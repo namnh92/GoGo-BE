@@ -84,4 +84,4 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppConfig {
   return parsed.data;
 }
 
-export const APP_CONFIG = Symbol('APP_CONFIG');
+export { APP_CONFIG } from '@gogo/modules';

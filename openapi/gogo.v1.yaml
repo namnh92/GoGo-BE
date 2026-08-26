@@ -40,6 +40,177 @@ paths:
                     type: string
                     enum: [ok]
 
+  /auth/register:
+    post:
+      operationId: register
+      tags: [sessions]
+      summary: Register a user account (optionally claiming a guest session)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, displayName]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                password: { type: string, minLength: 10, maxLength: 128 }
+                displayName: { type: string, minLength: 1, maxLength: 50 }
+                claimGuestToken:
+                  type: string
+                  description: Opaque guest token to re-parent guest history (FR-AUTH-003).
+      responses:
+        '201':
+          description: Registered; web clients also receive HttpOnly session cookies.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenGrant' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: Registration could not be completed (never confirms account existence)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [sessions]
+      summary: Login with email + password (enumeration-safe, lockout on abuse)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '201':
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenGrant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/refresh:
+    post:
+      operationId: refreshSession
+      tags: [sessions]
+      summary: Rotate a refresh token or renew a guest access token
+      description: >
+        Refresh tokens are single-use; presenting a superseded token revokes
+        the whole session family. Web clients may rely on the HttpOnly refresh
+        cookie instead of the body field.
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string }
+                guestToken: { type: string }
+      responses:
+        '201':
+          description: New token grant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenGrant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /sessions/guest:
+    post:
+      operationId: createGuestSession
+      tags: [sessions]
+      summary: Join a room as a guest with a display name only (FR-AUTH-002)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [roomCode, displayName]
+              properties:
+                roomCode: { type: string, minLength: 6, maxLength: 64 }
+                displayName: { type: string, minLength: 1, maxLength: 50 }
+      responses:
+        '201':
+          description: Guest session created; access token is scoped to this room only.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [guestSessionId, roomId, accessToken, guestToken]
+                properties:
+                  guestSessionId: { type: string, format: uuid }
+                  roomId: { type: string, format: uuid }
+                  accessToken: { type: string }
+                  guestToken:
+                    type: string
+                    description: Long-lived opaque credential for re-entry and claim.
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          description: Room expired or no longer joinable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /sessions/current:
+    delete:
+      operationId: endCurrentSession
+      tags: [sessions]
+      summary: Logout — revoke the current session (or all devices)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                allDevices: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Session revoked; cookies cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /me:
+    get:
+      operationId: getMe
+      tags: [me]
+      summary: Current actor profile facts
+      responses:
+        '200':
+          description: Actor profile (shape depends on actorType)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [actorType, id]
+                properties:
+                  actorType: { type: string, enum: [user, guest] }
+                  id: { type: string, format: uuid }
+                  displayName: { type: string }
+                  email: { type: string }
+                  locale: { type: string }
+                  roomId: { type: string, format: uuid }
+                  expiresAt: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -49,7 +220,7 @@ components:
     cookieAuth:
       type: apiKey
       in: cookie
-      name: gogo_session
+      name: gogo_at
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -79,6 +250,23 @@ components:
         maximum: 100
         default: 20
   schemas:
+    TokenGrant:
+      type: object
+      required: [accessToken, expiresIn]
+      properties:
+        userId: { type: string, format: uuid }
+        claimedRoomId: { type: string, format: uuid }
+        accessToken: { type: string }
+        refreshToken:
+          type: string
+          description: Absent for guest access renewal.
+        roomId:
+          type: string
+          format: uuid
+          description: Present for guest access renewal only.
+        expiresIn:
+          type: integer
+          description: Access token TTL in seconds.
     ErrorEnvelope:
       type: object
       required: [code, message, field_errors, request_id, retryable]

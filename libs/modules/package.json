@@ -8,8 +8,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.2",
     "@gogo/database": "workspace:*",
-    "zod": "^3.24.0"
+    "@nestjs/common": "^11.2.3",
+    "@nestjs/core": "^11.2.3",
+    "@nestjs/platform-fastify": "^11.2.3",
+    "argon2": "^0.45.1",
+    "drizzle-orm": "^0.44.7",
+    "fast-jwt": "^6.3.2",
+    "fastify": "5.11.3",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "typescript": "^5.6.0"

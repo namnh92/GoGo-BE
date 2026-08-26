@@ -8,3 +8,4 @@ allowBuilds:
   cpu-features: false
   protobufjs: true
   ssh2: false
+  '@swc/core': true
