@@ -1,0 +1,148 @@
+openapi: 3.1.0
+info:
+  title: GoGo API
+  version: 1.0.0-alpha.1
+  description: >
+    GoGo BFF public contract. Conventions: base path /v1, JSON UTF-8, ISO-8601
+    UTC timestamps, money as integer minor units + currency, cursor pagination,
+    Idempotency-Key on retryable mutations, optimistic concurrency via resource
+    version/ETag. DTOs return facts, not composed sentences.
+servers:
+  - url: /v1
+tags:
+  - name: system
+  - name: sessions
+  - name: rooms
+  - name: preferences
+  - name: places
+  - name: suggestions
+  - name: plans
+  - name: me
+  - name: cms
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [system]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: gogo_session
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        Client-generated key for retryable mutations. Repeating a request with
+        the same key returns the original result instead of re-applying it.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque cursor from a previous page.
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [code, message, field_errors, request_id, retryable]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+        message:
+          type: string
+        field_errors:
+          type: array
+          items:
+            type: object
+            required: [field, code, message]
+            properties:
+              field: { type: string }
+              code: { type: string }
+              message: { type: string }
+        request_id:
+          type: string
+        retryable:
+          type: boolean
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: integer
+          description: Integer minor units (e.g. VND has 0 decimals, amount = dong).
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+  responses:
+    BadRequest:
+      description: Validation or business rule failure
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: Actor lacks permission on this resource
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Conflict:
+      description: Version/state conflict
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+security:
+  - bearerAuth: []

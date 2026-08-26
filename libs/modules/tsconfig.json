@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "src",
+    "identity",
+    "rooms",
+    "preferences",
+    "places",
+    "search",
+    "suggestions",
+    "plans",
+    "reviews",
+    "notifications",
+    "cms"
+  ]
+}
