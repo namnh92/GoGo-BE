@@ -6,7 +6,8 @@ services:
       POSTGRES_PASSWORD: gogo
       POSTGRES_DB: gogo
     ports:
-      - '5432:5432'
+      # 5433 host-side to avoid colliding with a locally installed postgres
+      - '5433:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -18,7 +19,8 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - '6379:6379'
+      # 6380 host-side to avoid colliding with other local redis instances
+      - '6380:6379'
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
