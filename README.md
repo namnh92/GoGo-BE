@@ -2,7 +2,7 @@
 
 Backend của **GoGo** — nền tảng giúp cặp đôi và nhóm bạn thống nhất địa điểm, tạo lịch trình và sử dụng kế hoạch trong ngày đi chơi.
 
-Repo này chứa API BFF, database schema, search, suggestion engine, background workers và CMS APIs. Tài liệu nguồn (workspace docs): `GOGO_SRS.md`, `GOGO_ENGINEERING_SKILLS_AND_PLANS.md`, `GOGO_MOCKUP_VERIFICATION_AND_TECHNICAL_APPLICATION-2.md`.
+Repo này chứa API BFF, database schema, search, suggestion engine, background workers và CMS APIs. Tài liệu nguồn (workspace docs): `GOGO_SRS.md`, `GOGO_IMPLEMENTATION_WBS.md`, `GOGO_ENGINEERING_SKILLS_AND_PLANS.md`, `GOGO_MOCKUP_VERIFICATION_AND_TECHNICAL_APPLICATION.md`, `GOGO_FEATURE_IMPROVEMENT_SPEC.md`.
 
 ## Hệ sinh thái GoGo
 
@@ -109,6 +109,22 @@ Lệnh chuẩn mục tiêu: `pnpm lint` · `pnpm typecheck` · `pnpm test` · `p
 
 Git Flow: `master` (production, tag `vX.Y.Z`) · `develop` (integration) · `feature|bugfix/GOGO-<ticket>-<name>` · `hotfix/GOGO-<ticket>-<name>` · `release/x.y.z`. PR bắt buộc, CI xanh, ≥1 approval. Thay đổi OpenAPI/migration/auth/ranking cần CODEOWNER duyệt.
 
+## Backlog
+
+Backlog theo `GOGO_IMPLEMENTATION_WBS.md`, task ID ổn định, quản lý bằng GitHub issues (label `wbs`):
+
+| Nhóm | Task IDs | Phạm vi |
+| --- | --- | --- |
+| Foundation | `FND-001..009` | ADR, workspace, packages, OpenAPI, CI, env, observability, fixtures, tokens |
+| Database | `DB-001..011` | ERD, schema theo domain, geo/FTS indexes, retention, backup/restore |
+| Search | `SE-001..009` | Normalization, FTS/trigram, filters, ranking, evaluation, indexing |
+| Suggestion | `SG-001..010` | Scoring, fairness, optimizer, lock/regenerate, AI guarded |
+| API BFF | `BE-BFF-001..012` | Runtime, auth/guest, room, preference, search, suggestion, plan, providers |
+| CMS | `CMS-001..010` | APIs/schema thuộc repo này; frontend CMS repo sẽ chốt sau |
+| QA/Platform | `QP-001..008` | Test harness, E2E, golden datasets, load, threat model, runbooks |
+
+Sprint plan: S0 foundation → S1 identity/room → S2 preference/place → S3 search → S4 suggestion → S5 plan → S6 Mini+Mobile core → S7 active date/ops → S8 AI → S9 hardening/beta.
+
 ## Trạng thái
 
-**Sprint 0 — skeleton.** Cấu trúc thư mục đã dựng theo tài liệu kiến trúc; code sẽ được bổ sung theo thứ tự BE-APPLY-001 → 010 (module skeleton → schema → guest session/RBAC → room DTO → place search → deterministic scoring → vote/plan → queue/outbox → lock/regenerate → CMS).
+**Sprint 0 — skeleton.** Cấu trúc thư mục đã dựng theo tài liệu kiến trúc; code bắt đầu theo backlog WBS ở trên.
