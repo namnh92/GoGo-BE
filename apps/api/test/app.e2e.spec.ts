@@ -41,6 +41,23 @@ describe('api runtime skeleton (BE-BFF-001)', () => {
     expect(res.headers['x-request-id']).toBe('test-req-id-12345');
   });
 
+  it('serves the OpenAPI contract and docs page (BE-BFF-012)', async () => {
+    const spec = await app.getHttpAdapter().getInstance().inject({
+      method: 'GET',
+      url: '/v1/openapi.yaml',
+    });
+    expect(spec.statusCode).toBe(200);
+    expect(spec.headers['content-type']).toContain('yaml');
+    expect(spec.body).toContain('openapi: 3.1.0');
+
+    const docs = await app.getHttpAdapter().getInstance().inject({
+      method: 'GET',
+      url: '/v1/docs',
+    });
+    expect(docs.statusCode).toBe(200);
+    expect(docs.body).toContain('/v1/openapi.yaml');
+  });
+
   it('unknown route returns error envelope', async () => {
     const res = await app.getHttpAdapter().getInstance().inject({
       method: 'GET',

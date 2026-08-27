@@ -17,6 +17,7 @@ import { AppExceptionFilter } from './common/filters/app-exception.filter';
 import { APP_CONFIG, loadEnv } from './config/env';
 import { DatabaseModule } from './database.module';
 import { ProvidersModule } from './providers.module';
+import { DocsController } from './health/docs.controller';
 import { HealthController } from './health/health.controller';
 
 @Global()
@@ -42,7 +43,7 @@ class ConfigModule {}
     NotificationsModule,
     CmsModule,
   ],
-  controllers: [HealthController],
+  controllers: [HealthController, DocsController],
   providers: [
     { provide: APP_FILTER, useClass: AppExceptionFilter },
     { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },

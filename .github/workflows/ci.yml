@@ -38,6 +38,24 @@ jobs:
             openapi/gogo.v1.yaml
             openapi/gogo.v1.d.ts
 
+  # BE-BFF-012: no breaking /v1 change lands without the policy being invoked.
+  # oasdiff compares the PR spec against the base branch spec.
+  contract-compat:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Extract base spec
+        run: git show origin/${{ github.base_ref }}:openapi/gogo.v1.yaml > /tmp/base.yaml || cp openapi/gogo.v1.yaml /tmp/base.yaml
+      - name: Breaking-change gate
+        uses: oasdiff/oasdiff-action/breaking@v0.0.21
+        with:
+          base: /tmp/base.yaml
+          revision: openapi/gogo.v1.yaml
+          fail-on: ERR
+
   integration:
     runs-on: ubuntu-latest
     steps:
