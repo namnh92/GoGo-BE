@@ -2940,8 +2940,22 @@ components:
             people already agreed on. Show a warning; do not present it as fine.
         unavailableReason:
           type: string
-          enum: [PLACE_SUSPENDED, PLACE_ARCHIVED, PLACE_NOT_PUBLISHED, PLACE_MISSING]
-          description: Present only when `placeAvailable` is false. Resolve copy via i18n.
+          enum:
+            [
+              PLACE_SUSPENDED,
+              PLACE_ARCHIVED,
+              PLACE_NOT_PUBLISHED,
+              PLACE_MISSING,
+              PLACE_TEMPORARILY_CLOSED,
+              PLACE_CLOSED,
+            ]
+          description: >
+            Present only when `placeAvailable` is false. Two independent axes:
+            `PLACE_SUSPENDED`/`PLACE_ARCHIVED`/`PLACE_NOT_PUBLISHED` are GoGo
+            moderation states, while `PLACE_TEMPORARILY_CLOSED`/`PLACE_CLOSED`
+            are what the provider reports about the business itself. A place on
+            holiday and a place taken down need different copy — resolve it via
+            i18n, never render the code.
     Plan:
       type: object
       properties:

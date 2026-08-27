@@ -2014,10 +2014,10 @@ export interface components {
             /** @description False when the place behind this stop is no longer usable — taken down, archived or never published. The stop is deliberately kept: a locked stop is invariant, and dropping stops would rewrite a plan people already agreed on. Show a warning; do not present it as fine. */
             placeAvailable?: boolean;
             /**
-             * @description Present only when `placeAvailable` is false. Resolve copy via i18n.
+             * @description Present only when `placeAvailable` is false. Two independent axes: `PLACE_SUSPENDED`/`PLACE_ARCHIVED`/`PLACE_NOT_PUBLISHED` are GoGo moderation states, while `PLACE_TEMPORARILY_CLOSED`/`PLACE_CLOSED` are what the provider reports about the business itself. A place on holiday and a place taken down need different copy — resolve it via i18n, never render the code.
              * @enum {string}
              */
-            unavailableReason?: "PLACE_SUSPENDED" | "PLACE_ARCHIVED" | "PLACE_NOT_PUBLISHED" | "PLACE_MISSING";
+            unavailableReason?: "PLACE_SUSPENDED" | "PLACE_ARCHIVED" | "PLACE_NOT_PUBLISHED" | "PLACE_MISSING" | "PLACE_TEMPORARILY_CLOSED" | "PLACE_CLOSED";
         };
         Plan: {
             /** Format: uuid */

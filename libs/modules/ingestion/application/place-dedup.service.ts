@@ -74,11 +74,13 @@ export class PlaceDedupService {
     refreshAfterDays?: number;
   }): Promise<void> {
     const refreshAfter = new Date(Date.now() + (input.refreshAfterDays ?? 30) * 24 * 3600 * 1000);
+    // `CLOSED_TEMPORARILY` used to land on 'unknown', which conflated "shut for
+    // now" with "we have no idea" — and the two lead to different decisions.
     const sourceStatus =
       input.details.businessStatus === 'CLOSED_PERMANENTLY'
         ? 'closed'
         : input.details.businessStatus === 'CLOSED_TEMPORARILY'
-          ? 'unknown'
+          ? 'temporarily_closed'
           : 'active';
     await this.db
       .insert(schema.placeProviderSources)

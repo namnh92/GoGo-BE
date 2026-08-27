@@ -126,7 +126,16 @@ export class SuggestionsRepository {
         where pp.place_id = p.id and pp.unit = 'per_person'
         order by pp.verified_at desc nulls last, pp.created_at desc limit 1
       ) lp on true
-      where p.status = 'published' and p.is_lodging = false ${geoFilter}
+      where p.status = 'published' and p.is_lodging = false
+        -- BE-IMP-004: a place the provider reports shut stays published (that
+        -- is a moderation state, and nobody moderated it) but must not be
+        -- suggested — putting a closed door on someone's evening is exactly
+        -- what core rule #8 forbids.
+        and not exists (
+          select 1 from place_provider_sources ps
+          where ps.place_id = p.id and ps.source_status in ('closed', 'temporarily_closed')
+        )
+        ${geoFilter}
       order by ${seedOrder} p.rating desc nulls last, p.rating_count desc
       limit ${limit}
     `);

@@ -27,12 +27,16 @@ export class PlansService {
   private async toDto(plan: PlanRow, stops: StopRow[]) {
     const statuses = await this.repo.placeAvailability(stops.map((s) => s.placeId));
     const unavailableReason = (placeId: string): string | undefined => {
-      const status = statuses.get(placeId);
-      if (status === undefined) return 'PLACE_MISSING';
-      if (status === 'published') return undefined;
-      if (status === 'suspended') return 'PLACE_SUSPENDED';
-      if (status === 'archived') return 'PLACE_ARCHIVED';
-      return 'PLACE_NOT_PUBLISHED';
+      const row = statuses.get(placeId);
+      if (row === undefined) return 'PLACE_MISSING';
+      // A moderation decision outranks a business fact: if GoGo took the place
+      // down, that is what an editor needs to see first.
+      if (row.status === 'suspended') return 'PLACE_SUSPENDED';
+      if (row.status === 'archived') return 'PLACE_ARCHIVED';
+      if (row.status !== 'published') return 'PLACE_NOT_PUBLISHED';
+      if (row.providerStatus === 'closed') return 'PLACE_CLOSED';
+      if (row.providerStatus === 'temporarily_closed') return 'PLACE_TEMPORARILY_CLOSED';
+      return undefined;
     };
     const reasons = new Map(stops.map((s) => [s.id, unavailableReason(s.placeId)]));
 

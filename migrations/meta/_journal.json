@@ -50,6 +50,13 @@
       "when": 1787837528888,
       "tag": "0006_review-hidden-status",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787837529888,
+      "tag": "0007_provider-temporarily-closed",
+      "breakpoints": true
     }
   ]
 }
