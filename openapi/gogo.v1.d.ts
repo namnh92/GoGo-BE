@@ -1363,8 +1363,33 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Enroll TOTP (requires a fresh password proof) */
+        /**
+         * Enroll TOTP, step 1 of 2 (requires a fresh password proof)
+         * @description Returns the secret and otpauth URI, and does **not** switch MFA on. `cmsConfirmTotp` does that, once a code generated from the secret verifies. Enrolling and activating together locked an admin out of the console whenever the authenticator never actually received the secret, because production requires MFA to log in.
+         *
+         *     The secret is shown exactly once, here. The stored copy is encrypted at rest and never readable again.
+         */
         post: operations["cmsSetupTotp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/auth/totp/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enroll TOTP, step 2 of 2 (proves the authenticator has the secret)
+         * @description A code from the pending secret activates MFA for this account. The confirming code is spent, so it cannot also be used to log in, and every other session for the admin is revoked — enrolling a second factor is a credential change, and sessions opened before it were opened with less.
+         */
+        post: operations["cmsConfirmTotp"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5403,10 +5428,49 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** @description Shown once. Not retrievable afterwards. */
                         secret?: string;
                         otpauthUri?: string;
+                        /** @description Always false here — enrollment is not active until confirmed. */
+                        confirmed?: boolean;
                     };
                 };
+            };
+        };
+    };
+    cmsConfirmTotp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    code: string;
+                };
+            };
+        };
+        responses: {
+            /** @description MFA is now required for this account */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        confirmed: boolean;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description No enrollment is pending */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

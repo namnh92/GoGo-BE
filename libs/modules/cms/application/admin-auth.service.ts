@@ -11,8 +11,29 @@ import { TokenService } from '../../identity/application/token.service';
 import { SessionRevocationService } from '../../identity/application/session-revocation.service';
 import type { ClientMeta } from '../../identity/application/auth.service';
 import { writeAudit } from '../../shared/audit';
+import { SecretBox } from '../../shared/secret-box';
+import { IdentityRepository } from '../../identity/infrastructure/identity.repository';
 
 export type AdminRole = (typeof schema.adminUsers.$inferSelect)['role'];
+
+/**
+ * Same numbers as consumer login. The console is the higher-privilege door;
+ * it had a per-IP limit and no per-account one at all, so an attacker rotating
+ * addresses had unlimited attempts against a named admin.
+ */
+export const ADMIN_LOCKOUT_THRESHOLD = 5;
+export const ADMIN_LOCKOUT_WINDOW_SECONDS = 15 * 60;
+
+/** TOTP step length, from the otplib defaults this service authenticates with. */
+const TOTP_STEP_SECONDS = 30;
+
+const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
+
+/**
+ * Namespaced so an admin's failures cannot be counted against the consumer
+ * account with the same address, in either direction.
+ */
+const adminIdentifier = (email: string) => sha256(`admin:${email.trim().toLowerCase()}`);
 
 /**
  * CMS-001 — admin authentication. Security rules: CMS sessions are shorter
@@ -28,8 +49,25 @@ export class AdminAuthService {
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
     private readonly revocations: SessionRevocationService,
-    @Inject(APP_CONFIG) private readonly config: IdentityConfig,
-  ) {}
+    @Inject(APP_CONFIG)
+    private readonly config: IdentityConfig & { CMS_MFA_ENCRYPTION_KEY: string },
+    private readonly identity: IdentityRepository,
+  ) {
+    // Production validates its own key at boot (env.ts). Elsewhere the key is
+    // derived from the JWT secret so dev and test boot without one — the
+    // derivation is deliberate and documented, not an empty-key fallback that
+    // would silently encrypt with nothing.
+    this.secrets = new SecretBox(
+      this.config.CMS_MFA_ENCRYPTION_KEY || `derived-mfa-key:${this.config.AUTH_JWT_SECRET}`,
+    );
+  }
+
+  private readonly secrets: SecretBox;
+
+  /** The step a code belongs to, used to refuse a replay of one already spent. */
+  private static stepOf(delta: number): number {
+    return Math.floor(Date.now() / 1000 / TOTP_STEP_SECONDS) + delta;
+  }
 
   async login(input: {
     email: string;
@@ -37,18 +75,38 @@ export class AdminAuthService {
     totp?: string | undefined;
     meta?: ClientMeta | undefined;
   }) {
+    // Per-account lockout, which the console did not have. A per-IP limit
+    // alone means an attacker rotating addresses gets unlimited attempts at a
+    // named admin — on the door with the most privilege behind it.
+    const identifierHash = adminIdentifier(input.email);
+    const ipHash = sha256(input.meta?.ip ?? 'unknown');
+    const failures = await this.identity.countRecentFailures(
+      identifierHash,
+      ADMIN_LOCKOUT_WINDOW_SECONDS,
+    );
+    if (failures >= ADMIN_LOCKOUT_THRESHOLD) {
+      // Indistinguishable from bad credentials apart from retryable, and never
+      // confirms the account exists.
+      throw AppError.tooManyRequests('Too many attempts, try again later');
+    }
+
     const [admin] = await this.db
       .select()
       .from(schema.adminUsers)
       .where(sql`lower(${schema.adminUsers.email}) = lower(${input.email})`)
       .limit(1);
     const valid = await this.passwords.verifyOrBurn(admin?.passwordHash, input.password);
+    await this.identity.recordLoginAttempt({ identifierHash, ipHash, succeeded: valid });
     if (!valid || !admin || admin.status !== 'active') {
       throw AppError.unauthorized('INVALID_CREDENTIALS', 'Email or password is incorrect');
     }
 
     if (admin.mfaTotpSecretEnc) {
-      if (!input.totp || !authenticator.check(input.totp, admin.mfaTotpSecretEnc)) {
+      const step = await this.consumeTotp(admin, input.totp);
+      // A wrong code is a failed attempt too: counting only the password would
+      // leave the second factor brute-forceable at the per-IP rate.
+      if (step === null) {
+        await this.identity.recordLoginAttempt({ identifierHash, ipHash, succeeded: false });
         throw AppError.unauthorized('MFA_REQUIRED', 'Valid TOTP code required');
       }
     } else if (this.config.NODE_ENV === 'production') {
@@ -186,7 +244,58 @@ export class AdminAuthService {
     await this.revocations.revokeMany(rows.map((r) => r.id));
   }
 
-  /** TOTP enrollment: requires a fresh password proof; returns otpauth URI. */
+  /**
+   * Verifies a TOTP code against the stored secret and spends its step.
+   *
+   * Returns the consumed step, or null when the code is absent, wrong, or
+   * belongs to a step already used. Replay matters because a code stays
+   * mathematically valid for its whole 30-second window: without this, one
+   * observed code is reusable inside it.
+   */
+  private async consumeTotp(
+    admin: typeof schema.adminUsers.$inferSelect,
+    code: string | undefined,
+  ): Promise<number | null> {
+    if (!code || !admin.mfaTotpSecretEnc) return null;
+    let secret: string;
+    try {
+      secret = this.secrets.decrypt(admin.mfaTotpSecretEnc);
+    } catch {
+      // An unreadable secret is a refusal, never a bypass.
+      return null;
+    }
+    const delta = authenticator.checkDelta(code, secret);
+    if (delta === null || delta === undefined) return null;
+
+    const step = AdminAuthService.stepOf(delta);
+    if (admin.mfaTotpLastStep !== null && step <= admin.mfaTotpLastStep) return null;
+
+    // Conditional on the step not having moved, so two requests racing with
+    // the same code cannot both win.
+    const updated = await this.db
+      .update(schema.adminUsers)
+      .set({ mfaTotpLastStep: step })
+      .where(
+        and(
+          eq(schema.adminUsers.id, admin.id),
+          admin.mfaTotpLastStep === null
+            ? isNull(schema.adminUsers.mfaTotpLastStep)
+            : eq(schema.adminUsers.mfaTotpLastStep, admin.mfaTotpLastStep),
+        ),
+      )
+      .returning({ id: schema.adminUsers.id });
+    return updated.length > 0 ? step : null;
+  }
+
+  /**
+   * TOTP enrollment, step one: requires a fresh password proof and returns the
+   * otpauth URI. MFA is **not** switched on here.
+   *
+   * Enrolling and activating in one step meant an admin whose authenticator
+   * never got the secret was locked out of the console at the next login,
+   * because production requires MFA. `confirmTotp` is the proof that the code
+   * actually works.
+   */
   async setupTotp(adminId: string, password: string) {
     const [admin] = await this.db
       .select()
@@ -200,7 +309,61 @@ export class AdminAuthService {
     const secret = authenticator.generateSecret();
     await this.db
       .update(schema.adminUsers)
-      .set({ mfaTotpSecretEnc: secret, updatedAt: sql`now()` })
+      .set({ mfaTotpPendingEnc: this.secrets.encrypt(secret), updatedAt: sql`now()` })
+      .where(eq(schema.adminUsers.id, adminId));
+    await writeAudit(this.db, {
+      actorType: 'admin',
+      actorId: adminId,
+      action: 'admin.mfa_enrollment_started',
+      resourceType: 'admin_user',
+      resourceId: adminId,
+    });
+    return {
+      // Returned once, at enrollment, so the authenticator can be provisioned.
+      // It is never readable again — the stored copy is encrypted.
+      secret,
+      otpauthUri: authenticator.keyuri(admin.email, 'GoGo CMS', secret),
+      confirmed: false,
+    };
+  }
+
+  /**
+   * TOTP enrollment, step two: a code generated from the pending secret proves
+   * the authenticator holds it, and only then does MFA become required for
+   * this account.
+   */
+  async confirmTotp(adminId: string, code: string) {
+    const [admin] = await this.db
+      .select()
+      .from(schema.adminUsers)
+      .where(eq(schema.adminUsers.id, adminId))
+      .limit(1);
+    if (!admin) throw AppError.unauthorized();
+    if (!admin.mfaTotpPendingEnc) {
+      throw AppError.conflict('MFA_NOT_PENDING', 'Start MFA enrollment first');
+    }
+
+    let secret: string;
+    try {
+      secret = this.secrets.decrypt(admin.mfaTotpPendingEnc);
+    } catch {
+      throw AppError.conflict('MFA_NOT_PENDING', 'Start MFA enrollment first');
+    }
+    const delta = authenticator.checkDelta(code, secret);
+    if (delta === null || delta === undefined) {
+      throw AppError.unauthorized('MFA_CODE_INVALID', 'That code is not valid');
+    }
+
+    await this.db
+      .update(schema.adminUsers)
+      .set({
+        mfaTotpSecretEnc: admin.mfaTotpPendingEnc,
+        mfaTotpPendingEnc: null,
+        // The confirming code is spent, so it cannot also be used to log in.
+        mfaTotpLastStep: AdminAuthService.stepOf(delta),
+        mfaEnrolledAt: sql`now()`,
+        updatedAt: sql`now()`,
+      })
       .where(eq(schema.adminUsers.id, adminId));
     await writeAudit(this.db, {
       actorType: 'admin',
@@ -209,10 +372,20 @@ export class AdminAuthService {
       resourceType: 'admin_user',
       resourceId: adminId,
     });
-    return {
-      secret,
-      otpauthUri: authenticator.keyuri(admin.email, 'GoGo CMS', secret),
-    };
+    // Every other session of this admin ends: enrolling a second factor is a
+    // credential change, and sessions opened before it were opened with less.
+    await this.revokeAllSessions(adminId, 'mfa_enrolled');
+    return { confirmed: true };
+  }
+
+  /** Ends every live session for one admin. */
+  private async revokeAllSessions(adminId: string, reason: string): Promise<void> {
+    const rows = await this.db
+      .update(schema.adminSessions)
+      .set({ revokedAt: sql`now()`, revokeReason: reason })
+      .where(and(eq(schema.adminSessions.adminId, adminId), isNull(schema.adminSessions.revokedAt)))
+      .returning({ id: schema.adminSessions.id });
+    await this.revocations.revokeMany(rows.map((r) => r.id));
   }
 
   /** Super-admin creates staff accounts (CMS-001 RBAC bootstrap). */

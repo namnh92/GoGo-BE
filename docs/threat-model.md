@@ -294,6 +294,38 @@ does, and waits on the metric destination (#120). The threshold itself waits on
 a real baseline: setting one before knowing the normal rate only manufactures
 noise.
 
+### Admin second factor (#62)
+
+The console had MFA in the sense that a code was checked. Four things it was
+not doing:
+
+The TOTP secret sat in a column called `mfa_totp_secret_enc` and was stored in
+plaintext. An attacker holding a database dump already has the password
+hashes; the second factor is precisely what is supposed to still stop them,
+and unencrypted it stopped nothing. Secrets are AES-256-GCM sealed now, with a
+key that lives in the application and is required at 32+ characters in
+production.
+
+Enrollment wrote the secret and switched MFA on in one step, with no proof the
+authenticator had received it. Since production refuses a login without MFA,
+that is a lockout of the admin from their own console. Enrollment is now two
+steps and only a verifying code activates it. The confirming code is spent, so
+it cannot also be used to log in, and every other session for that admin is
+revoked — adding a second factor is a credential change, and older sessions
+were opened with less.
+
+A code stayed usable for the whole of its 30-second step, so an intercepted
+one could be replayed inside it. The highest step consumed is recorded and
+compared, with the update conditional on that step so two racing requests
+cannot both spend the same code.
+
+Login was rate-limited per IP and not at all per account — on the door with
+the most privilege behind it, while consumer login had per-account lockout.
+Admin login now uses the same threshold and window, under a namespaced
+identifier so admin and consumer counters cannot be made to collide. A wrong
+TOTP code counts as a failed attempt too: counting only the password would
+leave the second factor brute-forceable at the per-IP rate.
+
 ### CMS session model (SEC-003)
 
 The staff session used to be an access token in a response body with no server

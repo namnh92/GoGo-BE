@@ -2,10 +2,11 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
+import { authenticator } from 'otplib';
 import { and, eq, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 
@@ -1429,5 +1430,216 @@ describe('audit read (BE-IMP-010, #158, FR-CMS-008)', () => {
       });
       expect(res.statusCode).toBe(404);
     }
+  });
+});
+
+/**
+ * CMS-001 (#62) — the second factor was not behaving like one. Each test here
+ * is one of the four ways it fell short.
+ */
+describe('admin MFA hardening', () => {
+  async function enrolled(email: string) {
+    const admin = await createAdmin(email, 'editor');
+    const setup = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/totp/setup',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+      payload: { password: 'admin-password-123' },
+    });
+    expect(setup.statusCode).toBe(201);
+    const secret = setup.json().secret as string;
+
+    const confirm = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/totp/confirm',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+      payload: { code: authenticator.generate(secret) },
+    });
+    expect(confirm.statusCode).toBe(201);
+    return { ...admin, email, secret };
+  }
+
+  const login = (email: string, totp?: string) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/login',
+      remoteAddress: ip(),
+      payload: { email, password: 'admin-password-123', ...(totp ? { totp } : {}) },
+    });
+
+  it('stores the TOTP secret encrypted, not under a column that merely says so', async () => {
+    const admin = await enrolled('mfa-encrypted@gogo.local');
+    const [row] = await db
+      .select()
+      .from(schema.adminUsers)
+      .where(eq(schema.adminUsers.id, admin.id));
+
+    expect(row!.mfaTotpSecretEnc).toBeTruthy();
+    // The whole point: a database dump already has the password hashes, so the
+    // second factor is what should still stop an attacker.
+    expect(row!.mfaTotpSecretEnc).not.toBe(admin.secret);
+    expect(row!.mfaTotpSecretEnc).not.toContain(admin.secret);
+    expect(row!.mfaTotpSecretEnc!.startsWith('v1.')).toBe(true);
+  });
+
+  it('does not switch MFA on until a code proves the authenticator has it', async () => {
+    const admin = await createAdmin('mfa-pending@gogo.local', 'editor');
+    const setup = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/totp/setup',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+      payload: { password: 'admin-password-123' },
+    });
+    expect(setup.json().confirmed).toBe(false);
+
+    const [row] = await db
+      .select()
+      .from(schema.adminUsers)
+      .where(eq(schema.adminUsers.id, admin.id));
+    // Pending, not active: in production an unconfirmed secret would lock the
+    // admin out of the console it was meant to protect.
+    expect(row!.mfaTotpPendingEnc).toBeTruthy();
+    expect(row!.mfaTotpSecretEnc).toBeNull();
+    expect(row!.mfaEnrolledAt).toBeNull();
+  });
+
+  it('refuses a wrong confirmation code and stays unenrolled', async () => {
+    const admin = await createAdmin('mfa-badconfirm@gogo.local', 'editor');
+    await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/totp/setup',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+      payload: { password: 'admin-password-123' },
+    });
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/totp/confirm',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+      payload: { code: '000000' },
+    });
+    expect(res.statusCode).toBe(401);
+
+    const [row] = await db
+      .select()
+      .from(schema.adminUsers)
+      .where(eq(schema.adminUsers.id, admin.id));
+    expect(row!.mfaTotpSecretEnc).toBeNull();
+  });
+
+  it('refuses to confirm when nothing is pending', async () => {
+    const admin = await createAdmin('mfa-nopending@gogo.local', 'editor');
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/totp/confirm',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+      payload: { code: '123456' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('MFA_NOT_PENDING');
+  });
+
+  it('accepts a code once and refuses the same code again', async () => {
+    const admin = await enrolled('mfa-replay@gogo.local');
+    // The confirming code was spent, so move to the next step rather than
+    // sleeping 30 seconds. The app runs in this process, so shifting Date
+    // shifts both the generated code and the server's step arithmetic.
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 60_000 });
+    try {
+      const code = authenticator.generate(admin.secret);
+
+      const first = await login(admin.email, code);
+      expect(first.statusCode).toBe(201);
+
+      // A TOTP code stays mathematically valid for its whole 30-second step, so
+      // without replay protection an observed code is reusable inside it.
+      const second = await login(admin.email, code);
+      expect(second.statusCode).toBe(401);
+      expect(second.json().code).toBe('MFA_REQUIRED');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses a login with no code once MFA is on', async () => {
+    const admin = await enrolled('mfa-required@gogo.local');
+    const res = await login(admin.email);
+    expect(res.statusCode).toBe(401);
+    expect(res.json().code).toBe('MFA_REQUIRED');
+  });
+
+  it('locks the account after repeated failures, whatever the IP', async () => {
+    const email = 'mfa-lockout@gogo.local';
+    await createAdmin(email, 'editor');
+
+    // Each attempt from a different address: a per-IP limit alone leaves the
+    // highest-privilege door open to an attacker who rotates addresses.
+    for (let i = 0; i < 5; i += 1) {
+      const res = await api().inject({
+        method: 'POST',
+        url: '/v1/cms/auth/login',
+        remoteAddress: ip(),
+        payload: { email, password: 'wrong-password-entirely' },
+      });
+      expect(res.statusCode).toBe(401);
+    }
+
+    const locked = await login(email);
+    expect(locked.statusCode).toBe(429);
+    // Never confirms the account exists, and never says the password was right.
+    expect(locked.json().code).toBe('RATE_LIMITED');
+  });
+
+  it('counts a wrong TOTP code toward the lockout, not just a wrong password', async () => {
+    const admin = await enrolled('mfa-totp-lockout@gogo.local');
+    for (let i = 0; i < 5; i += 1) {
+      const res = await login(admin.email, '000000');
+      expect(res.statusCode).toBe(401);
+    }
+    const locked = await login(admin.email, authenticator.generate(admin.secret));
+    // Otherwise the second factor is brute-forceable at the per-IP rate while
+    // the password stays untouched.
+    expect(locked.statusCode).toBe(429);
+  });
+
+  it('ends other sessions when a second factor is enrolled', async () => {
+    const admin = await createAdmin('mfa-session@gogo.local', 'editor');
+    const before = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/places?limit=1',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+    });
+    expect(before.statusCode).toBe(200);
+
+    const setup = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/totp/setup',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+      payload: { password: 'admin-password-123' },
+    });
+    await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/totp/confirm',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+      payload: { code: authenticator.generate(setup.json().secret) },
+    });
+
+    const after = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/places?limit=1',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+    });
+    // Enrolling a second factor is a credential change; a session opened
+    // before it was opened with less.
+    expect(after.statusCode).toBe(401);
   });
 });

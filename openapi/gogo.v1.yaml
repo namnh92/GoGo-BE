@@ -2251,7 +2251,17 @@ paths:
     post:
       operationId: cmsSetupTotp
       tags: [cms]
-      summary: Enroll TOTP (requires a fresh password proof)
+      summary: 'Enroll TOTP, step 1 of 2 (requires a fresh password proof)'
+      description: >
+        Returns the secret and otpauth URI, and does **not** switch MFA on.
+        `cmsConfirmTotp` does that, once a code generated from the secret
+        verifies. Enrolling and activating together locked an admin out of the
+        console whenever the authenticator never actually received the secret,
+        because production requires MFA to log in.
+
+
+        The secret is shown exactly once, here. The stored copy is encrypted at
+        rest and never readable again.
       requestBody:
         required: true
         content:
@@ -2269,8 +2279,47 @@ paths:
               schema:
                 type: object
                 properties:
-                  secret: { type: string }
+                  secret:
+                    type: string
+                    description: Shown once. Not retrievable afterwards.
                   otpauthUri: { type: string }
+                  confirmed:
+                    type: boolean
+                    description: Always false here — enrollment is not active until confirmed.
+
+  /cms/auth/totp/confirm:
+    post:
+      operationId: cmsConfirmTotp
+      tags: [cms]
+      summary: 'Enroll TOTP, step 2 of 2 (proves the authenticator has the secret)'
+      description: >
+        A code from the pending secret activates MFA for this account. The
+        confirming code is spent, so it cannot also be used to log in, and
+        every other session for the admin is revoked — enrolling a second
+        factor is a credential change, and sessions opened before it were
+        opened with less.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        '201':
+          description: MFA is now required for this account
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [confirmed]
+                properties:
+                  confirmed: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: No enrollment is pending
 
   /cms/auth/admins:
     post:
