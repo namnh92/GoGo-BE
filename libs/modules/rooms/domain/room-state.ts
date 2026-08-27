@@ -10,7 +10,9 @@ export type DecisionMode = 'match' | 'vote' | 'host';
 const TRANSITIONS: Record<RoomStatus, RoomStatus[]> = {
   draft: ['collecting', 'cancelled'],
   collecting: ['matching', 'collecting', 'expired', 'cancelled'],
-  matching: ['ready', 'collecting', 'cancelled'],
+  // Self-loop like `collecting`: a client expressing "start matching"
+  // twice — a retry after a timeout — must not be an error.
+  matching: ['ready', 'collecting', 'matching', 'cancelled'],
   ready: ['active', 'matching', 'cancelled'],
   active: ['completed', 'cancelled'],
   completed: [],

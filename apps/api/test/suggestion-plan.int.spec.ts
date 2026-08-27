@@ -157,7 +157,11 @@ async function seedPlaces() {
 let placeIds: Record<string, string>;
 
 /** Create a room with two user members, prefs completed → matching. */
-async function matchingRoom(type: 'couple' | 'group', decisionMode: 'match' | 'vote') {
+async function matchingRoom(
+  type: 'couple' | 'group',
+  decisionMode: 'match' | 'vote',
+  options: { skipTransitions?: boolean } = {},
+) {
   const hostToken = await register(`h${Date.now()}${Math.random().toString(36).slice(2, 6)}@g.vn`);
   const memberToken = await register(
     `m${Date.now()}${Math.random().toString(36).slice(2, 6)}@g.vn`,
@@ -178,7 +182,11 @@ async function matchingRoom(type: 'couple' | 'group', decisionMode: 'match' | 'v
     },
   });
   const room = create.json();
-  await patch(hostToken, `/v1/rooms/${room.id}/status`, { status: 'collecting' });
+  // Kept for the existing cases, skipped by the ones proving a client no longer
+  // has to walk the state machine itself (#155).
+  if (!options.skipTransitions) {
+    await patch(hostToken, `/v1/rooms/${room.id}/status`, { status: 'collecting' });
+  }
   const invite = await post(hostToken, `/v1/rooms/${room.id}/invites`, {});
   await post(memberToken, '/v1/rooms/join', { inviteCode: invite.json().code });
 
@@ -584,5 +592,44 @@ describe('provider says closed: a business fact, not a moderation decision (BE-I
     expect(suspended.stops.find((s: { id: string }) => s.id === stop.id).unavailableReason).toBe(
       'PLACE_SUSPENDED',
     );
+  });
+});
+
+describe('room lifecycle does not dead-end (#155)', () => {
+  it('a freshly created room can be matched without the client walking states', async () => {
+    // The bug this guards: the room was created in `draft`, nothing moved it
+    // to `collecting`, `complete` answered roomReadyForMatching: true anyway,
+    // and the suggestions endpoint then returned 409 ROOM_NOT_MATCHING.
+    const { hostToken, roomId } = await matchingRoom('group', 'vote', { skipTransitions: true });
+
+    // Everyone finished their preferences, so the room moved itself on. The
+    // client never patched a status.
+    const room = (await get(hostToken, `/v1/rooms/${roomId}`)).json();
+    expect(['collecting', 'matching']).toContain(room.status);
+
+    const suggestions = await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    expect(suggestions.statusCode).toBe(201);
+  });
+
+  it('roomReadyForMatching describes the room, not just member progress', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote', { skipTransitions: true });
+    const done = await post(hostToken, `/v1/rooms/${roomId}/preferences/complete`, {});
+    const body = done.json();
+    expect(body.roomStatus).toBeTruthy();
+    // The two are now separate facts: a client can tell "everyone finished"
+    // apart from "the room can be matched".
+    expect(body).toHaveProperty('allMembersCompleted');
+    if (body.roomReadyForMatching) {
+      expect(['matching', 'collecting']).toContain(body.roomStatus);
+    }
+  });
+
+  it('asking to start matching twice is not an error', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    const first = await patch(hostToken, `/v1/rooms/${roomId}/status`, { status: 'matching' });
+    const second = await patch(hostToken, `/v1/rooms/${roomId}/status`, { status: 'matching' });
+    // A retry after a timeout must not look like a broken client.
+    expect([200, 201]).toContain(first.statusCode);
+    expect([200, 201]).toContain(second.statusCode);
   });
 });
