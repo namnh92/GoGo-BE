@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import type { Actor } from '../../identity/domain/actor';
@@ -75,11 +75,29 @@ const decisionSchema = z.object({
   mergeIntoPlaceId: z.string().uuid().optional(),
 });
 
+const submissionListQuery = z.object({
+  status: z.enum(['pending', 'approved', 'rejected', 'merged']).default('pending'),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  cursor: z.string().max(512).optional(),
+});
+
 /** PI-CMS-007 backend — moderation queue actions for mobile submissions. */
 @RequireRole('moderator', 'editor')
 @Controller('cms/place-submissions')
 export class CmsSubmissionController {
   constructor(private readonly submissions: PlaceSubmissionService) {}
+
+  /**
+   * The decide endpoint existed with nothing to list what to decide on, so a
+   * moderator had no way to find a submission at all.
+   */
+  @Get()
+  list(
+    @Query(new ZodValidationPipe(submissionListQuery))
+    query: z.infer<typeof submissionListQuery>,
+  ) {
+    return this.submissions.listSubmissions(query);
+  }
 
   @Post(':id/decide')
   decide(

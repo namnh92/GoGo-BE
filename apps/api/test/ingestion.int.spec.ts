@@ -27,6 +27,23 @@ let ipc = 0;
 const ip = () => `10.60.${Math.floor(++ipc / 250)}.${(ipc % 250) + 1}`;
 const auth = (t: string) => ({ authorization: `Bearer ${t}` });
 
+async function createAdmin(email: string, role: 'moderator' | 'editor' | 'ops_admin') {
+  const argon2 = (await import('argon2')).default;
+  await db.insert(schema.adminUsers).values({
+    email,
+    passwordHash: await argon2.hash('admin-password-123', { type: argon2.argon2id }),
+    displayName: 'Admin',
+    role,
+  });
+  const login = await api().inject({
+    method: 'POST',
+    url: '/v1/cms/auth/login',
+    remoteAddress: ip(),
+    payload: { email, password: 'admin-password-123' },
+  });
+  return { token: login.json().accessToken as string };
+}
+
 async function register(email: string) {
   const res = await api().inject({
     method: 'POST',
@@ -290,5 +307,120 @@ describe('permissions (FR-INGEST-011)', () => {
       payload: { decision: 'approved', reason: 'nope' },
     });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('PI-CMS-007 — submission queue (list)', () => {
+  it('lists pending proposals newest first, pages by cursor, and hides who sent them', async () => {
+    const moderator = await createAdmin('sub-queue@gogo.local', 'moderator');
+    for (let i = 0; i < 4; i++) {
+      places.seed({ providerPlaceId: `fake-queue-${i}`, name: `Quán Queue ${i}` });
+      const token = await register(`queue-user-${i}@gogo.vn`);
+      const res = await api().inject({
+        method: 'POST',
+        url: '/v1/place-submissions',
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: { googlePlaceId: `fake-queue-${i}`, note: `đề xuất ${i}` },
+      });
+      expect(res.statusCode).toBe(201);
+    }
+
+    const first = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/place-submissions?limit=2',
+      remoteAddress: ip(),
+      headers: auth(moderator.token),
+    });
+    expect(first.statusCode).toBe(200);
+    const page = first.json();
+    expect(page.items).toHaveLength(2);
+    expect(page.nextCursor).not.toBeNull();
+    // Moderating does not need the person, only whether it came from an account.
+    expect(page.items[0]).not.toHaveProperty('submittedByUserId');
+    expect(page.items[0].fromRegisteredUser).toBe(true);
+
+    const second = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-submissions?limit=2&cursor=${encodeURIComponent(page.nextCursor)}`,
+      remoteAddress: ip(),
+      headers: auth(moderator.token),
+    });
+    const ids = new Set([
+      ...page.items.map((i: { id: string }) => i.id),
+      ...second.json().items.map((i: { id: string }) => i.id),
+    ]);
+    expect(ids.size).toBe(4);
+  });
+
+  it('counts repeat proposals of the same place as one row', async () => {
+    const moderator = await createAdmin('sub-dupe@gogo.local', 'moderator');
+    places.seed({ providerPlaceId: 'fake-popular', name: 'Quán Ai Cũng Gửi' });
+    for (let i = 0; i < 3; i++) {
+      const token = await register(`popular-${i}@gogo.vn`);
+      await api().inject({
+        method: 'POST',
+        url: '/v1/place-submissions',
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: { googlePlaceId: 'fake-popular' },
+      });
+    }
+
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/place-submissions?limit=100',
+      remoteAddress: ip(),
+      headers: auth(moderator.token),
+    });
+    const rows = res
+      .json()
+      .items.filter((i: { googlePlaceId: string }) => i.googlePlaceId === 'fake-popular');
+    // One row, not three — the count is the signal to prioritise by.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].submissionCount).toBe(3);
+  });
+
+  it('a decided submission leaves the pending queue and keeps its reason', async () => {
+    const moderator = await createAdmin('sub-decide@gogo.local', 'moderator');
+    places.seed({ providerPlaceId: 'fake-decide', name: 'Quán Quyết Định' });
+    const token = await register('decide-user@gogo.vn');
+    const submitted = await api().inject({
+      method: 'POST',
+      url: '/v1/place-submissions',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { googlePlaceId: 'fake-decide' },
+    });
+
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-submissions/${submitted.json().submissionId}/decide`,
+      remoteAddress: ip(),
+      headers: auth(moderator.token),
+      payload: { decision: 'rejected', reason: 'trùng địa điểm đã có' },
+    });
+
+    const pending = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/place-submissions?status=pending&limit=100',
+      remoteAddress: ip(),
+      headers: auth(moderator.token),
+    });
+    expect(
+      pending.json().items.some((i: { id: string }) => i.id === submitted.json().submissionId),
+    ).toBe(false);
+
+    const rejected = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/place-submissions?status=rejected&limit=100',
+      remoteAddress: ip(),
+      headers: auth(moderator.token),
+    });
+    const row = rejected
+      .json()
+      .items.find((i: { id: string }) => i.id === submitted.json().submissionId);
+    expect(row.decisionReason).toBe('trùng địa điểm đã có');
+    expect(row.decidedAt).toBeTruthy();
   });
 });
