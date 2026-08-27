@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
+import { pgArray } from '../../search/infrastructure/search.repository';
 import { DB } from '../../shared/tokens';
 import { writeOutbox, type DomainEventInput } from '../../shared/outbox';
 
@@ -25,9 +26,78 @@ export type NewConstraint = {
   accessibilityKeys: string[];
 };
 
+export type RoomListRow = {
+  id: string;
+  type: string;
+  status: string;
+  decision_mode: string;
+  participant_count: number;
+  title: string | null;
+  scheduled_date: Date | string | null;
+  updated_at: Date | string;
+  code: string;
+  my_member_id: string;
+  my_role: string;
+  member_count: number;
+  completed_count: number;
+  plan_id: string | null;
+};
+
 @Injectable()
 export class RoomsRepository {
   constructor(@Inject(DB) readonly db: Db) {}
+
+  /**
+   * #152 — rooms the actor belongs to, newest activity first.
+   *
+   * A room used to be reachable only by id, so closing the app mid-flow lost it
+   * for good; Mobile shipped a local store purely to remember them. Keyset
+   * paging on `(updated_at, id)` because a room's timestamp moves while the
+   * list is being read — a vote or a plan is enough.
+   */
+  async listRoomsForActor(input: {
+    actorType: 'user' | 'guest';
+    actorId: string;
+    statuses?: string[] | undefined;
+    limit: number;
+    cursor?: { updatedAt: string; id: string } | undefined;
+  }) {
+    const membership =
+      input.actorType === 'user'
+        ? sql`rm.user_id = ${input.actorId}`
+        : sql`rm.guest_session_id = ${input.actorId}`;
+
+    const conditions = [sql`rm.removed_at is null`, membership];
+    if (input.statuses?.length) {
+      // `status` is an enum; comparing it to a text[] needs the cast, or
+      // Postgres refuses the operator outright.
+      conditions.push(sql`r.status::text = any(${pgArray(input.statuses)}::text[])`);
+    }
+    if (input.cursor) {
+      conditions.push(
+        sql`(r.updated_at, r.id) < (${input.cursor.updatedAt}::timestamptz, ${input.cursor.id}::uuid)`,
+      );
+    }
+
+    const rows = await this.db.execute(sql`
+      select r.id, r.type, r.status, r.decision_mode, r.participant_count,
+             r.title, r.scheduled_date, r.updated_at, r.code,
+             rm.id as my_member_id, rm.role as my_role,
+             (select count(*)::int from room_members m
+               where m.room_id = r.id and m.removed_at is null) as member_count,
+             (select count(*)::int from room_members m
+               where m.room_id = r.id and m.removed_at is null
+                 and m.selection_status = 'completed') as completed_count,
+             (select p.id from plans p
+               where p.room_id = r.id and p.status = 'current' limit 1) as plan_id
+      from rooms r
+      join room_members rm on rm.room_id = r.id
+      where ${sql.join(conditions, sql` and `)}
+      order by r.updated_at desc, r.id desc
+      limit ${input.limit + 1}
+    `);
+    return rows.rows as RoomListRow[];
+  }
 
   async createRoom(input: {
     code: string;

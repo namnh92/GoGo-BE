@@ -40,18 +40,36 @@ function duplicateOperationIds(text: string): string[] {
   return [...seen.entries()].filter(([, n]) => n > 1).map(([id, n]) => `${id} (×${n})`);
 }
 
-/** Paths in the spec: two-space-indented keys under `paths:` starting with `/`. */
-function specPaths(text: string): Set<string> {
+/**
+ * Operations in the spec as `METHOD path`.
+ *
+ * Comparing paths alone let a new method on an existing path through unnoticed:
+ * adding `GET /rooms` next to `POST /rooms` was invisible to this check until
+ * it counted the pair.
+ */
+const METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
+
+function specOperations(text: string): Set<string> {
   const out = new Set<string>();
   let inPaths = false;
+  let current: string | null = null;
   for (const line of text.split('\n')) {
     if (/^paths:\s*$/.test(line)) {
       inPaths = true;
       continue;
     }
-    if (inPaths && /^[a-z]/.test(line)) break;
-    const match = /^ {2}(\/[^:]*):\s*$/.exec(line);
-    if (inPaths && match) out.add(normalize(match[1]!));
+    if (!inPaths) continue;
+    if (/^[a-z]/.test(line)) break;
+
+    const pathMatch = /^ {2}(\/[^:]*):\s*$/.exec(line);
+    if (pathMatch) {
+      current = normalize(pathMatch[1]!);
+      continue;
+    }
+    const methodMatch = /^ {4}([a-z]+):\s*$/.exec(line);
+    if (current && methodMatch && METHODS.includes(methodMatch[1]!)) {
+      out.add(`${methodMatch[1]!.toUpperCase()} ${current}`);
+    }
   }
   return out;
 }
@@ -85,7 +103,13 @@ async function servedRoutes(): Promise<Set<string>> {
     while (stack.length > 0 && stack[stack.length - 1]!.depth >= depth) stack.pop();
     const full = stack.map((s) => s.segment).join('') + segment;
     stack.push({ depth, segment });
-    if (methods) routes.add(normalize(full.replace(/^\/v1/, '')));
+    if (methods) {
+      const path = normalize(full.replace(/^\/v1/, ''));
+      for (const method of methods[1]!.split(',').map((m) => m.trim())) {
+        if (method === 'HEAD') continue; // fastify adds HEAD for every GET
+        routes.add(`${method} ${path}`);
+      }
+    }
   }
   return routes;
 }
@@ -110,18 +134,20 @@ function expand(route: string): string[] {
 /** Not routes: the fastify catch-all and the empty root node of the tree. */
 const IGNORED = new Set(['/*', '']);
 
+const pathOf = (operation: string) => operation.slice(operation.indexOf(' ') + 1);
+
 async function main(): Promise<void> {
   const specText = readFileSync(path.resolve('openapi/gogo.v1.yaml'), 'utf8');
-  const spec = specPaths(specText);
+  const spec = specOperations(specText);
   const duplicates = duplicateOperationIds(specText);
-  const served = new Set([...(await servedRoutes())].filter((r) => !IGNORED.has(r)));
+  const served = new Set([...(await servedRoutes())].filter((r) => !IGNORED.has(pathOf(r))));
 
   const missing = [...served].filter((r) => !expand(r).some((v) => spec.has(v))).sort();
   const servedVariants = new Set([...served].flatMap(expand));
   const specOnly = [...spec].filter((r) => !servedVariants.has(r)).sort();
 
-  console.log(`served routes : ${served.size}`);
-  console.log(`spec paths    : ${spec.size}`);
+  console.log(`served ops : ${served.size}`);
+  console.log(`spec ops   : ${spec.size}`);
   console.log(`MISSING from spec (${missing.length}):`);
   for (const r of missing) console.log(`  - ${r}`);
   console.log(`SPEC-ONLY, not served (${specOnly.length}):`);

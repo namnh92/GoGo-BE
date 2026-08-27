@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { z } from 'zod';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import type { Actor } from '../../identity/domain/actor';
 import { AuthService } from '../../identity/application/auth.service';
@@ -23,6 +24,33 @@ import {
   type UpdateConstraintsDto,
 } from './dtos';
 
+const ROOM_STATUSES = [
+  'draft',
+  'collecting',
+  'matching',
+  'ready',
+  'active',
+  'completed',
+  'cancelled',
+  'expired',
+] as const;
+
+/** Repeatable or CSV, so "active rooms" does not have to pull all history. */
+const roomListQuery = z.object({
+  status: z
+    .union([z.string(), z.array(z.string())])
+    .transform((value) =>
+      (Array.isArray(value) ? value : value.split(','))
+        .map((item) => item.trim())
+        .filter((item): item is (typeof ROOM_STATUSES)[number] =>
+          (ROOM_STATUSES as readonly string[]).includes(item),
+        ),
+    )
+    .optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  cursor: z.string().max(512).optional(),
+});
+
 const UuidPipe = new ZodValidationPipe(uuidSchema);
 
 @Controller('rooms')
@@ -46,6 +74,19 @@ export class RoomsController {
       ...(body.scheduledDate ? { scheduledDate: body.scheduledDate } : {}),
       constraint: stripUndefined(body.constraint),
       seedPlaceIds: body.seedPlaceIds,
+    });
+  }
+
+  /** #152 — a room used to be reachable only by id; losing it lost the room. */
+  @Get()
+  list(
+    @CurrentActor() actor: Actor,
+    @Query(new ZodValidationPipe(roomListQuery)) query: z.infer<typeof roomListQuery>,
+  ) {
+    return this.rooms.listRooms(actor, {
+      ...(query.status ? { statuses: query.status } : {}),
+      limit: query.limit,
+      ...(query.cursor ? { cursor: query.cursor } : {}),
     });
   }
 

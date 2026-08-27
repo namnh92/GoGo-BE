@@ -120,6 +120,48 @@ export class RoomsService {
     return this.getRoomSummary(actor, room.id);
   }
 
+  /**
+   * #152 — "your rooms". A summary per room, not the aggregate: enough to draw
+   * a list row (progress, current plan) without a second call per room, and
+   * deliberately no invite code — a list screen has no reason to hand one out.
+   */
+  async listRooms(
+    actor: Actor,
+    query: { statuses?: string[] | undefined; limit: number; cursor?: string | undefined },
+  ) {
+    const cursor = query.cursor ? decodeRoomCursor(query.cursor) : undefined;
+    const rows = await this.repo.listRoomsForActor({
+      actorType: actor.type === 'guest' ? 'guest' : 'user',
+      actorId: actor.id,
+      ...(query.statuses ? { statuses: query.statuses } : {}),
+      limit: query.limit,
+      ...(cursor ? { cursor } : {}),
+    });
+
+    const items = rows.slice(0, query.limit);
+    const last = items[items.length - 1];
+    return {
+      items: items.map((row) => ({
+        id: row.id,
+        type: row.type,
+        status: row.status,
+        decisionMode: row.decision_mode,
+        participantCount: row.participant_count,
+        title: row.title ?? undefined,
+        scheduledDate: row.scheduled_date ? isoDate(row.scheduled_date) : undefined,
+        updatedAt: isoDate(row.updated_at)!,
+        myRole: row.my_role,
+        myMemberId: row.my_member_id,
+        // Enough progress to render the row: "2/3 đã xong" without a per-room call.
+        memberCount: row.member_count,
+        completedCount: row.completed_count,
+        planId: row.plan_id ?? undefined,
+      })),
+      nextCursor:
+        rows.length > query.limit && last ? encodeRoomCursor(last.updated_at, last.id) : null,
+    };
+  }
+
   async getRoomSummary(actor: Actor, roomId: string) {
     const { room, member } = await this.policy.requireMember(actor, roomId);
     const [constraint, members, seedPlaces] = await Promise.all([
@@ -353,5 +395,28 @@ export class RoomsService {
     await this.policy.requireHost(actor, roomId);
     await this.repo.removeSeedPlace(roomId, placeId);
     return { seedPlaces: await this.repo.listSeedPlaces(roomId) };
+  }
+}
+
+function isoDate(value: Date | string | null | undefined): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+export function encodeRoomCursor(updatedAt: Date | string, id: string): string {
+  return Buffer.from(JSON.stringify([isoDate(updatedAt), id])).toString('base64url');
+}
+
+export function decodeRoomCursor(cursor: string): { updatedAt: string; id: string } {
+  try {
+    const [updatedAt, id] = JSON.parse(Buffer.from(cursor, 'base64url').toString()) as [
+      string,
+      string,
+    ];
+    if (typeof updatedAt !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('bad');
+    return { updatedAt, id };
+  } catch {
+    throw AppError.badRequest('INVALID_CURSOR', 'Cursor is not valid');
   }
 }

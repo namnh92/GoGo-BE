@@ -381,6 +381,46 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /rooms:
+    get:
+      operationId: listRooms
+      tags: [rooms]
+      summary: Rooms the caller belongs to, most recently active first
+      description: >
+        A room used to be reachable only by id, so a client that lost the id
+        lost the room — closing the app mid-flow was enough. Keyset paging on
+        `(updatedAt, id)` because a room's timestamp moves while the list is
+        being read: one vote is enough. Each row carries the progress needed to
+        draw it, so a "your rooms" screen makes one call, not one per room. The
+        invite code is deliberately absent — a list screen has no reason to hand
+        one out.
+      parameters:
+        - name: status
+          in: query
+          description: Repeatable or comma-separated; unknown values are ignored.
+          schema:
+            type: string
+            example: collecting,matching
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 50, default: 20 },
+          }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
+      responses:
+        '200':
+          description: One page of room summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/RoomListItem' }
+                  nextCursor: { type: string, nullable: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       operationId: createRoom
       tags: [rooms]
@@ -3484,6 +3524,30 @@ components:
           description: >
             Present for provider imagery, which must be displayed with it.
             Community photos are only returned once approved in moderation.
+    RoomListItem:
+      type: object
+      required: [id, type, status, decisionMode, participantCount, updatedAt, myRole, myMemberId]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [couple, group] }
+        status:
+          type: string
+          enum: [draft, collecting, matching, ready, active, completed, cancelled, expired]
+        decisionMode: { type: string, enum: [match, vote, host] }
+        participantCount: { type: integer }
+        title: { type: string }
+        scheduledDate: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        myRole: { type: string, enum: [host, member, guest] }
+        myMemberId: { type: string, format: uuid }
+        memberCount: { type: integer }
+        completedCount:
+          type: integer
+          description: Members done with preferences — enough to render "2/3" without another call.
+        planId:
+          type: string
+          format: uuid
+          description: The room's current plan, when one exists.
   responses:
     BadRequest:
       description: Validation or business rule failure
