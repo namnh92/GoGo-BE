@@ -73,6 +73,7 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       userRatingCount?: number;
       businessStatus?: string;
       priceLevel?: string;
+      primaryType?: string;
       regularOpeningHours?: {
         periods?: {
           open?: { day: number; hour: number; minute: number };
@@ -88,7 +89,7 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
         {
           method: 'GET',
           fieldMask:
-            'id,displayName,formattedAddress,location,rating,userRatingCount,businessStatus,priceLevel,regularOpeningHours',
+            'id,displayName,formattedAddress,location,rating,userRatingCount,businessStatus,priceLevel,primaryType,regularOpeningHours',
         },
       );
     } catch (err) {
@@ -135,6 +136,7 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
             : 'OPERATIONAL',
       hours,
       priceLevel: data.priceLevel ? (priceLevelMap[data.priceLevel] ?? null) : null,
+      primaryType: data.primaryType ?? null,
       attribution: 'Data © Google',
       raw: data,
     };

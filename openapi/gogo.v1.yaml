@@ -1410,7 +1410,7 @@ paths:
                 file: { type: string, format: binary }
                 mode:
                   type: string
-                  enum: [dry_run, create_drafts, publish_approved]
+                  enum: [dry_run, create_drafts, publish_approved, update_existing]
                   default: dry_run
                 defaultCity: { type: string, maxLength: 80 }
                 mapping:
@@ -1475,7 +1475,7 @@ paths:
                   items: { type: string }
                 mode:
                   type: string
-                  enum: [dry_run, create_drafts, publish_approved]
+                  enum: [dry_run, create_drafts, publish_approved, update_existing]
                   default: dry_run
                 defaultCity: { type: string, maxLength: 80 }
                 tabCityMapping:
@@ -3166,7 +3166,15 @@ components:
               cancelled,
               paused_provider_quota,
             ]
-        mode: { type: string, enum: [dry_run, create_drafts, publish_approved] }
+        mode:
+          type: string
+          enum: [dry_run, create_drafts, publish_approved, update_existing]
+          description: >
+            `update_existing` re-syncs an edited sheet onto places that already
+            exist: provider facts refresh from Google, editorial fields come
+            from the sheet, and an empty cell means "unknown", not "delete".
+            A row whose provider place now looks like a *different business* is
+            written nowhere and lands in review instead.
         sourceType: { type: string, enum: [csv, xlsx, google_sheet, mobile_link] }
         sourceFileName: { type: string, nullable: true }
         totals: { $ref: '#/components/schemas/ImportTotals' }

@@ -10,7 +10,7 @@ import { PlaceImportJobService, type ImportMode } from '../application/place-imp
 
 const Uuid = new ZodValidationPipe(z.string().uuid());
 
-const MODES = ['dry_run', 'create_drafts', 'publish_approved'] as const;
+const MODES = ['dry_run', 'create_drafts', 'publish_approved', 'update_existing'] as const;
 
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),

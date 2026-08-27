@@ -21,12 +21,13 @@ import {
   parseTabularSource,
   type SheetGrid,
 } from '../domain/tabular';
+import { detectIdentityChange } from '../domain/identity-change';
 import { validateRow, type NormalizedImportRow } from '../domain/template';
 import { PlaceDedupService } from './place-dedup.service';
 import { PlaceResolverService } from './place-resolver.service';
 import { writeAudit } from '../../shared/audit';
 
-export type ImportMode = 'dry_run' | 'create_drafts' | 'publish_approved';
+export type ImportMode = 'dry_run' | 'create_drafts' | 'publish_approved' | 'update_existing';
 
 type JobRow = typeof schema.placeIngestJobs.$inferSelect;
 type IngestRow = typeof schema.placeIngestRows.$inferSelect;
@@ -539,7 +540,7 @@ export class PlaceImportJobService {
 
     for (const row of rows) {
       try {
-        await this.resolveRow(row.id, row.normalized_input);
+        await this.resolveRow(row.id, row.normalized_input, job.mode as ImportMode);
       } catch (err) {
         if (err instanceof ProviderQuotaExceededError) {
           // Park the job: the remaining rows go back to pending untouched so a
@@ -575,7 +576,11 @@ export class PlaceImportJobService {
     return { processed: rows.length, hasMore: after.status === 'processing' };
   }
 
-  private async resolveRow(rowId: string, normalized: NormalizedImportRow): Promise<void> {
+  private async resolveRow(
+    rowId: string,
+    normalized: NormalizedImportRow,
+    mode: ImportMode,
+  ): Promise<void> {
     const hints = {
       name: normalized.name ?? normalized.googleMapsQuery ?? undefined,
       city: normalized.city ?? undefined,
@@ -650,6 +655,7 @@ export class PlaceImportJobService {
       outcome.details,
       outcome.decision.reasons,
       outcome.decision.best?.confidence,
+      { mode, normalized },
     );
   }
 
@@ -658,6 +664,7 @@ export class PlaceImportJobService {
     details: ResolvedProviderPlace,
     reasons: string[],
     confidence: number | undefined,
+    context?: { mode: ImportMode; normalized: NormalizedImportRow },
   ): Promise<void> {
     const verdict = await this.dedup.check(details);
     const base = {
@@ -670,6 +677,10 @@ export class PlaceImportJobService {
     };
 
     if (verdict.kind === 'LINKED_EXISTING') {
+      if (context?.mode === 'update_existing') {
+        await this.updateExisting(rowId, verdict.placeId, details, context.normalized, base);
+        return;
+      }
       await this.db
         .update(schema.placeIngestRows)
         .set({ ...base, status: 'duplicate', matchedPlaceId: verdict.placeId })
@@ -708,6 +719,130 @@ export class PlaceImportJobService {
 
   private countRow(status: string, errorCode?: string): void {
     this.metrics.increment('place_import_rows_total', { status, error_code: errorCode });
+  }
+
+  /**
+   * BE-IMP-004 — `update_existing`: re-sync a corrected sheet onto a place that
+   * already exists. Without this mode, fixing a price in the sheet and
+   * re-importing did nothing: the row matched by provider id, was marked
+   * `duplicate`, and stopped.
+   *
+   * Field ownership follows ADR-0006 §8 — provider facts refresh from Google
+   * (the place may have been renamed, moved or reopened since), editorial
+   * fields come from the sheet, and an empty sheet cell means "unknown", never
+   * "delete this".
+   *
+   * Before any of that: if the provider place looks like a *different business*
+   * now, nothing is written. Taking the new name while keeping the old
+   * highlight, price and category produces a record that lies — and the reviews
+   * and saved places pointing at that row would silently follow. A human
+   * decides; the importer does not.
+   */
+  private async updateExisting(
+    rowId: string,
+    placeId: string,
+    details: ResolvedProviderPlace,
+    normalized: NormalizedImportRow,
+    base: Record<string, unknown>,
+  ): Promise<void> {
+    const [snapshot] = await this.db
+      .select({
+        name: schema.places.name,
+        ratingCount: schema.placeProviderSources.ratingCount,
+        primaryType: schema.placeProviderSources.primaryType,
+      })
+      .from(schema.places)
+      .leftJoin(
+        schema.placeProviderSources,
+        eq(schema.placeProviderSources.placeId, schema.places.id),
+      )
+      .where(eq(schema.places.id, placeId))
+      .limit(1);
+
+    const verdict = detectIdentityChange(
+      {
+        name: snapshot?.name ?? details.name,
+        ratingCount: snapshot?.ratingCount ?? null,
+        primaryType: snapshot?.primaryType ?? null,
+      },
+      {
+        name: details.name,
+        ratingCount: details.ratingCount,
+        primaryType: details.primaryType,
+        businessStatus: details.businessStatus,
+      },
+    );
+
+    if (verdict.changed) {
+      await this.db
+        .update(schema.placeIngestRows)
+        .set({
+          ...base,
+          status: 'needs_confirmation',
+          matchedPlaceId: placeId,
+          matchReasons: verdict.reasons,
+          errors: [
+            {
+              code: 'PLACE_IDENTITY_CHANGED',
+              field: 'name',
+              message: `Có thể đã đổi chủ/đổi loại hình (${verdict.reasons.join(', ')})`,
+            },
+          ],
+        })
+        .where(eq(schema.placeIngestRows.id, rowId));
+      this.countRow('needs_confirmation', 'PLACE_IDENTITY_CHANGED');
+      this.metrics.increment('place_identity_change_total', {
+        reason: verdict.reasons[0] ?? 'unknown',
+      });
+      return;
+    }
+
+    const score = await this.resolver.scoreFor(details, null, normalized.categoryKey);
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(schema.places)
+        .set({
+          // Provider owns these — the place may have been renamed or moved.
+          name: details.name,
+          addressText: details.addressText,
+          geom: { x: details.lng, y: details.lat },
+          rating: details.rating !== null ? details.rating.toFixed(2) : null,
+          ratingCount: details.ratingCount,
+          priceLevel: details.priceLevel,
+          freshnessCheckedAt: new Date(),
+          // Sheet owns this one; an empty cell leaves what is already there.
+          ...(normalized.highlight ? { description: normalized.highlight } : {}),
+          updatedAt: sql`now()`,
+        })
+        .where(eq(schema.places.id, placeId));
+
+      const unit = dbPriceUnit(normalized.priceUnit);
+      if (normalized.priceMin !== null && normalized.priceMax !== null && unit) {
+        await tx.insert(schema.placePrices).values({
+          placeId,
+          priceMin: normalized.priceMin,
+          priceMax: normalized.priceMax,
+          currency: 'VND',
+          unit,
+          confidence: '0.50',
+          source: 'editor',
+        });
+      }
+    });
+
+    await this.dedup.upsertProviderSource({
+      placeId,
+      details,
+      derivedScore: score,
+      fetchTier: 'quality',
+    });
+    await this.dedup.emitReindex(placeId, 'updated');
+
+    await this.db
+      .update(schema.placeIngestRows)
+      .set({ ...base, status: 'imported', matchedPlaceId: placeId })
+      .where(eq(schema.placeIngestRows.id, rowId));
+    this.countRow('imported');
   }
 
   private async failRow(rowId: string, message: IngestMessage): Promise<void> {

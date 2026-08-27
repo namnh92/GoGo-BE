@@ -705,3 +705,130 @@ describe('PI-QA-002 — bulk import at 0 / 1 / 100 / 5.000 rows', () => {
     expect(tooMany.json().code).toBe('TOO_MANY_ROWS');
   });
 });
+
+describe('BE-IMP-004 — update_existing re-syncs an edited sheet', () => {
+  async function runImport(token: string, rows: string[], mode: string, name: string) {
+    const body = multipart({ mode, defaultCity: 'Hồ Chí Minh' }, { name, content: csv(rows) });
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(token), ...body.headers },
+      payload: body.payload,
+    });
+    expect(created.statusCode).toBe(201);
+    const job = created.json();
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    await imports.processJob(job.id);
+    return job.id as string;
+  }
+
+  it('a corrected price in the sheet reaches the catalog', async () => {
+    const editor = await createAdmin('upd-editor@gogo.local', 'editor');
+    const ops = await createAdmin('upd-ops@gogo.local', 'ops_admin');
+    places.seed({
+      providerPlaceId: 'fake-upd',
+      name: 'Quán Update',
+      lat: 10.81,
+      lng: 106.73,
+      ratingCount: 300,
+      primaryType: 'cafe',
+    });
+    const row = (price: string) =>
+      `U-1,Quán Update,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-upd,cafe,${price},per_person`;
+
+    const first = await runImport(editor.token, [row('100000,200000')], 'create_drafts', 'u1.csv');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${first}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Quán Update'));
+    expect(place).toBeTruthy();
+
+    // Before this mode existed, re-importing a corrected sheet did nothing at
+    // all: the row matched by provider id, went `duplicate`, and stopped.
+    const second = await runImport(
+      editor.token,
+      [row('150000,300000')],
+      'update_existing',
+      'u2.csv',
+    );
+    const job = await imports.getJob(second);
+    expect(job.rowsByStatus.imported).toBe(1);
+
+    const prices = await db
+      .select()
+      .from(schema.placePrices)
+      .where(eq(schema.placePrices.placeId, place!.id));
+    expect(prices.some((p) => p.priceMin === 150_000 && p.priceMax === 300_000)).toBe(true);
+
+    // Still one canonical place — an update must never fork the catalog.
+    const all = await db.select().from(schema.places).where(eq(schema.places.name, 'Quán Update'));
+    expect(all).toHaveLength(1);
+  });
+
+  it('a place that changed hands goes to review instead of being overwritten', async () => {
+    const editor = await createAdmin('upd-identity@gogo.local', 'editor');
+    const ops = await createAdmin('upd-identity-ops@gogo.local', 'ops_admin');
+    places.seed({
+      providerPlaceId: 'fake-owner',
+      name: 'Cà Phê Cũ',
+      lat: 10.82,
+      lng: 106.74,
+      ratingCount: 600,
+      primaryType: 'cafe',
+    });
+    const row = `O-1,Cà Phê Cũ,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-owner,cafe,,,`;
+
+    const first = await runImport(editor.token, [row], 'create_drafts', 'o1.csv');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${first}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Cà Phê Cũ'));
+
+    // Same provider id, but the business behind it is new: reviews reset and
+    // the category moved. Name similarity alone would have waved this through.
+    places.seed({
+      providerPlaceId: 'fake-owner',
+      name: 'Karaoke Cũ',
+      lat: 10.82,
+      lng: 106.74,
+      ratingCount: 9,
+      primaryType: 'karaoke',
+    });
+
+    const second = await runImport(editor.token, [row], 'update_existing', 'o2.csv');
+    const rows = await imports.listRows(second, { limit: 10, offset: 0 });
+    expect(rows.items[0]!.status).toBe('needs_confirmation');
+    expect(rows.items[0]!.errors.map((e) => e.code)).toContain('PLACE_IDENTITY_CHANGED');
+    expect(rows.items[0]!.matchReasons).toEqual(
+      expect.arrayContaining(['RATING_COUNT_RESET', 'PRIMARY_TYPE_CHANGED']),
+    );
+
+    // Nothing was written: the old editorial content still describes the old
+    // business, and a human decides what happens to it.
+    const [unchanged] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.id, place!.id));
+    expect(unchanged!.name).toBe('Cà Phê Cũ');
+  });
+});

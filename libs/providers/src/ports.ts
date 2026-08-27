@@ -16,6 +16,12 @@ export type ResolvedProviderPlace = {
   /** Weekly hours, minutes-of-day, local place time. */
   hours: { dayOfWeek: number; openMinute: number; closeMinute: number; isOvernight: boolean }[];
   priceLevel: number | null;
+  /**
+   * Provider's primary category (`restaurant`, `karaoke`, …). Stored because a
+   * change here is the clearest sign a place changed hands: a name can be
+   * rewritten by the same owner, a restaurant turning into a karaoke bar cannot.
+   */
+  primaryType: string | null;
   attribution: string;
   raw: unknown;
 };
