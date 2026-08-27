@@ -332,6 +332,80 @@ describe('guest sessions (FR-AUTH-002/003)', () => {
   });
 });
 
+describe('session revocation closes the access-token window', () => {
+  it('logout-all kills the outstanding access token immediately, not at expiry', async () => {
+    const reg = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: freshIp(),
+      payload: { email: 'revoke1@gogo.vn', password: 'sufficiently-long-pw', displayName: 'R' },
+    });
+    const token = reg.json().accessToken as string;
+    expect(
+      (
+        await api().inject({
+          method: 'GET',
+          url: '/v1/me',
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    await api().inject({
+      method: 'DELETE',
+      url: '/v1/sessions/current',
+      remoteAddress: freshIp(),
+      headers: { authorization: `Bearer ${token}` },
+      payload: { allDevices: true },
+    });
+
+    // Same token, every surface — including the PII export — must be dead now.
+    for (const url of ['/v1/me', '/v1/me/saved', '/v1/me/export']) {
+      const res = await api().inject({
+        method: 'GET',
+        url,
+        remoteAddress: freshIp(),
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode, url).toBe(401);
+      expect(res.json().code).toBe('SESSION_REVOKED');
+    }
+  });
+
+  it('refresh-token reuse also kills access tokens across the family', async () => {
+    const reg = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: freshIp(),
+      payload: { email: 'revoke2@gogo.vn', password: 'sufficiently-long-pw', displayName: 'R' },
+    });
+    const first = reg.json();
+    const rotated = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/refresh',
+      remoteAddress: freshIp(),
+      payload: { refreshToken: first.refreshToken },
+    });
+    const fresh = rotated.json();
+
+    // Attacker replays the superseded refresh token.
+    await api().inject({
+      method: 'POST',
+      url: '/v1/auth/refresh',
+      remoteAddress: freshIp(),
+      payload: { refreshToken: first.refreshToken },
+    });
+
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/me',
+      remoteAddress: freshIp(),
+      headers: { authorization: `Bearer ${fresh.accessToken}` },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+});
+
 describe('authorization surface', () => {
   it('denies protected routes without credentials (deny-by-default)', async () => {
     const res = await api().inject({ method: 'GET', url: '/v1/me' });

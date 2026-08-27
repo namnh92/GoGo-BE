@@ -1473,6 +1473,600 @@ paths:
         '200':
           description: '{ updated: true }'
 
+  /docs:
+    get:
+      operationId: getDocsPage
+      tags: [system]
+      summary: Swagger UI over the deployed contract
+      security: []
+      responses:
+        '200':
+          description: HTML page
+          content:
+            text/html:
+              schema: { type: string }
+
+  /cms/auth/login:
+    post:
+      operationId: cmsLogin
+      tags: [cms]
+      summary: Staff login — argon2id + TOTP (MFA mandatory in production)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+                totp: { type: string, minLength: 6, maxLength: 6 }
+      responses:
+        '201':
+          description: Admin token grant (act=admin; role re-checked per request)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  role: { $ref: '#/components/schemas/AdminRole' }
+                  displayName: { type: string }
+                  expiresIn: { type: integer }
+        '401':
+          description: Bad credentials or missing/invalid TOTP (`MFA_REQUIRED`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403':
+          description: Production refuses accounts without MFA (`MFA_SETUP_REQUIRED`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/auth/totp/setup:
+    post:
+      operationId: cmsSetupTotp
+      tags: [cms]
+      summary: Enroll TOTP (requires a fresh password proof)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        '201':
+          description: Secret + otpauth URI for the authenticator app
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string }
+                  otpauthUri: { type: string }
+
+  /cms/auth/admins:
+    post:
+      operationId: cmsCreateAdmin
+      tags: [cms]
+      summary: 'Super admin: create a staff account'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, displayName, role]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 12 }
+                displayName: { type: string }
+                role: { $ref: '#/components/schemas/AdminRole' }
+      responses:
+        '201': { description: Created }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /cms/places:
+    get:
+      operationId: cmsListPlaces
+      tags: [cms]
+      summary: 'Editor: catalog list with status/text filter'
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 200, default: 50 } }
+      responses:
+        '200': { description: Places with freshness and confidence }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /cms/places/stale:
+    get:
+      operationId: cmsStaleQueue
+      tags: [cms]
+      summary: 'Editor: published places whose facts need re-verification'
+      parameters:
+        - { name: days, in: query, schema: { type: integer, default: 30 } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 200, default: 50 } }
+      responses:
+        '200': { description: Stale queue }
+
+  /cms/places/duplicates:
+    get:
+      operationId: cmsDuplicateCandidates
+      tags: [cms]
+      summary: 'Editor: duplicate candidates (name similarity + 150m proximity)'
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, maximum: 200, default: 50 } }
+      responses:
+        '200': { description: Candidate pairs with similarity + distance }
+
+  /cms/places/{id}:
+    patch:
+      operationId: cmsUpdatePlace
+      tags: [cms]
+      summary: 'Editor: edit canonical place facts (audited with a before/after diff)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                addressText: { type: string }
+                areaKey: { type: string }
+                lat: { type: number }
+                lng: { type: number }
+                avgVisitMinutes: { type: integer }
+                suitability:
+                  type: object
+                  additionalProperties: { type: number }
+                isLodging: { type: boolean }
+                curatedRank: { type: [integer, 'null'] }
+                taxonomyIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        '200': { description: Updated }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/places/{id}/status:
+    patch:
+      operationId: cmsTransitionPlace
+      tags: [cms]
+      summary: 'Editor: place workflow transition (draft→review→published→suspended)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [draft, community_submitted, review, published, suspended, archived]
+      responses:
+        '200': { description: Transitioned; suspended places leave search immediately }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /cms/places/{id}/hours:
+    put:
+      operationId: cmsSetPlaceHours
+      tags: [cms]
+      summary: 'Editor: replace weekly hours (editor-verified, bumps freshness)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hours]
+              properties:
+                hours:
+                  type: array
+                  maxItems: 21
+                  items:
+                    type: object
+                    required: [dayOfWeek, openMinute, closeMinute]
+                    properties:
+                      dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
+                      openMinute: { type: integer, minimum: 0, maximum: 1439 }
+                      closeMinute: { type: integer, minimum: 0, maximum: 1439 }
+                      isOvernight: { type: boolean, default: false }
+      responses:
+        '200': { description: Hours replaced }
+
+  /cms/places/{id}/prices:
+    post:
+      operationId: cmsAddPlacePrice
+      tags: [cms]
+      summary: 'Editor: add a verified price observation'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [priceMin, priceMax]
+              properties:
+                priceMin: { type: integer, minimum: 0 }
+                priceMax: { type: integer, minimum: 0 }
+                unit:
+                  type: string
+                  enum: [per_person, per_item, per_hour, per_night]
+                  default: per_person
+      responses:
+        '201': { description: Price recorded with editor confidence }
+
+  /cms/places/{id}/verify-freshness:
+    post:
+      operationId: cmsVerifyFreshness
+      tags: [cms]
+      summary: 'Editor: mark place facts re-verified now'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201': { description: Freshness timestamp and confidence bumped }
+
+  /cms/places/{id}/merge:
+    post:
+      operationId: cmsMergePlaces
+      tags: [cms]
+      summary: 'Editor: merge a duplicate into this canonical place'
+      description: References (sources, media, prices, reviews, seeds) move over; the duplicate is archived, never deleted.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [duplicateId]
+              properties:
+                duplicateId: { type: string, format: uuid }
+      responses:
+        '201': { description: Merged; audited }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /cms/taxonomies:
+    post:
+      operationId: cmsCreateTaxonomy
+      tags: [cms]
+      summary: 'Editor/Ops: create a taxonomy key with i18n labels'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, key, labels]
+              properties:
+                kind:
+                  type: string
+                  enum:
+                    [mood, category, setting, dietary, accessibility, spending_style, suitability]
+                key: { type: string, pattern: '^[a-z0-9_]{2,40}$' }
+                labels:
+                  type: object
+                  additionalProperties: { type: string }
+                sortOrder: { type: integer }
+      responses:
+        '201': { description: Created }
+
+  /cms/taxonomies/{id}:
+    patch:
+      operationId: cmsUpdateTaxonomy
+      tags: [cms]
+      summary: 'Editor/Ops: update labels/order or deactivate (never delete a referenced key)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                labels:
+                  type: object
+                  additionalProperties: { type: string }
+                sortOrder: { type: integer }
+                isActive: { type: boolean }
+      responses:
+        '200': { description: Updated }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/taxonomies/{id}/synonyms:
+    post:
+      operationId: cmsAddSynonym
+      tags: [cms]
+      summary: 'Editor/Ops: add a search synonym for this taxonomy key'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [term]
+              properties:
+                term: { type: string }
+                locale: { type: string, default: vi }
+      responses:
+        '201': { description: Synonym added (feeds query expansion) }
+
+  /cms/collections:
+    get:
+      operationId: cmsListCollections
+      tags: [cms]
+      summary: 'Editor/Ops: editorial collections'
+      parameters:
+        - {
+            name: status,
+            in: query,
+            schema: { type: string, enum: [draft, scheduled, published, archived] },
+          }
+      responses:
+        '200': { description: Collections }
+    post:
+      operationId: cmsCreateCollection
+      tags: [cms]
+      summary: 'Editor/Ops: create a collection'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slug, title]
+              properties:
+                slug: { type: string, pattern: '^[a-z0-9-]{2,60}$' }
+                locale: { type: string, default: vi }
+                title: { type: string }
+                description: { type: string }
+                startsAt: { type: string, format: date-time }
+                endsAt: { type: string, format: date-time }
+      responses:
+        '201': { description: Created }
+
+  /cms/collections/{id}/status:
+    patch:
+      operationId: cmsSetCollectionStatus
+      tags: [cms]
+      summary: 'Editor/Ops: publish/schedule/archive a collection'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [draft, scheduled, published, archived] }
+      responses:
+        '200': { description: Status changed }
+
+  /cms/collections/{id}/items:
+    put:
+      operationId: cmsSetCollectionItems
+      tags: [cms]
+      summary: 'Editor/Ops: replace the ordered place list'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [placeIds]
+              properties:
+                placeIds:
+                  type: array
+                  maxItems: 100
+                  items: { type: string, format: uuid }
+      responses:
+        '200': { description: Items replaced }
+
+  /cms/moderation:
+    get:
+      operationId: cmsModerationQueue
+      tags: [cms]
+      summary: 'Moderator: pending reviews, reports, check-ins and community places'
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, maximum: 200, default: 50 } }
+      responses:
+        '200': { description: Unified queue }
+
+  /cms/moderation/reviews/{id}:
+    post:
+      operationId: cmsDecideReview
+      tags: [cms]
+      summary: 'Moderator: publish or reject a review (reason required, audited)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModerationDecision' }
+      responses:
+        '201': { description: Decided }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/moderation/checkins/{id}:
+    post:
+      operationId: cmsDecideCheckin
+      tags: [cms]
+      summary: 'Moderator: approve or reject a stop check-in (photos/bill)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModerationDecision' }
+      responses:
+        '201': { description: Decided }
+
+  /cms/moderation/reports/{id}:
+    post:
+      operationId: cmsDecideReport
+      tags: [cms]
+      summary: 'Moderator: action or dismiss a report'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModerationDecision' }
+      responses:
+        '201': { description: Decided }
+
+  /cms/ranking-configs:
+    post:
+      operationId: cmsCreateRankingConfig
+      tags: [cms]
+      summary: 'Ops: draft a versioned ranking/scoring config (weights bounds-checked)'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, weights]
+              properties:
+                key: { type: string, enum: [suggestion.scoring, search.ranking] }
+                weights:
+                  type: object
+                  additionalProperties: { type: number }
+      responses:
+        '201': { description: Draft created }
+        '400':
+          description: Unknown weight or value outside the engine's bounds
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/ranking-configs/{id}/approve:
+    post:
+      operationId: cmsApproveRankingConfig
+      tags: [cms]
+      summary: 'Ops: approve a draft — four-eyes, the creator cannot self-approve'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201': { description: Approved }
+        '403':
+          description: Same admin who created it (`SELF_APPROVAL`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/ranking-configs/{id}/activate:
+    post:
+      operationId: cmsActivateRankingConfig
+      tags: [cms]
+      summary: 'Ops: activate an approved config (supersedes the previous active one)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201': { description: Activated }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /cms/ranking-configs/{key}/rollback:
+    post:
+      operationId: cmsRollbackRankingConfig
+      tags: [cms]
+      summary: 'Ops: deactivate the active config — the engine falls back to bounded defaults'
+      parameters:
+        - { name: key, in: path, required: true, schema: { type: string } }
+      responses:
+        '201': { description: '{ rolledBack: boolean }' }
+
+  /cms/feature-flags/{key}:
+    put:
+      operationId: cmsSetFeatureFlag
+      tags: [cms]
+      summary: 'Ops: toggle a feature flag / kill switch'
+      parameters:
+        - { name: key, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                payload: {}
+      responses:
+        '200': { description: Flag updated (audited) }
+
+  /cms/import-jobs:
+    post:
+      operationId: cmsRunPlaceImport
+      tags: [cms]
+      summary: 'Ops: bulk place import (JSON rows) with dry-run and per-row errors'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rows]
+              properties:
+                dryRun: { type: boolean, default: true }
+                rows:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    required: [name, lat, lng]
+                    properties:
+                      name: { type: string }
+                      lat: { type: number }
+                      lng: { type: number }
+                      areaKey: { type: string }
+                      categoryKeys:
+                        type: array
+                        items: { type: string }
+      responses:
+        '201':
+          description: 'Job report: total/created/errors, status succeeded|partial_failure|failed'
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/ops/kpis:
+    get:
+      operationId: cmsOpsKpis
+      tags: [cms]
+      summary: 'Ops: health KPIs (freshness, zero-result, suggestion success, budget, providers)'
+      responses:
+        '200': { description: Aggregated KPIs without exposing PII }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1618,6 +2212,16 @@ components:
         reasonCodes:
           type: array
           items: { type: string, enum: [TEXT_MATCH, NEAR_YOU, HIGHLY_RATED, CURATED, OPEN_NOW] }
+    AdminRole:
+      type: string
+      enum: [editor, moderator, ops_admin, super_admin]
+    ModerationDecision:
+      type: object
+      required: [decision, reason]
+      description: The reason is mandatory and stored in the audit log.
+      properties:
+        decision: { type: string, enum: [published, rejected, approved, actioned, dismissed] }
+        reason: { type: string, minLength: 3, maxLength: 500 }
     NotificationKind:
       type: string
       enum:

@@ -29,6 +29,9 @@ services:
       PROCESS: api
       NODE_ENV: production
       API_PORT: '3000'
+      # Only Caddy (the single hop in front) may set X-Forwarded-For. The API
+      # port is deliberately not published, so nothing else can reach it.
+      TRUST_PROXY: '1'
     env_file:
       - ../.env.prod
     depends_on:

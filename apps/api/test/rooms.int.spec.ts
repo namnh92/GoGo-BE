@@ -524,13 +524,15 @@ describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
       .where(eq(schema.guestSessions.id, guestSessionId));
     expect(session!.revokedAt).not.toBeNull();
 
-    // Removed member loses access (membership row gone from policy view).
+    // Removal revokes the guest session, so the outstanding access token is
+    // rejected outright — stronger than the membership check alone.
     const denied = await api().inject({
       method: 'GET',
       url: `/v1/rooms/${room.id}`,
       headers: auth(guestToken),
     });
-    expect(denied.statusCode).toBe(403);
+    expect(denied.statusCode).toBe(401);
+    expect(denied.json().code).toBe('SESSION_REVOKED');
   });
 });
 

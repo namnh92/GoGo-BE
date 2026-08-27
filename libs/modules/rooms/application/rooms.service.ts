@@ -4,6 +4,7 @@ import { AppError } from '../../shared/app-error';
 import type { Actor } from '../../identity/domain/actor';
 import { TokenService } from '../../identity/application/token.service';
 import { IdentityRepository } from '../../identity/infrastructure/identity.repository';
+import { SessionRevocationService } from '../../identity/application/session-revocation.service';
 import {
   assertConstraintsEditable,
   assertDecisionMode,
@@ -61,6 +62,7 @@ export class RoomsService {
     private readonly policy: RoomPolicy,
     private readonly tokens: TokenService,
     private readonly identity: IdentityRepository,
+    private readonly revocations: SessionRevocationService,
   ) {}
 
   async createRoom(
@@ -235,7 +237,7 @@ export class RoomsService {
     if (target.id === me.id) {
       throw AppError.conflict('CANNOT_REMOVE_SELF', 'Host cannot remove themselves');
     }
-    await this.repo.removeMember({
+    const { guestSessionId } = await this.repo.removeMember({
       memberId,
       removedByMemberId: me.id,
       event: {
@@ -245,6 +247,9 @@ export class RoomsService {
         payload: { memberId },
       },
     });
+    // The guest's access token is self-contained — deny it now rather than
+    // letting a removed member keep reading the room until it expires.
+    if (guestSessionId) await this.revocations.revokeSession(guestSessionId);
     return { removed: true };
   }
 

@@ -102,6 +102,15 @@ export class IdentityRepository {
       );
   }
 
+  /** Session ids in a rotation family — used to deny outstanding access tokens. */
+  async listFamilySessionIds(familyId: string): Promise<string[]> {
+    const rows = await this.db
+      .select({ id: schema.authSessions.id })
+      .from(schema.authSessions)
+      .where(eq(schema.authSessions.familyId, familyId));
+    return rows.map((r) => r.id);
+  }
+
   async revokeSession(id: string, reason: string): Promise<void> {
     await this.db
       .update(schema.authSessions)

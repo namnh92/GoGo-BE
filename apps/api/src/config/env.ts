@@ -10,6 +10,13 @@ const envSchema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     API_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     API_HOST: z.string().default('0.0.0.0'),
+    /**
+     * Which proxies may set X-Forwarded-For. `false` = trust nobody (direct
+     * exposure), a number = trust that many hops closest to the server, or a
+     * comma-separated CIDR list. NEVER `true`: trusting every hop lets any
+     * client spoof its IP and walk past every IP-keyed rate limit.
+     */
+    TRUST_PROXY: z.string().default('1'),
     DATABASE_URL: z.string().url().or(z.string().startsWith('postgres://')),
     REDIS_URL: z.string().startsWith('redis://').or(z.string().startsWith('rediss://')),
     AUTH_JWT_SECRET: z.string().default(''),

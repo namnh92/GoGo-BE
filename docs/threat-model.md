@@ -84,6 +84,71 @@ Status legend: ✅ mitigated+tested · 🟡 mitigated, test pending · 🔴 open
 | DoS             | provider latency cascade       | timeout/retry/breaker; fallbacks                        | ✅     |
 | Info disclosure | backup theft                   | 🔴 encryption-at-rest depends on managed provider (#21) | 🔴     |
 
+## Review log — 2026-08-27 (code audit + live probes)
+
+Two findings were proven against the running stack, not inferred. Both are
+fixed in this change; the probes are now regression tests.
+
+### 1. IP rate limits were bypassable (HIGH — fixed)
+
+`trustProxy: true` made Fastify trust `X-Forwarded-For` from **any** source, so
+`req.ip` was client-controlled. Probing the API directly (bypassing Caddy) with
+a rotating XFF header: **14/14 requests passed a 10/min limit, never a 429**.
+
+The deployed path happened to be safe only because Caddy overwrites XFF for
+untrusted clients — a single misconfiguration (a published port, a second
+ingress, a k8s service, local port-forward) removed every IP-keyed defence at
+once: login brute force, guest-join floods, search scraping, and the
+provider-billed `places/resolve-google-maps-link`.
+
+**Fix:** `TRUST_PROXY` env, default and prod value `1` — trust only the
+immediate hop (Caddy); `false` when the API is exposed directly; a CIDR list
+for multi-hop ingress. Verified after the fix: an external client rotating
+`X-Forwarded-For` through Caddy is still limited at request 11/10, i.e. the
+spoofed value is ignored.
+
+**Residual (accepted):** hop/CIDR trust cannot distinguish the real proxy from
+another workload on the same private network — anything already inside that
+network can still present its own XFF. The compensating control is that the
+API port is never published; only Caddy is reachable from outside. Publishing
+`api:3000` would reopen this, so it must stay unpublished.
+
+Account-level login lockout was never affected (it keys on the identifier
+hash), which is why login brute force stayed bounded even while this was open.
+
+### 2. Logout did not stop the access token (MEDIUM — fixed)
+
+`DELETE /sessions/current { allDevices: true }` revoked the refresh chain but
+the outstanding JWT kept working for up to 15 minutes. Probe: after logout,
+`/me`, `/me/saved` and **`/me/export` (full PII export)** all returned `200`.
+
+Room-scoped routes were protected (RoomPolicy re-reads membership), but
+account-level routes were not — so "log out of all devices" on a stolen phone
+did not actually cut access to the user's own data.
+
+**Fix:** a session-id denylist (Redis + per-process fallback) held for exactly
+one access-token lifetime. Populated by logout, logout-all, refresh-token-reuse
+family revoke, guest logout, and host-removes-member. The guard rejects denied
+`sid` with `401 SESSION_REVOKED`.
+
+**Residual:** during a Redis outage a revocation made on instance A is not
+visible to instance B for the remaining token lifetime (≤15 min). Accepted for
+MVP (single instance); revisit when scaling horizontally.
+
+### Checked, no change needed
+
+- JWT tamper / wrong-secret rejection, HS256, no PII in claims — covered by
+  `token.service.spec`.
+- Guest room scoping, host-only actions, CMS role re-read per request — covered
+  by hand-crafted request tests in `rooms.int.spec` / `cms.int.spec`.
+- SQL/tsquery injection: every query parameterised; the ingestion PG array
+  helper escapes quotes/backslashes.
+- SSRF on place import/resolve: allowlist + per-hop re-validation + private-IP
+  block, probed live (`UNSAFE_TARGET` on metadata/loopback/private targets).
+- Error envelope leaks no internals; logs redact tokens/PII.
+- `/v1/health/ready` exposes dependency up/down publicly — accepted (no data,
+  and uptime monitors need it unauthenticated).
+
 ## Open risks (tracked)
 
 1. 🔴 SSO for CMS — blocked on IdP (#62 note).
