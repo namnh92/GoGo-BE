@@ -9,6 +9,24 @@ const OUTBOX_QUEUE = 'gogo-outbox';
 const PRIVACY_QUEUE = 'gogo-privacy';
 
 /**
+ * Dead-man-switch heartbeats (healthchecks.io style): ping ONLY after a
+ * successful run, throttled — the monitor alerts when pings stop, covering
+ * silent worker death that process-level monitoring misses.
+ */
+const lastPing = new Map<string, number>();
+async function heartbeat(url: string | undefined, throttleMs = 60_000): Promise<void> {
+  if (!url) return;
+  const now = Date.now();
+  if (now - (lastPing.get(url) ?? 0) < throttleMs) return;
+  lastPing.set(url, now);
+  try {
+    await fetch(url, { method: 'GET', signal: AbortSignal.timeout(10_000) });
+  } catch {
+    // Heartbeat failure must never break job processing.
+  }
+}
+
+/**
  * Worker process (BE-BFF-010 + DB-010): BullMQ consumers for outbox fan-out
  * and privacy/retention. Jobs are at-least-once; consumers are idempotent
  * (outbox marks published per event; privacy jobs are pure re-runnable SQL).
@@ -44,6 +62,7 @@ async function bootstrap(): Promise<void> {
     async () => {
       const handled = await dispatcher.dispatchBatch(100);
       if (handled > 0) logger.info({ handled }, 'outbox batch dispatched');
+      await heartbeat(process.env.HEARTBEAT_URL_OUTBOX);
     },
     { connection, concurrency: 1 },
   );
@@ -52,6 +71,7 @@ async function bootstrap(): Promise<void> {
     async () => {
       const report = await privacy.run(false);
       logger.info({ report }, 'privacy retention run complete');
+      await heartbeat(process.env.HEARTBEAT_URL_PRIVACY, 0);
     },
     { connection, concurrency: 1 },
   );

@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
     "argon2": "^0.45.1",
     "drizzle-orm": "^0.44.0",
     "pg": "^8.13.0"

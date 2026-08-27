@@ -1,5 +1,6 @@
 import type { ArgumentsHost, ExceptionFilter } from '@nestjs/common';
 import { Catch, HttpException } from '@nestjs/common';
+import * as Sentry from '@sentry/node';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AppError } from '../errors/app-error';
 
@@ -54,6 +55,8 @@ export class AppExceptionFilter implements ExceptionFilter {
 
     if (status >= 500) {
       request.log.error({ err: exception, request_id: requestId }, 'unhandled error');
+      // No-op unless Sentry.init ran (SENTRY_DSN set).
+      Sentry.captureException(exception, { extra: { request_id: requestId } });
     } else {
       request.log.info({ code: envelope.code, request_id: requestId }, 'request failed');
     }

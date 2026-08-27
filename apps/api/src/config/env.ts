@@ -43,7 +43,15 @@ const envSchema = z
     R2_ACCESS_KEY_ID: z.string().default(''),
     R2_SECRET_ACCESS_KEY: z.string().default(''),
     R2_BUCKET: z.string().default(''),
+    R2_BACKUP_BUCKET: z.string().default(''),
     SENTRY_DSN: z.string().default(''),
+    // Push providers — waiting slots; fakes are bound while empty.
+    FCM_SERVICE_ACCOUNT_B64: z.string().default(''),
+    APNS_KEY_ID: z.string().default(''),
+    APNS_TEAM_ID: z.string().default(''),
+    APNS_BUNDLE_ID: z.string().default(''),
+    APNS_PRIVATE_KEY_B64: z.string().default(''),
+    APNS_ENV: z.enum(['sandbox', 'production']).default('sandbox'),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
   })

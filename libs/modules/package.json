@@ -14,6 +14,7 @@
     "@nestjs/common": "^11.2.3",
     "@nestjs/core": "^11.2.3",
     "@nestjs/platform-fastify": "^11.2.3",
+    "@opentelemetry/api": "^1.9.1",
     "argon2": "^0.45.1",
     "drizzle-orm": "^0.44.7",
     "fast-jwt": "^6.3.2",

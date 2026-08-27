@@ -180,6 +180,14 @@ describe('Idempotency-Key (api-contract rule)', () => {
   });
 });
 
+describe('readiness endpoint (downtime monitoring target)', () => {
+  it('reports dependency checks — db ok, redis skipped in test env', async () => {
+    const res = await api().inject({ method: 'GET', url: '/v1/health/ready' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: 'ready', checks: { db: 'ok', redis: 'skipped' } });
+  });
+});
+
 describe('Redis rate-limit store (multi-instance)', () => {
   it('counts across store instances sharing one Redis (unlike in-memory)', async () => {
     const { RedisRateLimitStore } =

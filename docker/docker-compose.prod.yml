@@ -1,0 +1,124 @@
+# Single-VPS production stack (MVP cost profile — docs/infrastructure.md).
+# Usage on the VPS:
+#   docker compose -f docker/docker-compose.prod.yml --env-file .env.prod up -d
+# One-off migrate:
+#   docker compose -f docker/docker-compose.prod.yml --env-file .env.prod run --rm migrate
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env.prod}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      PROCESS: api
+      NODE_ENV: production
+      API_PORT: '3000'
+    env_file:
+      - ../.env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/v1/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      PROCESS: worker
+      NODE_ENV: production
+    env_file:
+      - ../.env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    profiles: ['tools']
+    environment:
+      PROCESS: migrate
+    env_file:
+      - ../.env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gogo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-gogo}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-gogo} -d ${POSTGRES_DB:-gogo}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Not exposed to the host — only the compose network reaches it.
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redisdata:/data
+
+  # Nightly pg_dump → R2 (S3 API). RPO 24h for MVP; move to managed PITR at
+  # beta gate (docs/runbooks.md §4). Skips upload until R2 creds are set.
+  backup:
+    image: alpine:3.20
+    restart: unless-stopped
+    entrypoint: ['/bin/sh', '/backup.sh']
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gogo}
+      POSTGRES_DB: ${POSTGRES_DB:-gogo}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BACKUP_BUCKET: ${R2_BACKUP_BUCKET:-}
+      HEARTBEAT_URL_BACKUP: ${HEARTBEAT_URL_BACKUP:-}
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
+  backups:

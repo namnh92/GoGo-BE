@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+.git
+.turbo
+.env*
+!.env.example
+docker/backup.sh
+*.log
