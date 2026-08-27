@@ -1,12 +1,25 @@
 import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { createDb } from '@gogo/database';
-import { OutboxDispatcher, PrivacyJobs } from '@gogo/modules';
+import {
+  OutboxDispatcher,
+  PlaceDedupService,
+  PlaceImportJobService,
+  PlaceResolverService,
+  PrivacyJobs,
+} from '@gogo/modules';
 import { createLogger } from '@gogo/observability';
-import { FakePush } from '@gogo/providers';
+import {
+  FakePush,
+  FakeSheets,
+  FakePlaceProvider,
+  GooglePlacesAdapter,
+  GoogleSheetsAdapter,
+} from '@gogo/providers';
 
 const OUTBOX_QUEUE = 'gogo-outbox';
 const PRIVACY_QUEUE = 'gogo-privacy';
+const INGEST_QUEUE = 'gogo-ingest';
 
 /**
  * Dead-man-switch heartbeats (healthchecks.io style): ping ONLY after a
@@ -49,9 +62,24 @@ async function bootstrap(): Promise<void> {
   const dispatcher = new OutboxDispatcher(db, new FakePush());
   const privacy = new PrivacyJobs(db);
 
+  // PI-BE-015: bulk import chunks run here, not in the API process. The tick
+  // polls for jobs an admin has started rather than consuming an enqueue, so a
+  // start survives an API restart and no message can strand a job.
+  const mapsKey = process.env.GOOGLE_MAPS_API_KEY ?? '';
+  const sheetsKey = process.env.GOOGLE_SHEETS_API_KEY || mapsKey;
+  const placeProvider = mapsKey ? new GooglePlacesAdapter(mapsKey) : new FakePlaceProvider();
+  const imports = new PlaceImportJobService(
+    db,
+    new PlaceResolverService(placeProvider, db),
+    new PlaceDedupService(db),
+    sheetsKey ? new GoogleSheetsAdapter(sheetsKey) : new FakeSheets(),
+  );
+
   const outboxQueue = new Queue(OUTBOX_QUEUE, { connection });
   const privacyQueue = new Queue(PRIVACY_QUEUE, { connection });
+  const ingestQueue = new Queue(INGEST_QUEUE, { connection });
   await outboxQueue.upsertJobScheduler('outbox-poll', { every: 5000 });
+  await ingestQueue.upsertJobScheduler('ingest-poll', { every: 5000 });
   await privacyQueue.upsertJobScheduler('privacy-daily', {
     pattern: '0 3 * * *',
     tz: 'Asia/Ho_Chi_Minh',
@@ -76,17 +104,32 @@ async function bootstrap(): Promise<void> {
     { connection, concurrency: 1 },
   );
 
+  const ingestWorker = new Worker(
+    INGEST_QUEUE,
+    async () => {
+      const advanced = await imports.processPendingJobs(5);
+      if (advanced.length > 0) logger.info({ advanced }, 'place import chunks processed');
+      await heartbeat(process.env.HEARTBEAT_URL_INGEST);
+    },
+    // Serial by design: chunks already batch 50 rows and each row may cost a
+    // provider call, so parallel ticks would only race the quota.
+    { connection, concurrency: 1 },
+  );
+
   outboxWorker.on('failed', (_job, err) => logger.error({ err }, 'outbox job failed'));
+  ingestWorker.on('failed', (_job, err) => logger.error({ err }, 'ingest job failed'));
   privacyWorker.on('failed', (_job, err) => logger.error({ err }, 'privacy job failed'));
-  logger.info('worker booted: outbox poll 5s, privacy daily 03:00 ICT');
+  logger.info('worker booted: outbox 5s, ingest 5s, privacy daily 03:00 ICT');
 
   const shutdown = async () => {
     logger.info('worker shutting down');
     await Promise.allSettled([
       outboxWorker.close(),
       privacyWorker.close(),
+      ingestWorker.close(),
       outboxQueue.close(),
       privacyQueue.close(),
+      ingestQueue.close(),
     ]);
     await pool.end();
     connection.disconnect();

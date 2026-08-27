@@ -1,4 +1,4 @@
-import { ProviderUnavailableError } from './ports';
+import { ProviderQuotaExceededError, ProviderUnavailableError } from './ports';
 
 export type ResilienceOptions = {
   name: string;
@@ -53,6 +53,9 @@ export async function withResilience<T>(
       state.openedAt = null;
       return result;
     } catch (err) {
+      // Quota exhaustion is a budget decision, not a transient fault: retrying
+      // only burns more of it, so it propagates untouched to the caller.
+      if (err instanceof ProviderQuotaExceededError) throw err;
       lastError = err;
       state.consecutiveFailures += 1;
       if (state.consecutiveFailures >= options.breakerThreshold) {

@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
 import {
   PLACE_PROVIDER,
+  ProviderQuotaExceededError,
   type PlaceProviderPort,
   type ResolvedProviderPlace,
 } from '@gogo/providers';
@@ -83,11 +84,16 @@ export class PlaceResolverService {
     return { status: 'UNRESOLVED', reasonCode: 'LOW_CONFIDENCE', decision };
   }
 
-  /** Provider failures are outcomes, never 500s (FR-INGEST-002). */
+  /**
+   * Provider failures are outcomes, never 500s (FR-INGEST-002) — except quota
+   * exhaustion, which is a budget signal the caller must act on: a bulk job
+   * pauses instead of marking thousands of good rows unresolvable.
+   */
   private async safeResolve(url: string): Promise<string | null> {
     try {
       return await this.provider.resolveUrl(url);
-    } catch {
+    } catch (err) {
+      if (err instanceof ProviderQuotaExceededError) throw err;
       return null;
     }
   }
@@ -95,7 +101,8 @@ export class PlaceResolverService {
   private async safeDetails(id: string): Promise<ResolvedProviderPlace | null> {
     try {
       return await this.provider.details(id);
-    } catch {
+    } catch (err) {
+      if (err instanceof ProviderQuotaExceededError) throw err;
       return null;
     }
   }

@@ -46,6 +46,8 @@ const envSchema = z
       .default('false')
       .transform((v) => v === 'true'),
     GOOGLE_MAPS_API_KEY: z.string().default(''),
+    /** Optional split key for the Sheets read scope; falls back to the Maps key. */
+    GOOGLE_SHEETS_API_KEY: z.string().default(''),
     R2_ACCOUNT_ID: z.string().default(''),
     R2_ACCESS_KEY_ID: z.string().default(''),
     R2_SECRET_ACCESS_KEY: z.string().default(''),

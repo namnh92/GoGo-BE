@@ -1,0 +1,225 @@
+import type { IngestMessage } from '@gogo/database';
+import { parseMapsUrl } from './maps-url';
+import { parseAudiences, parsePrice, parseVibes, type PriceUnit } from './normalize-row';
+import type { CanonicalField } from './column-mapping';
+import { INGEST_LIMITS } from './tabular/limits';
+
+/**
+ * PI-BE-011/013 — template validation + normalization (spec §4.3).
+ *
+ * Errors block the row; warnings let it through for an editor to resolve.
+ * Nothing here touches the network or the catalog: it is a pure function of
+ * the row, so dry-run costs nothing and a retry repeats identically.
+ */
+
+const PRICE_UNITS: PriceUnit[] = ['per_person', 'per_group', 'per_item', 'free', 'unknown'];
+
+export type NormalizedImportRow = {
+  sourceRowId: string;
+  name: string | null;
+  city: string | null;
+  district: string | null;
+  googleMapsUrl: string | null;
+  /** Set when the sheet holds a place name instead of a link (spec §4.4). */
+  googleMapsQuery: string | null;
+  categoryKey: string | null;
+  categoryRaw: string | null;
+  priceMin: number | null;
+  priceMax: number | null;
+  priceUnit: PriceUnit;
+  audiences: string[];
+  vibes: string[];
+  highlight: string | null;
+  note: string | null;
+};
+
+export type ValidatedRow = {
+  normalized: NormalizedImportRow;
+  errors: IngestMessage[];
+  warnings: IngestMessage[];
+};
+
+export type ValidationContext = {
+  defaultCity?: string | null;
+  /** Taxonomy keys that exist today. Unknown keys never create taxonomy. */
+  knownCategoryKeys?: ReadonlySet<string>;
+  knownVibeKeys?: ReadonlySet<string>;
+  knownAudienceKeys?: ReadonlySet<string>;
+};
+
+const msg = (code: string, field: string, message: string): IngestMessage => ({
+  code,
+  field,
+  message,
+});
+
+function parseInteger(raw: string | undefined): number | null {
+  if (raw === undefined || raw === '') return null;
+  const digits = raw.replace(/[.,\s]/g, '');
+  if (!/^\d+$/.test(digits)) return NaN;
+  return Number(digits);
+}
+
+export function validateRow(
+  raw: Partial<Record<CanonicalField, string>>,
+  ctx: ValidationContext = {},
+): ValidatedRow {
+  const errors: IngestMessage[] = [];
+  const warnings: IngestMessage[] = [];
+
+  const sourceRowId = (raw.source_row_id ?? '').trim();
+  if (!sourceRowId) {
+    errors.push(msg('ROW_ID_MISSING', 'source_row_id', 'source_row_id là bắt buộc'));
+  } else if (sourceRowId.length > 100) {
+    errors.push(msg('ROW_ID_TOO_LONG', 'source_row_id', 'source_row_id tối đa 100 ký tự'));
+  }
+
+  const name = raw.name?.trim() || null;
+  const city = raw.city?.trim() || ctx.defaultCity?.trim() || null;
+  if (!city) errors.push(msg('CITY_REQUIRED', 'city', 'city là bắt buộc'));
+
+  // A row must be resolvable: either a maps link or a name to search with.
+  let googleMapsUrl: string | null = null;
+  let googleMapsQuery: string | null = raw.google_maps_query?.trim() || null;
+  const rawUrl = raw.google_maps_url?.trim();
+  if (rawUrl) {
+    if (/^https?:\/\//i.test(rawUrl)) {
+      const parsed = parseMapsUrl(rawUrl);
+      if (parsed.ok) googleMapsUrl = rawUrl;
+      else {
+        errors.push(
+          msg('URL_INVALID', 'google_maps_url', `Link không hợp lệ: ${parsed.reasonCode}`),
+        );
+      }
+    } else {
+      // Legacy sheets put a plain place name in the link column.
+      googleMapsQuery = rawUrl;
+    }
+  }
+  if (!googleMapsUrl && !name && !googleMapsQuery) {
+    errors.push(msg('NAME_REQUIRED', 'name', 'Cần name hoặc google_maps_url để resolve'));
+  }
+
+  const categoryRaw = raw.category_raw?.trim() || null;
+  let categoryKey = raw.category?.trim() || null;
+  if (!categoryKey && !categoryRaw) {
+    errors.push(msg('CATEGORY_REQUIRED', 'category', 'category là bắt buộc'));
+  }
+  if (categoryKey && ctx.knownCategoryKeys && !ctx.knownCategoryKeys.has(categoryKey)) {
+    errors.push(msg('CATEGORY_UNKNOWN', 'category', `Taxonomy key không tồn tại: ${categoryKey}`));
+    categoryKey = null;
+  }
+  if (!categoryKey && categoryRaw) {
+    // Free-text category needs an editor decision — never auto-created.
+    warnings.push(msg('CATEGORY_UNMAPPED', 'category_raw', `Chưa map được: ${categoryRaw}`));
+  }
+
+  let priceMin = parseInteger(raw.price_min);
+  let priceMax = parseInteger(raw.price_max);
+  let priceUnit: PriceUnit = 'unknown';
+
+  if (Number.isNaN(priceMin) || Number.isNaN(priceMax)) {
+    errors.push(msg('PRICE_INVALID', 'price_min', 'Giá phải là số nguyên VND'));
+    priceMin = null;
+    priceMax = null;
+  }
+  const unitRaw = raw.price_unit?.trim();
+  if (unitRaw) {
+    if (PRICE_UNITS.includes(unitRaw as PriceUnit)) priceUnit = unitRaw as PriceUnit;
+    else
+      errors.push(msg('PRICE_UNIT_INVALID', 'price_unit', `price_unit không hợp lệ: ${unitRaw}`));
+  }
+  if (priceMin === null && priceMax === null && raw.price_raw) {
+    const parsed = parsePrice(raw.price_raw);
+    priceMin = parsed.min;
+    priceMax = parsed.max;
+    if (priceUnit === 'unknown') priceUnit = parsed.unit;
+    if (parsed.min === null) {
+      warnings.push(msg('PRICE_UNPARSED', 'price_raw', `Không đọc được giá: ${raw.price_raw}`));
+    }
+  }
+  if (priceMin !== null && priceMax !== null && priceMax < priceMin) {
+    errors.push(msg('PRICE_RANGE_INVALID', 'price_max', 'price_max phải >= price_min'));
+  }
+  if ((priceMin !== null && priceMin < 0) || (priceMax !== null && priceMax < 0)) {
+    errors.push(msg('PRICE_INVALID', 'price_min', 'Giá không được âm'));
+  }
+
+  const audiences = collectKeys(
+    raw.audiences,
+    raw.audiences_raw,
+    parseAudiences,
+    ctx.knownAudienceKeys,
+    'audiences',
+    warnings,
+  );
+  const vibes = collectKeys(
+    raw.vibes,
+    raw.vibes_raw,
+    parseVibes,
+    ctx.knownVibeKeys,
+    'vibes',
+    warnings,
+  );
+
+  for (const [field, value] of Object.entries(raw)) {
+    if (value && value.length > INGEST_LIMITS.maxCellChars) {
+      errors.push(msg('CELL_TOO_LONG', field, `Ô ${field} vượt quá độ dài cho phép`));
+    }
+  }
+
+  return {
+    normalized: {
+      sourceRowId,
+      name,
+      city,
+      district: raw.district?.trim() || null,
+      googleMapsUrl,
+      googleMapsQuery,
+      categoryKey,
+      categoryRaw,
+      priceMin,
+      priceMax,
+      priceUnit,
+      audiences,
+      vibes,
+      highlight: raw.highlight?.trim() || null,
+      note: raw.note?.trim() || null,
+    },
+    errors,
+    warnings,
+  };
+}
+
+function collectKeys(
+  explicit: string | undefined,
+  legacy: string | undefined,
+  parse: (raw: string) => { keys: string[]; unknown: string[] },
+  known: ReadonlySet<string> | undefined,
+  field: string,
+  warnings: IngestMessage[],
+): string[] {
+  if (!explicit && !legacy) return [];
+  const parsed = explicit
+    ? {
+        keys: explicit
+          .split(/[|,;]/)
+          .map((s) => s.trim())
+          .filter(Boolean),
+        unknown: [] as string[],
+      }
+    : parse(legacy!);
+
+  const accepted: string[] = [];
+  for (const key of parsed.keys) {
+    if (known && !known.has(key)) {
+      warnings.push(msg(`${field.toUpperCase()}_UNKNOWN`, field, `Key không tồn tại: ${key}`));
+      continue;
+    }
+    if (!accepted.includes(key)) accepted.push(key);
+  }
+  for (const token of parsed.unknown) {
+    warnings.push(msg(`${field.toUpperCase()}_UNKNOWN`, field, `Chưa map được: ${token}`));
+  }
+  return accepted;
+}

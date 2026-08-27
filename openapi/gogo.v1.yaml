@@ -1386,6 +1386,379 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /cms/place-imports:
+    post:
+      operationId: createPlaceImport
+      tags: [cms]
+      summary: 'Editor/ops: upload a CSV or XLSX bulk import (PI-BE-011)'
+      description: >
+        multipart/form-data with one `file` part plus text fields. The format is
+        decided by the file content, not the extension or mimetype: CSV must be
+        UTF-8, XLSX must be a real workbook and macro-enabled workbooks are
+        rejected. Limits: 20 MB, 5.000 data rows, 64 columns, 2.000 chars/cell.
+        Re-uploading identical bytes in the same mode returns the existing job
+        (`reused: true`) instead of re-billing the provider. `dry_run` validates
+        only and never calls the provider.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                mode:
+                  type: string
+                  enum: [dry_run, create_drafts, publish_approved]
+                  default: dry_run
+                defaultCity: { type: string, maxLength: 80 }
+                mapping:
+                  type: string
+                  description: JSON object mapping raw header → canonical field
+      responses:
+        '201':
+          description: Job created (or an identical one reused)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportJob' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    get:
+      operationId: listPlaceImports
+      tags: [cms]
+      summary: 'Editor/ops: import history, newest first'
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 25 },
+          }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Import history page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ImportJobSummary' }
+                  nextOffset: { type: integer, nullable: true }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /cms/place-imports/google-sheet:
+    post:
+      operationId: createPlaceImportFromSheet
+      tags: [cms]
+      summary: 'Editor/ops: import from a Google Sheet (PI-BE-012)'
+      description: >
+        Reads the named tabs through the Sheets API with a bounded range. Only
+        `docs.google.com` spreadsheet links (or a bare spreadsheet id) are
+        accepted and the URL is never fetched directly. A tab name can map to a
+        city via `tabCityMapping` — this is how the legacy HCM/HN sheet imports.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [spreadsheetUrl]
+              properties:
+                spreadsheetUrl: { type: string, maxLength: 2000 }
+                sheets:
+                  type: array
+                  maxItems: 20
+                  items: { type: string }
+                mode:
+                  type: string
+                  enum: [dry_run, create_drafts, publish_approved]
+                  default: dry_run
+                defaultCity: { type: string, maxLength: 80 }
+                tabCityMapping:
+                  type: object
+                  additionalProperties: { type: string }
+                mapping:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        '201':
+          description: Job created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportJob' }
+        '400':
+          description: SHEET_URL_INVALID / SHEET_NOT_FOUND / SHEET_TAB_NOT_FOUND
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403':
+          description: SHEET_PERMISSION_DENIED, or the caller lacks the CMS role
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/place-imports/{jobId}:
+    get:
+      operationId: getPlaceImport
+      tags: [cms]
+      summary: 'Editor/ops: job status and per-status row counts'
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Job detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportJob' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/place-imports/{jobId}/rows:
+    get:
+      operationId: listPlaceImportRows
+      tags: [cms]
+      summary: 'Editor/ops: rows with validation errors, match reasons and candidates'
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              [
+                pending,
+                validation_failed,
+                resolving,
+                unresolved,
+                needs_confirmation,
+                duplicate,
+                ready,
+                imported,
+                failed,
+              ]
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 25 },
+          }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Row page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ImportRow' }
+                  nextOffset: { type: integer, nullable: true }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/place-imports/{jobId}/error-report:
+    get:
+      operationId: downloadPlaceImportErrorReport
+      tags: [cms]
+      summary: 'Editor/ops: downloadable error report (PI-BE-017)'
+      description: >
+        UTF-8 CSV of every row carrying an error or warning. Cells starting with
+        `=`, `+`, `-` or `@` are prefixed with an apostrophe so the report cannot
+        execute a formula when it is opened in Excel or Sheets.
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: CSV attachment
+          content:
+            text/csv:
+              schema: { type: string }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/place-imports/{jobId}/start:
+    post:
+      operationId: startPlaceImport
+      tags: [cms]
+      summary: 'Editor/ops: start (or resume) background processing (PI-BE-015)'
+      description: >
+        Flips the job to `processing`; the worker advances it in chunks of 50
+        rows. Also the resume path for a job parked at
+        `paused_provider_quota`. Rejected for `dry_run` jobs.
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: Job is processing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportJob' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /cms/place-imports/{jobId}/cancel:
+    post:
+      operationId: cancelPlaceImport
+      tags: [cms]
+      summary: 'Editor/ops: cancel remaining chunks'
+      description: Stops unprocessed rows only — rows already imported are never rolled back.
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: Job cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportJob' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /cms/place-imports/{jobId}/retry:
+    post:
+      operationId: retryPlaceImport
+      tags: [cms]
+      summary: 'Editor/ops: re-queue failed and unresolved rows'
+      description: >
+        Idempotent by `(job_id, source_row_id)`: a retry updates the same rows
+        and can never create a duplicate canonical place.
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: Rows re-queued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ImportJob'
+                  - type: object
+                    properties:
+                      retriedRows: { type: integer }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /cms/place-imports/{jobId}/rows/{rowId}/confirm-candidate:
+    post:
+      operationId: confirmPlaceImportCandidate
+      tags: [cms]
+      summary: 'Editor/ops: pick the right branch for an ambiguous row'
+      description: >
+        Only a `googlePlaceId` the resolver actually surfaced on this row is
+        accepted; an arbitrary provider id is refused with CANDIDATE_NOT_LISTED.
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: rowId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [googlePlaceId]
+              properties:
+                googlePlaceId: { type: string, minLength: 5, maxLength: 255 }
+      responses:
+        '201':
+          description: Row resolved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportRowDecision' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/place-imports/{jobId}/rows/{rowId}/merge:
+    post:
+      operationId: mergePlaceImportRow
+      tags: [cms]
+      summary: 'Editor/ops: merge a duplicate row into an existing place'
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: rowId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [placeId]
+              properties:
+                placeId: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Row merged; provider snapshot linked and reindex emitted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportRowDecision' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /cms/place-imports/{jobId}/rows/{rowId}/skip:
+    post:
+      operationId: skipPlaceImportRow
+      tags: [cms]
+      summary: 'Editor/ops: skip a row so it is excluded from publish'
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: rowId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: Row skipped
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportRowDecision' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/place-imports/{jobId}/publish:
+    post:
+      operationId: publishPlaceImport
+      tags: [cms]
+      summary: 'Ops only: create catalog places from ready rows (PI-BE-016)'
+      description: >
+        Separated from importing on purpose: an editor prepares the batch and
+        ops publishes it (spec §9.3). `create_drafts` writes places in `draft`;
+        `publish_approved` publishes and emits a reindex event. Unknown taxonomy
+        keys are skipped, never created.
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rowIds:
+                  type: array
+                  maxItems: 500
+                  items: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Publish result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string, format: uuid }
+                  created: { type: integer }
+                  failed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        rowId: { type: string, format: uuid }
+                        code: { type: string }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /me/reviews:
     get:
       operationId: listMyReviews
@@ -2596,6 +2969,124 @@ components:
           type: string
           minLength: 3
           maxLength: 3
+    IngestMessage:
+      type: object
+      description: One validation error or warning, keyed by a stable code.
+      properties:
+        code: { type: string, example: PRICE_RANGE_INVALID }
+        field: { type: string }
+        message: { type: string }
+    ImportTotals:
+      type: object
+      properties:
+        rows: { type: integer }
+        processed: { type: integer }
+        success: { type: integer }
+        warnings: { type: integer }
+        failed: { type: integer }
+    ImportJobSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum:
+            [
+              uploaded,
+              validating,
+              processing,
+              review_required,
+              completed,
+              partial_success,
+              failed,
+              cancelled,
+              paused_provider_quota,
+            ]
+        mode: { type: string, enum: [dry_run, create_drafts, publish_approved] }
+        sourceType: { type: string, enum: [csv, xlsx, google_sheet, mobile_link] }
+        sourceFileName: { type: string, nullable: true }
+        totals: { $ref: '#/components/schemas/ImportTotals' }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+    ImportJob:
+      allOf:
+        - $ref: '#/components/schemas/ImportJobSummary'
+        - type: object
+          properties:
+            defaultCity: { type: string, nullable: true }
+            rowsByStatus:
+              type: object
+              additionalProperties: { type: integer }
+            startedAt: { type: string, format: date-time }
+            cancelledAt: { type: string, format: date-time }
+            reused:
+              type: boolean
+              description: True when identical bytes/mode returned the existing job.
+            unmappedHeaders:
+              type: array
+              items: { type: string }
+    ImportCandidate:
+      type: object
+      properties:
+        googlePlaceId: { type: string }
+        name: { type: string }
+        address: { type: string }
+        confidence: { type: number, format: float, minimum: 0, maximum: 1 }
+        lat: { type: number }
+        lng: { type: number }
+    ImportRow:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        rowNumber: { type: integer }
+        sourceRowId: { type: string }
+        status:
+          type: string
+          enum:
+            [
+              pending,
+              validation_failed,
+              resolving,
+              unresolved,
+              needs_confirmation,
+              duplicate,
+              ready,
+              imported,
+              failed,
+            ]
+        normalized:
+          type: object
+          description: Structured facts parsed from the row (price, audiences, vibes, keys).
+        resolvedGooglePlaceId: { type: string, nullable: true }
+        matchedPlaceId: { type: string, format: uuid, nullable: true }
+        matchConfidence: { type: number, format: float, nullable: true }
+        matchReasons:
+          type: array
+          items: { type: string }
+        candidates:
+          type: array
+          description: Present on PLACE_MATCH_AMBIGUOUS rows (spec §10.4).
+          items: { $ref: '#/components/schemas/ImportCandidate' }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/IngestMessage' }
+        warnings:
+          type: array
+          items: { $ref: '#/components/schemas/IngestMessage' }
+    ImportRowDecision:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string }
+        resolvedGooglePlaceId: { type: string, nullable: true }
+        matchedPlaceId: { type: string, format: uuid, nullable: true }
+        matchConfidence: { type: number, format: float, nullable: true }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/IngestMessage' }
+        warnings:
+          type: array
+          items: { $ref: '#/components/schemas/IngestMessage' }
   responses:
     BadRequest:
       description: Validation or business rule failure

@@ -861,6 +861,235 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/place-imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Editor/ops: import history, newest first */
+        get: operations["listPlaceImports"];
+        put?: never;
+        /**
+         * Editor/ops: upload a CSV or XLSX bulk import (PI-BE-011)
+         * @description multipart/form-data with one `file` part plus text fields. The format is decided by the file content, not the extension or mimetype: CSV must be UTF-8, XLSX must be a real workbook and macro-enabled workbooks are rejected. Limits: 20 MB, 5.000 data rows, 64 columns, 2.000 chars/cell. Re-uploading identical bytes in the same mode returns the existing job (`reused: true`) instead of re-billing the provider. `dry_run` validates only and never calls the provider.
+         */
+        post: operations["createPlaceImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-imports/google-sheet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Editor/ops: import from a Google Sheet (PI-BE-012)
+         * @description Reads the named tabs through the Sheets API with a bounded range. Only `docs.google.com` spreadsheet links (or a bare spreadsheet id) are accepted and the URL is never fetched directly. A tab name can map to a city via `tabCityMapping` — this is how the legacy HCM/HN sheet imports.
+         */
+        post: operations["createPlaceImportFromSheet"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-imports/{jobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Editor/ops: job status and per-status row counts */
+        get: operations["getPlaceImport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-imports/{jobId}/rows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Editor/ops: rows with validation errors, match reasons and candidates */
+        get: operations["listPlaceImportRows"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-imports/{jobId}/error-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Editor/ops: downloadable error report (PI-BE-017)
+         * @description UTF-8 CSV of every row carrying an error or warning. Cells starting with `=`, `+`, `-` or `@` are prefixed with an apostrophe so the report cannot execute a formula when it is opened in Excel or Sheets.
+         */
+        get: operations["downloadPlaceImportErrorReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-imports/{jobId}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Editor/ops: start (or resume) background processing (PI-BE-015)
+         * @description Flips the job to `processing`; the worker advances it in chunks of 50 rows. Also the resume path for a job parked at `paused_provider_quota`. Rejected for `dry_run` jobs.
+         */
+        post: operations["startPlaceImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-imports/{jobId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Editor/ops: cancel remaining chunks
+         * @description Stops unprocessed rows only — rows already imported are never rolled back.
+         */
+        post: operations["cancelPlaceImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-imports/{jobId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Editor/ops: re-queue failed and unresolved rows
+         * @description Idempotent by `(job_id, source_row_id)`: a retry updates the same rows and can never create a duplicate canonical place.
+         */
+        post: operations["retryPlaceImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-imports/{jobId}/rows/{rowId}/confirm-candidate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Editor/ops: pick the right branch for an ambiguous row
+         * @description Only a `googlePlaceId` the resolver actually surfaced on this row is accepted; an arbitrary provider id is refused with CANDIDATE_NOT_LISTED.
+         */
+        post: operations["confirmPlaceImportCandidate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-imports/{jobId}/rows/{rowId}/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Editor/ops: merge a duplicate row into an existing place */
+        post: operations["mergePlaceImportRow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-imports/{jobId}/rows/{rowId}/skip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Editor/ops: skip a row so it is excluded from publish */
+        post: operations["skipPlaceImportRow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-imports/{jobId}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops only: create catalog places from ready rows (PI-BE-016)
+         * @description Separated from importing on purpose: an editor prepares the batch and ops publishes it (spec §9.3). `create_drafts` writes places in `draft`; `publish_approved` publishes and emits a reindex event. Unknown taxonomy keys are skipped, never created.
+         */
+        post: operations["publishPlaceImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/reviews": {
         parameters: {
             query?: never;
@@ -1867,6 +2096,90 @@ export interface components {
             /** @description Integer minor units (e.g. VND has 0 decimals, amount = dong). */
             amount: number;
             currency: string;
+        };
+        /** @description One validation error or warning, keyed by a stable code. */
+        IngestMessage: {
+            /** @example PRICE_RANGE_INVALID */
+            code?: string;
+            field?: string;
+            message?: string;
+        };
+        ImportTotals: {
+            rows?: number;
+            processed?: number;
+            success?: number;
+            warnings?: number;
+            failed?: number;
+        };
+        ImportJobSummary: {
+            /** Format: uuid */
+            id?: string;
+            /** @enum {string} */
+            status?: "uploaded" | "validating" | "processing" | "review_required" | "completed" | "partial_success" | "failed" | "cancelled" | "paused_provider_quota";
+            /** @enum {string} */
+            mode?: "dry_run" | "create_drafts" | "publish_approved";
+            /** @enum {string} */
+            sourceType?: "csv" | "xlsx" | "google_sheet" | "mobile_link";
+            sourceFileName?: string | null;
+            totals?: components["schemas"]["ImportTotals"];
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            completedAt?: string;
+        };
+        ImportJob: components["schemas"]["ImportJobSummary"] & {
+            defaultCity?: string | null;
+            rowsByStatus?: {
+                [key: string]: number;
+            };
+            /** Format: date-time */
+            startedAt?: string;
+            /** Format: date-time */
+            cancelledAt?: string;
+            /** @description True when identical bytes/mode returned the existing job. */
+            reused?: boolean;
+            unmappedHeaders?: string[];
+        };
+        ImportCandidate: {
+            googlePlaceId?: string;
+            name?: string;
+            address?: string;
+            /** Format: float */
+            confidence?: number;
+            lat?: number;
+            lng?: number;
+        };
+        ImportRow: {
+            /** Format: uuid */
+            id?: string;
+            rowNumber?: number;
+            sourceRowId?: string;
+            /** @enum {string} */
+            status?: "pending" | "validation_failed" | "resolving" | "unresolved" | "needs_confirmation" | "duplicate" | "ready" | "imported" | "failed";
+            /** @description Structured facts parsed from the row (price, audiences, vibes, keys). */
+            normalized?: Record<string, never>;
+            resolvedGooglePlaceId?: string | null;
+            /** Format: uuid */
+            matchedPlaceId?: string | null;
+            /** Format: float */
+            matchConfidence?: number | null;
+            matchReasons?: string[];
+            /** @description Present on PLACE_MATCH_AMBIGUOUS rows (spec §10.4). */
+            candidates?: components["schemas"]["ImportCandidate"][];
+            errors?: components["schemas"]["IngestMessage"][];
+            warnings?: components["schemas"]["IngestMessage"][];
+        };
+        ImportRowDecision: {
+            /** Format: uuid */
+            id?: string;
+            status?: string;
+            resolvedGooglePlaceId?: string | null;
+            /** Format: uuid */
+            matchedPlaceId?: string | null;
+            /** Format: float */
+            matchConfidence?: number | null;
+            errors?: components["schemas"]["IngestMessage"][];
+            warnings?: components["schemas"]["IngestMessage"][];
         };
     };
     responses: {
@@ -3557,6 +3870,411 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    listPlaceImports: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Import history page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items?: components["schemas"]["ImportJobSummary"][];
+                        nextOffset?: number | null;
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createPlaceImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                    /**
+                     * @default dry_run
+                     * @enum {string}
+                     */
+                    mode?: "dry_run" | "create_drafts" | "publish_approved";
+                    defaultCity?: string;
+                    /** @description JSON object mapping raw header → canonical field */
+                    mapping?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Job created (or an identical one reused) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJob"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    createPlaceImportFromSheet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    spreadsheetUrl: string;
+                    sheets?: string[];
+                    /**
+                     * @default dry_run
+                     * @enum {string}
+                     */
+                    mode?: "dry_run" | "create_drafts" | "publish_approved";
+                    defaultCity?: string;
+                    tabCityMapping?: {
+                        [key: string]: string;
+                    };
+                    mapping?: {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description Job created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJob"];
+                };
+            };
+            /** @description SHEET_URL_INVALID / SHEET_NOT_FOUND / SHEET_TAB_NOT_FOUND */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description SHEET_PERMISSION_DENIED, or the caller lacks the CMS role */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    getPlaceImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Job detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJob"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listPlaceImportRows: {
+        parameters: {
+            query?: {
+                status?: "pending" | "validation_failed" | "resolving" | "unresolved" | "needs_confirmation" | "duplicate" | "ready" | "imported" | "failed";
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Row page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items?: components["schemas"]["ImportRow"][];
+                        nextOffset?: number | null;
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    downloadPlaceImportErrorReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CSV attachment */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    startPlaceImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Job is processing */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJob"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    cancelPlaceImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Job cancelled */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJob"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    retryPlaceImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rows re-queued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportJob"] & {
+                        retriedRows?: number;
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    confirmPlaceImportCandidate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+                rowId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    googlePlaceId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Row resolved */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportRowDecision"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    mergePlaceImportRow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+                rowId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    placeId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Row merged; provider snapshot linked and reindex emitted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportRowDecision"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    skipPlaceImportRow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+                rowId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Row skipped */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportRowDecision"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    publishPlaceImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    rowIds?: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Publish result */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        jobId?: string;
+                        created?: number;
+                        failed?: {
+                            /** Format: uuid */
+                            rowId?: string;
+                            code?: string;
+                        }[];
+                    };
+                };
             };
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];

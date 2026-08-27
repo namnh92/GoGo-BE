@@ -18,7 +18,11 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: {
         projectService: {
-          allowDefaultProject: ['vitest.config.ts', 'drizzle.config.ts'],
+          allowDefaultProject: [
+            'vitest.config.ts',
+            'drizzle.config.ts',
+            'scripts/check-route-coverage.ts',
+          ],
         },
       },
     },
@@ -38,5 +42,10 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
     },
+  },
+  {
+    // CLI checks: printing the result is the whole point.
+    files: ['scripts/**/*.ts'],
+    rules: { 'no-console': 'off' },
   },
 );

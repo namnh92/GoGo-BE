@@ -21,6 +21,7 @@
     "db:seed": "tsx libs/database/src/seed.ts",
     "api:types": "openapi-typescript openapi/gogo.v1.yaml -o openapi/gogo.v1.d.ts",
     "api:check": "openapi-typescript openapi/gogo.v1.yaml -o /tmp/gogo.v1.d.ts && diff -q /tmp/gogo.v1.d.ts openapi/gogo.v1.d.ts",
+    "api:routes": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/check-route-coverage.ts",
     "eval:search": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register libs/modules/search/eval/run-eval.ts"
   },
   "devDependencies": {

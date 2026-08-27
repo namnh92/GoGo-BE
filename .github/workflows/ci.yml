@@ -26,6 +26,9 @@ jobs:
       # Contract drift gate (QP-002): the committed generated client must
       # match the OpenAPI spec; regeneration diff fails the build.
       - run: pnpm api:check
+      # Coverage gate: every route the app serves must be in the spec, and
+      # every documented path must exist — the Mobile team reads /v1/docs.
+      - run: pnpm api:routes
       # Supply-chain gate: critical advisories in prod deps fail the build.
       - run: pnpm audit --prod --audit-level critical
       - run: pnpm test
