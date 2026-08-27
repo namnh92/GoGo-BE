@@ -35,6 +35,7 @@ const loginSchema = z.object({
   totp: z.string().length(6).optional(),
 });
 const totpSetupSchema = z.object({ password: z.string().min(1).max(128) });
+const totpConfirmSchema = z.object({ code: z.string().regex(/^\d{6}$/) });
 const createAdminSchema = z.object({
   email: z.string().email(),
   password: z.string().min(12).max(128),
@@ -108,6 +109,20 @@ export class CmsAuthController {
     @Body(new ZodValidationPipe(totpSetupSchema)) body: { password: string },
   ) {
     return this.auth.setupTotp(actor.id, body.password);
+  }
+
+  /**
+   * #62 — enrollment only takes effect once a code from the new secret
+   * verifies. Enrolling and activating in one step locked an admin out of the
+   * console whenever the authenticator never received the secret.
+   */
+  @RateLimit({ action: 'cms.totp_confirm', limit: 5, windowSeconds: 60, keyBy: 'actor' })
+  @Post('totp/confirm')
+  confirmTotp(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(totpConfirmSchema)) body: { code: string },
+  ) {
+    return this.auth.confirmTotp(actor.id, body.code);
   }
 
   @RequireRole('super_admin')

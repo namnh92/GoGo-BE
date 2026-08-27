@@ -127,6 +127,13 @@
       "when": 1787837539888,
       "tag": "0017_outbox-retry-and-dedupe",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787837540888,
+      "tag": "0018_admin-mfa-hardening",
+      "breakpoints": true
     }
   ]
 }

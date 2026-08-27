@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   index,
   integer,
@@ -30,7 +31,17 @@ export const adminUsers = pgTable(
     // Password auth only outside production; production requires SSO/MFA.
     passwordHash: text('password_hash'),
     ssoSubject: text('sso_subject'),
+    /** Encrypted at rest: a database dump must not hand over the second factor. */
     mfaTotpSecretEnc: text('mfa_totp_secret_enc'),
+    /** Enrolled but unproven; promoted only after a code from it verifies. */
+    mfaTotpPendingEnc: text('mfa_totp_pending_enc'),
+    /**
+     * Highest TOTP step already consumed. Without it a code stays usable for
+     * the whole of its 30-second window and an intercepted one can be
+     * replayed inside it.
+     */
+    mfaTotpLastStep: bigint('mfa_totp_last_step', { mode: 'number' }),
+    mfaEnrolledAt: timestamp('mfa_enrolled_at', { withTimezone: true }),
     displayName: text('display_name').notNull(),
     role: adminRole('role').notNull(),
     status: adminStatus('status').notNull().default('active'),

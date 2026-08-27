@@ -37,6 +37,12 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('true')
       .transform((v) => v === 'true'),
+    /**
+     * SEC-004 (#62) — encrypts admin TOTP secrets at rest. Required in
+     * production: without it a database dump hands over every second factor,
+     * which is the one credential a leaked dump is not supposed to include.
+     */
+    CMS_MFA_ENCRYPTION_KEY: z.string().default(''),
     COOKIE_SECRET: z.string().default(''),
     COOKIE_SECURE: z
       .enum(['true', 'false'])
@@ -102,6 +108,13 @@ const envSchema = z
           code: z.ZodIssueCode.custom,
           path: ['AUTH_JWT_SECRET'],
           message: 'AUTH_JWT_SECRET must be at least 32 chars in production',
+        });
+      }
+      if (env.CMS_MFA_ENCRYPTION_KEY.length < 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['CMS_MFA_ENCRYPTION_KEY'],
+          message: 'CMS_MFA_ENCRYPTION_KEY must be at least 32 chars in production',
         });
       }
       if (env.COOKIE_SECRET.length < 32) {
