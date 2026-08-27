@@ -75,6 +75,22 @@ export { IngestionModule } from '../ingestion/presentation/ingestion.module';
 export { PlaceResolverService } from '../ingestion/application/place-resolver.service';
 export { PlaceDedupService } from '../ingestion/application/place-dedup.service';
 export { PlaceSubmissionService } from '../ingestion/application/place-submission.service';
+export {
+  PlaceImportJobService,
+  type ImportMode,
+} from '../ingestion/application/place-import-job.service';
+export {
+  INGEST_LIMITS,
+  IngestFileError,
+  detectFormat,
+  parseCsv,
+  parseTabularSource,
+  parseXlsx,
+  type SheetGrid,
+} from '../ingestion/domain/tabular';
+export { applyMapping, resolveMapping, CANONICAL_FIELDS } from '../ingestion/domain/column-mapping';
+export { validateRow, type NormalizedImportRow } from '../ingestion/domain/template';
+export { buildErrorReportCsv, escapeCsvCell } from '../ingestion/domain/error-report';
 export { parseMapsUrl, expandShortLink } from '../ingestion/domain/maps-url';
 export { decideMatch, scoreMatch } from '../ingestion/domain/match-score';
 export { providerScore, compositeQualityScore } from '../ingestion/domain/quality-score';

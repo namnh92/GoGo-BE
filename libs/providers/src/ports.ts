@@ -64,3 +64,41 @@ export const PLACE_PROVIDER = Symbol('PLACE_PROVIDER');
 export const AREA_AUTOCOMPLETE = Symbol('AREA_AUTOCOMPLETE');
 export const PUSH_PROVIDER = Symbol('PUSH_PROVIDER');
 export const STORAGE_PROVIDER = Symbol('STORAGE_PROVIDER');
+
+export type SheetTab = { title: string; index: number };
+
+export class SheetAccessError extends Error {
+  constructor(
+    readonly code:
+      | 'SHEET_URL_INVALID'
+      | 'SHEET_NOT_FOUND'
+      | 'SHEET_PERMISSION_DENIED'
+      | 'SHEET_TAB_NOT_FOUND'
+      | 'SHEET_TOO_LARGE'
+      | 'SHEET_UNAVAILABLE',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SheetAccessError';
+  }
+}
+
+/**
+ * PI-BE-012 — Google Sheets as an import source. Values only, bounded reads,
+ * and credentials never leave the adapter (spec §10.2, §12).
+ */
+export interface SheetsPort {
+  listTabs(spreadsheetId: string): Promise<SheetTab[]>;
+  /** Rows of raw cell text, capped at `maxRows` data rows plus the header. */
+  readTab(spreadsheetId: string, title: string, maxRows: number): Promise<string[][]>;
+}
+
+/** Raised when the provider refuses further calls (quota/rate limit). */
+export class ProviderQuotaExceededError extends Error {
+  constructor(provider: string, cause?: unknown) {
+    super(`provider ${provider} quota exceeded`, { cause });
+    this.name = 'ProviderQuotaExceededError';
+  }
+}
+
+export const SHEETS_PROVIDER = Symbol('SHEETS_PROVIDER');

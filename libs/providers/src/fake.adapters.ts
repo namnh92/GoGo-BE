@@ -1,9 +1,12 @@
+import { SheetAccessError } from './ports';
 import type {
   AreaAutocompletePort,
   AreaPrediction,
   PlaceProviderPort,
   PushPort,
   ResolvedProviderPlace,
+  SheetTab,
+  SheetsPort,
   StoragePort,
 } from './ports';
 
@@ -86,5 +89,42 @@ export class FakeStorage implements StoragePort {
       url: `https://fake-storage.local/upload/${encodeURIComponent(key)}`,
       expiresInSeconds: 900,
     };
+  }
+}
+
+/**
+ * PI-BE-012 — in-memory Sheets source. Bound whenever no Sheets credential is
+ * configured, so the whole import pipeline is exercisable without Google.
+ */
+export class FakeSheets implements SheetsPort {
+  readonly books = new Map<string, Map<string, string[][]>>();
+  /** Set to simulate a sheet the service account cannot read. */
+  denied = new Set<string>();
+
+  seed(spreadsheetId: string, title: string, rows: string[][]): void {
+    const book = this.books.get(spreadsheetId) ?? new Map<string, string[][]>();
+    book.set(title, rows);
+    this.books.set(spreadsheetId, book);
+  }
+
+  async listTabs(spreadsheetId: string): Promise<SheetTab[]> {
+    const book = this.require(spreadsheetId);
+    return [...book.keys()].map((title, index) => ({ title, index }));
+  }
+
+  async readTab(spreadsheetId: string, title: string, maxRows: number): Promise<string[][]> {
+    const book = this.require(spreadsheetId);
+    const rows = book.get(title);
+    if (!rows) throw new SheetAccessError('SHEET_TAB_NOT_FOUND', `Tab ${title} không tồn tại`);
+    return rows.slice(0, maxRows + 1).map((r) => [...r]);
+  }
+
+  private require(spreadsheetId: string): Map<string, string[][]> {
+    if (this.denied.has(spreadsheetId)) {
+      throw new SheetAccessError('SHEET_PERMISSION_DENIED', 'Không có quyền đọc Google Sheet này');
+    }
+    const book = this.books.get(spreadsheetId);
+    if (!book) throw new SheetAccessError('SHEET_NOT_FOUND', 'Không tìm thấy Google Sheet');
+    return book;
   }
 }

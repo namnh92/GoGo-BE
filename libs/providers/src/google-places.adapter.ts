@@ -1,4 +1,5 @@
 import {
+  ProviderQuotaExceededError,
   ProviderUnavailableError,
   type AreaAutocompletePort,
   type AreaPrediction,
@@ -83,6 +84,7 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       );
     } catch (err) {
       if (err instanceof ProviderUnavailableError) throw err;
+      if (err instanceof ProviderQuotaExceededError) throw err;
       return null;
     }
     if (!data?.id || !data.location) return null;
@@ -166,6 +168,9 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
           'X-Goog-FieldMask': init.fieldMask,
         },
       });
+      // 429 / RESOURCE_EXHAUSTED pauses the import instead of retrying into
+      // an exhausted budget (spec §9.4).
+      if (res.status === 429) throw new ProviderQuotaExceededError('google.places');
       if (!res.ok) throw new Error(`google ${res.status}`);
       return (await res.json()) as T;
     });

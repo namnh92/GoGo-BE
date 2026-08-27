@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import * as Sentry from '@sentry/node';
 import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
+import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import { createLogger } from '@gogo/observability';
 import { NestFactory } from '@nestjs/core';
@@ -73,6 +74,12 @@ export async function createApp(): Promise<NestFastifyApplication> {
       request_id: String(req.id),
       retryable: true,
     }),
+  });
+
+  // PI-BE-011: CMS bulk import upload. Limits are enforced by the parser too;
+  // these stop a hostile body before it is ever buffered.
+  await app.register(multipart, {
+    limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 12, fieldSize: 64 * 1024 },
   });
 
   app.enableCors({
