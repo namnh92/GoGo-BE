@@ -4,6 +4,7 @@ import { IdempotencyInterceptor } from '@gogo/modules';
 import {
   CmsModule,
   IdentityModule,
+  IngestionModule,
   NotificationsModule,
   PlacesModule,
   PlansModule,
@@ -42,6 +43,7 @@ class ConfigModule {}
     ReviewsModule,
     NotificationsModule,
     CmsModule,
+    IngestionModule,
   ],
   controllers: [HealthController, DocsController],
   providers: [

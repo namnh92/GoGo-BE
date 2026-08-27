@@ -21,6 +21,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/health/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Readiness probe — checks database and Redis
+         * @description Returns 503 when the database is unreachable. Redis failure degrades (rate limits fail open) and is reported without failing readiness. Uptime monitors should point here, not at /health.
+         */
+        get: operations["getReadiness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/openapi.yaml": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The deployed contract — generate clients from this */
+        get: operations["getOpenapiSpec"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/register": {
         parameters: {
             query?: never;
@@ -750,6 +787,149 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/places/resolve-google-maps-link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve a Google Maps link to a provider place (preview only)
+         * @description PI-BE-018 / FR-INGEST-002/010. Hostname allowlist, ≤5 redirects with SSRF guard, no HTML scraping. Returns RESOLVED, ALREADY_EXISTS (opens the canonical place), CANDIDATE_SELECTION (user picks the branch) or UNRESOLVED with reason codes. Provider data carries source, fetchedAt and attributions; Google rating and derived score stay separate.
+         */
+        post: operations["resolveGoogleMapsLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/place-submissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Propose a place from a resolved provider id (FR-INGEST-011/012)
+         * @description Creates at most one pending proposal per provider place; repeat submissions increment submissionCount. Never publishes to the catalog. Guests must submit within their room-scoped session.
+         */
+        post: operations["submitPlace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/place-submissions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Poll a submission (owner only) */
+        get: operations["getPlaceSubmission"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-submissions/{id}/decide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Moderator/editor: approve, reject or merge a submission (PI-CMS-007) */
+        post: operations["decidePlaceSubmission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reviews written by the caller, with moderation status */
+        get: operations["listMyReviews"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reviews/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Edit own review — goes back to moderation (owner only) */
+        patch: operations["updateReview"];
+        trace?: never;
+    };
+    "/me/notifications/{id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark one notification read */
+        post: operations["markNotificationRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/notification-preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Per-channel, per-kind notification opt-ins */
+        get: operations["getNotificationPreferences"];
+        /** Opt in/out of one notification kind on one channel */
+        put: operations["setNotificationPreference"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -850,6 +1030,288 @@ export interface components {
             freshnessCheckedAt?: string;
             confidence: number;
             reasonCodes: ("TEXT_MATCH" | "NEAR_YOU" | "HIGHLY_RATED" | "CURATED" | "OPEN_NOW")[];
+        };
+        /** @enum {string} */
+        NotificationKind: "invite" | "preference_reminder" | "plan_ready" | "plan_changed" | "date_reminder" | "moderation_update";
+        Review: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            placeId?: string;
+            /** Format: uuid */
+            planId?: string;
+            rating: number;
+            text?: string;
+            /**
+             * @description New and edited reviews start at `pending` until moderation.
+             * @enum {string}
+             */
+            status: "pending" | "published" | "rejected" | "removed";
+            /** Format: date-time */
+            createdAt?: string;
+        };
+        SavedItem: {
+            /** @enum {string} */
+            targetType?: "place" | "plan";
+            /** Format: uuid */
+            targetId?: string;
+            /** Format: date-time */
+            savedAt?: string;
+        };
+        /** @description Facts only — compose the display string client-side from `kind` + `payload`. */
+        Notification: {
+            /** Format: uuid */
+            id?: string;
+            kind?: components["schemas"]["NotificationKind"];
+            payload?: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            readAt?: string;
+            /** Format: date-time */
+            createdAt?: string;
+        };
+        /** @description Minutes-of-day in place-local time; render "Đang mở · Đóng 23:00" client-side. */
+        OpenState: {
+            openNow?: boolean;
+            closesAtMinute?: number;
+            opensAtMinute?: number;
+            opensDayOffset?: number;
+        };
+        /** @description Estimated range in integer minor units — never present it as an exact figure. */
+        PricePerPerson: {
+            min?: number;
+            max?: number;
+            currency?: string;
+            confidence?: number;
+        };
+        PlaceDetail: {
+            /** Format: uuid */
+            id?: string;
+            name?: string;
+            description?: string;
+            status?: string;
+            address_text?: string;
+            area_key?: string;
+            lat?: number;
+            lng?: number;
+            phone?: string;
+            website?: string;
+            rating?: number;
+            rating_count?: number;
+            avg_visit_minutes?: number;
+            suitability?: {
+                [key: string]: number;
+            };
+            is_lodging?: boolean;
+            confidence?: number;
+            /** Format: date-time */
+            freshness_checked_at?: string;
+            taxonomies?: {
+                kind?: string;
+                key?: string;
+            }[];
+            hours?: {
+                dayOfWeek?: number;
+                openMinute?: number;
+                closeMinute?: number;
+                isOvernight?: boolean;
+            }[];
+            prices?: {
+                priceMin?: number;
+                priceMax?: number;
+                currency?: string;
+                /** @enum {string} */
+                unit?: "per_person" | "per_item" | "per_hour" | "per_night";
+                confidence?: number;
+                /** Format: date-time */
+                verifiedAt?: string;
+            }[];
+            /** @description Provider attribution — must be displayed with provider-sourced facts. */
+            sources?: {
+                provider?: string;
+                url?: string;
+                attribution?: string;
+            }[];
+        };
+        SuggestionCandidate: {
+            /** Format: uuid */
+            placeId?: string;
+            name?: string;
+            rank?: number;
+            score?: number;
+            /** @description Explainable score parts — drives the "Vì sao phù hợp" UI. */
+            components?: {
+                [key: string]: number;
+            };
+            reasonCodes?: ("MATCHES_PREFERENCES" | "LIKED_BY_EVERYONE" | "FITS_BUDGET" | "NEAR_ORIGIN" | "HIGHLY_RATED" | "HOST_SUGGESTED")[];
+            /** @description True after a constraint edit — regenerate before showing as current. */
+            stale?: boolean;
+            /** @enum {string} */
+            myVote?: "yes" | "no" | "star";
+            points?: number;
+        };
+        SuggestionsCurrent: {
+            run?: {
+                /** Format: uuid */
+                id?: string;
+                /** Format: date-time */
+                createdAt?: string;
+                constraintVersion?: number;
+                engineVersion?: string;
+                weightsVersion?: string;
+                stale?: boolean;
+            } | null;
+            /** @enum {string} */
+            decisionMode?: "match" | "vote" | "host";
+            candidates?: components["schemas"]["SuggestionCandidate"][];
+            votes?: {
+                mine?: {
+                    [key: string]: "yes" | "no" | "star";
+                };
+                progress?: {
+                    /** Format: uuid */
+                    placeId?: string;
+                    points?: number;
+                    yes?: number;
+                    star?: number;
+                    no?: number;
+                }[];
+            };
+        };
+        PlanTotals: {
+            costMin?: number;
+            costMax?: number;
+            currency?: string;
+            durationMinutes?: number;
+            travelDistanceM?: number;
+            /** @description Computed from the UPPER bound — never show "trong ngân sách" when true. */
+            overBudget?: boolean;
+            /** @description Some stop has unknown/low-confidence price — surface the uncertainty. */
+            uncertain?: boolean;
+        };
+        PlanStop: {
+            /** Format: uuid */
+            id?: string;
+            /** Format: uuid */
+            placeId?: string;
+            position?: number;
+            /** Format: date-time */
+            arriveAt?: string;
+            /** Format: date-time */
+            departAt?: string;
+            durationMinutes?: number;
+            travelMinutesFromPrev?: number | null;
+            travelDistanceMFromPrev?: number | null;
+            costMin?: number | null;
+            costMax?: number | null;
+            /** @description Locked stops are invariant across regenerate. */
+            isLocked?: boolean;
+            /** @enum {string} */
+            status?: "planned" | "completed" | "skipped";
+            /** Format: date-time */
+            completedAt?: string;
+        };
+        Plan: {
+            /** Format: uuid */
+            id?: string;
+            /** Format: uuid */
+            roomId?: string;
+            version?: number;
+            /** @enum {string} */
+            status?: "draft" | "current" | "superseded" | "archived";
+            /** @description Constraints changed after this plan was built. */
+            isStale?: boolean;
+            constraintVersion?: number;
+            totals?: components["schemas"]["PlanTotals"];
+            /** Format: date-time */
+            createdAt?: string;
+            stops?: components["schemas"]["PlanStop"][];
+        };
+        Checkin: {
+            /** Format: uuid */
+            id?: string;
+            rating?: number;
+            tags?: string[];
+            note?: string;
+            photoKeys?: string[];
+            billTotal?: number;
+            billPeopleCount?: number;
+            /** @description Rounded display value; `billTotal` is the canonical number. */
+            billPerPerson?: number;
+            /** @enum {string} */
+            moderation?: "pending" | "approved" | "rejected";
+        };
+        TaxonomyList: {
+            /** @description Kind → entries. Store the stable `key`, resolve labels via `labels[locale]`. */
+            kinds?: {
+                [key: string]: {
+                    key?: string;
+                    sortOrder?: number;
+                    labels?: {
+                        [key: string]: string;
+                    };
+                }[];
+            };
+        };
+        AreaPredictions: {
+            predictions?: {
+                key?: string;
+                description?: string;
+                lat?: number;
+                lng?: number;
+            }[];
+            /**
+             * @description `fallback` means the provider failed and static areas were served.
+             * @enum {string}
+             */
+            source?: "provider" | "fallback";
+            attribution?: string | null;
+        };
+        ResolveLinkResult: {
+            /**
+             * @description ALREADY_EXISTS → open `existingPlaceId` instead of submitting. CANDIDATE_SELECTION → make the user pick a branch.
+             * @enum {string}
+             */
+            status?: "RESOLVED" | "ALREADY_EXISTS" | "CANDIDATE_SELECTION" | "UNRESOLVED";
+            matchConfidence?: number;
+            reasonCodes?: string[];
+            /** Format: uuid */
+            existingPlaceId?: string;
+            candidate?: {
+                googlePlaceId?: string;
+                name?: string;
+                address?: string;
+                location?: {
+                    lat?: number;
+                    lng?: number;
+                };
+                googleRating?: number | null;
+                googleRatingCount?: number;
+                /** @description Derived 0–100 score; keep it visually separate from the raw rating. */
+                googleScore?: number | null;
+                businessStatus?: string;
+                source?: string;
+                /** Format: date-time */
+                fetchedAt?: string;
+                attributions?: string[];
+            };
+            candidates?: {
+                googlePlaceId?: string;
+                name?: string;
+                address?: string;
+                confidence?: number;
+            }[];
+        };
+        SubmissionResult: {
+            /** @enum {string} */
+            status?: "PENDING" | "ALREADY_EXISTS";
+            /** Format: uuid */
+            submissionId?: string;
+            /** Format: uuid */
+            placeId?: string;
+            /** @description True when another user already proposed the same place. */
+            deduped?: boolean;
         };
         TokenGrant: {
             /** Format: uuid */
@@ -973,6 +1435,64 @@ export interface operations {
                         /** @enum {string} */
                         status: "ok";
                     };
+                };
+            };
+        };
+    };
+    getReadiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dependencies reachable */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status?: "ready";
+                        checks?: {
+                            /** @enum {string} */
+                            db?: "ok" | "failed";
+                            /** @enum {string} */
+                            redis?: "ok" | "failed" | "skipped";
+                        };
+                    };
+                };
+            };
+            /** @description Database unreachable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getOpenapiSpec: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OpenAPI document (YAML) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/yaml": string;
                 };
             };
         };
@@ -1495,7 +2015,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Joined (idempotent for existing members) */
+            /** @description Joined (idempotent — re-joining returns the existing membership) */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -1629,7 +2149,21 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        selections?: {
+                            [key: string]: string[];
+                        };
+                        weights?: {
+                            [key: string]: number;
+                        };
+                        /** @description Pass back as `expectedVersion`; 0 means nothing saved yet. */
+                        version?: number;
+                        isDraft?: boolean;
+                        /** Format: date-time */
+                        completedAt?: string;
+                    };
+                };
             };
         };
     };
@@ -1657,12 +2191,17 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Saved: { version, isDraft } */
+            /** @description Autosaved */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        version?: number;
+                        isDraft?: boolean;
+                    };
+                };
             };
             400: components["responses"]["BadRequest"];
             409: components["responses"]["Conflict"];
@@ -1679,12 +2218,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description { completed, roomReadyForMatching } */
+            /** @description Completed; room flips to `matching` when everyone is done */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        completed?: boolean;
+                        roomReadyForMatching?: boolean;
+                    };
+                };
             };
             400: components["responses"]["BadRequest"];
         };
@@ -1701,12 +2245,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description kinds → [{ key, sortOrder, labels }] */
+            /** @description Taxonomy keys with i18n labels */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaxonomyList"];
+                };
             };
         };
     };
@@ -1772,12 +2318,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Place aggregate (FR-PLAN-004) */
+            /** @description Place aggregate with hours, verified prices, sources and freshness */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["PlaceDetail"];
+                };
             };
             404: components["responses"]["NotFound"];
         };
@@ -1793,12 +2341,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Ranked candidates with components + reason codes */
+            /** @description Ranked candidates with explainable components + reason codes */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SuggestionsCurrent"];
+                };
             };
             409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
@@ -1815,12 +2365,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Run info + candidates (score */
+            /** @description Current run, candidates and vote progress */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SuggestionsCurrent"];
+                };
             };
         };
     };
@@ -1843,12 +2395,19 @@ export interface operations {
             };
         };
         responses: {
-            /** @description { voted, matched, planId? } */
+            /** @description Vote recorded (idempotent). Couple `match` mode may auto-create the plan. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        voted?: boolean;
+                        matched?: boolean;
+                        /** Format: uuid */
+                        planId?: string;
+                    };
+                };
             };
             400: components["responses"]["BadRequest"];
             409: components["responses"]["Conflict"];
@@ -1875,12 +2434,22 @@ export interface operations {
             };
         };
         responses: {
-            /** @description { finalized, tie, winnerPlaceId, planId } */
+            /** @description Decision applied and the first plan version created */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        finalized?: boolean;
+                        /** @description True when points tied and candidate rank broke it. */
+                        tie?: boolean;
+                        /** Format: uuid */
+                        winnerPlaceId?: string;
+                        /** Format: uuid */
+                        planId?: string;
+                    };
+                };
             };
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
@@ -1897,12 +2466,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Plan with stops + totals (overBudget from upper bound) */
+            /** @description Current plan version with stops and totals */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Plan"];
+                };
             };
             404: components["responses"]["NotFound"];
         };
@@ -1923,7 +2494,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Plan"];
+                };
             };
         };
     };
@@ -1951,12 +2524,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description New plan version */
+            /** @description New plan version (times, travel and totals recalculated server-side) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Plan"];
+                };
             };
             409: components["responses"]["Conflict"];
         };
@@ -1978,12 +2553,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description New plan version keeping every locked stop */
+            /** @description New plan version — every locked stop is preserved verbatim */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Plan"];
+                };
             };
             409: components["responses"]["Conflict"];
         };
@@ -2011,7 +2588,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Plan"];
+                };
             };
         };
     };
@@ -2062,12 +2641,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Check-in saved (moderation pending); billPerPerson is display math */
+            /** @description Check-in saved (photos/bill go to moderation) */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Checkin"];
+                };
             };
             400: components["responses"]["BadRequest"];
         };
@@ -2135,12 +2716,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description { predictions[], source: provider|fallback, attribution } */
+            /** @description Ranked area predictions (or the static fallback list) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AreaPredictions"];
+                };
             };
             429: components["responses"]["RateLimited"];
         };
@@ -2159,7 +2742,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SavedItem"][];
+                };
             };
         };
     };
@@ -2225,12 +2810,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description { id, status: pending } */
+            /** @description Review created; awaits moderation */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Review"];
+                };
             };
         };
     };
@@ -2265,12 +2852,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description { notifications[], nextCursor } */
+            /** @description Notification inbox page */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        notifications?: components["schemas"]["Notification"][];
+                        nextCursor?: string | null;
+                    };
+                };
             };
         };
     };
@@ -2292,6 +2884,277 @@ export interface operations {
         };
         responses: {
             /** @description Registered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resolveGoogleMapsLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uri */
+                    url: string;
+                    cityHint?: string;
+                    /** Format: uuid */
+                    roomId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Resolution outcome with candidate + attribution facts */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveLinkResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    submitPlace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    googlePlaceId: string;
+                    /** Format: uuid */
+                    roomId?: string;
+                    category?: string;
+                    estimatedPrice?: {
+                        min?: number;
+                        max?: number;
+                        /** @enum {string} */
+                        unit?: "per_person" | "per_group" | "per_item" | "free" | "unknown";
+                    };
+                    vibes?: string[];
+                    note?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Proposal accepted (or the place already exists) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubmissionResult"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            /** @description Place is closed/suspended and cannot be added */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    getPlaceSubmission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Submission status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        id?: string;
+                        /** @enum {string} */
+                        status?: "pending" | "approved" | "rejected" | "merged";
+                        googlePlaceId?: string;
+                        /** Format: uuid */
+                        placeId?: string;
+                        submissionCount?: number;
+                        /** Format: date-time */
+                        createdAt?: string;
+                        /** Format: date-time */
+                        decidedAt?: string;
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    decidePlaceSubmission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    decision: "approved" | "rejected" | "merged";
+                    reason: string;
+                    /** Format: uuid */
+                    mergeIntoPlaceId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Decision applied; audited + reindex event emitted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    listMyReviews: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Own reviews */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Review"][];
+                };
+            };
+        };
+    };
+    updateReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    rating?: number;
+                    text?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated; status returns to `pending` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Review"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    markNotificationRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description { read: true } */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getNotificationPreferences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Preferences (absent rows default to enabled) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        channel?: "push" | "email";
+                        kind?: components["schemas"]["NotificationKind"];
+                        enabled?: boolean;
+                    }[];
+                };
+            };
+        };
+    };
+    setNotificationPreference: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    channel: "push" | "email";
+                    kind: components["schemas"]["NotificationKind"];
+                    enabled: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description { updated: true } */
             200: {
                 headers: {
                     [name: string]: unknown;

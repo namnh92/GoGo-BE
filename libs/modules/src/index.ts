@@ -70,6 +70,21 @@ export { PlaceImportService } from '../places/application/place-import.service';
 export { CmsModule } from '../cms/presentation/cms.module';
 export { AdminAuthService } from '../cms/application/admin-auth.service';
 
+// Place ingestion (PI-*)
+export { IngestionModule } from '../ingestion/presentation/ingestion.module';
+export { PlaceResolverService } from '../ingestion/application/place-resolver.service';
+export { PlaceDedupService } from '../ingestion/application/place-dedup.service';
+export { PlaceSubmissionService } from '../ingestion/application/place-submission.service';
+export { parseMapsUrl, expandShortLink } from '../ingestion/domain/maps-url';
+export { decideMatch, scoreMatch } from '../ingestion/domain/match-score';
+export { providerScore, compositeQualityScore } from '../ingestion/domain/quality-score';
+export {
+  parsePrice,
+  parseAudiences,
+  parseVibes,
+  mapLegacyHeader,
+} from '../ingestion/domain/normalize-row';
+
 // Platform
 export { IdempotencyInterceptor } from '../shared/idempotency.interceptor';
 export { writeOutbox, type DomainEventInput } from '../shared/outbox';

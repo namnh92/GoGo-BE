@@ -20,3 +20,4 @@ coverage/
 
 # logs
 *.log
+.oasdiff-base.yaml

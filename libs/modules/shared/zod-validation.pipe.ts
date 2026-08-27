@@ -9,7 +9,12 @@ export class ZodValidationPipe<T> implements PipeTransform<unknown, T> {
   constructor(private readonly schema: ZodType<T, ZodTypeDef, unknown>) {}
 
   transform(value: unknown): T {
-    const result = this.schema.safeParse(value);
+    // Fastify hands `undefined` for a body-less request. Endpoints whose
+    // fields are all optional must still accept that (POST without a body),
+    // so normalize to {} and let the schema decide — a schema with required
+    // fields still fails, but with per-field errors instead of "(root)".
+    const input = value === undefined ? {} : value;
+    const result = this.schema.safeParse(input);
     if (!result.success) {
       throw AppError.badRequest(
         'VALIDATION_FAILED',

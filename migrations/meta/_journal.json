@@ -15,6 +15,13 @@
       "when": 1787787460765,
       "tag": "0001_search-geo-indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787828461652,
+      "tag": "0002_rich_tana_nile",
+      "breakpoints": true
     }
   ]
 }
