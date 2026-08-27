@@ -3,6 +3,7 @@ import type { FastifyReply } from 'fastify';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { AuthService } from '../application/auth.service';
+import { SessionRevocationService } from '../application/session-revocation.service';
 import type { Actor } from '../domain/actor';
 import { IdentityRepository } from '../infrastructure/identity.repository';
 import { clearAuthCookies, setAuthCookies } from './cookies';
@@ -14,6 +15,7 @@ export class SessionsController {
   constructor(
     private readonly auth: AuthService,
     private readonly repo: IdentityRepository,
+    private readonly revocations: SessionRevocationService,
     @Inject(APP_CONFIG) private readonly config: IdentityConfig,
   ) {}
 
@@ -54,6 +56,7 @@ export class SessionsController {
       await this.auth.logout(actor.sessionId, body.allDevices);
     } else {
       await this.repo.revokeGuestSession(actor.sessionId);
+      await this.revocations.revokeSession(actor.sessionId);
     }
     clearAuthCookies(reply, this.config.COOKIE_SECURE);
     return { revoked: true };

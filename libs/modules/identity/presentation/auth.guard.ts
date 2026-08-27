@@ -3,6 +3,7 @@ import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 import { AppError } from '../../shared/app-error';
 import type { Actor } from '../domain/actor';
+import { SessionRevocationService } from '../application/session-revocation.service';
 import { TokenService } from '../application/token.service';
 import { IS_PUBLIC_KEY } from './decorators';
 
@@ -29,9 +30,10 @@ export class AuthGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly tokens: TokenService,
+    private readonly revocations: SessionRevocationService,
   ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -64,6 +66,12 @@ export class AuthGuard implements CanActivate {
       if (!csrfCookie || typeof csrfHeader !== 'string' || csrfHeader !== csrfCookie) {
         throw AppError.forbidden('CSRF_FAILED', 'Missing or invalid CSRF token');
       }
+    }
+
+    // Logout/removal revokes the session id; the outstanding access token must
+    // stop working immediately, not when it happens to expire.
+    if (await this.revocations.isRevoked(claims.sid)) {
+      throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
     }
 
     const actor: Actor = {

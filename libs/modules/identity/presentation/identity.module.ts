@@ -4,6 +4,13 @@ import IORedis from 'ioredis';
 import { randomBytes } from 'node:crypto';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { AuthService, AUTH_OPTIONS, type AuthOptions } from '../application/auth.service';
+import {
+  FallbackRevocationStore,
+  InMemoryRevocationStore,
+  RedisRevocationStore,
+  REVOCATION_STORE,
+  SessionRevocationService,
+} from '../application/session-revocation.service';
 import { PasswordService } from '../application/password.service';
 import { TokenService } from '../application/token.service';
 import { IdentityRepository } from '../infrastructure/identity.repository';
@@ -45,6 +52,27 @@ import { SessionsController } from './sessions.controller';
       }),
       inject: [APP_CONFIG],
     },
+    {
+      provide: 'ACCESS_TTL_SECONDS',
+      useFactory: (config: IdentityConfig) => config.AUTH_ACCESS_TOKEN_TTL_SECONDS,
+      inject: [APP_CONFIG],
+    },
+    {
+      // Denylist of revoked session ids, kept for one access-token lifetime.
+      provide: REVOCATION_STORE,
+      useFactory: (config: IdentityConfig & { REDIS_URL?: string }) => {
+        if (!config.REDIS_URL || config.NODE_ENV === 'test') return new InMemoryRevocationStore();
+        const redis = new IORedis(config.REDIS_URL, {
+          lazyConnect: true,
+          maxRetriesPerRequest: 1,
+          enableOfflineQueue: true,
+        });
+        redis.on('error', () => undefined);
+        return new FallbackRevocationStore(new RedisRevocationStore(redis));
+      },
+      inject: [APP_CONFIG],
+    },
+    SessionRevocationService,
     AuthService,
     {
       // Redis-backed limits when configured (multi-instance correct); the
@@ -69,6 +97,13 @@ import { SessionsController } from './sessions.controller';
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: RateLimitGuard },
   ],
-  exports: [AuthService, TokenService, PasswordService, IdentityRepository, RATE_LIMIT_STORE],
+  exports: [
+    AuthService,
+    TokenService,
+    PasswordService,
+    IdentityRepository,
+    SessionRevocationService,
+    RATE_LIMIT_STORE,
+  ],
 })
 export class IdentityModule {}

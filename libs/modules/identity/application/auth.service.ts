@@ -4,6 +4,7 @@ import { AppError } from '../../shared/app-error';
 import type { Actor } from '../domain/actor';
 import { IdentityRepository } from '../infrastructure/identity.repository';
 import { PasswordService } from './password.service';
+import { SessionRevocationService } from './session-revocation.service';
 import { TokenService } from './token.service';
 
 export const AUTH_OPTIONS = Symbol('AUTH_OPTIONS');
@@ -39,6 +40,7 @@ export class AuthService {
     private readonly repo: IdentityRepository,
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
+    private readonly revocations: SessionRevocationService,
     @Inject(AUTH_OPTIONS) private readonly options: AuthOptions,
   ) {}
 
@@ -125,6 +127,7 @@ export class AuthService {
     }
     if (session.supersededAt) {
       await this.repo.revokeFamily(session.familyId, 'refresh_token_reuse');
+      await this.revocations.revokeMany(await this.repo.listFamilySessionIds(session.familyId));
       throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
     }
     if (session.expiresAt.getTime() <= Date.now()) {
@@ -156,8 +159,15 @@ export class AuthService {
   async logout(sessionId: string, allDevices: boolean): Promise<void> {
     const session = await this.repo.findAuthSessionById(sessionId);
     if (!session) return; // already gone — logout is idempotent
-    if (allDevices) await this.repo.revokeFamily(session.familyId, 'logout_all');
-    else await this.repo.revokeSession(session.id, 'logout');
+    if (allDevices) {
+      await this.repo.revokeFamily(session.familyId, 'logout_all');
+      // Every access token minted from this family dies now, not at expiry.
+      const family = await this.repo.listFamilySessionIds(session.familyId);
+      await this.revocations.revokeMany(family);
+    } else {
+      await this.repo.revokeSession(session.id, 'logout');
+      await this.revocations.revokeSession(session.id);
+    }
   }
 
   // --- guest sessions (FR-AUTH-002/003) ------------------------------------

@@ -11,6 +11,17 @@ import type { IncomingMessage } from 'node:http';
 import { AppModule } from './app.module';
 import { loadEnv } from './config/env';
 
+/** '1' → hop count, 'false' → no trust, otherwise a CIDR/IP allowlist. */
+function parseTrustProxy(value: string): boolean | number | string[] {
+  const v = value.trim();
+  if (v === 'false' || v === '') return false;
+  if (/^\d+$/.test(v)) return Number(v);
+  return v
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export async function createApp(): Promise<NestFastifyApplication> {
   const config = loadEnv();
   if (config.SENTRY_DSN) {
@@ -26,7 +37,9 @@ export async function createApp(): Promise<NestFastifyApplication> {
 
   const adapter = new FastifyAdapter({
     loggerInstance: logger,
-    trustProxy: true,
+    // Only the configured proxy hop(s) may set X-Forwarded-For; trusting all
+    // hops would make req.ip client-controlled and defeat IP rate limits.
+    trustProxy: parseTrustProxy(config.TRUST_PROXY),
     // FND-007: every request carries a request id; incoming x-request-id is
     // honored so traces span BFF and jobs.
     genReqId: (req: IncomingMessage) => {
