@@ -843,3 +843,56 @@ describe('SEC-001 emergency takedown (break-glass)', () => {
     expect(row!.status).toBe('hidden');
   });
 });
+
+describe('SEC-002 part A: which rule authorized the write', () => {
+  it('tells a super_admin bypass apart from a write it was entitled to', async () => {
+    const root = await createAdmin('authz-root@gogo.local', 'super_admin');
+    const editor = await createAdmin('authz-editor@gogo.local', 'editor');
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Authz Path Place',
+        nameNormalized: 'set-by-trigger',
+        status: 'draft',
+        geom: { x: 106.7, y: 10.77 },
+      })
+      .returning();
+
+    // The editor owns catalog writes: this is the model working as designed.
+    const byEditor = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/places/${place!.id}`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: { description: 'by the role that owns it' },
+    });
+    expect(byEditor.statusCode).toBe(200);
+
+    // super_admin writing the same route would have been refused for any other
+    // role — that is the escape hatch, and it must be visible as such.
+    const byRoot = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/places/${place!.id}`,
+      remoteAddress: ip(),
+      headers: auth(root.token),
+      payload: { description: 'through the hatch' },
+    });
+    expect(byRoot.statusCode).toBe(200);
+
+    const rows = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.resourceId, place!.id));
+    const paths = new Map(rows.map((r) => [r.actorId, r.authorizationPath]));
+    expect(paths.get(editor.id)).toBe('exact_role');
+    expect(paths.get(root.id)).toBe('super_admin_bypass');
+  });
+
+  it('answers "how often was the hatch used" with plain SQL, no metrics backend', async () => {
+    const bypasses = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.authorizationPath, 'super_admin_bypass'));
+    expect(bypasses[0]!.n).toBeGreaterThan(0);
+  });
+});

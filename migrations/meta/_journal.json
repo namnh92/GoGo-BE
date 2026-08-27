@@ -57,6 +57,13 @@
       "when": 1787837529888,
       "tag": "0007_provider-temporarily-closed",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787837530888,
+      "tag": "0008_audit-authorization-path",
+      "breakpoints": true
     }
   ]
 }
