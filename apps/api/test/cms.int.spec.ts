@@ -896,3 +896,152 @@ describe('SEC-002 part A: which rule authorized the write', () => {
     expect(bypasses[0]!.n).toBeGreaterThan(0);
   });
 });
+
+describe('SEC-003 admin session model', () => {
+  async function login(email: string, role: 'editor' | 'ops_admin' = 'editor') {
+    const passwordHash = await argon2.hash('admin-password-123', { type: argon2.argon2id });
+    await db.insert(schema.adminUsers).values({ email, passwordHash, displayName: 'A', role });
+    return api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/login',
+      remoteAddress: ip(),
+      payload: { email, password: 'admin-password-123' },
+    });
+  }
+
+  type SetCookie = { name: string; value: string; httpOnly?: boolean; path?: string };
+  const cookie = (res: { cookies: unknown[] }, name: string) =>
+    (res.cookies as SetCookie[]).find((c) => c.name === name);
+
+  it('opens a session on a cookie, not on something the client must store', async () => {
+    const res = await login('sess-cookie@gogo.local');
+    expect(res.statusCode).toBe(201);
+
+    const access = cookie(res, 'gogo_at');
+    const refresh = cookie(res, 'gogo_rt');
+    const csrf = cookie(res, 'gogo_csrf');
+    expect(access?.httpOnly).toBe(true);
+    expect(refresh?.httpOnly).toBe(true);
+    // Scoped to the endpoint that consumes it, so it never rides along on
+    // ordinary CMS requests.
+    expect(refresh?.path).toBe('/v1/cms/auth/refresh');
+    // The double-submit token has to be readable by JS — that is the point.
+    expect(csrf?.httpOnly).toBeFalsy();
+  });
+
+  it('the session outlives the access token, and is shorter than a consumer one', async () => {
+    const res = await login('sess-ttl@gogo.local');
+    const body = res.json();
+    // The whole reason this exists: 15 minutes was a hard logout mid-edit.
+    expect(body.refreshExpiresIn).toBeGreaterThan(body.expiresIn);
+    // Security rule: CMS sessions expire sooner than the consumer app's 30 days.
+    expect(body.refreshExpiresIn).toBeLessThan(30 * 24 * 3600);
+  });
+
+  it('rotates on refresh and treats reuse of the old token as theft', async () => {
+    const res = await login('sess-rotate@gogo.local');
+    const first = res.json().refreshToken;
+
+    const rotated = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/refresh',
+      remoteAddress: ip(),
+      payload: { refreshToken: first },
+    });
+    expect(rotated.statusCode).toBe(201);
+    expect(rotated.json().refreshToken).not.toBe(first);
+
+    // Replaying the superseded token revokes the family, not just this call.
+    const replay = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/refresh',
+      remoteAddress: ip(),
+      payload: { refreshToken: first },
+    });
+    expect(replay.json().code).toBe('SESSION_REVOKED');
+
+    const afterTheft = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/refresh',
+      remoteAddress: ip(),
+      payload: { refreshToken: rotated.json().refreshToken },
+    });
+    expect(afterTheft.statusCode).toBe(401);
+  });
+
+  it('logout kills the access token immediately, not at expiry', async () => {
+    const res = await login('sess-logout@gogo.local');
+    const token = res.json().accessToken;
+    expect(
+      (
+        await api().inject({
+          method: 'GET',
+          url: '/v1/cms/places?limit=1',
+          remoteAddress: ip(),
+          headers: auth(token),
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/logout',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {},
+    });
+
+    // Same guarantee as #129 for consumer sessions: revoked means revoked now.
+    const after = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/places?limit=1',
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(after.json().code).toBe('SESSION_REVOKED');
+  });
+
+  it('logging out one device leaves the other signed in', async () => {
+    const first = await login('sess-two@gogo.local');
+    const second = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/login',
+      remoteAddress: ip(),
+      payload: { email: 'sess-two@gogo.local', password: 'admin-password-123' },
+    });
+
+    await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/logout',
+      remoteAddress: ip(),
+      headers: auth(first.json().accessToken),
+      payload: {},
+    });
+
+    // Each login is its own session row — that is what `sid = admin.id` made
+    // impossible before.
+    const other = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/places?limit=1',
+      remoteAddress: ip(),
+      headers: auth(second.json().accessToken),
+    });
+    expect(other.statusCode).toBe(200);
+  });
+
+  it('a suspended admin cannot refresh their way onward', async () => {
+    const res = await login('sess-suspended@gogo.local');
+    await db
+      .update(schema.adminUsers)
+      .set({ status: 'suspended' })
+      .where(eq(schema.adminUsers.email, 'sess-suspended@gogo.local'));
+
+    const refreshed = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/refresh',
+      remoteAddress: ip(),
+      payload: { refreshToken: res.json().refreshToken },
+    });
+    expect(refreshed.statusCode).toBe(403);
+  });
+});

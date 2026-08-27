@@ -13,11 +13,20 @@ import {
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { RequireRole } from './admin.guard';
+import { Inject, Req, Res } from '@nestjs/common';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
+import { AppError } from '../../shared/app-error';
+import { REFRESH_COOKIE } from '../../identity/presentation/auth.guard';
+import { clearAuthCookies, setAuthCookies } from '../../identity/presentation/cookies';
+import { clientMeta } from '../../identity/presentation/client-meta';
 
 const Uuid = new ZodValidationPipe(z.string().uuid());
 
 // ---------------------------------------------------------------- auth
 
+const refreshSchema = z.object({ refreshToken: z.string().min(20).optional() }).default({});
+const logoutSchema = z.object({ allDevices: z.boolean().default(false) }).default({});
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1).max(128),
@@ -33,13 +42,61 @@ const createAdminSchema = z.object({
 
 @Controller('cms/auth')
 export class CmsAuthController {
-  constructor(private readonly auth: AdminAuthService) {}
+  constructor(
+    private readonly auth: AdminAuthService,
+    @Inject(APP_CONFIG) private readonly config: IdentityConfig,
+  ) {}
 
   @Public()
   @RateLimit({ action: 'cms.login', limit: 5, windowSeconds: 60, keyBy: 'ip' })
   @Post('login')
-  login(@Body(new ZodValidationPipe(loginSchema)) body: z.infer<typeof loginSchema>) {
-    return this.auth.login(body);
+  async login(
+    @Body(new ZodValidationPipe(loginSchema)) body: z.infer<typeof loginSchema>,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    const result = await this.auth.login({ ...body, meta: clientMeta(req) });
+    // Browser clients authenticate by cookie; the body tokens exist for
+    // non-browser callers. A CMS that stores the body token is doing it wrong.
+    setAuthCookies(reply, result, this.cookieOpts());
+    return result;
+  }
+
+  /** SEC-003 — rotating refresh so a shift does not end every 15 minutes. */
+  @Public()
+  @RateLimit({ action: 'cms.refresh', limit: 30, windowSeconds: 60, keyBy: 'ip' })
+  @Post('refresh')
+  async refresh(
+    @Body(new ZodValidationPipe(refreshSchema)) body: z.infer<typeof refreshSchema>,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    const token = body.refreshToken ?? req.cookies?.[REFRESH_COOKIE];
+    if (!token) throw AppError.unauthorized('INVALID_REFRESH_TOKEN', 'Session is not valid');
+    const result = await this.auth.refresh(token, clientMeta(req));
+    setAuthCookies(reply, result, this.cookieOpts());
+    return result;
+  }
+
+  @RequireRole('editor', 'moderator', 'ops_admin')
+  @Post('logout')
+  async logout(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(logoutSchema)) body: z.infer<typeof logoutSchema>,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    await this.auth.logout(actor.sessionId, body.allDevices);
+    clearAuthCookies(reply, this.config.COOKIE_SECURE, '/v1/cms/auth/refresh');
+    return { loggedOut: true };
+  }
+
+  private cookieOpts() {
+    return {
+      secure: this.config.COOKIE_SECURE,
+      accessTtlSeconds: this.config.AUTH_ACCESS_TOKEN_TTL_SECONDS,
+      refreshTtlSeconds: this.config.AUTH_ADMIN_REFRESH_TTL_SECONDS,
+      refreshPath: '/v1/cms/auth/refresh',
+    };
   }
 
   @RequireRole('editor', 'moderator', 'ops_admin')

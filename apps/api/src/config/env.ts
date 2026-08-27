@@ -23,6 +23,11 @@ const envSchema = z
     AUTH_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().max(3600).default(900),
     AUTH_REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(2_592_000),
     AUTH_GUEST_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(604_800),
+    /**
+     * SEC-003 — CMS sessions expire sooner than consumer ones (security rule).
+     * 8 hours covers a shift; the consumer refresh lives 30 days.
+     */
+    AUTH_ADMIN_REFRESH_TTL_SECONDS: z.coerce.number().int().positive().default(28_800),
     COOKIE_SECRET: z.string().default(''),
     COOKIE_SECURE: z
       .enum(['true', 'false'])

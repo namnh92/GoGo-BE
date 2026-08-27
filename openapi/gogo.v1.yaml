@@ -1878,16 +1878,14 @@ paths:
                 totp: { type: string, minLength: 6, maxLength: 6 }
       responses:
         '201':
-          description: Admin token grant (act=admin; role re-checked per request)
+          description: >
+            Session opened. Sets `gogo_at` (HttpOnly), `gogo_rt` (HttpOnly,
+            scoped to `/v1/cms/auth/refresh`) and `gogo_csrf` (readable, for the
+            double-submit header). **Browser clients authenticate by cookie and
+            must ignore the body tokens** — those exist for non-browser callers.
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  accessToken: { type: string }
-                  role: { $ref: '#/components/schemas/AdminRole' }
-                  displayName: { type: string }
-                  expiresIn: { type: integer }
+              schema: { $ref: '#/components/schemas/AdminSession' }
         '401':
           description: Bad credentials or missing/invalid TOTP (`MFA_REQUIRED`)
           content:
@@ -1899,6 +1897,67 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/auth/refresh:
+    post:
+      operationId: cmsRefresh
+      tags: [cms]
+      summary: Rotate the staff session (SEC-003)
+      description: >
+        Reads the refresh token from the `gogo_rt` cookie, or from the body for
+        non-browser callers. Single-use: presenting a superseded token is
+        treated as theft and revokes the whole session family. The admin row is
+        re-read, so a suspended or demoted account cannot refresh onward.
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string, minLength: 20 }
+      responses:
+        '201':
+          description: Rotated session; cookies reset
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminSession' }
+        '401':
+          description: INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/auth/logout:
+    post:
+      operationId: cmsLogout
+      tags: [cms]
+      summary: End the staff session (SEC-003)
+      description: >
+        Revokes the session and denylists its id, so an access token already in
+        flight stops working immediately rather than at expiry. Idempotent.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                allDevices:
+                  type: boolean
+                  default: false
+                  description: Revoke every session in this login's family.
+      responses:
+        '201':
+          description: Session ended and cookies cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  loggedOut: { type: boolean }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /cms/auth/totp/setup:
     post:
@@ -3292,6 +3351,21 @@ components:
           description: >
             Why this was taken down. Required and stored in the audit record —
             it is the only explanation anyone reviewing the incident later has.
+    AdminSession:
+      type: object
+      properties:
+        accessToken:
+          type: string
+          description: For non-browser callers. Browser clients use the cookie.
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: Access token lifetime, seconds. }
+        refreshExpiresIn:
+          type: integer
+          description: >
+            Session lifetime, seconds. Deliberately shorter than the consumer
+            app's (security rule): a shift, not a month.
+        role: { $ref: '#/components/schemas/AdminRole' }
+        displayName: { type: string }
   responses:
     BadRequest:
       description: Validation or business rule failure

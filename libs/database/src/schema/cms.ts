@@ -41,6 +41,45 @@ export const adminUsers = pgTable(
   (t) => [uniqueIndex('admin_users_email_unique').on(t.email)],
 );
 
+/**
+ * SEC-003 — one row per admin login.
+ *
+ * Separate from `auth_sessions` because that table references `users.id` and
+ * admins live in `admin_users`; the model is otherwise the same as ADR-0003:
+ * opaque refresh token stored only as a digest, single-use rotation, and reuse
+ * of a superseded token revoking the whole family as a theft response.
+ *
+ * Before this existed the access token's `sid` was the admin id itself, so
+ * there was nothing to log out of, nothing to revoke per device, and no way to
+ * answer "where is this account signed in" — the question a compromised staff
+ * account makes urgent.
+ */
+export const adminSessions = pgTable(
+  'admin_sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    adminId: uuid('admin_id')
+      .notNull()
+      .references(() => adminUsers.id, { onDelete: 'cascade' }),
+    refreshTokenHash: text('refresh_token_hash').notNull(),
+    familyId: uuid('family_id').notNull(),
+    rotatedFromId: uuid('rotated_from_id'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokeReason: text('revoke_reason'),
+    ipHash: text('ip_hash'),
+    userAgent: text('user_agent'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('admin_sessions_refresh_unique').on(t.refreshTokenHash),
+    index('admin_sessions_admin_idx').on(t.adminId, t.createdAt),
+    index('admin_sessions_family_idx').on(t.familyId),
+  ],
+);
+
 export const auditActorType = pgEnum('audit_actor_type', ['admin', 'user', 'system']);
 
 export const auditLogs = pgTable(

@@ -1193,6 +1193,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate the staff session (SEC-003)
+         * @description Reads the refresh token from the `gogo_rt` cookie, or from the body for non-browser callers. Single-use: presenting a superseded token is treated as theft and revokes the whole session family. The admin row is re-read, so a suspended or demoted account cannot refresh onward.
+         */
+        post: operations["cmsRefresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * End the staff session (SEC-003)
+         * @description Revokes the session and denylists its id, so an access token already in flight stops working immediately rather than at expiry. Idempotent.
+         */
+        post: operations["cmsLogout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/auth/totp/setup": {
         parameters: {
             query?: never;
@@ -2265,6 +2305,17 @@ export interface components {
         EmergencyTakedownRequest: {
             /** @description Why this was taken down. Required and stored in the audit record — it is the only explanation anyone reviewing the incident later has. */
             reason: string;
+        };
+        AdminSession: {
+            /** @description For non-browser callers. Browser clients use the cookie. */
+            accessToken?: string;
+            refreshToken?: string;
+            /** @description Access token lifetime */
+            expiresIn?: number;
+            /** @description Session lifetime, seconds. Deliberately shorter than the consumer app's (security rule): a shift, not a month. */
+            refreshExpiresIn?: number;
+            role?: components["schemas"]["AdminRole"];
+            displayName?: string;
         };
     };
     responses: {
@@ -4526,18 +4577,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Admin token grant (act=admin; role re-checked per request) */
+            /** @description Session opened. Sets `gogo_at` (HttpOnly), `gogo_rt` (HttpOnly, scoped to `/v1/cms/auth/refresh`) and `gogo_csrf` (readable, for the double-submit header). **Browser clients authenticate by cookie and must ignore the body tokens** — those exist for non-browser callers. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        accessToken?: string;
-                        role?: components["schemas"]["AdminRole"];
-                        displayName?: string;
-                        expiresIn?: number;
-                    };
+                    "application/json": components["schemas"]["AdminSession"];
                 };
             };
             /** @description Bad credentials or missing/invalid TOTP (`MFA_REQUIRED`) */
@@ -4559,6 +4605,76 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+        };
+    };
+    cmsRefresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    refreshToken?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Rotated session; cookies reset */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminSession"];
+                };
+            };
+            /** @description INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    cmsLogout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Revoke every session in this login's family.
+                     * @default false
+                     */
+                    allDevices?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Session ended and cookies cleared */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        loggedOut?: boolean;
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
         };
     };
     cmsSetupTotp: {
