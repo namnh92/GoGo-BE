@@ -93,9 +93,19 @@ job. Heartbeat: `HEARTBEAT_URL_INGEST`.
 Without `GOOGLE_MAPS_API_KEY` / `GOOGLE_SHEETS_API_KEY` the fakes are bound and
 the whole flow is exercisable locally — resolve returns seeded places only.
 
+## The only import path
+
+`POST /v1/cms/place-imports` replaced the old `POST /v1/cms/import-jobs`, which
+took JSON rows and wrote straight to `places` — no provider resolve, no dedup,
+no provider snapshot. That endpoint and its `import_jobs` table were removed in
+migration `0003`; nothing consumed them (the CMS UI does not exist yet).
+
+Uploads are **not** virus-scanned: operators vet files before uploading, and the
+backend parses bytes in-process without ever executing or re-serving them. This
+is a recorded decision, not an oversight — see `docs/threat-model.md`.
+
 ## Still open
 
 - PI-CMS-001..006 — the CMS wizard UI on top of these APIs.
-- PI-SRE-001 — quota/cost/latency dashboards; the metric names in spec §13 are
-  not emitted yet, only logged.
-- Virus scanning of uploads (spec §12) needs a scanner service — not wired.
+- PI-SRE-001 — metrics are emitted (spec §13 names, as structured log lines);
+  a scrape endpoint and dashboard still need a destination decided (#36/#120).

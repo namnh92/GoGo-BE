@@ -141,28 +141,3 @@ export const collectionItems = pgTable(
   },
   (t) => [uniqueIndex('collection_items_unique').on(t.collectionId, t.placeId)],
 );
-
-export const importJobStatus = pgEnum('import_job_status', [
-  'queued',
-  'running',
-  'succeeded',
-  'partial_failure',
-  'failed',
-]);
-
-/** FR-CMS-009 — CSV/import background jobs with downloadable error report. */
-export const importJobs = pgTable(
-  'import_jobs',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    kind: text('kind').notNull(),
-    status: importJobStatus('status').notNull().default('queued'),
-    isDryRun: boolean('is_dry_run').notNull().default(false),
-    fileKey: text('file_key'),
-    report: jsonb('report'),
-    createdByAdminId: uuid('created_by_admin_id').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    finishedAt: timestamp('finished_at', { withTimezone: true }),
-  },
-  (t) => [index('import_jobs_status_idx').on(t.status, t.createdAt)],
-);

@@ -1639,23 +1639,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/cms/import-jobs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Ops: bulk place import (JSON rows) with dry-run and per-row errors */
-        post: operations["cmsRunPlaceImport"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/cms/ops/kpis": {
         parameters: {
             query?: never;
@@ -5196,39 +5179,6 @@ export interface operations {
                 };
                 content?: never;
             };
-        };
-    };
-    cmsRunPlaceImport: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** @default true */
-                    dryRun?: boolean;
-                    rows: {
-                        name: string;
-                        lat: number;
-                        lng: number;
-                        areaKey?: string;
-                        categoryKeys?: string[];
-                    }[];
-                };
-            };
-        };
-        responses: {
-            /** @description Job report: total/created/errors, status succeeded|partial_failure|failed */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            429: components["responses"]["RateLimited"];
         };
     };
     cmsOpsKpis: {
