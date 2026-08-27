@@ -17,7 +17,23 @@ export type RequestContext = {
   requestId?: string | undefined;
   /** Client IP as resolved by Fastify, i.e. already honouring TRUST_PROXY. */
   ip?: string | undefined;
+  /**
+   * SEC-002 — which rule let this request through the CMS role gate.
+   *
+   * `exact_role` and `rank_read` are the model working as designed.
+   * `super_admin_bypass` means the request would have been refused for any
+   * other role: it is the escape hatch, and how often it is used is the signal
+   * for whether the role model fits the work. Set by AdminGuard, which is the
+   * only place that knows.
+   */
+  authorizationPath?: 'exact_role' | 'rank_read' | 'super_admin_bypass' | undefined;
 };
+
+/** Mutable within the request: AdminGuard fills this after the store exists. */
+export function setAuthorizationPath(path: NonNullable<RequestContext['authorizationPath']>): void {
+  const store = storage.getStore();
+  if (store) store.authorizationPath = path;
+}
 
 const storage = new AsyncLocalStorage<RequestContext>();
 

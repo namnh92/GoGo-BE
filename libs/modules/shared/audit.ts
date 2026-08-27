@@ -38,5 +38,6 @@ export async function writeAudit(db: AuditWriter, input: AuditInput): Promise<vo
     diff: input.diff,
     requestId: context.requestId ?? null,
     ipAddress: input.actorType === 'admin' ? (context.ip ?? null) : null,
+    authorizationPath: context.authorizationPath ?? null,
   });
 }

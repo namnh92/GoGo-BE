@@ -61,6 +61,13 @@ export const auditLogs = pgTable(
      * admin did it" apart from "that admin's account was taken over".
      */
     ipAddress: text('ip_address'),
+    /**
+     * SEC-002 — which rule authorized this write: `exact_role`, `rank_read`, or
+     * `super_admin_bypass`. Only the last one means the request would have been
+     * refused for any other role, and counting those answers whether the role
+     * model matches the work rather than being routed around.
+     */
+    authorizationPath: text('authorization_path'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

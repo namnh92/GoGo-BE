@@ -260,6 +260,27 @@ Residual: alert **routing** still depends on a metric destination (#120). Until
 then the alert exists as a distinctly-named metric in the log stream, not as a
 page.
 
+### super_admin observability (SEC-002, part A)
+
+`super_admin` bypasses every role gate. That is the design — there has to be an
+escape hatch — but an unobserved hatch becomes the main road: when parallel
+writes are inconvenient, people reach for the shared account, and a shared
+account collapses the audit trail into one identity.
+
+So every audit row records **which rule authorized it**: `exact_role` (the role
+that owns the action), `rank_read` (a peer or higher rank reading, SEC/#143), or
+`super_admin_bypass` (would have been refused for any other role). Only the last
+one is the hatch, and its frequency is the signal for whether the role model
+matches the work or is being routed around.
+
+Deliberately observation, not obstruction: `super_admin` is not blocked and no
+extra confirmation step is added. Blocking an emergency escape hatch is the
+surest way to have it worked around by some other route.
+
+Answering "how often was the hatch used, on what" needs no metrics backend —
+it is one query on `audit_logs`. Alerting on a threshold does, and waits on the
+metric destination (#120).
+
 ## Open risks (tracked)
 
 1. 🔴 SSO for CMS — blocked on IdP (#62 note).

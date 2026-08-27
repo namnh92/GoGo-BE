@@ -10,6 +10,7 @@ import { Reflector } from '@nestjs/core';
 import { eq } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
+import { setAuthorizationPath } from '../../shared/request-context';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
 import type { AdminRole } from '../application/admin-auth.service';
@@ -78,14 +79,21 @@ export class AdminGuard implements CanActivate {
     if (!admin || admin.status !== 'active') {
       throw AppError.forbidden('ADMIN_ONLY', 'Staff account is not active');
     }
-    const allowed =
-      admin.role === 'super_admin' ||
-      roles.includes(admin.role) ||
-      (SAFE_METHODS.has((req.method ?? 'GET').toUpperCase()) &&
-        ROLE_RANK[admin.role] >= Math.min(...roles.map((r) => ROLE_RANK[r])));
-    if (!allowed) {
+    const byExactRole = roles.includes(admin.role);
+    const byRankRead =
+      SAFE_METHODS.has((req.method ?? 'GET').toUpperCase()) &&
+      ROLE_RANK[admin.role] >= Math.min(...roles.map((r) => ROLE_RANK[r]));
+
+    if (!byExactRole && !byRankRead && admin.role !== 'super_admin') {
       throw AppError.forbidden('ROLE_DENIED', 'Your role cannot perform this action');
     }
+    // SEC-002: record which rule let this through. `super_admin_bypass` means
+    // the request would have been refused for every other role — that is the
+    // escape hatch, and its frequency is the signal for whether the role model
+    // fits the work people actually do.
+    setAuthorizationPath(
+      byExactRole ? 'exact_role' : byRankRead ? 'rank_read' : 'super_admin_bypass',
+    );
     actor.role = admin.role;
     return true;
   }
