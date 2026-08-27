@@ -16,6 +16,7 @@ import {
   SearchModule,
   SuggestionsModule,
   TravelModule,
+  UploadsModule,
 } from '@gogo/modules';
 import { AppExceptionFilter } from './common/filters/app-exception.filter';
 import { APP_CONFIG, loadEnv } from './config/env';
@@ -50,6 +51,7 @@ class ConfigModule {}
     NotificationsModule,
     CmsModule,
     IngestionModule,
+    UploadsModule,
   ],
   controllers: [HealthController, DocsController],
   providers: [

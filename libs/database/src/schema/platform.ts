@@ -41,3 +41,37 @@ export const idempotencyKeys = pgTable(
   },
   (t) => [index('idempotency_keys_expiry_idx').on(t.expiresAt)],
 );
+
+/**
+ * BE-BFF-016 (#171) — what makes an upload key mean something.
+ *
+ * Check-in accepted `photoKeys` and `billPhotoKey` before any endpoint could
+ * produce one. A presigned key on its own is an unowned string: without this
+ * row, any member could attach any key, including another member's. The row
+ * binds the key to the actor who asked for it, to a purpose, and to an expiry.
+ */
+export const mediaUploads = pgTable(
+  'media_uploads',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    storageKey: text('storage_key').notNull().unique(),
+    /** Guests included: a guest checks in on its own room. */
+    actorType: text('actor_type').notNull(),
+    actorId: uuid('actor_id').notNull(),
+    purpose: text('purpose').notNull(),
+    contentType: text('content_type').notNull(),
+    contentLength: integer('content_length').notNull(),
+    /**
+     * `pending` → `attached`. Deliberately no `uploaded`: the API never sees
+     * the bytes land, and recording a state it cannot observe would put a
+     * claim in the data that nothing verifies.
+     */
+    status: text('status').notNull().default('pending'),
+    attachedToType: text('attached_to_type'),
+    attachedToId: text('attached_to_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    attachedAt: timestamp('attached_at', { withTimezone: true }),
+  },
+  (t) => [index('media_uploads_actor_idx').on(t.actorId, t.status, t.expiresAt)],
+);

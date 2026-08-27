@@ -127,3 +127,12 @@ export {
   type RoomEvent,
   type RoomEventType,
 } from '../realtime/domain/room-event';
+
+export { UploadsModule } from '../uploads/presentation/uploads.module';
+export {
+  UploadsService,
+  UPLOAD_PURPOSES,
+  ALLOWED_CONTENT_TYPES,
+  MAX_UPLOAD_BYTES,
+  type UploadPurpose,
+} from '../uploads/application/uploads.service';

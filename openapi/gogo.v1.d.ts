@@ -439,6 +439,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Presigned upload for moderated user media
+         * @description Check-in accepts `photoKeys` and `billPhotoKey` — keys of already uploaded objects — and until this endpoint existed nothing in the contract could produce one, so the mobile check-in sheet shipped without photos or the verified bill (FR-PLAN-009 was unreachable).
+         *
+         *     Presigned rather than multipart: the client PUTs the bytes straight to storage with the returned URL and sends only the `key` back. Image bytes never cross the API.
+         *
+         *     The returned key is bound to the actor that created it. Attaching a key belonging to another actor, an expired one, or one issued for a different purpose is rejected — the server does not distinguish those cases in its answer.
+         *
+         *     Content type and size are enforced server-side and the content type is part of what is signed, so storage refuses an upload that does not match what was authorized.
+         */
+        post: operations["createUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/taxonomies": {
         parameters: {
             query?: never;
@@ -2617,7 +2643,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability";
+            kind: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability" | "checkin_tag";
             key: string;
             /** @description Locale to label. Business data stores the key; the label is presentation. */
             labels: {
@@ -3691,10 +3717,56 @@ export interface operations {
             400: components["responses"]["BadRequest"];
         };
     };
+    createUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    purpose: "checkin_photo" | "bill_photo" | "place_photo";
+                    /** @enum {string} */
+                    contentType: "image/jpeg" | "image/png" | "image/webp" | "image/heic";
+                    /** @description Declared up front, so an oversized file is refused before a URL exists. */
+                    contentLength: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Upload authorized */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Send this back in the check-in; it is only usable by this actor. */
+                        key: string;
+                        uploadUrl: string;
+                        /** Format: date-time */
+                        expiresAt: string;
+                        maxBytes: number;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description Object storage is not configured in this environment */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listTaxonomies: {
         parameters: {
             query?: {
-                /** @description Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability) */
+                /** @description Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability,checkin_tag) */
                 kinds?: string;
             };
             header?: never;
@@ -5609,7 +5681,7 @@ export interface operations {
     cmsListTaxonomies: {
         parameters: {
             query?: {
-                kind?: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability";
+                kind?: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability" | "checkin_tag";
                 isActive?: boolean;
             };
             header?: never;
@@ -5640,7 +5712,7 @@ export interface operations {
             content: {
                 "application/json": {
                     /** @enum {string} */
-                    kind: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability";
+                    kind: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability" | "checkin_tag";
                     key: string;
                     labels: {
                         [key: string]: string;
