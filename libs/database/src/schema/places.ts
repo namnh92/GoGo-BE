@@ -34,6 +34,8 @@ export const taxonomyKind = pgEnum('taxonomy_kind', [
   'accessibility',
   'spending_style',
   'suitability',
+  /** #171 — check-in vocabulary, owned by the CMS like every other kind. */
+  'checkin_tag',
 ]);
 
 export const taxonomies = pgTable(

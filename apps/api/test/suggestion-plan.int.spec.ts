@@ -407,14 +407,36 @@ describe('active date + check-in (BE-BFF-014, FR-PLAN-008/009)', () => {
     });
     expect(noPhoto.statusCode).toBe(400);
 
+    // #171 — a photo key now has to come from the upload endpoint. An
+    // invented one is refused, which is the whole point of the table behind it.
+    const invented = await post(memberToken, `/v1/plans/${planId}/stops/${stopId}/checkin`, {
+      rating: 5,
+      tags: ['would_return'],
+      photoKeys: ['media/a.jpg'],
+    });
+    expect(invented.statusCode).toBe(400);
+    expect(invented.json().code).toBe('INVALID_UPLOAD_KEY');
+
+    const photo = await post(memberToken, '/v1/uploads', {
+      purpose: 'checkin_photo',
+      contentType: 'image/jpeg',
+      contentLength: 250_000,
+    });
+    expect(photo.statusCode).toBe(201);
+    const bill = await post(memberToken, '/v1/uploads', {
+      purpose: 'bill_photo',
+      contentType: 'image/jpeg',
+      contentLength: 180_000,
+    });
+
     const checkin = await post(memberToken, `/v1/plans/${planId}/stops/${stopId}/checkin`, {
       rating: 5,
-      tags: ['ngon', 'view đẹp'],
+      tags: ['would_return', 'photogenic'],
       note: 'Tuyệt vời',
-      photoKeys: ['media/a.jpg'],
+      photoKeys: [photo.json().key],
       billTotal: 500_000,
       billPeopleCount: 2,
-      billPhotoKey: 'media/bill.jpg',
+      billPhotoKey: bill.json().key,
     });
     expect(checkin.statusCode).toBe(201);
     expect(checkin.json().billPerPerson).toBe(250_000);
@@ -631,5 +653,128 @@ describe('room lifecycle does not dead-end (#155)', () => {
     // A retry after a timeout must not look like a broken client.
     expect([200, 201]).toContain(first.statusCode);
     expect([200, 201]).toContain(second.statusCode);
+  });
+});
+
+/**
+ * #171 — check-in accepted `photoKeys` and `billPhotoKey` while nothing in the
+ * contract could produce one, so the mobile sheet shipped without photos or
+ * the verified bill. These cover the half that decides whether the key means
+ * anything: who may use it.
+ */
+describe('client upload path (BE-BFF-016, #171)', () => {
+  async function activePlan() {
+    const { hostToken, memberToken, roomId } = await matchingRoom('group', 'vote');
+    await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    const cur = await get(hostToken, `/v1/rooms/${roomId}/suggestions/current`);
+    await put(hostToken, `/v1/rooms/${roomId}/votes/${cur.json().candidates[0].placeId}`, {
+      value: 'yes',
+    });
+    const planId = (await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`)).json().planId;
+    const plan = (await get(hostToken, `/v1/plans/${planId}`)).json();
+    await patch(hostToken, `/v1/rooms/${roomId}/status`, { status: 'active' });
+    return { hostToken, memberToken, roomId, planId, stopId: plan.stops[0].id as string };
+  }
+
+  it('hands back a key and a URL the client can PUT to', async () => {
+    const { memberToken } = await activePlan();
+    const res = await post(memberToken, '/v1/uploads', {
+      purpose: 'checkin_photo',
+      contentType: 'image/jpeg',
+      contentLength: 1_200_000,
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.key).toMatch(/^u\/user\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.jpg$/);
+    expect(body.uploadUrl).toContain('http');
+    expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('refuses a type it will not host, before a URL exists', async () => {
+    const { memberToken } = await activePlan();
+    const res = await post(memberToken, '/v1/uploads', {
+      purpose: 'checkin_photo',
+      contentType: 'application/x-msdownload',
+      contentLength: 1000,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('UNSUPPORTED_CONTENT_TYPE');
+  });
+
+  it('refuses an oversized file up front rather than after the bytes move', async () => {
+    const { memberToken } = await activePlan();
+    const res = await post(memberToken, '/v1/uploads', {
+      purpose: 'checkin_photo',
+      contentType: 'image/jpeg',
+      contentLength: 50 * 1024 * 1024,
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('one member cannot attach another member’s upload', async () => {
+    const { hostToken, memberToken, planId, stopId } = await activePlan();
+    const hostUpload = await post(hostToken, '/v1/uploads', {
+      purpose: 'checkin_photo',
+      contentType: 'image/png',
+      contentLength: 4000,
+    });
+
+    const stolen = await post(memberToken, `/v1/plans/${planId}/stops/${stopId}/checkin`, {
+      rating: 4,
+      tags: [],
+      photoKeys: [hostUpload.json().key],
+    });
+    expect(stolen.statusCode).toBe(400);
+    expect(stolen.json().code).toBe('INVALID_UPLOAD_KEY');
+  });
+
+  it('a bill-photo key cannot be passed off as a check-in photo', async () => {
+    const { memberToken, planId, stopId } = await activePlan();
+    const billKey = (
+      await post(memberToken, '/v1/uploads', {
+        purpose: 'bill_photo',
+        contentType: 'image/jpeg',
+        contentLength: 4000,
+      })
+    ).json().key;
+
+    const res = await post(memberToken, `/v1/plans/${planId}/stops/${stopId}/checkin`, {
+      rating: 4,
+      tags: [],
+      photoKeys: [billKey],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('INVALID_UPLOAD_KEY');
+  });
+
+  it('re-saving a check-in with the same photo stays idempotent', async () => {
+    const { memberToken, planId, stopId } = await activePlan();
+    const key = (
+      await post(memberToken, '/v1/uploads', {
+        purpose: 'checkin_photo',
+        contentType: 'image/webp',
+        contentLength: 9000,
+      })
+    ).json().key;
+
+    const body = { rating: 5, tags: ['quiet'], photoKeys: [key] };
+    const first = await post(memberToken, `/v1/plans/${planId}/stops/${stopId}/checkin`, body);
+    expect(first.statusCode).toBe(201);
+    // An already-attached key belongs to this same check-in, so editing the
+    // note must not make the photo suddenly invalid.
+    const second = await post(memberToken, `/v1/plans/${planId}/stops/${stopId}/checkin`, {
+      ...body,
+      note: 'Sửa lại ghi chú',
+    });
+    expect(second.statusCode).toBe(201);
+  });
+
+  it('serves the check-in tag vocabulary as taxonomy, not client-defined keys', async () => {
+    const res = await api().inject({ method: 'GET', url: '/v1/taxonomies?kinds=checkin_tag' });
+    expect(res.statusCode).toBe(200);
+    const tags = res.json().kinds.checkin_tag as { key: string; labels: Record<string, string> }[];
+    expect(tags.map((t) => t.key)).toContain('would_return');
+    // Stored value is the stable key; the label is presentation, per locale.
+    expect(tags.find((t) => t.key === 'would_return')!.labels['vi']).toBe('Muốn quay lại');
   });
 });

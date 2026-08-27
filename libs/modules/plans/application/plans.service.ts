@@ -3,6 +3,7 @@ import { AppError } from '../../shared/app-error';
 import type { Actor } from '../../identity/domain/actor';
 import { RoomPolicy } from '../../rooms/presentation/room-policy';
 import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
+import { UploadsService } from '../../uploads/application/uploads.service';
 import { buildItinerary, type LockedAnchor } from '../../suggestions/domain/optimizer';
 import { SuggestionsRepository } from '../../suggestions/infrastructure/suggestions.repository';
 import { PlansRepository, type PlanRow, type StopRow } from '../infrastructure/plans.repository';
@@ -17,6 +18,7 @@ export class PlansService {
     private readonly builder: PlanBuilderService,
     private readonly policy: RoomPolicy,
     @Inject(ROOM_EVENT_BUS) private readonly events: RoomEventBus,
+    private readonly uploads: UploadsService,
   ) {}
 
   /**
@@ -291,6 +293,23 @@ export class PlansService {
         [{ field: 'billPhotoKey', code: 'required', message: 'required when billTotal is set' }],
       );
     }
+    // #171 — a key is only usable by the actor who asked for it. Claimed
+    // before the write, so a check-in never records a photo the member does
+    // not own: without this an upload key is an unowned string and one member
+    // could attach another's photo, or their bill.
+    await this.uploads.attach(actor, input.photoKeys, {
+      type: 'stop_checkin',
+      id: `${stopId}:${member.id}`,
+      purposes: ['checkin_photo'],
+    });
+    if (input.billPhotoKey) {
+      await this.uploads.attach(actor, [input.billPhotoKey], {
+        type: 'stop_checkin_bill',
+        id: `${stopId}:${member.id}`,
+        purposes: ['bill_photo'],
+      });
+    }
+
     const billPeople =
       input.billTotal !== undefined ? (input.billPeopleCount ?? room.participantCount) : undefined;
 

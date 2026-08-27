@@ -307,6 +307,7 @@ const taxonomyListQuery = z.object({
       'accessibility',
       'spending_style',
       'suitability',
+      'checkin_tag',
     ])
     .optional(),
   isActive: z

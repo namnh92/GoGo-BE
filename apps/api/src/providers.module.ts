@@ -13,6 +13,7 @@ import {
   PLACE_PROVIDER,
   PUSH_PROVIDER,
   SHEETS_PROVIDER,
+  R2StorageAdapter,
   STORAGE_PROVIDER,
   TRAVEL_TIME_PROVIDER,
 } from '@gogo/providers';
@@ -76,7 +77,21 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       inject: [APP_CONFIG, METRICS],
     },
     { provide: PUSH_PROVIDER, useClass: FakePush },
-    { provide: STORAGE_PROVIDER, useClass: FakeStorage },
+    {
+      // Real R2 the moment credentials exist; the fake keeps every other
+      // environment able to run the whole upload flow without them.
+      provide: STORAGE_PROVIDER,
+      useFactory: (config: AppConfig) =>
+        config.R2_ACCESS_KEY_ID && config.R2_SECRET_ACCESS_KEY && config.R2_BUCKET
+          ? new R2StorageAdapter({
+              accountId: config.R2_ACCOUNT_ID,
+              accessKeyId: config.R2_ACCESS_KEY_ID,
+              secretAccessKey: config.R2_SECRET_ACCESS_KEY,
+              bucket: config.R2_BUCKET,
+            })
+          : new FakeStorage(),
+      inject: [APP_CONFIG],
+    },
   ],
   exports: [
     PLACE_PROVIDER,

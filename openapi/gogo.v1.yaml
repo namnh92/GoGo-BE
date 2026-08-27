@@ -866,6 +866,68 @@ paths:
                       ready and then get 409 ROOM_NOT_MATCHING.
         '400': { $ref: '#/components/responses/BadRequest' }
 
+  /uploads:
+    post:
+      operationId: createUpload
+      tags: [plans]
+      summary: 'Presigned upload for moderated user media'
+      description: >
+        Check-in accepts `photoKeys` and `billPhotoKey` — keys of already
+        uploaded objects — and until this endpoint existed nothing in the
+        contract could produce one, so the mobile check-in sheet shipped
+        without photos or the verified bill (FR-PLAN-009 was unreachable).
+
+
+        Presigned rather than multipart: the client PUTs the bytes straight to
+        storage with the returned URL and sends only the `key` back. Image
+        bytes never cross the API.
+
+
+        The returned key is bound to the actor that created it. Attaching a key
+        belonging to another actor, an expired one, or one issued for a
+        different purpose is rejected — the server does not distinguish those
+        cases in its answer.
+
+
+        Content type and size are enforced server-side and the content type is
+        part of what is signed, so storage refuses an upload that does not
+        match what was authorized.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [purpose, contentType, contentLength]
+              properties:
+                purpose:
+                  type: string
+                  enum: [checkin_photo, bill_photo, place_photo]
+                contentType:
+                  type: string
+                  enum: [image/jpeg, image/png, image/webp, image/heic]
+                contentLength:
+                  type: integer
+                  description: Declared up front, so an oversized file is refused before a URL exists.
+      responses:
+        '201':
+          description: Upload authorized
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key, uploadUrl, expiresAt, maxBytes]
+                properties:
+                  key:
+                    type: string
+                    description: Send this back in the check-in; it is only usable by this actor.
+                  uploadUrl: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  maxBytes: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503':
+          description: Object storage is not configured in this environment
+
   /taxonomies:
     get:
       operationId: listTaxonomies
@@ -876,7 +938,7 @@ paths:
         - name: kinds
           in: query
           schema: { type: string }
-          description: Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability)
+          description: Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability,checkin_tag)
       responses:
         '200':
           description: Taxonomy keys with i18n labels
@@ -2500,7 +2562,17 @@ paths:
           in: query
           schema:
             type: string
-            enum: [mood, category, setting, dietary, accessibility, spending_style, suitability]
+            enum:
+              [
+                mood,
+                category,
+                setting,
+                dietary,
+                accessibility,
+                spending_style,
+                suitability,
+                checkin_tag,
+              ]
         - { name: isActive, in: query, schema: { type: boolean } }
       responses:
         '200':
@@ -2525,7 +2597,16 @@ paths:
                 kind:
                   type: string
                   enum:
-                    [mood, category, setting, dietary, accessibility, spending_style, suitability]
+                    [
+                      mood,
+                      category,
+                      setting,
+                      dietary,
+                      accessibility,
+                      spending_style,
+                      suitability,
+                      checkin_tag,
+                    ]
                 key: { type: string, pattern: '^[a-z0-9_]{2,40}$' }
                 labels:
                   type: object
@@ -3931,7 +4012,17 @@ components:
         id: { type: string, format: uuid }
         kind:
           type: string
-          enum: [mood, category, setting, dietary, accessibility, spending_style, suitability]
+          enum:
+            [
+              mood,
+              category,
+              setting,
+              dietary,
+              accessibility,
+              spending_style,
+              suitability,
+              checkin_tag,
+            ]
         key: { type: string }
         labels:
           type: object

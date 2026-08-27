@@ -92,6 +92,27 @@
       "when": 1787837534888,
       "tag": "0012_admin-sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1787837535888,
+      "tag": "0013_audit-break-glass-index",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1787837536888,
+      "tag": "0014_media-uploads",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1787837537888,
+      "tag": "0015_checkin-tag-seed",
+      "breakpoints": true
     }
   ]
 }
