@@ -17,7 +17,25 @@ export class PlansService {
     private readonly policy: RoomPolicy,
   ) {}
 
-  private toDto(plan: PlanRow, stops: StopRow[]) {
+  /**
+   * BE-IMP-009 — a place can be taken down after a plan is saved. The plan
+   * keeps the stop (core rule #7: a locked stop is invariant, and silently
+   * dropping stops would rewrite a plan people already agreed on), so the DTO
+   * has to say which stops are no longer usable instead of presenting them as
+   * fine (core rule #8). Clients get a stable code, never a sentence.
+   */
+  private async toDto(plan: PlanRow, stops: StopRow[]) {
+    const statuses = await this.repo.placeAvailability(stops.map((s) => s.placeId));
+    const unavailableReason = (placeId: string): string | undefined => {
+      const status = statuses.get(placeId);
+      if (status === undefined) return 'PLACE_MISSING';
+      if (status === 'published') return undefined;
+      if (status === 'suspended') return 'PLACE_SUSPENDED';
+      if (status === 'archived') return 'PLACE_ARCHIVED';
+      return 'PLACE_NOT_PUBLISHED';
+    };
+    const reasons = new Map(stops.map((s) => [s.id, unavailableReason(s.placeId)]));
+
     return {
       id: plan.id,
       roomId: plan.roomId,
@@ -27,6 +45,8 @@ export class PlansService {
       constraintVersion: plan.constraintVersion,
       totals: plan.totals,
       createdAt: plan.createdAt.toISOString(),
+      // Plan-level flag so a client can show one banner without scanning stops.
+      hasUnavailableStops: [...reasons.values()].some((r) => r !== undefined),
       stops: stops.map((s) => ({
         id: s.id,
         placeId: s.placeId,
@@ -41,6 +61,9 @@ export class PlansService {
         isLocked: s.isLocked,
         status: s.status,
         completedAt: s.completedAt?.toISOString(),
+        // `status` above is the stop's own progress; this is the place behind it.
+        placeAvailable: reasons.get(s.id) === undefined,
+        unavailableReason: reasons.get(s.id),
       })),
     };
   }
@@ -48,14 +71,14 @@ export class PlansService {
   async getPlan(actor: Actor, planId: string) {
     const plan = await this.repo.getPlan(planId);
     await this.policy.requireMember(actor, plan.roomId);
-    return this.toDto(plan, await this.repo.listStops(planId));
+    return await this.toDto(plan, await this.repo.listStops(planId));
   }
 
   async getCurrentForRoom(actor: Actor, roomId: string) {
     await this.policy.requireMember(actor, roomId);
     const plan = await this.repo.currentPlan(roomId);
     if (!plan) throw AppError.notFound('PLAN_NOT_FOUND', 'Room has no current plan');
-    return this.toDto(plan, await this.repo.listStops(plan.id));
+    return await this.toDto(plan, await this.repo.listStops(plan.id));
   }
 
   /**
@@ -86,11 +109,24 @@ export class PlansService {
       throw AppError.badRequest('EMPTY_PLAN', 'A plan needs at least one stop');
     }
 
+    // BE-IMP-009: a place already in the plan may have been taken down since.
+    // Blocking the whole edit on that traps the host — they cannot even remove
+    // the offending stop. So an unavailable place blocks only when it is being
+    // *added*; keeping or dropping one that is already there stays possible.
+    const existingPlaceIds = new Set(
+      (await this.repo.listStops(planId)).map((stop) => stop.placeId),
+    );
     const facts = await this.repo.placeFacts(input.stops.map((s) => s.placeId));
     const anchors: LockedAnchor[] = input.stops.map((s, position) => {
       const fact = facts.find((f) => f.id === s.placeId);
-      if (!fact || fact.status !== 'published') {
-        throw AppError.badRequest('INVALID_PLACE', `Place ${s.placeId} is not available`);
+      if (!fact) {
+        throw AppError.badRequest('INVALID_PLACE', `Place ${s.placeId} does not exist`);
+      }
+      if (fact.status !== 'published' && !existingPlaceIds.has(s.placeId)) {
+        throw AppError.badRequest(
+          'PLACE_NOT_AVAILABLE',
+          `Place ${s.placeId} cannot be added to a plan`,
+        );
       }
       return {
         placeId: s.placeId,
@@ -133,7 +169,7 @@ export class PlansService {
         },
       ],
     });
-    return this.toDto(result.plan, result.stops);
+    return await this.toDto(result.plan, result.stops);
   }
 
   async regenerate(
@@ -147,7 +183,7 @@ export class PlansService {
       throw AppError.conflict('ROOM_ACTIVE', 'Plan is locked once the date starts');
     }
     const result = await this.builder.regenerate(planId, feedback);
-    return this.toDto(result.plan, result.stops);
+    return await this.toDto(result.plan, result.stops);
   }
 
   async lockStop(actor: Actor, planId: string, stopId: string, locked: boolean) {

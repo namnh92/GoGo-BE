@@ -34,6 +34,21 @@ export class PlansRepository {
       .orderBy(asc(schema.planStops.position));
   }
 
+  /**
+   * BE-IMP-009 — availability of the places a plan points at.
+   *
+   * A saved plan keeps its stops when a place is taken down (core rule #7:
+   * a locked stop is invariant), so the plan has to be able to say which of
+   * them are no longer usable rather than presenting them as fine.
+   */
+  async placeAvailability(placeIds: string[]): Promise<Map<string, string>> {
+    if (placeIds.length === 0) return new Map();
+    const rows = await this.db.execute(sql`
+      select id, status from places where id = any((${pgArray(placeIds)})::uuid[])
+    `);
+    return new Map((rows.rows as { id: string; status: string }[]).map((r) => [r.id, r.status]));
+  }
+
   getStop(stopId: string): Promise<StopRow | undefined> {
     return this.db
       .select()

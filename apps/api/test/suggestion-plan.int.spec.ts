@@ -421,3 +421,99 @@ describe('active date + check-in (BE-BFF-014, FR-PLAN-008/009)', () => {
     expect(events.length).toBeGreaterThan(0);
   });
 });
+
+describe('saved plan keeps a taken-down place, marked unavailable (BE-IMP-009)', () => {
+  it('warns instead of dropping the stop, and survives regenerate when locked', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    const cur = await get(hostToken, `/v1/rooms/${roomId}/suggestions/current`);
+    const target = cur.json().candidates[0].placeId;
+    await put(hostToken, `/v1/rooms/${roomId}/votes/${target}`, { value: 'yes' });
+    const planId = (await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`)).json().planId;
+
+    const plan = (await get(hostToken, `/v1/plans/${planId}`)).json();
+    expect(plan.hasUnavailableStops).toBe(false);
+    expect(plan.stops.every((s: { placeAvailable: boolean }) => s.placeAvailable)).toBe(true);
+
+    const doomed = plan.stops[0];
+    await patch(hostToken, `/v1/plans/${planId}/stops/${doomed.id}/lock`, { locked: true });
+
+    // The place is taken down after the plan was agreed on.
+    await db
+      .update(schema.places)
+      .set({ status: 'suspended' })
+      .where(eq(schema.places.id, doomed.placeId));
+
+    const after = (await get(hostToken, `/v1/plans/${planId}`)).json();
+    const stop = after.stops.find((s: { id: string }) => s.id === doomed.id);
+    // Kept, not dropped — dropping would rewrite a plan people already agreed on.
+    expect(stop).toBeTruthy();
+    expect(stop.placeAvailable).toBe(false);
+    expect(stop.unavailableReason).toBe('PLACE_SUSPENDED');
+    expect(after.hasUnavailableStops).toBe(true);
+    // The stop's own progress is a separate axis and must not be overwritten.
+    expect(stop.status).toBe('planned');
+
+    // Core rule #7 still wins: a locked stop is invariant across regenerate,
+    // even when its place is unavailable. The warning travels with it.
+    const regen = await post(hostToken, `/v1/plans/${planId}/regenerate`, {});
+    expect(regen.statusCode).toBe(201);
+    const kept = regen.json().stops.find((s: { placeId: string }) => s.placeId === doomed.placeId);
+    expect(kept).toBeTruthy();
+    expect(kept.isLocked).toBe(true);
+    expect(kept.placeAvailable).toBe(false);
+  });
+
+  it('an unavailable place blocks being added but not being removed', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    const cur = await get(hostToken, `/v1/rooms/${roomId}/suggestions/current`);
+    await put(hostToken, `/v1/rooms/${roomId}/votes/${cur.json().candidates[0].placeId}`, {
+      value: 'yes',
+    });
+    const planId = (await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`)).json().planId;
+    const plan = (await get(hostToken, `/v1/plans/${planId}`)).json();
+
+    const victim = plan.stops[0];
+    await db
+      .update(schema.places)
+      .set({ status: 'suspended' })
+      .where(eq(schema.places.id, victim.placeId));
+
+    // Editing the plan must stay possible — otherwise the host is trapped:
+    // they cannot even take the offending stop out.
+    let current = plan;
+    const withoutVictim = plan.stops
+      .filter((s: { id: string }) => s.id !== victim.id)
+      .map((s: { placeId: string; isLocked: boolean }) => ({
+        placeId: s.placeId,
+        isLocked: s.isLocked,
+      }));
+    if (withoutVictim.length > 0) {
+      const removed = await patch(hostToken, `/v1/plans/${plan.id}`, {
+        expectedVersion: plan.version,
+        stops: withoutVictim,
+      });
+      expect(removed.statusCode).toBe(200);
+      expect(
+        removed.json().stops.some((s: { placeId: string }) => s.placeId === victim.placeId),
+      ).toBe(false);
+      // Each edit creates a new plan version; the old id is superseded.
+      current = removed.json();
+    }
+
+    // Adding it back is refused with a distinct code.
+    const readd = await patch(hostToken, `/v1/plans/${current.id}`, {
+      expectedVersion: current.version,
+      stops: [
+        ...current.stops.map((s: { placeId: string; isLocked: boolean }) => ({
+          placeId: s.placeId,
+          isLocked: s.isLocked,
+        })),
+        { placeId: victim.placeId, isLocked: false },
+      ],
+    });
+    expect(readd.statusCode).toBe(400);
+    expect(readd.json().code).toBe('PLACE_NOT_AVAILABLE');
+  });
+});

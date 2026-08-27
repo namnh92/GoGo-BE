@@ -1944,10 +1944,20 @@ export interface components {
             costMax?: number | null;
             /** @description Locked stops are invariant across regenerate. */
             isLocked?: boolean;
-            /** @enum {string} */
+            /**
+             * @description Progress of the stop itself, not of the place behind it.
+             * @enum {string}
+             */
             status?: "planned" | "completed" | "skipped";
             /** Format: date-time */
             completedAt?: string;
+            /** @description False when the place behind this stop is no longer usable — taken down, archived or never published. The stop is deliberately kept: a locked stop is invariant, and dropping stops would rewrite a plan people already agreed on. Show a warning; do not present it as fine. */
+            placeAvailable?: boolean;
+            /**
+             * @description Present only when `placeAvailable` is false. Resolve copy via i18n.
+             * @enum {string}
+             */
+            unavailableReason?: "PLACE_SUSPENDED" | "PLACE_ARCHIVED" | "PLACE_NOT_PUBLISHED" | "PLACE_MISSING";
         };
         Plan: {
             /** Format: uuid */
@@ -1963,6 +1973,8 @@ export interface components {
             totals?: components["schemas"]["PlanTotals"];
             /** Format: date-time */
             createdAt?: string;
+            /** @description True when at least one stop points at a place that is no longer usable — lets a client show one banner without scanning stops. */
+            hasUnavailableStops?: boolean;
             stops?: components["schemas"]["PlanStop"][];
         };
         Checkin: {

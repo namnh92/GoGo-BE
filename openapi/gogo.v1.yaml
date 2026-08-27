@@ -2827,8 +2827,22 @@ components:
         isLocked:
           type: boolean
           description: Locked stops are invariant across regenerate.
-        status: { type: string, enum: [planned, completed, skipped] }
+        status:
+          type: string
+          enum: [planned, completed, skipped]
+          description: Progress of the stop itself, not of the place behind it.
         completedAt: { type: string, format: date-time }
+        placeAvailable:
+          type: boolean
+          description: >
+            False when the place behind this stop is no longer usable — taken
+            down, archived or never published. The stop is deliberately kept:
+            a locked stop is invariant, and dropping stops would rewrite a plan
+            people already agreed on. Show a warning; do not present it as fine.
+        unavailableReason:
+          type: string
+          enum: [PLACE_SUSPENDED, PLACE_ARCHIVED, PLACE_NOT_PUBLISHED, PLACE_MISSING]
+          description: Present only when `placeAvailable` is false. Resolve copy via i18n.
     Plan:
       type: object
       properties:
@@ -2842,6 +2856,11 @@ components:
         constraintVersion: { type: integer }
         totals: { $ref: '#/components/schemas/PlanTotals' }
         createdAt: { type: string, format: date-time }
+        hasUnavailableStops:
+          type: boolean
+          description: >
+            True when at least one stop points at a place that is no longer
+            usable — lets a client show one banner without scanning stops.
         stops:
           type: array
           items: { $ref: '#/components/schemas/PlanStop' }
