@@ -910,7 +910,7 @@ export interface paths {
             cookie?: never;
         };
         /** Editor/ops: job status and per-status row counts */
-        get: operations["getPlaceImport"];
+        get: operations["getPlaceImportJob"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4002,7 +4002,7 @@ export interface operations {
             429: components["responses"]["RateLimited"];
         };
     };
-    getPlaceImport: {
+    getPlaceImportJob: {
         parameters: {
             query?: never;
             header?: never;

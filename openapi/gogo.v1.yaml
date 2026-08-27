@@ -1504,7 +1504,7 @@ paths:
 
   /cms/place-imports/{jobId}:
     get:
-      operationId: getPlaceImport
+      operationId: getPlaceImportJob
       tags: [cms]
       summary: 'Editor/ops: job status and per-status row counts'
       parameters:
