@@ -1,0 +1,7 @@
+packages:
+  - apps/*
+  - libs/*
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+  argon2: true

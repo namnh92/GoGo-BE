@@ -1,27 +1,20 @@
-# Dependencies
+# dependencies
 node_modules/
-.pnpm-store/
 
-# Build
+# builds
 dist/
-build/
-*.tsbuildinfo
-
-# Env & secrets
-.env
-.env.*
-!.env.example
-
-# Logs & coverage
-*.log
+.turbo/
 coverage/
-.nyc_output/
 
-# OS / editor
+# env — only .env.example is committed
+.env
+.env.local
+.env.*.local
+
+# editor/os
 .DS_Store
 .idea/
 .vscode/
-*.swp
 
-# Test
-.testcontainers/
+# logs
+*.log

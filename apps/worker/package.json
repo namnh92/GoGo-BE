@@ -1,0 +1,23 @@
+{
+  "name": "@gogo/worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@gogo/database": "workspace:*",
+    "@gogo/modules": "workspace:*",
+    "@gogo/observability": "workspace:*",
+    "bullmq": "^5.0.0",
+    "ioredis": "^5.4.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
