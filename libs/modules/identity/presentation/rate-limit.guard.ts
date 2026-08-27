@@ -56,9 +56,14 @@ export class RateLimitGuard implements CanActivate {
     if (spec.keyBy.includes('actor'))
       parts.push(req.actor ? `${req.actor.type}:${req.actor.id}` : 'anon');
 
-    const count = await this.store.hit(parts.join('|'), spec.windowSeconds);
+    const key = parts.join('|');
+    const count = await this.store.hit(key, spec.windowSeconds);
     if (count > spec.limit) {
       throw AppError.tooManyRequests();
+    }
+    if (spec.burst) {
+      const burst = await this.store.hit(`${key}|burst`, spec.burst.windowSeconds);
+      if (burst > spec.burst.limit) throw AppError.tooManyRequests();
     }
     return true;
   }

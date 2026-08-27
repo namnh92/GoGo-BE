@@ -667,3 +667,179 @@ describe('audit request context (BE-IMP-007)', () => {
     expect(rows.every((r) => r.ipAddress === null)).toBe(true);
   });
 });
+
+describe('SEC-001 emergency takedown (break-glass)', () => {
+  const takedown = (token: string, url: string, reason = 'nội dung vi phạm nghiêm trọng') =>
+    api().inject({
+      method: 'POST',
+      url,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { reason },
+    });
+
+  async function publishedPlace(name: string) {
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name,
+        nameNormalized: 'set-by-trigger',
+        status: 'published',
+        geom: { x: 106.7009, y: 10.7769 },
+        areaKey: 'hcm_q1',
+      })
+      .returning();
+    return place!;
+  }
+
+  it('every admin role can take a place down — the point is whoever is awake', async () => {
+    for (const role of ['editor', 'moderator', 'ops_admin', 'super_admin'] as const) {
+      const admin = await createAdmin(`bg-${role}@gogo.local`, role);
+      const place = await publishedPlace(`Break Glass ${role}`);
+      const res = await takedown(admin.token, `/v1/cms/emergency/places/${place.id}/suspend`);
+      expect(res.statusCode).toBe(201);
+      expect(res.json().status).toBe('suspended');
+    }
+  });
+
+  it('the place actually leaves discovery, not just the database row', async () => {
+    // The success condition is "gone from discovery". Today search reads status
+    // live from Postgres so this holds automatically — this test is what turns
+    // red the day an external index lands (SE-009) and a takedown would
+    // otherwise silently stop working.
+    const admin = await createAdmin('bg-discovery@gogo.local', 'editor');
+    const place = await publishedPlace('Break Glass Discovery Quán');
+
+    const before = await api().inject({
+      method: 'GET',
+      url: '/v1/places/search?q=Break Glass Discovery&lat=10.7769&lng=106.7009&radiusM=5000',
+      remoteAddress: ip(),
+    });
+    expect(before.json().results.some((i: { id: string }) => i.id === place.id)).toBe(true);
+
+    await takedown(admin.token, `/v1/cms/emergency/places/${place.id}/suspend`);
+
+    const after = await api().inject({
+      method: 'GET',
+      url: '/v1/places/search?q=Break Glass Discovery&lat=10.7769&lng=106.7009&radiusM=5000',
+      remoteAddress: ip(),
+    });
+    expect(after.json().results.some((i: { id: string }) => i.id === place.id)).toBe(false);
+  });
+
+  it('records who, from where, why, and what changed', async () => {
+    const admin = await createAdmin('bg-audit@gogo.local', 'moderator');
+    const place = await publishedPlace('Break Glass Audit');
+    const res = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/emergency/places/${place.id}/suspend`,
+      remoteAddress: '10.77.0.9',
+      headers: auth(admin.token),
+      payload: { reason: 'ảnh vi phạm, gỡ khẩn cấp' },
+    });
+    expect(res.statusCode).toBe(201);
+
+    const [row] = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.resourceId, place.id));
+    expect(row!.action).toBe('place.emergency_suspended');
+    expect(row!.actorId).toBe(admin.id);
+    expect(row!.ipAddress).toBe('10.77.0.9');
+    expect(row!.requestId).toBe(res.headers['x-request-id']);
+    expect(row!.diff).toMatchObject({
+      breakGlass: true,
+      role: 'moderator',
+      reason: 'ảnh vi phạm, gỡ khẩn cấp',
+      before: { status: 'published' },
+      after: { status: 'suspended' },
+    });
+  });
+
+  it('taking down does not grant putting back up', async () => {
+    // The asymmetry is the whole design: an ops_admin can suspend a place but
+    // still cannot restore or edit it.
+    const ops = await createAdmin('bg-asym@gogo.local', 'ops_admin');
+    const place = await publishedPlace('Break Glass Asymmetry');
+    expect(
+      (await takedown(ops.token, `/v1/cms/emergency/places/${place.id}/suspend`)).statusCode,
+    ).toBe(201);
+
+    const restore = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/places/${place.id}/status`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { status: 'published' },
+    });
+    expect(restore.json().code).toBe('ROLE_DENIED');
+  });
+
+  it('refuses a reason that explains nothing, and a state it does not apply to', async () => {
+    const admin = await createAdmin('bg-guard@gogo.local', 'editor');
+    const place = await publishedPlace('Break Glass Guard');
+
+    const noReason = await takedown(
+      admin.token,
+      `/v1/cms/emergency/places/${place.id}/suspend`,
+      'x',
+    );
+    expect(noReason.statusCode).toBe(400);
+
+    expect(
+      (await takedown(admin.token, `/v1/cms/emergency/places/${place.id}/suspend`)).statusCode,
+    ).toBe(201);
+    // Already suspended: break-glass covers exactly one transition.
+    const again = await takedown(admin.token, `/v1/cms/emergency/places/${place.id}/suspend`);
+    expect(again.statusCode).toBe(409);
+    expect(again.json().code).toBe('NOT_TAKEDOWNABLE');
+  });
+
+  it('burst limit stops a scripted run that the hourly cap alone would allow', async () => {
+    const admin = await createAdmin('bg-burst@gogo.local', 'editor');
+    const places = [];
+    for (let i = 0; i < 8; i++) places.push(await publishedPlace(`Break Glass Burst ${i}`));
+
+    let limited = false;
+    for (const place of places) {
+      const res = await takedown(admin.token, `/v1/cms/emergency/places/${place.id}/suspend`);
+      if (res.statusCode === 429) {
+        limited = true;
+        break;
+      }
+    }
+    // 5/minute: a human working an incident never reaches this; a script does.
+    expect(limited).toBe(true);
+  });
+
+  it('hides a published review, keeping it distinct from a moderator verdict', async () => {
+    const admin = await createAdmin('bg-review@gogo.local', 'ops_admin');
+    const place = await publishedPlace('Break Glass Review Target');
+    const reg = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: ip(),
+      payload: { email: 'bg-reviewer@gogo.vn', password: 'sufficiently-long-pw', displayName: 'R' },
+    });
+    const review = await api().inject({
+      method: 'POST',
+      url: '/v1/reviews',
+      remoteAddress: ip(),
+      headers: auth(reg.json().accessToken),
+      payload: { placeId: place.id, rating: 4, text: 'break glass target' },
+    });
+    await db
+      .update(schema.reviews)
+      .set({ status: 'published' })
+      .where(eq(schema.reviews.id, review.json().id));
+
+    const res = await takedown(admin.token, `/v1/cms/emergency/reviews/${review.json().id}/hide`);
+    expect(res.statusCode).toBe(201);
+    const [row] = await db
+      .select()
+      .from(schema.reviews)
+      .where(eq(schema.reviews.id, review.json().id));
+    // Not `rejected`/`removed`: those are quality verdicts, this is a takedown.
+    expect(row!.status).toBe('hidden');
+  });
+});

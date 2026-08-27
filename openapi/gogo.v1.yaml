@@ -2464,6 +2464,105 @@ paths:
       responses:
         '200': { description: Flag updated (audited) }
 
+  /cms/emergency/places/{id}/suspend:
+    post:
+      operationId: emergencySuspendPlace
+      tags: [cms]
+      summary: 'Any active admin: take a published place down (SEC-001 break-glass)'
+      description: >
+        Break-glass, deliberately asymmetric. Taking content **down** is open to
+        every active admin role because it is reversible and reduces harm; putting
+        it **back up** keeps its usual privileged role. Only `published →
+        suspended` is accepted — any other current state is refused rather than
+        coerced. One resource per call; there is no bulk form. Rate limited to 20
+        per hour per admin with a 5-per-minute burst cap, separately from the
+        normal baseline. Every call is audited with actor, role, request id, staff
+        IP, reason and before/after state, and raises an alert.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmergencyTakedownRequest' }
+      responses:
+        '201':
+          description: Place suspended; it leaves search and suggestion immediately
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [suspended] }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: NOT_TAKEDOWNABLE — the resource is not in a state this applies to
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/emergency/reviews/{id}/hide:
+    post:
+      operationId: emergencyHideReview
+      tags: [cms]
+      summary: 'Any active admin: hide a published review (SEC-001 break-glass)'
+      description: >
+        `published → hidden`. `hidden` is distinct from the moderator verdicts
+        `rejected`/`removed` on purpose: it records "taken down under time
+        pressure, pending review". Same limits and audit as the place route.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmergencyTakedownRequest' }
+      responses:
+        '201':
+          description: Review hidden
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [hidden] }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/emergency/checkins/{id}/hide:
+    post:
+      operationId: emergencyHideCheckin
+      tags: [cms]
+      summary: 'Any active admin: hide a stop check-in (SEC-001 break-glass)'
+      description: Same limits and audit as the place route.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmergencyTakedownRequest' }
+      responses:
+        '201':
+          description: Check-in hidden
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  moderation: { type: string, enum: [hidden] }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
   /cms/ops/kpis:
     get:
       operationId: cmsOpsKpis
@@ -3153,6 +3252,17 @@ components:
         freshnessCheckedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    EmergencyTakedownRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 10
+          maxLength: 500
+          description: >
+            Why this was taken down. Required and stored in the audit record —
+            it is the only explanation anyone reviewing the incident later has.
   responses:
     BadRequest:
       description: Validation or business rule failure

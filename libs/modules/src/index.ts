@@ -111,3 +111,4 @@ export {
   type RequestContext,
 } from '../shared/request-context';
 export { writeAudit, type AuditInput } from '../shared/audit';
+export { EmergencyTakedownService } from '../cms/application/emergency-takedown.service';

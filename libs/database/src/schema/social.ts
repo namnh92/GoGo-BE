@@ -43,6 +43,9 @@ export const reviewStatus = pgEnum('review_status', [
   'published',
   'rejected',
   'removed',
+  // SEC-001 emergency takedown. Separate from the moderator verdicts above:
+  // this one means "taken down under time pressure, pending review".
+  'hidden',
 ]);
 
 export const reviews = pgTable(

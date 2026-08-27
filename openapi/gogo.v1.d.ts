@@ -1642,6 +1642,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/emergency/places/{id}/suspend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Any active admin: take a published place down (SEC-001 break-glass)
+         * @description Break-glass, deliberately asymmetric. Taking content **down** is open to every active admin role because it is reversible and reduces harm; putting it **back up** keeps its usual privileged role. Only `published → suspended` is accepted — any other current state is refused rather than coerced. One resource per call; there is no bulk form. Rate limited to 20 per hour per admin with a 5-per-minute burst cap, separately from the normal baseline. Every call is audited with actor, role, request id, staff IP, reason and before/after state, and raises an alert.
+         */
+        post: operations["emergencySuspendPlace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/emergency/reviews/{id}/hide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Any active admin: hide a published review (SEC-001 break-glass)
+         * @description `published → hidden`. `hidden` is distinct from the moderator verdicts `rejected`/`removed` on purpose: it records "taken down under time pressure, pending review". Same limits and audit as the place route.
+         */
+        post: operations["emergencyHideReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/emergency/checkins/{id}/hide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Any active admin: hide a stop check-in (SEC-001 break-glass)
+         * @description Same limits and audit as the place route.
+         */
+        post: operations["emergencyHideCheckin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/ops/kpis": {
         parameters: {
             query?: never;
@@ -2196,6 +2256,10 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        EmergencyTakedownRequest: {
+            /** @description Why this was taken down. Required and stored in the audit record — it is the only explanation anyone reviewing the incident later has. */
+            reason: string;
         };
     };
     responses: {
@@ -5239,6 +5303,119 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    emergencySuspendPlace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmergencyTakedownRequest"];
+            };
+        };
+        responses: {
+            /** @description Place suspended; it leaves search and suggestion immediately */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        id?: string;
+                        /** @enum {string} */
+                        status?: "suspended";
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description NOT_TAKEDOWNABLE — the resource is not in a state this applies to */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    emergencyHideReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmergencyTakedownRequest"];
+            };
+        };
+        responses: {
+            /** @description Review hidden */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        id?: string;
+                        /** @enum {string} */
+                        status?: "hidden";
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    emergencyHideCheckin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmergencyTakedownRequest"];
+            };
+        };
+        responses: {
+            /** @description Check-in hidden */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        id?: string;
+                        /** @enum {string} */
+                        moderation?: "hidden";
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["RateLimited"];
         };
     };
     cmsOpsKpis: {
