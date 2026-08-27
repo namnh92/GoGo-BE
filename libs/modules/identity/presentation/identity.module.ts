@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import IORedis from 'ioredis';
 import { randomBytes } from 'node:crypto';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { AuthService, AUTH_OPTIONS, type AuthOptions } from '../application/auth.service';
@@ -10,6 +11,7 @@ import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { RateLimitGuard } from './rate-limit.guard';
 import { InMemoryRateLimitStore, RATE_LIMIT_STORE } from './rate-limit.service';
+import { FallbackRateLimitStore, RedisRateLimitStore } from './redis-rate-limit.store';
 import { SessionsController } from './sessions.controller';
 
 /**
@@ -44,7 +46,26 @@ import { SessionsController } from './sessions.controller';
       inject: [APP_CONFIG],
     },
     AuthService,
-    { provide: RATE_LIMIT_STORE, useClass: InMemoryRateLimitStore },
+    {
+      // Redis-backed limits when configured (multi-instance correct); the
+      // wrapper fails open to the per-process store on Redis outage.
+      provide: RATE_LIMIT_STORE,
+      useFactory: (config: IdentityConfig & { REDIS_URL?: string }) => {
+        if (!config.REDIS_URL || config.NODE_ENV === 'test') {
+          return new InMemoryRateLimitStore();
+        }
+        const redis = new IORedis(config.REDIS_URL, {
+          lazyConnect: true,
+          maxRetriesPerRequest: 1,
+          enableOfflineQueue: false,
+        });
+        redis.on('error', () => {
+          /* handled by fallback wrapper per hit */
+        });
+        return new FallbackRateLimitStore(new RedisRateLimitStore(redis));
+      },
+      inject: [APP_CONFIG],
+    },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: RateLimitGuard },
   ],

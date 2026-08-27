@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
+import { IdempotencyInterceptor } from '@gogo/modules';
 import {
   CmsModule,
   IdentityModule,
@@ -42,6 +43,9 @@ class ConfigModule {}
     CmsModule,
   ],
   controllers: [HealthController],
-  providers: [{ provide: APP_FILTER, useClass: AppExceptionFilter }],
+  providers: [
+    { provide: APP_FILTER, useClass: AppExceptionFilter },
+    { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },
+  ],
 })
 export class AppModule {}

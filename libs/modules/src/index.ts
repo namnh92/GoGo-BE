@@ -71,5 +71,6 @@ export { CmsModule } from '../cms/presentation/cms.module';
 export { AdminAuthService } from '../cms/application/admin-auth.service';
 
 // Platform
+export { IdempotencyInterceptor } from '../shared/idempotency.interceptor';
 export { writeOutbox, type DomainEventInput } from '../shared/outbox';
 export { PrivacyJobs, type PrivacyRunReport } from '../shared/privacy-jobs';

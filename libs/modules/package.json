@@ -18,7 +18,9 @@
     "drizzle-orm": "^0.44.7",
     "fast-jwt": "^6.3.2",
     "fastify": "5.11.3",
+    "ioredis": "^5.11.1",
     "otplib": "^12.0.1",
+    "rxjs": "^7.8.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {

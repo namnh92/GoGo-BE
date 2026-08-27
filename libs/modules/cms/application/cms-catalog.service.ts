@@ -143,16 +143,14 @@ export class CmsCatalogService {
     await this.db.transaction(async (tx) => {
       await tx.delete(schema.placeHours).where(eq(schema.placeHours.placeId, placeId));
       if (hours.length > 0) {
-        await tx
-          .insert(schema.placeHours)
-          .values(
-            hours.map((h) => ({
-              placeId,
-              ...h,
-              source: 'editor' as const,
-              verifiedAt: new Date(),
-            })),
-          );
+        await tx.insert(schema.placeHours).values(
+          hours.map((h) => ({
+            placeId,
+            ...h,
+            source: 'editor' as const,
+            verifiedAt: new Date(),
+          })),
+        );
       }
       await tx
         .update(schema.places)

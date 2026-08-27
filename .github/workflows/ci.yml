@@ -23,8 +23,20 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
+      # Contract drift gate (QP-002): the committed generated client must
+      # match the OpenAPI spec; regeneration diff fails the build.
+      - run: pnpm api:check
+      # Supply-chain gate: critical advisories in prod deps fail the build.
+      - run: pnpm audit --prod --audit-level critical
       - run: pnpm test
       - run: pnpm build
+      # Published contract artifacts (FND-005): consumers download these.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gogo-api-contract
+          path: |
+            openapi/gogo.v1.yaml
+            openapi/gogo.v1.d.ts
 
   integration:
     runs-on: ubuntu-latest

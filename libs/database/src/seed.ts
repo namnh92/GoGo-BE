@@ -292,6 +292,31 @@ async function main(): Promise<void> {
     }
   }
 
+  // SE-001 — generic-term synonyms expanding to categories in search.
+  const CATEGORY_SYNONYMS: Record<string, string[]> = {
+    cafe: ['cà phê', 'quán cà phê', 'coffee'],
+    restaurant: ['quán ăn', 'nhà hàng', 'ăn uống'],
+    park: ['công viên'],
+    bar: ['quán bar', 'pub'],
+    cinema: ['rạp phim', 'rạp chiếu phim'],
+    museum: ['bảo tàng'],
+    lodging: ['khách sạn', 'homestay'],
+  };
+  const catRows = await db
+    .select()
+    .from(schema.taxonomies)
+    .where(sql`${schema.taxonomies.kind} = 'category'`);
+  for (const [key, terms] of Object.entries(CATEGORY_SYNONYMS)) {
+    const cat = catRows.find((c) => c.key === key);
+    if (!cat) continue;
+    for (const term of terms) {
+      await db
+        .insert(schema.taxonomySynonyms)
+        .values({ taxonomyId: cat.id, term, locale: 'vi' })
+        .onConflictDoNothing();
+    }
+  }
+
   for (const [i, area] of SERVICE_AREAS.entries()) {
     await db
       .insert(schema.serviceAreas)
