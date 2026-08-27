@@ -222,6 +222,39 @@ export const placePrices = pgTable(
   ],
 );
 
+/**
+ * ADR-0007 — cached travel legs between two catalog places.
+ *
+ * Durable rather than a Redis TTL because these pairs are fixed geometry: two
+ * catalog points, identical for every user and every room, and reusable until
+ * one of the places moves. That is what makes routing affordable here — unlike
+ * a ride-hailing matrix, most legs GoGo asks for have been asked before. The
+ * origin→first-stop leg starts from a user-supplied point and is *not* cached
+ * here; it belongs in Redis with a short TTL.
+ */
+export const travelLegs = pgTable(
+  'travel_legs',
+  {
+    fromPlaceId: uuid('from_place_id')
+      .notNull()
+      .references(() => places.id, { onDelete: 'cascade' }),
+    toPlaceId: uuid('to_place_id')
+      .notNull()
+      .references(() => places.id, { onDelete: 'cascade' }),
+    mode: text('mode').notNull().default('drive'),
+    /** Hour-of-day bucket; only meaningful once traffic-aware routing is on. */
+    timeBucket: smallint('time_bucket').notNull().default(0),
+    minutes: integer('minutes').notNull(),
+    distanceM: integer('distance_m').notNull(),
+    provider: text('provider').notNull().default('google_routes'),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('travel_legs_pair_unique').on(t.fromPlaceId, t.toPlaceId, t.mode, t.timeBucket),
+    index('travel_legs_from_idx').on(t.fromPlaceId),
+  ],
+);
+
 export const moderationStatus = pgEnum('moderation_status', ['pending', 'approved', 'rejected']);
 
 export const placeMedia = pgTable(

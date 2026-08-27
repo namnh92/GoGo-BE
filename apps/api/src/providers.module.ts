@@ -7,11 +7,14 @@ import {
   FakeSheets,
   FakeStorage,
   GooglePlacesAdapter,
+  GoogleRoutesAdapter,
   GoogleSheetsAdapter,
+  HaversineTravelTime,
   PLACE_PROVIDER,
   PUSH_PROVIDER,
   SHEETS_PROVIDER,
   STORAGE_PROVIDER,
+  TRAVEL_TIME_PROVIDER,
 } from '@gogo/providers';
 import { LogMetrics, METRICS, createLogger, type MetricsPort } from '@gogo/observability';
 import { APP_CONFIG, type AppConfig } from './config/env';
@@ -59,6 +62,19 @@ import { APP_CONFIG, type AppConfig } from './config/env';
         new LogMetrics(createLogger({ level: config.LOG_LEVEL, name: 'gogo-metrics' })),
       inject: [APP_CONFIG],
     },
+    {
+      // ADR-0007: the real adapter is only bound when the flag *and* a key are
+      // present. Everywhere else the straight-line estimate answers, which is
+      // also the fallback path when quota runs out.
+      provide: TRAVEL_TIME_PROVIDER,
+      useFactory: (config: AppConfig, metrics: MetricsPort) => {
+        const key = config.GOOGLE_ROUTES_API_KEY || config.GOOGLE_MAPS_API_KEY;
+        return config.FLAG_ROUTES_API && key
+          ? new GoogleRoutesAdapter(key, metrics)
+          : new HaversineTravelTime();
+      },
+      inject: [APP_CONFIG, METRICS],
+    },
     { provide: PUSH_PROVIDER, useClass: FakePush },
     { provide: STORAGE_PROVIDER, useClass: FakeStorage },
   ],
@@ -66,6 +82,7 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     PLACE_PROVIDER,
     AREA_AUTOCOMPLETE,
     SHEETS_PROVIDER,
+    TRAVEL_TIME_PROVIDER,
     PUSH_PROVIDER,
     STORAGE_PROVIDER,
     METRICS,

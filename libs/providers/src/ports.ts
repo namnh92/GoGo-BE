@@ -108,3 +108,24 @@ export class ProviderQuotaExceededError extends Error {
 }
 
 export const SHEETS_PROVIDER = Symbol('SHEETS_PROVIDER');
+
+export type LatLng = { lat: number; lng: number };
+
+/** One leg. `null` when the provider could not route this pair. */
+export type TravelLeg = { minutes: number; distanceM: number };
+
+/**
+ * ADR-0007 — travel time between two points.
+ *
+ * Shaped as one origin to many destinations because that is what the itinerary
+ * optimizer asks for: it picks stops greedily, so at each step it needs the
+ * legs from the stop just chosen to every remaining candidate. Batching per
+ * step keeps four provider calls per plan instead of thirty-four, without
+ * paying for the full origins × destinations rectangle a matrix prefetch would
+ * bill for.
+ */
+export interface TravelTimePort {
+  matrix(origin: LatLng, destinations: LatLng[]): Promise<(TravelLeg | null)[]>;
+}
+
+export const TRAVEL_TIME_PROVIDER = Symbol('TRAVEL_TIME_PROVIDER');
