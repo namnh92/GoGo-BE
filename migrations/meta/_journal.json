@@ -113,6 +113,13 @@
       "when": 1787837537888,
       "tag": "0015_checkin-tag-seed",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1787837538888,
+      "tag": "0016_search-query-analytics",
+      "breakpoints": true
     }
   ]
 }

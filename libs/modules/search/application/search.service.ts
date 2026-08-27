@@ -1,5 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
 import { APP_CONFIG, type MediaConfig } from '../../shared/config';
 import { AppError } from '../../shared/app-error';
@@ -85,12 +86,48 @@ export class SearchService {
     @Optional() @Inject(APP_CONFIG) private readonly config?: MediaConfig,
   ) {}
 
+  /**
+   * SE-006 — one upsert into the daily aggregate.
+   *
+   * No actor, ever. A per-request log with an actor on it would make every
+   * search attributable to a person, and the question this data answers —
+   * "which queries fail" — does not need to know who asked. Failures here are
+   * swallowed: analytics must never turn a working search into an error.
+   */
+  private async recordSearch(
+    filters: SearchFilters,
+    resultCount: number,
+    latencyMs: number,
+  ): Promise<void> {
+    try {
+      // Free text is truncated: the column is for grouping, not for keeping
+      // whatever someone typed.
+      const term = filters.q ? normalizeVietnamese(filters.q).slice(0, 120) : '';
+      await this.db.execute(sql`
+        insert into search_query_daily
+          (day, query_normalized, has_query, searches, zero_results, results_sum, latency_ms_sum)
+        values (
+          current_date, ${term}, ${filters.q ? true : false}, 1,
+          ${resultCount === 0 ? 1 : 0}, ${resultCount}, ${latencyMs}
+        )
+        on conflict (day, query_normalized) do update set
+          searches = search_query_daily.searches + 1,
+          zero_results = search_query_daily.zero_results + excluded.zero_results,
+          results_sum = search_query_daily.results_sum + excluded.results_sum,
+          latency_ms_sum = search_query_daily.latency_ms_sum + excluded.latency_ms_sum
+      `);
+    } catch {
+      /* analytics is never worth failing a search over */
+    }
+  }
+
   /** Empty until media hosting is configured; see `toPhotos`. */
   private get mediaBaseUrl(): string {
     return this.config?.MEDIA_PUBLIC_BASE_URL ?? '';
   }
 
   async search(filters: SearchFilters, actorAnalyticsId?: string) {
+    const startedAt = Date.now();
     const { weights, version } = await this.repo.activeWeights();
     const synonymCategoryKeys = filters.q
       ? await this.repo.synonymCategoryKeys(normalizeVietnamese(filters.q))
@@ -111,6 +148,11 @@ export class SearchService {
     const results = page.map((row) =>
       this.toResult(row, hoursByPlace.get(row.id) ?? [], at, filters),
     );
+
+    // SE-006 — the denominator. Zero-result counts were already recorded, but
+    // "40 zero-results today" says nothing without "out of how many searches",
+    // so every search is counted, not only the empty ones.
+    await this.recordSearch(filters, results.length, Date.now() - startedAt);
 
     if (results.length === 0) {
       // FR-SEARCH-008: measurable zero-result without raw PII — normalized

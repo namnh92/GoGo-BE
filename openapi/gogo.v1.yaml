@@ -2548,6 +2548,42 @@ paths:
         '201': { description: Merged; audited }
         '400': { $ref: '#/components/responses/BadRequest' }
 
+  /cms/search-analytics:
+    get:
+      operationId: cmsSearchAnalytics
+      tags: [cms]
+      summary: 'Ops: search quality — zero-result rate and the queries that fail'
+      description: >
+        Zero-result counts were measurable before this; the denominator was
+        not, and "40 zero-results today" says nothing without "out of how many
+        searches".
+
+
+        Built from a daily aggregate, not a per-request search log. There is no
+        request-level search log to drill into — that absence is the privacy
+        design rather than a gap: a daily counter carries no actor, so nothing
+        can join a query back to a person.
+
+
+        A query term is only named once at least 5 searches produced it. Below
+        that floor the rows are still counted, in `hiddenBelowFloor`, but the
+        text is withheld: a query one person typed is effectively that person's
+        query. Hiding the rows entirely would understate how much of search is
+        failing, which is the opposite of the point.
+      parameters:
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 90, default: 7 } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 20 },
+          }
+      responses:
+        '200':
+          description: Search quality over the window
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsSearchAnalytics' }
+
   /cms/taxonomies:
     get:
       operationId: cmsListTaxonomies
@@ -4181,6 +4217,52 @@ components:
             Facts, never composed copy. Carries the version a client should
             compare against — `constraintVersion` for suggestions, `version`
             for a plan — so a stale event is distinguishable from a fresh one.
+
+    CmsSearchAnalytics:
+      type: object
+      required: [days, totals, trend, worstQueries, hiddenBelowFloor]
+      properties:
+        days: { type: integer }
+        totals:
+          type: object
+          required: [searches, zeroResults, zeroResultRate, avgResults, avgLatencyMs]
+          properties:
+            searches: { type: integer }
+            zeroResults: { type: integer }
+            zeroResultRate: { type: number }
+            avgResults: { type: number }
+            avgLatencyMs: { type: integer }
+        trend:
+          type: array
+          items:
+            type: object
+            required: [day, searches, zeroResults, zeroResultRate]
+            properties:
+              day: { type: string, format: date }
+              searches: { type: integer }
+              zeroResults: { type: integer }
+              zeroResultRate: { type: number }
+        worstQueries:
+          type: array
+          description: Only terms at or above the visibility floor.
+          items:
+            type: object
+            required: [query, searches, zeroResults, zeroResultRate]
+            properties:
+              query: { type: string }
+              searches: { type: integer }
+              zeroResults: { type: integer }
+              zeroResultRate: { type: number }
+        hiddenBelowFloor:
+          type: object
+          description: >
+            Rare terms, counted but not named. Present so the totals stay
+            honest about how much of search is failing.
+          required: [terms, searches, zeroResults]
+          properties:
+            terms: { type: integer }
+            searches: { type: integer }
+            zeroResults: { type: integer }
 
   responses:
     BadRequest:

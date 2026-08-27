@@ -7,6 +7,7 @@ import { CmsCatalogService } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { EmergencyTakedownService } from '../application/emergency-takedown.service';
+import { SearchAnalyticsService } from '../application/search-analytics.service';
 import { AdminGuard } from './admin.guard';
 import { EmergencyController } from './emergency.controller';
 import {
@@ -36,6 +37,7 @@ import {
     CmsContentService,
     CmsOpsService,
     EmergencyTakedownService,
+    SearchAnalyticsService,
     { provide: APP_GUARD, useClass: AdminGuard },
   ],
 })

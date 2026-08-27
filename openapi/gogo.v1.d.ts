@@ -1551,6 +1551,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/search-analytics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: search quality — zero-result rate and the queries that fail
+         * @description Zero-result counts were measurable before this; the denominator was not, and "40 zero-results today" says nothing without "out of how many searches".
+         *
+         *     Built from a daily aggregate, not a per-request search log. There is no request-level search log to drill into — that absence is the privacy design rather than a gap: a daily counter carries no actor, so nothing can join a query back to a person.
+         *
+         *     A query term is only named once at least 5 searches produced it. Below that floor the rows are still counted, in `hiddenBelowFloor`, but the text is withheld: a query one person typed is effectively that person's query. Hiding the rows entirely would understate how much of search is failing, which is the opposite of the point.
+         */
+        get: operations["cmsSearchAnalytics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/taxonomies": {
         parameters: {
             query?: never;
@@ -2750,6 +2774,36 @@ export interface components {
             payload_schema_version?: number;
             /** @description Facts, never composed copy. Carries the version a client should compare against — `constraintVersion` for suggestions, `version` for a plan — so a stale event is distinguishable from a fresh one. */
             payload: Record<string, never>;
+        };
+        CmsSearchAnalytics: {
+            days: number;
+            totals: {
+                searches: number;
+                zeroResults: number;
+                zeroResultRate: number;
+                avgResults: number;
+                avgLatencyMs: number;
+            };
+            trend: {
+                /** Format: date */
+                day: string;
+                searches: number;
+                zeroResults: number;
+                zeroResultRate: number;
+            }[];
+            /** @description Only terms at or above the visibility floor. */
+            worstQueries: {
+                query: string;
+                searches: number;
+                zeroResults: number;
+                zeroResultRate: number;
+            }[];
+            /** @description Rare terms, counted but not named. Present so the totals stay honest about how much of search is failing. */
+            hiddenBelowFloor: {
+                terms: number;
+                searches: number;
+                zeroResults: number;
+            };
         };
     };
     responses: {
@@ -5676,6 +5730,29 @@ export interface operations {
                 content?: never;
             };
             400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsSearchAnalytics: {
+        parameters: {
+            query?: {
+                days?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Search quality over the window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsSearchAnalytics"];
+                };
+            };
         };
     };
     cmsListTaxonomies: {

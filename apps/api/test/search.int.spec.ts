@@ -6,6 +6,7 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import argon2 from 'argon2';
 import { schema } from '@gogo/database';
 
 /**
@@ -365,5 +366,97 @@ describe('place detail is a contract, not a SQL row (#169)', () => {
     // its placeholder instead of a broken image.
     expect(Array.isArray(body.photos)).toBe(true);
     expect(body.photos).toHaveLength(0);
+  });
+});
+
+/** Ops admin for the analytics read; the endpoint is ops-scoped. */
+async function createOpsAdmin(email: string): Promise<string> {
+  const passwordHash = await argon2.hash('admin-password-123', { type: argon2.argon2id });
+  await db
+    .insert(schema.adminUsers)
+    .values({ email, passwordHash, displayName: 'ops', role: 'ops_admin' });
+  const res = await api().inject({
+    method: 'POST',
+    url: '/v1/cms/auth/login',
+    remoteAddress: '10.55.0.1',
+    payload: { email, password: 'admin-password-123' },
+  });
+  return res.json().accessToken as string;
+}
+
+/**
+ * SE-006 (#36) — search analytics. The point is the denominator: zero-result
+ * counts alone say nothing about whether search is working.
+ */
+describe('search analytics (SE-006, #36)', () => {
+  it('counts every search, not only the empty ones', async () => {
+    const before = await db.execute(
+      sql`select coalesce(sum(searches), 0)::int as n from search_query_daily`,
+    );
+    const start = Number((before.rows[0] as { n: number }).n);
+
+    await api().inject({ method: 'GET', url: '/v1/places/search?q=cafe&lat=10.77&lng=106.7' });
+    await api().inject({
+      method: 'GET',
+      url: '/v1/places/search?q=khongcogiday&lat=10.77&lng=106.7',
+    });
+
+    const after = await db.execute(sql`
+      select coalesce(sum(searches), 0)::int as searches,
+             coalesce(sum(zero_results), 0)::int as zero_results
+      from search_query_daily
+    `);
+    const row = after.rows[0] as { searches: number; zero_results: number };
+    expect(Number(row.searches)).toBe(start + 2);
+    expect(Number(row.zero_results)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('stores no actor alongside a query', async () => {
+    // The table has no actor column at all — the check is structural, because
+    // a comment saying "we do not log the user" is not an assurance.
+    const columns = await db.execute(sql`
+      select column_name from information_schema.columns
+      where table_name = 'search_query_daily'
+    `);
+    const names = (columns.rows as { column_name: string }[]).map((c) => c.column_name);
+    expect(names).not.toContain('actor_id');
+    expect(names.some((n) => n.includes('user') || n.includes('actor'))).toBe(false);
+  });
+
+  it('withholds a query term nobody else searched, but still counts it', async () => {
+    const admin = await createOpsAdmin('se006@gogo.local');
+    // One search of a unique term: below the visibility floor.
+    await api().inject({
+      method: 'GET',
+      url: '/v1/places/search?q=chuoi%20rieng%20tu%20cua%20mot%20nguoi&lat=10.77&lng=106.7',
+    });
+
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/search-analytics?days=1',
+      headers: { authorization: `Bearer ${admin}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    const named = body.worstQueries.map((q: { query: string }) => q.query);
+    expect(named.join(' ')).not.toContain('rieng tu');
+    // Counted, though: hiding it entirely would understate the failure rate.
+    expect(body.hiddenBelowFloor.searches).toBeGreaterThanOrEqual(1);
+    expect(body.totals.searches).toBeGreaterThanOrEqual(1);
+  });
+
+  it('reports a zero-result rate, so a spike is something to alert on', async () => {
+    const admin = await createOpsAdmin('se006-rate@gogo.local');
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/search-analytics?days=7',
+      headers: { authorization: `Bearer ${admin}` },
+    });
+    const body = res.json();
+    expect(body.totals.zeroResultRate).toBeGreaterThan(0);
+    expect(body.totals.zeroResultRate).toBeLessThanOrEqual(1);
+    expect(body.trend.length).toBeGreaterThanOrEqual(1);
+    expect(body.totals.avgLatencyMs).toBeGreaterThanOrEqual(0);
   });
 });

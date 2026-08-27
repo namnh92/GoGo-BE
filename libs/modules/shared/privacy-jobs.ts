@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
 
 export type PrivacyRunReport = {
+  searchTermsPurged: number;
   loginAttemptsPurged: number;
   idempotencyKeysPurged: number;
   guestSessionsAnonymized: number;
@@ -17,6 +18,7 @@ export class PrivacyJobs {
 
   async run(dryRun = false): Promise<PrivacyRunReport> {
     const report: PrivacyRunReport = {
+      searchTermsPurged: 0,
       loginAttemptsPurged: 0,
       idempotencyKeysPurged: 0,
       guestSessionsAnonymized: 0,
@@ -27,6 +29,38 @@ export class PrivacyJobs {
       const res = await this.db.execute(sql.raw(`select count(*)::int as n from (${query}) q`));
       return (res.rows[0] as { n: number }).n;
     };
+
+    // SE-006 search terms: 90-day retention on the text, not on the counts.
+    // The aggregate stays so trends survive; the free-text term is dropped,
+    // because a search box can be typed into with anything and there is no
+    // reason to keep the words once the period they describe is history.
+    const termsQ = `select day, query_normalized from search_query_daily
+      where day < current_date - 90 and query_normalized <> ''`;
+    report.searchTermsPurged = await count(termsQ);
+    if (!dryRun && report.searchTermsPurged > 0) {
+      // Folded into the aggregate empty-term row rather than deleted, so the
+      // day's totals do not silently shrink when the words go.
+      await this.db.execute(sql`
+        with expired as (
+          delete from search_query_daily
+          where day < current_date - 90 and query_normalized <> ''
+          returning day, searches, zero_results, results_sum, latency_ms_sum
+        ), rolled as (
+          select day, sum(searches)::int as searches, sum(zero_results)::int as zero_results,
+                 sum(results_sum)::bigint as results_sum,
+                 sum(latency_ms_sum)::bigint as latency_ms_sum
+          from expired group by day
+        )
+        insert into search_query_daily
+          (day, query_normalized, has_query, searches, zero_results, results_sum, latency_ms_sum)
+        select day, '', false, searches, zero_results, results_sum, latency_ms_sum from rolled
+        on conflict (day, query_normalized) do update set
+          searches = search_query_daily.searches + excluded.searches,
+          zero_results = search_query_daily.zero_results + excluded.zero_results,
+          results_sum = search_query_daily.results_sum + excluded.results_sum,
+          latency_ms_sum = search_query_daily.latency_ms_sum + excluded.latency_ms_sum
+      `);
+    }
 
     // login_attempts: 30-day retention.
     const loginQ = `select id from login_attempts where created_at < now() - interval '30 days'`;
