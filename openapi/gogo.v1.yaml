@@ -557,6 +557,80 @@ paths:
       responses:
         '200': { description: 'kinds → [{ key, sortOrder, labels }]' }
 
+  /places/search:
+    get:
+      operationId: searchPlaces
+      tags: [places]
+      summary: Place search — Vietnamese-normalized text, filters, ranking, cursor
+      description: >
+        FR-SEARCH-001..004/009 + SE-010. Accent-insensitive FTS + trigram typo
+        tolerance + synonym expansion; hard filters in SQL; weighted versioned
+        ranking (meta.weightsVersion); stable keyset cursor. Lodging excluded
+        unless requested. Zero-results emit telemetry without raw PII.
+      security: []
+      parameters:
+        - { name: q, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: lat, in: query, schema: { type: number } }
+        - { name: lng, in: query, schema: { type: number } }
+        - { name: radiusM, in: query, schema: { type: integer, minimum: 100, maximum: 100000 } }
+        - { name: openAt, in: query, schema: { type: string }, description: "'now' or ISO-8601" }
+        - { name: categories, in: query, schema: { type: string }, description: CSV, multi-select }
+        - { name: suitedFor, in: query, schema: { type: string, enum: [couple, group, family] } }
+        - { name: priceMinPerPerson, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: priceMaxPerPerson, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: minRating, in: query, schema: { type: number, minimum: 0, maximum: 5 } }
+        - { name: dietary, in: query, schema: { type: string }, description: CSV, ALL required }
+        - {
+            name: accessibility,
+            in: query,
+            schema: { type: string },
+            description: CSV,
+            ALL required,
+          }
+        - { name: includeLodging, in: query, schema: { type: boolean } }
+        - name: sort
+          in: query
+          schema:
+            {
+              type: string,
+              enum: [relevance, distance, rating, price, curated],
+              default: relevance,
+            }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Ranked results with reason codes and open/price facts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results, nextCursor, meta]
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/PlaceSearchResult' }
+                  nextCursor: { type: [string, 'null'] }
+                  meta:
+                    type: object
+                    properties:
+                      weightsVersion: { type: string }
+                      sort: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /places/{id}:
+    get:
+      operationId: getPlaceDetail
+      tags: [places]
+      summary: Place detail with sources, freshness, hours, verified prices
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Place aggregate (FR-PLAN-004) }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -663,6 +737,45 @@ components:
             properties:
               placeId: { type: string, format: uuid }
               name: { type: string }
+    PlaceSearchResult:
+      type: object
+      required: [id, name, lat, lng, isLodging, open, reasonCodes, confidence]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        addressText: { type: string }
+        areaKey: { type: string }
+        lat: { type: number }
+        lng: { type: number }
+        rating: { type: number }
+        ratingCount: { type: integer }
+        avgVisitMinutes: { type: integer }
+        suitability:
+          type: object
+          additionalProperties: { type: number }
+        isLodging: { type: boolean }
+        distanceM: { type: integer }
+        pricePerPerson:
+          type: object
+          description: Estimated per-person range with confidence — never fake precision (FR-SEARCH-009).
+          properties:
+            min: { type: integer }
+            max: { type: integer }
+            currency: { type: string }
+            confidence: { type: number }
+        open:
+          type: object
+          description: Facts for "Đang mở · Đóng 23:00" composition client-side.
+          properties:
+            openNow: { type: boolean }
+            closesAtMinute: { type: integer }
+            opensAtMinute: { type: integer }
+            opensDayOffset: { type: integer }
+        freshnessCheckedAt: { type: string, format: date-time }
+        confidence: { type: number }
+        reasonCodes:
+          type: array
+          items: { type: string, enum: [TEXT_MATCH, NEAR_YOU, HIGHLY_RATED, CURATED, OPEN_NOW] }
     TokenGrant:
       type: object
       required: [accessToken, expiresIn]

@@ -1,6 +1,12 @@
 import { Global, Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
-import { IdentityModule, PlacesModule, PreferencesModule, RoomsModule } from '@gogo/modules';
+import {
+  IdentityModule,
+  PlacesModule,
+  PreferencesModule,
+  RoomsModule,
+  SearchModule,
+} from '@gogo/modules';
 import { AppExceptionFilter } from './common/filters/app-exception.filter';
 import { APP_CONFIG, loadEnv } from './config/env';
 import { DatabaseModule } from './database.module';
@@ -21,6 +27,7 @@ class ConfigModule {}
     RoomsModule,
     PreferencesModule,
     PlacesModule,
+    SearchModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_FILTER, useClass: AppExceptionFilter }],

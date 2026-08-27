@@ -40,5 +40,11 @@ export { PreferencesModule } from '../preferences/presentation/preferences.modul
 // Places (taxonomy for now)
 export { PlacesModule } from '../places/presentation/places.module';
 
+// Search (SE-002..005, SE-010, BE-BFF-006)
+export { SearchModule } from '../search/presentation/search.module';
+export { SearchService, openStateAt } from '../search/application/search.service';
+export { SearchRepository } from '../search/infrastructure/search.repository';
+export { normalizeVietnamese, toSearchQuery } from '../search/domain/normalize';
+
 // Platform
 export { writeOutbox, type DomainEventInput } from '../shared/outbox';
