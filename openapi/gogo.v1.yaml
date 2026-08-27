@@ -211,6 +211,352 @@ paths:
                   expiresAt: { type: string, format: date-time }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /rooms:
+    post:
+      operationId: createRoom
+      tags: [rooms]
+      summary: Create a couple/group room with constraint v1 and optional seed places
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, decisionMode, participantCount, constraint]
+              properties:
+                type: { type: string, enum: [couple, group] }
+                decisionMode:
+                  type: string
+                  enum: [match, vote, host]
+                  description: couple allows match|host; group allows vote|host.
+                participantCount: { type: integer, minimum: 2, maximum: 20 }
+                title: { type: string, maxLength: 80 }
+                scheduledDate: { type: string, format: date-time }
+                constraint: { $ref: '#/components/schemas/RoomConstraintInput' }
+                seedPlaceIds:
+                  type: array
+                  maxItems: 10
+                  items: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Room created (creator becomes host)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /rooms/{id}:
+    get:
+      operationId: getRoom
+      tags: [rooms]
+      summary: Room summary facts (members only; share code is host-only)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Room summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /rooms/{id}/constraints:
+    patch:
+      operationId: updateRoomConstraints
+      tags: [rooms]
+      summary: 'Host-only: new constraint version; marks scores/plans stale'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/RoomConstraintInput'
+                - type: object
+                  required: [expectedConstraintVersion]
+                  properties:
+                    expectedConstraintVersion: { type: integer, minimum: 1 }
+                    participantCount: { type: integer, minimum: 2, maximum: 20 }
+      responses:
+        '200':
+          description: Updated summary with bumped constraintVersion
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /rooms/{id}/status:
+    patch:
+      operationId: transitionRoom
+      tags: [rooms]
+      summary: 'Host-only: validated room state transition (SRS §7.2)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [draft, collecting, matching, ready, active, completed, cancelled, expired]
+      responses:
+        '200':
+          description: Transitioned
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomSummary' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /rooms/{id}/members:
+    get:
+      operationId: listRoomMembers
+      tags: [rooms]
+      summary: Member progress facts (never other members' preference selections)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RoomMember' }
+
+  /rooms/{id}/members/{memberId}:
+    delete:
+      operationId: removeRoomMember
+      tags: [rooms]
+      summary: 'Host-only: remove a member (revokes guest session if guest)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: memberId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Removed }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /rooms/{id}/invites:
+    post:
+      operationId: createRoomInvite
+      tags: [rooms]
+      summary: 'Host-only: create a high-entropy expiring invite (code shown once)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                maxUses: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        '201':
+          description: Invite created — plaintext code returned exactly once, only hash stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [inviteId, code, expiresAt]
+                properties:
+                  inviteId: { type: string, format: uuid }
+                  code: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  maxUses: { type: integer }
+    get:
+      operationId: listRoomInvites
+      tags: [rooms]
+      summary: 'Host-only: invite metadata (never codes)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Invites }
+
+  /rooms/{id}/invites/{inviteId}:
+    delete:
+      operationId: revokeRoomInvite
+      tags: [rooms]
+      summary: 'Host-only: revoke an invite'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: inviteId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Revoked }
+
+  /rooms/join:
+    post:
+      operationId: joinRoom
+      tags: [rooms]
+      summary: Authenticated user joins via invite code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [inviteCode]
+              properties:
+                inviteCode: { type: string }
+      responses:
+        '201':
+          description: Joined (idempotent for existing members)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roomId: { type: string, format: uuid }
+                  memberId: { type: string, format: uuid }
+                  role: { type: string, enum: [host, member] }
+        '410':
+          description: Invite expired/revoked/spent or room not joinable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /rooms/join/guest:
+    post:
+      operationId: joinRoomAsGuest
+      tags: [rooms]
+      summary: Guest joins via invite code without an account (FR-AUTH-002)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [inviteCode, displayName]
+              properties:
+                inviteCode: { type: string }
+                displayName: { type: string, minLength: 1, maxLength: 50 }
+      responses:
+        '201':
+          description: Guest session bound to the invite's room
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  guestSessionId: { type: string, format: uuid }
+                  roomId: { type: string, format: uuid }
+                  accessToken: { type: string }
+                  guestToken: { type: string }
+        '410':
+          description: Invite expired/revoked/spent
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /rooms/{id}/seed-places:
+    post:
+      operationId: addRoomSeedPlaces
+      tags: [rooms]
+      summary: 'Host-only: attach verified places to the room (FR-ROOM-010)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [placeIds]
+              properties:
+                placeIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 10
+                  items: { type: string, format: uuid }
+      responses:
+        '200': { description: Updated seed list }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /rooms/{id}/seed-places/{placeId}:
+    delete:
+      operationId: removeRoomSeedPlace
+      tags: [rooms]
+      summary: 'Host-only: remove a seed place'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: placeId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Updated seed list }
+
+  /rooms/{roomId}/preferences/me:
+    get:
+      operationId: getMyPreferences
+      tags: [preferences]
+      summary: Caller's own preference draft (private to the member)
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Own preferences with version }
+    put:
+      operationId: saveMyPreferences
+      tags: [preferences]
+      summary: Autosave with optimistic concurrency (expectedVersion)
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [selections, expectedVersion]
+              properties:
+                selections:
+                  type: object
+                  additionalProperties:
+                    type: array
+                    items: { type: string }
+                  description: Taxonomy kind → selected stable keys.
+                weights:
+                  type: object
+                  additionalProperties: { type: number }
+                expectedVersion: { type: integer, minimum: 0 }
+      responses:
+        '200': { description: 'Saved: { version, isDraft }' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /rooms/{roomId}/preferences/complete:
+    post:
+      operationId: completeMyPreferences
+      tags: [preferences]
+      summary: Mark own preferences complete; room auto-moves to matching when everyone is done
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: '{ completed, roomReadyForMatching }' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /taxonomies:
+    get:
+      operationId: listTaxonomies
+      tags: [preferences]
+      summary: Stable taxonomy keys + i18n labels (clients never hard-code ids)
+      security: []
+      parameters:
+        - name: kinds
+          in: query
+          schema: { type: string }
+          description: Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability)
+      responses:
+        '200': { description: 'kinds → [{ key, sortOrder, labels }]' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -250,6 +596,73 @@ components:
         maximum: 100
         default: 20
   schemas:
+    RoomConstraintInput:
+      type: object
+      required: [budgetMode, budgetAmount]
+      properties:
+        originText: { type: string, maxLength: 200 }
+        originLat: { type: number, minimum: -90, maximum: 90 }
+        originLng: { type: number, minimum: -180, maximum: 180 }
+        areaKey: { type: string }
+        radiusM: { type: integer, minimum: 100, maximum: 50000 }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, format: date-time }
+        budgetMode: { type: string, enum: [total, per_person] }
+        budgetAmount:
+          type: integer
+          minimum: 0
+          description: Integer minor units, interpreted per budgetMode.
+        currency: { type: string, minLength: 3, maxLength: 3, default: VND }
+        dietaryKeys:
+          type: array
+          items: { type: string }
+        accessibilityKeys:
+          type: array
+          items: { type: string }
+    RoomMember:
+      type: object
+      required: [id, displayName, role, selectionStatus, isGuest]
+      properties:
+        id: { type: string, format: uuid }
+        displayName: { type: string }
+        role: { type: string, enum: [host, member] }
+        selectionStatus: { type: string, enum: [pending, in_progress, completed] }
+        isGuest: { type: boolean }
+        joinedAt: { type: string, format: date-time }
+    RoomSummary:
+      type: object
+      description: Facts only — audience copy is composed client-side from type/participantCount/budgetMode.
+      required: [id, type, status, decisionMode, participantCount, constraintVersion]
+      properties:
+        id: { type: string, format: uuid }
+        code:
+          type: string
+          description: Share code — present for the host only.
+        type: { type: string, enum: [couple, group] }
+        status:
+          type: string
+          enum: [draft, collecting, matching, ready, active, completed, cancelled, expired]
+        decisionMode: { type: string, enum: [match, vote, host] }
+        participantCount: { type: integer }
+        constraintVersion: { type: integer }
+        title: { type: string }
+        scheduledDate: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        myMemberId: { type: string, format: uuid }
+        myRole: { type: string, enum: [host, member] }
+        constraints:
+          allOf:
+            - $ref: '#/components/schemas/RoomConstraintInput'
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/RoomMember' }
+        seedPlaces:
+          type: array
+          items:
+            type: object
+            properties:
+              placeId: { type: string, format: uuid }
+              name: { type: string }
     TokenGrant:
       type: object
       required: [accessToken, expiresIn]

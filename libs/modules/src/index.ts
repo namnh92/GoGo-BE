@@ -19,3 +19,26 @@ export {
 } from '../identity/presentation/auth.guard';
 export { CurrentActor, Public, RateLimit } from '../identity/presentation/decorators';
 export type { Actor, ActorType } from '../identity/domain/actor';
+
+// Rooms (BE-BFF-003/004, BE-BFF-015)
+export { RoomsModule } from '../rooms/presentation/rooms.module';
+export { RoomsService } from '../rooms/application/rooms.service';
+export { RoomPolicy } from '../rooms/presentation/room-policy';
+export { budgetPerPerson, budgetTotal, isOverBudget, type Budget } from '../rooms/domain/budget';
+export {
+  assertConstraintsEditable,
+  assertDecisionMode,
+  assertTransition,
+  type DecisionMode,
+  type RoomStatus,
+  type RoomType,
+} from '../rooms/domain/room-state';
+
+// Preferences (BE-BFF-005)
+export { PreferencesModule } from '../preferences/presentation/preferences.module';
+
+// Places (taxonomy for now)
+export { PlacesModule } from '../places/presentation/places.module';
+
+// Platform
+export { writeOutbox, type DomainEventInput } from '../shared/outbox';
