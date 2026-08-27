@@ -80,6 +80,75 @@ export type PlaceListItem = {
 
 export type PlaceListPage = { items: PlaceListItem[]; nextCursor: string | null };
 
+/**
+ * Driver rows for the detail read. `db.execute` returns whatever the parser
+ * hands back, so numerics arrive as strings and timestamps as Date or string —
+ * normalized on the way out rather than assumed.
+ */
+type PlaceDetailRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  status: PlaceStatus;
+  address_text: string | null;
+  area_key: string | null;
+  lat: number | string | null;
+  lng: number | string | null;
+  phone: string | null;
+  website: string | null;
+  rating: string | null;
+  rating_count: number;
+  price_level: number | null;
+  avg_visit_minutes: number | null;
+  suitability: Record<string, number> | null;
+  is_lodging: boolean;
+  confidence: string;
+  curated_rank: number | null;
+  freshness_checked_at: Date | string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
+type PlaceHoursRow = {
+  day_of_week: number;
+  open_minute: number;
+  close_minute: number;
+  is_overnight: boolean;
+  source: string;
+  verified_at: Date | string | null;
+};
+
+type PlacePriceRow = {
+  id: string;
+  price_min: string | number;
+  price_max: string | number;
+  currency: string;
+  unit: string;
+  source: string;
+  confidence: string;
+  verified_at: Date | string | null;
+  created_at: Date | string;
+};
+
+type PlaceSourceRow = {
+  id: string;
+  provider: string;
+  external_id: string;
+  url: string | null;
+  attribution: string | null;
+  raw_updated_at: Date | string | null;
+  imported_at: Date | string;
+};
+
+type PlaceMediaRow = {
+  id: string;
+  storage_key: string;
+  width: number | null;
+  height: number | null;
+  sort_order: number;
+  moderation: string;
+};
+
 type PlaceListRow = {
   id: string;
   name: string;
@@ -236,6 +305,154 @@ export class CmsCatalogService {
       })),
       nextCursor:
         page.length > query.limit && last ? encodePlaceCursor(last.sort_value, last.id) : null,
+    };
+  }
+
+  /**
+   * BE-IMP-009 — the record the CMS place editor loads.
+   *
+   * Everything `updatePlace` accepts, plus the facts rendered around the form.
+   * The list endpoint is not a substitute: it is a keyset-paged index and
+   * carries none of this on purpose.
+   *
+   * Ratings stay apart. `places.rating` is the provider's figure and GoGo's is
+   * derived from published reviews; averaging them would produce a number that
+   * describes neither, and FR-INGEST-006 requires them stored and shown
+   * separately. The composite/Bayesian score that spec also describes is not
+   * computed anywhere yet, so it is absent rather than faked.
+   */
+  async getPlace(placeId: string) {
+    const [row] = (
+      await this.db.execute(sql`
+        select p.id, p.name, p.description, p.status, p.address_text, p.area_key,
+               ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
+               p.phone, p.website, p.rating, p.rating_count, p.price_level,
+               p.avg_visit_minutes, p.suitability, p.is_lodging, p.confidence,
+               p.curated_rank, p.freshness_checked_at, p.created_at, p.updated_at
+        from places p
+        where p.id = ${placeId}::uuid
+      `)
+    ).rows as PlaceDetailRow[];
+    if (!row) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
+
+    const [taxonomies, hours, prices, sources, media, gogo] = await Promise.all([
+      this.db.execute(sql`
+        select t.id, t.kind, t.key
+        from place_taxonomies pt
+        join taxonomies t on t.id = pt.taxonomy_id
+        where pt.place_id = ${placeId}::uuid
+        order by t.kind, t.key
+      `),
+      this.db.execute(sql`
+        select day_of_week, open_minute, close_minute, is_overnight, source, verified_at
+        from place_hours where place_id = ${placeId}::uuid
+        order by day_of_week, open_minute
+      `),
+      this.db.execute(sql`
+        select id, price_min, price_max, currency, unit, source, confidence, verified_at, created_at
+        from place_prices where place_id = ${placeId}::uuid
+        order by created_at desc
+      `),
+      this.db.execute(sql`
+        select id, provider, external_id, url, attribution, raw_updated_at, imported_at
+        from place_sources where place_id = ${placeId}::uuid
+        order by imported_at desc
+      `),
+      this.db.execute(sql`
+        select id, storage_key, width, height, sort_order, moderation
+        from place_media where place_id = ${placeId}::uuid
+        order by sort_order, created_at
+      `),
+      this.db.execute(sql`
+        select round(avg(rating)::numeric, 2) as rating, count(*)::int as count
+        from reviews where place_id = ${placeId}::uuid and status = 'published'
+      `),
+    ]);
+
+    const gogoRow = gogo.rows[0] as { rating: string | null; count: number } | undefined;
+
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      status: row.status,
+      addressText: row.address_text,
+      areaKey: row.area_key,
+      lat: row.lat !== null ? Number(row.lat) : undefined,
+      lng: row.lng !== null ? Number(row.lng) : undefined,
+      phone: row.phone,
+      website: row.website,
+      avgVisitMinutes: row.avg_visit_minutes,
+      suitability: row.suitability ?? {},
+      isLodging: row.is_lodging,
+      curatedRank: row.curated_rank,
+      confidence: Number(row.confidence),
+      priceLevel: row.price_level,
+      ratings: {
+        provider: {
+          rating: row.rating !== null ? Number(row.rating) : undefined,
+          count: row.rating_count,
+        },
+        gogo: {
+          rating: gogoRow?.rating != null ? Number(gogoRow.rating) : undefined,
+          count: gogoRow?.count ?? 0,
+        },
+      },
+      taxonomyIds: taxonomies.rows.map((t) => (t as { id: string }).id),
+      // Keys travel alongside the ids so a client can label a chip without a
+      // second round trip, and still writes back ids.
+      taxonomyKeys: taxonomies.rows.map((t) => (t as { key: string }).key),
+      hours: hours.rows.map((h) => {
+        const r = h as PlaceHoursRow;
+        return {
+          dayOfWeek: r.day_of_week,
+          openMinute: r.open_minute,
+          closeMinute: r.close_minute,
+          isOvernight: r.is_overnight,
+          source: r.source,
+          verifiedAt: toIso(r.verified_at),
+        };
+      }),
+      prices: prices.rows.map((pr) => {
+        const r = pr as PlacePriceRow;
+        return {
+          id: r.id,
+          priceMin: Number(r.price_min),
+          priceMax: Number(r.price_max),
+          currency: r.currency,
+          unit: r.unit,
+          source: r.source,
+          confidence: Number(r.confidence),
+          verifiedAt: toIso(r.verified_at),
+          createdAt: toIso(r.created_at),
+        };
+      }),
+      sources: sources.rows.map((sr) => {
+        const r = sr as PlaceSourceRow;
+        return {
+          id: r.id,
+          provider: r.provider,
+          externalId: r.external_id,
+          url: r.url,
+          // Provider facts carry attribution and a fetch time (FR-INGEST-014).
+          attribution: r.attribution,
+          fetchedAt: toIso(r.raw_updated_at) ?? toIso(r.imported_at),
+        };
+      }),
+      media: media.rows.map((m) => {
+        const r = m as PlaceMediaRow;
+        return {
+          id: r.id,
+          storageKey: r.storage_key,
+          width: r.width,
+          height: r.height,
+          sortOrder: r.sort_order,
+          moderation: r.moderation,
+        };
+      }),
+      freshnessCheckedAt: toIso(row.freshness_checked_at),
+      createdAt: toIso(row.created_at)!,
+      updatedAt: toIso(row.updated_at)!,
     };
   }
 

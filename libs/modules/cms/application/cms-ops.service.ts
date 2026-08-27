@@ -1,10 +1,42 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { desc, eq, sql } from 'drizzle-orm';
+import { desc, eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import { SCORING_WEIGHT_BOUNDS } from '../../suggestions/domain/types';
 import { writeAudit } from '../../shared/audit';
+
+type RankingConfigRow = {
+  id: string;
+  key: string;
+  version: number;
+  status: string;
+  weights: Record<string, number>;
+  bounds: Record<string, { min: number; max: number }>;
+  created_by_admin_id: string;
+  approved_by_admin_id: string | null;
+  created_by_name: string | null;
+  approved_by_name: string | null;
+  activated_at: Date | string | null;
+  created_at: Date | string;
+};
+
+type FeatureFlagRow = {
+  key: string;
+  enabled: boolean;
+  payload: unknown;
+  description: string | null;
+  updated_by_admin_id: string | null;
+  updated_by_name: string | null;
+  updated_at: Date | string;
+};
+
+/** Driver rows carry Date or the raw string depending on the parser in play. */
+function toIso(value: Date | string | null | undefined): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
 
 /** CMS-007/008/009/010 — moderation, ranking console, imports, ops KPIs. */
 @Injectable()
@@ -177,6 +209,74 @@ export class CmsOpsService {
       .returning();
     await this.audit(adminId, 'ranking_config.created', 'ranking_config', row!.id, input);
     return { id: row!.id, version: row!.version, status: row!.status };
+  }
+
+  /**
+   * BE-IMP-012 — read the config back.
+   *
+   * Four-eyes only means something if the approving admin can see what they
+   * are approving. The bounds ship with the list for the same reason: without
+   * them a console either hardcodes limits and drifts, or lets an operator
+   * build a draft the API will reject.
+   */
+  async listRankingConfigs(filter: { key?: string | undefined; status?: string | undefined }) {
+    const where: SQL[] = [];
+    if (filter.key) where.push(sql`rc.key = ${filter.key}`);
+    if (filter.status) where.push(sql`rc.status = ${filter.status}`);
+    const condition = where.length > 0 ? sql.join(where, sql` and `) : sql`true`;
+
+    const rows = await this.db.execute(sql`
+      select rc.id, rc.key, rc.version, rc.status, rc.weights, rc.bounds,
+             rc.created_by_admin_id, rc.approved_by_admin_id, rc.activated_at, rc.created_at,
+             creator.display_name as created_by_name,
+             approver.display_name as approved_by_name
+      from ranking_configs rc
+      left join admin_users creator on creator.id = rc.created_by_admin_id
+      left join admin_users approver on approver.id = rc.approved_by_admin_id
+      where ${condition}
+      order by rc.key, rc.version desc
+    `);
+
+    return (rows.rows as RankingConfigRow[]).map((r) => ({
+      id: r.id,
+      key: r.key,
+      version: r.version,
+      status: r.status,
+      weights: r.weights,
+      /** The engine's own limits, so a console cannot drift from them. */
+      bounds: r.bounds,
+      createdBy: { id: r.created_by_admin_id, displayName: r.created_by_name },
+      approvedBy: r.approved_by_admin_id
+        ? { id: r.approved_by_admin_id, displayName: r.approved_by_name }
+        : null,
+      activatedAt: toIso(r.activated_at),
+      createdAt: toIso(r.created_at)!,
+    }));
+  }
+
+  /**
+   * BE-IMP-012 — flags were a blind write, including the AI kill switch, which
+   * is exactly the control someone reaches for when things are already wrong.
+   */
+  async listFeatureFlags() {
+    const rows = await this.db.execute(sql`
+      select f.key, f.enabled, f.payload, f.description, f.updated_at,
+             f.updated_by_admin_id, a.display_name as updated_by_name
+      from feature_flags f
+      left join admin_users a on a.id = f.updated_by_admin_id
+      order by f.key
+    `);
+
+    return (rows.rows as FeatureFlagRow[]).map((f) => ({
+      key: f.key,
+      enabled: f.enabled,
+      payload: f.payload,
+      description: f.description,
+      updatedBy: f.updated_by_admin_id
+        ? { id: f.updated_by_admin_id, displayName: f.updated_by_name }
+        : null,
+      updatedAt: toIso(f.updated_at)!,
+    }));
   }
 
   /** Four-eyes: approver must differ from creator (FR-CMS-007). */

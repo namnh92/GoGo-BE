@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { IdentityModule } from '../../identity/presentation/identity.module';
 import { AdminAuthService } from '../application/admin-auth.service';
+import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsCatalogService } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsOpsService } from '../application/cms-ops.service';
@@ -9,6 +10,7 @@ import { EmergencyTakedownService } from '../application/emergency-takedown.serv
 import { AdminGuard } from './admin.guard';
 import { EmergencyController } from './emergency.controller';
 import {
+  CmsAuditController,
   CmsAuthController,
   CmsCatalogController,
   CmsContentController,
@@ -19,6 +21,7 @@ import {
 @Module({
   imports: [IdentityModule],
   controllers: [
+    CmsAuditController,
     CmsAuthController,
     CmsCatalogController,
     CmsContentController,
@@ -28,6 +31,7 @@ import {
   ],
   providers: [
     AdminAuthService,
+    CmsAuditService,
     CmsCatalogService,
     CmsContentService,
     CmsOpsService,

@@ -1200,6 +1200,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Admin: read the audit log (filterable, cursor-paged)
+         * @description Audit is a feature, not a log — ops must be able to answer "who suspended this place and why" without database access. Read-only: FR-CMS-008 makes the log immutable, so there is no update or delete path here by design.
+         *     `breakGlass=true` is the incident-review query: it returns emergency takedowns on their own, with actor, role, reason and request id.
+         */
+        get: operations["cmsListAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/places/{id}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Admin: one place's change history
+         * @description The same query as `cmsListAudit`, scoped to a place for the editor's history drawer.
+         */
+        get: operations["cmsListPlaceAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/auth/login": {
         parameters: {
             query?: never;
@@ -1352,7 +1393,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Editor: the record the place editor loads
+         * @description Everything `cmsUpdatePlace` accepts, plus the facts rendered around the form. The list endpoint is not a substitute — it is a keyset-paged index and carries none of this on purpose.
+         */
+        get: operations["cmsGetPlace"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1457,7 +1502,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Editor/Ops: taxonomy keys with labels, synonyms and usage
+         * @description Unfiltered, this returns active **and** inactive keys — the CMS is where a deactivated key is seen and reactivated, so hiding it by default would make it unreachable.
+         */
+        get: operations["cmsListTaxonomies"];
         put?: never;
         /** Editor/Ops: create a taxonomy key with i18n labels */
         post: operations["cmsCreateTaxonomy"];
@@ -1543,7 +1592,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Editor/Ops: the ordered place list, as stored
+         * @description `cmsSetCollectionItems` replaces the whole list, so an editor must be able to read the current one before writing it back.
+         */
+        get: operations["cmsListCollectionItems"];
         /** Editor/Ops: replace the ordered place list */
         put: operations["cmsSetCollectionItems"];
         post?: never;
@@ -1628,7 +1681,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Ops: ranking config versions with approver and activation
+         * @description Approve and activate must be two different accounts, which is only checkable if both names are readable — so each version carries who drafted it and who approved it.
+         */
+        get: operations["cmsListRankingConfigs"];
         put?: never;
         /** Ops: draft a versioned ranking/scoring config (weights bounds-checked) */
         post: operations["cmsCreateRankingConfig"];
@@ -1683,6 +1740,26 @@ export interface paths {
         put?: never;
         /** Ops: deactivate the active config — the engine falls back to bounded defaults */
         post: operations["cmsRollbackRankingConfig"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/feature-flags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: every flag with its current value and last writer
+         * @description A kill switch nobody can read is not a kill switch. The AI fallback and the travel-time provider are both flag-gated, so their state has to be visible before an incident, not during one.
+         */
+        get: operations["cmsListFeatureFlags"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2418,6 +2495,187 @@ export interface components {
              * @description The room's current plan, when one exists.
              */
             planId?: string;
+        };
+        CmsPlaceDetail: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            description?: string | null;
+            /** @enum {string} */
+            status: "draft" | "community_submitted" | "review" | "published" | "suspended" | "archived";
+            addressText?: string | null;
+            areaKey?: string | null;
+            lat?: number;
+            lng?: number;
+            phone?: string | null;
+            website?: string | null;
+            avgVisitMinutes?: number | null;
+            suitability?: {
+                [key: string]: number;
+            };
+            isLodging?: boolean;
+            curatedRank?: number | null;
+            confidence?: number;
+            priceLevel?: number | null;
+            /** @description Kept apart, never averaged. The provider figure and GoGo's own — derived from published reviews — measure different populations, and a blended number would describe neither (FR-INGEST-006). The composite score that spec also describes is not computed anywhere yet, so it is absent rather than faked. */
+            ratings: {
+                provider: {
+                    rating?: number;
+                    count: number;
+                };
+                gogo: {
+                    rating?: number;
+                    count: number;
+                };
+            };
+            taxonomyIds: string[];
+            /** @description Alongside the ids so a chip can be labelled without a second call; writes still send ids. */
+            taxonomyKeys?: string[];
+            hours: {
+                dayOfWeek: number;
+                openMinute: number;
+                closeMinute: number;
+                isOvernight: boolean;
+                source: string;
+                /** Format: date-time */
+                verifiedAt?: string | null;
+            }[];
+            prices: {
+                /** Format: uuid */
+                id: string;
+                /** @description Integer minor units. */
+                priceMin: number;
+                /** @description Integer minor units. */
+                priceMax: number;
+                currency: string;
+                unit: string;
+                source: string;
+                confidence: number;
+                /** Format: date-time */
+                verifiedAt?: string | null;
+                /** Format: date-time */
+                createdAt?: string;
+            }[];
+            sources: {
+                /** Format: uuid */
+                id: string;
+                provider: string;
+                externalId: string;
+                url?: string | null;
+                /** @description Provider facts must be displayed with their attribution (FR-INGEST-014). */
+                attribution?: string | null;
+                /** Format: date-time */
+                fetchedAt?: string | null;
+            }[];
+            media: {
+                /** Format: uuid */
+                id: string;
+                storageKey: string;
+                width?: number | null;
+                height?: number | null;
+                sortOrder: number;
+                moderation: string;
+            }[];
+            /** Format: date-time */
+            freshnessCheckedAt?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CmsTaxonomy: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability";
+            key: string;
+            /** @description Locale to label. Business data stores the key; the label is presentation. */
+            labels: {
+                [key: string]: string;
+            };
+            sortOrder: number;
+            isActive: boolean;
+            /** @description Places referencing this key — what makes the delete rule checkable. */
+            usageCount: number;
+            synonyms: {
+                /** Format: uuid */
+                id: string;
+                term: string;
+                locale: string;
+            }[];
+        };
+        CmsAdminRef: {
+            /** Format: uuid */
+            id: string;
+            displayName?: string | null;
+        };
+        CmsRankingConfig: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            key: "suggestion.scoring" | "search.ranking";
+            version: number;
+            /** @enum {string} */
+            status: "draft" | "approved" | "active" | "rolled_back";
+            weights: {
+                [key: string]: number;
+            };
+            /** @description The engine's own limits, sent so a console cannot drift from them. */
+            bounds: Record<string, never>;
+            createdBy: components["schemas"]["CmsAdminRef"];
+            /** @description Null until approved; separation of duties requires it to differ from the activator. */
+            approvedBy?: components["schemas"]["CmsAdminRef"] | null;
+            /** Format: date-time */
+            activatedAt?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        CmsFeatureFlag: {
+            key: string;
+            enabled: boolean;
+            /** @description Free-form flag configuration. */
+            payload?: unknown;
+            description?: string | null;
+            updatedBy?: components["schemas"]["CmsAdminRef"] | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CmsAuditEntry: {
+            /** Format: uuid */
+            id: string;
+            action: string;
+            /** @enum {string} */
+            actorType: "admin" | "user" | "system";
+            /** Format: uuid */
+            actorId?: string;
+            /**
+             * @description The role at read time, joined for incident review. Nothing else about the account is exposed.
+             * @enum {string}
+             */
+            actorRole?: "editor" | "moderator" | "ops_admin" | "super_admin";
+            resourceType: string;
+            resourceId: string;
+            /** Format: date-time */
+            occurredAt: string;
+            /** @description Before/after of the sensitive write, PII-minimised at write time. */
+            diff?: unknown;
+            /** @description Lifted out of the diff for the writes that require one. */
+            reason?: string;
+            /** @description True for emergency takedown — the write that bypassed the normal role for this action. */
+            breakGlass: boolean;
+            requestId?: string;
+            /** @description Staff IP, recorded for admin actions only and returned only to ops_admin and above. It exists to tell "that admin did it" apart from "that admin's account was taken over"; that justification does not extend to the roles that do not run incident review, so it is omitted for them, and it must not appear in any other response, log line or analytics event. */
+            ipAddress?: string;
+            /**
+             * @description Which rule authorized the write. `super_admin_bypass` means every other role would have been refused.
+             * @enum {string}
+             */
+            authorizationPath?: "exact_role" | "rank_read" | "super_admin_bypass";
+        };
+        CmsAuditPage: {
+            items: components["schemas"]["CmsAuditEntry"][];
+            /** @description Keyset cursor over (occurredAt, id); the log is appended to while it is read. */
+            nextCursor: string | null;
         };
     };
     responses: {
@@ -4725,6 +4983,68 @@ export interface operations {
             };
         };
     };
+    cmsListAudit: {
+        parameters: {
+            query?: {
+                resourceType?: string;
+                /** @description Text, not uuid — flags and ranking configs are audited by key. */
+                resourceId?: string;
+                actorId?: string;
+                action?: string;
+                from?: string;
+                to?: string;
+                /** @description Emergency takedowns only. */
+                breakGlass?: boolean;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Audit entries, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAuditPage"];
+                };
+            };
+        };
+    };
+    cmsListPlaceAudit: {
+        parameters: {
+            query?: {
+                action?: string;
+                actorId?: string;
+                from?: string;
+                to?: string;
+                breakGlass?: boolean;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Audit entries for this place, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAuditPage"];
+                };
+            };
+        };
+    };
     cmsLogin: {
         parameters: {
             query?: never;
@@ -4992,6 +5312,29 @@ export interface operations {
             };
         };
     };
+    cmsGetPlace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Place record */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsPlaceDetail"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
     cmsUpdatePlace: {
         parameters: {
             query?: never;
@@ -5171,6 +5514,29 @@ export interface operations {
             400: components["responses"]["BadRequest"];
         };
     };
+    cmsListTaxonomies: {
+        parameters: {
+            query?: {
+                kind?: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability";
+                isActive?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Taxonomy keys */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsTaxonomy"][];
+                };
+            };
+        };
+    };
     cmsCreateTaxonomy: {
         parameters: {
             query?: never;
@@ -5339,6 +5705,44 @@ export interface operations {
             };
         };
     };
+    cmsListCollectionItems: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Collection items in position order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        collectionId: string;
+                        items: {
+                            position: number;
+                            /** Format: uuid */
+                            placeId: string;
+                            name: string;
+                            addressText?: string | null;
+                            /**
+                             * @description Carried so a curator sees that a pinned place has left publication, instead of a silently empty slot.
+                             * @enum {string}
+                             */
+                            status: "draft" | "community_submitted" | "review" | "published" | "suspended" | "archived";
+                        }[];
+                    };
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
     cmsSetCollectionItems: {
         parameters: {
             query?: never;
@@ -5458,6 +5862,29 @@ export interface operations {
             };
         };
     };
+    cmsListRankingConfigs: {
+        parameters: {
+            query?: {
+                key?: "suggestion.scoring" | "search.ranking";
+                status?: "draft" | "approved" | "active" | "rolled_back";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Config versions, newest first per key */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsRankingConfig"][];
+                };
+            };
+        };
+    };
     cmsCreateRankingConfig: {
         parameters: {
             query?: never;
@@ -5562,6 +5989,26 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    cmsListFeatureFlags: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Flags in key order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsFeatureFlag"][];
+                };
             };
         };
     };

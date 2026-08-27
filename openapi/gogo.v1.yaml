@@ -1953,6 +1953,72 @@ paths:
             text/html:
               schema: { type: string }
 
+  /cms/audit:
+    get:
+      operationId: cmsListAudit
+      tags: [cms]
+      summary: 'Admin: read the audit log (filterable, cursor-paged)'
+      description: >
+        Audit is a feature, not a log — ops must be able to answer "who
+        suspended this place and why" without database access. Read-only:
+        FR-CMS-008 makes the log immutable, so there is no update or delete
+        path here by design.
+
+        `breakGlass=true` is the incident-review query: it returns emergency
+        takedowns on their own, with actor, role, reason and request id.
+      parameters:
+        - { name: resourceType, in: query, schema: { type: string } }
+        - name: resourceId
+          in: query
+          schema: { type: string }
+          description: Text, not uuid — flags and ranking configs are audited by key.
+        - { name: actorId, in: query, schema: { type: string, format: uuid } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - name: breakGlass
+          in: query
+          schema: { type: boolean }
+          description: Emergency takedowns only.
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Audit entries, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAuditPage' }
+
+  /cms/places/{id}/audit:
+    get:
+      operationId: cmsListPlaceAudit
+      tags: [cms]
+      summary: "Admin: one place's change history"
+      description: The same query as `cmsListAudit`, scoped to a place for the editor's history drawer.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: actorId, in: query, schema: { type: string, format: uuid } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: breakGlass, in: query, schema: { type: boolean } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Audit entries for this place, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAuditPage' }
+
   /cms/auth/login:
     post:
       operationId: cmsLogin
@@ -2199,6 +2265,23 @@ paths:
         '200': { description: Candidate pairs with similarity + distance }
 
   /cms/places/{id}:
+    get:
+      operationId: cmsGetPlace
+      tags: [cms]
+      summary: 'Editor: the record the place editor loads'
+      description: >
+        Everything `cmsUpdatePlace` accepts, plus the facts rendered around the
+        form. The list endpoint is not a substitute — it is a keyset-paged index
+        and carries none of this on purpose.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Place record
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsPlaceDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
     patch:
       operationId: cmsUpdatePlace
       tags: [cms]
@@ -2338,6 +2421,29 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
 
   /cms/taxonomies:
+    get:
+      operationId: cmsListTaxonomies
+      tags: [cms]
+      summary: 'Editor/Ops: taxonomy keys with labels, synonyms and usage'
+      description: >
+        Unfiltered, this returns active **and** inactive keys — the CMS is where
+        a deactivated key is seen and reactivated, so hiding it by default would
+        make it unreachable.
+      parameters:
+        - name: kind
+          in: query
+          schema:
+            type: string
+            enum: [mood, category, setting, dietary, accessibility, spending_style, suitability]
+        - { name: isActive, in: query, schema: { type: boolean } }
+      responses:
+        '200':
+          description: Taxonomy keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CmsTaxonomy' }
     post:
       operationId: cmsCreateTaxonomy
       tags: [cms]
@@ -2459,6 +2565,42 @@ paths:
         '200': { description: Status changed }
 
   /cms/collections/{id}/items:
+    get:
+      operationId: cmsListCollectionItems
+      tags: [cms]
+      summary: 'Editor/Ops: the ordered place list, as stored'
+      description: >
+        `cmsSetCollectionItems` replaces the whole list, so an editor must be
+        able to read the current one before writing it back.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Collection items in position order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [collectionId, items]
+                properties:
+                  collectionId: { type: string, format: uuid }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [position, placeId, name, status]
+                      properties:
+                        position: { type: integer }
+                        placeId: { type: string, format: uuid }
+                        name: { type: string }
+                        addressText: { type: [string, 'null'] }
+                        status:
+                          type: string
+                          enum: [draft, community_submitted, review, published, suspended, archived]
+                          description: >
+                            Carried so a curator sees that a pinned place has
+                            left publication, instead of a silently empty slot.
+        '404': { $ref: '#/components/responses/NotFound' }
     put:
       operationId: cmsSetCollectionItems
       tags: [cms]
@@ -2537,6 +2679,33 @@ paths:
         '201': { description: Decided }
 
   /cms/ranking-configs:
+    get:
+      operationId: cmsListRankingConfigs
+      tags: [cms]
+      summary: 'Ops: ranking config versions with approver and activation'
+      description: >
+        Approve and activate must be two different accounts, which is only
+        checkable if both names are readable — so each version carries who
+        drafted it and who approved it.
+      parameters:
+        - {
+            name: key,
+            in: query,
+            schema: { type: string, enum: [suggestion.scoring, search.ranking] },
+          }
+        - {
+            name: status,
+            in: query,
+            schema: { type: string, enum: [draft, approved, active, rolled_back] },
+          }
+      responses:
+        '200':
+          description: Config versions, newest first per key
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CmsRankingConfig' }
     post:
       operationId: cmsCreateRankingConfig
       tags: [cms]
@@ -2596,6 +2765,24 @@ paths:
         - { name: key, in: path, required: true, schema: { type: string } }
       responses:
         '201': { description: '{ rolledBack: boolean }' }
+
+  /cms/feature-flags:
+    get:
+      operationId: cmsListFeatureFlags
+      tags: [cms]
+      summary: 'Ops: every flag with its current value and last writer'
+      description: >
+        A kill switch nobody can read is not a kill switch. The AI fallback and
+        the travel-time provider are both flag-gated, so their state has to be
+        visible before an incident, not during one.
+      responses:
+        '200':
+          description: Flags in key order
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CmsFeatureFlag' }
 
   /cms/feature-flags/{key}:
     put:
@@ -3548,6 +3735,252 @@ components:
           type: string
           format: uuid
           description: The room's current plan, when one exists.
+    CmsPlaceDetail:
+      type: object
+      required:
+        [
+          id,
+          name,
+          status,
+          ratings,
+          taxonomyIds,
+          hours,
+          prices,
+          sources,
+          media,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: [string, 'null'] }
+        status:
+          type: string
+          enum: [draft, community_submitted, review, published, suspended, archived]
+        addressText: { type: [string, 'null'] }
+        areaKey: { type: [string, 'null'] }
+        lat: { type: number }
+        lng: { type: number }
+        phone: { type: [string, 'null'] }
+        website: { type: [string, 'null'] }
+        avgVisitMinutes: { type: [integer, 'null'] }
+        suitability:
+          type: object
+          additionalProperties: { type: number }
+        isLodging: { type: boolean }
+        curatedRank: { type: [integer, 'null'] }
+        confidence: { type: number }
+        priceLevel: { type: [integer, 'null'] }
+        ratings:
+          type: object
+          required: [provider, gogo]
+          description: >
+            Kept apart, never averaged. The provider figure and GoGo's own —
+            derived from published reviews — measure different populations, and
+            a blended number would describe neither (FR-INGEST-006). The
+            composite score that spec also describes is not computed anywhere
+            yet, so it is absent rather than faked.
+          properties:
+            provider:
+              type: object
+              required: [count]
+              properties:
+                rating: { type: number }
+                count: { type: integer }
+            gogo:
+              type: object
+              required: [count]
+              properties:
+                rating: { type: number }
+                count: { type: integer }
+        taxonomyIds:
+          type: array
+          items: { type: string, format: uuid }
+        taxonomyKeys:
+          type: array
+          items: { type: string }
+          description: Alongside the ids so a chip can be labelled without a second call; writes still send ids.
+        hours:
+          type: array
+          items:
+            type: object
+            required: [dayOfWeek, openMinute, closeMinute, isOvernight, source]
+            properties:
+              dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
+              openMinute: { type: integer }
+              closeMinute: { type: integer }
+              isOvernight: { type: boolean }
+              source: { type: string }
+              verifiedAt: { type: [string, 'null'], format: date-time }
+        prices:
+          type: array
+          items:
+            type: object
+            required: [id, priceMin, priceMax, currency, unit, source, confidence]
+            properties:
+              id: { type: string, format: uuid }
+              priceMin: { type: integer, description: Integer minor units. }
+              priceMax: { type: integer, description: Integer minor units. }
+              currency: { type: string }
+              unit: { type: string }
+              source: { type: string }
+              confidence: { type: number }
+              verifiedAt: { type: [string, 'null'], format: date-time }
+              createdAt: { type: string, format: date-time }
+        sources:
+          type: array
+          items:
+            type: object
+            required: [id, provider, externalId]
+            properties:
+              id: { type: string, format: uuid }
+              provider: { type: string }
+              externalId: { type: string }
+              url: { type: [string, 'null'] }
+              attribution:
+                type: [string, 'null']
+                description: Provider facts must be displayed with their attribution (FR-INGEST-014).
+              fetchedAt: { type: [string, 'null'], format: date-time }
+        media:
+          type: array
+          items:
+            type: object
+            required: [id, storageKey, sortOrder, moderation]
+            properties:
+              id: { type: string, format: uuid }
+              storageKey: { type: string }
+              width: { type: [integer, 'null'] }
+              height: { type: [integer, 'null'] }
+              sortOrder: { type: integer }
+              moderation: { type: string }
+        freshnessCheckedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CmsTaxonomy:
+      type: object
+      required: [id, kind, key, labels, sortOrder, isActive, usageCount, synonyms]
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [mood, category, setting, dietary, accessibility, spending_style, suitability]
+        key: { type: string }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+          description: Locale to label. Business data stores the key; the label is presentation.
+        sortOrder: { type: integer }
+        isActive: { type: boolean }
+        usageCount:
+          type: integer
+          description: Places referencing this key — what makes the delete rule checkable.
+        synonyms:
+          type: array
+          items:
+            type: object
+            required: [id, term, locale]
+            properties:
+              id: { type: string, format: uuid }
+              term: { type: string }
+              locale: { type: string }
+
+    CmsAdminRef:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, format: uuid }
+        displayName: { type: [string, 'null'] }
+
+    CmsRankingConfig:
+      type: object
+      required: [id, key, version, status, weights, bounds, createdBy, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        key: { type: string, enum: [suggestion.scoring, search.ranking] }
+        version: { type: integer }
+        status: { type: string, enum: [draft, approved, active, rolled_back] }
+        weights:
+          type: object
+          additionalProperties: { type: number }
+        bounds:
+          type: object
+          description: The engine's own limits, sent so a console cannot drift from them.
+        createdBy: { $ref: '#/components/schemas/CmsAdminRef' }
+        approvedBy:
+          oneOf:
+            - { $ref: '#/components/schemas/CmsAdminRef' }
+            - { type: 'null' }
+          description: Null until approved; separation of duties requires it to differ from the activator.
+        activatedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    CmsFeatureFlag:
+      type: object
+      required: [key, enabled, updatedAt]
+      properties:
+        key: { type: string }
+        enabled: { type: boolean }
+        payload: { description: Free-form flag configuration. }
+        description: { type: [string, 'null'] }
+        updatedBy:
+          oneOf:
+            - { $ref: '#/components/schemas/CmsAdminRef' }
+            - { type: 'null' }
+        updatedAt: { type: string, format: date-time }
+
+    CmsAuditEntry:
+      type: object
+      required: [id, action, actorType, resourceType, resourceId, occurredAt, breakGlass]
+      properties:
+        id: { type: string, format: uuid }
+        action: { type: string }
+        actorType: { type: string, enum: [admin, user, system] }
+        actorId: { type: string, format: uuid }
+        actorRole:
+          type: string
+          enum: [editor, moderator, ops_admin, super_admin]
+          description: >
+            The role at read time, joined for incident review. Nothing else
+            about the account is exposed.
+        resourceType: { type: string }
+        resourceId: { type: string }
+        occurredAt: { type: string, format: date-time }
+        diff:
+          description: Before/after of the sensitive write, PII-minimised at write time.
+        reason:
+          type: string
+          description: Lifted out of the diff for the writes that require one.
+        breakGlass:
+          type: boolean
+          description: True for emergency takedown — the write that bypassed the normal role for this action.
+        requestId: { type: string }
+        ipAddress:
+          type: string
+          description: >
+            Staff IP, recorded for admin actions only and returned only to
+            ops_admin and above. It exists to tell "that admin did it" apart
+            from "that admin's account was taken over"; that justification does
+            not extend to the roles that do not run incident review, so it is
+            omitted for them, and it must not appear in any other response,
+            log line or analytics event.
+        authorizationPath:
+          type: string
+          enum: [exact_role, rank_read, super_admin_bypass]
+          description: Which rule authorized the write. `super_admin_bypass` means every other role would have been refused.
+
+    CmsAuditPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsAuditEntry' }
+        nextCursor:
+          type: [string, 'null']
+          description: Keyset cursor over (occurredAt, id); the log is appended to while it is read.
+
   responses:
     BadRequest:
       description: Validation or business rule failure
