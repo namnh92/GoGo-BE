@@ -277,9 +277,22 @@ Deliberately observation, not obstruction: `super_admin` is not blocked and no
 extra confirmation step is added. Blocking an emergency escape hatch is the
 surest way to have it worked around by some other route.
 
-Answering "how often was the hatch used, on what" needs no metrics backend —
-it is one query on `audit_logs`. Alerting on a threshold does, and waits on the
-metric destination (#120).
+A bypass **write** also emits `cms_super_admin_bypass_total`, labelled by
+`action` (method plus route pattern) and `resource_type`. Only writes through
+the hatch are counted: a `super_admin` reading, or writing where its own role
+was what the route asked for, is ordinary work, and counting it would drown the
+signal. The label is the route pattern rather than the resource id — one label
+per place would make the counter unusable, and the audit log is where a
+specific resource is looked up.
+
+A rising count means the role model does not fit the work people actually do.
+It is not, by itself, evidence that anyone misbehaved.
+
+Answering "how often was the hatch used, on what" therefore needs no metrics
+backend either — it is also one query on `audit_logs`. Alerting on a threshold
+does, and waits on the metric destination (#120). The threshold itself waits on
+a real baseline: setting one before knowing the normal rate only manufactures
+noise.
 
 ### CMS session model (SEC-003)
 
