@@ -48,6 +48,11 @@ export type SearchFilters = {
 
 export type SearchRow = {
   id: string;
+  photo_id: string | null;
+  photo_key: string | null;
+  photo_width: number | null;
+  photo_height: number | null;
+  photo_from_community: boolean | null;
   name: string;
   address_text: string | null;
   area_key: string | null;
@@ -238,6 +243,10 @@ export class SearchRepository {
         p.is_lodging, p.confidence, p.freshness_checked_at, p.curated_rank,
         lp.price_min, lp.price_max, lp.currency as price_currency,
         lp.confidence as price_confidence,
+        -- #151: one image is enough for a list row; the gallery is detail-only.
+        pm.id as photo_id, pm.storage_key as photo_key,
+        pm.width as photo_width, pm.height as photo_height,
+        pm.uploaded_by_user_id is not null as photo_from_community,
         ${distanceM} as distance_m,
         ${textScore} as text_score,
         sv.sort_value,
@@ -250,6 +259,13 @@ export class SearchRepository {
         order by pp.verified_at desc nulls last, pp.created_at desc
         limit 1
       ) lp on true
+      left join lateral (
+        select m.id, m.storage_key, m.width, m.height, m.uploaded_by_user_id
+        from place_media m
+        where m.place_id = p.id and m.moderation = 'approved'
+        order by m.sort_order, m.created_at
+        limit 1
+      ) pm on true
       cross join lateral (select ${sortValue} as sort_value) sv
       where ${where}
       order by sv.sort_value desc, p.id desc
@@ -292,7 +308,17 @@ export class SearchRepository {
           from place_prices pp where pp.place_id = p.id) as prices,
         (select json_agg(json_build_object('provider', s.provider, 'url', s.url,
             'attribution', s.attribution))
-          from place_sources s where s.place_id = p.id) as sources
+          from place_sources s where s.place_id = p.id) as sources,
+        -- #151: photos travel with their attribution and moderation state.
+        -- Community imagery that has not been approved never leaves the CMS.
+        (select json_agg(json_build_object(
+            'id', m.id, 'storageKey', m.storage_key,
+            'width', m.width, 'height', m.height,
+            'source', case when m.uploaded_by_user_id is null then 'manual' else 'community' end,
+            'moderation', m.moderation)
+            order by m.sort_order, m.created_at)
+          from place_media m
+          where m.place_id = p.id and m.moderation = 'approved') as media
       from places p
       where p.id = ${placeId} and p.status in ('published', 'community_submitted')
       limit 1

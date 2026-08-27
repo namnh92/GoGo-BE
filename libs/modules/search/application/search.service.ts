@@ -1,7 +1,9 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { type Db } from '@gogo/database';
+import { APP_CONFIG, type MediaConfig } from '../../shared/config';
 import { AppError } from '../../shared/app-error';
+import { iso, num, toPhotos, type PlacePhotoRow } from '../domain/place-dto';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import { normalizeVietnamese } from '../domain/normalize';
@@ -80,7 +82,13 @@ export class SearchService {
   constructor(
     private readonly repo: SearchRepository,
     @Inject(DB) private readonly db: Db,
+    @Optional() @Inject(APP_CONFIG) private readonly config?: MediaConfig,
   ) {}
+
+  /** Empty until media hosting is configured; see `toPhotos`. */
+  private get mediaBaseUrl(): string {
+    return this.config?.MEDIA_PUBLIC_BASE_URL ?? '';
+  }
 
   async search(filters: SearchFilters, actorAnalyticsId?: string) {
     const { weights, version } = await this.repo.activeWeights();
@@ -160,6 +168,23 @@ export class SearchService {
       suitability: row.suitability ?? undefined,
       isLodging: row.is_lodging,
       distanceM: row.distance_m !== null ? Math.round(row.distance_m) : undefined,
+      // #151: one honest image or none. A client that gets nothing renders its
+      // placeholder; a client that gets a stock photo tells the user a lie.
+      primaryPhoto: row.photo_key
+        ? toPhotos(
+            [
+              {
+                id: row.photo_id!,
+                storageKey: row.photo_key,
+                width: row.photo_width,
+                height: row.photo_height,
+                source: row.photo_from_community ? 'community' : 'manual',
+                moderation: 'approved',
+              },
+            ],
+            this.mediaBaseUrl,
+          )[0]
+        : undefined,
       // FR-SEARCH-009: estimated per-person range — facts, not fake precision.
       pricePerPerson:
         row.price_min !== null
@@ -179,9 +204,55 @@ export class SearchService {
     };
   }
 
+  /**
+   * #169 — mapped, not passed through. The row carries `numeric` as strings,
+   * Postgres timestamps and snake_case names; the contract promises numbers,
+   * ISO-8601 and camelCase, and nothing in the generated types can catch the
+   * difference at the boundary.
+   */
   async placeDetail(placeId: string) {
-    const detail = await this.repo.placeDetail(placeId);
-    if (!detail) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
-    return detail;
+    const row = (await this.repo.placeDetail(placeId)) as Record<string, unknown> | undefined;
+    if (!row) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
+
+    const sources = (row['sources'] ?? []) as { provider: string; attribution?: string }[];
+    const providerAttribution = sources.find((s) => s.attribution)?.attribution;
+
+    return {
+      id: row['id'] as string,
+      name: row['name'] as string,
+      description: (row['description'] as string | null) ?? undefined,
+      status: row['status'] as string,
+      addressText: (row['address_text'] as string | null) ?? undefined,
+      areaKey: (row['area_key'] as string | null) ?? undefined,
+      lat: num(row['lat'])!,
+      lng: num(row['lng'])!,
+      phone: (row['phone'] as string | null) ?? undefined,
+      website: (row['website'] as string | null) ?? undefined,
+      rating: num(row['rating']),
+      ratingCount: num(row['rating_count']) ?? 0,
+      priceLevel: num(row['price_level']),
+      avgVisitMinutes: num(row['avg_visit_minutes']),
+      suitability: (row['suitability'] as Record<string, number> | null) ?? undefined,
+      isLodging: Boolean(row['is_lodging']),
+      confidence: num(row['confidence']),
+      freshnessCheckedAt: iso(row['freshness_checked_at']),
+      curatedRank: num(row['curated_rank']),
+      taxonomies: (row['taxonomies'] as unknown[]) ?? [],
+      hours: (row['hours'] as unknown[]) ?? [],
+      prices: ((row['prices'] as Record<string, unknown>[] | null) ?? []).map((price) => ({
+        priceMin: num(price['priceMin']) ?? 0,
+        priceMax: num(price['priceMax']) ?? 0,
+        currency: (price['currency'] as string) ?? 'VND',
+        unit: price['unit'] as string,
+        confidence: num(price['confidence']),
+        verifiedAt: iso(price['verifiedAt']),
+      })),
+      sources,
+      photos: toPhotos(
+        row['media'] as PlacePhotoRow[] | null,
+        this.mediaBaseUrl,
+        providerAttribution,
+      ),
+    };
   }
 }
