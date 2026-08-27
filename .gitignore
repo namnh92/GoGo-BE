@@ -9,7 +9,9 @@ coverage/
 # env — only .env.example is committed
 .env
 .env.local
+.env.prod
 .env.*.local
+.env.*
 
 # editor/os
 .DS_Store

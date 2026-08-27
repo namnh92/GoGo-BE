@@ -47,6 +47,36 @@ DNS: A record `api.<domain>` → VPS IP. Caddy tự lấy Let's Encrypt.
 Deploy tiếp theo: `git pull && build && run --rm migrate && up -d` (theo thứ
 tự runbooks §1). CI deploy tự động qua SSH action làm sau khi ổn định.
 
+## 2b. Chạy thử stack prod trên máy local
+
+Dùng project name riêng để không đụng volume của compose dev:
+
+```bash
+cp .env.example .env.prod   # DOMAIN=localhost, ACME_EMAIL bất kỳ,
+                            # POSTGRES_PASSWORD/AUTH_JWT_SECRET/COOKIE_SECRET: openssl rand -base64 48
+                            # DATABASE_URL=postgres://gogo:<pw>@postgres:5432/gogo
+                            # REDIS_URL=redis://redis:6379   COOKIE_SECURE=true
+chmod 600 .env.prod
+
+P="docker compose -p gogo-prod -f docker/docker-compose.prod.yml --env-file .env.prod"
+$P build
+$P up -d postgres redis && sleep 12
+$P run --rm migrate
+$P up -d
+# seed dữ liệu demo (tùy chọn)
+$P run --rm -e NODE_ENV=development --entrypoint sh api -c "node -r @swc-node/register libs/database/src/seed.ts"
+
+curl -sk https://localhost/v1/health/ready     # {"status":"ready","checks":{"db":"ok","redis":"ok"}}
+curl -sk "https://localhost/v1/places/search?q=ca%20phe&limit=3"
+$P logs -f worker                              # outbox poll 5s
+$P down                                        # dừng ($P down -v để xóa cả dữ liệu)
+```
+
+`-k` vì Caddy cấp cert nội bộ cho `localhost`; trên domain thật cert Let's
+Encrypt hợp lệ, không cần `-k`. Cảnh báo: nếu volume `pgdata` đã init bằng
+mật khẩu khác, đổi `POSTGRES_PASSWORD` sẽ báo `28P01` — dùng project name
+khác hoặc `down -v` để tạo volume mới.
+
 ## 3. Downtime monitoring — setup 20 phút
 
 **Better Stack Uptime (free):** tạo 3 monitors + 1 status page:

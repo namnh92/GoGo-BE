@@ -42,13 +42,19 @@ export class HealthController {
 
     if (this.config.REDIS_URL && this.config.NODE_ENV !== 'test') {
       try {
-        this.redis ??= new IORedis(this.config.REDIS_URL, {
-          lazyConnect: true,
-          maxRetriesPerRequest: 1,
-          connectTimeout: 800,
-          enableOfflineQueue: false,
-        });
-        this.redis.on('error', () => undefined);
+        if (!this.redis) {
+          this.redis = new IORedis(this.config.REDIS_URL, {
+            lazyConnect: true,
+            maxRetriesPerRequest: 1,
+            connectTimeout: 800,
+            // Offline queue stays on: with lazyConnect the very first command
+            // is issued while the socket is still connecting, and disabling
+            // the queue would reject it even when Redis is healthy.
+            enableOfflineQueue: true,
+            retryStrategy: (times) => (times > 2 ? null : 200),
+          });
+          this.redis.on('error', () => undefined);
+        }
         const pong = await Promise.race([
           this.redis.ping(),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 800)),
