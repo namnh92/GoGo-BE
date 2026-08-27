@@ -500,3 +500,109 @@ describe('place list: filter, sort, cursor paging (BE-IMP-001/002)', () => {
     expect(JSON.stringify(plan.rows)).toContain('places_name_trgm_idx');
   });
 });
+
+describe('RBAC: hierarchical read, exact-match write (BE-IMP-008, #143)', () => {
+  let editor: { id: string; token: string };
+  let moderator: { id: string; token: string };
+  let ops: { id: string; token: string };
+  let root: { id: string; token: string };
+  let placeId: string;
+
+  beforeAll(async () => {
+    editor = await createAdmin('rbac-editor@gogo.local', 'editor');
+    moderator = await createAdmin('rbac-mod@gogo.local', 'moderator');
+    ops = await createAdmin('rbac-ops@gogo.local', 'ops_admin');
+    root = await createAdmin('rbac-root@gogo.local', 'super_admin');
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: 'RBAC Place',
+        nameNormalized: 'set-by-trigger',
+        status: 'draft',
+        geom: { x: 106.7, y: 10.77 },
+      })
+      .returning();
+    placeId = place!.id;
+  });
+
+  const get = (url: string, token: string) =>
+    api().inject({ method: 'GET', url, remoteAddress: ip(), headers: auth(token) });
+
+  it('every staff role can READ the catalog, including the one that publishes into it', async () => {
+    // The case that motivated this: ops_admin publishes an import, creating
+    // places, then could not open the list to see what it had just created.
+    for (const t of [editor, moderator, ops, root]) {
+      expect((await get('/v1/cms/places?limit=1', t.token)).statusCode).toBe(200);
+    }
+  });
+
+  it('WRITING the catalog stays with the role that owns it', async () => {
+    const patch = (token: string) =>
+      api().inject({
+        method: 'PATCH',
+        url: `/v1/cms/places/${placeId}`,
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: { description: 'edited' },
+      });
+
+    expect((await patch(editor.token)).statusCode).toBe(200);
+    expect((await patch(root.token)).statusCode).toBe(200);
+    // Read access did not become write access.
+    expect((await patch(ops.token)).json().code).toBe('ROLE_DENIED');
+    expect((await patch(moderator.token)).json().code).toBe('ROLE_DENIED');
+  });
+
+  it('reads do not climb: a lower rank still cannot see ops-only data', async () => {
+    expect((await get('/v1/cms/ops/kpis', ops.token)).statusCode).toBe(200);
+    expect((await get('/v1/cms/ops/kpis', root.token)).statusCode).toBe(200);
+    expect((await get('/v1/cms/ops/kpis', editor.token)).json().code).toBe('ROLE_DENIED');
+    expect((await get('/v1/cms/ops/kpis', moderator.token)).json().code).toBe('ROLE_DENIED');
+  });
+
+  it('peers can read each other: editor sees the moderation queue, moderator sees places', async () => {
+    expect((await get('/v1/cms/moderation?limit=1', editor.token)).statusCode).toBe(200);
+    expect((await get('/v1/cms/places?limit=1', moderator.token)).statusCode).toBe(200);
+  });
+
+  it('moderation decisions stay with moderators', async () => {
+    const reg = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: ip(),
+      payload: {
+        email: 'rbac-reviewer@gogo.vn',
+        password: 'sufficiently-long-pw',
+        displayName: 'R',
+      },
+    });
+    const review = await api().inject({
+      method: 'POST',
+      url: '/v1/reviews',
+      remoteAddress: ip(),
+      headers: auth(reg.json().accessToken),
+      payload: { placeId, rating: 4, text: 'rbac target' },
+    });
+    const decide = (token: string) =>
+      api().inject({
+        method: 'POST',
+        url: `/v1/cms/moderation/reviews/${review.json().id}`,
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: { decision: 'published', reason: 'nội dung phù hợp' },
+      });
+    expect((await decide(editor.token)).json().code).toBe('ROLE_DENIED');
+    expect((await decide(ops.token)).json().code).toBe('ROLE_DENIED');
+    expect([200, 201]).toContain((await decide(moderator.token)).statusCode);
+  });
+
+  it('a suspended admin loses read access too, not just write', async () => {
+    const victim = await createAdmin('rbac-suspended@gogo.local', 'ops_admin');
+    expect((await get('/v1/cms/places?limit=1', victim.token)).statusCode).toBe(200);
+    await db
+      .update(schema.adminUsers)
+      .set({ status: 'suspended' })
+      .where(eq(schema.adminUsers.id, victim.id));
+    expect((await get('/v1/cms/places?limit=1', victim.token)).json().code).toBe('ADMIN_ONLY');
+  });
+});
