@@ -118,6 +118,12 @@ export const notifications = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     kind: notificationKind('kind').notNull(),
     payload: jsonb('payload').notNull(),
+    /**
+     * The outbox event that produced this row. Delivery is at-least-once, so
+     * without it a retry after a partial fan-out puts the same notification in
+     * someone's inbox twice.
+     */
+    dedupeKey: text('dedupe_key'),
     readAt: timestamp('read_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

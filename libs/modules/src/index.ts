@@ -61,7 +61,11 @@ export { coupleMatches, resolveWinner, tallyVotes } from '../suggestions/domain/
 export { ReviewsModule } from '../reviews/presentation/reviews.module';
 export { NotificationsModule } from '../notifications/presentation/notifications.module';
 export { UserContentService } from '../reviews/application/user-content.service';
-export { OutboxDispatcher } from '../notifications/application/outbox-dispatcher';
+export {
+  OutboxDispatcher,
+  MAX_DELIVERY_ATTEMPTS,
+  RETRY_BACKOFF_SECONDS,
+} from '../notifications/application/outbox-dispatcher';
 
 // Place import + areas (BE-BFF-013/016)
 export { PlaceImportService } from '../places/application/place-import.service';

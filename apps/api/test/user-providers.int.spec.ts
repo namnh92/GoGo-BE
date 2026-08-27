@@ -7,7 +7,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
-import { OutboxDispatcher, PrivacyJobs } from '@gogo/modules';
+import { MAX_DELIVERY_ATTEMPTS, OutboxDispatcher, PrivacyJobs } from '@gogo/modules';
 import { AREA_AUTOCOMPLETE, FakePush, PLACE_PROVIDER } from '@gogo/providers';
 import type { FakeAreaAutocomplete, FakePlaceProvider } from '@gogo/providers';
 
@@ -487,3 +487,157 @@ async function loginAgain(email: string) {
   });
   return { token: res.json().accessToken as string };
 }
+
+/**
+ * BE-BFF-010 (#59) — delivery is at-least-once, which only works if a repeat
+ * is harmless and a permanent failure eventually stops. Neither was true.
+ */
+describe('outbox delivery: retry, dead-letter, dedupe', () => {
+  async function roomWithHost(email: string) {
+    const { token, userId } = await register(email);
+    const [room] = await db
+      .insert(schema.rooms)
+      .values({
+        code: `OB${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+        type: 'group',
+        decisionMode: 'vote',
+        participantCount: 3,
+        status: 'collecting',
+        hostUserId: userId,
+      })
+      .returning();
+    await db.insert(schema.roomMembers).values({
+      roomId: room!.id,
+      userId,
+      role: 'host',
+      displayName: 'Host',
+    });
+    return { token, userId, roomId: room!.id };
+  }
+
+  /** Reads fine, cannot write a notification — the failure a retry is for. */
+  function brokenInsert() {
+    return new Proxy(db as object, {
+      get(target, prop, receiver) {
+        if (prop === 'insert') {
+          return () => {
+            throw new Error('database unavailable');
+          };
+        }
+        return Reflect.get(target, prop, receiver) as unknown;
+      },
+    });
+  }
+
+  async function queueEvent(roomId: string) {
+    const [event] = await db
+      .insert(schema.outboxEvents)
+      .values({
+        eventType: 'plan.published',
+        resourceType: 'room',
+        resourceId: roomId,
+        payload: {},
+      })
+      .returning();
+    return event!;
+  }
+
+  it('a redelivered event does not put the same notification in an inbox twice', async () => {
+    const { userId, roomId } = await roomWithHost('outbox-dedupe@gogo.vn');
+    const event = await queueEvent(roomId);
+    const dispatcher = new OutboxDispatcher(db as never, new FakePush());
+
+    await dispatcher.dispatchBatch();
+    // Force the redelivery an at-least-once queue is allowed to produce.
+    await db
+      .update(schema.outboxEvents)
+      .set({ publishedAt: null })
+      .where(eq(schema.outboxEvents.id, event.id));
+    await dispatcher.dispatchBatch();
+
+    const notifications = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, userId));
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.dedupeKey).toBe(event.id);
+  });
+
+  it('backs off instead of retrying a broken event every tick', async () => {
+    const { roomId } = await roomWithHost('outbox-backoff@gogo.vn');
+    const event = await queueEvent(roomId);
+    // A push failure alone is swallowed by design, so break the write the
+    // fan-out depends on. `select` and `update` still work, which is what
+    // lets the dispatcher pick the event up and record the failure.
+    const brokenDb = brokenInsert();
+    await new OutboxDispatcher(brokenDb as never, new FakePush()).dispatchBatch();
+    const [afterFirst] = await db
+      .select()
+      .from(schema.outboxEvents)
+      .where(eq(schema.outboxEvents.id, event.id));
+    expect(afterFirst!.attempts).toBe(1);
+    // Not due again immediately — that is the whole point.
+    expect(afterFirst!.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
+
+    // And it is not selected while it is not due.
+    const picked = await new OutboxDispatcher(db as never, new FakePush()).dispatchBatch();
+    expect(picked).toBe(0);
+  });
+
+  it('dead-letters after the attempts run out, so it stops blocking the queue', async () => {
+    const { roomId } = await roomWithHost('outbox-deadletter@gogo.vn');
+    const event = await queueEvent(roomId);
+    await db
+      .update(schema.outboxEvents)
+      .set({ attempts: MAX_DELIVERY_ATTEMPTS - 1 })
+      .where(eq(schema.outboxEvents.id, event.id));
+
+    await new OutboxDispatcher(brokenInsert() as never, new FakePush()).dispatchBatch();
+
+    const [dead] = await db
+      .select()
+      .from(schema.outboxEvents)
+      .where(eq(schema.outboxEvents.id, event.id));
+    expect(dead!.failedAt).not.toBeNull();
+    // Kept, not deleted: the failure is the thing worth having.
+    expect(dead!.lastError).toContain('database unavailable');
+
+    // A newer event behind it still gets through.
+    const fresh = await queueEvent(roomId);
+    const handled = await new OutboxDispatcher(db as never, new FakePush()).dispatchBatch();
+    expect(handled).toBeGreaterThanOrEqual(1);
+    const [published] = await db
+      .select()
+      .from(schema.outboxEvents)
+      .where(eq(schema.outboxEvents.id, fresh.id));
+    expect(published!.publishedAt).not.toBeNull();
+  });
+
+  it('one dead device token does not fail the event for everyone else', async () => {
+    const { userId, roomId } = await roomWithHost('outbox-badtoken@gogo.vn');
+    await db
+      .insert(schema.deviceTokens)
+      .values({ userId, platform: 'ios', token: `dead-${Date.now()}` });
+    const event = await queueEvent(roomId);
+
+    const rejecting = {
+      send: async () => {
+        throw new Error('token rejected');
+      },
+    };
+    await new OutboxDispatcher(db as never, rejecting as never).dispatchBatch();
+
+    const [row] = await db
+      .select()
+      .from(schema.outboxEvents)
+      .where(eq(schema.outboxEvents.id, event.id));
+    // Published: the in-app notification is the durable half, and retrying
+    // would re-push to every token that already received it.
+    expect(row!.publishedAt).not.toBeNull();
+    const notifications = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, userId));
+    expect(notifications).toHaveLength(1);
+  });
+});

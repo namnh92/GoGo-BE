@@ -17,22 +17,50 @@ const EVENT_TO_NOTIFICATION: Record<
 };
 
 /**
- * Outbox consumer: at-least-once, idempotent per event (an event is only
- * fanned out once because publishing marks it). Plain class — the worker
- * process wires it without Nest.
+ * Exponential backoff with a ceiling: 5s, 20s, 80s, 320s, 20m, 20m…
+ *
+ * Retrying a broken event every 5 seconds is not resilience — it burns the
+ * batch on the same failure while newer events wait behind it.
+ */
+export const RETRY_BACKOFF_SECONDS = (attempts: number): number =>
+  Math.min(5 * 4 ** attempts, 1200);
+
+/**
+ * After this many failures the event is dead-lettered: it stops being selected
+ * and stops blocking the queue. Something that has failed six times with
+ * backoff is not going to succeed on the seventh; it needs a person.
+ */
+export const MAX_DELIVERY_ATTEMPTS = 6;
+
+/**
+ * Outbox consumer: at-least-once, so fan-out has to be repeatable rather than
+ * merely rare. Every notification carries the event id as a dedupe key, which
+ * makes a redelivery a no-op instead of a duplicate in someone's inbox.
+ *
+ * Plain class — the worker process wires it without Nest.
  */
 export class OutboxDispatcher {
   constructor(
     private readonly db: Db,
     private readonly push: PushPort,
+    private readonly metrics?: { increment(name: string, labels?: Record<string, string>): void },
   ) {}
 
   /** Process one batch. Returns number of events handled. */
   async dispatchBatch(limit = 50): Promise<number> {
+    // Due, unpublished, not dead-lettered. Before `next_attempt_at` existed
+    // this selected the same failing event on every tick.
     const events = await this.db
       .select()
       .from(schema.outboxEvents)
-      .where(isNull(schema.outboxEvents.publishedAt))
+      .where(
+        and(
+          isNull(schema.outboxEvents.publishedAt),
+          isNull(schema.outboxEvents.failedAt),
+          sql`(${schema.outboxEvents.nextAttemptAt} is null
+               or ${schema.outboxEvents.nextAttemptAt} <= now())`,
+        ),
+      )
       .orderBy(asc(schema.outboxEvents.occurredAt))
       .limit(limit);
 
@@ -44,13 +72,23 @@ export class OutboxDispatcher {
           .set({ publishedAt: sql`now()` })
           .where(eq(schema.outboxEvents.id, event.id));
       } catch (err) {
+        const attempts = event.attempts + 1;
+        const exhausted = attempts >= MAX_DELIVERY_ATTEMPTS;
         await this.db
           .update(schema.outboxEvents)
           .set({
-            attempts: sql`${schema.outboxEvents.attempts} + 1`,
+            attempts,
             lastError: String(err).slice(0, 500),
+            nextAttemptAt: exhausted
+              ? null
+              : sql`now() + make_interval(secs => ${RETRY_BACKOFF_SECONDS(attempts)})`,
+            ...(exhausted ? { failedAt: sql`now()` } : {}),
           })
           .where(eq(schema.outboxEvents.id, event.id));
+        this.metrics?.increment(
+          exhausted ? 'outbox_event_dead_lettered_total' : 'outbox_event_retry_total',
+          { event_type: event.eventType },
+        );
       }
     }
     return events.length;
@@ -99,24 +137,37 @@ export class OutboxDispatcher {
     );
 
     for (const userId of userIds) {
-      await this.db.insert(schema.notifications).values({
-        userId,
-        kind: mapping.kind,
-        payload: { eventType: event.eventType, roomId, resourceId: event.resourceId },
-      });
+      await this.db
+        .insert(schema.notifications)
+        .values({
+          userId,
+          kind: mapping.kind,
+          payload: { eventType: event.eventType, roomId, resourceId: event.resourceId },
+          dedupeKey: event.id,
+        })
+        // Redelivery must not put the same notification in an inbox twice.
+        .onConflictDoNothing();
       if (optedOutInApp.has(userId)) continue;
       const tokens = await this.db
         .select()
         .from(schema.deviceTokens)
         .where(eq(schema.deviceTokens.userId, userId));
       for (const t of tokens) {
-        // Copy is composed client-side from kind + payload; push carries the
-        // routing facts only.
-        await this.push.send(t.token, {
-          title: 'GoGo',
-          body: mapping.kind,
-          data: { kind: mapping.kind, roomId },
-        });
+        try {
+          // Copy is composed client-side from kind + payload; push carries the
+          // routing facts only.
+          await this.push.send(t.token, {
+            title: 'GoGo',
+            body: mapping.kind,
+            data: { kind: mapping.kind, roomId },
+          });
+        } catch (err) {
+          // One dead device token must not fail the whole event: retrying the
+          // fan-out would re-push to every *other* token that already got it,
+          // and the in-app notification is the durable half regardless.
+          this.metrics?.increment('push_delivery_failed_total', { kind: mapping.kind });
+          void err;
+        }
       }
     }
   }

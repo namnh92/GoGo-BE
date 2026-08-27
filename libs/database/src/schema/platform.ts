@@ -34,6 +34,15 @@ export const outboxEvents = pgTable(
     publishedAt: timestamp('published_at', { withTimezone: true }),
     attempts: integer('attempts').notNull().default(0),
     lastError: text('last_error'),
+    /** When this event may next be attempted; null means now. */
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
+    /**
+     * Set once attempts are exhausted. A dead-lettered event stops being
+     * selected — and stops blocking everything behind it — while staying
+     * inspectable. Deleting it would throw away the only record of the
+     * failure.
+     */
+    failedAt: timestamp('failed_at', { withTimezone: true }),
   },
   (t) => [index('outbox_events_unpublished_idx').on(t.publishedAt, t.occurredAt)],
 );

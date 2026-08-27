@@ -58,8 +58,9 @@ async function bootstrap(): Promise<void> {
 
   const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
   const { db, pool } = createDb(databaseUrl);
+  const metrics = new LogMetrics(logger);
   // Real push provider lands with credentials (GoGo-BE#60); fake logs sends.
-  const dispatcher = new OutboxDispatcher(db, new FakePush());
+  const dispatcher = new OutboxDispatcher(db, new FakePush(), metrics);
   const privacy = new PrivacyJobs(db);
 
   // PI-BE-015: bulk import chunks run here, not in the API process. The tick
@@ -67,7 +68,6 @@ async function bootstrap(): Promise<void> {
   // start survives an API restart and no message can strand a job.
   const mapsKey = process.env.GOOGLE_MAPS_API_KEY ?? '';
   const sheetsKey = process.env.GOOGLE_SHEETS_API_KEY || mapsKey;
-  const metrics = new LogMetrics(logger);
   const placeProvider = mapsKey
     ? new GooglePlacesAdapter(mapsKey, metrics)
     : new FakePlaceProvider();
