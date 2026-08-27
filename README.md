@@ -6,12 +6,13 @@ Repo này chứa API BFF, database schema, search, suggestion engine, background
 
 ## Hệ sinh thái GoGo
 
-| Repo                                                        | Phạm vi                                                  |
-| ----------------------------------------------------------- | -------------------------------------------------------- |
-| **GoGo-BE** (repo này)                                      | API BFF, database, search, suggestion, workers, CMS APIs |
-| [GoGo-WebApp](https://github.com/namnh92/GoGo-WebApp)       | Responsive Web/PWA và Mini Web App                       |
-| [GoGo-MobileApp](https://github.com/namnh92/GoGo-MobileApp) | React Native iOS/Android                                 |
-| [GoGo-Mockup](https://github.com/namnh92/GoGo-Mockup)       | Prototype, UI/UX fixtures và design validation           |
+| Repo                                                        | Phạm vi                                                          |
+| ----------------------------------------------------------- | ---------------------------------------------------------------- |
+| **GoGo-BE** (repo này)                                      | API BFF, database, search, suggestion, workers, CMS APIs         |
+| [GoGo-CMS](https://github.com/namnh92/GoGo-CMS)             | Back-office cho ops: catalog, kiểm duyệt, bulk import, dashboard |
+| [GoGo-WebApp](https://github.com/namnh92/GoGo-WebApp)       | Responsive Web/PWA và Mini Web App                               |
+| [GoGo-MobileApp](https://github.com/namnh92/GoGo-MobileApp) | React Native iOS/Android                                         |
+| [GoGo-Mockup](https://github.com/namnh92/GoGo-Mockup)       | Prototype, UI/UX fixtures và design validation                   |
 
 ## Stack đã chốt
 
@@ -114,15 +115,15 @@ Git Flow: `master` (production, tag `vX.Y.Z`) · `develop` (integration) · `fea
 
 Backlog theo `GOGO_IMPLEMENTATION_WBS.md`, task ID ổn định, quản lý bằng GitHub issues (label `wbs`):
 
-| Nhóm        | Task IDs          | Phạm vi                                                                     |
-| ----------- | ----------------- | --------------------------------------------------------------------------- |
-| Foundation  | `FND-001..009`    | ADR, workspace, packages, OpenAPI, CI, env, observability, fixtures, tokens |
-| Database    | `DB-001..011`     | ERD, schema theo domain, geo/FTS indexes, retention, backup/restore         |
-| Search      | `SE-001..009`     | Normalization, FTS/trigram, filters, ranking, evaluation, indexing          |
-| Suggestion  | `SG-001..010`     | Scoring, fairness, optimizer, lock/regenerate, AI guarded                   |
-| API BFF     | `BE-BFF-001..012` | Runtime, auth/guest, room, preference, search, suggestion, plan, providers  |
-| CMS         | `CMS-001..010`    | APIs/schema thuộc repo này; frontend CMS repo sẽ chốt sau                   |
-| QA/Platform | `QP-001..008`     | Test harness, E2E, golden datasets, load, threat model, runbooks            |
+| Nhóm        | Task IDs          | Phạm vi                                                                                  |
+| ----------- | ----------------- | ---------------------------------------------------------------------------------------- |
+| Foundation  | `FND-001..009`    | ADR, workspace, packages, OpenAPI, CI, env, observability, fixtures, tokens              |
+| Database    | `DB-001..011`     | ERD, schema theo domain, geo/FTS indexes, retention, backup/restore                      |
+| Search      | `SE-001..009`     | Normalization, FTS/trigram, filters, ranking, evaluation, indexing                       |
+| Suggestion  | `SG-001..010`     | Scoring, fairness, optimizer, lock/regenerate, AI guarded                                |
+| API BFF     | `BE-BFF-001..012` | Runtime, auth/guest, room, preference, search, suggestion, plan, providers               |
+| CMS         | `CMS-001..010`    | APIs/schema ở repo này; UI back-office ở [GoGo-CMS](https://github.com/namnh92/GoGo-CMS) |
+| QA/Platform | `QP-001..008`     | Test harness, E2E, golden datasets, load, threat model, runbooks                         |
 
 Sprint plan: S0 foundation → S1 identity/room → S2 preference/place → S3 search → S4 suggestion → S5 plan → S6 Mini+Mobile core → S7 active date/ops → S8 AI → S9 hardening/beta.
 
