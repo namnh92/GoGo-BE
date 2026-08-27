@@ -13,6 +13,7 @@ import {
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
+import { SearchAnalyticsService } from '../application/search-analytics.service';
 import { RequireRole, type AdminActor } from './admin.guard';
 import { Inject, Req, Res } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -463,6 +464,10 @@ const rankingListQuery = z.object({
   key: z.enum(['suggestion.scoring', 'search.ranking']).optional(),
   status: z.enum(['draft', 'approved', 'active', 'rolled_back']).optional(),
 });
+const searchAnalyticsQuery = z.object({
+  days: z.coerce.number().int().min(1).max(90).default(7),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
 const flagSchema = z.object({
   enabled: z.boolean(),
   payload: z.unknown().optional(),
@@ -527,7 +532,10 @@ export class CmsAuditController {
 @RequireRole('ops_admin')
 @Controller('cms')
 export class CmsOpsController {
-  constructor(private readonly ops: CmsOpsService) {}
+  constructor(
+    private readonly ops: CmsOpsService,
+    private readonly searchAnalyticsService: SearchAnalyticsService,
+  ) {}
 
   @Post('ranking-configs')
   createRanking(
@@ -576,5 +584,18 @@ export class CmsOpsController {
   @Get('ops/kpis')
   kpis() {
     return this.ops.kpis();
+  }
+
+  /**
+   * SE-006 — search quality. Answers "is search getting worse" and "which
+   * queries fail" from a daily aggregate; there is no per-request search log
+   * to drill into, and that absence is the privacy design, not a gap.
+   */
+  @Get('search-analytics')
+  searchAnalytics(
+    @Query(new ZodValidationPipe(searchAnalyticsQuery))
+    query: z.infer<typeof searchAnalyticsQuery>,
+  ) {
+    return this.searchAnalyticsService.overview(query.days, query.limit);
   }
 }

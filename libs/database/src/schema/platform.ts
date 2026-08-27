@@ -1,4 +1,16 @@
-import { index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+  bigint,
+  boolean,
+  date,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
 
 /**
  * Platform tables: transactional outbox for domain events and idempotency
@@ -74,4 +86,29 @@ export const mediaUploads = pgTable(
     attachedAt: timestamp('attached_at', { withTimezone: true }),
   },
   (t) => [index('media_uploads_actor_idx').on(t.actorId, t.status, t.expiresAt)],
+);
+
+/**
+ * SE-006 (#36) — daily search aggregate.
+ *
+ * A day/term counter rather than one row per request: cheaper, and the more
+ * private shape, because there is no actor on it to join a query back to a
+ * person with. Raw per-request search logs are deliberately not kept.
+ */
+export const searchQueryDaily = pgTable(
+  'search_query_daily',
+  {
+    day: date('day').notNull(),
+    /** Truncated, never stored with an actor; hidden below a k-anonymity floor on read. */
+    queryNormalized: text('query_normalized').notNull(),
+    hasQuery: boolean('has_query').notNull(),
+    searches: integer('searches').notNull().default(0),
+    zeroResults: integer('zero_results').notNull().default(0),
+    resultsSum: bigint('results_sum', { mode: 'number' }).notNull().default(0),
+    latencyMsSum: bigint('latency_ms_sum', { mode: 'number' }).notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.day, t.queryNormalized] }),
+    index('search_query_daily_day_idx').on(t.day, t.zeroResults),
+  ],
 );
