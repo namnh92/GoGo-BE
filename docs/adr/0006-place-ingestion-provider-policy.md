@@ -68,7 +68,7 @@ Three refinements decided while scoping the `update_existing` import mode:
 trusts. This is a policy choice, not a modelling one: provider links stay in
 `place_provider_sources (provider, external_id)`, so adding a second provider
 later is a new adapter and new rows, not a migration. (This is why the
-provider id is deliberately *not* a unique column on `places`.)
+provider id is deliberately _not_ a unique column on `places`.)
 
 **Every place is anchored to a Google Maps link.** Including places an editor
 enters by hand: the link is what makes rating, review count, hours and
@@ -82,7 +82,7 @@ changed name, hours or owner since it was first ingested. Sheet/editor keeps
 ownership of the GoGo-owned fields.
 
 The consequence needs stating, because it is the case that motivated the rule:
-when a place changes *owner*, provider facts and GoGo editorial content stop
+when a place changes _owner_, provider facts and GoGo editorial content stop
 describing the same business. Taking the new name while keeping the old
 highlight, curated price and category produces a record that lies. So the fresh
 data is always taken, but a material identity change — name similarity below
