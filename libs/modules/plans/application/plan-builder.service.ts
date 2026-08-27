@@ -7,6 +7,7 @@ import { scoreCandidate } from '../../suggestions/domain/scoring';
 import { DEFAULT_SCORING_WEIGHTS } from '../../suggestions/domain/types';
 import { SuggestionsRepository } from '../../suggestions/infrastructure/suggestions.repository';
 import { PlansRepository } from '../infrastructure/plans.repository';
+import { TravelTimeService } from '../../travel/application/travel-time.service';
 
 /**
  * Shared plan construction (SG-007/SG-008): winner-anchored builds and
@@ -18,7 +19,20 @@ export class PlanBuilderService {
   constructor(
     private readonly plans: PlansRepository,
     private readonly suggestions: SuggestionsRepository,
+    private readonly travel: TravelTimeService,
   ) {}
+
+  /**
+   * ADR-0007 — one provider call per greedy step. Bound here rather than
+   * imported inside the optimizer so the optimizer stays a pure function and
+   * its determinism tests keep running without a provider.
+   */
+  private get travelBatch() {
+    return (
+      origin: { lat: number; lng: number; placeId?: string | undefined },
+      destinations: { lat: number; lng: number; placeId?: string | undefined }[],
+    ) => this.travel.matrix(origin, destinations);
+  }
 
   /** Winner becomes stop #1; the optimizer fills complementary stops. */
   async buildAroundWinner(roomId: string, winnerPlaceId: string, runId?: string) {
@@ -50,7 +64,12 @@ export class PlanBuilderService {
       lat: winner.lat,
       lng: winner.lng,
     };
-    const built = buildItinerary({ ranked, snapshot, lockedStops: [anchor] });
+    const built = await buildItinerary({
+      ranked,
+      snapshot,
+      lockedStops: [anchor],
+      travel: this.travelBatch,
+    });
 
     const result = await this.plans.createPlanVersion({
       roomId,
@@ -119,7 +138,12 @@ export class PlanBuilderService {
       passed.map((c) => scoreCandidate(c, snapshot, DEFAULT_SCORING_WEIGHTS)),
       { topK: 10 },
     );
-    const built = buildItinerary({ ranked, snapshot, lockedStops: anchors });
+    const built = await buildItinerary({
+      ranked,
+      snapshot,
+      lockedStops: anchors,
+      travel: this.travelBatch,
+    });
 
     return this.plans.createPlanVersion({
       roomId: plan.roomId,

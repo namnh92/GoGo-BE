@@ -107,4 +107,11 @@ export type PlanTotalsDraft = {
   travelDistanceM: number;
   overBudget: boolean;
   uncertain: boolean;
+  /**
+   * ADR-0007 — true when at least one leg is a straight-line estimate rather
+   * than a routed travel time. Clients must say so: a guess presented as a
+   * measured duration is what core rule #8 forbids, and in city traffic the
+   * two differ by a lot.
+   */
+  travelEstimated: boolean;
 };

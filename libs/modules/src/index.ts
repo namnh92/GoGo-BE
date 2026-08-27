@@ -116,4 +116,5 @@ export {
   TravelTimeService,
   ROUTES_ENABLED,
   type TravelTarget,
-} from '../suggestions/application/travel-time.service';
+} from '../travel/application/travel-time.service';
+export { TravelModule } from '../travel/presentation/travel.module';

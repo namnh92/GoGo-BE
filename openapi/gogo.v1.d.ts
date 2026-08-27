@@ -1986,6 +1986,8 @@ export interface components {
             overBudget?: boolean;
             /** @description Some stop has unknown/low-confidence price — surface the uncertainty. */
             uncertain?: boolean;
+            /** @description True when at least one leg is a straight-line estimate rather than a routed travel time. Say so in the UI: in city traffic the two differ by a lot, and presenting a guess as a measured duration is what core rule #8 forbids. */
+            travelEstimated?: boolean;
         };
         PlanStop: {
             /** Format: uuid */

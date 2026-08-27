@@ -152,11 +152,14 @@ export class PlansService {
     const snapshot = await this.suggestions.buildSnapshot(plan.roomId);
     // Pool empty: the anchor list IS the plan; materialization recalculates
     // times, travel legs and totals (FR-PLAN-003).
-    const built = buildItinerary({
+    const built = await buildItinerary({
       ranked: [],
       snapshot,
       lockedStops: anchors,
       maxStops: anchors.length,
+      // Editing supplies the whole sequence, so nothing is selected greedily
+      // and there is no batch to ask for — the legs between the given stops
+      // are estimates, and the plan says so.
     });
     const result = await this.repo.createPlanVersion({
       roomId: plan.roomId,
