@@ -9,6 +9,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { eq } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
+import { METRICS, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
 import { setAuthorizationPath } from '../../shared/request-context';
 import { DB } from '../../shared/tokens';
@@ -57,6 +58,7 @@ export class AdminGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     @Inject(DB) private readonly db: Db,
+    @Inject(METRICS) private readonly metrics: MetricsPort,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -66,7 +68,11 @@ export class AdminGuard implements CanActivate {
     ]);
     if (!roles) return true; // not a CMS route
 
-    const req = context.switchToHttp().getRequest<{ actor?: AdminActor; method?: string }>();
+    const req = context.switchToHttp().getRequest<{
+      actor?: AdminActor;
+      method?: string;
+      routeOptions?: { url?: string };
+    }>();
     const actor = req.actor;
     if (!actor || actor.type !== 'admin') {
       throw AppError.forbidden('ADMIN_ONLY', 'CMS access requires a staff account');
@@ -91,10 +97,36 @@ export class AdminGuard implements CanActivate {
     // the request would have been refused for every other role — that is the
     // escape hatch, and its frequency is the signal for whether the role model
     // fits the work people actually do.
-    setAuthorizationPath(
-      byExactRole ? 'exact_role' : byRankRead ? 'rank_read' : 'super_admin_bypass',
-    );
+    const path = byExactRole ? 'exact_role' : byRankRead ? 'rank_read' : 'super_admin_bypass';
+    setAuthorizationPath(path);
+
+    // SEC-002 metric. Counted only for writes that went through the bypass:
+    // a super_admin reading, or writing where its own role was asked for, is
+    // ordinary work and would drown the signal. The question this answers is
+    // "how often did someone have to become root, and to touch what" — and a
+    // rising answer means the role model does not fit the work, not that
+    // someone misbehaved. Nothing here blocks: obstructing the escape hatch is
+    // the surest way to have it routed around somewhere unobservable.
+    const method = (req.method ?? 'GET').toUpperCase();
+    if (path === 'super_admin_bypass' && !SAFE_METHODS.has(method)) {
+      this.metrics.increment('cms_super_admin_bypass_total', {
+        action: `${method} ${req.routeOptions?.url ?? 'unknown'}`,
+        resource_type: resourceTypeOf(req.routeOptions?.url),
+      });
+    }
     actor.role = admin.role;
     return true;
   }
+}
+
+/**
+ * The collection segment of a CMS route — `/v1/cms/places/:id/status` is about
+ * places. Enough to answer "into what", without turning every id into its own
+ * label and blowing up metric cardinality.
+ */
+function resourceTypeOf(url: string | undefined): string {
+  if (!url) return 'unknown';
+  const segments = url.split('/').filter(Boolean);
+  const cmsIndex = segments.indexOf('cms');
+  return segments[cmsIndex + 1] ?? 'unknown';
 }
