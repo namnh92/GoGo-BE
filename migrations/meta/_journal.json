@@ -120,6 +120,13 @@
       "when": 1787837538888,
       "tag": "0016_search-query-analytics",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1787837539888,
+      "tag": "0017_outbox-retry-and-dedupe",
+      "breakpoints": true
     }
   ]
 }
