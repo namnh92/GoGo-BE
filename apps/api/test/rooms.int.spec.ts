@@ -668,3 +668,100 @@ describe('taxonomy endpoint (FR-PREF-002)', () => {
     expect(kinds.mood.map((t: { key: string }) => t.key)).toContain('chill');
   });
 });
+
+describe('GET /rooms — the actor can find their rooms again (#152)', () => {
+  it('lists rooms the caller belongs to, newest activity first', async () => {
+    const { token } = await registerUser(`list${Date.now()}@g.vn`);
+    const first = await createGroupRoom(token);
+    const second = await createGroupRoom(token);
+
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(res.statusCode).toBe(200);
+    const ids = res.json().items.map((r: { id: string }) => r.id);
+    // Before this endpoint a client that lost the id lost the room for good.
+    expect(ids).toContain(first.id);
+    expect(ids).toContain(second.id);
+    expect(ids[0]).toBe(second.id); // most recently touched first
+  });
+
+  it('carries enough progress to draw a row without a call per room', async () => {
+    const { token } = await registerUser(`prog${Date.now()}@g.vn`);
+    const room = await createGroupRoom(token);
+    const body = (
+      await api().inject({
+        method: 'GET',
+        url: '/v1/rooms',
+        remoteAddress: ip(),
+        headers: auth(token),
+      })
+    ).json();
+    const row = body.items.find((r: { id: string }) => r.id === room.id);
+    expect(row.myRole).toBe('host');
+    expect(row.memberCount).toBeGreaterThan(0);
+    expect(row).toHaveProperty('completedCount');
+    // A list screen has no reason to hand out an invite code.
+    expect(row).not.toHaveProperty('code');
+    expect(row).not.toHaveProperty('inviteCode');
+  });
+
+  it('never shows a room the caller is not in', async () => {
+    const { token: mine } = await registerUser(`mine${Date.now()}@g.vn`);
+    const { token: stranger } = await registerUser(`other${Date.now()}@g.vn`);
+    const room = await createGroupRoom(mine);
+
+    const body = (
+      await api().inject({
+        method: 'GET',
+        url: '/v1/rooms',
+        remoteAddress: ip(),
+        headers: auth(stranger),
+      })
+    ).json();
+    expect(body.items.map((r: { id: string }) => r.id)).not.toContain(room.id);
+  });
+
+  it('filters by status and pages by cursor', async () => {
+    const { token } = await registerUser(`page${Date.now()}@g.vn`);
+    for (let i = 0; i < 3; i++) await createGroupRoom(token);
+
+    const page = (
+      await api().inject({
+        method: 'GET',
+        url: '/v1/rooms?limit=2',
+        remoteAddress: ip(),
+        headers: auth(token),
+      })
+    ).json();
+    expect(page.items).toHaveLength(2);
+    expect(page.nextCursor).not.toBeNull();
+
+    const next = (
+      await api().inject({
+        method: 'GET',
+        url: `/v1/rooms?limit=2&cursor=${encodeURIComponent(page.nextCursor)}`,
+        remoteAddress: ip(),
+        headers: auth(token),
+      })
+    ).json();
+    const seen = new Set([
+      ...page.items.map((r: { id: string }) => r.id),
+      ...next.items.map((r: { id: string }) => r.id),
+    ]);
+    expect(seen.size).toBe(3);
+
+    const filtered = (
+      await api().inject({
+        method: 'GET',
+        url: '/v1/rooms?status=completed',
+        remoteAddress: ip(),
+        headers: auth(token),
+      })
+    ).json();
+    expect(filtered.items).toHaveLength(0);
+  });
+});

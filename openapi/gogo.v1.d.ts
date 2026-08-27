@@ -172,7 +172,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Rooms the caller belongs to, most recently active first
+         * @description A room used to be reachable only by id, so a client that lost the id lost the room — closing the app mid-flow was enough. Keyset paging on `(updatedAt, id)` because a room's timestamp moves while the list is being read: one vote is enough. Each row carries the progress needed to draw it, so a "your rooms" screen makes one call, not one per room. The invite code is deliberately absent — a list screen has no reason to hand one out.
+         */
+        get: operations["listRooms"];
         put?: never;
         /** Create a couple/group room with constraint v1 and optional seed places */
         post: operations["createRoom"];
@@ -2387,6 +2391,34 @@ export interface components {
             /** @description Present for provider imagery, which must be displayed with it. Community photos are only returned once approved in moderation. */
             attribution?: string;
         };
+        RoomListItem: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            type: "couple" | "group";
+            /** @enum {string} */
+            status: "draft" | "collecting" | "matching" | "ready" | "active" | "completed" | "cancelled" | "expired";
+            /** @enum {string} */
+            decisionMode: "match" | "vote" | "host";
+            participantCount: number;
+            title?: string;
+            /** Format: date-time */
+            scheduledDate?: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** @enum {string} */
+            myRole: "host" | "member" | "guest";
+            /** Format: uuid */
+            myMemberId: string;
+            memberCount?: number;
+            /** @description Members done with preferences — enough to render "2/3" without another call. */
+            completedCount?: number;
+            /**
+             * Format: uuid
+             * @description The room's current plan, when one exists.
+             */
+            planId?: string;
+        };
     };
     responses: {
         /** @description Validation or business rule failure */
@@ -2790,6 +2822,36 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    listRooms: {
+        parameters: {
+            query?: {
+                /** @description Repeatable or comma-separated; unknown values are ignored. */
+                status?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of room summaries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["RoomListItem"][];
+                        nextCursor: string | null;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
         };
     };
     createRoom: {
