@@ -196,10 +196,12 @@ Google Sheets read, error-report export. Reviewed against spec §12.
 
 ### Residual
 
-- 🟡 **No virus scanning of uploads** (spec §12). Uploads are parsed, never
-  executed or re-served, so the risk is to whoever later opens the original
-  file — but the control is genuinely missing. Needs a scanner service; not
-  wired (tracked here).
+- 🟢 **No virus scanning of uploads** — _accepted risk, decided 2026-08-27._
+  Operators vet import files before uploading them. The backend never executes
+  an upload and never serves it back: bytes are parsed in-process, and only the
+  parsed cell values are stored. The residual exposure is to whoever opens the
+  original file outside GoGo, which the upload path does not widen. Revisit if
+  import is ever opened past staff accounts.
 - 🟡 Import history is visible to any `editor`; there is no per-team scoping.
   Accepted for MVP — CMS accounts are staff-only.
 
@@ -210,7 +212,8 @@ Google Sheets read, error-report export. Reviewed against spec §12.
 3. 🟡 Load/soak validation of rate limits + query costs (#76).
 4. 🟡 Dependency/supply-chain scanning in CI (add `pnpm audit` + Dependabot — small follow-up).
 5. 🔴 Pentest before beta (QP gate) — schedule with team.
-6. 🟡 Virus scanning for CMS bulk-import uploads (PI-SEC-001 residual).
+6. ✅ Virus scanning for CMS bulk-import uploads — accepted risk (files vetted
+   before upload; staff-only endpoint). Reopen if import leaves staff scope.
 
 Review cadence: revisit per release gate (Alpha/Beta/Pilot — WBS §18) and on
 any auth/permission/ranking change (CODEOWNER rule).

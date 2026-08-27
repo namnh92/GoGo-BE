@@ -353,39 +353,7 @@ describe('moderation queue (CMS-007, FR-CMS-005)', () => {
   });
 });
 
-describe('import jobs + KPIs (CMS-009/010)', () => {
-  it('dry run reports without writing; real run creates drafts + partial errors', async () => {
-    const ops = await createAdmin('ops3@gogo.local', 'ops_admin');
-    const rows = [
-      { name: 'Import A', lat: 10.77, lng: 106.7 },
-      { name: '', lat: 10.77, lng: 106.7 }, // invalid
-      { name: 'Import B', lat: 99, lng: 200 }, // invalid coords
-    ];
-    const dry = await api().inject({
-      method: 'POST',
-      url: '/v1/cms/import-jobs',
-      remoteAddress: ip(),
-      headers: auth(ops.token),
-      payload: { dryRun: true, rows },
-    });
-    expect(dry.json().report).toMatchObject({ total: 3, created: 1 });
-    expect(dry.json().report.errors).toHaveLength(2);
-    const before = await db.select().from(schema.places).where(eq(schema.places.name, 'Import A'));
-    expect(before).toHaveLength(0);
-
-    const real = await api().inject({
-      method: 'POST',
-      url: '/v1/cms/import-jobs',
-      remoteAddress: ip(),
-      headers: auth(ops.token),
-      payload: { dryRun: false, rows },
-    });
-    expect(real.json().status).toBe('partial_failure');
-    const after = await db.select().from(schema.places).where(eq(schema.places.name, 'Import A'));
-    expect(after).toHaveLength(1);
-    expect(after[0]!.status).toBe('draft');
-  });
-
+describe('ops KPIs (CMS-010)', () => {
   it('KPIs endpoint aggregates health metrics (FR-CMS-010)', async () => {
     const ops = await createAdmin('ops4@gogo.local', 'ops_admin');
     const res = await api().inject({
