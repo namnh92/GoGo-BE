@@ -527,6 +527,72 @@ paths:
               schema: { $ref: '#/components/schemas/RoomSummary' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /rooms/{id}/events:
+    get:
+      operationId: streamRoomEvents
+      tags: [rooms]
+      summary: 'Realtime room stream (SSE)'
+      description: >
+        Server-sent events for one room, authorized exactly like `GET
+        /rooms/{id}`: members only, and a guest token reaches only the room it
+        is bound to.
+
+
+        SSE rather than a WebSocket because every event here is server →
+        client; nothing needs a bidirectional channel, and this keeps the same
+        bearer auth as the rest of the API.
+
+
+        Event types: `room.status_changed`, `participant.joined`,
+        `participant.left`, `participant.selection_changed`,
+        `matching.started`, `matching.completed`, `matching.failed`,
+        `suggestions.generated`, `suggestions.updated`, `vote.changed`,
+        `plan.updated`, plus two stream-level types — `heartbeat`, which keeps
+        idle connections alive through proxies, and `resync`, which says the
+        client's resume point is older than the replay buffer and it must
+        refetch. `resync` exists so a gap is reported rather than silently
+        skipped: a client that is wrong without knowing it is the failure this
+        endpoint is meant to prevent.
+
+
+        Each message's `id` is a per-room sequence number. Send it back as
+        `Last-Event-ID` (or the `lastEventId` query parameter, which browsers
+        need because `EventSource` cannot set headers) to resume.
+
+
+        Payloads carry facts, never composed copy, and never another member's
+        preference selections — `participant.selection_changed` reports
+        progress only (FR-PREF-005).
+
+
+        Polling the underlying endpoints remains a supported fallback; when
+        `REALTIME_SSE_ENABLED` is off, this route answers `503 REALTIME_DISABLED`
+        and clients should poll.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: { type: string }
+          description: The last sequence number received, to resume after a reconnect.
+        - name: lastEventId
+          in: query
+          required: false
+          schema: { type: string }
+          description: Same as the header, for browser EventSource which cannot set one.
+      responses:
+        '200':
+          description: An event stream
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/RoomEvent' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429':
+          description: Too many open streams for this session
+        '503':
+          description: Realtime disabled in this environment; poll instead
+
   /rooms/{id}/members:
     get:
       operationId: listRoomMembers
@@ -3980,6 +4046,50 @@ components:
         nextCursor:
           type: [string, 'null']
           description: Keyset cursor over (occurredAt, id); the log is appended to while it is read.
+
+    RoomEvent:
+      type: object
+      description: >
+        The domain-event envelope from the api-contract rules, unchanged.
+        Field names are snake_case here because that is the event convention,
+        not the REST DTO convention.
+      required:
+        [event_id, event_type, event_version, occurred_at, resource_type, resource_id, payload]
+      properties:
+        event_id: { type: string, format: uuid }
+        event_type:
+          type: string
+          enum:
+            - room.status_changed
+            - participant.joined
+            - participant.left
+            - participant.selection_changed
+            - matching.started
+            - matching.completed
+            - matching.failed
+            - suggestions.generated
+            - suggestions.updated
+            - vote.changed
+            - plan.updated
+            - resync
+            - heartbeat
+        event_version: { type: integer }
+        occurred_at: { type: string, format: date-time }
+        actor_id:
+          type: [string, 'null']
+          description: >
+            Pseudonymous. Where a participant is named it is by room-scoped
+            member id, which does not carry an account across rooms.
+        resource_type: { type: string }
+        resource_id: { type: string }
+        correlation_id: { type: [string, 'null'] }
+        payload_schema_version: { type: integer }
+        payload:
+          type: object
+          description: >
+            Facts, never composed copy. Carries the version a client should
+            compare against — `constraintVersion` for suggestions, `version`
+            for a plan — so a stale event is distinguishable from a fresh one.
 
   responses:
     BadRequest:

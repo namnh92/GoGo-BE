@@ -765,3 +765,194 @@ describe('GET /rooms — the actor can find their rooms again (#152)', () => {
     expect(filtered.items).toHaveLength(0);
   });
 });
+
+/**
+ * #154 — the SSE stream. `inject` buffers a whole response, which never
+ * arrives for a stream, so these tests speak to a real socket.
+ */
+describe('room realtime stream (BE-BFF-013, #154)', () => {
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const address = app.getHttpServer().address() as { port: number };
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  /** Reads frames until `want` events have arrived or the deadline passes. */
+  async function readEvents(
+    response: Response,
+    want: number,
+    timeoutMs = 5_000,
+  ): Promise<{ type: string; id: string | null; data: unknown }[]> {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    const events: { type: string; id: string | null; data: unknown }[] = [];
+    let buffer = '';
+    const deadline = Date.now() + timeoutMs;
+
+    while (events.length < want && Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop() ?? '';
+      for (const frame of frames) {
+        const type = /^event: (.*)$/m.exec(frame)?.[1] ?? 'message';
+        const id = /^id: (.*)$/m.exec(frame)?.[1] ?? null;
+        const data = /^data: (.*)$/m.exec(frame)?.[1];
+        if (type === 'heartbeat') continue;
+        events.push({ type, id, data: data ? JSON.parse(data) : null });
+      }
+    }
+    await reader.cancel();
+    return events;
+  }
+
+  it('a second member joining reaches the host without a poll', async () => {
+    const hostToken = (await registerUser('sse-host@gogo.local')).token;
+    const memberToken = (await registerUser('sse-member@gogo.local')).token;
+    const room = await createGroupRoom(hostToken);
+    const invite = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(hostToken),
+      payload: {},
+    });
+
+    const stream = await fetch(`${baseUrl}/v1/rooms/${room.id}/events`, {
+      headers: { ...auth(hostToken), accept: 'text/event-stream' },
+    });
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get('content-type')).toContain('text/event-stream');
+
+    const events = readEvents(stream, 1);
+    await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join',
+      remoteAddress: ip(),
+      headers: auth(memberToken),
+      payload: { inviteCode: invite.json().code },
+    });
+
+    const [joined] = await events;
+    expect(joined!.type).toBe('participant.joined');
+    expect(joined!.id).toBe('1');
+    expect((joined!.data as { event_type: string }).event_type).toBe('participant.joined');
+    // The room-scoped member id, not the account id.
+    expect((joined!.data as { actor_id: string }).actor_id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('a non-member cannot open the stream, hand-crafted request included', async () => {
+    const hostToken = (await registerUser('sse-owner@gogo.local')).token;
+    const outsiderToken = (await registerUser('sse-outsider@gogo.local')).token;
+    const room = await createGroupRoom(hostToken);
+
+    const res = await fetch(`${baseUrl}/v1/rooms/${room.id}/events`, {
+      headers: { ...auth(outsiderToken), accept: 'text/event-stream' },
+    });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { code: string }).code).toBe('NOT_A_MEMBER');
+  });
+
+  it('rejects an unauthenticated stream rather than opening one', async () => {
+    const hostToken = (await registerUser('sse-anon-host@gogo.local')).token;
+    const room = await createGroupRoom(hostToken);
+
+    const res = await fetch(`${baseUrl}/v1/rooms/${room.id}/events`, {
+      headers: { accept: 'text/event-stream' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('resumes from Last-Event-ID instead of dropping the gap', async () => {
+    const hostToken = (await registerUser('sse-resume-host@gogo.local')).token;
+    const first = (await registerUser('sse-resume-a@gogo.local')).token;
+    const second = (await registerUser('sse-resume-b@gogo.local')).token;
+    const room = await createGroupRoom(hostToken);
+    const invite = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(hostToken),
+      payload: { maxUses: 5 },
+    });
+    const code = invite.json().code;
+
+    // Connect, see the first join, then drop the connection mid-room.
+    const initial = await fetch(`${baseUrl}/v1/rooms/${room.id}/events`, {
+      headers: { ...auth(hostToken), accept: 'text/event-stream' },
+    });
+    const seen = readEvents(initial, 1);
+    await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join',
+      remoteAddress: ip(),
+      headers: auth(first),
+      payload: { inviteCode: code },
+    });
+    const [firstJoin] = await seen;
+    const lastEventId = firstJoin!.id!;
+
+    // The second join happens while nobody is connected — exactly the tunnel
+    // case. Without resume the host would never learn about it.
+    await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join',
+      remoteAddress: ip(),
+      headers: auth(second),
+      payload: { inviteCode: code },
+    });
+
+    const resumed = await fetch(`${baseUrl}/v1/rooms/${room.id}/events`, {
+      headers: {
+        ...auth(hostToken),
+        accept: 'text/event-stream',
+        'last-event-id': lastEventId,
+      },
+    });
+    const replayed = await readEvents(resumed, 1);
+    expect(replayed[0]!.type).toBe('participant.joined');
+    expect(Number(replayed[0]!.id)).toBeGreaterThan(Number(lastEventId));
+  });
+
+  it('never puts another member’s selections on the wire', async () => {
+    const hostToken = (await registerUser('sse-priv-host@gogo.local')).token;
+    const memberToken = (await registerUser('sse-priv-member@gogo.local')).token;
+    const room = await createGroupRoom(hostToken, 2);
+    const invite = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(hostToken),
+      payload: {},
+    });
+    await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join',
+      remoteAddress: ip(),
+      headers: auth(memberToken),
+      payload: { inviteCode: invite.json().code },
+    });
+
+    const stream = await fetch(`${baseUrl}/v1/rooms/${room.id}/events`, {
+      headers: { ...auth(hostToken), accept: 'text/event-stream' },
+    });
+    const events = readEvents(stream, 1);
+    await api().inject({
+      method: 'PUT',
+      url: `/v1/rooms/${room.id}/preferences/me`,
+      remoteAddress: ip(),
+      headers: auth(memberToken),
+      payload: { selections: { mood: ['chill'] }, expectedVersion: 0 },
+    });
+
+    const [changed] = await events;
+    expect(changed!.type).toBe('participant.selection_changed');
+    const payload = (changed!.data as { payload: Record<string, unknown> }).payload;
+    expect(payload['selectionStatus']).toBe('in_progress');
+    // Progress, not content: FR-PREF-005 is not suspended by the transport.
+    expect(JSON.stringify(changed!.data)).not.toContain('chill');
+  });
+});

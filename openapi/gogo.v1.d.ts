@@ -237,6 +237,36 @@ export interface paths {
         patch: operations["transitionRoom"];
         trace?: never;
     };
+    "/rooms/{id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Realtime room stream (SSE)
+         * @description Server-sent events for one room, authorized exactly like `GET /rooms/{id}`: members only, and a guest token reaches only the room it is bound to.
+         *
+         *     SSE rather than a WebSocket because every event here is server → client; nothing needs a bidirectional channel, and this keeps the same bearer auth as the rest of the API.
+         *
+         *     Event types: `room.status_changed`, `participant.joined`, `participant.left`, `participant.selection_changed`, `matching.started`, `matching.completed`, `matching.failed`, `suggestions.generated`, `suggestions.updated`, `vote.changed`, `plan.updated`, plus two stream-level types — `heartbeat`, which keeps idle connections alive through proxies, and `resync`, which says the client's resume point is older than the replay buffer and it must refetch. `resync` exists so a gap is reported rather than silently skipped: a client that is wrong without knowing it is the failure this endpoint is meant to prevent.
+         *
+         *     Each message's `id` is a per-room sequence number. Send it back as `Last-Event-ID` (or the `lastEventId` query parameter, which browsers need because `EventSource` cannot set headers) to resume.
+         *
+         *     Payloads carry facts, never composed copy, and never another member's preference selections — `participant.selection_changed` reports progress only (FR-PREF-005).
+         *
+         *     Polling the underlying endpoints remains a supported fallback; when `REALTIME_SSE_ENABLED` is off, this route answers `503 REALTIME_DISABLED` and clients should poll.
+         */
+        get: operations["streamRoomEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/rooms/{id}/members": {
         parameters: {
             query?: never;
@@ -2677,6 +2707,24 @@ export interface components {
             /** @description Keyset cursor over (occurredAt, id); the log is appended to while it is read. */
             nextCursor: string | null;
         };
+        /** @description The domain-event envelope from the api-contract rules, unchanged. Field names are snake_case here because that is the event convention, not the REST DTO convention. */
+        RoomEvent: {
+            /** Format: uuid */
+            event_id: string;
+            /** @enum {string} */
+            event_type: "room.status_changed" | "participant.joined" | "participant.left" | "participant.selection_changed" | "matching.started" | "matching.completed" | "matching.failed" | "suggestions.generated" | "suggestions.updated" | "vote.changed" | "plan.updated" | "resync" | "heartbeat";
+            event_version: number;
+            /** Format: date-time */
+            occurred_at: string;
+            /** @description Pseudonymous. Where a participant is named it is by room-scoped member id, which does not carry an account across rooms. */
+            actor_id?: string | null;
+            resource_type: string;
+            resource_id: string;
+            correlation_id?: string | null;
+            payload_schema_version?: number;
+            /** @description Facts, never composed copy. Carries the version a client should compare against — `constraintVersion` for suggestions, `version` for a plan — so a stale event is distinguishable from a fresh one. */
+            payload: Record<string, never>;
+        };
     };
     responses: {
         /** @description Validation or business rule failure */
@@ -3238,6 +3286,50 @@ export interface operations {
                 };
             };
             409: components["responses"]["Conflict"];
+        };
+    };
+    streamRoomEvents: {
+        parameters: {
+            query?: {
+                /** @description Same as the header, for browser EventSource which cannot set one. */
+                lastEventId?: string;
+            };
+            header?: {
+                /** @description The last sequence number received, to resume after a reconnect. */
+                "Last-Event-ID"?: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description An event stream */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["RoomEvent"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Too many open streams for this session */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Realtime disabled in this environment; poll instead */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     listRoomMembers: {

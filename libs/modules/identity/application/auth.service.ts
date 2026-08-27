@@ -6,6 +6,7 @@ import { IdentityRepository } from '../infrastructure/identity.repository';
 import { PasswordService } from './password.service';
 import { SessionRevocationService } from './session-revocation.service';
 import { TokenService } from './token.service';
+import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
 
 export const AUTH_OPTIONS = Symbol('AUTH_OPTIONS');
 
@@ -42,6 +43,7 @@ export class AuthService {
     private readonly tokens: TokenService,
     private readonly revocations: SessionRevocationService,
     @Inject(AUTH_OPTIONS) private readonly options: AuthOptions,
+    @Inject(ROOM_EVENT_BUS) private readonly events: RoomEventBus,
   ) {}
 
   async register(input: {
@@ -192,11 +194,26 @@ export class AuthService {
       tokenHash: this.tokens.hashOpaqueToken(guestToken),
       expiresAt: new Date(Date.now() + this.options.guestTtlSeconds * 1000),
     });
-    await this.repo.addGuestMember({
+    const { memberId } = await this.repo.addGuestMember({
       roomId: room.id,
       guestSessionId: session.id,
       displayName: input.displayName,
     });
+    // Only a genuine join is announced: a guest whose membership row already
+    // existed has reconnected, and telling the room they arrived again would
+    // be a lie the UI would render as a new participant.
+    if (memberId) {
+      try {
+        await this.events.publish({
+          roomId: room.id,
+          type: 'participant.joined',
+          actorId: memberId,
+          payload: { memberId, role: 'member', memberType: 'guest' },
+        });
+      } catch {
+        /* transport-only; clients fall back to polling */
+      }
+    }
 
     const actor: Actor = {
       type: 'guest',
