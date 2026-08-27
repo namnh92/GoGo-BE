@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { writeOutbox } from '../../shared/outbox';
@@ -167,11 +167,16 @@ export class PreferencesService {
         .where(and(eq(schema.roomMembers.roomId, roomId), isNull(schema.roomMembers.removedAt)));
 
       const everyoneDone = (remaining[0]?.n ?? 1) === 0 && (members[0]?.n ?? 0) >= 2;
-      if (everyoneDone && room.status === 'collecting') {
+      // `draft` is accepted alongside `collecting` so a room created before
+      // rooms opened in `collecting` is not stranded. `draft → collecting →
+      // matching` is already legal, so no invariant moves here.
+      if (everyoneDone && ['draft', 'collecting'].includes(room.status)) {
         await tx
           .update(schema.rooms)
           .set({ status: 'matching', updatedAt: sql`now()` })
-          .where(and(eq(schema.rooms.id, roomId), eq(schema.rooms.status, 'collecting')));
+          .where(
+            and(eq(schema.rooms.id, roomId), inArray(schema.rooms.status, ['draft', 'collecting'])),
+          );
         await writeOutbox(tx, {
           eventType: 'room.ready_for_matching',
           resourceType: 'room',
@@ -182,7 +187,26 @@ export class PreferencesService {
       return everyoneDone;
     });
 
-    return { completed: true, roomReadyForMatching: allCompleted };
+    // Reports the room, not just member progress. It used to say `true` while
+    // the room sat in a state the matching endpoint rejects — the server
+    // announcing readiness and then refusing to act on it.
+    const [after] = await this.db
+      .select({ status: schema.rooms.status })
+      .from(schema.rooms)
+      .where(eq(schema.rooms.id, roomId))
+      .limit(1);
+    const roomStatus = after?.status ?? 'draft';
+    return {
+      completed: true,
+      allMembersCompleted: allCompleted,
+      roomStatus,
+      // Both halves, deliberately: everyone has finished *and* the room is in a
+      // state the matching endpoint accepts. Reporting only the first is what
+      // let the server announce readiness and then answer 409; reporting only
+      // the second would tell a client to start matching while half the room
+      // has not answered yet.
+      roomReadyForMatching: allCompleted && ['matching', 'collecting'].includes(roomStatus),
+    };
   }
 
   private async markInProgress(

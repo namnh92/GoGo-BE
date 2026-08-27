@@ -3246,6 +3246,11 @@ export interface operations {
                 content: {
                     "application/json": {
                         completed?: boolean;
+                        /** @description Every member has finished their preferences. */
+                        allMembersCompleted?: boolean;
+                        /** @enum {string} */
+                        roomStatus?: "draft" | "collecting" | "matching" | "ready" | "active" | "completed" | "cancelled" | "expired";
+                        /** @description Everyone has finished **and** the room is in a state the suggestions endpoint accepts. It used to report member progress alone, so a client could be told the room was ready and then get 409 ROOM_NOT_MATCHING. */
                         roomReadyForMatching?: boolean;
                     };
                 };

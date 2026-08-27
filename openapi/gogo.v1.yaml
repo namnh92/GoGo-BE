@@ -744,7 +744,20 @@ paths:
                 type: object
                 properties:
                   completed: { type: boolean }
-                  roomReadyForMatching: { type: boolean }
+                  allMembersCompleted:
+                    type: boolean
+                    description: Every member has finished their preferences.
+                  roomStatus:
+                    type: string
+                    enum:
+                      [draft, collecting, matching, ready, active, completed, cancelled, expired]
+                  roomReadyForMatching:
+                    type: boolean
+                    description: >
+                      Everyone has finished **and** the room is in a state the
+                      suggestions endpoint accepts. It used to report member
+                      progress alone, so a client could be told the room was
+                      ready and then get 409 ROOM_NOT_MATCHING.
         '400': { $ref: '#/components/responses/BadRequest' }
 
   /taxonomies:

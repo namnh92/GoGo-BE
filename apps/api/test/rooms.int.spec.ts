@@ -111,7 +111,9 @@ describe('room lifecycle (BE-BFF-003)', () => {
     const { token } = await registerUser('host1@gogo.vn', 'Chủ Kèo');
     const room = await createGroupRoom(token);
     expect(room.type).toBe('group');
-    expect(room.status).toBe('draft');
+    // #155: a room exists to be joined, so it starts open to joining rather
+    // than in a `draft` state nothing moved it out of.
+    expect(room.status).toBe('collecting');
     expect(room.constraintVersion).toBe(1);
     expect(room.myRole).toBe('host');
     expect(room.code).toBeTruthy(); // host sees the share code

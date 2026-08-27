@@ -55,6 +55,11 @@ export class RoomsRepository {
           title: input.title,
           scheduledDate: input.scheduledDate,
           expiresAt: input.expiresAt,
+          // A room exists to be joined, so it starts open to joining. Creating
+          // it in `draft` gave clients a state nothing moved them out of: the
+          // server would report the room ready for matching and then refuse to
+          // match it, and every client had to walk the state machine itself.
+          status: 'collecting',
         })
         .returning();
       const [member] = await tx
