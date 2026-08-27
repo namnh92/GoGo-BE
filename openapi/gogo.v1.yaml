@@ -1950,13 +1950,78 @@ paths:
     get:
       operationId: cmsListPlaces
       tags: [cms]
-      summary: 'Editor: catalog list with status/text filter'
+      summary: 'Editor/ops: catalog list with server-side filter, sort and cursor paging'
+      description: >
+        Keyset pagination, not offset: the catalog is written to while editors
+        browse it (background imports), so an offset would repeat or skip rows.
+        Pass the returned `nextCursor` back to get the next page; `nextCursor`
+        is null only when there is genuinely nothing more. Text search runs on
+        the normalized name — accent-insensitive, same behaviour as the
+        consumer-facing search.
       parameters:
-        - { name: status, in: query, schema: { type: string } }
-        - { name: q, in: query, schema: { type: string } }
-        - { name: limit, in: query, schema: { type: integer, maximum: 200, default: 50 } }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, community_submitted, review, published, suspended, archived]
+        - {
+            name: q,
+            in: query,
+            description: Accent-insensitive name search,
+            schema: { type: string, maxLength: 120 },
+          }
+        - { name: areaKey, in: query, schema: { type: string, maxLength: 64 } }
+        - {
+            name: category,
+            in: query,
+            description: Taxonomy key of kind `category`,
+            schema: { type: string, maxLength: 64 },
+          }
+        - name: source
+          in: query
+          description: Where the place came from, derived from provider/submission links.
+          schema: { type: string, enum: [google, community, manual] }
+        - name: staleDays
+          in: query
+          description: Freshness last verified more than N days ago, or never.
+          schema: { type: integer, minimum: 0, maximum: 3650 }
+        - name: sort
+          in: query
+          schema:
+            { type: string, enum: [updated_at, created_at, name, confidence], default: updated_at }
+        - { name: direction, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
+          }
+        - {
+            name: cursor,
+            in: query,
+            description: Opaque cursor from a previous page,
+            schema: { type: string, maxLength: 512 },
+          }
       responses:
-        '200': { description: Places with freshness and confidence }
+        '200':
+          description: One page of places
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/CmsPlaceListItem' }
+                  nextCursor:
+                    type: string
+                    nullable: true
+                    description: Null when this is the last page.
+        '400':
+          description: INVALID_CURSOR or a rejected filter value
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /cms/places/stale:
@@ -3054,6 +3119,21 @@ components:
         warnings:
           type: array
           items: { $ref: '#/components/schemas/IngestMessage' }
+    CmsPlaceListItem:
+      type: object
+      required: [id, name, status, confidence, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status:
+          type: string
+          enum: [draft, community_submitted, review, published, suspended, archived]
+        areaKey: { type: string }
+        rating: { type: number, format: float }
+        confidence: { type: number, format: float, minimum: 0, maximum: 1 }
+        freshnessCheckedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
   responses:
     BadRequest:
       description: Validation or business rule failure

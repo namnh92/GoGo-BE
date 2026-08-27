@@ -144,6 +144,29 @@ Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 Chưa có: endpoint scrape (`/metrics`) và dashboard. Cần chốt nơi nhận metric
 trước — cùng quyết định với #36.
 
+## 3c. CORS cho browser client (BE-IMP-003)
+
+CMS và Web chạy ở origin khác API, gửi kèm cookie session, nên CORS phải là
+**allowlist tường minh**:
+
+```env
+# dev
+CORS_ORIGINS=http://localhost:5173,http://localhost:5174
+# production
+CORS_ORIGINS=https://app.gogo.vn,https://cms.gogo.vn
+```
+
+Không bao giờ dùng `*` hoặc `origin: true`. Cookie có `credentials` cộng
+wildcard origin = giao session cho bất kỳ trang nào người dùng mở.
+
+Header được phép: `content-type`, `authorization`, `idempotency-key`,
+`x-request-id`, `x-gogo-csrf`. Header lộ ra client: `x-request-id` (để client
+đính vào báo lỗi).
+
+Rỗng = chặn toàn bộ cross-origin. Đây là mặc định an toàn, nhưng cũng nghĩa là
+**CMS không gọi được API nào, kể cả login** — nếu CMS báo lỗi mạng ở màn đăng
+nhập, kiểm biến này trước.
+
 ## 4. Key hand-off checklist (bàn giao private)
 
 Kênh: gửi qua kênh riêng (không chat thường/không email plaintext — dùng

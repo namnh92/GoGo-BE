@@ -9,6 +9,7 @@ import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
+import { CSRF_HEADER } from '@gogo/modules';
 import { AppModule } from './app.module';
 import { loadEnv } from './config/env';
 
@@ -82,9 +83,22 @@ export async function createApp(): Promise<NestFastifyApplication> {
     limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 12, fieldSize: 64 * 1024 },
   });
 
+  // BE-IMP-003. Browser clients (CMS, Web) send session cookies, so the origin
+  // list is an explicit allowlist — never `true`/`*`. Wildcard origin plus
+  // credentials hands the session to any page that asks.
   app.enableCors({
     origin: config.CORS_ORIGINS.length > 0 ? config.CORS_ORIGINS : false,
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'content-type',
+      'authorization',
+      'idempotency-key',
+      'x-request-id',
+      CSRF_HEADER,
+    ],
+    exposedHeaders: ['x-request-id'],
+    maxAge: 600,
   });
   app.setGlobalPrefix('v1');
   app.enableShutdownHooks();
