@@ -1,4 +1,4 @@
-import { SheetAccessError } from './ports';
+import { ProviderQuotaExceededError, ProviderUnavailableError, SheetAccessError } from './ports';
 import type {
   AreaAutocompletePort,
   AreaPrediction,
@@ -27,6 +27,10 @@ export class FakePlaceProvider implements PlaceProviderPort {
   readonly registry = new Map<string, ResolvedProviderPlace>();
   /** Set to simulate provider outage. */
   failing = false;
+  /** PI-QA-001: the two failure modes callers must handle differently — */
+  /** quota parks a bulk job, a timeout is just an unresolved row. */
+  quotaExhausted = false;
+  timingOut = false;
 
   seed(place: Partial<ResolvedProviderPlace> & { providerPlaceId: string }): void {
     this.registry.set(place.providerPlaceId, {
@@ -46,6 +50,7 @@ export class FakePlaceProvider implements PlaceProviderPort {
   }
 
   async resolveUrl(url: string): Promise<string | null> {
+    this.guard();
     if (this.failing) throw new Error('fake provider down');
     // Fake convention: any URL containing place_id=XYZ or /fake/XYZ resolves.
     const byParam = /[?&]place_id=([\w-]+)/.exec(url);
@@ -56,8 +61,15 @@ export class FakePlaceProvider implements PlaceProviderPort {
   }
 
   async details(providerPlaceId: string): Promise<ResolvedProviderPlace | null> {
+    this.guard();
     if (this.failing) throw new Error('fake provider down');
     return this.registry.get(providerPlaceId) ?? null;
+  }
+
+  /** Mirrors what the real adapter throws after `withResilience` gives up. */
+  private guard(): void {
+    if (this.quotaExhausted) throw new ProviderQuotaExceededError('fake.places');
+    if (this.timingOut) throw new ProviderUnavailableError('fake.places', 'timeout');
   }
 }
 
@@ -100,6 +112,7 @@ export class FakeSheets implements SheetsPort {
   readonly books = new Map<string, Map<string, string[][]>>();
   /** Set to simulate a sheet the service account cannot read. */
   denied = new Set<string>();
+  quotaExhausted = false;
 
   seed(spreadsheetId: string, title: string, rows: string[][]): void {
     const book = this.books.get(spreadsheetId) ?? new Map<string, string[][]>();
@@ -120,6 +133,7 @@ export class FakeSheets implements SheetsPort {
   }
 
   private require(spreadsheetId: string): Map<string, string[][]> {
+    if (this.quotaExhausted) throw new ProviderQuotaExceededError('fake.sheets');
     if (this.denied.has(spreadsheetId)) {
       throw new SheetAccessError('SHEET_PERMISSION_DENIED', 'Không có quyền đọc Google Sheet này');
     }

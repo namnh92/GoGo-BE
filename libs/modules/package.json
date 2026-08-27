@@ -10,6 +10,7 @@
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
     "@gogo/database": "workspace:*",
+    "@gogo/observability": "workspace:*",
     "@gogo/providers": "workspace:*",
     "@nestjs/common": "^11.2.3",
     "@nestjs/core": "^11.2.3",

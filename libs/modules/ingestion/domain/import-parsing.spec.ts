@@ -3,7 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { applyMapping, resolveMapping } from './column-mapping';
 import { buildErrorReportCsv, escapeCsvCell } from './error-report';
 import { validateRow } from './template';
-import { INGEST_LIMITS, IngestFileError, detectFormat, parseCsv, parseXlsx } from './tabular';
+import {
+  INGEST_LIMITS,
+  IngestFileError,
+  detectFormat,
+  parseCsv,
+  parseXlsx,
+  sanitizeFileName,
+} from './tabular';
 
 /**
  * PI-BE-011/013/017 — parser, mapping, validation and export.
@@ -393,5 +400,37 @@ describe('error report CSV', () => {
     expect(lines[1]).toContain(`"'=HCM-7"`);
     expect(lines[1]).toContain('CITY_REQUIRED');
     expect(lines[1]).toContain('PRICE_UNPARSED');
+  });
+});
+
+// --- PI-SEC-001 regressions -------------------------------------------------
+
+describe('hostile input hardening', () => {
+  it('leaves an out-of-range XML entity as text instead of throwing', () => {
+    const bytes = makeXlsx([{ name: 'S1', rows: [['name'], ['ok']] }]);
+    // Rebuild sheet1 with a code point above the Unicode maximum.
+    const hostile = makeXlsx([{ name: 'S1', rows: [['name'], ['A&#x110000;B']] }]);
+    expect(() => parseXlsx(bytes)).not.toThrow();
+    const grids = parseXlsx(hostile);
+    expect(grids[0]!.rows[0]![0]).toBe('A&#x110000;B');
+  });
+
+  it('sanitises a hostile upload filename', () => {
+    expect(sanitizeFileName('../../etc/passwd')).toBe('passwd');
+    expect(sanitizeFileName('a\\b\\c.csv')).toBe('c.csv');
+    expect(sanitizeFileName('<img src=x onerror=alert(1)>.csv')).toBe(
+      'img src=x onerror=alert(1).csv',
+    );
+    expect(sanitizeFileName('')).toBe('upload');
+    expect(sanitizeFileName('x'.repeat(500)).length).toBe(180);
+  });
+
+  it('refuses encrypted and ZIP64 archives rather than half-parsing them', () => {
+    const bytes = makeXlsx([{ name: 'S1', rows: [['name'], ['A']] }]);
+    // Flip the EOCD central-directory offset to the ZIP64 marker.
+    const eocd = bytes.length - 22;
+    const zip64 = Buffer.from(bytes);
+    zip64.writeUInt32LE(0xffffffff, eocd + 16);
+    expectCode(() => parseXlsx(zip64), 'FILE_UNSUPPORTED');
   });
 });

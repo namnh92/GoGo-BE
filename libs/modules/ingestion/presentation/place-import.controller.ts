@@ -5,6 +5,7 @@ import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import type { Actor } from '../../identity/domain/actor';
 import { CurrentActor, RateLimit } from '../../identity/presentation/decorators';
 import { RequireRole } from '../../cms/presentation/admin.guard';
+import { sanitizeFileName } from '../domain/tabular';
 import { PlaceImportJobService, type ImportMode } from '../application/place-import-job.service';
 
 const Uuid = new ZodValidationPipe(z.string().uuid());
@@ -99,7 +100,7 @@ export class PlaceImportController {
 
     return this.jobs.createFromFile({
       bytes,
-      fileName: part.filename,
+      fileName: sanitizeFileName(part.filename),
       mode: mode as ImportMode,
       defaultCity: field('defaultCity'),
       mapping,

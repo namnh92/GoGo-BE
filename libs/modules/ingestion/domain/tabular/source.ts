@@ -37,6 +37,21 @@ export function detectFormat(bytes: Buffer, fileName?: string): DetectedFormat {
   return 'csv';
 }
 
+/**
+ * The upload filename is attacker-controlled and ends up stored on the job and
+ * rendered in the CMS. Keep the basename, drop control characters and path
+ * separators, and cap the length.
+ */
+export function sanitizeFileName(raw: string | undefined): string {
+  const base = (raw ?? '')
+    .split(/[\\/]/)
+    .pop()!
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f<>"'`]/g, '')
+    .trim();
+  return base.slice(0, 180) || 'upload';
+}
+
 /** One entry point for uploads: bytes in, one grid per tab out. */
 export function parseTabularSource(
   bytes: Buffer,

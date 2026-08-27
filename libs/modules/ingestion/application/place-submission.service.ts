@@ -1,7 +1,8 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import type { ResolvedProviderPlace } from '@gogo/providers';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
@@ -42,6 +43,7 @@ export class PlaceSubmissionService {
     @Inject(DB) private readonly db: Db,
     private readonly resolver: PlaceResolverService,
     private readonly dedup: PlaceDedupService,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
   async resolveLink(input: {
@@ -156,6 +158,7 @@ export class PlaceSubmissionService {
         .update(schema.placeSubmissions)
         .set({ submissionCount: sql`${schema.placeSubmissions.submissionCount} + 1` })
         .where(eq(schema.placeSubmissions.id, existing.id));
+      this.metrics.increment('mobile_place_submissions_total', { status: 'deduped' });
       return { status: 'PENDING' as const, submissionId: existing.id, deduped: true };
     }
 
@@ -175,6 +178,7 @@ export class PlaceSubmissionService {
         note: input.note ?? null,
       })
       .returning();
+    this.metrics.increment('mobile_place_submissions_total', { status: 'pending' });
     await writeOutbox(this.db, {
       eventType: 'place.submission_created',
       resourceType: 'place_submission',
@@ -253,6 +257,13 @@ export class PlaceSubmissionService {
       resourceId: id,
       diff: { decision, reason, resultPlaceId },
     });
+    this.metrics.increment('mobile_place_submissions_total', { status: decision });
+    // How long a proposal waited before an editor acted on it (spec §13).
+    this.metrics.observe(
+      'place_submission_publish_latency_hours',
+      (Date.now() - row.createdAt.getTime()) / 3_600_000,
+      { decision },
+    );
     await writeOutbox(this.db, {
       eventType: 'place.submission_decided',
       resourceType: 'place_submission',

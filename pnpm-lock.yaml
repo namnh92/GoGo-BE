@@ -200,6 +200,9 @@ importers:
       '@gogo/database':
         specifier: workspace:*
         version: link:../database
+      '@gogo/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gogo/providers':
         specifier: workspace:*
         version: link:../providers

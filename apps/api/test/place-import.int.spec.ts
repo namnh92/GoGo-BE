@@ -521,3 +521,172 @@ describe('RBAC', () => {
     expect(res.statusCode).toBe(403);
   });
 });
+
+describe('PI-QA-002 — bulk import at 0 / 1 / 100 / 5.000 rows', () => {
+  async function upload(token: string, content: Buffer, mode: string, name: string) {
+    const body = multipart({ mode, defaultCity: 'Hồ Chí Minh' }, { name, content });
+    return api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(token), ...body.headers },
+      payload: body.payload,
+    });
+  }
+
+  function rows(count: number, prefix: string): string[] {
+    return Array.from(
+      { length: count },
+      (_, i) =>
+        `${prefix}-${i},Quán ${prefix} ${i},Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-scale-${i % 25},cafe,100000,200000,per_person`,
+    );
+  }
+
+  it('0 rows is a bad request, not an empty job', async () => {
+    const editor = await createAdmin('scale0@gogo.local', 'editor');
+    const res = await upload(editor.token, csv([]), 'dry_run', 'empty.csv');
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('FILE_EMPTY');
+  });
+
+  it('1 row: counts, progress and error report agree', async () => {
+    const editor = await createAdmin('scale1@gogo.local', 'editor');
+    places.seed({ providerPlaceId: 'fake-scale-0', name: 'Quán One', lat: 10.9, lng: 106.9 });
+
+    const job = (
+      await upload(editor.token, csv(rows(1, 'ONE')), 'create_drafts', 'one.csv')
+    ).json();
+    expect(job.totals.rows).toBe(1);
+
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(job.id);
+
+    const done = await imports.getJob(job.id);
+    expect(done.totals.processed).toBe(1);
+    expect(done.totals.success).toBe(1);
+    expect(done.totals.failed).toBe(0);
+    expect(done.status).toBe('completed');
+
+    const report = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${job.id}/error-report`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    // No errors, no warnings → header row only.
+    expect(report.body.trim().split('\r\n')).toHaveLength(1);
+  });
+
+  it('100 rows: mixed outcomes, and retry does not duplicate', async () => {
+    const editor = await createAdmin('scale100@gogo.local', 'editor');
+    for (let i = 0; i < 25; i++) {
+      places.seed({
+        providerPlaceId: `fake-scale-${i}`,
+        name: `Quán Scale ${i}`,
+        lat: 10.5 + i / 100,
+        lng: 106.5 + i / 100,
+      });
+    }
+    // 90 resolvable rows + 10 that fail validation up front.
+    const bad = Array.from({ length: 10 }, (_, i) => `,Quán Bad ${i},,,,,,,`);
+    const job = (
+      await upload(editor.token, csv([...rows(90, 'C'), ...bad]), 'create_drafts', 'hundred.csv')
+    ).json();
+    expect(job.totals.rows).toBe(100);
+    expect(job.totals.failed).toBe(10);
+
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(job.id);
+
+    const done = await imports.getJob(job.id);
+    expect(done.totals.processed).toBe(100);
+    expect(done.rowsByStatus.validation_failed).toBe(10);
+    // 25 distinct provider places: the first row of each is ready, the rest
+    // are same-provider duplicates of it — no second canonical place.
+    expect((done.rowsByStatus.ready ?? 0) + (done.rowsByStatus.duplicate ?? 0)).toBe(90);
+    expect(done.status).toBe('partial_success');
+
+    const report = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${job.id}/error-report`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    // Header + one line per row carrying an error or warning.
+    const lines = report.body.trim().split('\r\n');
+    expect(lines.length - 1).toBe(
+      (done.rowsByStatus.validation_failed ?? 0) + (done.rowsByStatus.duplicate ?? 0),
+    );
+
+    const readyRows = await imports.listRows(job.id, { status: 'ready', limit: 100, offset: 0 });
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth((await createAdmin('scale100-ops@gogo.local', 'ops_admin')).token),
+      payload: {},
+    });
+    const afterPublish = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.places)
+      .where(sql`${schema.places.name} like 'Quán C %'`);
+    const placesAfter = afterPublish[0]?.n ?? 0;
+    expect(placesAfter).toBe(readyRows.items.length);
+
+    // Retry re-queues nothing resolvable and creates no second place.
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/retry`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(job.id);
+    const afterRetry = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.places)
+      .where(sql`${schema.places.name} like 'Quán C %'`);
+    expect(afterRetry[0]?.n).toBe(placesAfter);
+  });
+
+  it('5.000 rows: accepted, chunked and counted; 5.001 is refused', async () => {
+    const editor = await createAdmin('scale5k@gogo.local', 'editor');
+    const job = (
+      await upload(editor.token, csv(rows(5000, 'K')), 'dry_run', 'five-thousand.csv')
+    ).json();
+    expect(job.totals.rows).toBe(5000);
+    expect(job.totals.failed).toBe(0);
+
+    const page = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${job.id}/rows?limit=100&offset=4900`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    expect(page.json().items).toHaveLength(100);
+    // Exactly the last page: nextOffset is null rather than a page that would
+    // come back empty.
+    expect(page.json().nextOffset).toBeNull();
+
+    const midPage = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${job.id}/rows?limit=100&offset=0`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    expect(midPage.json().nextOffset).toBe(100);
+
+    const tooMany = await upload(editor.token, csv(rows(5001, 'X')), 'dry_run', 'over.csv');
+    expect(tooMany.statusCode).toBe(400);
+    expect(tooMany.json().code).toBe('TOO_MANY_ROWS');
+  });
+});

@@ -103,6 +103,47 @@ Tạo check → copy ping URL vào `.env.prod` → restart. Xong.
 **Sentry:** tạo project Node → `SENTRY_DSN` vào `.env.prod`. Filter đã
 capture mọi 5xx kèm request_id.
 
+## 3b. Metrics & alert cho ingestion (PI-SRE-001)
+
+MVP không chạy Prometheus/OTLP collector. Metric đi ra **theo log**, mỗi dòng
+một shape cố định (`LogMetrics` trong `@gogo/observability`):
+
+```json
+{"metric":"place_import_rows_total","type":"counter","value":1,"status":"ready"}
+{"metric":"place_resolve_duration_ms","type":"histogram","value":128,"source":"cms_import","outcome":"ok"}
+```
+
+Aggregator nào cũng đếm và alert được trên shape này; đổi sang exporter thật
+sau chỉ phải sửa một file, không phải sửa mọi call site.
+
+Metric đang phát (spec §13):
+
+| Metric                                   | Label                             | Phát ở                                           |
+| ---------------------------------------- | --------------------------------- | ------------------------------------------------ |
+| `place_import_jobs_total`                | `status`, `source_type`           | tạo job, pause quota, kết thúc job               |
+| `place_import_rows_total`                | `status`, `error_code`            | mỗi dòng khi resolve xong                        |
+| `place_resolve_duration_ms`              | `source`, `outcome`               | mỗi lần resolve                                  |
+| `place_resolve_confidence_bucket`        | `bucket`                          | mỗi lần resolve                                  |
+| `place_duplicate_candidates_total`       | `kind`                            | provider id trùng / trùng theo tên + khoảng cách |
+| `places_provider_requests_total`         | `method`, `status`, `duration_ms` | mọi call Google Places                           |
+| `places_provider_cost_units`             | `sku`                             | mọi call Google Places thành công                |
+| `mobile_place_submissions_total`         | `status`                          | submit / dedupe / decide                         |
+| `place_submission_publish_latency_hours` | `decision`                        | khi editor quyết định                            |
+
+Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
+
+| Alert            | Điều kiện                                                                 | Vì sao                                                                                            |
+| ---------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Ingestion quota  | có `place_import_jobs_total{status="paused_provider_quota"}`              | job đang đứng, cần người vào resume                                                               |
+| Provider lỗi     | tỉ lệ `places_provider_requests_total{status!~"2.."}` > 10% trong 15 phút | key sai, hết hạn, hoặc Google có sự cố                                                            |
+| Provider chậm    | p95 `place_resolve_duration_ms` > 3.000ms trong 15 phút                   | job 5.000 dòng sẽ không kịp                                                                       |
+| Chi phí          | `places_provider_cost_units` vượt ngân sách ngày                          | chặn hoá đơn bất ngờ — **đặt cả budget alert bên Google Cloud Billing**, đừng chỉ dựa vào cái này |
+| Chất lượng match | tỉ lệ bucket `0-0.5` > 30% trong một job                                  | dữ liệu nguồn kém hoặc mapping sai, không phải lỗi resolver                                       |
+| Submission tồn   | p95 `place_submission_publish_latency_hours` > 72h                        | hàng chờ moderation bị bỏ quên                                                                    |
+
+Chưa có: endpoint scrape (`/metrics`) và dashboard. Cần chốt nơi nhận metric
+trước — cùng quyết định với #36.
+
 ## 4. Key hand-off checklist (bàn giao private)
 
 Kênh: gửi qua kênh riêng (không chat thường/không email plaintext — dùng

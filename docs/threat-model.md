@@ -149,6 +149,60 @@ MVP (single instance); revisit when scaling horizontally.
 - `/v1/health/ready` exposes dependency up/down publicly — accepted (no data,
   and uptime monitors need it unauthenticated).
 
+## Review log — 2026-08-27 (bulk import surface, PI-SEC-001)
+
+Scope: the CMS bulk import added in PR #130 — file upload, XLSX/ZIP parsing,
+Google Sheets read, error-report export. Reviewed against spec §12.
+
+### Fixed during the review
+
+| #   | Finding                                                                                                                                | Fix                                                                                           |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 1   | XML numeric entity out of range (`&#x110000;`) threw `RangeError` from `String.fromCodePoint`, turning a malformed workbook into a 500 | Out-of-range code points are left as literal text (`tabular/xlsx.ts`)                         |
+| 2   | A malformed cell ref (`<c r="1"/>`) produced `columnIndex() === -1` and a negative array write                                         | Bad ref falls back to append order                                                            |
+| 3   | The upload filename — attacker-controlled — was stored on the job and echoed back to the CMS unmodified                                | `sanitizeFileName()`: basename only, control chars and `<>"'\`` stripped, capped at 180 chars |
+
+### Checked, no change needed
+
+- **SSRF.** `google_maps_url` goes through the existing allowlist + per-hop
+  re-validation + private-IP block. The Sheets _URL is never fetched_: only the
+  spreadsheet id is extracted and passed to `sheets.googleapis.com`, a fixed
+  host. Non-Google spreadsheet links are refused (`SHEET_URL_INVALID`).
+- **Upload limits.** Enforced twice — `@fastify/multipart` (20 MB, 1 file, 12
+  fields, 64 KB/field) before buffering, then the parser caps (5.000 rows, 64
+  columns, 2.000 chars/cell).
+- **Archive handling.** Nothing in the archive is executed; only the named XML
+  parts are inflated. `xl/vbaProject.bin` → `FILE_MACRO_NOT_ALLOWED`. Zip bomb:
+  200 MB total expansion cap, 200× per-entry ratio cap, plus `maxOutputLength`
+  on each inflate so a lying central directory errors instead of allocating.
+  ZIP64 and encrypted entries are refused rather than partially parsed.
+- **Entity expansion.** Only the five predefined XML entities are expanded and
+  no DTD is processed, so a billion-laughs payload has nothing to expand.
+- **Zip path traversal.** Entry names are keys in an in-memory map; the reader
+  never touches the filesystem, so `../` in a name goes nowhere.
+- **Content-type confusion.** Format is decided by leading bytes; a `.xlsx`
+  name over CSV bytes is `FILE_TYPE_MISMATCH`, legacy OLE2 `.xls` is refused.
+- **CSV formula injection.** Error-report cells starting `=` `+` `-` `@` (and
+  tab/CR) are apostrophe-prefixed; the response is
+  `Content-Disposition: attachment` + `nosniff`.
+- **Abuse.** Import creation is rate-limited 10 per 5 min per admin; the public
+  resolve endpoint 10/min per IP; submissions 5/min. Every mutation is audited.
+- **Authorization.** All import routes require `editor`/`ops_admin`;
+  **publish is `ops_admin` only**. The admin row is re-read per request, so a
+  suspended admin loses access mid-session. `confirm-candidate` accepts only a
+  provider id the resolver surfaced for that row.
+- **Secrets.** The Sheets/Places key lives in the adapter only and never
+  reaches an error body, a log line or the job record.
+
+### Residual
+
+- 🟡 **No virus scanning of uploads** (spec §12). Uploads are parsed, never
+  executed or re-served, so the risk is to whoever later opens the original
+  file — but the control is genuinely missing. Needs a scanner service; not
+  wired (tracked here).
+- 🟡 Import history is visible to any `editor`; there is no per-team scoping.
+  Accepted for MVP — CMS accounts are staff-only.
+
 ## Open risks (tracked)
 
 1. 🔴 SSO for CMS — blocked on IdP (#62 note).
@@ -156,6 +210,7 @@ MVP (single instance); revisit when scaling horizontally.
 3. 🟡 Load/soak validation of rate limits + query costs (#76).
 4. 🟡 Dependency/supply-chain scanning in CI (add `pnpm audit` + Dependabot — small follow-up).
 5. 🔴 Pentest before beta (QP gate) — schedule with team.
+6. 🟡 Virus scanning for CMS bulk-import uploads (PI-SEC-001 residual).
 
 Review cadence: revisit per release gate (Alpha/Beta/Pilot — WBS §18) and on
 any auth/permission/ranking change (CODEOWNER rule).

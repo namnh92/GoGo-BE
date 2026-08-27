@@ -17,12 +17,21 @@ const XML_ENTITIES: Record<string, string> = {
   apos: "'",
 };
 
+/** Out-of-range code points are left as literal text — never thrown at the caller. */
+function codePoint(value: number): string | null {
+  return Number.isInteger(value) && value >= 0 && value <= 0x10ffff
+    ? String.fromCodePoint(value)
+    : null;
+}
+
 function decodeXml(text: string): string {
   return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (whole, entity: string) => {
     if (entity.startsWith('#x') || entity.startsWith('#X')) {
-      return String.fromCodePoint(Number.parseInt(entity.slice(2), 16));
+      return codePoint(Number.parseInt(entity.slice(2), 16)) ?? whole;
     }
-    if (entity.startsWith('#')) return String.fromCodePoint(Number.parseInt(entity.slice(1), 10));
+    if (entity.startsWith('#')) return codePoint(Number.parseInt(entity.slice(1), 10)) ?? whole;
+    // Only the five predefined entities are expanded — no DTD, no nesting, so
+    // an entity-expansion bomb has nothing to expand.
     return XML_ENTITIES[entity] ?? whole;
   });
 }
@@ -114,7 +123,9 @@ function readSheet(zip: ZipArchive, ref: SheetRef, shared: string[]): SheetGrid 
         );
       }
       // Sparse sheets skip empty cells; the column ref restores alignment.
-      const index = ref2 ? columnIndex(ref2) : cells.length;
+      // A malformed ref falls back to append order rather than a negative index.
+      const parsed = ref2 ? columnIndex(ref2) : -1;
+      const index = parsed >= 0 ? parsed : cells.length;
       if (index >= INGEST_LIMITS.maxColumns) {
         throw new IngestFileError(
           'TOO_MANY_COLUMNS',
