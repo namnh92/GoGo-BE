@@ -112,3 +112,8 @@ export {
 } from '../shared/request-context';
 export { writeAudit, type AuditInput } from '../shared/audit';
 export { EmergencyTakedownService } from '../cms/application/emergency-takedown.service';
+export {
+  TravelTimeService,
+  ROUTES_ENABLED,
+  type TravelTarget,
+} from '../suggestions/application/travel-time.service';

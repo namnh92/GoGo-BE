@@ -45,9 +45,20 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
+    /**
+     * ADR-0007. Off means every leg is the straight-line estimate — the same
+     * behaviour as before the Routes adapter existed, and the permanent
+     * fallback for quota exhaustion and outages.
+     */
+    FLAG_ROUTES_API: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
     GOOGLE_MAPS_API_KEY: z.string().default(''),
     /** Optional split key for the Sheets read scope; falls back to the Maps key. */
     GOOGLE_SHEETS_API_KEY: z.string().default(''),
+    /** Optional split key for Routes; falls back to the Maps key. */
+    GOOGLE_ROUTES_API_KEY: z.string().default(''),
     R2_ACCOUNT_ID: z.string().default(''),
     R2_ACCESS_KEY_ID: z.string().default(''),
     R2_SECRET_ACCESS_KEY: z.string().default(''),
