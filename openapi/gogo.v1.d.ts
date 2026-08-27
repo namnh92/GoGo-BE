@@ -1851,6 +1851,7 @@ export interface components {
             name: string;
             addressText?: string;
             areaKey?: string;
+            primaryPhoto?: components["schemas"]["PlacePhoto"];
             lat: number;
             lng: number;
             rating?: number;
@@ -1948,22 +1949,27 @@ export interface components {
             name?: string;
             description?: string;
             status?: string;
-            address_text?: string;
-            area_key?: string;
+            addressText?: string;
+            areaKey?: string;
             lat?: number;
             lng?: number;
             phone?: string;
             website?: string;
+            /** @description A number, not the string Postgres returns for `numeric`. The endpoint used to pass the row through unmapped, so a client calling `.toFixed` on this crashed (#169). */
             rating?: number;
-            rating_count?: number;
-            avg_visit_minutes?: number;
+            ratingCount?: number;
+            priceLevel?: number;
+            avgVisitMinutes?: number;
             suitability?: {
                 [key: string]: number;
             };
-            is_lodging?: boolean;
+            isLodging?: boolean;
             confidence?: number;
+            curatedRank?: number;
             /** Format: date-time */
-            freshness_checked_at?: string;
+            freshnessCheckedAt?: string;
+            /** @description Ordered gallery; empty when the place has no approved imagery. */
+            photos?: components["schemas"]["PlacePhoto"][];
             taxonomies?: {
                 kind?: string;
                 key?: string;
@@ -2365,6 +2371,21 @@ export interface components {
             /** Format: date-time */
             decidedAt?: string;
             decisionReason?: string;
+        };
+        PlacePhoto: {
+            /** Format: uuid */
+            id: string;
+            /** @description Directly loadable. Photos are omitted entirely rather than sent with a URL that will not load — a broken image is worse than the neutral placeholder a client falls back to. */
+            url: string;
+            width?: number;
+            height?: number;
+            /**
+             * @description Lets a client tell imported and user-submitted imagery apart.
+             * @enum {string}
+             */
+            source: "google" | "community" | "manual";
+            /** @description Present for provider imagery, which must be displayed with it. Community photos are only returned once approved in moderation. */
+            attribution?: string;
         };
     };
     responses: {

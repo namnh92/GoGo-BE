@@ -4,6 +4,8 @@
  */
 export const APP_CONFIG = Symbol('APP_CONFIG');
 
+export type MediaConfig = { MEDIA_PUBLIC_BASE_URL: string };
+
 export type IdentityConfig = {
   NODE_ENV: 'development' | 'test' | 'production';
   AUTH_JWT_SECRET: string;

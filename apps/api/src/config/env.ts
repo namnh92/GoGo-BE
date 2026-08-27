@@ -68,6 +68,12 @@ const envSchema = z
     R2_ACCESS_KEY_ID: z.string().default(''),
     R2_SECRET_ACCESS_KEY: z.string().default(''),
     R2_BUCKET: z.string().default(''),
+    /**
+     * #151 — public base for place imagery. While it is empty the API omits
+     * photos entirely rather than emitting a URL that will not load: a broken
+     * image is worse than the neutral placeholder a client falls back to.
+     */
+    MEDIA_PUBLIC_BASE_URL: z.string().default(''),
     R2_BACKUP_BUCKET: z.string().default(''),
     SENTRY_DSN: z.string().default(''),
     // Push providers — waiting slots; fakes are bound while empty.

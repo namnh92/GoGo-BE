@@ -327,3 +327,43 @@ describe('place detail (BE-BFF-006)', () => {
     expect(res.statusCode).toBe(404);
   });
 });
+
+describe('place detail is a contract, not a SQL row (#169)', () => {
+  it('sends numbers as numbers and timestamps as ISO-8601', async () => {
+    const [place] = await db.select().from(schema.places).limit(1);
+    const res = await api().inject({
+      method: 'GET',
+      url: `/v1/places/${place!.id}`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    // `numeric` arrives from Postgres as a string; a client calling .toFixed on
+    // it crashed. TypeScript could not catch it — the generated type says number.
+    if (body.rating !== undefined) expect(typeof body.rating).toBe('number');
+    if (body.confidence !== undefined) expect(typeof body.confidence).toBe('number');
+    if (body.freshnessCheckedAt) {
+      expect(body.freshnessCheckedAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+    }
+  });
+
+  it('uses the camelCase names the contract promises', async () => {
+    const [place] = await db.select().from(schema.places).limit(1);
+    const body = (await api().inject({ method: 'GET', url: `/v1/places/${place!.id}` })).json();
+
+    expect(body).not.toHaveProperty('address_text');
+    expect(body).not.toHaveProperty('rating_count');
+    expect(body).not.toHaveProperty('freshness_checked_at');
+    expect(body).toHaveProperty('ratingCount');
+  });
+
+  it('offers no photo rather than one that cannot load (#151)', async () => {
+    const [place] = await db.select().from(schema.places).limit(1);
+    const body = (await api().inject({ method: 'GET', url: `/v1/places/${place!.id}` })).json();
+
+    // No media host configured in tests: the array is empty, so a client shows
+    // its placeholder instead of a broken image.
+    expect(Array.isArray(body.photos)).toBe(true);
+    expect(body.photos).toHaveLength(0);
+  });
+});

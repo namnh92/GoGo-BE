@@ -2798,6 +2798,7 @@ components:
         name: { type: string }
         addressText: { type: string }
         areaKey: { type: string }
+        primaryPhoto: { $ref: '#/components/schemas/PlacePhoto' }
         lat: { type: number }
         lng: { type: number }
         rating: { type: number }
@@ -2897,21 +2898,32 @@ components:
         name: { type: string }
         description: { type: string }
         status: { type: string }
-        address_text: { type: string }
-        area_key: { type: string }
+        addressText: { type: string }
+        areaKey: { type: string }
         lat: { type: number }
         lng: { type: number }
         phone: { type: string }
         website: { type: string }
-        rating: { type: number }
-        rating_count: { type: integer }
-        avg_visit_minutes: { type: integer }
+        rating:
+          type: number
+          description: >
+            A number, not the string Postgres returns for `numeric`. The
+            endpoint used to pass the row through unmapped, so a client calling
+            `.toFixed` on this crashed (#169).
+        ratingCount: { type: integer }
+        priceLevel: { type: integer }
+        avgVisitMinutes: { type: integer }
         suitability:
           type: object
           additionalProperties: { type: number }
-        is_lodging: { type: boolean }
+        isLodging: { type: boolean }
         confidence: { type: number }
-        freshness_checked_at: { type: string, format: date-time }
+        curatedRank: { type: integer }
+        freshnessCheckedAt: { type: string, format: date-time }
+        photos:
+          type: array
+          description: Ordered gallery; empty when the place has no approved imagery.
+          items: { $ref: '#/components/schemas/PlacePhoto' }
         taxonomies:
           type: array
           items:
@@ -3450,6 +3462,28 @@ components:
         createdAt: { type: string, format: date-time }
         decidedAt: { type: string, format: date-time }
         decisionReason: { type: string }
+    PlacePhoto:
+      type: object
+      required: [id, url, source]
+      properties:
+        id: { type: string, format: uuid }
+        url:
+          type: string
+          description: >
+            Directly loadable. Photos are omitted entirely rather than sent with
+            a URL that will not load — a broken image is worse than the neutral
+            placeholder a client falls back to.
+        width: { type: integer }
+        height: { type: integer }
+        source:
+          type: string
+          enum: [google, community, manual]
+          description: Lets a client tell imported and user-submitted imagery apart.
+        attribution:
+          type: string
+          description: >
+            Present for provider imagery, which must be displayed with it.
+            Community photos are only returned once approved in moderation.
   responses:
     BadRequest:
       description: Validation or business rule failure
