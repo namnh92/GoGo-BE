@@ -13,7 +13,6 @@ import {
   DEFAULT_SCORING_WEIGHTS,
   ENGINE_VERSION,
   SCORING_WEIGHT_BOUNDS,
-  type ScoredCandidate,
   type ScoringWeights,
 } from '../domain/types';
 import { SuggestionsRepository } from '../infrastructure/suggestions.repository';

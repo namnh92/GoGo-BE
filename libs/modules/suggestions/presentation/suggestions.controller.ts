@@ -8,7 +8,8 @@ import { SuggestionService } from '../application/suggestion.service';
 const UuidPipe = new ZodValidationPipe(z.string().uuid());
 
 const voteSchema = z.object({ value: z.enum(['yes', 'no', 'star']) });
-const finalizeSchema = z.object({ placeId: z.string().uuid().optional() });
+// eslint-disable-next-line no-useless-assignment -- used in @Body decorator below
+const finalizePipe = new ZodValidationPipe(z.object({ placeId: z.string().uuid().optional() }));
 
 @Controller('rooms/:roomId')
 export class SuggestionsController {
@@ -41,7 +42,7 @@ export class SuggestionsController {
   finalize(
     @CurrentActor() actor: Actor,
     @Param('roomId', UuidPipe) roomId: string,
-    @Body(new ZodValidationPipe(finalizeSchema)) body: { placeId?: string },
+    @Body(finalizePipe) body: { placeId?: string },
   ) {
     return this.suggestions.finalize(actor, roomId, body.placeId);
   }
