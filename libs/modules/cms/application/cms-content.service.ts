@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
@@ -7,6 +7,25 @@ import { writeAudit } from '../../shared/audit';
 
 type TaxonomyKind = (typeof schema.taxonomies.$inferSelect)['kind'];
 type CollectionStatus = (typeof schema.contentCollections.$inferSelect)['status'];
+
+type TaxonomyRow = {
+  id: string;
+  kind: TaxonomyKind;
+  key: string;
+  labels: Record<string, string>;
+  sort_order: number;
+  is_active: boolean;
+  usage_count: number;
+  synonyms: { id: string; term: string; locale: string }[];
+};
+
+type CollectionItemRow = {
+  position: number;
+  id: string;
+  name: string;
+  address_text: string | null;
+  status: string;
+};
 
 /** CMS-005/006 — taxonomy/synonym/localization + editorial collections. */
 @Injectable()
@@ -177,6 +196,95 @@ export class CmsContentService {
       count: placeIds.length,
     });
     return { count: placeIds.length };
+  }
+
+  /**
+   * BE-IMP-010 — the CMS taxonomy list.
+   *
+   * `GET /v1/taxonomies` cannot serve this: it is the consumer endpoint, so it
+   * returns active keys only and no usage data. The CMS needs the opposite —
+   * deactivated keys, so they can be brought back, and a usage count, because
+   * "cannot delete a referenced key" is only enforceable if the count is known
+   * before the operator tries.
+   */
+  async listTaxonomies(filter: {
+    kind?: TaxonomyKind | undefined;
+    isActive?: boolean | undefined;
+  }) {
+    const where: SQL[] = [];
+    if (filter.kind) where.push(sql`t.kind = ${filter.kind}`);
+    if (filter.isActive !== undefined) where.push(sql`t.is_active = ${filter.isActive}`);
+    const condition = where.length > 0 ? sql.join(where, sql` and `) : sql`true`;
+
+    const rows = await this.db.execute(sql`
+      select t.id, t.kind, t.key, t.sort_order, t.is_active,
+             coalesce(
+               (select jsonb_object_agg(l.locale, l.label)
+                from taxonomy_labels l where l.taxonomy_id = t.id),
+               '{}'::jsonb
+             ) as labels,
+             coalesce(
+               (select jsonb_agg(jsonb_build_object('id', s.id, 'term', s.term, 'locale', s.locale)
+                                 order by s.term)
+                from taxonomy_synonyms s where s.taxonomy_id = t.id),
+               '[]'::jsonb
+             ) as synonyms,
+             (select count(*)::int from place_taxonomies pt where pt.taxonomy_id = t.id)
+               as usage_count
+      from taxonomies t
+      where ${condition}
+      order by t.kind, t.sort_order, t.key
+    `);
+
+    return (rows.rows as TaxonomyRow[]).map((t) => ({
+      id: t.id,
+      kind: t.kind,
+      key: t.key,
+      labels: t.labels,
+      sortOrder: t.sort_order,
+      isActive: t.is_active,
+      /** Places referencing this key — what makes the delete rule checkable. */
+      usageCount: t.usage_count,
+      synonyms: t.synonyms,
+    }));
+  }
+
+  /**
+   * BE-IMP-011 — read back a collection's ordered places.
+   *
+   * `setCollectionItems` replaces the list wholesale. Without a read, the only
+   * safe edit is to rebuild it from scratch, and the unsafe one — assuming the
+   * list is what you last remember — silently drops places.
+   *
+   * `status` is included because a published collection quietly holding a
+   * suspended place is a bug an editor can only catch if the list shows it.
+   */
+  async listCollectionItems(collectionId: string) {
+    const [collection] = await this.db
+      .select({ id: schema.contentCollections.id })
+      .from(schema.contentCollections)
+      .where(eq(schema.contentCollections.id, collectionId))
+      .limit(1);
+    if (!collection) throw AppError.notFound('COLLECTION_NOT_FOUND', 'Collection not found');
+
+    const rows = await this.db.execute(sql`
+      select ci.position, p.id, p.name, p.address_text, p.status
+      from collection_items ci
+      join places p on p.id = ci.place_id
+      where ci.collection_id = ${collectionId}::uuid
+      order by ci.position
+    `);
+
+    return {
+      collectionId,
+      items: (rows.rows as CollectionItemRow[]).map((r) => ({
+        position: r.position,
+        placeId: r.id,
+        name: r.name,
+        addressText: r.address_text,
+        status: r.status,
+      })),
+    };
   }
 
   async listCollections(filter: { status?: CollectionStatus | undefined }) {

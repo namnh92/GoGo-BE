@@ -11,8 +11,9 @@ import {
   type PlaceEditInput,
 } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
+import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
-import { RequireRole } from './admin.guard';
+import { RequireRole, type AdminActor } from './admin.guard';
 import { Inject, Req, Res } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
@@ -198,6 +199,15 @@ export class CmsCatalogController {
     return this.catalog.duplicateCandidates(Math.min(Number(limit) || 50, 200));
   }
 
+  /**
+   * Declared after the literal routes above: Nest matches in declaration
+   * order, so `:id` first would swallow `/stale` and `/duplicates`.
+   */
+  @Get(':id')
+  detail(@Param('id', Uuid) id: string) {
+    return this.catalog.getPlace(id);
+  }
+
   @Patch(':id')
   update(
     @CurrentActor() actor: Actor,
@@ -286,6 +296,24 @@ const collectionStatusSchema = z.object({
   status: z.enum(['draft', 'scheduled', 'published', 'archived']),
 });
 const collectionItemsSchema = z.object({ placeIds: z.array(z.string().uuid()).max(100) });
+/** The CMS list defaults to BOTH active and inactive — that is the point. */
+const taxonomyListQuery = z.object({
+  kind: z
+    .enum([
+      'mood',
+      'category',
+      'setting',
+      'dietary',
+      'accessibility',
+      'spending_style',
+      'suitability',
+    ])
+    .optional(),
+  isActive: z
+    .enum(['true', 'false'])
+    .transform((value) => value === 'true')
+    .optional(),
+});
 
 @RequireRole('editor', 'ops_admin')
 @Controller('cms')
@@ -318,6 +346,13 @@ export class CmsContentController {
     return this.content.addSynonym(actor.id, id, body);
   }
 
+  @Get('taxonomies')
+  listTaxonomies(
+    @Query(new ZodValidationPipe(taxonomyListQuery)) query: z.infer<typeof taxonomyListQuery>,
+  ) {
+    return this.content.listTaxonomies(query);
+  }
+
   @Get('collections')
   listCollections(@Query('status') status?: string) {
     return this.content.listCollections({ status: status as never });
@@ -340,6 +375,11 @@ export class CmsContentController {
     body: z.infer<typeof collectionStatusSchema>,
   ) {
     return this.content.setCollectionStatus(actor.id, id, body.status);
+  }
+
+  @Get('collections/:id/items')
+  collectionItems(@Param('id', Uuid) id: string) {
+    return this.content.listCollectionItems(id);
   }
 
   @Put('collections/:id/items')
@@ -418,10 +458,70 @@ const rankingCreateSchema = z.object({
   key: z.enum(['suggestion.scoring', 'search.ranking']),
   weights: z.record(z.string(), z.number()),
 });
+const rankingListQuery = z.object({
+  key: z.enum(['suggestion.scoring', 'search.ranking']).optional(),
+  status: z.enum(['draft', 'approved', 'active', 'rolled_back']).optional(),
+});
 const flagSchema = z.object({
   enabled: z.boolean(),
   payload: z.unknown().optional(),
 });
+
+/**
+ * `resourceId` is text, not uuid: audit rows reference feature flags and
+ * ranking configs by key as well as entities by id.
+ */
+const auditListQuery = z.object({
+  resourceType: z.string().max(64).optional(),
+  resourceId: z.string().max(128).optional(),
+  actorId: z.string().uuid().optional(),
+  action: z.string().max(64).optional(),
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+  breakGlass: z
+    .enum(['true', 'false'])
+    .transform((value) => value === 'true')
+    .optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
+
+/**
+ * BE-IMP-010 — the audit log, readable at last.
+ *
+ * Declared at `editor` so rank-based read lets every admin role open a
+ * resource's history; the staff IP inside it is narrowed separately, to
+ * ops_admin and above. Read-only by design: FR-CMS-008 makes the log
+ * immutable, so there is deliberately no write route on this controller.
+ */
+@RequireRole('editor')
+@Controller('cms')
+export class CmsAuditController {
+  constructor(private readonly audit: CmsAuditService) {}
+
+  @Get('audit')
+  list(
+    @CurrentActor() actor: Actor,
+    @Query(new ZodValidationPipe(auditListQuery)) query: z.infer<typeof auditListQuery>,
+  ) {
+    const role = (actor as AdminActor).role;
+    return this.audit.list(query, { includeIp: role === 'ops_admin' || role === 'super_admin' });
+  }
+
+  /** The place editor's history drawer; same query, scoped for it. */
+  @Get('places/:id/audit')
+  forPlace(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Query(new ZodValidationPipe(auditListQuery)) query: z.infer<typeof auditListQuery>,
+  ) {
+    const role = (actor as AdminActor).role;
+    return this.audit.list(
+      { ...query, resourceType: 'place', resourceId: id },
+      { includeIp: role === 'ops_admin' || role === 'super_admin' },
+    );
+  }
+}
 
 @RequireRole('ops_admin')
 @Controller('cms')
@@ -434,6 +534,13 @@ export class CmsOpsController {
     @Body(new ZodValidationPipe(rankingCreateSchema)) body: z.infer<typeof rankingCreateSchema>,
   ) {
     return this.ops.createRankingConfig(actor.id, body);
+  }
+
+  @Get('ranking-configs')
+  listRanking(
+    @Query(new ZodValidationPipe(rankingListQuery)) query: z.infer<typeof rankingListQuery>,
+  ) {
+    return this.ops.listRankingConfigs(query);
   }
 
   @Post('ranking-configs/:id/approve')
@@ -449,6 +556,11 @@ export class CmsOpsController {
   @Post('ranking-configs/:key/rollback')
   rollbackRanking(@CurrentActor() actor: Actor, @Param('key') key: string) {
     return this.ops.rollbackRankingConfig(actor.id, key);
+  }
+
+  @Get('feature-flags')
+  listFlags() {
+    return this.ops.listFeatureFlags();
   }
 
   @Put('feature-flags/:key')

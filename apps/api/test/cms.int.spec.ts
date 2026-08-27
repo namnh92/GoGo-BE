@@ -1045,3 +1045,389 @@ describe('SEC-003 admin session model', () => {
     expect(refreshed.statusCode).toBe(403);
   });
 });
+
+/**
+ * BE-IMP-009/010 (#157–#161) — the CMS could write these records but not read
+ * them back. Every assertion below is about the read half specifically: that
+ * it returns what the editor form needs, and that reading does not widen who
+ * can see what.
+ */
+describe('CMS read endpoints', () => {
+  async function seedPlace(name: string) {
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name,
+        nameNormalized: 'set-by-trigger',
+        status: 'published',
+        geom: { x: 106.7009, y: 10.7769 },
+        areaKey: 'hcm_q1',
+        rating: '4.60',
+        ratingCount: 812,
+        priceLevel: 2,
+        avgVisitMinutes: 75,
+      })
+      .returning();
+    return place!;
+  }
+
+  it('the place detail carries what the editor form needs, typed', async () => {
+    const admin = await createAdmin('read-detail@gogo.local', 'editor');
+    const place = await seedPlace('Detail Read Cafe');
+    await db.insert(schema.placeHours).values({
+      placeId: place.id,
+      dayOfWeek: 1,
+      openMinute: 480,
+      closeMinute: 1320,
+      source: 'editor',
+    });
+    await db.insert(schema.placePrices).values({
+      placeId: place.id,
+      priceMin: 50000,
+      priceMax: 120000,
+      currency: 'VND',
+      unit: 'per_person',
+      source: 'editor',
+    });
+
+    const res = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/places/${place.id}`,
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    // Numbers as numbers: `numeric` and PostGIS columns come back as strings
+    // from the driver, and a form binding a string to a number input silently
+    // misbehaves rather than failing.
+    expect(typeof body.lat).toBe('number');
+    expect(typeof body.confidence).toBe('number');
+    expect(body.hours).toHaveLength(1);
+    expect(body.prices[0].priceMin).toBe(50000);
+    expect(typeof body.prices[0].priceMin).toBe('number');
+    expect(body.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('keeps the provider rating and GoGo’s own apart instead of blending them', async () => {
+    const admin = await createAdmin('read-ratings@gogo.local', 'editor');
+    const place = await seedPlace('Ratings Read Cafe');
+
+    const res = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/places/${place.id}`,
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+    });
+    const { ratings } = res.json();
+    expect(ratings.provider).toEqual({ rating: 4.6, count: 812 });
+    // No published reviews yet — an empty GoGo rating is absent, not zero.
+    expect(ratings.gogo.count).toBe(0);
+    expect(ratings.gogo.rating).toBeUndefined();
+    expect(res.json().rating).toBeUndefined();
+  });
+
+  it('404s on an unknown place rather than returning an empty record', async () => {
+    const admin = await createAdmin('read-missing@gogo.local', 'editor');
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/places/00000000-0000-4000-8000-000000000000',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('lists inactive taxonomy keys too — the CMS is where one is reactivated', async () => {
+    const admin = await createAdmin('read-taxonomy@gogo.local', 'editor');
+    await db.insert(schema.taxonomies).values([
+      { kind: 'mood', key: 'read_active_mood', isActive: true },
+      { kind: 'mood', key: 'read_inactive_mood', isActive: false },
+    ]);
+
+    const all = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/taxonomies?kind=mood',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+    });
+    expect(all.statusCode).toBe(200);
+    const keys = all.json().map((t: { key: string }) => t.key);
+    expect(keys).toContain('read_active_mood');
+    expect(keys).toContain('read_inactive_mood');
+
+    const activeOnly = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/taxonomies?kind=mood&isActive=true',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+    });
+    expect(activeOnly.json().map((t: { key: string }) => t.key)).not.toContain(
+      'read_inactive_mood',
+    );
+  });
+
+  it('reads a collection back in the order it was written', async () => {
+    const admin = await createAdmin('read-collection@gogo.local', 'editor');
+    const first = await seedPlace('Collection Read One');
+    const second = await seedPlace('Collection Read Two');
+    const [collection] = await db
+      .insert(schema.contentCollections)
+      .values({ slug: 'read-collection', title: 'Read Collection', createdByAdminId: admin.id })
+      .returning();
+
+    await api().inject({
+      method: 'PUT',
+      url: `/v1/cms/collections/${collection!.id}/items`,
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+      payload: { placeIds: [second.id, first.id] },
+    });
+
+    const res = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/collections/${collection!.id}/items`,
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items.map((i: { placeId: string }) => i.placeId)).toEqual([
+      second.id,
+      first.id,
+    ]);
+  });
+
+  it('ranking configs come back with drafter and approver, so four-eyes is checkable', async () => {
+    const ops = await createAdmin('read-ranking-ops@gogo.local', 'ops_admin');
+    const other = await createAdmin('read-ranking-two@gogo.local', 'ops_admin');
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/ranking-configs',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { key: 'search.ranking', weights: { distance: 0.5, rating: 0.5 } },
+    });
+    const configId = created.json().id as string;
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/ranking-configs/${configId}/approve`,
+      remoteAddress: ip(),
+      headers: auth(other.token),
+    });
+
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/ranking-configs?key=search.ranking',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+    });
+    expect(res.statusCode).toBe(200);
+    const row = res.json().find((c: { id: string }) => c.id === configId);
+    expect(row.createdBy.id).toBe(ops.id);
+    expect(row.approvedBy.id).toBe(other.id);
+    expect(row.createdBy.id).not.toBe(row.approvedBy.id);
+    expect(row.bounds).toBeTruthy();
+  });
+
+  it('feature flags are readable — a kill switch nobody can read is not one', async () => {
+    const ops = await createAdmin('read-flags@gogo.local', 'ops_admin');
+    await api().inject({
+      method: 'PUT',
+      url: '/v1/cms/feature-flags/ai.refinement',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { enabled: false },
+    });
+
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/feature-flags',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+    });
+    expect(res.statusCode).toBe(200);
+    const flag = res.json().find((f: { key: string }) => f.key === 'ai.refinement');
+    expect(flag.enabled).toBe(false);
+    expect(flag.updatedBy.id).toBe(ops.id);
+  });
+});
+
+describe('audit read (BE-IMP-010, #158, FR-CMS-008)', () => {
+  async function suspendablePlace(name: string) {
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name,
+        nameNormalized: 'set-by-trigger',
+        status: 'published',
+        geom: { x: 106.7009, y: 10.7769 },
+      })
+      .returning();
+    return place!;
+  }
+
+  it('answers “who suspended this place and why” without a database', async () => {
+    const editor = await createAdmin('audit-actor@gogo.local', 'editor');
+    const place = await suspendablePlace('Audit History Cafe');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/emergency/places/${place.id}/suspend`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: { reason: 'Reported for a health violation, taking it down pending review' },
+    });
+
+    const res = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/places/${place.id}/audit`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    expect(res.statusCode).toBe(200);
+    const entry = res.json().items[0];
+    expect(entry.action).toBe('place.emergency_suspended');
+    expect(entry.actorId).toBe(editor.id);
+    expect(entry.actorRole).toBe('editor');
+    expect(entry.reason).toContain('health violation');
+    expect(entry.breakGlass).toBe(true);
+    expect(entry.diff.before.status).toBe('published');
+    expect(entry.diff.after.status).toBe('suspended');
+    expect(entry.requestId).toBeTruthy();
+  });
+
+  it('breakGlass=true returns takedowns only, not every write on the resource', async () => {
+    const editor = await createAdmin('audit-filter@gogo.local', 'editor');
+    const place = await suspendablePlace('Audit Filter Cafe');
+    await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/places/${place.id}`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: { name: 'Audit Filter Cafe Renamed' },
+    });
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/emergency/places/${place.id}/suspend`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: { reason: 'Emergency takedown for the audit filter test' },
+    });
+
+    const all = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/audit?resourceType=place&resourceId=${place.id}`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    expect(all.json().items.length).toBeGreaterThanOrEqual(2);
+
+    const glass = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/audit?resourceType=place&resourceId=${place.id}&breakGlass=true`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    const actions = glass.json().items.map((e: { action: string }) => e.action);
+    expect(actions).toEqual(['place.emergency_suspended']);
+  });
+
+  it('shows the staff IP to ops_admin and withholds it from an editor', async () => {
+    const ops = await createAdmin('audit-ip-ops@gogo.local', 'ops_admin');
+    const editor = await createAdmin('audit-ip-editor@gogo.local', 'editor');
+    const place = await suspendablePlace('Audit IP Cafe');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/emergency/places/${place.id}/suspend`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { reason: 'Takedown used to check who may see the staff IP' },
+    });
+
+    const url = `/v1/cms/audit?resourceType=place&resourceId=${place.id}`;
+    const asOps = await api().inject({
+      method: 'GET',
+      url,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+    });
+    expect(asOps.json().items[0].ipAddress).toBeTruthy();
+
+    // The editor still reads the history — only the PII inside it is narrower.
+    const asEditor = await api().inject({
+      method: 'GET',
+      url,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    expect(asEditor.statusCode).toBe(200);
+    expect(asEditor.json().items[0].action).toBe('place.emergency_suspended');
+    expect(asEditor.json().items[0].ipAddress).toBeUndefined();
+  });
+
+  it('pages by cursor without repeating a row, newest first', async () => {
+    const ops = await createAdmin('audit-page@gogo.local', 'ops_admin');
+    for (let i = 0; i < 5; i += 1) {
+      await api().inject({
+        method: 'PUT',
+        url: `/v1/cms/feature-flags/audit.page.${i}`,
+        remoteAddress: ip(),
+        headers: auth(ops.token),
+        payload: { enabled: true },
+      });
+    }
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 5; page += 1) {
+      // Filtered by action as well as actor: logging in is itself audited, so
+      // "everything this admin did" is not the same count as "the writes made".
+      const url =
+        `/v1/cms/audit?actorId=${ops.id}&action=feature_flag.set&limit=2` +
+        `${cursor ? `&cursor=${cursor}` : ''}`;
+      const res = await api().inject({
+        method: 'GET',
+        url,
+        remoteAddress: ip(),
+        headers: auth(ops.token),
+      });
+      const body = res.json() as { items: { id: string }[]; nextCursor: string | null };
+      seen.push(...body.items.map((e) => e.id));
+      cursor = body.nextCursor;
+      if (!cursor) break;
+    }
+    expect(seen).toHaveLength(5);
+    expect(new Set(seen).size).toBe(5);
+  });
+
+  it('is read-only: there is no route that edits or deletes an entry', async () => {
+    const superAdmin = await createAdmin('audit-immutable@gogo.local', 'super_admin');
+    const place = await suspendablePlace('Audit Immutable Cafe');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/emergency/places/${place.id}/suspend`,
+      remoteAddress: ip(),
+      headers: auth(superAdmin.token),
+      payload: { reason: 'Takedown that must remain in the log afterwards' },
+    });
+    const listed = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/audit?resourceType=place&resourceId=${place.id}`,
+      remoteAddress: ip(),
+      headers: auth(superAdmin.token),
+    });
+    const entryId = listed.json().items[0].id as string;
+
+    // Not even super_admin: the log is immutable, so these routes do not exist.
+    for (const method of ['PATCH', 'PUT', 'DELETE'] as const) {
+      const res = await api().inject({
+        method,
+        url: `/v1/cms/audit/${entryId}`,
+        remoteAddress: ip(),
+        headers: auth(superAdmin.token),
+        payload: { action: 'tampered' },
+      });
+      expect(res.statusCode).toBe(404);
+    }
+  });
+});
