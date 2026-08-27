@@ -2399,39 +2399,6 @@ paths:
       responses:
         '200': { description: Flag updated (audited) }
 
-  /cms/import-jobs:
-    post:
-      operationId: cmsRunPlaceImport
-      tags: [cms]
-      summary: 'Ops: bulk place import (JSON rows) with dry-run and per-row errors'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [rows]
-              properties:
-                dryRun: { type: boolean, default: true }
-                rows:
-                  type: array
-                  maxItems: 500
-                  items:
-                    type: object
-                    required: [name, lat, lng]
-                    properties:
-                      name: { type: string }
-                      lat: { type: number }
-                      lng: { type: number }
-                      areaKey: { type: string }
-                      categoryKeys:
-                        type: array
-                        items: { type: string }
-      responses:
-        '201':
-          description: 'Job report: total/created/errors, status succeeded|partial_failure|failed'
-        '429': { $ref: '#/components/responses/RateLimited' }
-
   /cms/ops/kpis:
     get:
       operationId: cmsOpsKpis

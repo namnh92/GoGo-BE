@@ -341,20 +341,6 @@ const flagSchema = z.object({
   enabled: z.boolean(),
   payload: z.unknown().optional(),
 });
-const importSchema = z.object({
-  dryRun: z.boolean().default(true),
-  rows: z
-    .array(
-      z.object({
-        name: z.string().max(200),
-        lat: z.number(),
-        lng: z.number(),
-        areaKey: z.string().max(64).optional(),
-        categoryKeys: z.array(z.string()).max(10).optional(),
-      }),
-    )
-    .max(500),
-});
 
 @RequireRole('ops_admin')
 @Controller('cms')
@@ -391,15 +377,6 @@ export class CmsOpsController {
     @Body(new ZodValidationPipe(flagSchema)) body: { enabled: boolean; payload?: unknown },
   ) {
     return this.ops.setFeatureFlag(actor.id, key, body.enabled, body.payload);
-  }
-
-  @RateLimit({ action: 'cms.import', limit: 6, windowSeconds: 60, keyBy: 'actor' })
-  @Post('import-jobs')
-  runImport(
-    @CurrentActor() actor: Actor,
-    @Body(new ZodValidationPipe(importSchema)) body: z.infer<typeof importSchema>,
-  ) {
-    return this.ops.runPlaceImport(actor.id, body);
   }
 
   @Get('ops/kpis')

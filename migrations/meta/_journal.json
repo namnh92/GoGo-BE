@@ -22,6 +22,13 @@
       "when": 1787828461652,
       "tag": "0002_rich_tana_nile",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787837525888,
+      "tag": "0003_retire-legacy-import-jobs",
+      "breakpoints": true
     }
   ]
 }
