@@ -68,6 +68,9 @@ importers:
       '@gogo/observability':
         specifier: workspace:*
         version: link:../../libs/observability
+      '@gogo/providers':
+        specifier: workspace:*
+        version: link:../../libs/providers
       '@nestjs/common':
         specifier: ^11.0.0
         version: 11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -123,6 +126,9 @@ importers:
       '@gogo/observability':
         specifier: workspace:*
         version: link:../../libs/observability
+      '@gogo/providers':
+        specifier: workspace:*
+        version: link:../../libs/providers
       bullmq:
         specifier: ^5.0.0
         version: 5.81.3
@@ -173,6 +179,9 @@ importers:
       '@gogo/database':
         specifier: workspace:*
         version: link:../database
+      '@gogo/providers':
+        specifier: workspace:*
+        version: link:../providers
       '@nestjs/common':
         specifier: ^11.2.3
         version: 11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -214,6 +223,9 @@ importers:
 
   libs/providers:
     devDependencies:
+      '@types/node':
+        specifier: ^26.3.0
+        version: 26.3.0
       typescript:
         specifier: ^5.6.0
         version: 5.9.3

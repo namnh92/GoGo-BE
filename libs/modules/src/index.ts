@@ -57,5 +57,15 @@ export { rankWithFairness } from '../suggestions/domain/fairness';
 export { buildItinerary } from '../suggestions/domain/optimizer';
 export { coupleMatches, resolveWinner, tallyVotes } from '../suggestions/domain/decision';
 
+// User content + notifications (BE-BFF-009/010)
+export { ReviewsModule } from '../reviews/presentation/reviews.module';
+export { NotificationsModule } from '../notifications/presentation/notifications.module';
+export { UserContentService } from '../reviews/application/user-content.service';
+export { OutboxDispatcher } from '../notifications/application/outbox-dispatcher';
+
+// Place import + areas (BE-BFF-013/016)
+export { PlaceImportService } from '../places/application/place-import.service';
+
 // Platform
 export { writeOutbox, type DomainEventInput } from '../shared/outbox';
+export { PrivacyJobs, type PrivacyRunReport } from '../shared/privacy-jobs';

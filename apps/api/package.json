@@ -15,6 +15,7 @@
     "@gogo/database": "workspace:*",
     "@gogo/modules": "workspace:*",
     "@gogo/observability": "workspace:*",
+    "@gogo/providers": "workspace:*",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-fastify": "^11.0.0",

@@ -189,6 +189,26 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /me:
+    patch:
+      operationId: updateProfile
+      tags: [me]
+      summary: Update display name / locale
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName: { type: string, minLength: 1, maxLength: 50 }
+                locale: { type: string, enum: [vi, en] }
+      responses:
+        '200': { description: Updated profile facts }
+    delete:
+      operationId: deleteAccount
+      tags: [me]
+      summary: Delete account — PII nulled, sessions revoked, content pseudonymized
+      responses:
+        '200': { description: '{ deleted: true }' }
     get:
       operationId: getMe
       tags: [me]
@@ -836,6 +856,144 @@ paths:
       responses:
         '201': { description: Check-in saved (moderation pending); billPerPerson is display math }
         '400': { $ref: '#/components/responses/BadRequest' }
+
+  /places/imports:
+    post:
+      operationId: submitPlaceImport
+      tags: [places]
+      summary: Submit a Google Maps link for verification (FR-PLACE-001..005)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, maxLength: 2000 }
+                roomId: { type: string, format: uuid }
+      responses:
+        '201':
+          description: >
+            Import result: pending → verified | rejected. Rejections carry a
+            stable reasonCode (NOT_FOUND, INSUFFICIENT_REVIEWS, LOW_RATING,
+            OUT_OF_AREA, CLOSED, INVALID_URL, PROVIDER_ERROR).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /places/imports/{importId}:
+    get:
+      operationId: getPlaceImport
+      tags: [places]
+      summary: Poll an import (owner only)
+      parameters:
+        - { name: importId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: '{ id, status, reasonCode?, placeId? }' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /places/areas:
+    get:
+      operationId: suggestAreas
+      tags: [places]
+      summary: Area autocomplete proxy — provider key server-side, static fallback (FR-PLACE-007)
+      security: []
+      parameters:
+        - { name: query, in: query, required: true, schema: { type: string, maxLength: 120 } }
+        - name: sessionToken
+          in: query
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 64 }
+          description: Groups one typing session for provider billing.
+      responses:
+        '200':
+          description: '{ predictions[], source: provider|fallback, attribution }'
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /me/saved:
+    get:
+      operationId: listSaved
+      tags: [me]
+      summary: Saved places/plans (FR-USER-001)
+      responses:
+        '200': { description: Saved items }
+
+  /me/saved/{type}/{id}:
+    put:
+      operationId: saveItem
+      tags: [me]
+      summary: Save a place or plan (idempotent)
+      parameters:
+        - { name: type, in: path, required: true, schema: { type: string, enum: [place, plan] } }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Saved }
+    delete:
+      operationId: unsaveItem
+      tags: [me]
+      summary: Remove a saved item
+      parameters:
+        - { name: type, in: path, required: true, schema: { type: string, enum: [place, plan] } }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Removed }
+
+  /reviews:
+    post:
+      operationId: createReview
+      tags: [me]
+      summary: Create a review (moderation pending; owner-only edits — FR-USER-002)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating]
+              properties:
+                placeId: { type: string, format: uuid }
+                planId: { type: string, format: uuid }
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                text: { type: string, maxLength: 2000 }
+      responses:
+        '201': { description: '{ id, status: pending }' }
+
+  /me/export:
+    get:
+      operationId: exportMyData
+      tags: [me]
+      summary: Export all actor-owned data (privacy rule)
+      responses:
+        '200': { description: JSON export; audit-logged }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /me/notifications:
+    get:
+      operationId: listNotifications
+      tags: [me]
+      summary: In-app notification inbox (cursor by createdAt)
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': { description: '{ notifications[], nextCursor }' }
+
+  /me/device-tokens:
+    put:
+      operationId: registerDeviceToken
+      tags: [me]
+      summary: Register a push device token (BE-BFF-010)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [platform, token]
+              properties:
+                platform: { type: string, enum: [ios, android, web] }
+                token: { type: string }
+      responses:
+        '200': { description: Registered }
 
 components:
   securitySchemes:
