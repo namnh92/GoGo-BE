@@ -1,6 +1,6 @@
 # ADR-0007: Travel time — Routes API, batched-greedy access, no live traffic at MVP
 
-- **Status:** proposed
+- **Status:** accepted (2026-08-28) — batched greedy, Essentials tier, live traffic off at MVP
 - **Date:** 2026-08-27
 - **Deciders:** BE + product
 - **Extends** ADR-0004 (maps/place provider), ADR-0006 (provider policy)
