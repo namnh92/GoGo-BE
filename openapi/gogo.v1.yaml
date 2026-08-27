@@ -1980,7 +1980,11 @@ paths:
           in: query
           schema: { type: boolean }
           description: Emergency takedowns only.
-        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
         - { name: cursor, in: query, schema: { type: string } }
       responses:
         '200':
@@ -2002,7 +2006,11 @@ paths:
         - { name: from, in: query, schema: { type: string, format: date-time } }
         - { name: to, in: query, schema: { type: string, format: date-time } }
         - { name: breakGlass, in: query, schema: { type: boolean } }
-        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
         - { name: cursor, in: query, schema: { type: string } }
       responses:
         '200':
@@ -2680,8 +2688,16 @@ paths:
         checkable if both names are readable — so each version carries who
         drafted it and who approved it.
       parameters:
-        - { name: key, in: query, schema: { type: string, enum: [suggestion.scoring, search.ranking] } }
-        - { name: status, in: query, schema: { type: string, enum: [draft, approved, active, rolled_back] } }
+        - {
+            name: key,
+            in: query,
+            schema: { type: string, enum: [suggestion.scoring, search.ranking] },
+          }
+        - {
+            name: status,
+            in: query,
+            schema: { type: string, enum: [draft, approved, active, rolled_back] },
+          }
       responses:
         '200':
           description: Config versions, newest first per key
@@ -3721,7 +3737,20 @@ components:
           description: The room's current plan, when one exists.
     CmsPlaceDetail:
       type: object
-      required: [id, name, status, ratings, taxonomyIds, hours, prices, sources, media, createdAt, updatedAt]
+      required:
+        [
+          id,
+          name,
+          status,
+          ratings,
+          taxonomyIds,
+          hours,
+          prices,
+          sources,
+          media,
+          createdAt,
+          updatedAt,
+        ]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
