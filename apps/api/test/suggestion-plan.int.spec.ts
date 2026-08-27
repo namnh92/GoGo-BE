@@ -517,3 +517,72 @@ describe('saved plan keeps a taken-down place, marked unavailable (BE-IMP-009)',
     expect(readd.json().code).toBe('PLACE_NOT_AVAILABLE');
   });
 });
+
+describe('provider says closed: a business fact, not a moderation decision (BE-IMP-004a)', () => {
+  async function markProvider(placeId: string, sourceStatus: string) {
+    await db
+      .insert(schema.placeProviderSources)
+      .values({
+        placeId,
+        provider: 'google_places',
+        externalId: `ext-${placeId}`,
+        sourceStatus: sourceStatus as 'closed',
+        fetchTier: 'quality',
+      })
+      .onConflictDoUpdate({
+        target: [schema.placeProviderSources.provider, schema.placeProviderSources.externalId],
+        set: { sourceStatus: sourceStatus as 'closed' },
+      });
+  }
+
+  it('a temporarily closed place stays published but stops being suggested', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    const before = await get(hostToken, `/v1/rooms/${roomId}/suggestions/current`);
+    const victim = before.json().candidates[0].placeId;
+
+    await markProvider(victim, 'temporarily_closed');
+
+    const { hostToken: host2, roomId: room2 } = await matchingRoom('group', 'vote');
+    await post(host2, `/v1/rooms/${room2}/suggestions`);
+    const after = await get(host2, `/v1/rooms/${room2}/suggestions/current`);
+    expect(after.json().candidates.some((c: { placeId: string }) => c.placeId === victim)).toBe(
+      false,
+    );
+
+    // The place itself was never moderated, so its own status must not move —
+    // otherwise nobody can later tell a holiday from a takedown.
+    const [row] = await db.select().from(schema.places).where(eq(schema.places.id, victim));
+    expect(row!.status).toBe('published');
+  });
+
+  it('a saved plan warns with the business reason, not the moderation one', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    const cur = await get(hostToken, `/v1/rooms/${roomId}/suggestions/current`);
+    await put(hostToken, `/v1/rooms/${roomId}/votes/${cur.json().candidates[0].placeId}`, {
+      value: 'yes',
+    });
+    const planId = (await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`)).json().planId;
+    const plan = (await get(hostToken, `/v1/plans/${planId}`)).json();
+    const stop = plan.stops[0];
+
+    await markProvider(stop.placeId, 'temporarily_closed');
+
+    const warned = (await get(hostToken, `/v1/plans/${planId}`)).json();
+    const warnedStop = warned.stops.find((s: { id: string }) => s.id === stop.id);
+    expect(warnedStop.placeAvailable).toBe(false);
+    expect(warnedStop.unavailableReason).toBe('PLACE_TEMPORARILY_CLOSED');
+
+    // A moderation takedown outranks the business fact: an editor needs to see
+    // that GoGo made a decision, not that the shop is on holiday.
+    await db
+      .update(schema.places)
+      .set({ status: 'suspended' })
+      .where(eq(schema.places.id, stop.placeId));
+    const suspended = (await get(hostToken, `/v1/plans/${planId}`)).json();
+    expect(suspended.stops.find((s: { id: string }) => s.id === stop.id).unavailableReason).toBe(
+      'PLACE_SUSPENDED',
+    );
+  });
+});

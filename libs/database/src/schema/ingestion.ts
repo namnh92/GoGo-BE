@@ -145,6 +145,9 @@ export const placeIngestRows = pgTable(
 export const providerSourceStatus = pgEnum('provider_source_status', [
   'active',
   'moved',
+  // Business is shut for now and expected back — a provider fact, kept apart
+  // from `places.status`, which records what GoGo decided about the place.
+  'temporarily_closed',
   'closed',
   'unknown',
 ]);

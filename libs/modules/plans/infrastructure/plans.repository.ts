@@ -41,12 +41,29 @@ export class PlansRepository {
    * a locked stop is invariant), so the plan has to be able to say which of
    * them are no longer usable rather than presenting them as fine.
    */
-  async placeAvailability(placeIds: string[]): Promise<Map<string, string>> {
+  async placeAvailability(
+    placeIds: string[],
+  ): Promise<Map<string, { status: string; providerStatus: string | null }>> {
     if (placeIds.length === 0) return new Map();
+    // Two independent axes, and a stop can fail on either: `places.status` is
+    // what GoGo decided (draft, suspended by a moderator), `source_status` is
+    // what the provider reports about the business (shut for now, shut for
+    // good). A place taken down and a place on Tết holiday are not the same
+    // thing to explain to a user.
     const rows = await this.db.execute(sql`
-      select id, status from places where id = any((${pgArray(placeIds)})::uuid[])
+      select p.id, p.status,
+        (select ps.source_status from place_provider_sources ps
+          where ps.place_id = p.id
+          order by ps.fetched_at desc limit 1) as provider_status
+      from places p
+      where p.id = any((${pgArray(placeIds)})::uuid[])
     `);
-    return new Map((rows.rows as { id: string; status: string }[]).map((r) => [r.id, r.status]));
+    return new Map(
+      (rows.rows as { id: string; status: string; provider_status: string | null }[]).map((r) => [
+        r.id,
+        { status: r.status, providerStatus: r.provider_status },
+      ]),
+    );
   }
 
   getStop(stopId: string): Promise<StopRow | undefined> {
