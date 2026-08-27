@@ -2,23 +2,129 @@ openapi: 3.1.0
 info:
   title: GoGo API
   version: 1.0.0-alpha.1
-  description: >
-    GoGo BFF public contract. Conventions: base path /v1, JSON UTF-8, ISO-8601
-    UTC timestamps, money as integer minor units + currency, cursor pagination,
-    Idempotency-Key on retryable mutations, optimistic concurrency via resource
-    version/ETag. DTOs return facts, not composed sentences.
+  description: |
+    Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
+    integration guide — every rule below is enforced by the API, not advisory.
+
+    ## Base URL & versioning
+
+    All paths are relative to `/v1`. Breaking changes to `/v1` are blocked in
+    CI (oasdiff gate); additive changes ship freely. The deployed spec is
+    always downloadable at `GET /v1/openapi.yaml` — generate your client from
+    that file, never hand-write DTOs.
+
+    ## Authentication (mobile)
+
+    Mobile uses **bearer tokens**, not cookies (cookies + CSRF are the Web
+    path; ignore them). Store tokens in Keychain/Keystore, never in
+    AsyncStorage.
+
+    1. `POST /auth/register` or `POST /auth/login` → `{ accessToken,
+       refreshToken, expiresIn }`.
+    2. Send `Authorization: Bearer <accessToken>` on every call. Access tokens
+       live ≤15 minutes.
+    3. On `401`, call `POST /auth/refresh` with `{ refreshToken }` → a **new
+       pair**. Refresh tokens are single-use: store the new one immediately and
+       discard the old.
+    4. **Reusing an old refresh token revokes the entire session family** (theft
+       detection) — the user is logged out everywhere. Serialise refresh calls
+       behind one mutex; parallel refreshes will log the user out.
+    5. `DELETE /sessions/current` with `{ "allDevices": true|false }` to log out.
+
+    ### Guest sessions (no account)
+
+    `POST /sessions/guest` (room code) or `POST /rooms/join/guest` (invite code)
+    returns `accessToken` **scoped to that one room** plus a long-lived
+    `guestToken`. Persist `guestToken` to re-enter the room later
+    (`POST /auth/refresh` with `{ guestToken }` returns a fresh access token).
+    On registration, pass the stored token as `claimGuestToken` to migrate the
+    guest's memberships, preferences and votes to the new account.
+
+    Guests can only touch their own room — any other room returns
+    `403 ROOM_SCOPE_VIOLATION`. Guests cannot create rooms or use `/me/saved`,
+    `/reviews` (`403 USER_ONLY`).
+
+    ## Errors
+
+    Every failure uses one envelope:
+
+    ```json
+    { "code": "ROOM_NOT_MATCHING", "message": "...", "field_errors": [],
+      "request_id": "9f0c…", "retryable": false }
+    ```
+
+    Branch on `code` (stable), never on `message` (may change / is not
+    localised). `field_errors[]` maps validation failures to form fields.
+    Include `request_id` in bug reports. `retryable: true` means a backoff
+    retry is sensible (429, 5xx).
+
+    ## Idempotency
+
+    Any retryable mutation accepts `Idempotency-Key: <8–128 chars>`. Replaying
+    the same key returns the original response with `x-idempotent-replay: true`
+    instead of acting twice. Same key + a different body → `422
+    IDEMPOTENCY_KEY_REUSED`. Use it on room creation, votes, plan edits and
+    check-ins — anything you might retry after a flaky network.
+
+    ## Rate limits
+
+    `429 RATE_LIMITED` (`retryable: true`) with per-action budgets: login 5/min,
+    guest session 10/min, room join 10/min, suggestions 6/min, votes 60/min,
+    search 60/min, place resolve 10/min, submissions 5/min. Back off, do not
+    hammer.
+
+    ## Data conventions
+
+    - **Money is integer minor units** (VND has no decimals → `250000` means
+      250.000 ₫). Never send floats.
+    - `budgetMode` is `total` or `per_person`; convert consistently — the API
+      never mixes them.
+    - Times are ISO-8601 UTC. Opening hours use minutes-of-day in **place-local
+      time** (`closesAtMinute: 1380` = 23:00).
+    - **DTOs return facts, not sentences.** Compose copy client-side from
+      `type` + `participantCount` + `budgetMode` — the API deliberately never
+      sends "Cả hai bạn…" strings, so i18n stays on the client.
+    - Lists are cursor-paginated: pass back `nextCursor` verbatim; `null` means
+      the end.
+
+    ## Permissions
+
+    `host` / `member` / `guest` are enforced server-side on every call. Hiding a
+    button is UX, not security — expect `403 HOST_ONLY` if a non-host calls a
+    host action. Room state also gates actions (`409 ROOM_NOT_MATCHING`,
+    `ROOM_ACTIVE`, …), so drive the UI from `room.status`.
+
+    ## Typical mobile flow
+
+    `POST /rooms` → `PATCH /rooms/{id}/status` (`collecting`) →
+    `POST /rooms/{id}/invites` (share code) → guests join →
+    `PUT /rooms/{id}/preferences/me` + `POST …/preferences/complete` →
+    room flips to `matching` automatically → `POST /rooms/{id}/suggestions` →
+    `PUT /rooms/{id}/votes/{placeId}` → `POST /rooms/{id}/votes/finalize` →
+    plan appears (`GET /rooms/{id}/plans/current`) → lock/regenerate →
+    `PATCH /rooms/{id}/status` (`active`) → complete stops + check-ins.
 servers:
   - url: /v1
+    description: Same-origin (app talks to the deployed API host)
 tags:
   - name: system
+    description: Health probes and the contract itself.
   - name: sessions
+    description: Register, login, refresh rotation, guest sessions.
   - name: rooms
+    description: Room lifecycle, constraints, invites, members, seed places.
   - name: preferences
+    description: Private per-member preferences and the taxonomy that drives them.
   - name: places
+    description: Search, place detail, area autocomplete, add-by-link ingestion.
   - name: suggestions
+    description: Deterministic suggestion runs, voting, decisions.
   - name: plans
+    description: Itinerary versions, lock/regenerate, active date, check-ins.
   - name: me
+    description: Profile, saved items, reviews, notifications, privacy.
   - name: cms
+    description: Staff-only endpoints — not used by the mobile app.
 
 paths:
   /health:
@@ -39,6 +145,49 @@ paths:
                   status:
                     type: string
                     enum: [ok]
+
+  /health/ready:
+    get:
+      operationId: getReadiness
+      tags: [system]
+      summary: Readiness probe — checks database and Redis
+      description: >
+        Returns 503 when the database is unreachable. Redis failure degrades
+        (rate limits fail open) and is reported without failing readiness.
+        Uptime monitors should point here, not at /health.
+      security: []
+      responses:
+        '200':
+          description: Dependencies reachable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ready] }
+                  checks:
+                    type: object
+                    properties:
+                      db: { type: string, enum: [ok, failed] }
+                      redis: { type: string, enum: [ok, failed, skipped] }
+        '503':
+          description: Database unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /openapi.yaml:
+    get:
+      operationId: getOpenapiSpec
+      tags: [system]
+      summary: The deployed contract — generate clients from this
+      security: []
+      responses:
+        '200':
+          description: OpenAPI document (YAML)
+          content:
+            application/yaml:
+              schema: { type: string }
 
   /auth/register:
     post:
@@ -430,7 +579,7 @@ paths:
                 inviteCode: { type: string }
       responses:
         '201':
-          description: Joined (idempotent for existing members)
+          description: Joined (idempotent — re-joining returns the existing membership)
           content:
             application/json:
               schema:
@@ -522,7 +671,26 @@ paths:
       parameters:
         - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
-        '200': { description: Own preferences with version }
+        '200':
+          description: Own preferences with version
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  selections:
+                    type: object
+                    additionalProperties:
+                      type: array
+                      items: { type: string }
+                  weights:
+                    type: object
+                    additionalProperties: { type: number }
+                  version:
+                    type: integer
+                    description: Pass back as `expectedVersion`; 0 means nothing saved yet.
+                  isDraft: { type: boolean }
+                  completedAt: { type: string, format: date-time }
     put:
       operationId: saveMyPreferences
       tags: [preferences]
@@ -548,7 +716,15 @@ paths:
                   additionalProperties: { type: number }
                 expectedVersion: { type: integer, minimum: 0 }
       responses:
-        '200': { description: 'Saved: { version, isDraft }' }
+        '200':
+          description: Autosaved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: integer }
+                  isDraft: { type: boolean }
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
 
@@ -560,7 +736,15 @@ paths:
       parameters:
         - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
-        '200': { description: '{ completed, roomReadyForMatching }' }
+        '200':
+          description: Completed; room flips to `matching` when everyone is done
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  completed: { type: boolean }
+                  roomReadyForMatching: { type: boolean }
         '400': { $ref: '#/components/responses/BadRequest' }
 
   /taxonomies:
@@ -575,7 +759,11 @@ paths:
           schema: { type: string }
           description: Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability)
       responses:
-        '200': { description: 'kinds → [{ key, sortOrder, labels }]' }
+        '200':
+          description: Taxonomy keys with i18n labels
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaxonomyList' }
 
   /places/search:
     get:
@@ -648,7 +836,11 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
-        '200': { description: Place aggregate (FR-PLAN-004) }
+        '200':
+          description: Place aggregate with hours, verified prices, sources and freshness
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceDetail' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /rooms/{roomId}/suggestions:
@@ -659,7 +851,11 @@ paths:
       parameters:
         - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
-        '201': { description: Ranked candidates with components + reason codes }
+        '201':
+          description: Ranked candidates with explainable components + reason codes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuggestionsCurrent' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
@@ -672,7 +868,10 @@ paths:
         - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '200':
-          { description: Run info + candidates (score, components, reasonCodes, stale) + votes }
+          description: Current run, candidates and vote progress
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuggestionsCurrent' }
 
   /rooms/{roomId}/votes/{placeId}:
     put:
@@ -694,7 +893,15 @@ paths:
                 value: { type: string, enum: [yes, no, star] }
       responses:
         '200':
-          description: '{ voted, matched, planId? }'
+          description: Vote recorded (idempotent). Couple `match` mode may auto-create the plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  voted: { type: boolean }
+                  matched: { type: boolean }
+                  planId: { type: string, format: uuid }
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
 
@@ -716,7 +923,19 @@ paths:
                   format: uuid
                   description: Optional explicit winner (host mode / tie-break) — must be a current candidate.
       responses:
-        '201': { description: '{ finalized, tie, winnerPlaceId, planId }' }
+        '201':
+          description: Decision applied and the first plan version created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  finalized: { type: boolean }
+                  tie:
+                    type: boolean
+                    description: True when points tied and candidate rank broke it.
+                  winnerPlaceId: { type: string, format: uuid }
+                  planId: { type: string, format: uuid }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
 
@@ -728,7 +947,11 @@ paths:
       parameters:
         - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
-        '200': { description: Plan with stops + totals (overBudget from upper bound) }
+        '200':
+          description: Current plan version with stops and totals
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /plans/{id}:
@@ -739,7 +962,11 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
-        '200': { description: Plan with stops }
+        '200':
+          description: Plan with stops
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
     patch:
       operationId: editPlanStops
       tags: [plans]
@@ -767,7 +994,11 @@ paths:
                       durationMinutes: { type: integer, minimum: 10 }
                       isLocked: { type: boolean, default: false }
       responses:
-        '200': { description: New plan version }
+        '200':
+          description: New plan version (times, travel and totals recalculated server-side)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
         '409': { $ref: '#/components/responses/Conflict' }
 
   /plans/{id}/regenerate:
@@ -787,7 +1018,11 @@ paths:
                   type: array
                   items: { type: string, format: uuid }
       responses:
-        '201': { description: New plan version keeping every locked stop }
+        '201':
+          description: New plan version — every locked stop is preserved verbatim
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
         '409': { $ref: '#/components/responses/Conflict' }
 
   /plans/{id}/stops/{stopId}/lock:
@@ -808,7 +1043,11 @@ paths:
               properties:
                 locked: { type: boolean }
       responses:
-        '200': { description: Updated plan }
+        '200':
+          description: Updated plan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
 
   /plans/{id}/stops/{stopId}/complete:
     post:
@@ -854,7 +1093,11 @@ paths:
                 billPeopleCount: { type: integer, minimum: 1 }
                 billPhotoKey: { type: string }
       responses:
-        '201': { description: Check-in saved (moderation pending); billPerPerson is display math }
+        '201':
+          description: Check-in saved (photos/bill go to moderation)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Checkin' }
         '400': { $ref: '#/components/responses/BadRequest' }
 
   /places/imports:
@@ -907,7 +1150,10 @@ paths:
           description: Groups one typing session for provider billing.
       responses:
         '200':
-          description: '{ predictions[], source: provider|fallback, attribution }'
+          description: Ranked area predictions (or the static fallback list)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AreaPredictions' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
   /me/saved:
@@ -916,7 +1162,13 @@ paths:
       tags: [me]
       summary: Saved places/plans (FR-USER-001)
       responses:
-        '200': { description: Saved items }
+        '200':
+          description: Saved items
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SavedItem' }
 
   /me/saved/{type}/{id}:
     put:
@@ -956,7 +1208,11 @@ paths:
                 rating: { type: integer, minimum: 1, maximum: 5 }
                 text: { type: string, maxLength: 2000 }
       responses:
-        '201': { description: '{ id, status: pending }' }
+        '201':
+          description: Review created; awaits moderation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Review' }
 
   /me/export:
     get:
@@ -975,7 +1231,17 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Cursor'
       responses:
-        '200': { description: '{ notifications[], nextCursor }' }
+        '200':
+          description: Notification inbox page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notifications:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  nextCursor: { type: [string, 'null'] }
 
   /me/device-tokens:
     put:
@@ -1020,7 +1286,10 @@ paths:
                 roomId: { type: string, format: uuid }
       responses:
         '201':
-          description: Resolution outcome with candidate/attribution facts
+          description: Resolution outcome with candidate + attribution facts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolveLinkResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
@@ -1058,7 +1327,10 @@ paths:
                 note: { type: string, maxLength: 1000 }
       responses:
         '201':
-          description: 'PENDING (with submissionId/deduped) or ALREADY_EXISTS (with placeId)'
+          description: Proposal accepted (or the place already exists)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubmissionResult' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409':
           description: Place is closed/suspended and cannot be added
@@ -1075,7 +1347,20 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
-        '200': { description: '{ id, status, placeId?, submissionCount }' }
+        '200':
+          description: Submission status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [pending, approved, rejected, merged] }
+                  googlePlaceId: { type: string }
+                  placeId: { type: string, format: uuid }
+                  submissionCount: { type: integer }
+                  createdAt: { type: string, format: date-time }
+                  decidedAt: { type: string, format: date-time }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /cms/place-submissions/{id}/decide:
@@ -1100,6 +1385,93 @@ paths:
         '201': { description: Decision applied; audited + reindex event emitted }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+
+  /me/reviews:
+    get:
+      operationId: listMyReviews
+      tags: [me]
+      summary: Reviews written by the caller, with moderation status
+      responses:
+        '200':
+          description: Own reviews
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Review' }
+
+  /reviews/{id}:
+    patch:
+      operationId: updateReview
+      tags: [me]
+      summary: Edit own review — goes back to moderation (owner only)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                text: { type: string, maxLength: 2000 }
+      responses:
+        '200':
+          description: Updated; status returns to `pending`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Review' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /me/notifications/{id}/read:
+    post:
+      operationId: markNotificationRead
+      tags: [me]
+      summary: Mark one notification read
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: '{ read: true }'
+
+  /me/notification-preferences:
+    get:
+      operationId: getNotificationPreferences
+      tags: [me]
+      summary: Per-channel, per-kind notification opt-ins
+      responses:
+        '200':
+          description: Preferences (absent rows default to enabled)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    channel: { type: string, enum: [push, email] }
+                    kind: { $ref: '#/components/schemas/NotificationKind' }
+                    enabled: { type: boolean }
+    put:
+      operationId: setNotificationPreference
+      tags: [me]
+      summary: Opt in/out of one notification kind on one channel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, kind, enabled]
+              properties:
+                channel: { type: string, enum: [push, email] }
+                kind: { $ref: '#/components/schemas/NotificationKind' }
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: '{ updated: true }'
 
 components:
   securitySchemes:
@@ -1246,6 +1618,330 @@ components:
         reasonCodes:
           type: array
           items: { type: string, enum: [TEXT_MATCH, NEAR_YOU, HIGHLY_RATED, CURATED, OPEN_NOW] }
+    NotificationKind:
+      type: string
+      enum:
+        [invite, preference_reminder, plan_ready, plan_changed, date_reminder, moderation_update]
+    Review:
+      type: object
+      required: [id, rating, status]
+      properties:
+        id: { type: string, format: uuid }
+        placeId: { type: string, format: uuid }
+        planId: { type: string, format: uuid }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        text: { type: string }
+        status:
+          type: string
+          enum: [pending, published, rejected, removed]
+          description: New and edited reviews start at `pending` until moderation.
+        createdAt: { type: string, format: date-time }
+    SavedItem:
+      type: object
+      properties:
+        targetType: { type: string, enum: [place, plan] }
+        targetId: { type: string, format: uuid }
+        savedAt: { type: string, format: date-time }
+    Notification:
+      type: object
+      description: Facts only — compose the display string client-side from `kind` + `payload`.
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/NotificationKind' }
+        payload:
+          type: object
+          additionalProperties: true
+        readAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+    OpenState:
+      type: object
+      description: Minutes-of-day in place-local time; render "Đang mở · Đóng 23:00" client-side.
+      properties:
+        openNow: { type: boolean }
+        closesAtMinute: { type: integer }
+        opensAtMinute: { type: integer }
+        opensDayOffset: { type: integer }
+    PricePerPerson:
+      type: object
+      description: Estimated range in integer minor units — never present it as an exact figure.
+      properties:
+        min: { type: integer }
+        max: { type: integer }
+        currency: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+    PlaceDetail:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        status: { type: string }
+        address_text: { type: string }
+        area_key: { type: string }
+        lat: { type: number }
+        lng: { type: number }
+        phone: { type: string }
+        website: { type: string }
+        rating: { type: number }
+        rating_count: { type: integer }
+        avg_visit_minutes: { type: integer }
+        suitability:
+          type: object
+          additionalProperties: { type: number }
+        is_lodging: { type: boolean }
+        confidence: { type: number }
+        freshness_checked_at: { type: string, format: date-time }
+        taxonomies:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string }
+              key: { type: string }
+        hours:
+          type: array
+          items:
+            type: object
+            properties:
+              dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
+              openMinute: { type: integer }
+              closeMinute: { type: integer }
+              isOvernight: { type: boolean }
+        prices:
+          type: array
+          items:
+            type: object
+            properties:
+              priceMin: { type: integer }
+              priceMax: { type: integer }
+              currency: { type: string }
+              unit: { type: string, enum: [per_person, per_item, per_hour, per_night] }
+              confidence: { type: number }
+              verifiedAt: { type: string, format: date-time }
+        sources:
+          type: array
+          description: Provider attribution — must be displayed with provider-sourced facts.
+          items:
+            type: object
+            properties:
+              provider: { type: string }
+              url: { type: string }
+              attribution: { type: string }
+    SuggestionCandidate:
+      type: object
+      properties:
+        placeId: { type: string, format: uuid }
+        name: { type: string }
+        rank: { type: integer }
+        score: { type: number, minimum: 0, maximum: 1 }
+        components:
+          type: object
+          description: Explainable score parts — drives the "Vì sao phù hợp" UI.
+          additionalProperties: { type: number }
+        reasonCodes:
+          type: array
+          items:
+            type: string
+            enum:
+              [
+                MATCHES_PREFERENCES,
+                LIKED_BY_EVERYONE,
+                FITS_BUDGET,
+                NEAR_ORIGIN,
+                HIGHLY_RATED,
+                HOST_SUGGESTED,
+              ]
+        stale:
+          type: boolean
+          description: True after a constraint edit — regenerate before showing as current.
+        myVote: { type: string, enum: [yes, no, star] }
+        points: { type: integer }
+    SuggestionsCurrent:
+      type: object
+      properties:
+        run:
+          type: [object, 'null']
+          properties:
+            id: { type: string, format: uuid }
+            createdAt: { type: string, format: date-time }
+            constraintVersion: { type: integer }
+            engineVersion: { type: string }
+            weightsVersion: { type: string }
+            stale: { type: boolean }
+        decisionMode: { type: string, enum: [match, vote, host] }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/SuggestionCandidate' }
+        votes:
+          type: object
+          properties:
+            mine:
+              type: object
+              additionalProperties: { type: string, enum: [yes, no, star] }
+            progress:
+              type: array
+              items:
+                type: object
+                properties:
+                  placeId: { type: string, format: uuid }
+                  points: { type: integer }
+                  yes: { type: integer }
+                  star: { type: integer }
+                  no: { type: integer }
+    PlanTotals:
+      type: object
+      properties:
+        costMin: { type: integer }
+        costMax: { type: integer }
+        currency: { type: string }
+        durationMinutes: { type: integer }
+        travelDistanceM: { type: integer }
+        overBudget:
+          type: boolean
+          description: Computed from the UPPER bound — never show "trong ngân sách" when true.
+        uncertain:
+          type: boolean
+          description: Some stop has unknown/low-confidence price — surface the uncertainty.
+    PlanStop:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        placeId: { type: string, format: uuid }
+        position: { type: integer }
+        arriveAt: { type: string, format: date-time }
+        departAt: { type: string, format: date-time }
+        durationMinutes: { type: integer }
+        travelMinutesFromPrev: { type: [integer, 'null'] }
+        travelDistanceMFromPrev: { type: [integer, 'null'] }
+        costMin: { type: [integer, 'null'] }
+        costMax: { type: [integer, 'null'] }
+        isLocked:
+          type: boolean
+          description: Locked stops are invariant across regenerate.
+        status: { type: string, enum: [planned, completed, skipped] }
+        completedAt: { type: string, format: date-time }
+    Plan:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        roomId: { type: string, format: uuid }
+        version: { type: integer }
+        status: { type: string, enum: [draft, current, superseded, archived] }
+        isStale:
+          type: boolean
+          description: Constraints changed after this plan was built.
+        constraintVersion: { type: integer }
+        totals: { $ref: '#/components/schemas/PlanTotals' }
+        createdAt: { type: string, format: date-time }
+        stops:
+          type: array
+          items: { $ref: '#/components/schemas/PlanStop' }
+    Checkin:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        tags:
+          type: array
+          items: { type: string }
+        note: { type: string }
+        photoKeys:
+          type: array
+          maxItems: 3
+          items: { type: string }
+        billTotal: { type: integer }
+        billPeopleCount: { type: integer }
+        billPerPerson:
+          type: integer
+          description: Rounded display value; `billTotal` is the canonical number.
+        moderation: { type: string, enum: [pending, approved, rejected] }
+    TaxonomyList:
+      type: object
+      properties:
+        kinds:
+          type: object
+          description: Kind → entries. Store the stable `key`, resolve labels via `labels[locale]`.
+          additionalProperties:
+            type: array
+            items:
+              type: object
+              properties:
+                key: { type: string }
+                sortOrder: { type: integer }
+                labels:
+                  type: object
+                  additionalProperties: { type: string }
+    AreaPredictions:
+      type: object
+      properties:
+        predictions:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              description: { type: string }
+              lat: { type: number }
+              lng: { type: number }
+        source:
+          type: string
+          enum: [provider, fallback]
+          description: '`fallback` means the provider failed and static areas were served.'
+        attribution: { type: [string, 'null'] }
+    ResolveLinkResult:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [RESOLVED, ALREADY_EXISTS, CANDIDATE_SELECTION, UNRESOLVED]
+          description: >
+            ALREADY_EXISTS → open `existingPlaceId` instead of submitting.
+            CANDIDATE_SELECTION → make the user pick a branch.
+        matchConfidence: { type: number }
+        reasonCodes:
+          type: array
+          items: { type: string }
+        existingPlaceId: { type: string, format: uuid }
+        candidate:
+          type: object
+          properties:
+            googlePlaceId: { type: string }
+            name: { type: string }
+            address: { type: string }
+            location:
+              type: object
+              properties:
+                lat: { type: number }
+                lng: { type: number }
+            googleRating: { type: [number, 'null'] }
+            googleRatingCount: { type: integer }
+            googleScore:
+              type: [number, 'null']
+              description: Derived 0–100 score; keep it visually separate from the raw rating.
+            businessStatus: { type: string }
+            source: { type: string }
+            fetchedAt: { type: string, format: date-time }
+            attributions:
+              type: array
+              items: { type: string }
+        candidates:
+          type: array
+          items:
+            type: object
+            properties:
+              googlePlaceId: { type: string }
+              name: { type: string }
+              address: { type: string }
+              confidence: { type: number }
+    SubmissionResult:
+      type: object
+      properties:
+        status: { type: string, enum: [PENDING, ALREADY_EXISTS] }
+        submissionId: { type: string, format: uuid }
+        placeId: { type: string, format: uuid }
+        deduped:
+          type: boolean
+          description: True when another user already proposed the same place.
     TokenGrant:
       type: object
       required: [accessToken, expiresIn]

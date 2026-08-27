@@ -56,6 +56,7 @@ describe('api runtime skeleton (BE-BFF-001)', () => {
     });
     expect(docs.statusCode).toBe(200);
     expect(docs.body).toContain('/v1/openapi.yaml');
+    expect(docs.body).toContain('swagger-ui');
   });
 
   it('unknown route returns error envelope', async () => {
