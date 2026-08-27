@@ -46,5 +46,16 @@ export { SearchService, openStateAt } from '../search/application/search.service
 export { SearchRepository } from '../search/infrastructure/search.repository';
 export { normalizeVietnamese, toSearchQuery } from '../search/domain/normalize';
 
+// Suggestions + Plans (SG-001..008, BE-BFF-007/008/014)
+export { SuggestionsModule } from '../suggestions/presentation/suggestions.module';
+export { PlansModule } from '../plans/presentation/plans.module';
+export { SuggestionService } from '../suggestions/application/suggestion.service';
+export { PlansService } from '../plans/application/plans.service';
+export { hardFilter } from '../suggestions/domain/hard-filter';
+export { scoreCandidate } from '../suggestions/domain/scoring';
+export { rankWithFairness } from '../suggestions/domain/fairness';
+export { buildItinerary } from '../suggestions/domain/optimizer';
+export { coupleMatches, resolveWinner, tallyVotes } from '../suggestions/domain/decision';
+
 // Platform
 export { writeOutbox, type DomainEventInput } from '../shared/outbox';

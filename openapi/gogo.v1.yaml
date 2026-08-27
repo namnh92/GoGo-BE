@@ -631,6 +631,212 @@ paths:
         '200': { description: Place aggregate (FR-PLAN-004) }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /rooms/{roomId}/suggestions:
+    post:
+      operationId: generateSuggestions
+      tags: [suggestions]
+      summary: Run the deterministic suggestion pipeline (SG-002..005)
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201': { description: Ranked candidates with components + reason codes }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /rooms/{roomId}/suggestions/current:
+    get:
+      operationId: getCurrentSuggestions
+      tags: [suggestions]
+      summary: Current ranking, my votes, vote progress
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          { description: Run info + candidates (score, components, reasonCodes, stale) + votes }
+
+  /rooms/{roomId}/votes/{placeId}:
+    put:
+      operationId: castVote
+      tags: [suggestions]
+      summary: Idempotent vote on a current candidate (FR-SUG-004)
+      description: Couple match mode auto-creates the plan when everyone matched.
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: placeId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value: { type: string, enum: [yes, no, star] }
+      responses:
+        '200':
+          description: '{ voted, matched, planId? }'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /rooms/{roomId}/votes/finalize:
+    post:
+      operationId: finalizeVotes
+      tags: [suggestions]
+      summary: 'Host-only: finalize decision (tally star=2/yes=1; tie → candidate rank or host pick)'
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                placeId:
+                  type: string
+                  format: uuid
+                  description: Optional explicit winner (host mode / tie-break) — must be a current candidate.
+      responses:
+        '201': { description: '{ finalized, tie, winnerPlaceId, planId }' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /rooms/{roomId}/plans/current:
+    get:
+      operationId: getCurrentPlan
+      tags: [plans]
+      summary: The room's current plan version with stops
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Plan with stops + totals (overBudget from upper bound) }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /plans/{id}:
+    get:
+      operationId: getPlan
+      tags: [plans]
+      summary: Plan by id (members only)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Plan with stops }
+    patch:
+      operationId: editPlanStops
+      tags: [plans]
+      summary: 'Host-only: replace stop list; times/travel/costs recalculated server-side'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedVersion, stops]
+              properties:
+                expectedVersion: { type: integer, minimum: 1 }
+                stops:
+                  type: array
+                  minItems: 1
+                  maxItems: 8
+                  items:
+                    type: object
+                    required: [placeId]
+                    properties:
+                      placeId: { type: string, format: uuid }
+                      durationMinutes: { type: integer, minimum: 10 }
+                      isLocked: { type: boolean, default: false }
+      responses:
+        '200': { description: New plan version }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /plans/{id}/regenerate:
+    post:
+      operationId: regeneratePlan
+      tags: [plans]
+      summary: 'Host-only: regenerate — locked stops are invariant (SG-008)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                excludePlaceIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        '201': { description: New plan version keeping every locked stop }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /plans/{id}/stops/{stopId}/lock:
+    patch:
+      operationId: lockPlanStop
+      tags: [plans]
+      summary: 'Host-only: lock/unlock a stop'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: stopId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locked]
+              properties:
+                locked: { type: boolean }
+      responses:
+        '200': { description: Updated plan }
+
+  /plans/{id}/stops/{stopId}/complete:
+    post:
+      operationId: completePlanStop
+      tags: [plans]
+      summary: Complete a stop during the active date (FR-PLAN-008)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: stopId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201': { description: '{ completed: true }' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /plans/{id}/stops/{stopId}/checkin:
+    post:
+      operationId: checkinPlanStop
+      tags: [plans]
+      summary: Stop check-in — rating/tags/note/photos, optional verified bill (FR-PLAN-008/009)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: stopId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                tags:
+                  type: array
+                  maxItems: 10
+                  items: { type: string, maxLength: 40 }
+                note: { type: string, maxLength: 1000 }
+                photoKeys:
+                  type: array
+                  maxItems: 3
+                  items: { type: string }
+                billTotal:
+                  type: integer
+                  minimum: 0
+                  description: Requires billPhotoKey as evidence.
+                billPeopleCount: { type: integer, minimum: 1 }
+                billPhotoKey: { type: string }
+      responses:
+        '201': { description: Check-in saved (moderation pending); billPerPerson is display math }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
 components:
   securitySchemes:
     bearerAuth:
