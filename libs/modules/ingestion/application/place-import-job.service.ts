@@ -24,6 +24,7 @@ import {
 import { validateRow, type NormalizedImportRow } from '../domain/template';
 import { PlaceDedupService } from './place-dedup.service';
 import { PlaceResolverService } from './place-resolver.service';
+import { writeAudit } from '../../shared/audit';
 
 export type ImportMode = 'dry_run' | 'create_drafts' | 'publish_approved';
 
@@ -1048,7 +1049,7 @@ export class PlaceImportJobService {
     resourceId: string,
     diff: unknown,
   ): Promise<void> {
-    await this.db.insert(schema.auditLogs).values({
+    await writeAudit(this.db, {
       actorType: 'admin',
       actorId: adminId,
       action,

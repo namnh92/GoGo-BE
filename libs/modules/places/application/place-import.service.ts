@@ -11,6 +11,7 @@ import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
 import { haversineMeters } from '../../suggestions/domain/hard-filter';
+import { writeAudit } from '../../shared/audit';
 
 const ALLOWED_HOSTS =
   /^(https?:\/\/)?(www\.)?((maps\.)?google\.[a-z.]+\/maps|maps\.google\.[a-z.]+|maps\.app\.goo\.gl|goo\.gl\/maps|maps\.google\.com)/i;
@@ -209,7 +210,7 @@ export class PlaceImportService {
       })
       .where(eq(schema.placeImports.id, importId))
       .returning();
-    await this.db.insert(schema.auditLogs).values({
+    await writeAudit(this.db, {
       actorType: row.submittedByUserId ? 'user' : 'system',
       actorId: row.submittedByUserId,
       action: 'place.import_verified',

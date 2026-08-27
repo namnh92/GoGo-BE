@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { DB } from '../../shared/tokens';
+import { writeAudit } from '../../shared/audit';
 
 export type UserRow = typeof schema.users.$inferSelect;
 export type AuthSessionRow = typeof schema.authSessions.$inferSelect;
@@ -228,16 +229,14 @@ export class IdentityRepository {
     resourceType: string;
     resourceId: string;
     diff?: unknown;
-    requestId?: string;
   }): Promise<void> {
-    await this.db.insert(schema.auditLogs).values({
+    await writeAudit(this.db, {
       actorType: input.actorType,
       actorId: input.actorId,
       action: input.action,
       resourceType: input.resourceType,
       resourceId: input.resourceId,
       diff: input.diff,
-      requestId: input.requestId,
     });
   }
 }

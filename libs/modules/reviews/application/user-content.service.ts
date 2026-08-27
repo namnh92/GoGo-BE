@@ -6,6 +6,7 @@ import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import { pgArray } from '../../search/infrastructure/search.repository';
 import type { Actor } from '../../identity/domain/actor';
+import { writeAudit } from '../../shared/audit';
 
 function requireUser(actor: Actor): string {
   if (actor.type !== 'user') {
@@ -196,7 +197,7 @@ export class UserContentService {
       .from(schema.reviews)
       .where(eq(schema.reviews.userId, userId));
 
-    await this.db.insert(schema.auditLogs).values({
+    await writeAudit(this.db, {
       actorType: 'user',
       actorId: userId,
       action: 'user.data_exported',
@@ -256,7 +257,7 @@ export class UserContentService {
         .update(schema.roomMembers)
         .set({ displayName: 'Đã rời' })
         .where(eq(schema.roomMembers.userId, userId));
-      await tx.insert(schema.auditLogs).values({
+      await writeAudit(tx, {
         actorType: 'user',
         actorId: userId,
         action: 'user.account_deleted',

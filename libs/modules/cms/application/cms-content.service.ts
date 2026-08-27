@@ -3,6 +3,7 @@ import { and, asc, eq, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
+import { writeAudit } from '../../shared/audit';
 
 type TaxonomyKind = (typeof schema.taxonomies.$inferSelect)['kind'];
 type CollectionStatus = (typeof schema.contentCollections.$inferSelect)['status'];
@@ -19,7 +20,7 @@ export class CmsContentService {
     resourceId: string,
     diff?: unknown,
   ) {
-    await this.db.insert(schema.auditLogs).values({
+    await writeAudit(this.db, {
       actorType: 'admin',
       actorId: adminId,
       action,

@@ -55,6 +55,12 @@ export const auditLogs = pgTable(
     // Before/after diff of the sensitive write; PII minimized at write time.
     diff: jsonb('diff'),
     requestId: text('request_id'),
+    /**
+     * Staff IP for admin actions only. It is PII, so user/guest actions never
+     * populate it: the justification is staff accountability — telling "that
+     * admin did it" apart from "that admin's account was taken over".
+     */
+    ipAddress: text('ip_address'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

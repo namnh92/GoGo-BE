@@ -7,6 +7,7 @@ import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { DB } from '../../shared/tokens';
 import { PasswordService } from '../../identity/application/password.service';
 import { TokenService } from '../../identity/application/token.service';
+import { writeAudit } from '../../shared/audit';
 
 export type AdminRole = (typeof schema.adminUsers.$inferSelect)['role'];
 
@@ -50,7 +51,7 @@ export class AdminAuthService {
       .update(schema.adminUsers)
       .set({ lastLoginAt: sql`now()` })
       .where(eq(schema.adminUsers.id, admin.id));
-    await this.db.insert(schema.auditLogs).values({
+    await writeAudit(this.db, {
       actorType: 'admin',
       actorId: admin.id,
       action: 'admin.login',
@@ -86,7 +87,7 @@ export class AdminAuthService {
       .update(schema.adminUsers)
       .set({ mfaTotpSecretEnc: secret, updatedAt: sql`now()` })
       .where(eq(schema.adminUsers.id, adminId));
-    await this.db.insert(schema.auditLogs).values({
+    await writeAudit(this.db, {
       actorType: 'admin',
       actorId: adminId,
       action: 'admin.mfa_enrolled',
@@ -117,7 +118,7 @@ export class AdminAuthService {
         role: input.role,
       })
       .returning();
-    await this.db.insert(schema.auditLogs).values({
+    await writeAudit(this.db, {
       actorType: 'admin',
       actorId: input.createdBy,
       action: 'admin.created',
