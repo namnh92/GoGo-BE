@@ -64,6 +64,20 @@
       "when": 1787837530888,
       "tag": "0008_audit-authorization-path",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787837531888,
+      "tag": "0009_provider-primary-type",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787837532888,
+      "tag": "0010_ingest-update-existing-mode",
+      "breakpoints": true
     }
   ]
 }

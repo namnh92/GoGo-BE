@@ -43,6 +43,35 @@ unit: per_person}`, `Cặp đôi|Bạn bè` → `['couple','group']`. A tab name
 Unknown taxonomy keys are a **validation error** (`CATEGORY_UNKNOWN`) or a
 warning (`CATEGORY_UNMAPPED`). Import never creates taxonomy.
 
+## Mode `update_existing`
+
+Re-sync một sheet đã sửa lên place đã tồn tại. Trước khi có mode này, sửa giá trong sheet rồi import lại **không có tác dụng gì**: dòng khớp provider id, thành `duplicate`, dừng.
+
+Quyền sở hữu field theo ADR-0006 §8:
+
+| Nhóm                                                       | Ai thắng                                                                            |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| name, địa chỉ, geo, rating, review count, price level, giờ | **Google** — place có thể đã đổi tên/dời chỗ/mở lại                                 |
+| giá VND, highlight, note                                   | **Sheet**                                                                           |
+| category, vibes, audiences                                 | Sheet, **chỉ khi ô không rỗng** — ô rỗng nghĩa là "không biết", không phải "xoá đi" |
+
+### Trước khi ghi bất cứ thứ gì: có phải vẫn là business cũ không?
+
+Cùng một `google_place_id` không đảm bảo cùng một quán. Nếu đổi chủ, lấy tên mới trong khi giữ nguyên highlight, giá GoGo curate và category cũ sẽ tạo ra **một record nói dối** — và review, saved place, plan stop đang trỏ vào dòng đó sẽ âm thầm đi theo.
+
+Nên `update_existing` chạy composite check trước; **bất kỳ** tín hiệu nào bật thì dòng vào `needs_confirmation`, **không ghi gì cả**, người quyết:
+
+| Tín hiệu                      | Vì sao                                                             |
+| ----------------------------- | ------------------------------------------------------------------ |
+| `RATING_COUNT_RESET`          | Google reset review cho business mới. Tín hiệu **mạnh nhất** ta có |
+| `PRIMARY_TYPE_CHANGED`        | Nhà hàng thành karaoke — tên không bắt được                        |
+| `BUSINESS_CLOSED_PERMANENTLY` | Rõ ràng                                                            |
+| `NAME_UNRECOGNISABLE`         | similarity < 0.3                                                   |
+
+**Tên một mình là cổng sai** — đo trên ca thật: `Highlands Coffee Nguyễn Huệ → The Coffee House Nguyễn Huệ` (đổi chủ) được **0.60**, còn `Cà Phê Sài Gòn → Saigon Coffee House` (cùng chủ) được **0.00**. Token địa chỉ và loại hình thổi phồng điểm đúng chỗ cần cảnh báo.
+
+Không có tín hiệu nào **auto-reject**. Tín hiệu nghĩa là "người quyết", không bao giờ nghĩa là "bỏ đi".
+
 ## Job statuses
 
 `uploaded → validating → review_required → processing → completed |

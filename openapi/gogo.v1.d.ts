@@ -2174,8 +2174,11 @@ export interface components {
             id?: string;
             /** @enum {string} */
             status?: "uploaded" | "validating" | "processing" | "review_required" | "completed" | "partial_success" | "failed" | "cancelled" | "paused_provider_quota";
-            /** @enum {string} */
-            mode?: "dry_run" | "create_drafts" | "publish_approved";
+            /**
+             * @description `update_existing` re-syncs an edited sheet onto places that already exist: provider facts refresh from Google, editorial fields come from the sheet, and an empty cell means "unknown", not "delete". A row whose provider place now looks like a *different business* is written nowhere and lands in review instead.
+             * @enum {string}
+             */
+            mode?: "dry_run" | "create_drafts" | "publish_approved" | "update_existing";
             /** @enum {string} */
             sourceType?: "csv" | "xlsx" | "google_sheet" | "mobile_link";
             sourceFileName?: string | null;
@@ -3998,7 +4001,7 @@ export interface operations {
                      * @default dry_run
                      * @enum {string}
                      */
-                    mode?: "dry_run" | "create_drafts" | "publish_approved";
+                    mode?: "dry_run" | "create_drafts" | "publish_approved" | "update_existing";
                     defaultCity?: string;
                     /** @description JSON object mapping raw header → canonical field */
                     mapping?: string;
@@ -4036,7 +4039,7 @@ export interface operations {
                      * @default dry_run
                      * @enum {string}
                      */
-                    mode?: "dry_run" | "create_drafts" | "publish_approved";
+                    mode?: "dry_run" | "create_drafts" | "publish_approved" | "update_existing";
                     defaultCity?: string;
                     tabCityMapping?: {
                         [key: string]: string;

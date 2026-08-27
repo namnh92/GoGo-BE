@@ -95,12 +95,14 @@ export class PlaceDedupService {
         refreshAfter,
         attribution: { text: input.details.attribution },
         sourceStatus,
+        primaryType: input.details.primaryType,
         fetchTier: input.fetchTier,
       })
       .onConflictDoUpdate({
         target: [schema.placeProviderSources.provider, schema.placeProviderSources.externalId],
         set: {
           placeId: input.placeId,
+          primaryType: input.details.primaryType,
           rating: input.details.rating !== null ? input.details.rating.toFixed(2) : null,
           ratingCount: input.details.ratingCount,
           derivedScore: input.derivedScore.toFixed(2),

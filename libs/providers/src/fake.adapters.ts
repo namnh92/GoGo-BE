@@ -43,6 +43,7 @@ export class FakePlaceProvider implements PlaceProviderPort {
       businessStatus: 'OPERATIONAL',
       hours: defaultHours,
       priceLevel: 2,
+      primaryType: 'cafe',
       attribution: 'Data © Fake Provider',
       raw: {},
       ...place,

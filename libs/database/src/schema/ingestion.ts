@@ -45,6 +45,9 @@ export const ingestJobMode = pgEnum('ingest_job_mode', [
   'dry_run',
   'create_drafts',
   'publish_approved',
+  // Re-sync a sheet onto places that already exist: provider facts refresh from
+  // Google, editorial fields come from the sheet (ADR-0006 §8).
+  'update_existing',
 ]);
 
 export const placeIngestJobs = pgTable(
@@ -171,6 +174,8 @@ export const placeProviderSources = pgTable(
     /** Bayesian-shrunk 0..100 score; never overwrites the raw aggregates. */
     derivedScore: numeric('derived_score', { precision: 5, scale: 2 }),
     priceLevel: integer('price_level'),
+    /** Provider's primary category at fetch time — the identity-change signal. */
+    primaryType: text('primary_type'),
     fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
     refreshAfter: timestamp('refresh_after', { withTimezone: true }),
     attribution: jsonb('attribution').$type<Record<string, unknown>>().notNull().default({}),
