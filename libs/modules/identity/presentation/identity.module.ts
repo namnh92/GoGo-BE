@@ -48,6 +48,6 @@ import { SessionsController } from './sessions.controller';
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: RateLimitGuard },
   ],
-  exports: [AuthService, TokenService, IdentityRepository, RATE_LIMIT_STORE],
+  exports: [AuthService, TokenService, PasswordService, IdentityRepository, RATE_LIMIT_STORE],
 })
 export class IdentityModule {}

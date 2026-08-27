@@ -3,7 +3,7 @@
  * Actor; policies authorize on actor + membership + role + resource state.
  */
 
-export type ActorType = 'user' | 'guest';
+export type ActorType = 'user' | 'guest' | 'admin';
 
 export type Actor = {
   type: ActorType;

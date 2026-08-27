@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import {
+  CmsModule,
   IdentityModule,
   NotificationsModule,
   PlacesModule,
@@ -38,6 +39,7 @@ class ConfigModule {}
     PlansModule,
     ReviewsModule,
     NotificationsModule,
+    CmsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_FILTER, useClass: AppExceptionFilter }],

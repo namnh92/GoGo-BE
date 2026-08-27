@@ -368,6 +368,22 @@ async function main(): Promise<void> {
     }
   }
 
+  // Dev-only CMS bootstrap admin — production admins are created by a
+  // super admin through the API and must enroll MFA.
+  if ((process.env.NODE_ENV ?? 'development') !== 'production') {
+    const { default: argon2 } = await import('argon2');
+    const passwordHash = await argon2.hash('gogo-dev-admin-password', { type: argon2.argon2id });
+    await db
+      .insert(schema.adminUsers)
+      .values({
+        email: 'admin@gogo.local',
+        passwordHash,
+        displayName: 'Dev Super Admin',
+        role: 'super_admin',
+      })
+      .onConflictDoNothing();
+  }
+
   await pool.end();
   // eslint-disable-next-line no-console
   console.log('seed complete');

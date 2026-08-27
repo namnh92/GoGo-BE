@@ -66,6 +66,10 @@ export { OutboxDispatcher } from '../notifications/application/outbox-dispatcher
 // Place import + areas (BE-BFF-013/016)
 export { PlaceImportService } from '../places/application/place-import.service';
 
+// CMS (CMS-001..010)
+export { CmsModule } from '../cms/presentation/cms.module';
+export { AdminAuthService } from '../cms/application/admin-auth.service';
+
 // Platform
 export { writeOutbox, type DomainEventInput } from '../shared/outbox';
 export { PrivacyJobs, type PrivacyRunReport } from '../shared/privacy-jobs';
