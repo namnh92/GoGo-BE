@@ -8,6 +8,12 @@ export type CookieOptions = {
   secure: boolean;
   accessTtlSeconds: number;
   refreshTtlSeconds: number;
+  /**
+   * Where the refresh cookie is sent. Scoped to the endpoint that consumes it
+   * so it never rides along on ordinary requests; CMS refreshes at its own
+   * path, so the caller says which (SEC-003).
+   */
+  refreshPath?: string | undefined;
 };
 
 /**
@@ -32,7 +38,7 @@ export function setAuthCookies(
       httpOnly: true,
       secure: opts.secure,
       sameSite: 'lax',
-      path: '/v1/auth/refresh',
+      path: opts.refreshPath ?? '/v1/auth/refresh',
       maxAge: opts.refreshTtlSeconds,
     });
   }
@@ -45,10 +51,16 @@ export function setAuthCookies(
   });
 }
 
-export function clearAuthCookies(reply: FastifyReply, secure: boolean): void {
+export function clearAuthCookies(
+  reply: FastifyReply,
+  secure: boolean,
+  refreshPath = '/v1/auth/refresh',
+): void {
+  // The refresh cookie only clears on the path it was set for, so the caller
+  // has to name it — CMS sets its own (SEC-003).
   for (const [name, path] of [
     [ACCESS_COOKIE, '/'],
-    [REFRESH_COOKIE, '/v1/auth/refresh'],
+    [REFRESH_COOKIE, refreshPath],
     [CSRF_COOKIE, '/'],
   ] as const) {
     reply.setCookie(name, '', {

@@ -85,6 +85,13 @@
       "when": 1787837533888,
       "tag": "0011_travel-legs-cache",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787837534888,
+      "tag": "0012_admin-sessions",
+      "breakpoints": true
     }
   ]
 }

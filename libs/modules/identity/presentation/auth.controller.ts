@@ -3,10 +3,11 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AppError } from '../../shared/app-error';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
-import { AuthService, type ClientMeta } from '../application/auth.service';
+import { AuthService } from '../application/auth.service';
 import { REFRESH_COOKIE } from './auth.guard';
 import { clearAuthCookies, setAuthCookies } from './cookies';
 import { Public, RateLimit } from './decorators';
+import { clientMeta } from './client-meta';
 import {
   loginSchema,
   refreshSchema,
@@ -17,14 +18,6 @@ import {
 } from './dtos';
 
 type CookieRequest = FastifyRequest & { cookies?: Record<string, string | undefined> };
-
-function clientMeta(req: FastifyRequest): ClientMeta {
-  const ua = req.headers['user-agent'];
-  return {
-    ...(req.ip ? { ip: req.ip } : {}),
-    ...(typeof ua === 'string' ? { userAgent: ua.slice(0, 256) } : {}),
-  };
-}
 
 @Controller('auth')
 export class AuthController {

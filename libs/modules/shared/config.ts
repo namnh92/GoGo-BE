@@ -10,5 +10,6 @@ export type IdentityConfig = {
   AUTH_ACCESS_TOKEN_TTL_SECONDS: number;
   AUTH_REFRESH_TOKEN_TTL_SECONDS: number;
   AUTH_GUEST_SESSION_TTL_SECONDS: number;
+  AUTH_ADMIN_REFRESH_TTL_SECONDS: number;
   COOKIE_SECURE: boolean;
 };

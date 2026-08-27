@@ -281,6 +281,31 @@ Answering "how often was the hatch used, on what" needs no metrics backend —
 it is one query on `audit_logs`. Alerting on a threshold does, and waits on the
 metric destination (#120).
 
+### CMS session model (SEC-003)
+
+The staff session used to be an access token in a response body with no server
+side to it: no cookie, no refresh, and `sid` set to the admin id itself. Three
+consequences, all now closed.
+
+A browser client had to hold a bearer token in JS, against the rule that says a
+web session belongs in a secure `HttpOnly` cookie. Login now sets one, scoped so
+the refresh cookie only travels to `/v1/cms/auth/refresh`, with the CSRF cookie
+readable for the double-submit header.
+
+With no refresh, a 15-minute access token meant a hard logout mid-edit. Sessions
+now rotate, single-use, with reuse of a superseded token revoking the family —
+the same theft response as ADR-0003. The session lives 8 hours against the
+consumer app's 30 days, which is the "shorter timeout for CMS" the rule asks for.
+
+With `sid` equal to the admin id there was nothing to log out of: no logout
+endpoint existed, and revoking would have hit every device that account had.
+Each login is now its own row, so `POST /cms/auth/logout` ends one session and
+denylists its id — an access token in flight stops working immediately, the same
+guarantee #129 gave consumer sessions.
+
+Refresh re-reads the admin row rather than trusting the token, so a suspended or
+demoted account cannot refresh onward.
+
 ## Open risks (tracked)
 
 1. 🔴 SSO for CMS — blocked on IdP (#62 note).
