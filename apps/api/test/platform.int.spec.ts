@@ -1,6 +1,7 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { GenericContainer, type StartedTestContainer } from 'testcontainers';
 import IORedis from 'ioredis';
+import argon2 from 'argon2';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { eq } from 'drizzle-orm';
@@ -257,5 +258,74 @@ describe('CORS allowlist (BE-IMP-003)', () => {
     // `*` plus credentials would hand the session to any page the user opens.
     const res = await preflight('http://localhost:5174');
     expect(res.headers['access-control-allow-origin']).not.toBe('*');
+  });
+});
+
+describe('per-actor rate-limit baseline (BE-IMP-005)', () => {
+  const sharedIp = '10.90.0.1';
+
+  async function admin(email: string) {
+    const passwordHash = await argon2.hash('admin-password-123', { type: argon2.argon2id });
+    await db
+      .insert(schema.adminUsers)
+      .values({ email, passwordHash, displayName: 'A', role: 'editor' });
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/login',
+      remoteAddress: '10.90.9.9',
+      payload: { email, password: 'admin-password-123' },
+    });
+    return res.json().accessToken as string;
+  }
+
+  it("two admins behind one IP do not eat each other's budget", async () => {
+    const a = await admin('rl-a@gogo.local');
+    const b = await admin('rl-b@gogo.local');
+
+    // Same source IP for both — the case that used to share one bucket.
+    const call = (token: string) =>
+      api().inject({
+        method: 'GET',
+        url: '/v1/cms/places?limit=1',
+        remoteAddress: sharedIp,
+        headers: { authorization: `Bearer ${token}` },
+      });
+
+    for (let i = 0; i < 40; i++) expect((await call(a)).statusCode).toBe(200);
+    // B is untouched by A's traffic.
+    expect((await call(b)).statusCode).toBe(200);
+  });
+
+  it('a higher admin baseline does not loosen a provider-quota limit', async () => {
+    const token = await admin('rl-quota@gogo.local');
+    // places.resolve_link is 10/min by IP regardless of who is calling: the
+    // point of the endpoint limit is cost, not identity.
+    const call = () =>
+      api().inject({
+        method: 'POST',
+        url: '/v1/places/resolve-google-maps-link',
+        remoteAddress: '10.91.0.1',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { url: 'https://www.google.com/maps?place_id=fake-rl' },
+      });
+
+    let limited = false;
+    for (let i = 0; i < 14 && !limited; i++) {
+      if ((await call()).statusCode === 429) limited = true;
+    }
+    expect(limited).toBe(true);
+  });
+
+  it('anonymous traffic is still bounded by IP', async () => {
+    let limited = false;
+    for (let i = 0; i < 200 && !limited; i++) {
+      const res = await api().inject({
+        method: 'GET',
+        url: '/v1/taxonomies',
+        remoteAddress: '10.92.0.1',
+      });
+      if (res.statusCode === 429) limited = true;
+    }
+    expect(limited).toBe(true);
   });
 });

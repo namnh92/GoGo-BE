@@ -25,6 +25,21 @@ function normalize(route: string): string {
   );
 }
 
+/**
+ * operationId must be unique across the document — client generators name
+ * methods after it, so a duplicate silently collides one operation with
+ * another. Neither `api:check` (type drift) nor oasdiff (breaking changes)
+ * catches this, and the Mobile team generates its client from this file.
+ */
+function duplicateOperationIds(text: string): string[] {
+  const seen = new Map<string, number>();
+  for (const match of text.matchAll(/^\s+operationId:\s*(\S+)\s*$/gm)) {
+    const id = match[1]!;
+    seen.set(id, (seen.get(id) ?? 0) + 1);
+  }
+  return [...seen.entries()].filter(([, n]) => n > 1).map(([id, n]) => `${id} (×${n})`);
+}
+
 /** Paths in the spec: two-space-indented keys under `paths:` starting with `/`. */
 function specPaths(text: string): Set<string> {
   const out = new Set<string>();
@@ -96,7 +111,9 @@ function expand(route: string): string[] {
 const IGNORED = new Set(['/*', '']);
 
 async function main(): Promise<void> {
-  const spec = specPaths(readFileSync(path.resolve('openapi/gogo.v1.yaml'), 'utf8'));
+  const specText = readFileSync(path.resolve('openapi/gogo.v1.yaml'), 'utf8');
+  const spec = specPaths(specText);
+  const duplicates = duplicateOperationIds(specText);
   const served = new Set([...(await servedRoutes())].filter((r) => !IGNORED.has(r)));
 
   const missing = [...served].filter((r) => !expand(r).some((v) => spec.has(v))).sort();
@@ -110,11 +127,18 @@ async function main(): Promise<void> {
   console.log(`SPEC-ONLY, not served (${specOnly.length}):`);
   for (const r of specOnly) console.log(`  - ${r}`);
 
+  console.log(`DUPLICATE operationIds (${duplicates.length}):`);
+  for (const d of duplicates) console.log(`  - ${d}`);
+
   if (missing.length > 0 || specOnly.length > 0) {
     console.error('\nOpenAPI and the router disagree — update openapi/gogo.v1.yaml.');
     process.exit(1);
   }
-  console.log('\nOK: every served route is documented and every documented path is served.');
+  if (duplicates.length > 0) {
+    console.error('\noperationId must be unique — client generators name methods after it.');
+    process.exit(1);
+  }
+  console.log('\nOK: routes documented, paths served, operationIds unique.');
   process.exit(0);
 }
 

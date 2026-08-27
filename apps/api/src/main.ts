@@ -63,10 +63,13 @@ export async function createApp(): Promise<NestFastifyApplication> {
 
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cookie, config.COOKIE_SECRET ? { secret: config.COOKIE_SECRET } : {});
-  // Baseline global rate limit; per-action limits (login/OTP/join/invite/
-  // suggestion/report) are attached at the route level per security rules.
+  // Coarse flood net, keyed by IP, applied before authentication resolves —
+  // so it has to accommodate a whole office of admins behind one address
+  // (BE-IMP-005). The limits that actually matter are the per-action
+  // `@RateLimit` specs plus the per-actor baseline in RateLimitGuard, both of
+  // which run after the actor is known and are unchanged by this ceiling.
   await app.register(rateLimit, {
-    max: 300,
+    max: 1200,
     timeWindow: '1 minute',
     errorResponseBuilder: (req) => ({
       code: 'RATE_LIMITED',

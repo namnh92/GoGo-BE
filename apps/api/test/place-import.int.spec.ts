@@ -490,15 +490,30 @@ describe('PI-BE-017 — error report', () => {
 });
 
 describe('RBAC', () => {
-  it('a moderator cannot reach the import endpoints', async () => {
+  it('a moderator can read import history but cannot start an import', async () => {
+    // BE-IMP-008: reads are hierarchical (a moderator ranks with an editor, so
+    // it sees the queue), writes still need the exact role.
     const moderator = await createAdmin('import-mod@gogo.local', 'moderator');
-    const res = await api().inject({
+    const read = await api().inject({
       method: 'GET',
       url: '/v1/cms/place-imports',
       remoteAddress: ip(),
       headers: auth(moderator.token),
     });
-    expect(res.statusCode).toBe(403);
+    expect(read.statusCode).toBe(200);
+
+    const body = multipart(
+      { mode: 'dry_run' },
+      { name: 'mod.csv', content: csv(['M-1,Q,HCM,,,cafe,,,']) },
+    );
+    const write = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(moderator.token), ...body.headers },
+      payload: body.payload,
+    });
+    expect(write.json().code).toBe('ROLE_DENIED');
   });
 
   it('an authenticated non-admin user is refused', async () => {

@@ -60,6 +60,37 @@ Hostname allowlist, ≤5 redirects, 5s timeout, private/loopback IP blocked
 cell caps enforced, error-report CSV escaped against formula injection.
 Provider key stays server-side.
 
+### 8. Amendment 2026-08-27 — single provider, mandatory link, update precedence
+
+Three refinements decided while scoping the `update_existing` import mode:
+
+**One trusted provider for now.** Google Places is the only provider GoGo
+trusts. This is a policy choice, not a modelling one: provider links stay in
+`place_provider_sources (provider, external_id)`, so adding a second provider
+later is a new adapter and new rows, not a migration. (This is why the
+provider id is deliberately _not_ a unique column on `places`.)
+
+**Every place is anchored to a Google Maps link.** Including places an editor
+enters by hand: the link is what makes rating, review count, hours and
+business status verifiable. A place without a provider link is a data-quality
+defect, not a legitimate provenance — the CMS `source=manual` filter exists to
+find them, not to bless them.
+
+**On update, provider facts win.** Re-importing a row re-resolves it against
+Google and takes the fresh provider-owned fields (§3), because a place may have
+changed name, hours or owner since it was first ingested. Sheet/editor keeps
+ownership of the GoGo-owned fields.
+
+The consequence needs stating, because it is the case that motivated the rule:
+when a place changes _owner_, provider facts and GoGo editorial content stop
+describing the same business. Taking the new name while keeping the old
+highlight, curated price and category produces a record that lies. So the fresh
+data is always taken, but a material identity change — name similarity below
+threshold, or `business_status` turning `CLOSED_PERMANENTLY` — moves the place
+to `review` with a diff for an editor, rather than silently republishing it.
+Saved places, GoGo reviews and plan stops still point at that row; whether they
+survive the change is an editorial decision, not one the importer should make.
+
 ## Consequences
 
 - Predictable provider spend; a bulk job of 5.000 rows costs `core`(+`quality`

@@ -22,6 +22,31 @@ export const RequireRole = (...roles: AdminRole[]): CustomDecorator =>
 export type AdminActor = Actor & { role: AdminRole };
 
 /**
+ * BE-IMP-008 — read is hierarchical, write is not.
+ *
+ * The roles are peers, not a chain: `ops_admin` is not a superset of `editor`.
+ * That is the right shape for *writing* — an ops admin has no business editing
+ * catalog copy. It was the wrong shape for *reading*: an ops admin could
+ * publish an import (creating places) and then get a 403 opening the place list
+ * to see what they had just created, and the on-call operator could see neither
+ * the catalog nor the moderation queue.
+ *
+ * So a safe method (GET/HEAD/OPTIONS) passes when the caller's rank is at least
+ * the lowest rank the route asks for: peers can read each other's areas, a
+ * higher rank reads below it, and nothing reads above it — `ranking-configs`
+ * and the admin list stay closed to lower ranks. Every write keeps the exact
+ * role match it has today.
+ */
+const ROLE_RANK: Record<AdminRole, number> = {
+  editor: 1,
+  moderator: 1,
+  ops_admin: 2,
+  super_admin: 3,
+};
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
  * FR-CMS-001 — RBAC enforced server-side. Runs after the global AuthGuard;
  * the admin row (status + role) is re-read per request so a suspended or
  * demoted admin loses access immediately, whatever their token says.
@@ -40,7 +65,7 @@ export class AdminGuard implements CanActivate {
     ]);
     if (!roles) return true; // not a CMS route
 
-    const req = context.switchToHttp().getRequest<{ actor?: AdminActor }>();
+    const req = context.switchToHttp().getRequest<{ actor?: AdminActor; method?: string }>();
     const actor = req.actor;
     if (!actor || actor.type !== 'admin') {
       throw AppError.forbidden('ADMIN_ONLY', 'CMS access requires a staff account');
@@ -53,7 +78,12 @@ export class AdminGuard implements CanActivate {
     if (!admin || admin.status !== 'active') {
       throw AppError.forbidden('ADMIN_ONLY', 'Staff account is not active');
     }
-    if (admin.role !== 'super_admin' && !roles.includes(admin.role)) {
+    const allowed =
+      admin.role === 'super_admin' ||
+      roles.includes(admin.role) ||
+      (SAFE_METHODS.has((req.method ?? 'GET').toUpperCase()) &&
+        ROLE_RANK[admin.role] >= Math.min(...roles.map((r) => ROLE_RANK[r])));
+    if (!allowed) {
       throw AppError.forbidden('ROLE_DENIED', 'Your role cannot perform this action');
     }
     actor.role = admin.role;
