@@ -121,3 +121,30 @@ export const searchQueryDaily = pgTable(
     index('search_query_daily_day_idx').on(t.day, t.zeroResults),
   ],
 );
+
+/**
+ * SG-009 (#48) — audit for AI feedback parsing.
+ *
+ * Model version, outcome and reason codes on every run, per the AI guardrails.
+ * The member's words are deliberately not stored: they are the input, and
+ * keeping arbitrary user text where nothing reads it is not worth the risk.
+ */
+export const aiFeedbackRuns = pgTable(
+  'ai_feedback_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    planId: uuid('plan_id').notNull(),
+    roomId: uuid('room_id').notNull(),
+    /** Room-scoped member id, never a user id. */
+    memberId: uuid('member_id'),
+    modelVersion: text('model_version').notNull(),
+    outcome: text('outcome').notNull(),
+    reasonCodes: text('reason_codes').array().notNull().default([]),
+    inputLength: integer('input_length').notNull(),
+    candidateCount: integer('candidate_count').notNull(),
+    applied: jsonb('applied'),
+    latencyMs: integer('latency_ms').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('ai_feedback_runs_plan_idx').on(t.planId, t.createdAt)],
+);

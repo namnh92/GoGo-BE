@@ -1,7 +1,7 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -776,5 +776,94 @@ describe('client upload path (BE-BFF-016, #171)', () => {
     expect(tags.map((t) => t.key)).toContain('would_return');
     // Stored value is the stable key; the label is presentation, per locale.
     expect(tags.find((t) => t.key === 'would_return')!.labels['vi']).toBe('Muốn quay lại');
+  });
+});
+
+/**
+ * SG-009 (#48) — natural-language feedback. The AI flag is off in test, which
+ * is the point: the deterministic parser is the fallback, so it has to be
+ * genuinely useful rather than a stub.
+ */
+describe('plan feedback (SG-009, #48)', () => {
+  async function planFor(hostToken: string, roomId: string) {
+    await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    const cur = await get(hostToken, `/v1/rooms/${roomId}/suggestions/current`);
+    await put(hostToken, `/v1/rooms/${roomId}/votes/${cur.json().candidates[0].placeId}`, {
+      value: 'yes',
+    });
+    return (await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`)).json().planId as string;
+  }
+
+  it('turns "rẻ hơn" into a tightened budget and says what it applied', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    const planId = await planFor(hostToken, roomId);
+
+    const res = await post(hostToken, `/v1/plans/${planId}/regenerate`, {
+      feedbackText: 'Chỗ này đắt quá, tìm chỗ rẻ hơn đi',
+    });
+    expect(res.statusCode).toBe(201);
+    const feedback = res.json().feedback;
+    expect(feedback.understood).toBe(true);
+    // Integer minor units, strictly below what the room agreed.
+    expect(feedback.applied.budgetMaxAmount).toBeGreaterThan(0);
+    expect(feedback.ignoredReasons).not.toContain('SCHEMA_INVALID');
+  });
+
+  it('reports that nothing was understood rather than silently doing nothing', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    const planId = await planFor(hostToken, roomId);
+
+    const res = await post(hostToken, `/v1/plans/${planId}/regenerate`, {
+      feedbackText: 'asdkjh qwlkejh zzz',
+    });
+    expect(res.statusCode).toBe(201);
+    // A plan that came back unchanged with no explanation is indistinguishable
+    // from feedback that was never read.
+    expect(res.json().feedback.understood).toBe(false);
+    expect(res.json().feedback.ignoredReasons).toContain('NOTHING_UNDERSTOOD');
+  });
+
+  it('regenerating without feedback carries no feedback block at all', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    const planId = await planFor(hostToken, roomId);
+
+    const res = await post(hostToken, `/v1/plans/${planId}/regenerate`, {});
+    expect(res.statusCode).toBe(201);
+    expect(res.json().feedback).toBeUndefined();
+  });
+
+  it('records the run for audit without keeping the member’s words', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    const planId = await planFor(hostToken, roomId);
+    const words = 'Đắt quá, tìm chỗ gần hơn và yên tĩnh hơn';
+
+    await post(hostToken, `/v1/plans/${planId}/regenerate`, { feedbackText: words });
+
+    const runs = await db.execute(
+      sql`select * from ai_feedback_runs where plan_id = ${planId}::uuid`,
+    );
+    expect(runs.rows).toHaveLength(1);
+    const run = runs.rows[0] as Record<string, unknown>;
+    expect(run['model_version']).toBe('keyword-v1');
+    // Off by default: a real provider needs a DPA and a privacy review first.
+    expect(run['outcome']).toBe('disabled');
+    expect(run['input_length']).toBe(words.length);
+    expect(JSON.stringify(run)).not.toContain('yên tĩnh');
+  });
+
+  it('feedback never survives past a locked stop', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    const planId = await planFor(hostToken, roomId);
+    const plan = (await get(hostToken, `/v1/plans/${planId}`)).json();
+    const stopId = plan.stops[0].id;
+    const lockedPlaceId = plan.stops[0].placeId;
+    await patch(hostToken, `/v1/plans/${planId}/stops/${stopId}/lock`, { locked: true });
+
+    const res = await post(hostToken, `/v1/plans/${planId}/regenerate`, {
+      feedbackText: 'rẻ hơn, gần hơn, ngắn hơn',
+    });
+    expect(res.statusCode).toBe(201);
+    // Core rule #7 is not negotiable by feedback, however it is phrased.
+    expect(res.json().stops.map((s: { placeId: string }) => s.placeId)).toContain(lockedPlaceId);
   });
 });

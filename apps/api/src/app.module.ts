@@ -3,6 +3,7 @@ import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { IdempotencyInterceptor } from '@gogo/modules';
 import {
   CmsModule,
+  FeedbackModule,
   IdentityModule,
   IngestionModule,
   NotificationsModule,
@@ -39,6 +40,7 @@ class ConfigModule {}
     ProvidersModule,
     TravelModule,
     RealtimeBusModule,
+    FeedbackModule,
     IdentityModule,
     RoomsModule,
     RoomEventsModule,

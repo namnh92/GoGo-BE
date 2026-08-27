@@ -52,6 +52,37 @@ export interface PushPort {
   ): Promise<void>;
 }
 
+/**
+ * SG-009 (#48) — natural-language feedback into structured constraints.
+ *
+ * The only thing AI is allowed to do here. It does not choose places, it does
+ * not score, and its output is a *proposal* that the deterministic validator
+ * then accepts or throws away. `raw` is whatever the provider returned, before
+ * any of that: parsing it is the caller's job, precisely so a malformed
+ * response is a rejection rather than an exception in the middle of a plan.
+ */
+export type FeedbackParseInput = {
+  /** The member's own words. Never accompanied by who wrote them. */
+  text: string;
+  /** Verified candidate ids the proposal may reference, and nothing else. */
+  allowedPlaceIds: string[];
+  /** Structured facts only — no free text from the room, no identities. */
+  facts: {
+    budgetMode: 'total' | 'per_person';
+    budgetAmount: number;
+    currency: string;
+    categoryKeys: string[];
+  };
+};
+
+export interface FeedbackParserPort {
+  /** Provider name + version, recorded on every run for audit and A/B. */
+  readonly modelVersion: string;
+  parse(input: FeedbackParseInput, signal?: AbortSignal): Promise<unknown>;
+}
+
+export const FEEDBACK_PARSER = Symbol('FEEDBACK_PARSER');
+
 export interface StoragePort {
   presignUpload(
     key: string,

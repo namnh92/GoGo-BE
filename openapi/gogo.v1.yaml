@@ -1187,6 +1187,29 @@ paths:
       operationId: regeneratePlan
       tags: [plans]
       summary: 'Host-only: regenerate — locked stops are invariant (SG-008)'
+      description: >
+        `feedbackText` (SG-009) is the member's own words. It is turned into
+        structured constraints, validated against the verified candidate set
+        and the room's own constraints, and only then handed to the same
+        deterministic pipeline — which stays the thing making the decision.
+
+
+        Feedback may only **tighten**: it can narrow the budget, shrink the
+        radius, drop stops or avoid a category. It cannot raise the budget the
+        room agreed on, widen the host's radius, add stops, or reference a
+        place that was not already a verified candidate. Anything it proposes
+        outside those bounds is dropped with a reason code.
+
+
+        The response reports what was understood and what was ignored, because
+        feedback that silently changes nothing is indistinguishable from
+        feedback that was never read.
+
+
+        When AI parsing is disabled, times out, runs out of quota, or returns
+        output that fails validation, a deterministic parser produces the
+        result instead. There is no failure path that surfaces a model error
+        to the user.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -1198,12 +1221,21 @@ paths:
                 excludePlaceIds:
                   type: array
                   items: { type: string, format: uuid }
+                feedbackText:
+                  type: string
+                  maxLength: 500
+                  description: Free text, e.g. "rẻ hơn và gần hơn".
       responses:
         '201':
           description: New plan version — every locked stop is preserved verbatim
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Plan' }
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Plan'
+                  - type: object
+                    properties:
+                      feedback: { $ref: '#/components/schemas/FeedbackOutcome' }
         '409': { $ref: '#/components/responses/Conflict' }
 
   /plans/{id}/stops/{stopId}/lock:
@@ -4312,6 +4344,54 @@ components:
             terms: { type: integer }
             searches: { type: integer }
             zeroResults: { type: integer }
+
+    FeedbackOutcome:
+      type: object
+      description: >
+        Present only when `feedbackText` was sent. Says what the deterministic
+        pipeline was actually asked to do, so a user can tell "understood and
+        applied" from "not understood".
+      required: [understood, applied, ignoredReasons]
+      properties:
+        understood:
+          type: boolean
+          description: False means nothing in the text survived validation.
+        applied:
+          type: object
+          properties:
+            excludePlaceIds:
+              type: array
+              items: { type: string, format: uuid }
+            avoidCategoryKeys:
+              type: array
+              items: { type: string }
+            requireDietaryKeys:
+              type: array
+              items: { type: string }
+            budgetMaxAmount:
+              type: integer
+              description: Integer minor units, always below the room's own budget.
+            radiusM: { type: integer }
+            maxStops: { type: integer }
+        ignoredReasons:
+          type: array
+          description: >
+            Why parts were dropped. `PLACE_NOT_A_CANDIDATE` is the shape of a
+            hallucinated place id; `BUDGET_NOT_TIGHTENED` means the proposal
+            tried to loosen a constraint rather than narrow it.
+          items:
+            type: string
+            enum:
+              [
+                SCHEMA_INVALID,
+                PLACE_NOT_A_CANDIDATE,
+                CATEGORY_UNKNOWN,
+                DIETARY_UNKNOWN,
+                BUDGET_NOT_TIGHTENED,
+                RADIUS_NOT_REDUCED,
+                STOPS_NOT_REDUCED,
+                NOTHING_UNDERSTOOD,
+              ]
 
   responses:
     BadRequest:

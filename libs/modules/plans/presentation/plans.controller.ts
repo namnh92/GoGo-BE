@@ -29,6 +29,12 @@ type EditStopsDto = z.infer<typeof editStopsSchema>;
 
 const regenerateSchema = z.object({
   excludePlaceIds: z.array(z.string().uuid()).max(20).optional(),
+  /**
+   * SG-009 — the member's own words. Turned into structured constraints by
+   * the feedback parser, validated against the candidate allowlist and the
+   * room's constraints, and only then handed to the deterministic pipeline.
+   */
+  feedbackText: z.string().min(1).max(500).optional(),
 });
 
 const lockSchema = z.object({ locked: z.boolean() });
@@ -77,7 +83,8 @@ export class PlansController {
   regenerate(
     @CurrentActor() actor: Actor,
     @Param('id', UuidPipe) id: string,
-    @Body(new ZodValidationPipe(regenerateSchema)) body: { excludePlaceIds?: string[] },
+    @Body(new ZodValidationPipe(regenerateSchema))
+    body: { excludePlaceIds?: string[]; feedbackText?: string },
   ) {
     return this.plans.regenerate(actor, id, body);
   }

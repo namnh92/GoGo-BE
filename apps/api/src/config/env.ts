@@ -43,6 +43,15 @@ const envSchema = z
      * which is the one credential a leaked dump is not supposed to include.
      */
     CMS_MFA_ENCRYPTION_KEY: z.string().default(''),
+    /**
+     * SG-009 (#48) — the mandatory AI kill switch. Off by default: a real
+     * provider needs a prompt/data privacy review and a DPA first, and until
+     * then the deterministic keyword parser does the work.
+     */
+    FLAG_AI_FEEDBACK: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
     COOKIE_SECRET: z.string().default(''),
     COOKIE_SECURE: z
       .enum(['true', 'false'])
