@@ -132,14 +132,15 @@ Metric đang phát (spec §13):
 
 Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 
-| Alert            | Điều kiện                                                                 | Vì sao                                                                                            |
-| ---------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Ingestion quota  | có `place_import_jobs_total{status="paused_provider_quota"}`              | job đang đứng, cần người vào resume                                                               |
-| Provider lỗi     | tỉ lệ `places_provider_requests_total{status!~"2.."}` > 10% trong 15 phút | key sai, hết hạn, hoặc Google có sự cố                                                            |
-| Provider chậm    | p95 `place_resolve_duration_ms` > 3.000ms trong 15 phút                   | job 5.000 dòng sẽ không kịp                                                                       |
-| Chi phí          | `places_provider_cost_units` vượt ngân sách ngày                          | chặn hoá đơn bất ngờ — **đặt cả budget alert bên Google Cloud Billing**, đừng chỉ dựa vào cái này |
-| Chất lượng match | tỉ lệ bucket `0-0.5` > 30% trong một job                                  | dữ liệu nguồn kém hoặc mapping sai, không phải lỗi resolver                                       |
-| Submission tồn   | p95 `place_submission_publish_latency_hours` > 72h                        | hàng chờ moderation bị bỏ quên                                                                    |
+| Alert            | Điều kiện                                                                 | Vì sao                                                                                                                             |
+| ---------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Ingestion quota  | có `place_import_jobs_total{status="paused_provider_quota"}`              | job đang đứng, cần người vào resume                                                                                                |
+| Provider lỗi     | tỉ lệ `places_provider_requests_total{status!~"2.."}` > 10% trong 15 phút | key sai, hết hạn, hoặc Google có sự cố                                                                                             |
+| Provider chậm    | p95 `place_resolve_duration_ms` > 3.000ms trong 15 phút                   | job 5.000 dòng sẽ không kịp                                                                                                        |
+| Chi phí          | `places_provider_cost_units` vượt ngân sách ngày                          | chặn hoá đơn bất ngờ — **đặt cả budget alert bên Google Cloud Billing**, đừng chỉ dựa vào cái này                                  |
+| Chất lượng match | tỉ lệ bucket `0-0.5` > 30% trong một job                                  | dữ liệu nguồn kém hoặc mapping sai, không phải lỗi resolver                                                                        |
+| Submission tồn   | p95 `place_submission_publish_latency_hours` > 72h                        | hàng chờ moderation bị bỏ quên                                                                                                     |
+| Break-glass      | **bất kỳ** `cms_emergency_takedown_total`                                 | gỡ nội dung khẩn cấp phải **page ngay**, không để tới kỳ audit sau. Nhiều lần liên tiếp từ một actor = dấu hiệu tài khoản bị chiếm |
 
 Chưa có: endpoint scrape (`/metrics`) và dashboard. Cần chốt nơi nhận metric
 trước — cùng quyết định với #36.

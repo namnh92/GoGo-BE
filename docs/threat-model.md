@@ -219,6 +219,47 @@ justification does not extend to users or guests, whose actions are audited
 without an IP. The IP comes from `req.ip`, which honours `TRUST_PROXY` — a
 client cannot write its own address into the audit trail.
 
+### Emergency takedown / break-glass (SEC-001)
+
+Normal writes stay with the role that owns them — right until nobody who owns
+them is awake. Without an escape hatch the practical outcome is a shared
+`super_admin` account, and a shared account collapses the audit trail into one
+identity, losing exactly what RBAC exists to give.
+
+The hatch is narrow rather than absent, and asymmetric on purpose: **taking
+content down** (`POST /v1/cms/emergency/*`) is open to every active admin role
+because it is reversible and reduces harm; **putting it back up** — restore,
+publish, activate — keeps its usual privileged role. Wrongly suspending costs
+five minutes of an editor's time; wrongly publishing has already reached users.
+
+Scope is one transition per resource: place `published → suspended`, review
+`published → hidden`, check-in `→ hidden`. Deliberately excluded: delete and
+archive (side effects that do not undo cleanly), ranking configs and feature
+flags (ops-only config, and ops is usually on call anyway).
+
+**Abuse of the hatch itself** is the risk this opens. A compromised staff
+account could mass-suspend the catalog — a denial of service on the business,
+through the door we just built. Mitigations: one resource per call with no bulk
+form, a dedicated limit of 20/hour per admin **plus a 5/minute burst cap** (an
+hourly cap alone still allows twenty takedowns in two seconds, which is a
+script, not an incident), and every call raising an alert rather than only a
+counter.
+
+Each call is audited with actor, role, request id, staff IP, reason (required,
+≥10 chars) and before/after state, and emits
+`cms_emergency_takedown_total{resource_type, role}`.
+
+**Success condition**: a takedown counts only when the resource is gone from
+discovery, not when the row is written. Today search and suggestion read
+`status` live from Postgres, so that holds automatically; an integration test
+asserts the place disappears from search results, which is what turns red the
+day an external index lands (SE-009) and a takedown would otherwise silently
+stop working.
+
+Residual: alert **routing** still depends on a metric destination (#120). Until
+then the alert exists as a distinctly-named metric in the log stream, not as a
+page.
+
 ## Open risks (tracked)
 
 1. 🔴 SSO for CMS — blocked on IdP (#62 note).

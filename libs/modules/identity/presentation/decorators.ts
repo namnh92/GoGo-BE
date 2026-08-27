@@ -21,6 +21,13 @@ export type RateLimitSpec = {
   limit: number;
   windowSeconds: number;
   keyBy: 'ip' | 'actor' | 'ip+actor';
+  /**
+   * Optional second, shorter window on the same key (SEC-001). An hourly cap
+   * alone still lets a compromised account spend the whole budget in seconds,
+   * which is exactly the shape of a scripted abuse run and nothing like a
+   * human working through an incident.
+   */
+  burst?: { limit: number; windowSeconds: number };
 };
 
 export const RATE_LIMIT_KEY = 'gogo:rate_limit';

@@ -5,7 +5,9 @@ import { AdminAuthService } from '../application/admin-auth.service';
 import { CmsCatalogService } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsOpsService } from '../application/cms-ops.service';
+import { EmergencyTakedownService } from '../application/emergency-takedown.service';
 import { AdminGuard } from './admin.guard';
+import { EmergencyController } from './emergency.controller';
 import {
   CmsAuthController,
   CmsCatalogController,
@@ -22,12 +24,14 @@ import {
     CmsContentController,
     CmsModerationController,
     CmsOpsController,
+    EmergencyController,
   ],
   providers: [
     AdminAuthService,
     CmsCatalogService,
     CmsContentService,
     CmsOpsService,
+    EmergencyTakedownService,
     { provide: APP_GUARD, useClass: AdminGuard },
   ],
 })
