@@ -33,6 +33,30 @@ export type ResolveLinkResponse = {
     { googlePlaceId: string; name: string; address: string; confidence: number }[] | undefined;
 };
 
+function iso(value: Date | string | null | undefined): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+export function encodeSubmissionCursor(createdAt: Date | string, id: string): string {
+  const raw = createdAt instanceof Date ? createdAt.toISOString() : String(createdAt);
+  return Buffer.from(JSON.stringify([raw, id])).toString('base64url');
+}
+
+export function decodeSubmissionCursor(cursor: string): { createdAt: string; id: string } {
+  try {
+    const [createdAt, id] = JSON.parse(Buffer.from(cursor, 'base64url').toString()) as [
+      string,
+      string,
+    ];
+    if (typeof createdAt !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('bad');
+    return { createdAt, id };
+  } catch {
+    throw AppError.badRequest('INVALID_CURSOR', 'Cursor is not valid');
+  }
+}
+
 /**
  * PI-BE-018/019/020 — Mobile add-by-link. Resolve is preview-only; submitting
  * creates at most one pending proposal per provider place (FR-INGEST-010/012)
@@ -208,6 +232,93 @@ export class PlaceSubmissionService {
       submissionCount: row.submissionCount,
       createdAt: row.createdAt.toISOString(),
       decidedAt: row.decidedAt?.toISOString(),
+    };
+  }
+
+  /**
+   * PI-CMS-007 — the pending queue.
+   *
+   * The decide endpoint existed without anything to list what to decide on, so
+   * the CMS had no way to find a submission in the first place. Keyset paging
+   * on `(created_at, id)` for the same reason as the place list: proposals
+   * arrive while a moderator works through them.
+   */
+  async listSubmissions(options: {
+    status?: 'pending' | 'approved' | 'rejected' | 'merged' | undefined;
+    limit: number;
+    cursor?: string | undefined;
+  }) {
+    const where = [options.status ? sql`s.status = ${options.status}` : sql`true`];
+    if (options.cursor) {
+      const { createdAt, id } = decodeSubmissionCursor(options.cursor);
+      where.push(sql`(s.created_at, s.id) < (${createdAt}::timestamptz, ${id}::uuid)`);
+    }
+
+    const rows = await this.db.execute(sql`
+      select s.id, s.google_place_id, s.status, s.submission_count, s.category_key,
+             s.price_min, s.price_max, s.price_unit, s.vibe_keys, s.note,
+             s.room_id, s.result_place_id, s.created_at, s.decided_at, s.decision_reason,
+             (s.submitted_by_user_id is not null) as from_user,
+             p.name as result_place_name
+      from place_submissions s
+      left join places p on p.id = s.result_place_id
+      where ${sql.join(where, sql` and `)}
+      order by s.created_at desc, s.id desc
+      limit ${options.limit + 1}
+    `);
+
+    type Row = {
+      id: string;
+      google_place_id: string;
+      status: string;
+      submission_count: number;
+      category_key: string | null;
+      price_min: number | null;
+      price_max: number | null;
+      price_unit: string | null;
+      vibe_keys: string[];
+      note: string | null;
+      room_id: string | null;
+      result_place_id: string | null;
+      result_place_name: string | null;
+      created_at: Date | string;
+      decided_at: Date | string | null;
+      decision_reason: string | null;
+      from_user: boolean;
+    };
+    const page = rows.rows as Row[];
+    const items = page.slice(0, options.limit);
+    const last = items[items.length - 1];
+
+    return {
+      items: items.map((r) => ({
+        id: r.id,
+        googlePlaceId: r.google_place_id,
+        status: r.status,
+        // Many people proposing the same place is one row, not many — the
+        // count is the signal a moderator prioritises by.
+        submissionCount: r.submission_count,
+        categoryKey: r.category_key ?? undefined,
+        estimatedPrice:
+          r.price_min !== null && r.price_max !== null
+            ? { min: r.price_min, max: r.price_max, unit: r.price_unit ?? 'per_person' }
+            : undefined,
+        vibeKeys: r.vibe_keys,
+        note: r.note ?? undefined,
+        roomId: r.room_id ?? undefined,
+        resultPlaceId: r.result_place_id ?? undefined,
+        resultPlaceName: r.result_place_name ?? undefined,
+        // Who submitted is deliberately reduced to a boolean: moderating does
+        // not need the person's identity, only whether it came from an account.
+        fromRegisteredUser: r.from_user,
+        createdAt: iso(r.created_at)!,
+        decidedAt: iso(r.decided_at),
+        decisionReason: r.decision_reason ?? undefined,
+      })),
+      nextCursor:
+        page.length > options.limit && last
+          ? encodeSubmissionCursor(last.created_at, last.id)
+          : null,
     };
   }
 

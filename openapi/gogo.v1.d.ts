@@ -844,6 +844,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/place-submissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Moderator/editor: queue of places proposed from Mobile (PI-CMS-007)
+         * @description Keyset paging on `(created_at, id)`, newest first — proposals keep arriving while a moderator works through the queue, so an offset would repeat or skip them. Repeat proposals of the same provider place are one row with `submissionCount`, which is what a moderator prioritises by. The submitter is reduced to `fromRegisteredUser`: moderating does not need the person's identity.
+         */
+        get: operations["cmsListPlaceSubmissions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/place-submissions/{id}/decide": {
         parameters: {
             query?: never;
@@ -2316,6 +2336,35 @@ export interface components {
             refreshExpiresIn?: number;
             role?: components["schemas"]["AdminRole"];
             displayName?: string;
+        };
+        PlaceSubmissionSummary: {
+            /** Format: uuid */
+            id: string;
+            googlePlaceId: string;
+            /** @enum {string} */
+            status: "pending" | "approved" | "rejected" | "merged";
+            /** @description How many people proposed this same provider place. */
+            submissionCount: number;
+            categoryKey?: string;
+            estimatedPrice?: {
+                min?: number;
+                max?: number;
+                unit?: string;
+            };
+            vibeKeys?: string[];
+            note?: string;
+            /** Format: uuid */
+            roomId?: string;
+            /** Format: uuid */
+            resultPlaceId?: string;
+            resultPlaceName?: string;
+            /** @description Whether it came from an account rather than a guest session. */
+            fromRegisteredUser?: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            decidedAt?: string;
+            decisionReason?: string;
         };
     };
     responses: {
@@ -3976,6 +4025,35 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    cmsListPlaceSubmissions: {
+        parameters: {
+            query?: {
+                status?: "pending" | "approved" | "rejected" | "merged";
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of submissions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["PlaceSubmissionSummary"][];
+                        nextCursor: string | null;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
         };
     };
