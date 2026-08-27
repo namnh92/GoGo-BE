@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
+import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
 import type { Actor } from '../../identity/domain/actor';
 import { RoomPolicy } from '../../rooms/presentation/room-policy';
 import { coupleMatches, resolveWinner, tallyVotes, type VoteRecord } from '../domain/decision';
@@ -28,7 +29,17 @@ export class SuggestionService {
     private readonly policy: RoomPolicy,
     private readonly planBuilder: PlanBuilderService,
     @Inject(DB) private readonly db: Db,
+    @Inject(ROOM_EVENT_BUS) private readonly events: RoomEventBus,
   ) {}
+
+  /** Transport-only: a realtime failure never fails the write it describes. */
+  private async publish(input: Parameters<RoomEventBus['publish']>[0]): Promise<void> {
+    try {
+      await this.events.publish(input);
+    } catch {
+      /* clients fall back to polling */
+    }
+  }
 
   /** Versioned weights from ranking_configs with SG-001 bounds enforcement. */
   private async activeWeights(): Promise<{ weights: ScoringWeights; version: string }> {
@@ -56,6 +67,10 @@ export class SuggestionService {
     if (!['matching', 'collecting'].includes(room.status)) {
       throw AppError.conflict('ROOM_NOT_MATCHING', 'Room is not ready for suggestions');
     }
+
+    // Announced before the work, so a second member sees a spinner rather
+    // than an unexplained pause while the pipeline runs.
+    await this.publish({ roomId, type: 'matching.started', payload: {} });
 
     const snapshot = await this.repo.buildSnapshot(roomId);
     const { weights, version } = await this.activeWeights();
@@ -95,9 +110,32 @@ export class SuggestionService {
         },
       );
       await this.repo.finishRun(run.id, 'succeeded');
+      await this.publish({
+        roomId,
+        type: 'suggestions.generated',
+        payload: {
+          runId: run.id,
+          candidateCount: ranked.length,
+          engineVersion: ENGINE_VERSION,
+          weightsVersion: version,
+          // The version a client compares against to tell a stale event from
+          // one describing the constraints it currently holds.
+          constraintVersion: snapshot.constraintVersion,
+        },
+      });
+      await this.publish({
+        roomId,
+        type: 'matching.completed',
+        payload: { runId: run.id, candidateCount: ranked.length },
+      });
       return this.current(actor, roomId);
     } catch (err) {
       await this.repo.finishRun(run.id, 'failed', 'PIPELINE_ERROR');
+      await this.publish({
+        roomId,
+        type: 'matching.failed',
+        payload: { runId: run.id, reason: 'PIPELINE_ERROR' },
+      });
       throw err;
     }
   }
@@ -172,6 +210,16 @@ export class SuggestionService {
       },
     });
 
+    // Facts only: who voted and on what. Never another member's full ballot —
+    // FR-PREF-005 keeps selections private, and a realtime channel is not an
+    // exception to that.
+    await this.publish({
+      roomId,
+      type: 'vote.changed',
+      actorId: member.id,
+      payload: { memberId: member.id, placeId, runId: run.id },
+    });
+
     if (room.decisionMode === 'match') {
       const votes = await this.repo.listVotes(roomId);
       const members = new Set(votes.map((v) => v.memberId));
@@ -191,6 +239,13 @@ export class SuggestionService {
           (a, b) => (rankByPlace.get(a) ?? 1e9) - (rankByPlace.get(b) ?? 1e9),
         )[0]!;
         const plan = await this.planBuilder.buildAroundWinner(roomId, best, run.id);
+        await this.publish({
+          roomId,
+          type: 'plan.updated',
+          resourceType: 'plan',
+          resourceId: plan.plan.id,
+          payload: { planId: plan.plan.id, version: plan.plan.version, reason: 'matched' },
+        });
         return { voted: true, matched: true, planId: plan.plan.id };
       }
     }

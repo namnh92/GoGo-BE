@@ -28,6 +28,15 @@ const envSchema = z
      * 8 hours covers a shift; the consumer refresh lives 30 days.
      */
     AUTH_ADMIN_REFRESH_TTL_SECONDS: z.coerce.number().int().positive().default(28_800),
+    /**
+     * #154 — the SSE transport, per environment. Default on: a client that
+     * cannot open the stream falls back to polling, so the failure mode of
+     * having it on is worse latency, not a broken app.
+     */
+    REALTIME_SSE_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
     COOKIE_SECRET: z.string().default(''),
     COOKIE_SECURE: z
       .enum(['true', 'false'])

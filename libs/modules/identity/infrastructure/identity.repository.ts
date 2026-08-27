@@ -193,8 +193,8 @@ export class IdentityRepository {
     roomId: string;
     guestSessionId: string;
     displayName: string;
-  }): Promise<void> {
-    await this.db
+  }): Promise<{ memberId: string | null }> {
+    const [row] = await this.db
       .insert(schema.roomMembers)
       .values({
         roomId: input.roomId,
@@ -202,7 +202,10 @@ export class IdentityRepository {
         displayName: input.displayName,
         role: 'member',
       })
-      .onConflictDoNothing();
+      .onConflictDoNothing()
+      .returning({ id: schema.roomMembers.id });
+    // Null when the guest already had a membership row — a re-join, not a join.
+    return { memberId: row?.id ?? null };
   }
 
   /**

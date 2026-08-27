@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { AppError } from '../../shared/app-error';
+import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
 import type { Actor } from '../../identity/domain/actor';
 import { TokenService } from '../../identity/application/token.service';
 import { IdentityRepository } from '../../identity/infrastructure/identity.repository';
@@ -63,6 +64,7 @@ export class RoomsService {
     private readonly tokens: TokenService,
     private readonly identity: IdentityRepository,
     private readonly revocations: SessionRevocationService,
+    @Inject(ROOM_EVENT_BUS) private readonly events: RoomEventBus,
   ) {}
 
   async createRoom(
@@ -253,7 +255,28 @@ export class RoomsService {
       resourceId: roomId,
       payload: { from: room.status, to },
     });
+    // Realtime is a courtesy on top of a committed write: publishing after the
+    // repository call means a dropped event costs a client one refetch, never
+    // a room that moved for some members and not others.
+    await this.publish({
+      roomId,
+      type: 'room.status_changed',
+      payload: { from: room.status, to },
+    });
     return this.getRoomSummary(actor, roomId);
+  }
+
+  /**
+   * A realtime publish must never fail the write it describes. The write is
+   * already committed by the time this runs, so a bus that is down degrades
+   * clients to polling instead of turning a successful action into a 500.
+   */
+  private async publish(input: Parameters<RoomEventBus['publish']>[0]): Promise<void> {
+    try {
+      await this.events.publish(input);
+    } catch {
+      /* transport-only failure; the durable record is the room's own tables */
+    }
   }
 
   async listMembers(actor: Actor, roomId: string) {
@@ -292,6 +315,12 @@ export class RoomsService {
     // The guest's access token is self-contained — deny it now rather than
     // letting a removed member keep reading the room until it expires.
     if (guestSessionId) await this.revocations.revokeSession(guestSessionId);
+    await this.publish({
+      roomId,
+      type: 'participant.left',
+      actorId: me.id,
+      payload: { memberId, removedByMemberId: me.id },
+    });
     return { removed: true };
   }
 
@@ -372,6 +401,14 @@ export class RoomsService {
         actorId: user?.analyticsId,
         payload: { memberType: 'user' },
       },
+    });
+    await this.publish({
+      roomId: room.id,
+      type: 'participant.joined',
+      // The room-scoped member id, not the user id: it identifies the
+      // participant inside this room without carrying an account across rooms.
+      actorId: member.id,
+      payload: { memberId: member.id, role: member.role, memberType: 'user' },
     });
     return { roomId: room.id, memberId: member.id, role: member.role };
   }

@@ -1,7 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { AppError } from '../../shared/app-error';
 import type { Actor } from '../../identity/domain/actor';
 import { RoomPolicy } from '../../rooms/presentation/room-policy';
+import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
 import { buildItinerary, type LockedAnchor } from '../../suggestions/domain/optimizer';
 import { SuggestionsRepository } from '../../suggestions/infrastructure/suggestions.repository';
 import { PlansRepository, type PlanRow, type StopRow } from '../infrastructure/plans.repository';
@@ -15,7 +16,32 @@ export class PlansService {
     private readonly suggestions: SuggestionsRepository,
     private readonly builder: PlanBuilderService,
     private readonly policy: RoomPolicy,
+    @Inject(ROOM_EVENT_BUS) private readonly events: RoomEventBus,
   ) {}
+
+  /**
+   * A plan change reaches the other members. The version travels with it so a
+   * client can tell an event about the plan it holds from one about a newer
+   * one, instead of guessing from arrival order.
+   */
+  private async publishPlan(
+    roomId: string,
+    planId: string,
+    version: number,
+    reason: string,
+  ): Promise<void> {
+    try {
+      await this.events.publish({
+        roomId,
+        type: 'plan.updated',
+        resourceType: 'plan',
+        resourceId: planId,
+        payload: { planId, version, reason },
+      });
+    } catch {
+      /* transport-only; clients fall back to polling */
+    }
+  }
 
   /**
    * BE-IMP-009 — a place can be taken down after a plan is saved. The plan
@@ -176,6 +202,7 @@ export class PlansService {
         },
       ],
     });
+    await this.publishPlan(plan.roomId, result.plan.id, result.plan.version, 'edit');
     return await this.toDto(result.plan, result.stops);
   }
 
@@ -190,6 +217,7 @@ export class PlansService {
       throw AppError.conflict('ROOM_ACTIVE', 'Plan is locked once the date starts');
     }
     const result = await this.builder.regenerate(planId, feedback);
+    await this.publishPlan(plan.roomId, result.plan.id, result.plan.version, 'regenerate');
     return await this.toDto(result.plan, result.stops);
   }
 
@@ -201,6 +229,12 @@ export class PlansService {
       throw AppError.notFound('STOP_NOT_FOUND', 'Stop not found');
     }
     await this.repo.setStopLock(stopId, locked, member.id);
+    await this.publishPlan(
+      plan.roomId,
+      planId,
+      plan.version,
+      locked ? 'stop_locked' : 'stop_unlocked',
+    );
     return this.getPlan(actor, planId);
   }
 
@@ -221,6 +255,7 @@ export class PlansService {
       resourceId: planId,
       payload: { stopId, memberId: member.id },
     });
+    await this.publishPlan(plan.roomId, planId, plan.version, 'stop_completed');
     return { completed: true };
   }
 

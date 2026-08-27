@@ -118,3 +118,12 @@ export {
   type TravelTarget,
 } from '../travel/application/travel-time.service';
 export { TravelModule } from '../travel/presentation/travel.module';
+
+export { RealtimeBusModule } from '../realtime/presentation/realtime.module';
+export { RoomEventsModule } from '../realtime/presentation/room-events.module';
+export { ROOM_EVENT_BUS, type RoomEventBus } from '../realtime/application/room-event-bus';
+export {
+  ROOM_EVENT_TYPES,
+  type RoomEvent,
+  type RoomEventType,
+} from '../realtime/domain/room-event';

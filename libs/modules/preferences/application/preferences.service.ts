@@ -6,6 +6,7 @@ import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
 import { RoomPolicy } from '../../rooms/presentation/room-policy';
+import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
 
 /**
  * BE-BFF-005 — private per-member preferences with autosave + optimistic
@@ -17,7 +18,17 @@ export class PreferencesService {
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly policy: RoomPolicy,
+    @Inject(ROOM_EVENT_BUS) private readonly events: RoomEventBus,
   ) {}
+
+  /** Transport-only: a realtime failure never fails the write it describes. */
+  private async publish(input: Parameters<RoomEventBus['publish']>[0]): Promise<void> {
+    try {
+      await this.events.publish(input);
+    } catch {
+      /* clients fall back to polling */
+    }
+  }
 
   /** Validates that every selected key exists as an active taxonomy of its kind. */
   private async assertValidSelections(selections: Record<string, string[]>): Promise<void> {
@@ -77,7 +88,7 @@ export class PreferencesService {
     }
     await this.assertValidSelections(input.selections);
 
-    return this.db.transaction(async (tx) => {
+    const saved = await this.db.transaction(async (tx) => {
       const [existing] = await tx
         .select()
         .from(schema.preferenceSelections)
@@ -118,6 +129,16 @@ export class PreferencesService {
       await this.markInProgress(tx, member.id);
       return { version: updated!.version, isDraft: true };
     });
+
+    // Progress only — the fact that this member is working, not what they
+    // picked. That distinction is the whole reason preferences are private.
+    await this.publish({
+      roomId,
+      type: 'participant.selection_changed',
+      actorId: member.id,
+      payload: { memberId: member.id, selectionStatus: 'in_progress' },
+    });
+    return saved;
   }
 
   /** Marks the member done; when everyone is done the room moves to matching. */
@@ -196,6 +217,23 @@ export class PreferencesService {
       .where(eq(schema.rooms.id, roomId))
       .limit(1);
     const roomStatus = after?.status ?? 'draft';
+
+    // Progress, never content. Other members learn that this one is done;
+    // what they chose stays private (FR-PREF-005).
+    await this.publish({
+      roomId,
+      type: 'participant.selection_changed',
+      actorId: member.id,
+      payload: { memberId: member.id, selectionStatus: 'completed' },
+    });
+    if (allCompleted && roomStatus === 'matching' && room.status !== 'matching') {
+      await this.publish({
+        roomId,
+        type: 'room.status_changed',
+        payload: { from: room.status, to: 'matching' },
+      });
+    }
+
     return {
       completed: true,
       allMembersCompleted: allCompleted,
