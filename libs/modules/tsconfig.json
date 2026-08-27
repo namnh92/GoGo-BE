@@ -15,6 +15,9 @@
     "reviews",
     "notifications",
     "cms",
-    "ingestion"
+    "ingestion",
+    "travel",
+    "realtime",
+    "shared"
   ]
 }
