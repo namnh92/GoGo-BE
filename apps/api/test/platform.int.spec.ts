@@ -45,6 +45,8 @@ beforeAll(async () => {
   process.env.REDIS_URL = 'redis://localhost:6380';
   process.env.NODE_ENV = 'test';
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
+  // BE-IMP-003: browser clients (CMS, Web) are an explicit allowlist.
+  process.env.CORS_ORIGINS = 'http://localhost:5174,https://cms.gogo.vn';
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 2 });
   db = drizzle(pool, { schema });
@@ -221,5 +223,39 @@ describe('Redis rate-limit store (multi-instance)', () => {
     expect(await store.hit('k', 60)).toBe(1);
     expect(await store.hit('k', 60)).toBe(2); // memory fallback keeps counting
     dead.disconnect();
+  });
+});
+
+describe('CORS allowlist (BE-IMP-003)', () => {
+  const preflight = (origin: string) =>
+    api().inject({
+      method: 'OPTIONS',
+      url: '/v1/cms/places',
+      headers: {
+        origin,
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'authorization,x-gogo-csrf',
+      },
+    });
+
+  it('allows a listed origin and the headers the CMS actually sends', async () => {
+    const res = await preflight('http://localhost:5174');
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5174');
+    // Cookie-based session: without this the browser drops the response.
+    expect(res.headers['access-control-allow-credentials']).toBe('true');
+    const allowed = String(res.headers['access-control-allow-headers'] ?? '').toLowerCase();
+    expect(allowed).toContain('x-gogo-csrf');
+    expect(allowed).toContain('idempotency-key');
+  });
+
+  it('refuses an origin that is not on the list', async () => {
+    const res = await preflight('https://evil.example.com');
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('never answers with a wildcard origin', async () => {
+    // `*` plus credentials would hand the session to any page the user opens.
+    const res = await preflight('http://localhost:5174');
+    expect(res.headers['access-control-allow-origin']).not.toBe('*');
   });
 });

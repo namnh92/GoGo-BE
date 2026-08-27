@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, ilike, sql } from 'drizzle-orm';
+import { eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
+import { normalizeVietnamese } from '../../search/domain/normalize';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 
@@ -30,6 +31,107 @@ export type PlaceEditInput = {
   taxonomyIds?: string[] | undefined;
 };
 
+export const PLACE_SORTS = ['updated_at', 'created_at', 'name', 'confidence'] as const;
+export type PlaceSort = (typeof PLACE_SORTS)[number];
+
+export const PLACE_SOURCES = ['google', 'community', 'manual'] as const;
+export type PlaceSource = (typeof PLACE_SOURCES)[number];
+
+/**
+ * Keyset paging needs a NOT NULL sort column — a null would break the tuple
+ * comparison and silently drop rows. `nullable` is asserted, not assumed.
+ * `name` sorts on the normalized column so ordering does not depend on the
+ * database collation.
+ */
+const SORTABLE: Record<PlaceSort, { column: SQL; nullable: boolean; cast: SQL }> = {
+  // `cast` matters: the cursor travels as text, and comparing a timestamptz
+  // column against untyped text makes Postgres pick the wrong operator.
+  updated_at: { column: sql`p.updated_at`, nullable: false, cast: sql`::timestamptz` },
+  created_at: { column: sql`p.created_at`, nullable: false, cast: sql`::timestamptz` },
+  name: { column: sql`p.name_normalized`, nullable: false, cast: sql`::text` },
+  confidence: { column: sql`p.confidence`, nullable: false, cast: sql`::numeric` },
+};
+
+export type PlaceListQuery = {
+  status?: PlaceStatus | undefined;
+  q?: string | undefined;
+  areaKey?: string | undefined;
+  category?: string | undefined;
+  source?: PlaceSource | undefined;
+  staleBefore?: Date | undefined;
+  sort: PlaceSort;
+  direction: 'asc' | 'desc';
+  limit: number;
+  cursor?: string | undefined;
+};
+
+export type PlaceListItem = {
+  id: string;
+  name: string;
+  status: string;
+  areaKey?: string | undefined;
+  rating?: number | undefined;
+  confidence: number;
+  freshnessCheckedAt?: string | undefined;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PlaceListPage = { items: PlaceListItem[]; nextCursor: string | null };
+
+type PlaceListRow = {
+  id: string;
+  name: string;
+  status: string;
+  area_key: string | null;
+  rating: string | null;
+  confidence: string;
+  // `db.execute` returns driver rows: timestamps may arrive as Date or as the
+  // raw string, depending on the parser in play. Normalize instead of assuming.
+  freshness_checked_at: Date | string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+  sort_value: string | number | Date;
+};
+
+function toIso(value: Date | string | null | undefined): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+/**
+ * "Where did this place come from" — derived from the links that exist, not
+ * from `created_by`, so a place keeps its provenance when staff change.
+ */
+function sourcePredicate(source: PlaceSource): SQL {
+  const linkedToProvider = sql`(
+    exists (select 1 from place_provider_sources ps where ps.place_id = p.id)
+    or exists (select 1 from place_sources s where s.place_id = p.id and s.provider = 'google')
+  )`;
+  const fromCommunity = sql`exists (
+    select 1 from place_submissions sub where sub.result_place_id = p.id
+  )`;
+  if (source === 'community') return fromCommunity;
+  if (source === 'google') return sql`${linkedToProvider} and not ${fromCommunity}`;
+  return sql`not ${linkedToProvider} and not ${fromCommunity}`;
+}
+
+export function encodePlaceCursor(value: string | number | Date, id: string): string {
+  const raw = value instanceof Date ? value.toISOString() : String(value);
+  return Buffer.from(JSON.stringify([raw, id])).toString('base64url');
+}
+
+export function decodePlaceCursor(cursor: string): { value: string; id: string } {
+  try {
+    const [value, id] = JSON.parse(Buffer.from(cursor, 'base64url').toString()) as [string, string];
+    if (typeof value !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('bad');
+    return { value, id };
+  } catch {
+    throw AppError.badRequest('INVALID_CURSOR', 'Cursor is not valid');
+  }
+}
+
 /** CMS-002/003/004 — canonical place editing, sources/hours/prices, dedup. */
 @Injectable()
 export class CmsCatalogService {
@@ -46,27 +148,94 @@ export class CmsCatalogService {
     });
   }
 
-  async listPlaces(filter: { status?: string | undefined; q?: string | undefined; limit: number }) {
-    const conditions = [
-      ...(filter.status ? [eq(schema.places.status, filter.status as PlaceStatus)] : []),
-      ...(filter.q ? [ilike(schema.places.name, `%${filter.q}%`)] : []),
-    ];
-    const rows = await this.db
-      .select()
-      .from(schema.places)
-      .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .orderBy(desc(schema.places.updatedAt))
-      .limit(filter.limit);
-    return rows.map((p) => ({
-      id: p.id,
-      name: p.name,
-      status: p.status,
-      areaKey: p.areaKey ?? undefined,
-      rating: p.rating !== null ? Number(p.rating) : undefined,
-      confidence: Number(p.confidence),
-      freshnessCheckedAt: p.freshnessCheckedAt?.toISOString(),
-      updatedAt: p.updatedAt.toISOString(),
-    }));
+  /**
+   * BE-IMP-001/002 — CMS place list.
+   *
+   * Keyset (cursor) pagination, not offset: the catalog is written to while
+   * editors browse it — a background import shifts rows between requests, and
+   * offset would then repeat or skip them. The cursor carries the sort value
+   * plus the id so the traversal stays stable no matter what is inserted.
+   *
+   * Search runs on `name_normalized`, the column the trigram index is built
+   * on. Querying `name` instead both missed the index and gave different
+   * results from the consumer-facing search on identical data.
+   */
+  async listPlaces(query: PlaceListQuery): Promise<PlaceListPage> {
+    const { column, nullable, cast } = SORTABLE[query.sort];
+    if (nullable) throw new Error(`sort column ${query.sort} must be NOT NULL for keyset paging`);
+    const descending = query.direction === 'desc';
+
+    const where: SQL[] = [];
+    if (query.status) where.push(sql`p.status = ${query.status}`);
+    if (query.areaKey) where.push(sql`p.area_key = ${query.areaKey}`);
+
+    if (query.q) {
+      // Already lower/unaccented on both sides, so LIKE is enough — and it is
+      // what `places_name_trgm_idx` (gin_trgm_ops) can actually serve.
+      const needle = `%${normalizeVietnamese(query.q)}%`;
+      where.push(sql`p.name_normalized like ${needle}`);
+    }
+
+    if (query.category) {
+      where.push(sql`exists (
+        select 1 from place_taxonomies pt
+        join taxonomies t on t.id = pt.taxonomy_id
+        where pt.place_id = p.id and t.kind = 'category' and t.key = ${query.category}
+      )`);
+    }
+
+    if (query.source) where.push(sourcePredicate(query.source));
+
+    if (query.staleBefore) {
+      // Never checked counts as stale — that is the case an editor most wants.
+      where.push(
+        sql`(p.freshness_checked_at is null or p.freshness_checked_at < ${query.staleBefore})`,
+      );
+    }
+
+    if (query.cursor) {
+      const { value, id } = decodePlaceCursor(query.cursor);
+      const bound = sql`${value}${cast}`;
+      where.push(
+        descending
+          ? sql`(${column}, p.id) < (${bound}, ${id}::uuid)`
+          : sql`(${column}, p.id) > (${bound}, ${id}::uuid)`,
+      );
+    }
+
+    const condition = where.length > 0 ? sql.join(where, sql` and `) : sql`true`;
+    const order = descending ? sql`${column} desc, p.id desc` : sql`${column} asc, p.id asc`;
+
+    // limit + 1 so `nextCursor` means "there is more", not "maybe more".
+    const rows = await this.db.execute(sql`
+      select p.id, p.name, p.status, p.area_key, p.rating, p.confidence,
+             p.freshness_checked_at, p.created_at, p.updated_at,
+             ${column} as sort_value
+      from places p
+      where ${condition}
+      order by ${order}
+      limit ${query.limit + 1}
+    `);
+
+    const page = rows.rows as PlaceListRow[];
+    const items = page.slice(0, query.limit);
+    const last = items[items.length - 1];
+
+    return {
+      items: items.map((p) => ({
+        id: p.id,
+        name: p.name,
+        status: p.status,
+        areaKey: p.area_key ?? undefined,
+        rating: p.rating !== null ? Number(p.rating) : undefined,
+        confidence: Number(p.confidence),
+        freshnessCheckedAt: toIso(p.freshness_checked_at),
+        createdAt: toIso(p.created_at)!,
+        updatedAt: toIso(p.updated_at)!,
+      })),
+      nextCursor:
+        page.length > query.limit && last ? encodePlaceCursor(last.sort_value, last.id) : null,
+    };
   }
 
   async updatePlace(adminId: string, placeId: string, input: PlaceEditInput) {

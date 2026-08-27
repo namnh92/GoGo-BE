@@ -1234,7 +1234,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Editor: catalog list with status/text filter */
+        /**
+         * Editor/ops: catalog list with server-side filter, sort and cursor paging
+         * @description Keyset pagination, not offset: the catalog is written to while editors browse it (background imports), so an offset would repeat or skip rows. Pass the returned `nextCursor` back to get the next page; `nextCursor` is null only when there is genuinely nothing more. Text search runs on the normalized name — accent-insensitive, same behaviour as the consumer-facing search.
+         */
         get: operations["cmsListPlaces"];
         put?: never;
         post?: never;
@@ -2163,6 +2166,24 @@ export interface components {
             matchConfidence?: number | null;
             errors?: components["schemas"]["IngestMessage"][];
             warnings?: components["schemas"]["IngestMessage"][];
+        };
+        CmsPlaceListItem: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            status: "draft" | "community_submitted" | "review" | "published" | "suspended" | "archived";
+            areaKey?: string;
+            /** Format: float */
+            rating?: number;
+            /** Format: float */
+            confidence: number;
+            /** Format: date-time */
+            freshnessCheckedAt?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
         };
     };
     responses: {
@@ -4520,9 +4541,21 @@ export interface operations {
     cmsListPlaces: {
         parameters: {
             query?: {
-                status?: string;
+                status?: "draft" | "community_submitted" | "review" | "published" | "suspended" | "archived";
+                /** @description Accent-insensitive name search */
                 q?: string;
+                areaKey?: string;
+                /** @description Taxonomy key of kind `category` */
+                category?: string;
+                /** @description Where the place came from, derived from provider/submission links. */
+                source?: "google" | "community" | "manual";
+                /** @description Freshness last verified more than N days ago, or never. */
+                staleDays?: number;
+                sort?: "updated_at" | "created_at" | "name" | "confidence";
+                direction?: "asc" | "desc";
                 limit?: number;
+                /** @description Opaque cursor from a previous page */
+                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -4530,12 +4563,27 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Places with freshness and confidence */
+            /** @description One page of places */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["CmsPlaceListItem"][];
+                        /** @description Null when this is the last page. */
+                        nextCursor: string | null;
+                    };
+                };
+            };
+            /** @description INVALID_CURSOR or a rejected filter value */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
             403: components["responses"]["Forbidden"];
         };

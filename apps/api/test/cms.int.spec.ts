@@ -2,7 +2,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -368,5 +368,135 @@ describe('ops KPIs (CMS-010)', () => {
     expect(body).toHaveProperty('suggestionRunsLast7d');
     expect(body).toHaveProperty('currentPlansOverBudget');
     expect(body).toHaveProperty('moderationBacklog');
+  });
+});
+
+describe('place list: filter, sort, cursor paging (BE-IMP-001/002)', () => {
+  let editorToken: string;
+
+  beforeAll(async () => {
+    editorToken = (await createAdmin('list-editor@gogo.local', 'editor')).token;
+    // 25 places, deterministic names/areas; updatedAt spaced so the keyset has
+    // a real ordering to walk rather than a pile of identical timestamps.
+    for (let i = 0; i < 25; i++) {
+      await db.insert(schema.places).values({
+        name: `Danh Sách Quán ${String(i).padStart(2, '0')}`,
+        nameNormalized: 'set-by-trigger',
+        status: i % 5 === 0 ? 'published' : 'draft',
+        geom: { x: 106.7 + i / 1000, y: 10.77 + i / 1000 },
+        areaKey: i % 2 === 0 ? 'hcm_q1' : 'hcm_q3',
+        confidence: '0.50',
+        updatedAt: new Date(Date.UTC(2026, 0, 1, 0, i)),
+      });
+    }
+  });
+
+  const list = async (query: string) => {
+    const res = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/places?${query}`,
+      remoteAddress: ip(),
+      headers: auth(editorToken),
+    });
+    expect(res.statusCode).toBe(200);
+    return res.json() as {
+      items: { id: string; name: string; status: string; areaKey?: string }[];
+      nextCursor: string | null;
+    };
+  };
+
+  it('walks the whole catalog by cursor without repeating or skipping a row', async () => {
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page: Awaited<ReturnType<typeof list>> = await list(
+        `limit=7${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+      );
+      seen.push(...page.items.map((i) => i.id));
+      cursor = page.nextCursor;
+      pages += 1;
+      expect(pages).toBeLessThan(30);
+    } while (cursor);
+
+    expect(new Set(seen).size).toBe(seen.length); // no repeats
+    const all = await db.select({ id: schema.places.id }).from(schema.places);
+    expect(seen.length).toBe(all.length); // no skips
+  });
+
+  it('stays stable while rows are being written underneath it', async () => {
+    // The whole reason for keyset over offset: an import runs while an editor
+    // pages through the table.
+    const first = await list('limit=5');
+    expect(first.nextCursor).not.toBeNull();
+
+    for (let i = 0; i < 5; i++) {
+      await db.insert(schema.places).values({
+        name: `Chen Ngang ${i}`,
+        nameNormalized: 'set-by-trigger',
+        status: 'draft',
+        geom: { x: 106.8, y: 10.8 },
+        updatedAt: new Date(Date.UTC(2026, 1, 1, 0, i)), // newer than page 1
+      });
+    }
+
+    const second = await list(`limit=5&cursor=${encodeURIComponent(first.nextCursor!)}`);
+    const overlap = second.items.filter((i) => first.items.some((f) => f.id === i.id));
+    expect(overlap).toEqual([]);
+  });
+
+  it('nextCursor is null on the last page, not a page that comes back empty', async () => {
+    const page = await list('limit=200');
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it('rejects a tampered cursor instead of returning arbitrary rows', async () => {
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/places?cursor=not-a-real-cursor',
+      remoteAddress: ip(),
+      headers: auth(editorToken),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('INVALID_CURSOR');
+  });
+
+  it('searches without diacritics and matches the consumer-side behaviour', async () => {
+    // "danh sach" must find "Danh Sách" — the old query hit `name` and missed.
+    const page = await list('q=danh sach quan 03');
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]!.name).toBe('Danh Sách Quán 03');
+  });
+
+  it('filters by status and area', async () => {
+    const published = await list('status=published&limit=200');
+    expect(published.items.every((i) => i.status === 'published')).toBe(true);
+    expect(published.items.length).toBeGreaterThan(0);
+
+    const q1 = await list('areaKey=hcm_q1&limit=200');
+    expect(q1.items.every((i) => i.areaKey === 'hcm_q1')).toBe(true);
+  });
+
+  it('sorts by name ascending using the normalized column', async () => {
+    const page = await list('sort=name&direction=asc&limit=200');
+    const names = page.items.map((i) => i.name);
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, 'vi')));
+  });
+
+  it('search predicate can be served by the trigram index', async () => {
+    // Not "the planner must use it" — on a 30-row test table a seq scan is the
+    // correct choice. What matters is that the index *applies* to this
+    // predicate at all: querying `name` instead of `name_normalized` made it
+    // unusable at any size, which is the regression being guarded.
+    // SET LOCAL only lives inside a transaction — outside one it is discarded
+    // before the next statement runs.
+    const plan = await db.transaction(async (tx) => {
+      await tx.execute(sql`set local enable_seqscan = off`);
+      return tx.execute(
+        sql`explain (format json) select p.id from places p
+            where p.name_normalized like '%danh sach%'`,
+      );
+    });
+    expect(JSON.stringify(plan.rows)).toContain('places_name_trgm_idx');
   });
 });

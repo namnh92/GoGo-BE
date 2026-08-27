@@ -4,7 +4,12 @@ import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { CurrentActor, Public, RateLimit } from '../../identity/presentation/decorators';
 import type { Actor } from '../../identity/domain/actor';
 import { AdminAuthService } from '../application/admin-auth.service';
-import { CmsCatalogService, type PlaceEditInput } from '../application/cms-catalog.service';
+import {
+  CmsCatalogService,
+  PLACE_SORTS,
+  PLACE_SOURCES,
+  type PlaceEditInput,
+} from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { RequireRole } from './admin.guard';
@@ -93,17 +98,36 @@ const priceSchema = z.object({
 });
 const mergeSchema = z.object({ duplicateId: z.string().uuid() });
 
+/** BE-IMP-001 — server-side filter/sort/paginate for the CMS place table. */
+const placeListQuery = z.object({
+  status: z
+    .enum(['draft', 'community_submitted', 'review', 'published', 'suspended', 'archived'])
+    .optional(),
+  q: z.string().trim().min(1).max(120).optional(),
+  areaKey: z.string().trim().max(64).optional(),
+  category: z.string().trim().max(64).optional(),
+  source: z.enum(PLACE_SOURCES).optional(),
+  /** Places whose freshness was last checked before N days ago (or never). */
+  staleDays: z.coerce.number().int().min(0).max(3650).optional(),
+  sort: z.enum(PLACE_SORTS).default('updated_at'),
+  direction: z.enum(['asc', 'desc']).default('desc'),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().max(512).optional(),
+});
+
 @RequireRole('editor')
 @Controller('cms/places')
 export class CmsCatalogController {
   constructor(private readonly catalog: CmsCatalogService) {}
 
   @Get()
-  list(@Query('status') status?: string, @Query('q') q?: string, @Query('limit') limit?: string) {
+  list(@Query(new ZodValidationPipe(placeListQuery)) query: z.infer<typeof placeListQuery>) {
+    const { staleDays, ...rest } = query;
     return this.catalog.listPlaces({
-      status,
-      q,
-      limit: Math.min(Number(limit) || 50, 200),
+      ...rest,
+      ...(staleDays !== undefined
+        ? { staleBefore: new Date(Date.now() - staleDays * 86_400_000) }
+        : {}),
     });
   }
 

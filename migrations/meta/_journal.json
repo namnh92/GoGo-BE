@@ -29,6 +29,13 @@
       "when": 1787837525888,
       "tag": "0003_retire-legacy-import-jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787837526888,
+      "tag": "0004_cms-list-indexes",
+      "breakpoints": true
     }
   ]
 }
