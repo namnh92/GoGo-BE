@@ -47,12 +47,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # The action runs in a container with only the workspace mounted, so the
+      # base spec must live inside the workspace — /tmp is not shared.
       - name: Extract base spec
-        run: git show origin/${{ github.base_ref }}:openapi/gogo.v1.yaml > /tmp/base.yaml || cp openapi/gogo.v1.yaml /tmp/base.yaml
+        run: |
+          git show "origin/${{ github.base_ref }}:openapi/gogo.v1.yaml" > .oasdiff-base.yaml \
+            || cp openapi/gogo.v1.yaml .oasdiff-base.yaml
       - name: Breaking-change gate
         uses: oasdiff/oasdiff-action/breaking@v0.0.21
         with:
-          base: /tmp/base.yaml
+          base: .oasdiff-base.yaml
           revision: openapi/gogo.v1.yaml
           fail-on: ERR
 

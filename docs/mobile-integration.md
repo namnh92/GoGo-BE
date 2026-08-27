@@ -18,14 +18,14 @@ DTOs are the one thing guaranteed to drift.
 
 ## 2. Token handling (the part that bites)
 
-| Rule | Why |
-| --- | --- |
-| Store `accessToken` + `refreshToken` in **Keychain/Keystore**, never AsyncStorage | tokens are credentials (`.claude/rules/security.md`) |
-| Access token ≤15 min — refresh on `401`, not on a timer you trust | server clock wins |
-| **Serialise refresh behind one mutex** | refresh tokens are single-use; two parallel refreshes replay an old token |
-| Replaying an old refresh token **revokes the whole session family** | theft detection — the user gets logged out of every device |
-| Persist `guestToken` for guests | lets them re-enter the room; `POST /auth/refresh` with `{ guestToken }` returns a fresh access token |
-| On registration send the stored `claimGuestToken` | migrates guest memberships/preferences/votes into the account |
+| Rule                                                                              | Why                                                                                                  |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Store `accessToken` + `refreshToken` in **Keychain/Keystore**, never AsyncStorage | tokens are credentials (`.claude/rules/security.md`)                                                 |
+| Access token ≤15 min — refresh on `401`, not on a timer you trust                 | server clock wins                                                                                    |
+| **Serialise refresh behind one mutex**                                            | refresh tokens are single-use; two parallel refreshes replay an old token                            |
+| Replaying an old refresh token **revokes the whole session family**               | theft detection — the user gets logged out of every device                                           |
+| Persist `guestToken` for guests                                                   | lets them re-enter the room; `POST /auth/refresh` with `{ guestToken }` returns a fresh access token |
+| On registration send the stored `claimGuestToken`                                 | migrates guest memberships/preferences/votes into the account                                        |
 
 Cookies and the CSRF header exist for Web only — mobile ignores both.
 
@@ -48,9 +48,9 @@ submission. Do **not** generate a fresh key per retry — that defeats it.
   `budgetMode` — never "Cả hai bạn…". Build audience strings from those facts
   so i18n stays in the app.
 - **Opening hours are minutes-of-day, place-local.** `open.closesAtMinute:
-  1380` → "Đang mở · Đóng 23:00".
+1380` → "Đang mở · Đóng 23:00".
 - **Prices are ranges with confidence.** Show a range, never a fake exact
-  number. `totals.overBudget` comes from the *upper* bound; `totals.uncertain`
+  number. `totals.overBudget` comes from the _upper_ bound; `totals.uncertain`
   means some stop's price is unknown — say so instead of implying certainty.
 - **Provider attribution is mandatory** wherever Google-sourced facts appear
   (`sources[]`, `candidate.attributions[]`). Google rating, GoGo rating and
@@ -64,7 +64,7 @@ submission. Do **not** generate a fresh key per retry — that defeats it.
 decides what is legal. Attempting an action outside the state returns `409`
 (`ROOM_NOT_MATCHING`, `ROOM_ACTIVE`, `ROOM_NOT_COLLECTING`). Roles are enforced
 server-side: a member calling a host action gets `403 HOST_ONLY`, a guest
-touching another room gets `403 ROOM_SCOPE_VIOLATION`. Hide the button *and*
+touching another room gets `403 ROOM_SCOPE_VIOLATION`. Hide the button _and_
 handle the error — the API is the enforcement layer.
 
 Optimistic concurrency: `preferences` (`expectedVersion`), `constraints`
@@ -84,21 +84,21 @@ Codes worth explicit UI: `INVALID_CREDENTIALS`, `SESSION_REVOKED`,
 
 ## 7. Flow cheat-sheet
 
-| Screen | Calls |
-| --- | --- |
-| Create room | `POST /rooms` → `PATCH /rooms/{id}/status` `collecting` |
-| Invite sheet | `POST /rooms/{id}/invites` → share `code` (returned once — never re-fetchable) |
-| Guest join | `POST /rooms/join/guest` `{ inviteCode, displayName }` |
-| Preferences | `GET/PUT /rooms/{id}/preferences/me` (autosave w/ `expectedVersion`) → `POST …/complete` |
-| Lobby | `GET /rooms/{id}/members` (progress only — never other members' selections) |
-| Search | `GET /places/search` (q, geo, `openAt`, `categories`, price/person, `suitedFor`, cursor) |
-| Place detail | `GET /places/{id}` |
-| Add by link | `POST /places/resolve-google-maps-link` → preview → `POST /place-submissions` |
-| Matching | `POST /rooms/{id}/suggestions` → `GET …/suggestions/current` |
-| Vote | `PUT /rooms/{id}/votes/{placeId}` → host `POST …/votes/finalize` |
-| Plan | `GET /rooms/{id}/plans/current`, `PATCH /plans/{id}`, `POST /plans/{id}/regenerate`, lock stop |
-| Active date | `PATCH /rooms/{id}/status` `active` → `POST /plans/{id}/stops/{stopId}/complete` → `…/checkin` |
-| Profile | `GET/PATCH /me`, `/me/saved`, `/me/reviews`, `/me/notifications`, `PUT /me/device-tokens` |
+| Screen       | Calls                                                                                          |
+| ------------ | ---------------------------------------------------------------------------------------------- |
+| Create room  | `POST /rooms` → `PATCH /rooms/{id}/status` `collecting`                                        |
+| Invite sheet | `POST /rooms/{id}/invites` → share `code` (returned once — never re-fetchable)                 |
+| Guest join   | `POST /rooms/join/guest` `{ inviteCode, displayName }`                                         |
+| Preferences  | `GET/PUT /rooms/{id}/preferences/me` (autosave w/ `expectedVersion`) → `POST …/complete`       |
+| Lobby        | `GET /rooms/{id}/members` (progress only — never other members' selections)                    |
+| Search       | `GET /places/search` (q, geo, `openAt`, `categories`, price/person, `suitedFor`, cursor)       |
+| Place detail | `GET /places/{id}`                                                                             |
+| Add by link  | `POST /places/resolve-google-maps-link` → preview → `POST /place-submissions`                  |
+| Matching     | `POST /rooms/{id}/suggestions` → `GET …/suggestions/current`                                   |
+| Vote         | `PUT /rooms/{id}/votes/{placeId}` → host `POST …/votes/finalize`                               |
+| Plan         | `GET /rooms/{id}/plans/current`, `PATCH /plans/{id}`, `POST /plans/{id}/regenerate`, lock stop |
+| Active date  | `PATCH /rooms/{id}/status` `active` → `POST /plans/{id}/stops/{stopId}/complete` → `…/checkin` |
+| Profile      | `GET/PATCH /me`, `/me/saved`, `/me/reviews`, `/me/notifications`, `PUT /me/device-tokens`      |
 
 Directions: build the universal URL client-side —
 `https://www.google.com/maps/dir/?api=1&destination=<lat,lng|address>`. No
