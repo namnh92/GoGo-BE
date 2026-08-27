@@ -13,6 +13,7 @@ import {
   RoomsModule,
   SearchModule,
   SuggestionsModule,
+  TravelModule,
 } from '@gogo/modules';
 import { AppExceptionFilter } from './common/filters/app-exception.filter';
 import { APP_CONFIG, loadEnv } from './config/env';
@@ -33,6 +34,7 @@ class ConfigModule {}
     ConfigModule,
     DatabaseModule,
     ProvidersModule,
+    TravelModule,
     IdentityModule,
     RoomsModule,
     PreferencesModule,

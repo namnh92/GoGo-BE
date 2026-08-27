@@ -193,9 +193,12 @@ describe('optimizer (SG-007/SG-008)', () => {
     );
   }
 
-  it('respects window duration and per-person budget; totals overBudget from upper bound', () => {
+  it('respects window duration and per-person budget; totals overBudget from upper bound', async () => {
     const snap = snapshot({ budget: { mode: 'per_person', amount: 150_000, currency: 'VND' } });
-    const result = buildItinerary({ ranked: ranked(snap, ['a', 'b', 'c', 'd']), snapshot: snap });
+    const result = await buildItinerary({
+      ranked: ranked(snap, ['a', 'b', 'c', 'd']),
+      snapshot: snap,
+    });
     expect(result.stops.length).toBeGreaterThan(0);
     expect(result.totals.costMax).toBeLessThanOrEqual(150_000);
     expect(result.totals.overBudget).toBe(false);
@@ -203,7 +206,7 @@ describe('optimizer (SG-007/SG-008)', () => {
     expect(result.totals.durationMinutes).toBeLessThanOrEqual(7 * 60);
   });
 
-  it('locked stops survive regenerate exactly (E2E gate #3)', () => {
+  it('locked stops survive regenerate exactly (E2E gate #3)', async () => {
     const snap = snapshot();
     const locked: LockedAnchor = {
       placeId: 'locked-place',
@@ -220,7 +223,7 @@ describe('optimizer (SG-007/SG-008)', () => {
       lat: 10.777,
       lng: 106.701,
     };
-    const result = buildItinerary({
+    const result = await buildItinerary({
       ranked: ranked(snap, ['x', 'y', 'z']),
       snapshot: snap,
       lockedStops: [locked],
@@ -235,12 +238,81 @@ describe('optimizer (SG-007/SG-008)', () => {
     expect(result.stops.filter((s) => s.placeId === 'locked-place')).toHaveLength(1);
   });
 
-  it('is deterministic', () => {
+  it('is deterministic', async () => {
     const snap = snapshot();
-    const r1 = buildItinerary({ ranked: ranked(snap, ['a', 'b', 'c']), snapshot: snap });
-    const r2 = buildItinerary({ ranked: ranked(snap, ['a', 'b', 'c']), snapshot: snap });
+    const r1 = await buildItinerary({ ranked: ranked(snap, ['a', 'b', 'c']), snapshot: snap });
+    const r2 = await buildItinerary({ ranked: ranked(snap, ['a', 'b', 'c']), snapshot: snap });
     expect(r1.stops.map((s) => s.placeId)).toEqual(r2.stops.map((s) => s.placeId));
     expect(r1.totals).toEqual(r2.totals);
+  });
+  it('asks once per greedy step, not once per leg, and only about the top candidates', async () => {
+    const snap = snapshot();
+    const calls: { origin: string; destinations: number }[] = [];
+    const result = await buildItinerary({
+      ranked: ranked(snap, ['a', 'b', 'c', 'd', 'e', 'f', 'g']),
+      snapshot: snap,
+      travel: async (origin, destinations) => {
+        calls.push({ origin: origin.placeId ?? 'room-origin', destinations: destinations.length });
+        return {
+          legs: destinations.map(() => ({ minutes: 7, distanceM: 700 })),
+          estimated: false,
+        };
+      },
+    });
+
+    // One call per selection round — never one per candidate pair. A round may
+    // batch and then find nothing that fits, which is why it can exceed the
+    // stop count by one: whether a candidate fits is only knowable *after*
+    // asking for its travel time.
+    expect(calls.length).toBeLessThanOrEqual(result.stops.length + 1);
+    expect(calls.length).toBeLessThan(7); // candidates offered
+
+    // Each batch is capped: the greedy loop nearly always takes one of the
+    // first few, so asking about all seven would pay for ranks that never win.
+    expect(Math.max(...calls.map((c) => c.destinations))).toBeLessThanOrEqual(5);
+    // First batch starts from the room origin, later ones from the stop chosen.
+    expect(calls[0]!.origin).toBe('room-origin');
+  });
+
+  it('uses the routed legs it was given', async () => {
+    const snap = snapshot();
+    const result = await buildItinerary({
+      ranked: ranked(snap, ['a', 'b']),
+      snapshot: snap,
+      travel: async (_o, destinations) => ({
+        legs: destinations.map(() => ({ minutes: 33, distanceM: 3300 })),
+        estimated: false,
+      }),
+    });
+    const routed = result.stops.filter((s) => s.travelMinutesFromPrev !== null);
+    expect(routed.length).toBeGreaterThan(0);
+    expect(routed.every((s) => s.travelMinutesFromPrev === 33)).toBe(true);
+    expect(result.totals.travelEstimated).toBe(false);
+  });
+
+  it('says so when a leg fell back to the straight-line estimate', async () => {
+    const snap = snapshot();
+    const result = await buildItinerary({
+      ranked: ranked(snap, ['a', 'b', 'c']),
+      snapshot: snap,
+      // Provider answered nothing: the plan still builds, on estimates.
+      travel: async (_o, destinations) => ({
+        legs: destinations.map(() => ({ minutes: 0, distanceM: 0 })),
+        estimated: true,
+      }),
+    });
+    expect(result.stops.length).toBeGreaterThan(0);
+    expect(result.totals.travelEstimated).toBe(true);
+  });
+
+  it('without a travel function behaves exactly as before', async () => {
+    const snap = snapshot();
+    const withoutTravel = await buildItinerary({
+      ranked: ranked(snap, ['a', 'b']),
+      snapshot: snap,
+    });
+    expect(withoutTravel.totals.travelEstimated).toBe(true);
+    expect(withoutTravel.stops.length).toBeGreaterThan(0);
   });
 });
 

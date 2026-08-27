@@ -14,6 +14,25 @@ export function travelEstimate(
   return { minutes: Math.ceil(distanceM / TRAVEL_SPEED_M_PER_MIN) + TRAVEL_BUFFER_MIN, distanceM };
 }
 
+/**
+ * ADR-0007 — one greedy step's worth of travel: the stop just chosen against
+ * the candidates still in play. Injected rather than imported so the optimizer
+ * stays a pure function of its inputs and the deterministic tests keep running
+ * without a provider.
+ */
+export type TravelBatch = (
+  origin: { lat: number; lng: number; placeId?: string | undefined },
+  destinations: { lat: number; lng: number; placeId?: string | undefined }[],
+) => Promise<{ legs: { minutes: number; distanceM: number }[]; estimated: boolean }>;
+
+/**
+ * How many candidates a step asks the provider about. The matrix is billed per
+ * element, and the greedy loop nearly always takes one of the first few, so
+ * asking about all ten would pay for ranks that never win (ADR-0007). Anything
+ * past this falls back to the estimate.
+ */
+export const TRAVEL_BATCH_SIZE = 5;
+
 /** Locked anchor passed into regenerate: full stored stop + its coordinates. */
 export type LockedAnchor = PlanStopDraft & { lat: number; lng: number };
 
@@ -42,12 +61,14 @@ export type OptimizerResult = {
  * travel time, consecutive-category diversity. Locked stops (SG-008) are
  * anchors: same place, same order, same duration/cost — never replaced.
  */
-export function buildItinerary(input: {
+export async function buildItinerary(input: {
   ranked: ScoredCandidate[];
   snapshot: RoomSnapshot;
   lockedStops?: LockedAnchor[] | undefined;
   maxStops?: number | undefined;
-}): OptimizerResult {
+  /** Absent → every leg is the straight-line estimate, as before ADR-0007. */
+  travel?: TravelBatch | undefined;
+}): Promise<OptimizerResult> {
   const { snapshot } = input;
   const locked = [...(input.lockedStops ?? [])].sort((a, b) => a.position - b.position);
   const lockedIds = new Set(locked.map((s) => s.placeId));
@@ -87,16 +108,51 @@ export function buildItinerary(input: {
 
   const pool = input.ranked.filter((s) => !lockedIds.has(s.candidate.placeId));
 
+  // Legs measured by the provider, keyed `from|to`. Everything not in here is
+  // an estimate, and the plan says so.
+  const measured = new Map<string, { minutes: number; distanceM: number }>();
+  let anyEstimated = false;
+  const legKey = (
+    from: { placeId?: string | undefined; lat: number; lng: number },
+    toPlaceId: string,
+  ) => `${from.placeId ?? `${from.lat},${from.lng}`}|${toPlaceId}`;
+
   while (sequence.length < targetStops && pool.length > 0) {
     const last = sequence[sequence.length - 1];
-    const lastPoint = last ? { lat: last.lat, lng: last.lng } : snapshot.origin;
+    const lastPoint = last
+      ? { lat: last.lat, lng: last.lng, placeId: last.placeId }
+      : snapshot.origin;
     const lastCategory = last?.category ?? null;
+
+    // One provider call per greedy step, covering the top candidates still in
+    // play — four calls per plan instead of one per leg (ADR-0007).
+    if (input.travel && lastPoint) {
+      const batch = pool.slice(0, TRAVEL_BATCH_SIZE).map((s) => ({
+        lat: s.candidate.lat,
+        lng: s.candidate.lng,
+        placeId: s.candidate.placeId,
+      }));
+      const result = await input.travel(lastPoint, batch);
+      if (result.estimated) anyEstimated = true;
+      batch.forEach((destination, i) => {
+        const leg = result.legs[i];
+        if (leg) measured.set(legKey(lastPoint, destination.placeId), leg);
+      });
+    }
+
+    const legTo = (candidate: { placeId: string; lat: number; lng: number }) => {
+      if (!lastPoint) return { minutes: 0, distanceM: 0 };
+      const hit = measured.get(legKey(lastPoint, candidate.placeId));
+      if (hit) return hit;
+      anyEstimated = true;
+      return travelEstimate(lastPoint, candidate);
+    };
 
     let picked = -1;
     for (let i = 0; i < pool.length; i++) {
       const c = pool[i]!.candidate;
       const visit = c.avgVisitMinutes ?? DEFAULT_VISIT_MIN;
-      const travel = lastPoint ? travelEstimate(lastPoint, c).minutes : 0;
+      const travel = legTo(c).minutes;
       if (usedMinutes + visit + travel > windowMinutes) continue;
       if (perPersonBudget > 0 && costMax + (c.pricePerPersonMax ?? 0) > perPersonBudget) continue;
       const category = (c.taxonomyKeys['category'] ?? [])[0] ?? null;
@@ -109,7 +165,7 @@ export function buildItinerary(input: {
     const s = pool.splice(picked, 1)[0]!;
     const c = s.candidate;
     const visit = c.avgVisitMinutes ?? DEFAULT_VISIT_MIN;
-    const travel = lastPoint ? travelEstimate(lastPoint, c).minutes : 0;
+    const travel = legTo(c).minutes;
     usedMinutes += visit + travel;
     costMax += c.pricePerPersonMax ?? 0;
     sequence.push({
@@ -129,7 +185,8 @@ export function buildItinerary(input: {
   // Materialize: times, travel legs, totals.
   const stops: PlanStopDraft[] = [];
   let cursor = startAt ? new Date(startAt) : null;
-  let prevPoint = snapshot.origin;
+  let prevPoint: { lat: number; lng: number; placeId?: string | undefined } | null =
+    snapshot.origin ?? null;
   let totalDistance = 0;
   let totalDuration = 0;
   let totalCostMin = 0;
@@ -140,7 +197,12 @@ export function buildItinerary(input: {
     let travelMinutes: number | null = null;
     let travelDistance: number | null = null;
     if (prevPoint) {
-      const est = travelEstimate(prevPoint, entry);
+      // Reuse the leg the selection already paid for; anything else — notably
+      // the legs between locked anchors, which were never selected — falls back
+      // to the estimate rather than buying a one-element matrix per pair.
+      const hit = measured.get(legKey(prevPoint, entry.placeId));
+      if (!hit) anyEstimated = true;
+      const est = hit ?? travelEstimate(prevPoint, entry);
       travelMinutes = position === 0 && !snapshot.origin ? null : est.minutes;
       travelDistance = position === 0 && !snapshot.origin ? null : est.distanceM;
     }
@@ -175,7 +237,7 @@ export function buildItinerary(input: {
       costMax: entry.costMax,
       isLocked: entry.isLocked,
     });
-    prevPoint = { lat: entry.lat, lng: entry.lng };
+    prevPoint = { lat: entry.lat, lng: entry.lng, placeId: entry.placeId };
   });
 
   // FR-SUG-006: over-budget flag comes from the UPPER bound.
@@ -196,6 +258,7 @@ export function buildItinerary(input: {
       travelDistanceM: totalDistance,
       overBudget,
       uncertain,
+      travelEstimated: anyEstimated,
     },
     reasonCodes,
   };
