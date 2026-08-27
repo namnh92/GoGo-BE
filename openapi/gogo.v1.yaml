@@ -995,6 +995,112 @@ paths:
       responses:
         '200': { description: Registered }
 
+  /places/resolve-google-maps-link:
+    post:
+      operationId: resolveGoogleMapsLink
+      tags: [places]
+      summary: Resolve a Google Maps link to a provider place (preview only)
+      description: >
+        PI-BE-018 / FR-INGEST-002/010. Hostname allowlist, ≤5 redirects with
+        SSRF guard, no HTML scraping. Returns RESOLVED, ALREADY_EXISTS (opens
+        the canonical place), CANDIDATE_SELECTION (user picks the branch) or
+        UNRESOLVED with reason codes. Provider data carries source, fetchedAt
+        and attributions; Google rating and derived score stay separate.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, maxLength: 2000 }
+                cityHint: { type: string, maxLength: 80 }
+                roomId: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Resolution outcome with candidate/attribution facts
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /place-submissions:
+    post:
+      operationId: submitPlace
+      tags: [places]
+      summary: Propose a place from a resolved provider id (FR-INGEST-011/012)
+      description: >
+        Creates at most one pending proposal per provider place; repeat
+        submissions increment submissionCount. Never publishes to the catalog.
+        Guests must submit within their room-scoped session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [googlePlaceId]
+              properties:
+                googlePlaceId: { type: string }
+                roomId: { type: string, format: uuid }
+                category: { type: string }
+                estimatedPrice:
+                  type: object
+                  properties:
+                    min: { type: integer, minimum: 0 }
+                    max: { type: integer, minimum: 0 }
+                    unit:
+                      type: string
+                      enum: [per_person, per_group, per_item, free, unknown]
+                vibes:
+                  type: array
+                  items: { type: string }
+                note: { type: string, maxLength: 1000 }
+      responses:
+        '201':
+          description: 'PENDING (with submissionId/deduped) or ALREADY_EXISTS (with placeId)'
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Place is closed/suspended and cannot be added
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /place-submissions/{id}:
+    get:
+      operationId: getPlaceSubmission
+      tags: [places]
+      summary: Poll a submission (owner only)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: '{ id, status, placeId?, submissionCount }' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /cms/place-submissions/{id}/decide:
+    post:
+      operationId: decidePlaceSubmission
+      tags: [cms]
+      summary: 'Moderator/editor: approve, reject or merge a submission (PI-CMS-007)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, reason]
+              properties:
+                decision: { type: string, enum: [approved, rejected, merged] }
+                reason: { type: string, minLength: 3, maxLength: 500 }
+                mergeIntoPlaceId: { type: string, format: uuid }
+      responses:
+        '201': { description: Decision applied; audited + reindex event emitted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
 components:
   securitySchemes:
     bearerAuth:

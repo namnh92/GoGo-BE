@@ -750,6 +750,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/places/resolve-google-maps-link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve a Google Maps link to a provider place (preview only)
+         * @description PI-BE-018 / FR-INGEST-002/010. Hostname allowlist, ≤5 redirects with SSRF guard, no HTML scraping. Returns RESOLVED, ALREADY_EXISTS (opens the canonical place), CANDIDATE_SELECTION (user picks the branch) or UNRESOLVED with reason codes. Provider data carries source, fetchedAt and attributions; Google rating and derived score stay separate.
+         */
+        post: operations["resolveGoogleMapsLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/place-submissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Propose a place from a resolved provider id (FR-INGEST-011/012)
+         * @description Creates at most one pending proposal per provider place; repeat submissions increment submissionCount. Never publishes to the catalog. Guests must submit within their room-scoped session.
+         */
+        post: operations["submitPlace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/place-submissions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Poll a submission (owner only) */
+        get: operations["getPlaceSubmission"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-submissions/{id}/decide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Moderator/editor: approve, reject or merge a submission (PI-CMS-007) */
+        post: operations["decidePlaceSubmission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2298,6 +2372,135 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    resolveGoogleMapsLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uri */
+                    url: string;
+                    cityHint?: string;
+                    /** Format: uuid */
+                    roomId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Resolution outcome with candidate/attribution facts */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    submitPlace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    googlePlaceId: string;
+                    /** Format: uuid */
+                    roomId?: string;
+                    category?: string;
+                    estimatedPrice?: {
+                        min?: number;
+                        max?: number;
+                        /** @enum {string} */
+                        unit?: "per_person" | "per_group" | "per_item" | "free" | "unknown";
+                    };
+                    vibes?: string[];
+                    note?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description PENDING (with submissionId/deduped) or ALREADY_EXISTS (with placeId) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+            /** @description Place is closed/suspended and cannot be added */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    getPlaceSubmission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description { id, status, placeId?, submissionCount } */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    decidePlaceSubmission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    decision: "approved" | "rejected" | "merged";
+                    reason: string;
+                    /** Format: uuid */
+                    mergeIntoPlaceId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Decision applied; audited + reindex event emitted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
         };
     };
 }

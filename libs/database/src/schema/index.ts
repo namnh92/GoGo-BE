@@ -5,3 +5,4 @@ export * from './plans';
 export * from './social';
 export * from './cms';
 export * from './platform';
+export * from './ingestion';
