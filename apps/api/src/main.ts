@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import * as Sentry from '@sentry/node';
 import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -12,6 +13,11 @@ import { loadEnv } from './config/env';
 
 export async function createApp(): Promise<NestFastifyApplication> {
   const config = loadEnv();
+  if (config.SENTRY_DSN) {
+    // Error monitoring (FND-007). captureException elsewhere is a safe no-op
+    // until this init runs.
+    Sentry.init({ dsn: config.SENTRY_DSN, environment: config.NODE_ENV });
+  }
   const logger = createLogger({
     level: config.LOG_LEVEL,
     name: 'gogo-api',

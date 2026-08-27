@@ -1,0 +1,299 @@
+import { Inject, Injectable } from '@nestjs/common';
+import { and, desc, eq, sql } from 'drizzle-orm';
+import { schema, type Db } from '@gogo/database';
+import { AppError } from '../../shared/app-error';
+import { writeOutbox } from '../../shared/outbox';
+import { DB } from '../../shared/tokens';
+import { pgArray } from '../../search/infrastructure/search.repository';
+import type { Actor } from '../../identity/domain/actor';
+
+function requireUser(actor: Actor): string {
+  if (actor.type !== 'user') {
+    throw AppError.forbidden('USER_ONLY', 'Register an account to use this feature');
+  }
+  return actor.id;
+}
+
+/** BE-BFF-009 — saved items, reviews, profile, privacy (export/delete). */
+@Injectable()
+export class UserContentService {
+  constructor(@Inject(DB) private readonly db: Db) {}
+
+  // --- saved (FR-USER-001) --------------------------------------------------
+
+  async listSaved(actor: Actor) {
+    const userId = requireUser(actor);
+    const rows = await this.db
+      .select()
+      .from(schema.savedItems)
+      .where(eq(schema.savedItems.userId, userId))
+      .orderBy(desc(schema.savedItems.createdAt));
+    return rows.map((r) => ({
+      targetType: r.targetType,
+      targetId: r.targetId,
+      savedAt: r.createdAt.toISOString(),
+    }));
+  }
+
+  async save(actor: Actor, targetType: 'place' | 'plan', targetId: string) {
+    const userId = requireUser(actor);
+    if (targetType === 'place') {
+      const [place] = await this.db
+        .select({ id: schema.places.id })
+        .from(schema.places)
+        .where(eq(schema.places.id, targetId));
+      if (!place) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
+    }
+    await this.db
+      .insert(schema.savedItems)
+      .values({ userId, targetType, targetId })
+      .onConflictDoNothing();
+    return { saved: true };
+  }
+
+  async unsave(actor: Actor, targetType: 'place' | 'plan', targetId: string) {
+    const userId = requireUser(actor);
+    await this.db
+      .delete(schema.savedItems)
+      .where(
+        and(
+          eq(schema.savedItems.userId, userId),
+          eq(schema.savedItems.targetType, targetType),
+          eq(schema.savedItems.targetId, targetId),
+        ),
+      );
+    return { saved: false };
+  }
+
+  // --- reviews (FR-USER-002) ------------------------------------------------
+
+  async createReview(
+    actor: Actor,
+    input: {
+      placeId?: string | undefined;
+      planId?: string | undefined;
+      rating: number;
+      text?: string | undefined;
+    },
+  ) {
+    const userId = requireUser(actor);
+    const [row] = await this.db
+      .insert(schema.reviews)
+      .values({
+        userId,
+        placeId: input.placeId ?? null,
+        planId: input.planId ?? null,
+        rating: input.rating,
+        text: input.text ?? null,
+      })
+      .returning();
+    await writeOutbox(this.db, {
+      eventType: 'review.submitted',
+      resourceType: 'review',
+      resourceId: row!.id,
+      payload: { placeId: input.placeId ?? null },
+    });
+    return { id: row!.id, status: row!.status };
+  }
+
+  async updateReview(
+    actor: Actor,
+    reviewId: string,
+    input: { rating?: number | undefined; text?: string | undefined },
+  ) {
+    const userId = requireUser(actor);
+    const [review] = await this.db
+      .select()
+      .from(schema.reviews)
+      .where(eq(schema.reviews.id, reviewId))
+      .limit(1);
+    if (!review) throw AppError.notFound('REVIEW_NOT_FOUND', 'Review not found');
+    // Ownership is the rule — even admins edit via moderation, not here.
+    if (review.userId !== userId) throw AppError.forbidden();
+    const [updated] = await this.db
+      .update(schema.reviews)
+      .set({
+        ...(input.rating !== undefined ? { rating: input.rating } : {}),
+        ...(input.text !== undefined ? { text: input.text } : {}),
+        status: 'pending', // edits go back through moderation
+        updatedAt: sql`now()`,
+      })
+      .where(eq(schema.reviews.id, reviewId))
+      .returning();
+    return { id: updated!.id, status: updated!.status };
+  }
+
+  async myReviews(actor: Actor) {
+    const userId = requireUser(actor);
+    const rows = await this.db
+      .select()
+      .from(schema.reviews)
+      .where(eq(schema.reviews.userId, userId))
+      .orderBy(desc(schema.reviews.createdAt));
+    return rows.map((r) => ({
+      id: r.id,
+      placeId: r.placeId ?? undefined,
+      planId: r.planId ?? undefined,
+      rating: r.rating,
+      text: r.text ?? undefined,
+      status: r.status,
+      createdAt: r.createdAt.toISOString(),
+    }));
+  }
+
+  // --- profile --------------------------------------------------------------
+
+  async updateProfile(
+    actor: Actor,
+    input: { displayName?: string | undefined; locale?: string | undefined },
+  ) {
+    const userId = requireUser(actor);
+    const [updated] = await this.db
+      .update(schema.users)
+      .set({
+        ...(input.displayName ? { displayName: input.displayName } : {}),
+        ...(input.locale ? { locale: input.locale } : {}),
+        updatedAt: sql`now()`,
+      })
+      .where(eq(schema.users.id, userId))
+      .returning();
+    return { displayName: updated!.displayName, locale: updated!.locale };
+  }
+
+  // --- privacy (security rules: export + delete) ----------------------------
+
+  /** Data export — every actor-owned row, JSON, no internal ids beyond needed. */
+  async exportData(actor: Actor) {
+    const userId = requireUser(actor);
+    const [user] = await this.db.select().from(schema.users).where(eq(schema.users.id, userId));
+    const memberships = await this.db
+      .select()
+      .from(schema.roomMembers)
+      .where(eq(schema.roomMembers.userId, userId));
+    const memberIds = memberships.map((m) => m.id);
+    const preferences =
+      memberIds.length > 0
+        ? await this.db
+            .select()
+            .from(schema.preferenceSelections)
+            .where(
+              sql`${schema.preferenceSelections.memberId} = any((${pgArray(memberIds)})::uuid[])`,
+            )
+        : [];
+    const votes =
+      memberIds.length > 0
+        ? await this.db
+            .select()
+            .from(schema.votes)
+            .where(sql`${schema.votes.memberId} = any((${pgArray(memberIds)})::uuid[])`)
+        : [];
+    const saved = await this.db
+      .select()
+      .from(schema.savedItems)
+      .where(eq(schema.savedItems.userId, userId));
+    const reviews = await this.db
+      .select()
+      .from(schema.reviews)
+      .where(eq(schema.reviews.userId, userId));
+
+    await this.db.insert(schema.auditLogs).values({
+      actorType: 'user',
+      actorId: userId,
+      action: 'user.data_exported',
+      resourceType: 'user',
+      resourceId: userId,
+    });
+
+    return {
+      exportedAt: new Date().toISOString(),
+      profile: {
+        displayName: user?.displayName,
+        email: user?.email,
+        locale: user?.locale,
+        createdAt: user?.createdAt.toISOString(),
+      },
+      memberships: memberships.map((m) => ({
+        roomId: m.roomId,
+        role: m.role,
+        joinedAt: m.joinedAt.toISOString(),
+      })),
+      preferences: preferences.map((p) => ({ roomId: p.roomId, selections: p.selections })),
+      votes: votes.map((v) => ({ roomId: v.roomId, placeId: v.targetPlaceId, value: v.value })),
+      saved: saved.map((s) => ({ type: s.targetType, id: s.targetId })),
+      reviews: reviews.map((r) => ({ rating: r.rating, text: r.text, status: r.status })),
+    };
+  }
+
+  /**
+   * Account deletion: PII nulled, sessions revoked, content pseudonymized —
+   * partial-unique email index frees the address for re-registration.
+   */
+  async deleteAccount(actor: Actor) {
+    const userId = requireUser(actor);
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(schema.users)
+        .set({
+          status: 'deleted',
+          email: null,
+          passwordHash: null,
+          displayName: 'Người dùng đã xóa',
+          deletedAt: sql`now()`,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(schema.users.id, userId));
+      await tx
+        .update(schema.authSessions)
+        .set({ revokedAt: sql`now()`, revokeReason: 'account_deleted' })
+        .where(
+          and(
+            eq(schema.authSessions.userId, userId),
+            sql`${schema.authSessions.revokedAt} is null`,
+          ),
+        );
+      await tx.delete(schema.deviceTokens).where(eq(schema.deviceTokens.userId, userId));
+      await tx
+        .update(schema.roomMembers)
+        .set({ displayName: 'Đã rời' })
+        .where(eq(schema.roomMembers.userId, userId));
+      await tx.insert(schema.auditLogs).values({
+        actorType: 'user',
+        actorId: userId,
+        action: 'user.account_deleted',
+        resourceType: 'user',
+        resourceId: userId,
+      });
+    });
+    return { deleted: true };
+  }
+
+  // --- notification preferences (FR-USER-004) ------------------------------
+
+  async getNotificationPreferences(actor: Actor) {
+    const userId = requireUser(actor);
+    const rows = await this.db
+      .select()
+      .from(schema.notificationPreferences)
+      .where(eq(schema.notificationPreferences.userId, userId));
+    return rows.map((r) => ({ channel: r.channel, kind: r.kind, enabled: r.enabled }));
+  }
+
+  async setNotificationPreference(
+    actor: Actor,
+    input: { channel: 'push' | 'email'; kind: string; enabled: boolean },
+  ) {
+    const userId = requireUser(actor);
+    await this.db
+      .insert(schema.notificationPreferences)
+      .values({ userId, channel: input.channel, kind: input.kind as never, enabled: input.enabled })
+      .onConflictDoUpdate({
+        target: [
+          schema.notificationPreferences.userId,
+          schema.notificationPreferences.channel,
+          schema.notificationPreferences.kind,
+        ],
+        set: { enabled: input.enabled },
+      });
+    return { updated: true };
+  }
+}

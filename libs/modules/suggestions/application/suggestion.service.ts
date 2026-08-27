@@ -1,0 +1,234 @@
+import { Inject, Injectable } from '@nestjs/common';
+import { sql } from 'drizzle-orm';
+import { type Db } from '@gogo/database';
+import { AppError } from '../../shared/app-error';
+import { DB } from '../../shared/tokens';
+import type { Actor } from '../../identity/domain/actor';
+import { RoomPolicy } from '../../rooms/presentation/room-policy';
+import { coupleMatches, resolveWinner, tallyVotes, type VoteRecord } from '../domain/decision';
+import { rankWithFairness } from '../domain/fairness';
+import { hardFilter } from '../domain/hard-filter';
+import { scoreCandidate } from '../domain/scoring';
+import {
+  DEFAULT_SCORING_WEIGHTS,
+  ENGINE_VERSION,
+  SCORING_WEIGHT_BOUNDS,
+  type ScoringWeights,
+} from '../domain/types';
+import { SuggestionsRepository } from '../infrastructure/suggestions.repository';
+import { PlanBuilderService } from '../../plans/application/plan-builder.service';
+
+const TOP_K = 10;
+
+/** BE-BFF-007 — deterministic suggestion runs, votes, decisions (SG-002..006). */
+@Injectable()
+export class SuggestionService {
+  constructor(
+    private readonly repo: SuggestionsRepository,
+    private readonly policy: RoomPolicy,
+    private readonly planBuilder: PlanBuilderService,
+    @Inject(DB) private readonly db: Db,
+  ) {}
+
+  /** Versioned weights from ranking_configs with SG-001 bounds enforcement. */
+  private async activeWeights(): Promise<{ weights: ScoringWeights; version: string }> {
+    const rows = await this.db.execute(sql`
+      select version, weights from ranking_configs
+      where key = 'suggestion.scoring' and status = 'active'
+      order by version desc limit 1
+    `);
+    const row = rows.rows[0] as { version: number; weights: Partial<ScoringWeights> } | undefined;
+    if (!row) return { weights: DEFAULT_SCORING_WEIGHTS, version: 'default' };
+    const merged: ScoringWeights = { ...DEFAULT_SCORING_WEIGHTS, ...row.weights };
+    for (const [key, bound] of Object.entries(SCORING_WEIGHT_BOUNDS)) {
+      const v = merged[key as keyof ScoringWeights];
+      if (v < bound.min || v > bound.max) {
+        // Out-of-bounds config is ignored, never partially applied.
+        return { weights: DEFAULT_SCORING_WEIGHTS, version: 'default(bounds-rejected)' };
+      }
+    }
+    return { weights: merged, version: String(row.version) };
+  }
+
+  /** SG-002..005 — run the deterministic pipeline and persist ranked scores. */
+  async generate(actor: Actor, roomId: string) {
+    const { room } = await this.policy.requireMember(actor, roomId);
+    if (!['matching', 'collecting'].includes(room.status)) {
+      throw AppError.conflict('ROOM_NOT_MATCHING', 'Room is not ready for suggestions');
+    }
+
+    const snapshot = await this.repo.buildSnapshot(roomId);
+    const { weights, version } = await this.activeWeights();
+    const run = await this.repo.createRun({
+      roomId,
+      constraintVersion: snapshot.constraintVersion,
+      engineVersion: ENGINE_VERSION,
+      weightsVersion: version,
+      inputSnapshot: snapshot,
+    });
+
+    try {
+      const candidates = await this.repo.retrieveCandidates(snapshot);
+      const passed = candidates.filter((c) => hardFilter(c, snapshot).ok);
+      const scored = passed.map((c) => scoreCandidate(c, snapshot, weights));
+      const ranked = rankWithFairness(scored, { topK: TOP_K });
+      await this.repo.persistScores(
+        run.id,
+        roomId,
+        ranked.map((s, i) => ({
+          placeId: s.candidate.placeId,
+          rank: i + 1,
+          scoreMicros: Math.round(s.score * 1e6),
+          components: s.components,
+          reasonCodes: s.reasonCodes,
+        })),
+        {
+          eventType: 'suggestion.generated',
+          resourceType: 'room',
+          resourceId: roomId,
+          payload: {
+            runId: run.id,
+            candidateCount: ranked.length,
+            engineVersion: ENGINE_VERSION,
+            weightsVersion: version,
+          },
+        },
+      );
+      await this.repo.finishRun(run.id, 'succeeded');
+      return this.current(actor, roomId);
+    } catch (err) {
+      await this.repo.finishRun(run.id, 'failed', 'PIPELINE_ERROR');
+      throw err;
+    }
+  }
+
+  /** Current ranking + the caller's votes + aggregate progress. */
+  async current(actor: Actor, roomId: string) {
+    const { member, room } = await this.policy.requireMember(actor, roomId);
+    const run = await this.repo.latestRun(roomId);
+    if (!run) {
+      return { run: null, candidates: [], votes: { mine: {}, progress: [] } };
+    }
+    const scores = await this.repo.scoresForRun(run.id);
+    const votes = await this.repo.listVotes(roomId);
+    const myVotes = Object.fromEntries(
+      votes.filter((v) => v.memberId === member.id).map((v) => [v.targetPlaceId, v.value]),
+    );
+    const tally = tallyVotes(
+      votes.map((v) => ({ memberId: v.memberId, placeId: v.targetPlaceId, value: v.value })),
+    );
+    return {
+      run: {
+        id: run.id,
+        createdAt: run.createdAt.toISOString(),
+        constraintVersion: run.constraintVersion,
+        engineVersion: run.engineVersion,
+        weightsVersion: run.weightsVersion,
+        stale: scores.length > 0 && scores.every((s) => s.isStale),
+      },
+      decisionMode: room.decisionMode,
+      candidates: scores.map((s) => ({
+        placeId: s.placeId,
+        name: s.name,
+        rank: s.rank,
+        score: s.scoreMicros / 1e6,
+        components: s.components,
+        reasonCodes: s.reasonCodes,
+        stale: s.isStale,
+        myVote: myVotes[s.placeId],
+        points: tally.find((t) => t.placeId === s.placeId)?.points ?? 0,
+      })),
+      votes: {
+        mine: myVotes,
+        progress: tally,
+      },
+    };
+  }
+
+  /** FR-SUG-004 — idempotent vote; couple `match` auto-decides on full match. */
+  async vote(actor: Actor, roomId: string, placeId: string, value: 'yes' | 'no' | 'star') {
+    const { member, room } = await this.policy.requireMember(actor, roomId);
+    if (room.status !== 'matching') {
+      throw AppError.conflict('ROOM_NOT_MATCHING', 'Voting is not open for this room');
+    }
+    const run = await this.repo.latestRun(roomId);
+    if (!run) throw AppError.conflict('NO_SUGGESTIONS', 'Generate suggestions first');
+    const scores = await this.repo.scoresForRun(run.id);
+    if (!scores.some((s) => s.placeId === placeId && !s.isStale)) {
+      // Votes only land on current, allowlisted candidates.
+      throw AppError.badRequest('NOT_A_CANDIDATE', 'Place is not in the current suggestions');
+    }
+
+    await this.repo.upsertVote({
+      roomId,
+      memberId: member.id,
+      placeId,
+      value,
+      event: {
+        eventType: 'vote.cast',
+        resourceType: 'room',
+        resourceId: roomId,
+        payload: { placeId, value },
+      },
+    });
+
+    if (room.decisionMode === 'match') {
+      const votes = await this.repo.listVotes(roomId);
+      const members = new Set(votes.map((v) => v.memberId));
+      const records: VoteRecord[] = votes.map((v) => ({
+        memberId: v.memberId,
+        placeId: v.targetPlaceId,
+        value: v.value,
+      }));
+      const matches = coupleMatches(records, [...members]);
+      // Auto-decide only when every room member has voted on something.
+      const memberCount = run.inputSnapshot
+        ? (run.inputSnapshot as { memberPreferences: unknown[] }).memberPreferences.length
+        : 2;
+      if (matches.length > 0 && members.size >= memberCount) {
+        const rankByPlace = new Map(scores.map((s) => [s.placeId, s.rank]));
+        const best = [...matches].sort(
+          (a, b) => (rankByPlace.get(a) ?? 1e9) - (rankByPlace.get(b) ?? 1e9),
+        )[0]!;
+        const plan = await this.planBuilder.buildAroundWinner(roomId, best, run.id);
+        return { voted: true, matched: true, planId: plan.plan.id };
+      }
+    }
+    return { voted: true, matched: false };
+  }
+
+  /** Host finalizes a vote/host decision; tie resolved by candidate rank. */
+  async finalize(actor: Actor, roomId: string, explicitPlaceId?: string) {
+    const { room } = await this.policy.requireHost(actor, roomId);
+    if (room.status !== 'matching') {
+      throw AppError.conflict('ROOM_NOT_MATCHING', 'Room is not in matching state');
+    }
+    const run = await this.repo.latestRun(roomId);
+    if (!run) throw AppError.conflict('NO_SUGGESTIONS', 'Generate suggestions first');
+    const scores = await this.repo.scoresForRun(run.id);
+
+    let winner: string;
+    let tie = false;
+    if (explicitPlaceId) {
+      // Host decision mode / host tie-break — still allowlisted only.
+      if (!scores.some((s) => s.placeId === explicitPlaceId)) {
+        throw AppError.badRequest('NOT_A_CANDIDATE', 'Place is not in the current suggestions');
+      }
+      winner = explicitPlaceId;
+    } else {
+      const votes = await this.repo.listVotes(roomId);
+      const tally = tallyVotes(
+        votes.map((v) => ({ memberId: v.memberId, placeId: v.targetPlaceId, value: v.value })),
+      );
+      const resolved = resolveWinner(tally, new Map(scores.map((s) => [s.placeId, s.rank])));
+      if (!resolved.winnerPlaceId) {
+        throw AppError.conflict('NO_VOTES', 'No votes to finalize');
+      }
+      winner = resolved.winnerPlaceId;
+      tie = resolved.tie;
+    }
+
+    const plan = await this.planBuilder.buildAroundWinner(roomId, winner, run.id);
+    return { finalized: true, tie, winnerPlaceId: winner, planId: plan.plan.id };
+  }
+}

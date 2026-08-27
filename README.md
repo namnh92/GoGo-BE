@@ -89,21 +89,22 @@ GET  /v1/places/search · GET /v1/places/{id} · POST /v1/places/{id}/reports
 - Outbox + idempotent consumers; không distributed transaction; không giữ DB transaction khi gọi provider ngoài.
 - Audit log append-only cho mọi write nhạy cảm.
 
-## Local development (dự kiến — chốt tại Sprint 0)
+## Local development
 
-Yêu cầu: Node.js LTS, pnpm, Docker (hoặc PostgreSQL + PostGIS local).
+Yêu cầu: Node.js ≥22, pnpm (corepack), Docker.
 
 ```bash
 pnpm install
-cp .env.example .env.local
-pnpm db:migrate
-pnpm db:seed
-pnpm dev
+docker compose -f docker/docker-compose.yml up -d   # postgis :5433, redis :6380
+cp .env.example .env
+DATABASE_URL=postgres://gogo:gogo@localhost:5433/gogo pnpm db:migrate
+DATABASE_URL=postgres://gogo:gogo@localhost:5433/gogo pnpm db:seed
+pnpm dev                                            # api tại http://localhost:3000/v1
 ```
 
-Lệnh chuẩn mục tiêu: `pnpm lint` · `pnpm typecheck` · `pnpm test` · `pnpm test:integration` · `pnpm build`.
+Lệnh chuẩn: `pnpm lint` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` (unit) · `pnpm test:integration` (Testcontainers, cần Docker) · `pnpm build`. Worker: `pnpm --filter @gogo/worker dev` (cần Redis).
 
-> Script sẽ được chốt khi Sprint 0 hoàn thành; README này không phải bằng chứng command đã tồn tại.
+Dev CMS login (seed): `admin@gogo.local` / `gogo-dev-admin-password`.
 
 ## Git
 
@@ -127,4 +128,6 @@ Sprint plan: S0 foundation → S1 identity/room → S2 preference/place → S3 s
 
 ## Trạng thái
 
-**Sprint 0 — skeleton.** Cấu trúc thư mục đã dựng theo tài liệu kiến trúc; code bắt đầu theo backlog WBS ở trên.
+**Core backend đã hiện thực** (PR chain #85–#92): foundation + config/observability, schema 42 bảng + migrations + geo/FTS indexes, auth/guest/session hardened (ADR-0003), rooms/invites/preferences, search tiếng Việt (golden set CI), deterministic suggestion engine + vote/match + plan lock/regenerate, place import pipeline, saved/review/privacy, notifications worker, retention jobs, CMS APIs (RBAC/moderation/ranking console). 74 integration + 33 unit tests.
+
+Còn blocked (xem issue comments): cloud provisioning (#21), preview env (#15), AI refinement provider+DPA (#48), load test env (#76), dashboard observability (#36), E2E FE (#74).

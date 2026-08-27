@@ -40,6 +40,961 @@ paths:
                     type: string
                     enum: [ok]
 
+  /auth/register:
+    post:
+      operationId: register
+      tags: [sessions]
+      summary: Register a user account (optionally claiming a guest session)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, displayName]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                password: { type: string, minLength: 10, maxLength: 128 }
+                displayName: { type: string, minLength: 1, maxLength: 50 }
+                claimGuestToken:
+                  type: string
+                  description: Opaque guest token to re-parent guest history (FR-AUTH-003).
+      responses:
+        '201':
+          description: Registered; web clients also receive HttpOnly session cookies.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenGrant' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: Registration could not be completed (never confirms account existence)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [sessions]
+      summary: Login with email + password (enumeration-safe, lockout on abuse)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '201':
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenGrant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/refresh:
+    post:
+      operationId: refreshSession
+      tags: [sessions]
+      summary: Rotate a refresh token or renew a guest access token
+      description: >
+        Refresh tokens are single-use; presenting a superseded token revokes
+        the whole session family. Web clients may rely on the HttpOnly refresh
+        cookie instead of the body field.
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string }
+                guestToken: { type: string }
+      responses:
+        '201':
+          description: New token grant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenGrant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /sessions/guest:
+    post:
+      operationId: createGuestSession
+      tags: [sessions]
+      summary: Join a room as a guest with a display name only (FR-AUTH-002)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [roomCode, displayName]
+              properties:
+                roomCode: { type: string, minLength: 6, maxLength: 64 }
+                displayName: { type: string, minLength: 1, maxLength: 50 }
+      responses:
+        '201':
+          description: Guest session created; access token is scoped to this room only.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [guestSessionId, roomId, accessToken, guestToken]
+                properties:
+                  guestSessionId: { type: string, format: uuid }
+                  roomId: { type: string, format: uuid }
+                  accessToken: { type: string }
+                  guestToken:
+                    type: string
+                    description: Long-lived opaque credential for re-entry and claim.
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          description: Room expired or no longer joinable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /sessions/current:
+    delete:
+      operationId: endCurrentSession
+      tags: [sessions]
+      summary: Logout — revoke the current session (or all devices)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                allDevices: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Session revoked; cookies cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /me:
+    patch:
+      operationId: updateProfile
+      tags: [me]
+      summary: Update display name / locale
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName: { type: string, minLength: 1, maxLength: 50 }
+                locale: { type: string, enum: [vi, en] }
+      responses:
+        '200': { description: Updated profile facts }
+    delete:
+      operationId: deleteAccount
+      tags: [me]
+      summary: Delete account — PII nulled, sessions revoked, content pseudonymized
+      responses:
+        '200': { description: '{ deleted: true }' }
+    get:
+      operationId: getMe
+      tags: [me]
+      summary: Current actor profile facts
+      responses:
+        '200':
+          description: Actor profile (shape depends on actorType)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [actorType, id]
+                properties:
+                  actorType: { type: string, enum: [user, guest] }
+                  id: { type: string, format: uuid }
+                  displayName: { type: string }
+                  email: { type: string }
+                  locale: { type: string }
+                  roomId: { type: string, format: uuid }
+                  expiresAt: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /rooms:
+    post:
+      operationId: createRoom
+      tags: [rooms]
+      summary: Create a couple/group room with constraint v1 and optional seed places
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, decisionMode, participantCount, constraint]
+              properties:
+                type: { type: string, enum: [couple, group] }
+                decisionMode:
+                  type: string
+                  enum: [match, vote, host]
+                  description: couple allows match|host; group allows vote|host.
+                participantCount: { type: integer, minimum: 2, maximum: 20 }
+                title: { type: string, maxLength: 80 }
+                scheduledDate: { type: string, format: date-time }
+                constraint: { $ref: '#/components/schemas/RoomConstraintInput' }
+                seedPlaceIds:
+                  type: array
+                  maxItems: 10
+                  items: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Room created (creator becomes host)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /rooms/{id}:
+    get:
+      operationId: getRoom
+      tags: [rooms]
+      summary: Room summary facts (members only; share code is host-only)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Room summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /rooms/{id}/constraints:
+    patch:
+      operationId: updateRoomConstraints
+      tags: [rooms]
+      summary: 'Host-only: new constraint version; marks scores/plans stale'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/RoomConstraintInput'
+                - type: object
+                  required: [expectedConstraintVersion]
+                  properties:
+                    expectedConstraintVersion: { type: integer, minimum: 1 }
+                    participantCount: { type: integer, minimum: 2, maximum: 20 }
+      responses:
+        '200':
+          description: Updated summary with bumped constraintVersion
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /rooms/{id}/status:
+    patch:
+      operationId: transitionRoom
+      tags: [rooms]
+      summary: 'Host-only: validated room state transition (SRS §7.2)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [draft, collecting, matching, ready, active, completed, cancelled, expired]
+      responses:
+        '200':
+          description: Transitioned
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomSummary' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /rooms/{id}/members:
+    get:
+      operationId: listRoomMembers
+      tags: [rooms]
+      summary: Member progress facts (never other members' preference selections)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RoomMember' }
+
+  /rooms/{id}/members/{memberId}:
+    delete:
+      operationId: removeRoomMember
+      tags: [rooms]
+      summary: 'Host-only: remove a member (revokes guest session if guest)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: memberId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Removed }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /rooms/{id}/invites:
+    post:
+      operationId: createRoomInvite
+      tags: [rooms]
+      summary: 'Host-only: create a high-entropy expiring invite (code shown once)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                maxUses: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        '201':
+          description: Invite created — plaintext code returned exactly once, only hash stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [inviteId, code, expiresAt]
+                properties:
+                  inviteId: { type: string, format: uuid }
+                  code: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  maxUses: { type: integer }
+    get:
+      operationId: listRoomInvites
+      tags: [rooms]
+      summary: 'Host-only: invite metadata (never codes)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Invites }
+
+  /rooms/{id}/invites/{inviteId}:
+    delete:
+      operationId: revokeRoomInvite
+      tags: [rooms]
+      summary: 'Host-only: revoke an invite'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: inviteId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Revoked }
+
+  /rooms/join:
+    post:
+      operationId: joinRoom
+      tags: [rooms]
+      summary: Authenticated user joins via invite code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [inviteCode]
+              properties:
+                inviteCode: { type: string }
+      responses:
+        '201':
+          description: Joined (idempotent for existing members)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roomId: { type: string, format: uuid }
+                  memberId: { type: string, format: uuid }
+                  role: { type: string, enum: [host, member] }
+        '410':
+          description: Invite expired/revoked/spent or room not joinable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /rooms/join/guest:
+    post:
+      operationId: joinRoomAsGuest
+      tags: [rooms]
+      summary: Guest joins via invite code without an account (FR-AUTH-002)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [inviteCode, displayName]
+              properties:
+                inviteCode: { type: string }
+                displayName: { type: string, minLength: 1, maxLength: 50 }
+      responses:
+        '201':
+          description: Guest session bound to the invite's room
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  guestSessionId: { type: string, format: uuid }
+                  roomId: { type: string, format: uuid }
+                  accessToken: { type: string }
+                  guestToken: { type: string }
+        '410':
+          description: Invite expired/revoked/spent
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /rooms/{id}/seed-places:
+    post:
+      operationId: addRoomSeedPlaces
+      tags: [rooms]
+      summary: 'Host-only: attach verified places to the room (FR-ROOM-010)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [placeIds]
+              properties:
+                placeIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 10
+                  items: { type: string, format: uuid }
+      responses:
+        '200': { description: Updated seed list }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /rooms/{id}/seed-places/{placeId}:
+    delete:
+      operationId: removeRoomSeedPlace
+      tags: [rooms]
+      summary: 'Host-only: remove a seed place'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: placeId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Updated seed list }
+
+  /rooms/{roomId}/preferences/me:
+    get:
+      operationId: getMyPreferences
+      tags: [preferences]
+      summary: Caller's own preference draft (private to the member)
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Own preferences with version }
+    put:
+      operationId: saveMyPreferences
+      tags: [preferences]
+      summary: Autosave with optimistic concurrency (expectedVersion)
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [selections, expectedVersion]
+              properties:
+                selections:
+                  type: object
+                  additionalProperties:
+                    type: array
+                    items: { type: string }
+                  description: Taxonomy kind → selected stable keys.
+                weights:
+                  type: object
+                  additionalProperties: { type: number }
+                expectedVersion: { type: integer, minimum: 0 }
+      responses:
+        '200': { description: 'Saved: { version, isDraft }' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /rooms/{roomId}/preferences/complete:
+    post:
+      operationId: completeMyPreferences
+      tags: [preferences]
+      summary: Mark own preferences complete; room auto-moves to matching when everyone is done
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: '{ completed, roomReadyForMatching }' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /taxonomies:
+    get:
+      operationId: listTaxonomies
+      tags: [preferences]
+      summary: Stable taxonomy keys + i18n labels (clients never hard-code ids)
+      security: []
+      parameters:
+        - name: kinds
+          in: query
+          schema: { type: string }
+          description: Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability)
+      responses:
+        '200': { description: 'kinds → [{ key, sortOrder, labels }]' }
+
+  /places/search:
+    get:
+      operationId: searchPlaces
+      tags: [places]
+      summary: Place search — Vietnamese-normalized text, filters, ranking, cursor
+      description: >
+        FR-SEARCH-001..004/009 + SE-010. Accent-insensitive FTS + trigram typo
+        tolerance + synonym expansion; hard filters in SQL; weighted versioned
+        ranking (meta.weightsVersion); stable keyset cursor. Lodging excluded
+        unless requested. Zero-results emit telemetry without raw PII.
+      security: []
+      parameters:
+        - { name: q, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: lat, in: query, schema: { type: number } }
+        - { name: lng, in: query, schema: { type: number } }
+        - { name: radiusM, in: query, schema: { type: integer, minimum: 100, maximum: 100000 } }
+        - { name: openAt, in: query, schema: { type: string }, description: "'now' or ISO-8601" }
+        - { name: categories, in: query, schema: { type: string }, description: CSV, multi-select }
+        - { name: suitedFor, in: query, schema: { type: string, enum: [couple, group, family] } }
+        - { name: priceMinPerPerson, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: priceMaxPerPerson, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: minRating, in: query, schema: { type: number, minimum: 0, maximum: 5 } }
+        - { name: dietary, in: query, schema: { type: string }, description: CSV, ALL required }
+        - {
+            name: accessibility,
+            in: query,
+            schema: { type: string },
+            description: CSV,
+            ALL required,
+          }
+        - { name: includeLodging, in: query, schema: { type: boolean } }
+        - name: sort
+          in: query
+          schema:
+            {
+              type: string,
+              enum: [relevance, distance, rating, price, curated],
+              default: relevance,
+            }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Ranked results with reason codes and open/price facts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results, nextCursor, meta]
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/PlaceSearchResult' }
+                  nextCursor: { type: [string, 'null'] }
+                  meta:
+                    type: object
+                    properties:
+                      weightsVersion: { type: string }
+                      sort: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /places/{id}:
+    get:
+      operationId: getPlaceDetail
+      tags: [places]
+      summary: Place detail with sources, freshness, hours, verified prices
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Place aggregate (FR-PLAN-004) }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /rooms/{roomId}/suggestions:
+    post:
+      operationId: generateSuggestions
+      tags: [suggestions]
+      summary: Run the deterministic suggestion pipeline (SG-002..005)
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201': { description: Ranked candidates with components + reason codes }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /rooms/{roomId}/suggestions/current:
+    get:
+      operationId: getCurrentSuggestions
+      tags: [suggestions]
+      summary: Current ranking, my votes, vote progress
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          { description: Run info + candidates (score, components, reasonCodes, stale) + votes }
+
+  /rooms/{roomId}/votes/{placeId}:
+    put:
+      operationId: castVote
+      tags: [suggestions]
+      summary: Idempotent vote on a current candidate (FR-SUG-004)
+      description: Couple match mode auto-creates the plan when everyone matched.
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: placeId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value: { type: string, enum: [yes, no, star] }
+      responses:
+        '200':
+          description: '{ voted, matched, planId? }'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /rooms/{roomId}/votes/finalize:
+    post:
+      operationId: finalizeVotes
+      tags: [suggestions]
+      summary: 'Host-only: finalize decision (tally star=2/yes=1; tie → candidate rank or host pick)'
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                placeId:
+                  type: string
+                  format: uuid
+                  description: Optional explicit winner (host mode / tie-break) — must be a current candidate.
+      responses:
+        '201': { description: '{ finalized, tie, winnerPlaceId, planId }' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /rooms/{roomId}/plans/current:
+    get:
+      operationId: getCurrentPlan
+      tags: [plans]
+      summary: The room's current plan version with stops
+      parameters:
+        - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Plan with stops + totals (overBudget from upper bound) }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /plans/{id}:
+    get:
+      operationId: getPlan
+      tags: [plans]
+      summary: Plan by id (members only)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Plan with stops }
+    patch:
+      operationId: editPlanStops
+      tags: [plans]
+      summary: 'Host-only: replace stop list; times/travel/costs recalculated server-side'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedVersion, stops]
+              properties:
+                expectedVersion: { type: integer, minimum: 1 }
+                stops:
+                  type: array
+                  minItems: 1
+                  maxItems: 8
+                  items:
+                    type: object
+                    required: [placeId]
+                    properties:
+                      placeId: { type: string, format: uuid }
+                      durationMinutes: { type: integer, minimum: 10 }
+                      isLocked: { type: boolean, default: false }
+      responses:
+        '200': { description: New plan version }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /plans/{id}/regenerate:
+    post:
+      operationId: regeneratePlan
+      tags: [plans]
+      summary: 'Host-only: regenerate — locked stops are invariant (SG-008)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                excludePlaceIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        '201': { description: New plan version keeping every locked stop }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /plans/{id}/stops/{stopId}/lock:
+    patch:
+      operationId: lockPlanStop
+      tags: [plans]
+      summary: 'Host-only: lock/unlock a stop'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: stopId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locked]
+              properties:
+                locked: { type: boolean }
+      responses:
+        '200': { description: Updated plan }
+
+  /plans/{id}/stops/{stopId}/complete:
+    post:
+      operationId: completePlanStop
+      tags: [plans]
+      summary: Complete a stop during the active date (FR-PLAN-008)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: stopId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201': { description: '{ completed: true }' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /plans/{id}/stops/{stopId}/checkin:
+    post:
+      operationId: checkinPlanStop
+      tags: [plans]
+      summary: Stop check-in — rating/tags/note/photos, optional verified bill (FR-PLAN-008/009)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: stopId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                tags:
+                  type: array
+                  maxItems: 10
+                  items: { type: string, maxLength: 40 }
+                note: { type: string, maxLength: 1000 }
+                photoKeys:
+                  type: array
+                  maxItems: 3
+                  items: { type: string }
+                billTotal:
+                  type: integer
+                  minimum: 0
+                  description: Requires billPhotoKey as evidence.
+                billPeopleCount: { type: integer, minimum: 1 }
+                billPhotoKey: { type: string }
+      responses:
+        '201': { description: Check-in saved (moderation pending); billPerPerson is display math }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /places/imports:
+    post:
+      operationId: submitPlaceImport
+      tags: [places]
+      summary: Submit a Google Maps link for verification (FR-PLACE-001..005)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, maxLength: 2000 }
+                roomId: { type: string, format: uuid }
+      responses:
+        '201':
+          description: >
+            Import result: pending → verified | rejected. Rejections carry a
+            stable reasonCode (NOT_FOUND, INSUFFICIENT_REVIEWS, LOW_RATING,
+            OUT_OF_AREA, CLOSED, INVALID_URL, PROVIDER_ERROR).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /places/imports/{importId}:
+    get:
+      operationId: getPlaceImport
+      tags: [places]
+      summary: Poll an import (owner only)
+      parameters:
+        - { name: importId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: '{ id, status, reasonCode?, placeId? }' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /places/areas:
+    get:
+      operationId: suggestAreas
+      tags: [places]
+      summary: Area autocomplete proxy — provider key server-side, static fallback (FR-PLACE-007)
+      security: []
+      parameters:
+        - { name: query, in: query, required: true, schema: { type: string, maxLength: 120 } }
+        - name: sessionToken
+          in: query
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 64 }
+          description: Groups one typing session for provider billing.
+      responses:
+        '200':
+          description: '{ predictions[], source: provider|fallback, attribution }'
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /me/saved:
+    get:
+      operationId: listSaved
+      tags: [me]
+      summary: Saved places/plans (FR-USER-001)
+      responses:
+        '200': { description: Saved items }
+
+  /me/saved/{type}/{id}:
+    put:
+      operationId: saveItem
+      tags: [me]
+      summary: Save a place or plan (idempotent)
+      parameters:
+        - { name: type, in: path, required: true, schema: { type: string, enum: [place, plan] } }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Saved }
+    delete:
+      operationId: unsaveItem
+      tags: [me]
+      summary: Remove a saved item
+      parameters:
+        - { name: type, in: path, required: true, schema: { type: string, enum: [place, plan] } }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Removed }
+
+  /reviews:
+    post:
+      operationId: createReview
+      tags: [me]
+      summary: Create a review (moderation pending; owner-only edits — FR-USER-002)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating]
+              properties:
+                placeId: { type: string, format: uuid }
+                planId: { type: string, format: uuid }
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                text: { type: string, maxLength: 2000 }
+      responses:
+        '201': { description: '{ id, status: pending }' }
+
+  /me/export:
+    get:
+      operationId: exportMyData
+      tags: [me]
+      summary: Export all actor-owned data (privacy rule)
+      responses:
+        '200': { description: JSON export; audit-logged }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /me/notifications:
+    get:
+      operationId: listNotifications
+      tags: [me]
+      summary: In-app notification inbox (cursor by createdAt)
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': { description: '{ notifications[], nextCursor }' }
+
+  /me/device-tokens:
+    put:
+      operationId: registerDeviceToken
+      tags: [me]
+      summary: Register a push device token (BE-BFF-010)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [platform, token]
+              properties:
+                platform: { type: string, enum: [ios, android, web] }
+                token: { type: string }
+      responses:
+        '200': { description: Registered }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -49,7 +1004,7 @@ components:
     cookieAuth:
       type: apiKey
       in: cookie
-      name: gogo_session
+      name: gogo_at
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -79,6 +1034,129 @@ components:
         maximum: 100
         default: 20
   schemas:
+    RoomConstraintInput:
+      type: object
+      required: [budgetMode, budgetAmount]
+      properties:
+        originText: { type: string, maxLength: 200 }
+        originLat: { type: number, minimum: -90, maximum: 90 }
+        originLng: { type: number, minimum: -180, maximum: 180 }
+        areaKey: { type: string }
+        radiusM: { type: integer, minimum: 100, maximum: 50000 }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, format: date-time }
+        budgetMode: { type: string, enum: [total, per_person] }
+        budgetAmount:
+          type: integer
+          minimum: 0
+          description: Integer minor units, interpreted per budgetMode.
+        currency: { type: string, minLength: 3, maxLength: 3, default: VND }
+        dietaryKeys:
+          type: array
+          items: { type: string }
+        accessibilityKeys:
+          type: array
+          items: { type: string }
+    RoomMember:
+      type: object
+      required: [id, displayName, role, selectionStatus, isGuest]
+      properties:
+        id: { type: string, format: uuid }
+        displayName: { type: string }
+        role: { type: string, enum: [host, member] }
+        selectionStatus: { type: string, enum: [pending, in_progress, completed] }
+        isGuest: { type: boolean }
+        joinedAt: { type: string, format: date-time }
+    RoomSummary:
+      type: object
+      description: Facts only — audience copy is composed client-side from type/participantCount/budgetMode.
+      required: [id, type, status, decisionMode, participantCount, constraintVersion]
+      properties:
+        id: { type: string, format: uuid }
+        code:
+          type: string
+          description: Share code — present for the host only.
+        type: { type: string, enum: [couple, group] }
+        status:
+          type: string
+          enum: [draft, collecting, matching, ready, active, completed, cancelled, expired]
+        decisionMode: { type: string, enum: [match, vote, host] }
+        participantCount: { type: integer }
+        constraintVersion: { type: integer }
+        title: { type: string }
+        scheduledDate: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        myMemberId: { type: string, format: uuid }
+        myRole: { type: string, enum: [host, member] }
+        constraints:
+          allOf:
+            - $ref: '#/components/schemas/RoomConstraintInput'
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/RoomMember' }
+        seedPlaces:
+          type: array
+          items:
+            type: object
+            properties:
+              placeId: { type: string, format: uuid }
+              name: { type: string }
+    PlaceSearchResult:
+      type: object
+      required: [id, name, lat, lng, isLodging, open, reasonCodes, confidence]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        addressText: { type: string }
+        areaKey: { type: string }
+        lat: { type: number }
+        lng: { type: number }
+        rating: { type: number }
+        ratingCount: { type: integer }
+        avgVisitMinutes: { type: integer }
+        suitability:
+          type: object
+          additionalProperties: { type: number }
+        isLodging: { type: boolean }
+        distanceM: { type: integer }
+        pricePerPerson:
+          type: object
+          description: Estimated per-person range with confidence — never fake precision (FR-SEARCH-009).
+          properties:
+            min: { type: integer }
+            max: { type: integer }
+            currency: { type: string }
+            confidence: { type: number }
+        open:
+          type: object
+          description: Facts for "Đang mở · Đóng 23:00" composition client-side.
+          properties:
+            openNow: { type: boolean }
+            closesAtMinute: { type: integer }
+            opensAtMinute: { type: integer }
+            opensDayOffset: { type: integer }
+        freshnessCheckedAt: { type: string, format: date-time }
+        confidence: { type: number }
+        reasonCodes:
+          type: array
+          items: { type: string, enum: [TEXT_MATCH, NEAR_YOU, HIGHLY_RATED, CURATED, OPEN_NOW] }
+    TokenGrant:
+      type: object
+      required: [accessToken, expiresIn]
+      properties:
+        userId: { type: string, format: uuid }
+        claimedRoomId: { type: string, format: uuid }
+        accessToken: { type: string }
+        refreshToken:
+          type: string
+          description: Absent for guest access renewal.
+        roomId:
+          type: string
+          format: uuid
+          description: Present for guest access renewal only.
+        expiresIn:
+          type: integer
+          description: Access token TTL in seconds.
     ErrorEnvelope:
       type: object
       required: [code, message, field_errors, request_id, retryable]

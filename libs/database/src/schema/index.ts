@@ -1,2 +1,7 @@
-// Drizzle schema barrel. Populated per DB-003..DB-008.
-export {};
+export * from './identity';
+export * from './rooms';
+export * from './places';
+export * from './plans';
+export * from './social';
+export * from './cms';
+export * from './platform';

@@ -3,3 +3,4 @@ node_modules
 pnpm-lock.yaml
 migrations
 .turbo
+openapi/gogo.v1.d.ts

@@ -1,0 +1,44 @@
+{
+  "version": "2026-08-27",
+  "note": "Judged query set for offline search evaluation (SE-008). Expected = place names that MUST appear, in relevance order. Extend as real query logs arrive (SE-006).",
+  "judgments": [
+    {
+      "id": "J1",
+      "filters": { "q": "cà phê" },
+      "expected": ["The Workshop Coffee", "Cà phê Đỗ Phủ - Biệt động Sài Gòn"],
+      "k": 5
+    },
+    {
+      "id": "J2",
+      "filters": { "q": "ca phe" },
+      "expected": ["Cà phê Đỗ Phủ - Biệt động Sài Gòn", "The Workshop Coffee"],
+      "k": 5
+    },
+    { "id": "J3", "filters": { "q": "workshp" }, "expected": ["The Workshop Coffee"], "k": 3 },
+    {
+      "id": "J4",
+      "filters": { "q": "bảo tàng" },
+      "expected": ["Bảo tàng Mỹ thuật TP.HCM"],
+      "k": 3
+    },
+    {
+      "id": "J5",
+      "filters": { "categories": ["park"], "lat": 10.776, "lng": 106.692, "radiusM": 2000 },
+      "expected": ["Công viên Tao Đàn"],
+      "k": 3
+    },
+    {
+      "id": "J6",
+      "filters": { "suitedFor": "couple", "sort": "rating" },
+      "expected": ["Cà phê Đỗ Phủ - Biệt động Sài Gòn"],
+      "k": 5
+    },
+    {
+      "id": "J7",
+      "filters": { "priceMaxPerPerson": 50000 },
+      "expected": ["Công viên Tao Đàn"],
+      "k": 5
+    },
+    { "id": "J8", "filters": { "q": "rooftop" }, "expected": ["Saigon Rooftop Bar"], "k": 3 }
+  ]
+}
