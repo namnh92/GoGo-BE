@@ -205,6 +205,20 @@ Google Sheets read, error-report export. Reviewed against spec §12.
 - 🟡 Import history is visible to any `editor`; there is no per-team scoping.
   Accepted for MVP — CMS accounts are staff-only.
 
+### Audit record (BE-IMP-007)
+
+Every audit row now carries `request_id` and, for **admin actors only**,
+`ip_address`. Both come from the request context (`AsyncLocalStorage`), filled
+by one Fastify hook — audit writers sit deep in services that never see the
+request, which is why `request_id` had been declared on the table and populated
+by exactly one writer, and the IP had nowhere to go at all.
+
+IP is PII, so the scope is deliberate: staff accountability needs to tell "that
+admin did it" apart from "that admin's account was taken over". That
+justification does not extend to users or guests, whose actions are audited
+without an IP. The IP comes from `req.ip`, which honours `TRUST_PROXY` — a
+client cannot write its own address into the audit trail.
+
 ## Open risks (tracked)
 
 1. 🔴 SSO for CMS — blocked on IdP (#62 note).

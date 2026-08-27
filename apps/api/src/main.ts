@@ -9,7 +9,7 @@ import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
-import { CSRF_HEADER } from '@gogo/modules';
+import { CSRF_HEADER, runWithRequestContext } from '@gogo/modules';
 import { AppModule } from './app.module';
 import { loadEnv } from './config/env';
 
@@ -57,6 +57,11 @@ export async function createApp(): Promise<NestFastifyApplication> {
   });
 
   const fastify = app.getHttpAdapter().getInstance();
+  // Runs before routing so everything downstream — guards, services, audit
+  // writers — can read the request id and client IP without being handed them.
+  fastify.addHook('onRequest', (req, _reply, done) => {
+    runWithRequestContext({ requestId: String(req.id), ip: req.ip }, done);
+  });
   fastify.addHook('onSend', async (req, reply) => {
     reply.header('x-request-id', String(req.id));
   });

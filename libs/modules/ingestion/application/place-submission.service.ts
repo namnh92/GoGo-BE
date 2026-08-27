@@ -9,6 +9,7 @@ import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
 import { PlaceDedupService } from './place-dedup.service';
 import { PlaceResolverService } from './place-resolver.service';
+import { writeAudit } from '../../shared/audit';
 
 export type ResolveLinkResponse = {
   status: 'RESOLVED' | 'ALREADY_EXISTS' | 'CANDIDATE_SELECTION' | 'UNRESOLVED';
@@ -249,7 +250,7 @@ export class PlaceSubmissionService {
         resultPlaceId,
       })
       .where(eq(schema.placeSubmissions.id, id));
-    await this.db.insert(schema.auditLogs).values({
+    await writeAudit(this.db, {
       actorType: 'admin',
       actorId: adminId,
       action: 'place_submission.decided',

@@ -4,6 +4,7 @@ import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import { SCORING_WEIGHT_BOUNDS } from '../../suggestions/domain/types';
+import { writeAudit } from '../../shared/audit';
 
 /** CMS-007/008/009/010 — moderation, ranking console, imports, ops KPIs. */
 @Injectable()
@@ -17,7 +18,7 @@ export class CmsOpsService {
     resourceId: string,
     diff?: unknown,
   ) {
-    await this.db.insert(schema.auditLogs).values({
+    await writeAudit(this.db, {
       actorType: 'admin',
       actorId: adminId,
       action,

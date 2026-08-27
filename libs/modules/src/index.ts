@@ -105,3 +105,9 @@ export {
 export { IdempotencyInterceptor } from '../shared/idempotency.interceptor';
 export { writeOutbox, type DomainEventInput } from '../shared/outbox';
 export { PrivacyJobs, type PrivacyRunReport } from '../shared/privacy-jobs';
+export {
+  currentRequestContext,
+  runWithRequestContext,
+  type RequestContext,
+} from '../shared/request-context';
+export { writeAudit, type AuditInput } from '../shared/audit';

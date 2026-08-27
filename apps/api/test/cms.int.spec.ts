@@ -606,3 +606,64 @@ describe('RBAC: hierarchical read, exact-match write (BE-IMP-008, #143)', () => 
     expect((await get('/v1/cms/places?limit=1', victim.token)).json().code).toBe('ADMIN_ONLY');
   });
 });
+
+describe('audit request context (BE-IMP-007)', () => {
+  it('records request id and staff IP for an admin write', async () => {
+    const editor = await createAdmin('audit-ctx@gogo.local', 'editor');
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Audit Ctx Place',
+        nameNormalized: 'set-by-trigger',
+        status: 'draft',
+        geom: { x: 106.7, y: 10.77 },
+      })
+      .returning();
+
+    const res = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/places/${place!.id}`,
+      remoteAddress: '10.99.0.7',
+      headers: auth(editor.token),
+      payload: { description: 'audit context' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const [row] = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.resourceId, place!.id));
+    expect(row!.actorId).toBe(editor.id);
+    // Both used to be lost: request_id was declared and never written, and the
+    // IP had nowhere to go at all.
+    expect(row!.requestId).toBe(res.headers['x-request-id']);
+    expect(row!.ipAddress).toBe('10.99.0.7');
+  });
+
+  it('does not record an IP for a non-admin actor', async () => {
+    const reg = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: '10.99.0.8',
+      payload: {
+        email: 'audit-user@gogo.vn',
+        password: 'sufficiently-long-pw',
+        displayName: 'U',
+      },
+    });
+    const del = await api().inject({
+      method: 'DELETE',
+      url: '/v1/me',
+      remoteAddress: '10.99.0.8',
+      headers: auth(reg.json().accessToken),
+    });
+    expect([200, 202, 204]).toContain(del.statusCode);
+
+    const rows = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.actorType, 'user'));
+    // Staff accountability justifies keeping an IP; it does not extend to users.
+    expect(rows.every((r) => r.ipAddress === null)).toBe(true);
+  });
+});

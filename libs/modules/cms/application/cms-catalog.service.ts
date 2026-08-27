@@ -4,6 +4,7 @@ import { schema, type Db } from '@gogo/database';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
+import { writeAudit } from '../../shared/audit';
 
 type PlaceStatus = (typeof schema.places.$inferSelect)['status'];
 
@@ -138,7 +139,7 @@ export class CmsCatalogService {
   constructor(@Inject(DB) private readonly db: Db) {}
 
   private async audit(adminId: string, action: string, resourceId: string, diff?: unknown) {
-    await this.db.insert(schema.auditLogs).values({
+    await writeAudit(this.db, {
       actorType: 'admin',
       actorId: adminId,
       action,
@@ -415,7 +416,7 @@ export class CmsCatalogService {
         .update(schema.places)
         .set({ status: 'archived', updatedAt: sql`now()` })
         .where(eq(schema.places.id, duplicateId));
-      await tx.insert(schema.auditLogs).values({
+      await writeAudit(tx, {
         actorType: 'admin',
         actorId: adminId,
         action: 'place.merged',
