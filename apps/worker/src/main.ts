@@ -8,7 +8,7 @@ import {
   PlaceResolverService,
   PrivacyJobs,
 } from '@gogo/modules';
-import { createLogger } from '@gogo/observability';
+import { LogMetrics, createLogger } from '@gogo/observability';
 import {
   FakePush,
   FakeSheets,
@@ -67,12 +67,16 @@ async function bootstrap(): Promise<void> {
   // start survives an API restart and no message can strand a job.
   const mapsKey = process.env.GOOGLE_MAPS_API_KEY ?? '';
   const sheetsKey = process.env.GOOGLE_SHEETS_API_KEY || mapsKey;
-  const placeProvider = mapsKey ? new GooglePlacesAdapter(mapsKey) : new FakePlaceProvider();
+  const metrics = new LogMetrics(logger);
+  const placeProvider = mapsKey
+    ? new GooglePlacesAdapter(mapsKey, metrics)
+    : new FakePlaceProvider();
   const imports = new PlaceImportJobService(
     db,
     new PlaceResolverService(placeProvider, db),
     new PlaceDedupService(db),
     sheetsKey ? new GoogleSheetsAdapter(sheetsKey) : new FakeSheets(),
+    metrics,
   );
 
   const outboxQueue = new Queue(OUTBOX_QUEUE, { connection });

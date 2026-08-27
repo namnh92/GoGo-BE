@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { schema, type Db, type IngestMessage, type MatchCandidate } from '@gogo/database';
@@ -10,6 +10,7 @@ import {
   type ResolvedProviderPlace,
   type SheetsPort,
 } from '@gogo/providers';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import { applyMapping, resolveMapping, type CanonicalField } from '../domain/column-mapping';
@@ -45,6 +46,7 @@ export class PlaceImportJobService {
     private readonly resolver: PlaceResolverService,
     private readonly dedup: PlaceDedupService,
     @Inject(SHEETS_PROVIDER) private readonly sheets: SheetsPort,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
   // --- creation ------------------------------------------------------------
@@ -264,6 +266,10 @@ export class PlaceImportJobService {
       return created!;
     });
 
+    this.metrics.increment('place_import_jobs_total', {
+      status: job.status,
+      source_type: input.sourceType,
+    });
     await this.audit(input.adminId, 'place_import.created', job.id, {
       sourceType: input.sourceType,
       mode: input.mode,
@@ -282,12 +288,15 @@ export class PlaceImportJobService {
 
   /** Import history (spec §9.2), newest first. */
   async listJobs(options: { limit: number; offset: number }) {
-    const rows = await this.db
+    // limit + 1 so `nextOffset` means "there is more", not "maybe more" —
+    // the CMS table should never have to fetch an empty page to find out.
+    const page = await this.db
       .select()
       .from(schema.placeIngestJobs)
       .orderBy(desc(schema.placeIngestJobs.createdAt))
-      .limit(options.limit)
+      .limit(options.limit + 1)
       .offset(options.offset);
+    const rows = page.slice(0, options.limit);
     return {
       items: rows.map((j) => ({
         id: j.id,
@@ -305,7 +314,7 @@ export class PlaceImportJobService {
         createdAt: j.createdAt.toISOString(),
         completedAt: j.completedAt?.toISOString(),
       })),
-      nextOffset: rows.length === options.limit ? options.offset + rows.length : null,
+      nextOffset: page.length > options.limit ? options.offset + rows.length : null,
     };
   }
 
@@ -351,13 +360,14 @@ export class PlaceImportJobService {
         )
       : eq(schema.placeIngestRows.jobId, jobId);
 
-    const rows = await this.db
+    const page = await this.db
       .select()
       .from(schema.placeIngestRows)
       .where(where)
       .orderBy(asc(schema.placeIngestRows.rowNumber))
-      .limit(options.limit)
+      .limit(options.limit + 1)
       .offset(options.offset);
+    const rows = page.slice(0, options.limit);
 
     return {
       items: rows.map((r) => ({
@@ -375,7 +385,7 @@ export class PlaceImportJobService {
         errors: r.errors,
         warnings: r.warnings,
       })),
-      nextOffset: rows.length === options.limit ? options.offset + rows.length : null,
+      nextOffset: page.length > options.limit ? options.offset + rows.length : null,
     };
   }
 
@@ -546,6 +556,10 @@ export class PlaceImportJobService {
             .update(schema.placeIngestJobs)
             .set({ status: 'paused_provider_quota' })
             .where(eq(schema.placeIngestJobs.id, jobId));
+          this.metrics.increment('place_import_jobs_total', {
+            status: 'paused_provider_quota',
+            source_type: job.sourceType,
+          });
           return { processed: 0, hasMore: false };
         }
         await this.failRow(row.id, {
@@ -573,7 +587,19 @@ export class PlaceImportJobService {
         [hints.name, hints.district, hints.city].filter(Boolean).join(' '),
       )}`;
 
-    const outcome = await this.resolver.resolveFromUrl(url, hints);
+    const outcome = await this.metrics.time(
+      'place_resolve_duration_ms',
+      { source: 'cms_import' },
+      () => this.resolver.resolveFromUrl(url, hints),
+    );
+    this.metrics.increment('place_resolve_confidence_bucket', {
+      source: 'cms_import',
+      bucket: confidenceBucket(
+        outcome.status === 'UNRESOLVED'
+          ? outcome.decision?.best?.confidence
+          : outcome.decision.best?.confidence,
+      ),
+    });
 
     if (outcome.status === 'NEEDS_CONFIRMATION') {
       await this.db
@@ -593,6 +619,7 @@ export class PlaceImportJobService {
           updatedAt: new Date(),
         })
         .where(eq(schema.placeIngestRows.id, rowId));
+      this.countRow('needs_confirmation', 'PLACE_MATCH_AMBIGUOUS');
       return;
     }
 
@@ -613,6 +640,7 @@ export class PlaceImportJobService {
           updatedAt: new Date(),
         })
         .where(eq(schema.placeIngestRows.id, rowId));
+      this.countRow('unresolved', `PLACE_${outcome.reasonCode}`);
       return;
     }
 
@@ -645,6 +673,8 @@ export class PlaceImportJobService {
         .update(schema.placeIngestRows)
         .set({ ...base, status: 'duplicate', matchedPlaceId: verdict.placeId })
         .where(eq(schema.placeIngestRows.id, rowId));
+      this.countRow('duplicate', 'PLACE_ALREADY_LINKED');
+      this.metrics.increment('place_duplicate_candidates_total', { kind: 'provider_id' });
       return;
     }
     if (verdict.kind === 'MERGE_CANDIDATE') {
@@ -663,6 +693,8 @@ export class PlaceImportJobService {
           ],
         })
         .where(eq(schema.placeIngestRows.id, rowId));
+      this.countRow('duplicate', 'PLACE_DUPLICATE_CANDIDATE');
+      this.metrics.increment('place_duplicate_candidates_total', { kind: 'name_distance' });
       return;
     }
 
@@ -670,9 +702,15 @@ export class PlaceImportJobService {
       .update(schema.placeIngestRows)
       .set({ ...base, status: 'ready' })
       .where(eq(schema.placeIngestRows.id, rowId));
+    this.countRow('ready');
+  }
+
+  private countRow(status: string, errorCode?: string): void {
+    this.metrics.increment('place_import_rows_total', { status, error_code: errorCode });
   }
 
   private async failRow(rowId: string, message: IngestMessage): Promise<void> {
+    this.countRow('failed', message.code);
     await this.db
       .update(schema.placeIngestRows)
       .set({ status: 'failed', errors: [message], updatedAt: new Date() })
@@ -950,6 +988,7 @@ export class PlaceImportJobService {
       .update(schema.placeIngestJobs)
       .set({ status, completedAt: new Date() })
       .where(eq(schema.placeIngestJobs.id, jobId));
+    this.metrics.increment('place_import_jobs_total', { status, source_type: job.sourceType });
   }
 
   private async taxonomyKeys(): Promise<{
@@ -1032,6 +1071,15 @@ function toCandidate(c: {
     lat: c.target.lat,
     lng: c.target.lng,
   };
+}
+
+/** Confidence histogram is coarse on purpose — ops read the shape, not the digits. */
+function confidenceBucket(value: number | undefined): string {
+  if (value === undefined) return 'none';
+  if (value >= 0.9) return '0.9-1.0';
+  if (value >= 0.7) return '0.7-0.9';
+  if (value >= 0.5) return '0.5-0.7';
+  return '0-0.5';
 }
 
 /** `normalized_input` is stored as jsonb; the writer is the only shape source. */

@@ -21,7 +21,16 @@ const RESILIENCE = {
  * is configured — CI and dev use the fakes.
  */
 export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompletePort {
-  constructor(private readonly apiKey: string) {}
+  /**
+   * PI-SRE-001: cost is billed per SKU, so the counter is labelled by the call
+   * that produced it — that is the only way an invoice can be reconciled.
+   */
+  constructor(
+    private readonly apiKey: string,
+    private readonly metrics: {
+      increment(name: string, labels?: Record<string, string | number | undefined>): void;
+    } = { increment: () => undefined },
+  ) {}
 
   async resolveUrl(url: string): Promise<string | null> {
     // Direct place_id in the URL — no network needed.
@@ -158,6 +167,7 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
     init: { method: string; body?: string; fieldMask: string },
   ): Promise<T> {
     return withResilience({ name, ...RESILIENCE }, async (signal) => {
+      const started = Date.now();
       const res = await fetch(url, {
         method: init.method,
         ...(init.body !== undefined ? { body: init.body } : {}),
@@ -168,6 +178,12 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
           'X-Goog-FieldMask': init.fieldMask,
         },
       });
+      this.metrics.increment('places_provider_requests_total', {
+        method: name,
+        status: res.status,
+        duration_ms: Date.now() - started,
+      });
+      if (res.ok) this.metrics.increment('places_provider_cost_units', { sku: name });
       // 429 / RESOURCE_EXHAUSTED pauses the import instead of retrying into
       // an exhausted budget (spec §9.4).
       if (res.status === 429) throw new ProviderQuotaExceededError('google.places');

@@ -13,6 +13,7 @@ import {
   SHEETS_PROVIDER,
   STORAGE_PROVIDER,
 } from '@gogo/providers';
+import { LogMetrics, METRICS, createLogger, type MetricsPort } from '@gogo/observability';
 import { APP_CONFIG, type AppConfig } from './config/env';
 
 /**
@@ -26,11 +27,11 @@ import { APP_CONFIG, type AppConfig } from './config/env';
   providers: [
     {
       provide: PLACE_PROVIDER,
-      useFactory: (config: AppConfig) =>
+      useFactory: (config: AppConfig, metrics: MetricsPort) =>
         config.GOOGLE_MAPS_API_KEY
-          ? new GooglePlacesAdapter(config.GOOGLE_MAPS_API_KEY)
+          ? new GooglePlacesAdapter(config.GOOGLE_MAPS_API_KEY, metrics)
           : new FakePlaceProvider(),
-      inject: [APP_CONFIG],
+      inject: [APP_CONFIG, METRICS],
     },
     {
       provide: AREA_AUTOCOMPLETE,
@@ -50,9 +51,24 @@ import { APP_CONFIG, type AppConfig } from './config/env';
           : new FakeSheets(),
       inject: [APP_CONFIG],
     },
+    {
+      // PI-SRE-001: metrics ride the log stream in the MVP stack — no collector
+      // to run, and any aggregator can count and alert on them.
+      provide: METRICS,
+      useFactory: (config: AppConfig) =>
+        new LogMetrics(createLogger({ level: config.LOG_LEVEL, name: 'gogo-metrics' })),
+      inject: [APP_CONFIG],
+    },
     { provide: PUSH_PROVIDER, useClass: FakePush },
     { provide: STORAGE_PROVIDER, useClass: FakeStorage },
   ],
-  exports: [PLACE_PROVIDER, AREA_AUTOCOMPLETE, SHEETS_PROVIDER, PUSH_PROVIDER, STORAGE_PROVIDER],
+  exports: [
+    PLACE_PROVIDER,
+    AREA_AUTOCOMPLETE,
+    SHEETS_PROVIDER,
+    PUSH_PROVIDER,
+    STORAGE_PROVIDER,
+    METRICS,
+  ],
 })
 export class ProvidersModule {}
