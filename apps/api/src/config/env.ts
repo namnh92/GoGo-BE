@@ -117,6 +117,12 @@ const envSchema = z
     APNS_BUNDLE_ID: z.string().default(''),
     APNS_PRIVATE_KEY_B64: z.string().default(''),
     APNS_ENV: z.enum(['sandbox', 'production']).default('sandbox'),
+    /**
+     * PI-SRE-001 — bearer token for `GET /metrics`. Empty means the endpoint
+     * answers 404: series names and label values describe internal structure,
+     * and an unconfigured deployment must not quietly publish it.
+     */
+    METRICS_TOKEN: z.string().default(''),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
   })

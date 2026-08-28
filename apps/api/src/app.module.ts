@@ -25,6 +25,7 @@ import { DatabaseModule } from './database.module';
 import { ProvidersModule } from './providers.module';
 import { DocsController } from './health/docs.controller';
 import { HealthController } from './health/health.controller';
+import { MetricsController } from './health/metrics.controller';
 
 @Global()
 @Module({
@@ -55,7 +56,7 @@ class ConfigModule {}
     IngestionModule,
     UploadsModule,
   ],
-  controllers: [HealthController, DocsController],
+  controllers: [HealthController, DocsController, MetricsController],
   providers: [
     { provide: APP_FILTER, useClass: AppExceptionFilter },
     { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },

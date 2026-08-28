@@ -55,3 +55,75 @@ acceptance for this doc.
 1. PR includes: forward test on snapshot (CI does fresh-container apply), documented rollback path, lock analysis (no long exclusive locks; use `CREATE INDEX CONCURRENTLY` for new prod indexes **[infra]** — drizzle migration files hand-edited when needed per ADR-0002).
 2. Apply in maintenance budget window; monitor `pg_stat_activity` for lock waits **[infra]**.
 3. Verify: app boots (fail-fast config), health check, smoke.
+
+## 7. Ingestion & platform alerts (PI-SRE-001, #120)
+
+Metrics are scraped from `GET /v1/metrics`, guarded by `METRICS_TOKEN`. With no
+token set the route answers 404 — an unconfigured deployment does not quietly
+publish its internals. Alert conditions live in `docs/infrastructure.md` §3b;
+this is what to do when one fires.
+
+`ALERTED_METRICS` in `@gogo/observability` lists the names those rules depend
+on, and a test fails if one is renamed. An alert matching a series nobody emits
+looks exactly like an alert that is quiet because nothing is wrong, which is
+the failure this guards against.
+
+### Break-glass takedown (`cms_emergency_takedown_total`)
+
+**Pages immediately, on any occurrence.**
+
+1. `GET /v1/cms/audit?breakGlass=true` — actor, role, reason, request id, IP.
+2. One takedown with a plausible reason is the system working. Several in a
+   row from one actor is the signal that matters: treat it as a possible
+   account compromise, not as a busy moderator.
+3. If compromised: suspend the admin (`status = suspended`), which kills read
+   and write on the next request, then review every action in that window.
+4. Restoring is a separate, privileged action on purpose — do not reverse a
+   takedown to "tidy up" before the review is done.
+
+### Ingestion paused on provider quota (`place_import_jobs_total{status="paused_provider_quota"}`)
+
+Not a data error. Rows are intact and the job is waiting.
+
+1. Check the Google Cloud console for the actual quota and the daily spend.
+2. If quota is genuinely exhausted, decide whether to raise it or wait — the
+   job resumes with `POST /v1/cms/place-imports/{jobId}/start`, from where it
+   stopped, with no duplicate rows.
+3. Do **not** cancel to "clear" the alert: cancel drops unprocessed chunks and
+   the already-imported rows stay, which is the confusing half-state.
+
+### Provider errors > 10% (`places_provider_requests_total{status!~"2.."}`)
+
+1. Distinguish key problems from outages: a wrong or expired key fails every
+   call, an outage fails some.
+2. Key problems — rotate `GOOGLE_MAPS_API_KEY` from the secret manager and
+   restart. The circuit breaker will have opened; it closes on its own after
+   the cooldown, so no manual reset.
+3. Outage — nothing to do but wait. Ingestion pauses, search and suggestions
+   keep working on catalog data, and travel time falls back to straight-line
+   estimates marked as estimates.
+
+### Provider slow (p95 `place_resolve_duration_ms` > 3s)
+
+A 5,000-row job will not finish inside its window. Either accept the longer
+run or pause the import; do not raise the timeout, which only moves the
+failure later and burns quota on calls that will be abandoned.
+
+### Cost over budget (`places_provider_cost_units`)
+
+The metric is the early warning, **not** the control. The binding limit is the
+budget alert in Google Cloud Billing — set that too, because a metric on a
+process that has stopped emitting cannot tell you it is spending.
+
+### Submissions stale (p95 `place_submission_publish_latency_hours` > 72h)
+
+The moderation queue is being ignored rather than failing. Check
+`GET /v1/cms/place-submissions` for depth, and whether one editor account is
+carrying the whole queue.
+
+### super_admin bypass (`cms_super_admin_bypass_total`)
+
+A rising count means the role model does not fit the work people actually do —
+it is not, by itself, evidence that anyone misbehaved. Read the audit with
+`authorization_path = 'super_admin_bypass'`, see which routes keep needing it,
+and fix the role model rather than the people.

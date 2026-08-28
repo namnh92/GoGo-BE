@@ -127,6 +127,31 @@ tags:
     description: Staff-only endpoints — not used by the mobile app.
 
 paths:
+  /metrics:
+    get:
+      operationId: scrapeMetrics
+      tags: [system]
+      summary: Prometheus text exposition for a scraper
+      description: >
+        Guarded by `METRICS_TOKEN` as a bearer token. Series names and label
+        values describe internal structure — which providers are called, which
+        admin actions happen — so this is not public.
+
+
+        With no token configured the route answers **404**, not 401: an
+        unconfigured endpoint should not advertise that it exists and is
+        merely locked.
+      responses:
+        '200':
+          description: Metrics in Prometheus text format
+          content:
+            text/plain:
+              schema: { type: string }
+        '401':
+          description: Missing or wrong token
+        '404':
+          description: No metrics token is configured in this environment
+
   /health:
     get:
       operationId: getHealth
