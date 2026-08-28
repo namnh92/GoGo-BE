@@ -50,11 +50,8 @@ beforeAll(async () => {
   process.env.CORS_ORIGINS = 'http://localhost:5174,https://cms.gogo.vn';
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 2 });
-
   // The container is stopped in afterAll; an idle client erroring as the
-
   // server goes away must not fail the run that already passed.
-
   pool.on('error', () => undefined);
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });

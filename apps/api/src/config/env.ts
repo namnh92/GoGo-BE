@@ -15,8 +15,18 @@ const envSchema = z
      * exposure), a number = trust that many hops closest to the server, or a
      * comma-separated CIDR list. NEVER `true`: trusting every hop lets any
      * client spoof its IP and walk past every IP-keyed rate limit.
+     *
+     * Defaults to `false`, and production must set it explicitly. It used to
+     * default to `1`, which trusts the direct peer — so anywhere the API was
+     * reachable without a proxy in front, a client could send its own
+     * X-Forwarded-For and get a fresh rate-limit bucket per request. Measured:
+     * 15 login attempts with a rotating header drew no 429 at all, while the
+     * same 15 from a fixed address were cut off after 10.
+     *
+     * A wrong value now costs availability (every client looks like the proxy)
+     * rather than security, and an operator behind a proxy is made to say so.
      */
-    TRUST_PROXY: z.string().default('1'),
+    TRUST_PROXY: z.string().optional(),
     DATABASE_URL: z.string().url().or(z.string().startsWith('postgres://')),
     REDIS_URL: z.string().startsWith('redis://').or(z.string().startsWith('rediss://')),
     AUTH_JWT_SECRET: z.string().default(''),
@@ -117,6 +127,14 @@ const envSchema = z
           code: z.ZodIssueCode.custom,
           path: ['AUTH_JWT_SECRET'],
           message: 'AUTH_JWT_SECRET must be at least 32 chars in production',
+        });
+      }
+      if (env.TRUST_PROXY === undefined || env.TRUST_PROXY.trim() === '') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['TRUST_PROXY'],
+          message:
+            'TRUST_PROXY must be set explicitly in production: "false" when the API is directly exposed, or the hop count / CIDR list of the proxies in front of it',
         });
       }
       if (env.CMS_MFA_ENCRYPTION_KEY.length < 32) {
