@@ -157,3 +157,11 @@ export {
   type FeedbackContext,
   type ValidatedFeedback,
 } from '../suggestions/domain/feedback';
+
+export {
+  ExperimentsService,
+  RANKING_EXPERIMENT,
+  type Assignment,
+} from '../suggestions/application/experiments.service';
+export { assign, bucket, CONTROL } from '../suggestions/domain/assignment';
+export { SUGGESTION_LATENCY_BUDGET_MS } from '../suggestions/application/suggestion.service';

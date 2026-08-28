@@ -75,3 +75,51 @@ unique index).
 SG-009 AI refinement (needs provider + DPA — blocked, tracked GoGo-BE#48),
 SG-010 offline eval/A-B (partial: versions persisted; assignment + cost
 budget tracked GoGo-BE#49).
+
+
+## Experiments and evaluation (SG-010, #49)
+
+**The subject is the room, never the member.** A group room split across two
+variants would compare two systems and call it one experiment, and the plan
+would depend on who asked for it. Assignment is `sha256(experimentKey:roomId)`
+mapped into the configured shares — computed rather than stored, so a room
+always lands in the same variant and there is no row whose loss would silently
+reassign it mid-experiment. The salt is the experiment key, so two experiments
+running over the same rooms do not correlate.
+
+Shares may sum to less than 1; the remainder is control. Summing to more is
+refused, because the alternative is silently dropping whichever variant sorted
+last.
+
+**A variant names an approved ranking config version.** Approved, not draft: an
+experiment must not become a way to put unreviewed weights in front of users,
+and the four-eyes rule stays the gate. A variant naming a version that is not
+approved falls back to the active config and says so in the recorded weights
+version, so the audit does not claim the experiment ran when it did not.
+
+**Null is not control.** A run with no `experiment_key` means no experiment was
+defined; a run with a key and `control` means the experiment ran and this room
+was the baseline. Those are different facts about a result and are stored
+differently.
+
+**The kill switch is a normal write.** `PUT /cms/experiments/{key}` with
+`enabled: false` sends every subject to control on the next request. A switch
+that needs a deploy is not a switch. Definitions are read per call rather than
+cached for the same reason.
+
+**Offline evaluation replays stored snapshots.** Every suggestion run keeps the
+immutable snapshot it was computed from, so a candidate config can be scored
+against real rooms before anyone is exposed to it — which is what makes
+activating a config a decision rather than a hope. It reads, scores in memory
+and writes nothing: no plan, no run, no user.
+
+Runs where no candidate passes the hard filters are **skipped, not counted as
+agreement** — counting them would flatter every candidate config, since both
+configs return the same nothing. Out-of-bounds weights are refused outright:
+any number produced from them would describe a config the engine would have
+rejected anyway.
+
+**Latency is a result too.** Every run records `latency_ms` and emits
+`suggestion_run_latency_ms` labelled by variant, with
+`suggestion_run_over_budget_total` past 3s. A variant that wins on ranking and
+loses on speed is two results, and only one of them shows up in ranking.

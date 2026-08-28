@@ -204,3 +204,23 @@ export const collectionItems = pgTable(
   },
   (t) => [uniqueIndex('collection_items_unique').on(t.collectionId, t.placeId)],
 );
+
+/**
+ * SG-010 (#49) — experiment definitions.
+ *
+ * The assignment is computed from a hash rather than stored, so a room always
+ * lands in the same variant and a lost row cannot silently reassign it. What
+ * lives here is the definition — which is what makes the kill switch possible
+ * — while the variant each run used is recorded on the run itself.
+ */
+export const experiments = pgTable('experiments', {
+  key: text('key').primaryKey(),
+  description: text('description'),
+  /** Disabling sends every subject to control on the next request. */
+  enabled: boolean('enabled').notNull().default(false),
+  /** Variant name -> relative weight. */
+  variants: jsonb('variants').notNull().$type<Record<string, number>>(),
+  createdByAdminId: uuid('created_by_admin_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

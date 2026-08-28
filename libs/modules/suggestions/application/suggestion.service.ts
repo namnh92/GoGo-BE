@@ -1,8 +1,18 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
+import { METRICS, type MetricsPort } from '@gogo/observability';
+import { CONTROL } from '../domain/assignment';
+import { ExperimentsService, RANKING_EXPERIMENT } from './experiments.service';
+
+/**
+ * SG-010 — the latency a suggestion run is expected to fit in. Exceeding it is
+ * not an error (a slow answer still beats no answer), but it is counted, so a
+ * variant that wins on ranking and loses on speed is visible as both.
+ */
+export const SUGGESTION_LATENCY_BUDGET_MS = 3_000;
 import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
 import type { Actor } from '../../identity/domain/actor';
 import { RoomPolicy } from '../../rooms/presentation/room-policy';
@@ -30,6 +40,8 @@ export class SuggestionService {
     private readonly planBuilder: PlanBuilderService,
     @Inject(DB) private readonly db: Db,
     @Inject(ROOM_EVENT_BUS) private readonly events: RoomEventBus,
+    private readonly experiments: ExperimentsService,
+    @Optional() @Inject(METRICS) private readonly metrics?: MetricsPort,
   ) {}
 
   /** Transport-only: a realtime failure never fails the write it describes. */
@@ -41,8 +53,33 @@ export class SuggestionService {
     }
   }
 
-  /** Versioned weights from ranking_configs with SG-001 bounds enforcement. */
-  private async activeWeights(): Promise<{ weights: ScoringWeights; version: string }> {
+  /**
+   * Versioned weights from ranking_configs with SG-001 bounds enforcement.
+   *
+   * SG-010: a variant names an **approved** config version to try. Approved,
+   * not draft — an experiment must not be a way to put unreviewed weights in
+   * front of users, and the four-eyes rule stays the gate. A variant naming a
+   * version that is not approved falls back to the active config rather than
+   * failing the run, and says so in the version string so the audit does not
+   * claim the experiment ran.
+   */
+  private async activeWeights(
+    variant?: string,
+  ): Promise<{ weights: ScoringWeights; version: string }> {
+    if (variant && variant !== CONTROL) {
+      const candidate = await this.db.execute(sql`
+        select version, weights from ranking_configs
+        where key = 'suggestion.scoring'
+          and version = ${Number(variant)}
+          and status in ('approved', 'active')
+        limit 1
+      `);
+      const row = candidate.rows[0] as
+        { version: number; weights: Partial<ScoringWeights> } | undefined;
+      if (row) return this.boundsChecked(row);
+      // Falls through to the active config below.
+    }
+
     const rows = await this.db.execute(sql`
       select version, weights from ranking_configs
       where key = 'suggestion.scoring' and status = 'active'
@@ -50,6 +87,13 @@ export class SuggestionService {
     `);
     const row = rows.rows[0] as { version: number; weights: Partial<ScoringWeights> } | undefined;
     if (!row) return { weights: DEFAULT_SCORING_WEIGHTS, version: 'default' };
+    return this.boundsChecked(row);
+  }
+
+  private boundsChecked(row: { version: number; weights: Partial<ScoringWeights> }): {
+    weights: ScoringWeights;
+    version: string;
+  } {
     const merged: ScoringWeights = { ...DEFAULT_SCORING_WEIGHTS, ...row.weights };
     for (const [key, bound] of Object.entries(SCORING_WEIGHT_BOUNDS)) {
       const v = merged[key as keyof ScoringWeights];
@@ -72,14 +116,22 @@ export class SuggestionService {
     // than an unexplained pause while the pipeline runs.
     await this.publish({ roomId, type: 'matching.started', payload: {} });
 
+    const startedAt = Date.now();
+    // SG-010: the room is the subject, never the member. Two people in one
+    // room landing in different variants would compare two systems and call
+    // it one experiment, and the plan would depend on who asked for it.
+    const assignment = await this.experiments.assignmentFor(RANKING_EXPERIMENT, roomId);
+
     const snapshot = await this.repo.buildSnapshot(roomId);
-    const { weights, version } = await this.activeWeights();
+    const { weights, version } = await this.activeWeights(assignment.variant);
     const run = await this.repo.createRun({
       roomId,
       constraintVersion: snapshot.constraintVersion,
       engineVersion: ENGINE_VERSION,
       weightsVersion: version,
       inputSnapshot: snapshot,
+      ...(assignment.key ? { experimentKey: assignment.key } : {}),
+      ...(assignment.key ? { experimentVariant: assignment.variant } : {}),
     });
 
     try {
@@ -109,7 +161,20 @@ export class SuggestionService {
           },
         },
       );
-      await this.repo.finishRun(run.id, 'succeeded');
+      const latencyMs = Date.now() - startedAt;
+      await this.repo.finishRun(run.id, 'succeeded', undefined, latencyMs);
+      // SG-010 cost/latency budget. Recorded per run and emitted with the
+      // variant, because "the new weights are better" and "the new weights are
+      // slower" are both results and only one of them shows up in ranking.
+      this.metrics?.observe('suggestion_run_latency_ms', latencyMs, {
+        variant: assignment.variant,
+        weights_version: version,
+      });
+      if (latencyMs > SUGGESTION_LATENCY_BUDGET_MS) {
+        this.metrics?.increment('suggestion_run_over_budget_total', {
+          variant: assignment.variant,
+        });
+      }
       await this.publish({
         roomId,
         type: 'suggestions.generated',
@@ -130,7 +195,7 @@ export class SuggestionService {
       });
       return this.current(actor, roomId);
     } catch (err) {
-      await this.repo.finishRun(run.id, 'failed', 'PIPELINE_ERROR');
+      await this.repo.finishRun(run.id, 'failed', 'PIPELINE_ERROR', Date.now() - startedAt);
       await this.publish({
         roomId,
         type: 'matching.failed',

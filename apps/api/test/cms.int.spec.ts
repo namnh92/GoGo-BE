@@ -1643,3 +1643,173 @@ describe('admin MFA hardening', () => {
     expect(after.statusCode).toBe(401);
   });
 });
+
+/**
+ * SG-010 (#49) — A/B assignment, offline evaluation, and the kill switch. The
+ * acceptance is "version audit + kill switch", and both are asserted here
+ * against the real endpoints rather than the units underneath.
+ */
+describe('experiments and offline evaluation', () => {
+  async function opsAdmin(email: string) {
+    return createAdmin(email, 'ops_admin');
+  }
+
+  it('records who changed an experiment and what the split was', async () => {
+    const ops = await opsAdmin('exp-audit@gogo.local');
+    const res = await api().inject({
+      method: 'PUT',
+      url: '/v1/cms/experiments/suggestion.ranking',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { enabled: true, variants: { '7': 0.5 }, description: 'try v7 weights' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const audit = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.resourceId, 'suggestion.ranking'));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.action).toBe('experiment.created');
+    expect(audit[0]!.actorId).toBe(ops.id);
+    // The audit is the version record: what the split was, from when.
+    expect(
+      (audit[0]!.diff as { after: { variants: Record<string, number> } }).after.variants,
+    ).toEqual({ '7': 0.5 });
+  });
+
+  it('refuses a split that allocates more than everyone', async () => {
+    const ops = await opsAdmin('exp-overalloc@gogo.local');
+    const res = await api().inject({
+      method: 'PUT',
+      url: '/v1/cms/experiments/over.allocated',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { enabled: true, variants: { a: 0.7, b: 0.6 } },
+    });
+    // Silently dropping whichever variant sorted last is the kind of quiet
+    // miscount an experiment cannot survive.
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('VARIANT_SHARES_EXCEED_ONE');
+  });
+
+  it('reports the control share rather than making ops compute it', async () => {
+    const ops = await opsAdmin('exp-control@gogo.local');
+    await api().inject({
+      method: 'PUT',
+      url: '/v1/cms/experiments/partial.split',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { enabled: true, variants: { a: 0.1, b: 0.2 } },
+    });
+    const list = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/experiments',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+    });
+    const row = list.json().find((e: { key: string }) => e.key === 'partial.split');
+    expect(row.controlShare).toBeCloseTo(0.7, 4);
+  });
+
+  it('switching an experiment off is a normal write, not a deploy', async () => {
+    const ops = await opsAdmin('exp-killswitch@gogo.local');
+    const url = '/v1/cms/experiments/kill.switch';
+    await api().inject({
+      method: 'PUT',
+      url,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { enabled: true, variants: { a: 1 } },
+    });
+    const off = await api().inject({
+      method: 'PUT',
+      url,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { enabled: false, variants: { a: 1 } },
+    });
+    expect(off.statusCode).toBe(200);
+    expect(off.json().enabled).toBe(false);
+
+    // The definition survives being switched off: history is not deleted.
+    const list = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/experiments',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+    });
+    expect(list.json().find((e: { key: string }) => e.key === 'kill.switch').variants).toEqual({
+      a: 1,
+    });
+  });
+
+  it('evaluates a candidate config without writing anything', async () => {
+    const ops = await opsAdmin('exp-evaluate@gogo.local');
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/ranking-configs',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { key: 'suggestion.scoring', weights: { distance: 0.2, quality: 0.25 } },
+    });
+    expect(created.statusCode).toBe(201);
+    const configId = created.json().id as string;
+
+    const runsBefore = await db.execute(sql`select count(*)::int as n from suggestion_runs`);
+    const res = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/ranking-configs/${configId}/evaluate?sampleSize=10`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.configVersion).toBeGreaterThan(0);
+    expect(body.metrics).toHaveProperty('top1Agreement');
+    expect(body.metrics).toHaveProperty('newZeroResults');
+
+    const runsAfter = await db.execute(sql`select count(*)::int as n from suggestion_runs`);
+    // Offline in the strict sense: no run, no plan, no user.
+    expect((runsAfter.rows[0] as { n: number }).n).toBe((runsBefore.rows[0] as { n: number }).n);
+  });
+
+  it('refuses to evaluate weights the engine would itself reject', async () => {
+    const ops = await opsAdmin('exp-bounds@gogo.local');
+    // Written straight to the table: the create endpoint enforces bounds, and
+    // the point here is that evaluation does not trust the row either.
+    const [config] = await db
+      .insert(schema.rankingConfigs)
+      .values({
+        key: 'suggestion.scoring',
+        version: 9_001,
+        status: 'draft',
+        weights: { distance: 99 },
+        bounds: {},
+        createdByAdminId: ops.id,
+      })
+      .returning();
+
+    const res = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/ranking-configs/${config!.id}/evaluate`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+    });
+    // Any number produced from out-of-bounds weights would describe a config
+    // the engine would have refused anyway.
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('WEIGHTS_OUT_OF_BOUNDS');
+  });
+
+  it('404s on a config that does not exist', async () => {
+    const ops = await opsAdmin('exp-missing@gogo.local');
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/ranking-configs/00000000-0000-4000-8000-000000000000/evaluate',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
