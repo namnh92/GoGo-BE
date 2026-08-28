@@ -2,7 +2,7 @@
   "name": "gogo-be",
   "version": "0.1.0",
   "private": true,
-  "description": "GoGo backend \u2014 API BFF, database, search, suggestion, workers, CMS APIs",
+  "description": "GoGo backend — API BFF, database, search, suggestion, workers, CMS APIs",
   "engines": {
     "node": ">=22"
   },
@@ -22,7 +22,9 @@
     "api:types": "openapi-typescript openapi/gogo.v1.yaml -o openapi/gogo.v1.d.ts",
     "api:check": "openapi-typescript openapi/gogo.v1.yaml -o /tmp/gogo.v1.d.ts && diff -q /tmp/gogo.v1.d.ts openapi/gogo.v1.d.ts",
     "api:routes": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/check-route-coverage.ts",
-    "eval:search": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register libs/modules/search/eval/run-eval.ts"
+    "eval:search": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register libs/modules/search/eval/run-eval.ts",
+    "check:boundaries": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/check-package-boundaries.ts",
+    "artifacts": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/build-artifacts.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -38,6 +40,7 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.68.0",
     "unplugin-swc": "^1.5.11",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "yaml": "^2.9.0"
   }
 }

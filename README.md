@@ -132,3 +132,30 @@ Sprint plan: S0 foundation → S1 identity/room → S2 preference/place → S3 s
 **Core backend đã hiện thực** (PR chain #85–#92): foundation + config/observability, schema 42 bảng + migrations + geo/FTS indexes, auth/guest/session hardened (ADR-0003), rooms/invites/preferences, search tiếng Việt (golden set CI), deterministic suggestion engine + vote/match + plan lock/regenerate, place import pipeline, saved/review/privacy, notifications worker, retention jobs, CMS APIs (RBAC/moderation/ranking console). 74 integration + 33 unit tests.
 
 Còn blocked (xem issue comments): cloud provisioning (#21), preview env (#15), AI refinement provider+DPA (#48), load test env (#76), dashboard observability (#36), E2E FE (#74).
+
+## Shared contract artifacts (FND-003)
+
+`pnpm artifacts` builds `artifacts/`, which CI uploads as `gogo-contract`.
+Every other repo generates from these rather than hand-copying types, so a
+break here surfaces in a consumer's build instead of at runtime.
+
+| File                                         | What it is for                                          |
+| -------------------------------------------- | ------------------------------------------------------- |
+| `openapi/gogo.v1.yaml` \| `.json` \| `.d.ts` | the API contract and its generated client               |
+| `events/domain-event.schema.json`            | the envelope every domain event carries                 |
+| `events/room-event.schema.json`              | the SSE stream's event types                            |
+| `design-tokens/tokens.json`                  | semantic colour and accessibility tokens                |
+| `analytics/taxonomy.json`                    | metric names and event types, extracted from call sites |
+| `fixtures/golden-scenarios.json`             | the minimum E2E flows, as data                          |
+| `manifest.json`                              | contract version, commit, and a sha256 per file         |
+
+The manifest version is the **contract** version (`info.version` in the spec),
+not a repo version — repos do not share one. The checksums are there because a
+version string alone cannot answer "is this the spec I think it is" after a
+hand-edit.
+
+`pnpm check:boundaries` enforces the direction: `libs/**` never imports from
+`apps/**`, and the leaf packages (`database`, `observability`, `providers`)
+never import `modules`. A package that reaches back into an app is not
+publishable — consumers would get a module graph that only resolves in this
+repo.
