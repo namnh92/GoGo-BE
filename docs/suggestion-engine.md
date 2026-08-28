@@ -76,7 +76,6 @@ SG-009 AI refinement (needs provider + DPA — blocked, tracked GoGo-BE#48),
 SG-010 offline eval/A-B (partial: versions persisted; assignment + cost
 budget tracked GoGo-BE#49).
 
-
 ## Experiments and evaluation (SG-010, #49)
 
 **The subject is the room, never the member.** A group room split across two

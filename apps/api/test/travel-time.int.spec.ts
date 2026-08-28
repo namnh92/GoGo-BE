@@ -58,6 +58,9 @@ beforeAll(async () => {
     .withDatabase('gogo_travel_test')
     .start();
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
+  // The container is stopped in afterAll; an idle client erroring as the
+  // server goes away must not fail the run that already passed.
+  pool.on('error', () => undefined);
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
   placeA = await seedPlace('Điểm A', 10.7769, 106.7009);
