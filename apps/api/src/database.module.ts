@@ -12,7 +12,7 @@ const DB_POOL = Symbol('DB_POOL');
   providers: [
     {
       provide: DB_POOL,
-      useFactory: (config: AppConfig) => createDb(config.DATABASE_URL),
+      useFactory: (config: AppConfig) => createDb(config.DATABASE_URL, { max: config.DB_POOL_MAX }),
       inject: [APP_CONFIG],
     },
     {

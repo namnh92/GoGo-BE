@@ -10,6 +10,8 @@ export default tseslint.config(
       '**/*.mjs',
       'migrations/**',
       'openapi/gogo.v1.d.ts',
+      // Built by `pnpm artifacts`, published by CI, never committed.
+      'artifacts/**',
     ],
   },
   js.configs.recommended,

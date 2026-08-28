@@ -67,3 +67,30 @@ erDiagram
 - `idempotency_keys` purged after `expires_at`.
 - Account deletion: `users.status='deleted'`, PII columns nulled, content
   pseudonymized; export covers all actor-owned rows.
+
+## Connection strategy (DB-002, #21)
+
+**Pool size is per process, not per deployment.** The ceiling is the server's
+`max_connections` divided by everything that connects: each api replica, the
+worker, a migration run, and whatever an operator has open in psql. Sizing the
+pool from the application's concurrency instead is how a deploy that doubles
+replicas exhausts the database at the moment it is busiest.
+
+`DB_POOL_MAX` defaults to 10, which fits a single-VPS MVP: default
+`max_connections` of 100, roughly four connecting processes, with headroom for
+a migration and a human. Raise it only together with `max_connections`, or put
+a pooler in front.
+
+`connectionTimeoutMillis` is 5s and deliberately short: a request queueing for
+a connection is already a slow request, and failing it frees the client to
+retry rather than holding a socket that will time out anyway.
+
+**TLS is required in production.** `DATABASE_URL` must carry
+`sslmode=require`, `verify-ca` or `verify-full`; boot fails otherwise. A
+database link that quietly falls back to plaintext is the kind of thing nobody
+notices until it turns up in a packet capture.
+
+**An idle client losing its server must not crash the process.** `pg` emits
+`error` on the pool when an idle connection dies, and an unhandled one takes
+the process with it — the wrong outcome during a restart or failover, where
+in-flight queries should fail and be retried while the API stays up.
