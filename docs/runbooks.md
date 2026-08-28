@@ -24,7 +24,7 @@ acceptance for this doc.
 
 ## 3. Incident response
 
-1. **Detect:** SLO alerts (BFF p95 ≤500ms, search ≤700ms, suggestion ≤3s, availability 99.9%) **[infra]**; `/v1/cms/ops/kpis` for domain health (zero-result spike, provider errors, over-budget plans, moderation backlog).
+1. **Detect:** SLO alerts (BFF p95 ≤500ms, search ≤700ms, suggestion ≤3s, availability 99.9%) **[infra]**. Those four numbers are also thresholds in `load/` (QP-005), so a load run fails and names the SLO it broke rather than producing a chart to interpret; `/v1/cms/ops/kpis` for domain health (zero-result spike, provider errors, over-budget plans, moderation backlog).
 2. **Triage matrix:**
    - 5xx spike → check DB pool saturation, then recent deploy → rollback path above.
    - Provider errors ↑ → breakers should be open (logs `provider … unavailable`); verify fallbacks serving (areas fallback list, deterministic suggestions); no action needed beyond provider status page.
