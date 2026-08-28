@@ -21,3 +21,6 @@ coverage/
 # logs
 *.log
 .oasdiff-base.yaml
+
+# Built by `pnpm artifacts`; published by CI, never committed.
+artifacts/

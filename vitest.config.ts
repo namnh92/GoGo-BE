@@ -21,7 +21,7 @@ export default defineConfig({
         plugins: [swcPlugin],
         test: {
           name: 'unit',
-          include: ['apps/**/*.spec.ts', 'libs/**/*.spec.ts'],
+          include: ['apps/**/*.spec.ts', 'libs/**/*.spec.ts', 'scripts/**/*.spec.ts'],
           exclude: ['**/*.int.spec.ts', '**/node_modules/**', '**/dist/**'],
           environment: 'node',
           server: inlineWorkspaceDeps,
