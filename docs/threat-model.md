@@ -294,6 +294,29 @@ does, and waits on the metric destination (#120). The threshold itself waits on
 a real baseline: setting one before knowing the normal rate only manufactures
 noise.
 
+### Spoofed client address (#77)
+
+`TRUST_PROXY` used to default to `1`, meaning Fastify took `X-Forwarded-For`
+from the direct peer. Anywhere the API is reachable without a proxy in front of
+it, that peer is the client — so a client could send its own header and get a
+fresh rate-limit bucket on every request, and could write whatever address it
+liked into the audit log's staff IP.
+
+Measured before the fix: fifteen guest-join attempts from one source with a
+rotating `X-Forwarded-For` drew **no** 429 at all, while the same fifteen from
+a fixed address were cut off after ten.
+
+The default is `false` now — trust nobody — and production must set the value
+explicitly. Getting it wrong now costs availability (every client looks like
+the proxy and shares one bucket) rather than security, and an operator running
+behind a proxy is made to say so rather than inheriting a default that happens
+to match.
+
+The regression test uses an IP-keyed route with no per-account fallback, so it
+measures the IP key alone. The obvious login test passes either way, because
+per-account lockout catches it — which is why it is not the test that guards
+this.
+
 ### Admin second factor (#62)
 
 The console had MFA in the sense that a code was checked. Four things it was
@@ -363,3 +386,23 @@ demoted account cannot refresh onward.
 
 Review cadence: revisit per release gate (Alpha/Beta/Pilot — WBS §18) and on
 any auth/permission/ranking change (CODEOWNER rule).
+
+## Automated security suite (QP-006, #77)
+
+`apps/api/test/security.int.spec.ts` is the executable half of this document,
+organised by the OWASP categories the security rules name, so a gap shows up as
+a missing block rather than an absence nobody notices. Everything is a
+hand-crafted HTTP request, because the rule is that the API is the enforcement
+layer and a hidden button proves nothing.
+
+Covered there: SQL payloads in both free text and filter parameters; forged JWT
+signatures, `alg: none`, an edited `sub`, an expired token with a valid
+signature, and a refresh token presented as an access token; account and
+invite-code enumeration; deny-by-default on protected routes; a consumer token
+against every CMS route; mass assignment of `hostUserId`; rate-limit evasion by
+spoofed forwarded header; tokens in query strings; request bodies echoed into
+error envelopes; and the response headers a JSON API should send.
+
+What it does not cover, and why: anything needing a real deployment (TLS
+termination, WAF rules, secret rotation) belongs to #21 and #76, and dependency
+scanning belongs in CI rather than in a test file.

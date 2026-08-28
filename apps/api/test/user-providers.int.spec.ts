@@ -53,11 +53,8 @@ beforeAll(async () => {
   process.env.GOOGLE_MAPS_API_KEY = ''; // force fakes
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-
   // The container is stopped in afterAll; an idle client erroring as the
-
   // server goes away must not fail the run that already passed.
-
   pool.on('error', () => undefined);
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });

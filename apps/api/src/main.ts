@@ -41,7 +41,7 @@ export async function createApp(): Promise<NestFastifyApplication> {
     loggerInstance: logger,
     // Only the configured proxy hop(s) may set X-Forwarded-For; trusting all
     // hops would make req.ip client-controlled and defeat IP rate limits.
-    trustProxy: parseTrustProxy(config.TRUST_PROXY),
+    trustProxy: parseTrustProxy(config.TRUST_PROXY ?? 'false'),
     // FND-007: every request carries a request id; incoming x-request-id is
     // honored so traces span BFF and jobs.
     genReqId: (req: IncomingMessage) => {
