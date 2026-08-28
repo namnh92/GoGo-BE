@@ -165,6 +165,9 @@ export class SuggestionsRepository {
     engineVersion: string;
     weightsVersion: string;
     inputSnapshot: RoomSnapshot;
+    /** SG-010 — absent when no experiment was defined, which is not control. */
+    experimentKey?: string | undefined;
+    experimentVariant?: string | undefined;
   }): Promise<RunRow> {
     const [row] = await this.db
       .insert(schema.suggestionRuns)
@@ -177,10 +180,18 @@ export class SuggestionsRepository {
     runId: string,
     status: 'succeeded' | 'failed',
     errorCode?: string,
+    latencyMs?: number,
   ): Promise<void> {
     await this.db
       .update(schema.suggestionRuns)
-      .set({ status, finishedAt: sql`now()`, errorCode: errorCode ?? null })
+      .set({
+        status,
+        finishedAt: sql`now()`,
+        errorCode: errorCode ?? null,
+        // Recorded for the failed case too: a run that took eight seconds and
+        // then failed is a different problem from one that failed at once.
+        ...(latencyMs !== undefined ? { latencyMs } : {}),
+      })
       .where(eq(schema.suggestionRuns.id, runId));
   }
 

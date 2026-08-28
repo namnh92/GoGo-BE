@@ -13,6 +13,8 @@ import {
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
+import { ExperimentsAdminService } from '../application/experiments-admin.service';
+import { RankingEvaluationService } from '../application/ranking-evaluation.service';
 import { SearchAnalyticsService } from '../application/search-analytics.service';
 import { RequireRole, type AdminActor } from './admin.guard';
 import { Inject, Req, Res } from '@nestjs/common';
@@ -479,6 +481,19 @@ const rankingListQuery = z.object({
   key: z.enum(['suggestion.scoring', 'search.ranking']).optional(),
   status: z.enum(['draft', 'approved', 'active', 'rolled_back']).optional(),
 });
+const evaluateQuery = z.object({
+  sampleSize: z.coerce.number().int().min(1).max(500).default(100),
+});
+const experimentSchema = z.object({
+  description: z.string().max(500).optional(),
+  enabled: z.boolean(),
+  /**
+   * Variant name -> share in [0, 1]. Names are ranking config versions; the
+   * remainder goes to control, so a half-configured split exposes fewer
+   * subjects rather than more.
+   */
+  variants: z.record(z.string().max(64), z.number().min(0).max(1)),
+});
 const searchAnalyticsQuery = z.object({
   days: z.coerce.number().int().min(1).max(90).default(7),
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -550,6 +565,8 @@ export class CmsOpsController {
   constructor(
     private readonly ops: CmsOpsService,
     private readonly searchAnalyticsService: SearchAnalyticsService,
+    private readonly evaluation: RankingEvaluationService,
+    private readonly experimentsAdmin: ExperimentsAdminService,
   ) {}
 
   @Post('ranking-configs')
@@ -565,6 +582,32 @@ export class CmsOpsController {
     @Query(new ZodValidationPipe(rankingListQuery)) query: z.infer<typeof rankingListQuery>,
   ) {
     return this.ops.listRankingConfigs(query);
+  }
+
+  /**
+   * SG-010 — replay a candidate config against real stored snapshots before
+   * anyone is exposed to it. Writes nothing: no plan, no run, no user.
+   */
+  @Get('ranking-configs/:id/evaluate')
+  evaluateRanking(
+    @Param('id', Uuid) id: string,
+    @Query(new ZodValidationPipe(evaluateQuery)) query: z.infer<typeof evaluateQuery>,
+  ) {
+    return this.evaluation.evaluate(id, query.sampleSize);
+  }
+
+  @Get('experiments')
+  listExperiments() {
+    return this.experimentsAdmin.list();
+  }
+
+  @Put('experiments/:key')
+  upsertExperiment(
+    @CurrentActor() actor: Actor,
+    @Param('key') key: string,
+    @Body(new ZodValidationPipe(experimentSchema)) body: z.infer<typeof experimentSchema>,
+  ) {
+    return this.experimentsAdmin.upsert(actor.id, key, body);
   }
 
   @Post('ranking-configs/:id/approve')

@@ -45,6 +45,11 @@ export const suggestionRuns = pgTable(
     // Immutable room snapshot the run was computed from (SG-002).
     inputSnapshot: jsonb('input_snapshot').notNull(),
     aiRefinementUsed: boolean('ai_refinement_used').notNull().default(false),
+    /** SG-010 — null means no experiment was active, which is not "control". */
+    experimentKey: text('experiment_key'),
+    experimentVariant: text('experiment_variant'),
+    /** What the run spent, against the latency budget. */
+    latencyMs: integer('latency_ms'),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     errorCode: text('error_code'),

@@ -1860,6 +1860,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/experiments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ops: experiment definitions and their current split */
+        get: operations["cmsListExperiments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/experiments/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Ops: define, re-split, or switch off an experiment
+         * @description `enabled: false` is the kill switch: every subject goes to control on the next request, and the assignment history is not deleted.
+         *
+         *     Variant names are ranking config versions, and only an **approved** version is honoured — an experiment must not be a way to put unreviewed weights in front of users, and the four-eyes rule stays the gate.
+         *
+         *     Shares may sum to less than 1; the remainder is control. Summing to more is refused rather than silently dropping a variant.
+         */
+        put: operations["cmsUpsertExperiment"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/ranking-configs/{id}/evaluate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: replay a candidate config against stored snapshots
+         * @description Every suggestion run keeps the immutable snapshot it was computed from, so a candidate config can be scored against real rooms **before** anyone is exposed to it — which is what makes activating a config a decision rather than a hope.
+         *
+         *     Offline in the strict sense: snapshots are read, scoring happens in memory, and nothing is written. No plan, no run, no user sees any of it.
+         *
+         *     Runs where no candidate passes the hard filters are skipped rather than counted as agreement, which would flatter every candidate config.
+         */
+        get: operations["cmsEvaluateRankingConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/feature-flags": {
         parameters: {
             query?: never;
@@ -2854,6 +2919,39 @@ export interface components {
             };
             /** @description Why parts were dropped. `PLACE_NOT_A_CANDIDATE` is the shape of a hallucinated place id; `BUDGET_NOT_TIGHTENED` means the proposal tried to loosen a constraint rather than narrow it. */
             ignoredReasons: ("SCHEMA_INVALID" | "PLACE_NOT_A_CANDIDATE" | "CATEGORY_UNKNOWN" | "DIETARY_UNKNOWN" | "BUDGET_NOT_TIGHTENED" | "RADIUS_NOT_REDUCED" | "STOPS_NOT_REDUCED" | "NOTHING_UNDERSTOOD")[];
+        };
+        CmsExperiment: {
+            key: string;
+            description?: string | null;
+            enabled: boolean;
+            variants: {
+                [key: string]: number;
+            };
+            /** @description What is left after the named variants. */
+            controlShare?: number;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        CmsRankingEvaluation: {
+            configVersion: number;
+            /** @description The active config it was compared against, or "default". */
+            baselineVersion: string;
+            runsEvaluated: number;
+            metrics: {
+                /** @description Share of runs whose top result is unchanged. */
+                top1Agreement: number;
+                /** @description Mean overlap of the top 5 — how far the ordering moved. */
+                top5Overlap: number;
+                /** @description Runs where the candidate returns nothing and the baseline did not. */
+                newZeroResults: number;
+                meanCandidateCount: number;
+            };
+            /** @description Runs that could not be evaluated, and why. Not counted as agreement. */
+            skipped: {
+                /** Format: uuid */
+                runId: string;
+                reason: string;
+            }[];
         };
     };
     responses: {
@@ -6324,6 +6422,91 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    cmsListExperiments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Experiments in key order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsExperiment"][];
+                };
+            };
+        };
+    };
+    cmsUpsertExperiment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    description?: string;
+                    enabled: boolean;
+                    variants: {
+                        [key: string]: number;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description Experiment saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsExperiment"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsEvaluateRankingConfig: {
+        parameters: {
+            query?: {
+                sampleSize?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description How the candidate would have ranked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsRankingEvaluation"];
+                };
+            };
+            /** @description Config weights are outside the engine's own bounds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
         };
     };
     cmsListFeatureFlags: {

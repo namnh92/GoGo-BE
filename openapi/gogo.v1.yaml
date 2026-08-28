@@ -3030,6 +3030,96 @@ paths:
       responses:
         '201': { description: '{ rolledBack: boolean }' }
 
+  /cms/experiments:
+    get:
+      operationId: cmsListExperiments
+      tags: [cms]
+      summary: 'Ops: experiment definitions and their current split'
+      responses:
+        '200':
+          description: Experiments in key order
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CmsExperiment' }
+
+  /cms/experiments/{key}:
+    put:
+      operationId: cmsUpsertExperiment
+      tags: [cms]
+      summary: 'Ops: define, re-split, or switch off an experiment'
+      description: >
+        `enabled: false` is the kill switch: every subject goes to control on
+        the next request, and the assignment history is not deleted.
+
+
+        Variant names are ranking config versions, and only an **approved**
+        version is honoured — an experiment must not be a way to put unreviewed
+        weights in front of users, and the four-eyes rule stays the gate.
+
+
+        Shares may sum to less than 1; the remainder is control. Summing to
+        more is refused rather than silently dropping a variant.
+      parameters:
+        - { name: key, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled, variants]
+              properties:
+                description: { type: string }
+                enabled: { type: boolean }
+                variants:
+                  type: object
+                  additionalProperties: { type: number, minimum: 0, maximum: 1 }
+      responses:
+        '200':
+          description: Experiment saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsExperiment' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /cms/ranking-configs/{id}/evaluate:
+    get:
+      operationId: cmsEvaluateRankingConfig
+      tags: [cms]
+      summary: 'Ops: replay a candidate config against stored snapshots'
+      description: >
+        Every suggestion run keeps the immutable snapshot it was computed from,
+        so a candidate config can be scored against real rooms **before**
+        anyone is exposed to it — which is what makes activating a config a
+        decision rather than a hope.
+
+
+        Offline in the strict sense: snapshots are read, scoring happens in
+        memory, and nothing is written. No plan, no run, no user sees any of
+        it.
+
+
+        Runs where no candidate passes the hard filters are skipped rather than
+        counted as agreement, which would flatter every candidate config.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - {
+            name: sampleSize,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 500, default: 100 },
+          }
+      responses:
+        '200':
+          description: How the candidate would have ranked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsRankingEvaluation' }
+        '400':
+          description: Config weights are outside the engine's own bounds
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /cms/feature-flags:
     get:
       operationId: cmsListFeatureFlags
@@ -4392,6 +4482,54 @@ components:
                 STOPS_NOT_REDUCED,
                 NOTHING_UNDERSTOOD,
               ]
+
+    CmsExperiment:
+      type: object
+      required: [key, enabled, variants]
+      properties:
+        key: { type: string }
+        description: { type: [string, 'null'] }
+        enabled: { type: boolean }
+        variants:
+          type: object
+          additionalProperties: { type: number }
+        controlShare:
+          type: number
+          description: What is left after the named variants.
+        updatedAt: { type: string, format: date-time }
+
+    CmsRankingEvaluation:
+      type: object
+      required: [configVersion, baselineVersion, runsEvaluated, metrics, skipped]
+      properties:
+        configVersion: { type: integer }
+        baselineVersion:
+          type: string
+          description: The active config it was compared against, or "default".
+        runsEvaluated: { type: integer }
+        metrics:
+          type: object
+          required: [top1Agreement, top5Overlap, newZeroResults, meanCandidateCount]
+          properties:
+            top1Agreement:
+              type: number
+              description: Share of runs whose top result is unchanged.
+            top5Overlap:
+              type: number
+              description: Mean overlap of the top 5 — how far the ordering moved.
+            newZeroResults:
+              type: integer
+              description: Runs where the candidate returns nothing and the baseline did not.
+            meanCandidateCount: { type: number }
+        skipped:
+          type: array
+          description: Runs that could not be evaluated, and why. Not counted as agreement.
+          items:
+            type: object
+            required: [runId, reason]
+            properties:
+              runId: { type: string, format: uuid }
+              reason: { type: string }
 
   responses:
     BadRequest:
