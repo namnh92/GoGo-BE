@@ -12,6 +12,8 @@ export default tseslint.config(
       'openapi/gogo.v1.d.ts',
       // Built by `pnpm artifacts`, published by CI, never committed.
       'artifacts/**',
+      // k6 scripts: a k6 runtime, not Node — see load/README.md.
+      'load/**',
     ],
   },
   js.configs.recommended,
