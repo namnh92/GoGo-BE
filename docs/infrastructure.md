@@ -142,8 +142,20 @@ Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 | Submission tồn   | p95 `place_submission_publish_latency_hours` > 72h                        | hàng chờ moderation bị bỏ quên                                                                                                     |
 | Break-glass      | **bất kỳ** `cms_emergency_takedown_total`                                 | gỡ nội dung khẩn cấp phải **page ngay**, không để tới kỳ audit sau. Nhiều lần liên tiếp từ một actor = dấu hiệu tài khoản bị chiếm |
 
-Chưa có: endpoint scrape (`/metrics`) và dashboard. Cần chốt nơi nhận metric
-trước — cùng quyết định với #36.
+Scrape: `GET /v1/metrics` trả **Prometheus text format**, chắn bằng
+`METRICS_TOKEN`. Không cấu hình token thì route trả **404** chứ không phải 401
+— endpoint chưa cấu hình không nên quảng cáo rằng nó tồn tại và chỉ đang khoá.
+
+Điều này gỡ nút thắt "chưa chốt nơi nhận metric": scraper nào đọc được format
+chuẩn cũng dùng được, nên chọn đích đến không còn là điều kiện tiên quyết để
+**có** alert. Metric vẫn đồng thời đi ra theo log, nên mất một đường không mất
+đường kia.
+
+Tên metric mà các rule ở trên dựa vào nằm trong `ALERTED_METRICS`
+(`@gogo/observability`), và có test đỏ khi đổi tên: một alert trỏ vào series
+không ai phát nữa **trông y hệt** một alert đang im vì mọi thứ đều ổn.
+
+Runbook cho từng alert: `docs/runbooks.md` §7. Chưa có: dashboard.
 
 ## 3c. CORS cho browser client (BE-IMP-003)
 

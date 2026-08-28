@@ -4,6 +4,28 @@
  */
 
 export interface paths {
+    "/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Prometheus text exposition for a scraper
+         * @description Guarded by `METRICS_TOKEN` as a bearer token. Series names and label values describe internal structure — which providers are called, which admin actions happen — so this is not public.
+         *
+         *     With no token configured the route answers **404**, not 401: an unconfigured endpoint should not advertise that it exists and is merely locked.
+         */
+        get: operations["scrapeMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -3023,6 +3045,40 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    scrapeMetrics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Metrics in Prometheus text format */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Missing or wrong token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No metrics token is configured in this environment */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getHealth: {
         parameters: {
             query?: never;

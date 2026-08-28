@@ -17,7 +17,15 @@ import {
   STORAGE_PROVIDER,
   TRAVEL_TIME_PROVIDER,
 } from '@gogo/providers';
-import { LogMetrics, METRICS, createLogger, type MetricsPort } from '@gogo/observability';
+import {
+  LogMetrics,
+  METRICS,
+  MetricsRegistry,
+  TeeMetrics,
+  createLogger,
+  type MetricsPort,
+} from '@gogo/observability';
+import { METRICS_REGISTRY } from './metrics.tokens';
 import { APP_CONFIG, type AppConfig } from './config/env';
 
 /**
@@ -58,10 +66,19 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     {
       // PI-SRE-001: metrics ride the log stream in the MVP stack — no collector
       // to run, and any aggregator can count and alert on them.
+      provide: METRICS_REGISTRY,
+      useFactory: () => new MetricsRegistry(),
+    },
+    {
+      // Both: the log line stays the record any aggregator can read, and the
+      // registry is what a scraper reads. Losing one must not lose the other.
       provide: METRICS,
-      useFactory: (config: AppConfig) =>
-        new LogMetrics(createLogger({ level: config.LOG_LEVEL, name: 'gogo-metrics' })),
-      inject: [APP_CONFIG],
+      useFactory: (config: AppConfig, registry: MetricsRegistry) =>
+        new TeeMetrics([
+          new LogMetrics(createLogger({ level: config.LOG_LEVEL, name: 'gogo-metrics' })),
+          registry,
+        ]),
+      inject: [APP_CONFIG, METRICS_REGISTRY],
     },
     {
       // ADR-0007: the real adapter is only bound when the flag *and* a key are
@@ -94,6 +111,7 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     },
   ],
   exports: [
+    METRICS_REGISTRY,
     PLACE_PROVIDER,
     AREA_AUTOCOMPLETE,
     SHEETS_PROVIDER,
