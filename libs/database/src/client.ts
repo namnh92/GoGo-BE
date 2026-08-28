@@ -4,12 +4,31 @@ import * as schema from './schema';
 
 export type Db = ReturnType<typeof createDb>['db'];
 
-export function createDb(connectionString: string) {
+export type DbOptions = {
+  /**
+   * DB-002 — pool size per process, not per deployment.
+   *
+   * The ceiling is Postgres `max_connections` divided by every process that
+   * connects: api replicas, the worker, migrations, and whatever a human has
+   * open in psql. Sizing this from the *application's* concurrency instead is
+   * how a deploy that doubles replicas takes the database down at the moment
+   * it is under most load.
+   *
+   * 10 fits a single-VPS MVP (default 100 connections, ~4 processes, with
+   * headroom for a migration and an operator). Raise it only alongside
+   * max_connections or a pooler.
+   */
+  max?: number;
+  /** Fail fast: a request queueing on a connection is already a slow request. */
+  connectionTimeoutMillis?: number;
+};
+
+export function createDb(connectionString: string, options: DbOptions = {}) {
   const pool = new Pool({
     connectionString,
-    max: 10,
+    max: options.max ?? 10,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
+    connectionTimeoutMillis: options.connectionTimeoutMillis ?? 5_000,
   });
   /**
    * An idle pooled client whose server goes away emits `error` on the pool,

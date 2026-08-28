@@ -37,6 +37,27 @@ acceptance for this doc.
 
 - **Targets:** RPO ≤15 min, RTO ≤2 h (SRS §10.1). Requires managed Postgres with WAL-based PITR **[infra — blocked #21]**.
 - Continuous WAL archiving + daily base backup; backups encrypted; restore credentials separate from runtime credentials.
+- **The drill runs in CI**, not only quarterly: `libs/database/test/restore.int.spec.ts`
+  dumps a populated database, restores it into a _fresh_ server, and checks
+  what actually matters afterwards. A drill that is only ever described is a
+  drill nobody has run — the first time anyone learns whether a dump restores
+  should not be during an incident.
+- **Two findings from writing it, both of which look like a broken backup and
+  are not:**
+  1. The PostGIS image ships `tiger`, `tiger_data` and `topology`. Dumping
+     them makes every restore fail with `schema "tiger" already exists`. Dump
+     with `--exclude-schema` for those three.
+  2. Selecting only `--schema=public` instead trades that for two worse
+     errors: `CREATE SCHEMA public` colliding, and `f_unaccent` failing to
+     resolve because the `unaccent` dictionary is an extension member that was
+     not restored yet. Exclude the PostGIS schemas; do not select ours.
+- **What the drill verifies**, beyond rows being present: `unaccent` works
+  (`f_unaccent('Đà') = 'Da'` — without it Vietnamese search silently stops
+  matching and nothing errors), geometry came back as geometry rather than
+  text, the name-normalisation trigger fires (a restored database that accepts
+  writes the original refused is the failure that looks like success), the
+  one-current-plan-per-room constraint still rejects a second, and the
+  migration ledger matches so the next deploy does not re-run everything.
 - **Restore drill (quarterly, on a scratch instance):**
   1. Restore to point-in-time T.
   2. Verify invariants: migrations table matches expected; `plans_room_current_unique` holds; row counts within expectation; PostGIS/pg_trgm extensions present (`f_unaccent('Đà') = 'Da'`).

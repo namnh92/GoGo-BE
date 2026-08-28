@@ -28,6 +28,14 @@ const envSchema = z
      */
     TRUST_PROXY: z.string().optional(),
     DATABASE_URL: z.string().url().or(z.string().startsWith('postgres://')),
+    /**
+     * DB-002 — pool size **per process**. The ceiling is the server's
+     * `max_connections` divided by every process that connects (api replicas,
+     * worker, migrations, an operator's psql), not the application's
+     * concurrency. Sizing it from concurrency is how a deploy that doubles
+     * replicas exhausts the database exactly when it is busiest.
+     */
+    DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
     REDIS_URL: z.string().startsWith('redis://').or(z.string().startsWith('rediss://')),
     AUTH_JWT_SECRET: z.string().default(''),
     AUTH_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().max(3600).default(900),
@@ -133,6 +141,18 @@ const envSchema = z
           code: z.ZodIssueCode.custom,
           path: ['AUTH_JWT_SECRET'],
           message: 'AUTH_JWT_SECRET must be at least 32 chars in production',
+        });
+      }
+      // DB-002: TLS everywhere (security rule). A connection string without
+      // it is refused rather than quietly downgraded — a database link that
+      // silently falls back to plaintext is the kind of thing nobody notices
+      // until it is in a packet capture.
+      if (!/[?&]sslmode=(require|verify-ca|verify-full)\b/.test(env.DATABASE_URL)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['DATABASE_URL'],
+          message:
+            'DATABASE_URL must set sslmode=require (or verify-ca / verify-full) in production',
         });
       }
       if (env.TRUST_PROXY === undefined || env.TRUST_PROXY.trim() === '') {
