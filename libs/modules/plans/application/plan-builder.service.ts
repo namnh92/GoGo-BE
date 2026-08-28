@@ -95,7 +95,18 @@ export class PlanBuilderService {
    * duration, cost); unlocked stops are rebuilt from a fresh snapshot, with
    * structured feedback exclusions.
    */
-  async regenerate(planId: string, feedback: { excludePlaceIds?: string[] | undefined }) {
+  async regenerate(
+    planId: string,
+    feedback: {
+      excludePlaceIds?: string[] | undefined;
+      /** SG-009 — already validated; this method never sees a raw proposal. */
+      avoidCategoryKeys?: string[] | undefined;
+      requireDietaryKeys?: string[] | undefined;
+      budgetMaxAmount?: number | undefined;
+      radiusM?: number | undefined;
+      maxStops?: number | undefined;
+    } = {},
+  ) {
     const plan = await this.plans.getPlan(planId);
     if (plan.status !== 'current') {
       throw AppError.conflict('PLAN_NOT_CURRENT', 'Only the current plan can regenerate');
@@ -104,7 +115,21 @@ export class PlanBuilderService {
     const lockedStops = stops.filter((s) => s.isLocked);
     const unlockedPlaceIds = stops.filter((s) => !s.isLocked).map((s) => s.placeId);
 
-    const snapshot = await this.suggestions.buildSnapshot(plan.roomId);
+    const base = await this.suggestions.buildSnapshot(plan.roomId);
+    // Feedback narrows the snapshot the deterministic pipeline runs on. It can
+    // only tighten — `validateFeedback` has already refused anything that
+    // would raise the budget or widen the radius the room agreed on — so the
+    // pipeline below is unchanged and still the thing making the decision.
+    const snapshot: typeof base = {
+      ...base,
+      ...(feedback.budgetMaxAmount !== undefined
+        ? { budget: { ...base.budget, amount: feedback.budgetMaxAmount } }
+        : {}),
+      ...(feedback.radiusM !== undefined ? { radiusM: feedback.radiusM } : {}),
+      ...(feedback.requireDietaryKeys?.length
+        ? { dietaryKeys: [...new Set([...base.dietaryKeys, ...feedback.requireDietaryKeys])] }
+        : {}),
+    };
     const lockedFacts = await this.plans.placeFacts(lockedStops.map((s) => s.placeId));
     const anchors: LockedAnchor[] = lockedStops.map((s) => {
       const fact = lockedFacts.find((f) => f.id === s.placeId);
@@ -132,8 +157,16 @@ export class PlanBuilderService {
       // are excluded unless they are the only viable options.
       ...unlockedPlaceIds,
     ]);
+    const avoid = new Set(feedback.avoidCategoryKeys ?? []);
     const candidates = await this.suggestions.retrieveCandidates(snapshot);
-    const passed = candidates.filter((c) => !exclude.has(c.placeId) && hardFilter(c, snapshot).ok);
+    const passed = candidates.filter(
+      (c) =>
+        !exclude.has(c.placeId) &&
+        hardFilter(c, snapshot).ok &&
+        // Avoided categories are a soft preference expressed as a filter; the
+        // hard constraints above still run first and still win.
+        !(c.taxonomyKeys['category'] ?? []).some((key) => avoid.has(key)),
+    );
     const ranked = rankWithFairness(
       passed.map((c) => scoreCandidate(c, snapshot, DEFAULT_SCORING_WEIGHTS)),
       { topK: 10 },
@@ -143,6 +176,7 @@ export class PlanBuilderService {
       snapshot,
       lockedStops: anchors,
       travel: this.travelBatch,
+      ...(feedback.maxStops !== undefined ? { maxStops: feedback.maxStops } : {}),
     });
 
     return this.plans.createPlanVersion({
@@ -160,6 +194,7 @@ export class PlanBuilderService {
             action: 'regenerate',
             keptLockedStops: anchors.map((a) => a.placeId),
             excluded: [...exclude],
+            avoidedCategories: [...avoid],
           },
         },
       ],

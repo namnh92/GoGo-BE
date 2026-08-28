@@ -634,7 +634,16 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Host-only: regenerate — locked stops are invariant (SG-008) */
+        /**
+         * Host-only: regenerate — locked stops are invariant (SG-008)
+         * @description `feedbackText` (SG-009) is the member's own words. It is turned into structured constraints, validated against the verified candidate set and the room's own constraints, and only then handed to the same deterministic pipeline — which stays the thing making the decision.
+         *
+         *     Feedback may only **tighten**: it can narrow the budget, shrink the radius, drop stops or avoid a category. It cannot raise the budget the room agreed on, widen the host's radius, add stops, or reference a place that was not already a verified candidate. Anything it proposes outside those bounds is dropped with a reason code.
+         *
+         *     The response reports what was understood and what was ignored, because feedback that silently changes nothing is indistinguishable from feedback that was never read.
+         *
+         *     When AI parsing is disabled, times out, runs out of quota, or returns output that fails validation, a deterministic parser produces the result instead. There is no failure path that surfaces a model error to the user.
+         */
         post: operations["regeneratePlan"];
         delete?: never;
         options?: never;
@@ -2830,6 +2839,22 @@ export interface components {
                 zeroResults: number;
             };
         };
+        /** @description Present only when `feedbackText` was sent. Says what the deterministic pipeline was actually asked to do, so a user can tell "understood and applied" from "not understood". */
+        FeedbackOutcome: {
+            /** @description False means nothing in the text survived validation. */
+            understood: boolean;
+            applied: {
+                excludePlaceIds?: string[];
+                avoidCategoryKeys?: string[];
+                requireDietaryKeys?: string[];
+                /** @description Integer minor units, always below the room's own budget. */
+                budgetMaxAmount?: number;
+                radiusM?: number;
+                maxStops?: number;
+            };
+            /** @description Why parts were dropped. `PLACE_NOT_A_CANDIDATE` is the shape of a hallucinated place id; `BUDGET_NOT_TIGHTENED` means the proposal tried to loosen a constraint rather than narrow it. */
+            ignoredReasons: ("SCHEMA_INVALID" | "PLACE_NOT_A_CANDIDATE" | "CATEGORY_UNKNOWN" | "DIETARY_UNKNOWN" | "BUDGET_NOT_TIGHTENED" | "RADIUS_NOT_REDUCED" | "STOPS_NOT_REDUCED" | "NOTHING_UNDERSTOOD")[];
+        };
     };
     responses: {
         /** @description Validation or business rule failure */
@@ -4158,6 +4183,8 @@ export interface operations {
             content: {
                 "application/json": {
                     excludePlaceIds?: string[];
+                    /** @description Free text, e.g. "rẻ hơn và gần hơn". */
+                    feedbackText?: string;
                 };
             };
         };
@@ -4168,7 +4195,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Plan"];
+                    "application/json": components["schemas"]["Plan"] & {
+                        feedback?: components["schemas"]["FeedbackOutcome"];
+                    };
                 };
             };
             409: components["responses"]["Conflict"];

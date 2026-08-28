@@ -4,6 +4,8 @@ import type { Actor } from '../../identity/domain/actor';
 import { RoomPolicy } from '../../rooms/presentation/room-policy';
 import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
 import { UploadsService } from '../../uploads/application/uploads.service';
+import { FeedbackService } from '../../suggestions/application/feedback.service';
+import type { FeedbackContext } from '../../suggestions/domain/feedback';
 import { buildItinerary, type LockedAnchor } from '../../suggestions/domain/optimizer';
 import { SuggestionsRepository } from '../../suggestions/infrastructure/suggestions.repository';
 import { PlansRepository, type PlanRow, type StopRow } from '../infrastructure/plans.repository';
@@ -19,6 +21,7 @@ export class PlansService {
     private readonly policy: RoomPolicy,
     @Inject(ROOM_EVENT_BUS) private readonly events: RoomEventBus,
     private readonly uploads: UploadsService,
+    private readonly feedback: FeedbackService,
   ) {}
 
   /**
@@ -211,16 +214,69 @@ export class PlansService {
   async regenerate(
     actor: Actor,
     planId: string,
-    feedback: { excludePlaceIds?: string[] | undefined },
+    feedback: { excludePlaceIds?: string[] | undefined; feedbackText?: string | undefined },
   ) {
     const plan = await this.repo.getPlan(planId);
-    const { room } = await this.policy.requireHost(actor, plan.roomId);
+    const { room, member } = await this.policy.requireHost(actor, plan.roomId);
     if (['active', 'completed'].includes(room.status)) {
       throw AppError.conflict('ROOM_ACTIVE', 'Plan is locked once the date starts');
     }
-    const result = await this.builder.regenerate(planId, feedback);
+    // SG-009: a sentence becomes structured constraints here, and nowhere
+    // else. What comes back is already validated against the candidate
+    // allowlist and the room's own constraints, so `builder.regenerate` never
+    // sees a raw proposal and the deterministic pipeline stays in charge.
+    let interpreted: Awaited<ReturnType<FeedbackService['interpret']>> | null = null;
+    if (feedback.feedbackText) {
+      const snapshot = await this.suggestions.buildSnapshot(plan.roomId);
+      const stops = await this.repo.listStops(planId);
+      const candidates = await this.suggestions.retrieveCandidates(snapshot);
+      const context: FeedbackContext = {
+        allowedPlaceIds: candidates.map((c) => c.placeId),
+        knownCategoryKeys: [
+          ...new Set(candidates.flatMap((c) => c.taxonomyKeys['category'] ?? [])),
+        ],
+        knownDietaryKeys: [...new Set(candidates.flatMap((c) => c.taxonomyKeys['dietary'] ?? []))],
+        budgetAmount: snapshot.budget.amount,
+        radiusM: snapshot.radiusM,
+        currentStopCount: stops.length,
+      };
+      interpreted = await this.feedback.interpret(
+        {
+          text: feedback.feedbackText,
+          allowedPlaceIds: context.allowedPlaceIds,
+          facts: {
+            budgetMode: snapshot.budget.mode,
+            budgetAmount: snapshot.budget.amount,
+            currency: snapshot.budget.currency,
+            categoryKeys: context.knownCategoryKeys,
+          },
+        },
+        context,
+        { planId, roomId: plan.roomId, memberId: member.id },
+      );
+    }
+
+    const result = await this.builder.regenerate(planId, {
+      ...(feedback.excludePlaceIds ? { excludePlaceIds: feedback.excludePlaceIds } : {}),
+      ...(interpreted?.applied ?? {}),
+    });
     await this.publishPlan(plan.roomId, result.plan.id, result.plan.version, 'regenerate');
-    return await this.toDto(result.plan, result.stops);
+    const dto = await this.toDto(result.plan, result.stops);
+    return {
+      ...dto,
+      // The user is told what was understood and what was not. Feedback that
+      // silently changes nothing is indistinguishable from feedback that was
+      // ignored, and the second one is what actually happened.
+      ...(interpreted
+        ? {
+            feedback: {
+              understood: interpreted.understood,
+              applied: interpreted.applied,
+              ignoredReasons: interpreted.rejected,
+            },
+          }
+        : {}),
+    };
   }
 
   async lockStop(actor: Actor, planId: string, stopId: string, locked: boolean) {

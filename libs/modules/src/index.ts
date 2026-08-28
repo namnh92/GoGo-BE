@@ -140,3 +140,20 @@ export {
   MAX_UPLOAD_BYTES,
   type UploadPurpose,
 } from '../uploads/application/uploads.service';
+
+export { FeedbackModule } from '../suggestions/presentation/feedback.module';
+export {
+  FeedbackService,
+  AI_FEEDBACK_ENABLED,
+  FEEDBACK_TIMEOUT_MS,
+  FEEDBACK_TIMEOUT_OVERRIDE,
+  type FeedbackOutcome,
+} from '../suggestions/application/feedback.service';
+export {
+  validateFeedback,
+  feedbackProposalSchema,
+  FEEDBACK_REASON_CODES,
+  type FeedbackProposal,
+  type FeedbackContext,
+  type ValidatedFeedback,
+} from '../suggestions/domain/feedback';
