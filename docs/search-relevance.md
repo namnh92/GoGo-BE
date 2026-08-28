@@ -62,3 +62,22 @@ PR blocked. NDCG over a larger judged set starts when real query logs exist
 
 `search.zero_result` outbox event: normalized query, filter summary,
 pseudonymous actor. Never raw user text with PII, never location coordinates.
+
+## When we would leave Postgres FTS (SE-009, #39)
+
+The acceptance for SE-009 is "only do it when a threshold triggers", and no
+threshold existed — so the trigger is defined in
+[ADR-0008](adr/0008-search-engine-migration-trigger.md) and measured from data
+`search_query_daily` already collects.
+
+Short version: latency p95 > 700ms for 7 days at real volume, zero-result rate
+
+> 15% for 14 days _after_ a synonym pass, a required capability that cannot be
+> expressed (vector similarity, learning-to-rank, personalised ranking), or index
+> maintenance costing more than a minute of degraded search a week.
+
+Not triggers: corpus size on its own, one slow query, one bad week.
+
+No spike has been started, deliberately. A spike answers "can the other engine
+do this", which was never in doubt, and its answer ages before the trigger
+fires.
