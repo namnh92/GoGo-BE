@@ -90,20 +90,49 @@ GET  /v1/places/search · GET /v1/places/{id} · POST /v1/places/{id}/reports
 - Outbox + idempotent consumers; không distributed transaction; không giữ DB transaction khi gọi provider ngoài.
 - Audit log append-only cho mọi write nhạy cảm.
 
-## Local development
+## Chạy backend trên máy
 
-Yêu cầu: Node.js ≥22, pnpm (corepack), Docker.
+Máy developer là **workstation, không phải một môi trường**. DEV chạy từ xa: PostgreSQL ở Neon,
+Redis ở Upstash, object storage ở R2. Developer làm Mobile hoặc CMS không cần repo này chút nào —
+họ trỏ vào dev API được host.
+
+Phần dưới dành cho người **làm backend**. Nó vẫn dùng dịch vụ DEV từ xa, không dựng chúng lên máy.
+
+Yêu cầu: Node.js ≥22, pnpm (corepack). Docker chỉ cần cho integration test.
 
 ```bash
 pnpm install
-docker compose -f docker/docker-compose.yml up -d   # postgis :5433, redis :6380
-cp .env.example .env
-DATABASE_URL=postgres://gogo:gogo@localhost:5433/gogo pnpm db:migrate
-DATABASE_URL=postgres://gogo:gogo@localhost:5433/gogo pnpm db:seed
-pnpm dev                                            # api tại http://localhost:3000/v1
+export AWS_PROFILE=gogo-bootstrap        # không có default profile
+aws sso login --profile gogo-bootstrap
+pnpm secrets:pull                        # ghi .env.runtime (0600) từ AWS SSM
+pnpm dev                                 # api tại http://localhost:3000/v1
 ```
 
-Lệnh chuẩn: `pnpm lint` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` (unit) · `pnpm test:integration` (Testcontainers, cần Docker) · `pnpm build`. Worker: `pnpm --filter @gogo/worker dev` (cần Redis).
+`secrets:pull` lấy `DATABASE_URL`, `REDIS_URL`, credential R2 và key của provider từ SSM, nên
+những gì chạy trên máy chỉ là code — không PostgreSQL, không Redis, không MinIO.
+
+Migration và seed chạy trên đúng database DEV đó:
+
+```bash
+pnpm db:migrate
+pnpm db:seed
+```
+
+Lệnh chuẩn: `pnpm lint` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` (unit) ·
+`pnpm test:integration` (Testcontainers, cần Docker) · `pnpm build`.
+Worker: `pnpm --filter @gogo/worker dev`.
+
+### Stack cục bộ đầy đủ — tuỳ chọn
+
+Cho làm offline, gỡ lỗi hạ tầng, hoặc khi cần một database dùng một lần:
+
+```bash
+docker compose -f docker/docker-compose.yml --profile full-local up -d   # postgis :5433, redis :6380
+DATABASE_URL=postgres://gogo:gogo@localhost:5433/gogo pnpm db:migrate
+```
+
+Đây là chế độ gỡ lỗi, không phải cách phát triển mặc định. Chạy nó nghĩa là bạn đang làm việc
+trên một database khác với cả team, và không có gì nhắc bạn điều đó.
 
 Dev CMS login (seed): `admin@gogo.local` / `gogo-dev-admin-password`.
 
