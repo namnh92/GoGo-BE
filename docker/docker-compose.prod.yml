@@ -11,11 +11,23 @@
 # the whole file before it filters by profile: `${POSTGRES_PASSWORD:?}` in a
 # profile-gated service aborts a deploy that never intended to run PostgreSQL.
 #
+# ENV_FILE names the runtime env file on the host, relative to the repository
+# root. It defaults to .env.prod, and the deploy sets it per environment — the
+# DEV host carries .env.dev, because a file called .env.prod on a development
+# machine invites someone to fill it with production values, and it would look
+# correct while pointing the dev API at the production database.
+#
+# --env-file and env_file: are different things and both are needed: the flag
+# supplies variables for interpolating this file, the key puts them inside the
+# containers.
+#
 # Deploy:
-#   docker compose -f docker/docker-compose.prod.yml --env-file .env.prod up -d
+#   ENV_FILE=.env.prod docker compose -f docker/docker-compose.prod.yml \
+#     --env-file .env.prod up -d
 #
 # Migrate:
-#   docker compose -f docker/docker-compose.prod.yml --env-file .env.prod run --rm migrate
+#   ENV_FILE=.env.prod docker compose -f docker/docker-compose.prod.yml \
+#     --env-file .env.prod run --rm migrate
 #
 # Self-hosted data tier, for a host with no managed services available. A
 # transitional mode, never the target — nightly pg_dump does not meet the
@@ -55,7 +67,7 @@ services:
       # port is deliberately not published, so nothing else can reach it.
       TRUST_PROXY: '1'
     env_file:
-      - ../.env.prod
+      - ../${ENV_FILE:-.env.prod}
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/v1/health']
       interval: 30s
@@ -71,7 +83,7 @@ services:
       PROCESS: worker
       NODE_ENV: production
     env_file:
-      - ../.env.prod
+      - ../${ENV_FILE:-.env.prod}
 
   migrate:
     build:
@@ -81,7 +93,7 @@ services:
     environment:
       PROCESS: migrate
     env_file:
-      - ../.env.prod
+      - ../${ENV_FILE:-.env.prod}
 
 volumes:
   caddy_data:
