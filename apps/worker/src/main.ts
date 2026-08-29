@@ -17,6 +17,35 @@ import {
   GoogleSheetsAdapter,
 } from '@gogo/providers';
 
+/**
+ * Poll intervals, in milliseconds.
+ *
+ * These are the dominant Redis cost of an idle worker, not the job handlers:
+ * a scheduler firing every 5s creates and completes a job every 5s whether or
+ * not there is work, and each cycle is several Redis commands.
+ *
+ * That matters because DEV runs on Upstash, which bills per command rather than
+ * by memory (GOGO_SRS.md §6.1). Its free tier is ~16,700 commands a day; two
+ * schedulers at 5s spend that many times over. Production uses Redis with an
+ * SLA and is not metered this way, so the interval is configuration rather than
+ * a constant — the same runtime contract, tuned per environment.
+ *
+ * The trade is dispatch latency: at 30s a notification waits up to 30 seconds
+ * before the outbox relay picks it up. Acceptable on DEV, not on production.
+ */
+const pollIntervalMs = (name: string, fallback: number): number => {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 1000) {
+    throw new Error(`${name} must be a number of milliseconds >= 1000, received "${raw}"`);
+  }
+  return value;
+};
+
+const OUTBOX_POLL_MS = pollIntervalMs('OUTBOX_POLL_MS', 5000);
+const INGEST_POLL_MS = pollIntervalMs('INGEST_POLL_MS', 5000);
+
 const OUTBOX_QUEUE = 'gogo-outbox';
 const PRIVACY_QUEUE = 'gogo-privacy';
 const INGEST_QUEUE = 'gogo-ingest';
@@ -82,8 +111,8 @@ async function bootstrap(): Promise<void> {
   const outboxQueue = new Queue(OUTBOX_QUEUE, { connection });
   const privacyQueue = new Queue(PRIVACY_QUEUE, { connection });
   const ingestQueue = new Queue(INGEST_QUEUE, { connection });
-  await outboxQueue.upsertJobScheduler('outbox-poll', { every: 5000 });
-  await ingestQueue.upsertJobScheduler('ingest-poll', { every: 5000 });
+  await outboxQueue.upsertJobScheduler('outbox-poll', { every: OUTBOX_POLL_MS });
+  await ingestQueue.upsertJobScheduler('ingest-poll', { every: INGEST_POLL_MS });
   await privacyQueue.upsertJobScheduler('privacy-daily', {
     pattern: '0 3 * * *',
     tz: 'Asia/Ho_Chi_Minh',
@@ -123,7 +152,10 @@ async function bootstrap(): Promise<void> {
   outboxWorker.on('failed', (_job, err) => logger.error({ err }, 'outbox job failed'));
   ingestWorker.on('failed', (_job, err) => logger.error({ err }, 'ingest job failed'));
   privacyWorker.on('failed', (_job, err) => logger.error({ err }, 'privacy job failed'));
-  logger.info('worker booted: outbox 5s, ingest 5s, privacy daily 03:00 ICT');
+  logger.info(
+    { outboxPollMs: OUTBOX_POLL_MS, ingestPollMs: INGEST_POLL_MS },
+    'worker booted: privacy daily 03:00 ICT',
+  );
 
   const shutdown = async () => {
     logger.info('worker shutting down');
