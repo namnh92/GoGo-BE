@@ -1,0 +1,27 @@
+# Edge for a host that accepts no inbound connections.
+#
+# cloudflared dials out to Cloudflare and serves the hostname from there, so
+# nothing listens on the host and no port is forwarded on the router in front of
+# it. Cloudflare terminates TLS, which is why there is no certificate here and
+# no ACME client to fail.
+#
+# This is what DEV uses: the host is behind a consumer line, and Let's Encrypt
+# established that from the outside after every probe from the same network
+# reported the ports open — those arrive through hairpin NAT and prove nothing.
+#
+#   docker compose -f docker/docker-compose.prod.yml \
+#                  -f docker/docker-compose.edge-tunnel.yml \
+#                  --env-file .env.dev up -d
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # No ports. That is the point.
+    command: ['tunnel', '--no-autoupdate', 'run']
+    environment:
+      # Enough on its own to run a connector for this tunnel, so it comes from
+      # SSM through the rendered env file, never from a compose literal.
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN — see GoGo-Infra INF-038}
+    depends_on:
+      - api
