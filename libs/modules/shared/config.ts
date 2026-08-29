@@ -8,6 +8,8 @@ export type MediaConfig = { MEDIA_PUBLIC_BASE_URL: string };
 
 export type IdentityConfig = {
   NODE_ENV: 'development' | 'test' | 'production';
+  /** The deployment, not the build mode. See apps/api/src/config/env.ts. */
+  APP_ENV: 'dev' | 'staging' | 'prod' | 'production';
   AUTH_JWT_SECRET: string;
   AUTH_ACCESS_TOKEN_TTL_SECONDS: number;
   AUTH_REFRESH_TOKEN_TTL_SECONDS: number;

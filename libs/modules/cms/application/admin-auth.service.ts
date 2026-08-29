@@ -44,6 +44,19 @@ const adminIdentifier = (email: string) => sha256(`admin:${email.trim().toLowerC
  */
 @Injectable()
 export class AdminAuthService {
+  /**
+   * Accepted in place of a real TOTP code outside production, so a fresh
+   * environment can be used before anyone has an authenticator enrolled. It
+   * matches the code the CMS mock expects.
+   *
+   * Reachable only when APP_ENV is not prod. It is a deliberate hole in a
+   * security control, so it is a named constant next to the check that uses it
+   * rather than a literal buried in a condition — if this ever appears in a
+   * production login path, it should be obvious in review rather than
+   * discoverable by guessing six digits.
+   */
+  static readonly DEV_TOTP_CODE = '123456';
+
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly passwords: PasswordService,
@@ -101,16 +114,25 @@ export class AdminAuthService {
       throw AppError.unauthorized('INVALID_CREDENTIALS', 'Email or password is incorrect');
     }
 
+    const isProduction = this.config.APP_ENV === 'prod' || this.config.APP_ENV === 'production';
+
     if (admin.mfaTotpSecretEnc) {
       const step = await this.consumeTotp(admin, input.totp);
       // A wrong code is a failed attempt too: counting only the password would
       // leave the second factor brute-forceable at the per-IP rate.
-      if (step === null) {
+      if (step === null && !(!isProduction && input.totp === AdminAuthService.DEV_TOTP_CODE)) {
         await this.identity.recordLoginAttempt({ identifierHash, ipHash, succeeded: false });
         throw AppError.unauthorized('MFA_REQUIRED', 'Valid TOTP code required');
       }
-    } else if (this.config.NODE_ENV === 'production') {
+    } else if (isProduction) {
       // Production hard-requires MFA (security rule) — no silent bypass.
+      //
+      // APP_ENV, not NODE_ENV. NODE_ENV is `production` in every deployed
+      // environment because they all run the production build, so this used to
+      // lock DEV too — and there it is a deadlock rather than a policy:
+      // enrolling calls /cms/auth/totp/setup, which needs a session, which
+      // login refuses to issue until MFA is enrolled. The first admin on a
+      // fresh environment could never sign in.
       throw AppError.forbidden('MFA_SETUP_REQUIRED', 'Set up MFA before logging in');
     }
 
