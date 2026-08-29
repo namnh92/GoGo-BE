@@ -395,7 +395,15 @@ async function main(): Promise<void> {
 
   // Dev-only CMS bootstrap admin — production admins are created by a
   // super admin through the API and must enroll MFA.
-  if ((process.env.NODE_ENV ?? 'development') !== 'production') {
+  //
+  // Guarded on APP_ENV, not NODE_ENV. NODE_ENV is the build mode and every
+  // deployed environment sets it to `production`, including DEV — so this used
+  // to skip on the one environment that needs it, leaving no way to sign in to
+  // the CMS at all. APP_ENV names the environment: dev, staging, prod.
+  //
+  // Unset means a workstation, which is also not production.
+  const appEnv = process.env.APP_ENV ?? 'dev';
+  if (appEnv !== 'prod' && appEnv !== 'production') {
     const { default: argon2 } = await import('argon2');
     const passwordHash = await argon2.hash('gogo-dev-admin-password', { type: argon2.argon2id });
     await db
