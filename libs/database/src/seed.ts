@@ -405,11 +405,21 @@ async function main(): Promise<void> {
   const appEnv = process.env.APP_ENV ?? 'dev';
   if (appEnv !== 'prod' && appEnv !== 'production') {
     const { default: argon2 } = await import('argon2');
-    const passwordHash = await argon2.hash('gogo-dev-admin-password', { type: argon2.argon2id });
+
+    // Overridable rather than hardcoded. The default is a convenience for a
+    // shared DEV environment that already sits behind Cloudflare Access, and it
+    // is weak on purpose — but it lives in version control, and the APP_ENV
+    // guard above is the only thing keeping it out of production. An
+    // environment that wants different credentials should not need a code
+    // change to get them.
+    const email = process.env.SEED_ADMIN_EMAIL ?? 'admin@gogo.id.vn';
+    const password = process.env.SEED_ADMIN_PASSWORD ?? '123456';
+
+    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
     await db
       .insert(schema.adminUsers)
       .values({
-        email: 'admin@gogo.local',
+        email,
         passwordHash,
         displayName: 'Dev Super Admin',
         role: 'super_admin',
