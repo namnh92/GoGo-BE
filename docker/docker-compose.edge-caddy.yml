@@ -1,0 +1,32 @@
+# Edge for a host that accepts inbound connections.
+#
+# Caddy terminates TLS with its own Let's Encrypt certificate over HTTP-01,
+# which needs ports 80 and 443 reachable from the internet. On a host without
+# that — anything behind a consumer line or a NAT nobody controls — the
+# challenge times out and Caddy retries until Let's Encrypt rate-limits the
+# hostname. Use docker-compose.edge-tunnel.yml there instead.
+#
+#   docker compose -f docker/docker-compose.prod.yml \
+#                  -f docker/docker-compose.edge-caddy.yml \
+#                  --env-file .env.prod up -d
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env.prod}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+volumes:
+  caddy_data:
+  caddy_config:

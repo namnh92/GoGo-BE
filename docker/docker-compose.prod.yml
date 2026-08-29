@@ -1,59 +1,40 @@
-# Deployed application stack.
+# Deployed application stack: api, worker and the one-off migrate job.
 #
-# Default services are caddy, api and worker; `migrate` runs as a one-off job.
+# The edge is not here. A host that accepts inbound connections uses
+# docker-compose.edge-caddy.yml; one that does not uses
+# docker-compose.edge-tunnel.yml. Which of those applies is a fact about the
+# host, and GoGo-Infra ADR-0004 says the host is an implementation detail — so
+# it cannot be baked into the stack every environment shares.
 #
 # PostgreSQL, Redis and the backup sidecar live in
 # docker-compose.self-hosted.yml and are NOT part of the target architecture —
 # every environment uses managed services
 # (GoGo-Remote-First-Multi-Environment-Infrastructure-Spec.md §13).
 #
-# They are a separate file rather than a profile because Compose interpolates
-# the whole file before it filters by profile: `${POSTGRES_PASSWORD:?}` in a
-# profile-gated service aborts a deploy that never intended to run PostgreSQL.
+# Separate files rather than profiles, because Compose interpolates the whole
+# file before it filters by profile: a `${VAR:?}` in a profile-gated service
+# aborts a deploy that never intended to run it.
 #
 # ENV_FILE names the runtime env file on the host, relative to the repository
-# root. It defaults to .env.prod, and the deploy sets it per environment — the
-# DEV host carries .env.dev, because a file called .env.prod on a development
-# machine invites someone to fill it with production values, and it would look
-# correct while pointing the dev API at the production database.
+# root, and defaults to .env.prod. The deploy sets it per environment.
 #
 # --env-file and env_file: are different things and both are needed: the flag
 # supplies variables for interpolating this file, the key puts them inside the
 # containers.
 #
-# Deploy:
+# Deploy (host with open ports):
 #   ENV_FILE=.env.prod docker compose -f docker/docker-compose.prod.yml \
-#     --env-file .env.prod up -d
+#     -f docker/docker-compose.edge-caddy.yml --env-file .env.prod up -d
+#
+# Deploy (host behind a tunnel):
+#   ENV_FILE=.env.dev docker compose -f docker/docker-compose.prod.yml \
+#     -f docker/docker-compose.edge-tunnel.yml --env-file .env.dev up -d
 #
 # Migrate:
 #   ENV_FILE=.env.prod docker compose -f docker/docker-compose.prod.yml \
 #     --env-file .env.prod run --rm migrate
-#
-# Self-hosted data tier, for a host with no managed services available. A
-# transitional mode, never the target — nightly pg_dump does not meet the
-# production RPO in GOGO_SRS.md §10.1:
-#
-#   docker compose -f docker/docker-compose.prod.yml \
-#                  -f docker/docker-compose.self-hosted.yml \
-#                  --env-file .env.prod up -d
 
 services:
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    ports:
-      - '80:80'
-      - '443:443'
-    environment:
-      DOMAIN: ${DOMAIN:?set DOMAIN in .env.prod}
-      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - api
-
   api:
     build:
       context: ..
@@ -94,7 +75,3 @@ services:
       PROCESS: migrate
     env_file:
       - ../${ENV_FILE:-.env.prod}
-
-volumes:
-  caddy_data:
-  caddy_config:

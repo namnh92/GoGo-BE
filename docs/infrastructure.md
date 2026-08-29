@@ -6,7 +6,10 @@
 > host. Xem `GoGo-Remote-First-Multi-Environment-Infrastructure-Spec.md` và README.
 >
 > **Postgres và Redis trong compose là chuyển tiếp**, không phải kiến trúc mục tiêu. Chúng nằm
-> ở `docker/docker-compose.self-hosted.yml` — file riêng chứ không phải profile: Compose nội suy
+> ở `docker/docker-compose.self-hosted.yml`. Edge cũng tách: `docker-compose.edge-caddy.yml` cho
+> host mở được cổng, `docker-compose.edge-tunnel.yml` cho host không (DEV). Host nào thuộc loại
+> nào là sự thật về host, mà ADR-0004 của GoGo-Infra nói host là chi tiết triển khai — nên không
+> nướng nó vào stack dùng chung. Đều là file riêng chứ không phải profile: Compose nội suy
 > toàn bộ file **trước** khi lọc profile, nên `${POSTGRES_PASSWORD:?}` trong một service bị profile
 > che vẫn làm hỏng lần deploy không hề định chạy PostgreSQL. Tách file khiến stack mặc định không
 > thể nhắc tới database local. Bảng "Beta gate" bên dưới
