@@ -1,0 +1,72 @@
+# Self-hosted data tier — PostgreSQL, Redis and the nightly backup.
+#
+# A separate file rather than a profile in docker-compose.prod.yml, because
+# profiles do not do what they look like they do here: Compose interpolates the
+# whole file before it filters by profile, so `${POSTGRES_PASSWORD:?}` in a
+# profile-gated service still aborts a deploy that never intended to run
+# PostgreSQL. That is exactly how the first DEV deploy failed:
+#
+#   error while interpolating services.postgres.environment.POSTGRES_PASSWORD:
+#   required variable POSTGRES_PASSWORD is missing a value
+#
+# Splitting the file makes the default stack unable to mention a local database
+# at all, which is the property remote-first actually needs.
+#
+# The target architecture uses managed PostgreSQL and Redis in every
+# environment. This exists for a host with no managed service available, and for
+# offline work.
+#
+#   docker compose -f docker/docker-compose.prod.yml \
+#                  -f docker/docker-compose.self-hosted.yml \
+#                  --env-file .env.prod up -d
+#
+# api, worker and migrate deliberately do not declare depends_on for these: a
+# service cannot depend on one that may not be deployed, and the application
+# retries its connections at startup either way.
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gogo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-gogo}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-gogo} -d ${POSTGRES_DB:-gogo}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Not exposed to the host — only the compose network reaches it.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redisdata:/data
+  backup:
+    image: alpine:3.20
+    restart: unless-stopped
+    entrypoint: ['/bin/sh', '/backup.sh']
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gogo}
+      POSTGRES_DB: ${POSTGRES_DB:-gogo}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BACKUP_BUCKET: ${R2_BACKUP_BUCKET:-}
+      HEARTBEAT_URL_BACKUP: ${HEARTBEAT_URL_BACKUP:-}
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  backups:

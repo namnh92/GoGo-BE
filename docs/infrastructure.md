@@ -6,7 +6,10 @@
 > host. Xem `GoGo-Remote-First-Multi-Environment-Infrastructure-Spec.md` và README.
 >
 > **Postgres và Redis trong compose là chuyển tiếp**, không phải kiến trúc mục tiêu. Chúng nằm
-> sau profile `self-hosted` và không dựng trong lần deploy mặc định. Bảng "Beta gate" bên dưới
+> ở `docker/docker-compose.self-hosted.yml` — file riêng chứ không phải profile: Compose nội suy
+> toàn bộ file **trước** khi lọc profile, nên `${POSTGRES_PASSWORD:?}` trong một service bị profile
+> che vẫn làm hỏng lần deploy không hề định chạy PostgreSQL. Tách file khiến stack mặc định không
+> thể nhắc tới database local. Bảng "Beta gate" bên dưới
 > là đường thoát; `pg_dump` hằng đêm với RPO 24h **không** đáp ứng yêu cầu ở `GOGO_SRS.md` §10.1
 > và không được coi là đã đáp ứng.
 
