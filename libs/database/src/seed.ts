@@ -395,13 +395,31 @@ async function main(): Promise<void> {
 
   // Dev-only CMS bootstrap admin — production admins are created by a
   // super admin through the API and must enroll MFA.
-  if ((process.env.NODE_ENV ?? 'development') !== 'production') {
+  //
+  // Guarded on APP_ENV, not NODE_ENV. NODE_ENV is the build mode and every
+  // deployed environment sets it to `production`, including DEV — so this used
+  // to skip on the one environment that needs it, leaving no way to sign in to
+  // the CMS at all. APP_ENV names the environment: dev, staging, prod.
+  //
+  // Unset means a workstation, which is also not production.
+  const appEnv = process.env.APP_ENV ?? 'dev';
+  if (appEnv !== 'prod' && appEnv !== 'production') {
     const { default: argon2 } = await import('argon2');
-    const passwordHash = await argon2.hash('gogo-dev-admin-password', { type: argon2.argon2id });
+
+    // Overridable rather than hardcoded. The default is a convenience for a
+    // shared DEV environment that already sits behind Cloudflare Access, and it
+    // is weak on purpose — but it lives in version control, and the APP_ENV
+    // guard above is the only thing keeping it out of production. An
+    // environment that wants different credentials should not need a code
+    // change to get them.
+    const email = process.env.SEED_ADMIN_EMAIL ?? 'admin@gogo.id.vn';
+    const password = process.env.SEED_ADMIN_PASSWORD ?? '123456';
+
+    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
     await db
       .insert(schema.adminUsers)
       .values({
-        email: 'admin@gogo.local',
+        email,
         passwordHash,
         displayName: 'Dev Super Admin',
         role: 'super_admin',
