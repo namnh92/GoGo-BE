@@ -1,5 +1,15 @@
 # GoGo Infrastructure — MVP cost-optimized plan (#21, #15, #36)
 
+> **Phạm vi.** File này mô tả stack **triển khai** trên VPS. Nó không mô tả cách phát triển
+> hằng ngày: máy developer là workstation, không phải một môi trường. DEV chạy từ xa —
+> PostgreSQL ở Neon, Redis ở Upstash, object storage ở R2 — và Mobile/CMS trỏ vào dev API được
+> host. Xem `GoGo-Remote-First-Multi-Environment-Infrastructure-Spec.md` và README.
+>
+> **Postgres và Redis trong compose là chuyển tiếp**, không phải kiến trúc mục tiêu. Chúng nằm
+> sau profile `self-hosted` và không dựng trong lần deploy mặc định. Bảng "Beta gate" bên dưới
+> là đường thoát; `pg_dump` hằng đêm với RPO 24h **không** đáp ứng yêu cầu ở `GOGO_SRS.md` §10.1
+> và không được coi là đã đáp ứng.
+
 Nguyên tắc: **một VPS + docker compose**, mọi thứ khác dùng free tier. Đơn
 giản nhất vận hành được, có đường nâng cấp rõ ràng tại beta gate. Toàn bộ
 config đã nằm trong repo (`docker/`), chỉ chờ credentials.
