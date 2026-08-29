@@ -1,8 +1,20 @@
-# Single-VPS production stack (MVP cost profile — docs/infrastructure.md).
-# Usage on the VPS:
+# Deployed application stack.
+#
+# Default services are caddy, api and worker; `migrate` runs as a one-off job.
+# PostgreSQL, Redis and the backup sidecar sit behind the `self-hosted` profile
+# and are NOT part of the target architecture — every environment uses managed
+# services (GoGo-Remote-First-Multi-Environment-Infrastructure-Spec.md §13).
+#
+# Deploy:
 #   docker compose -f docker/docker-compose.prod.yml --env-file .env.prod up -d
-# One-off migrate:
+# Migrate:
 #   docker compose -f docker/docker-compose.prod.yml --env-file .env.prod run --rm migrate
+#
+# Self-hosted data tier, for a host with no managed services available. A
+# transitional mode, never the target — nightly pg_dump does not meet the
+# production RPO in GOGO_SRS.md §10.1:
+#   docker compose -f docker/docker-compose.prod.yml --env-file .env.prod \
+#     --profile self-hosted up -d
 services:
   caddy:
     image: caddy:2-alpine
@@ -34,11 +46,6 @@ services:
       TRUST_PROXY: '1'
     env_file:
       - ../.env.prod
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/v1/health']
       interval: 30s
@@ -55,11 +62,6 @@ services:
       NODE_ENV: production
     env_file:
       - ../.env.prod
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
 
   migrate:
     build:
@@ -70,11 +72,22 @@ services:
       PROCESS: migrate
     env_file:
       - ../.env.prod
-    depends_on:
-      postgres:
-        condition: service_healthy
 
+  # ── self-hosted data tier ──────────────────────────────────────────────────
+  #
+  # Behind a profile because the target architecture uses managed PostgreSQL and
+  # Redis in every environment. Kept for a host with no managed service
+  # available, and for offline work.
+  #
+  # api, worker and migrate no longer declare depends_on for these: a service
+  # cannot depend on one that a profile may leave out, and the application
+  # retries its connections at startup either way. In self-hosted mode, start
+  # the data tier first:
+  #
+  #   docker compose ... --profile self-hosted up -d postgres redis
+  #   docker compose ... --profile self-hosted up -d
   postgres:
+    profiles: ['self-hosted']
     image: postgis/postgis:16-3.4
     restart: unless-stopped
     environment:
@@ -91,6 +104,7 @@ services:
     # Not exposed to the host — only the compose network reaches it.
 
   redis:
+    profiles: ['self-hosted']
     image: redis:7-alpine
     restart: unless-stopped
     command: ['redis-server', '--appendonly', 'yes']
@@ -100,6 +114,7 @@ services:
   # Nightly pg_dump → R2 (S3 API). RPO 24h for MVP; move to managed PITR at
   # beta gate (docs/runbooks.md §4). Skips upload until R2 creds are set.
   backup:
+    profiles: ['self-hosted']
     image: alpine:3.20
     restart: unless-stopped
     entrypoint: ['/bin/sh', '/backup.sh']

@@ -1,5 +1,15 @@
+# Nothing here starts by default.
+#
+# DEV points at Neon and Upstash — `pnpm secrets:pull` writes the connection
+# strings — so a local PostgreSQL is not just unnecessary, it is a hazard: a
+# developer running it works against a different database from everyone else,
+# and nothing says so.
+#
+# Use it deliberately, for offline work, infrastructure debugging or CI:
+#   docker compose --profile full-local up
 services:
   postgres:
+    profiles: ['full-local']
     image: postgis/postgis:16-3.4
     environment:
       POSTGRES_USER: gogo
@@ -17,6 +27,7 @@ services:
       retries: 10
 
   redis:
+    profiles: ['full-local']
     image: redis:7-alpine
     ports:
       # 6380 host-side to avoid colliding with other local redis instances
