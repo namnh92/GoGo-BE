@@ -8,6 +8,19 @@ import { z } from 'zod';
 const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    /**
+     * Which deployment this is, as opposed to how it was built.
+     *
+     * NODE_ENV is the build mode, and every deployed environment sets it to
+     * `production` — DEV included, because DEV runs the production build. Rules
+     * written against NODE_ENV therefore apply to DEV as if it were production,
+     * which is how the CMS ended up unreachable there: login refused an admin
+     * without MFA, and enrolling MFA needs a session that login would not
+     * issue.
+     *
+     * Unset means a workstation.
+     */
+    APP_ENV: z.enum(['dev', 'staging', 'prod', 'production']).default('dev'),
     API_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     API_HOST: z.string().default('0.0.0.0'),
     /**
