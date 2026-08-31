@@ -431,9 +431,16 @@ describe('CMS single sign-on exchange (#62, ADR-0010)', () => {
   });
 });
 
+type ServiceRow = { key: string; status: string; latencyMs?: number; detail?: string };
+
 describe('CMS ops observability (BE-CMS-G8 #247)', () => {
-  const get = (token: string, url: string) =>
-    api().inject({ method: 'GET', url, headers: auth(token) });
+  /*
+   * Awaited inside the helper: `inject()` is overloaded, and the un-awaited
+   * value types as `void & Promise<Response> & Chain`, which carries neither
+   * `statusCode` nor `json`.
+   */
+  const get = async (token: string, url: string) =>
+    await api().inject({ method: 'GET', url, headers: auth(token) });
 
   /*
    * The whole point of the endpoint. The test environment has no Redis, so
@@ -446,20 +453,23 @@ describe('CMS ops observability (BE-CMS-G8 #247)', () => {
     const res = await get(ops.token, '/v1/cms/ops/health');
     expect(res.statusCode).toBe(200);
 
-    const byKey = Object.fromEntries(
-      (res.json().services as { key: string; status: string; detail?: string }[]).map((s) => [
-        s.key,
-        s,
-      ]),
-    );
+    const services = res.json().services as ServiceRow[];
+    // Named lookup rather than an index: a missing row should fail saying
+    // which one, not as "possibly undefined" three assertions later.
+    const row = (key: string): ServiceRow => {
+      const found = services.find((s) => s.key === key);
+      if (!found) throw new Error(`no health row for ${key}; got ${services.map((s) => s.key)}`);
+      return found;
+    };
+
     // Answering at all is the only claim this row makes, and it is true.
-    expect(byKey.api.status).toBe('healthy');
-    expect(byKey.db.status).toBe('healthy');
-    expect(byKey.db.latencyMs).toBeTypeOf('number');
-    expect(byKey.redis.status).toBe('unknown');
-    expect(byKey.worker.status).toBe('unknown');
+    expect(row('api').status).toBe('healthy');
+    expect(row('db').status).toBe('healthy');
+    expect(row('db').latencyMs).toBeTypeOf('number');
+    expect(row('redis').status).toBe('unknown');
+    expect(row('worker').status).toBe('unknown');
     // An unknown that does not say why sends someone hunting.
-    expect(byKey.worker.detail).toBeTruthy();
+    expect(row('worker').detail).toBeTruthy();
   });
 
   /*
@@ -485,9 +495,9 @@ describe('CMS ops observability (BE-CMS-G8 #247)', () => {
     const res = await get(ops.token, '/v1/cms/ops/queues');
     expect(res.statusCode).toBe(200);
 
-    const outbox = (res.json().queues as { name: string; source: string }[]).find(
-      (q) => q.name === 'outbox_events',
-    );
+    const outbox = (
+      res.json().queues as { name: string; source: string; failed24hTruncated: boolean }[]
+    ).find((q) => q.name === 'outbox_events');
     expect(outbox).toMatchObject({ source: 'database', failed24hTruncated: false });
     expect(outbox).toHaveProperty('oldestPendingSeconds');
   });
