@@ -3998,7 +3998,8 @@ export interface components {
             completedAt?: string;
         };
         /**
-         * @description A column an import source can be mapped onto. Generated from `CANONICAL_FIELDS` in `libs/modules/ingestion/domain/column-mapping.ts`, which is the single source of truth; `import-parsing.spec.ts` fails if the two drift. A mapping naming anything outside this list is rejected with `MAPPING_FIELD_UNKNOWN` — never silently ignored.
+         * @description A column an import source can be mapped onto — the vocabulary a client should generate its mapping UI from. Mirrors `CANONICAL_FIELDS` in `libs/modules/ingestion/domain/column-mapping.ts`, which is the single source of truth; `import-parsing.spec.ts` fails if the two drift.
+         *     Request schemas keep `mapping` as a plain string map: narrowing an existing `/v1` request property to an enum is a breaking change (ADR-0005), so the vocabulary is published here and enforced at runtime instead. A value outside this list is rejected with `MAPPING_FIELD_UNKNOWN`, except for the compatibility cases documented on the import endpoints.
          * @enum {string}
          */
         ImportCanonicalField: "source_row_id" | "name" | "city" | "district" | "google_maps_url" | "google_maps_query" | "category" | "category_raw" | "price_min" | "price_max" | "price_unit" | "price_raw" | "audiences" | "audiences_raw" | "vibes" | "vibes_raw" | "highlight" | "note";
@@ -7003,7 +7004,7 @@ export interface operations {
                      */
                     mode?: "dry_run" | "create_drafts" | "publish_approved" | "update_existing";
                     defaultCity?: string;
-                    /** @description JSON object mapping raw header → `ImportCanonicalField`. Multipart carries it as a string, so the enum cannot be expressed here; the values are validated against `ImportCanonicalField` all the same, and an unknown one is a 400 `MAPPING_FIELD_UNKNOWN`. A header left out of the object is auto-detected; a header mapped to `""` is ignored. */
+                    /** @description JSON object mapping raw header → `ImportCanonicalField`. Values are validated against that schema at runtime; an unknown one is a 400 `MAPPING_FIELD_UNKNOWN`. A header left out of the object is auto-detected; a header mapped to `""` is ignored. Legacy spellings and retired values behave as described on `POST /cms/place-imports/google-sheet`. */
                     mapping?: string;
                 };
             };
@@ -7044,9 +7045,9 @@ export interface operations {
                     tabCityMapping?: {
                         [key: string]: string;
                     };
-                    /** @description Raw header → canonical field. A header left out is auto-detected; a header mapped to `""` is ignored. An unknown field is a 400 `MAPPING_FIELD_UNKNOWN`. */
+                    /** @description Raw header → canonical field. Supported values are the ones listed by `ImportCanonicalField`; generate against that schema rather than sending free text. The property stays a plain string map because narrowing a `/v1` request to an enum is a breaking change (ADR-0005) — the constraint is enforced at runtime, not in the wire type. A header left out is auto-detected; a header mapped to `""` is ignored. Three legacy spellings (`googleMapsUrl`, `priceMin`, `priceMax`) still normalise, and three retired values (`address`, `phone`, `website`) are still accepted and skipped; anything else is a 400 `MAPPING_FIELD_UNKNOWN`. */
                     mapping?: {
-                        [key: string]: components["schemas"]["ImportCanonicalField"];
+                        [key: string]: string;
                     };
                 };
             };

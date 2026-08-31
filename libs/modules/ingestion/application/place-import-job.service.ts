@@ -13,7 +13,12 @@ import {
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
-import { applyMapping, resolveMapping, type CanonicalField } from '../domain/column-mapping';
+import {
+  applyMapping,
+  resolveMapping,
+  type CanonicalField,
+  type ColumnMappingResult,
+} from '../domain/column-mapping';
 import { buildErrorReportCsv } from '../domain/error-report';
 import {
   INGEST_LIMITS,
@@ -58,7 +63,7 @@ export class PlaceImportJobService {
     fileName: string;
     mode: ImportMode;
     defaultCity?: string | undefined;
-    mapping?: Record<string, CanonicalField> | undefined;
+    mapping?: ColumnMappingResult | undefined;
     adminId: string;
   }) {
     let grids: SheetGrid[];
@@ -91,7 +96,7 @@ export class PlaceImportJobService {
     tabCityMapping?: Record<string, string> | undefined;
     mode: ImportMode;
     defaultCity?: string | undefined;
-    mapping?: Record<string, CanonicalField> | undefined;
+    mapping?: ColumnMappingResult | undefined;
     adminId: string;
   }) {
     let spreadsheetId: string;
@@ -146,7 +151,7 @@ export class PlaceImportJobService {
     grids: SheetGrid[];
     mode: ImportMode;
     defaultCity?: string | undefined;
-    mapping?: Record<string, CanonicalField> | undefined;
+    mapping?: ColumnMappingResult | undefined;
     adminId: string;
     tabCityMapping?: Record<string, string> | undefined;
   }) {
@@ -175,10 +180,28 @@ export class PlaceImportJobService {
     const unmappedHeaders = new Set<string>();
     const missingRequiredColumns = new Set<string>();
 
+    // Compatibility spellings the shipped CMS emitted. They behave exactly like
+    // the canonical field from here on; the counter is the only way anyone
+    // finds out a client still needs updating.
+    for (const legacy of input.mapping?.normalizedLegacy ?? []) {
+      this.metrics.increment('place_import_legacy_mapping_total', {
+        from: legacy.from,
+        to: legacy.to,
+      });
+    }
+
     let rowNumber = 0;
     for (const grid of input.grids) {
-      const { mapping, unmapped, missing } = resolveMapping(grid.headers, input.mapping);
+      const { mapping, unmapped, missing } = resolveMapping(grid.headers, input.mapping?.mapping);
       unmapped.forEach((h) => unmappedHeaders.add(`${grid.name}:${h}`));
+      // A column mapped onto a retired field has nowhere to go, so it is
+      // skipped like any unmapped column — and reported like one, rather than
+      // vanishing the way `/v1` used to let it.
+      for (const retired of input.mapping?.retired ?? []) {
+        if (grid.headers.some((h) => h.trim() === retired.header)) {
+          unmappedHeaders.add(`${grid.name}:${retired.header}`);
+        }
+      }
       // A tab named HCM/HN is the city fallback for its rows (spec §4.4).
       const tabCity = input.tabCityMapping?.[grid.name] ?? input.defaultCity;
       // This list is what the wizard blocks on, so it holds only columns the
@@ -258,7 +281,7 @@ export class PlaceImportJobService {
           status: input.mode === 'dry_run' ? 'completed' : 'review_required',
           mode: input.mode,
           defaultCity: input.defaultCity ?? null,
-          mapping: input.mapping ?? null,
+          mapping: input.mapping?.mapping ?? null,
           unmappedHeaders: [...unmappedHeaders],
           missingRequiredColumns: [...missingRequiredColumns],
           totalRows: prepared.length,

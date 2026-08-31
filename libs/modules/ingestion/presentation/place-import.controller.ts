@@ -10,7 +10,7 @@ import {
   CANONICAL_FIELDS,
   InvalidColumnMappingError,
   parseColumnMapping,
-  type CanonicalField,
+  type ColumnMappingResult,
 } from '../domain/column-mapping';
 import { PlaceImportJobService, type ImportMode } from '../application/place-import-job.service';
 
@@ -67,13 +67,18 @@ function toMappingError(err: unknown): AppError {
   );
 }
 
-function readMapping(raw: unknown): Record<string, CanonicalField> | undefined {
+function readMapping(raw: unknown): ColumnMappingResult | undefined {
+  let parsed: ColumnMappingResult;
   try {
-    const parsed = parseColumnMapping(raw);
-    return Object.keys(parsed).length > 0 ? parsed : undefined;
+    parsed = parseColumnMapping(raw);
   } catch (err) {
     throw toMappingError(err);
   }
+  const empty =
+    Object.keys(parsed.mapping).length === 0 &&
+    parsed.normalizedLegacy.length === 0 &&
+    parsed.retired.length === 0;
+  return empty ? undefined : parsed;
 }
 
 const confirmSchema = z.object({ googlePlaceId: z.string().trim().min(5).max(255) });
@@ -122,7 +127,7 @@ export class PlaceImportController {
       throw AppError.badRequest('MODE_INVALID', `mode không hợp lệ: ${mode}`);
     }
     const mappingRaw = field('mapping');
-    let mapping: Record<string, CanonicalField> | undefined;
+    let mapping: ColumnMappingResult | undefined;
     if (mappingRaw) {
       let parsed: unknown;
       try {

@@ -457,11 +457,11 @@ describe('PI-BE-019 — explicit column mapping is strict', () => {
     expect(res.json().unmappedHeaders).toEqual([]);
   });
 
-  it('rejects a mapping onto a field the parser does not have', async () => {
-    const editor = await createAdmin('mapping-bad-sheet@gogo.local', 'editor');
-    sheets.seed('7MappingRejectMappingReject01234567', 'HCM', [
-      ['Link', 'Tên'],
-      ['https://www.google.com/maps?place_id=fake-a', 'Quán A'],
+  it('normalises the legacy spellings the shipped CMS emitted', async () => {
+    const editor = await createAdmin('mapping-legacy-sheet@gogo.local', 'editor');
+    sheets.seed('7MappingLegacyMappingLegacy01234567', 'HCM', [
+      ['Link', 'Tên', 'category', 'city'],
+      ['https://www.google.com/maps?place_id=fake-a', 'Quán A', 'cafe', 'Hồ Chí Minh'],
     ]);
 
     const res = await api().inject({
@@ -470,29 +470,98 @@ describe('PI-BE-019 — explicit column mapping is strict', () => {
       remoteAddress: ip(),
       headers: auth(editor.token),
       payload: {
-        spreadsheetUrl: '7MappingRejectMappingReject01234567',
+        spreadsheetUrl: '7MappingLegacyMappingLegacy01234567',
         sheets: ['HCM'],
         mode: 'dry_run',
-        // The CMS wizard's own vocabulary. This used to import happily with
-        // the mapping silently discarded.
+        // `/v1` accepted this; it must keep working, now actually honoured.
         mapping: { Link: 'googleMapsUrl', Tên: 'name' },
       },
     });
 
-    expect(res.statusCode).toBe(400);
-    expect(res.json().code).toBe('MAPPING_FIELD_UNKNOWN');
-    expect(res.json().field_errors).toEqual([
-      expect.objectContaining({ field: 'mapping.Link', code: 'MAPPING_FIELD_UNKNOWN' }),
-    ]);
-    // The valid half of the mapping does not rescue the request: a partially
-    // honoured mapping screen is the thing being fixed.
-    expect(res.json().message).toContain('googleMapsUrl');
+    expect(res.statusCode).toBe(201);
+    expect(res.json().unmappedHeaders).toEqual([]);
+
+    const rows = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${res.json().id}/rows`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    const normalized = rows.json().items[0].normalized;
+    expect(normalized.name).toBe('Quán A');
+    // Proof the alias was honoured rather than merely tolerated: the URL only
+    // lands here if `Link` resolved to `google_maps_url`.
+    expect(normalized.googleMapsUrl).toContain('place_id=fake-a');
   });
 
-  it('rejects an unknown field on the multipart route with the same code', async () => {
+  it('still accepts the three retired fields, and says the column was skipped', async () => {
+    const editor = await createAdmin('mapping-retired@gogo.local', 'editor');
+    sheets.seed('8MappingRetiredMappingRetir01234567', 'HCM', [
+      ['Địa chỉ', 'name', 'category', 'city'],
+      ['126 NTMK', 'Quán A', 'cafe', 'Hồ Chí Minh'],
+    ]);
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: '8MappingRetiredMappingRetir01234567',
+        sheets: ['HCM'],
+        mode: 'dry_run',
+        mapping: { 'Địa chỉ': 'address' },
+      },
+    });
+
+    // `/v1` answered 200 and ignored it; that stays true.
+    expect(res.statusCode).toBe(201);
+    expect(res.json().totals.failed).toBe(0);
+    // But the outcome is visible now instead of silent.
+    expect(res.json().unmappedHeaders).toContain('HCM:Địa chỉ');
+  });
+
+  it('accepts every mapping value the shipped CMS could emit', async () => {
+    const editor = await createAdmin('mapping-shipped@gogo.local', 'editor');
+    sheets.seed('9MappingShippedMappingShipp01234567', 'HCM', [
+      ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'],
+      ['Quán A', '126 NTMK', 'HCM', 'Q1', '', 'cafe', '', '', '', '', ''],
+    ]);
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: '9MappingShippedMappingShipp01234567',
+        sheets: ['HCM'],
+        mode: 'dry_run',
+        // MAPPABLE_FIELDS + HEADER_HINTS from every GoGo-CMS commit that has
+        // ever contained them. Not one of these may 400.
+        mapping: {
+          a: 'name',
+          b: 'address',
+          c: 'city',
+          d: 'district',
+          e: 'googleMapsUrl',
+          f: 'category',
+          g: 'priceMin',
+          h: 'priceMax',
+          i: 'phone',
+          j: 'website',
+          k: 'note',
+        },
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('rejects a value no shipped client ever sent', async () => {
     const editor = await createAdmin('mapping-bad-file@gogo.local', 'editor');
     const body = multipart(
-      { mode: 'dry_run', mapping: JSON.stringify({ name: 'address' }) },
+      { mode: 'dry_run', mapping: JSON.stringify({ name: 'gmapsLink' }) },
       { name: 'mapping.csv', content: csv(['M-1,Quán A,Hồ Chí Minh,Quận 1,,cafe,,,']) },
     );
 
@@ -504,8 +573,8 @@ describe('PI-BE-019 — explicit column mapping is strict', () => {
       payload: body.payload,
     });
 
+    // The only behavioural change: a typo cannot silently do nothing.
     expect(res.statusCode).toBe(400);
-    // `address` is one of the three CMS-only fields with no canonical home.
     expect(res.json().code).toBe('MAPPING_FIELD_UNKNOWN');
   });
 
