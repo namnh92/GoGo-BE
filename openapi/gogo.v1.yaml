@@ -3360,25 +3360,73 @@ paths:
     get:
       operationId: cmsListFeatureFlags
       tags: [cms]
-      summary: 'Ops: every flag with its current value and last writer'
+      summary: 'Ops: every stored flag override with its value and last writer'
       description: >
         A kill switch nobody can read is not a kill switch. The AI fallback and
         the travel-time provider are both flag-gated, so their state has to be
         visible before an incident, not during one.
+
+
+        One entry per stored override. A key can have several — `(all, all)` is
+        the unscoped row, and a more specific `(production, ios)` row wins over
+        it for that environment and platform. Keys with no row at all are not
+        listed here; `cmsFeatureFlagCatalog` is what says which keys exist and
+        what they fall back to.
+      parameters:
+        - { name: environment, in: query, schema: { $ref: '#/components/schemas/FlagEnvironment' } }
+        - { name: platform, in: query, schema: { $ref: '#/components/schemas/FlagPlatform' } }
       responses:
         '200':
-          description: Flags in key order
+          description: Overrides in key, environment, platform order
           content:
             application/json:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/CmsFeatureFlag' }
 
+  /cms/feature-flags/catalog:
+    get:
+      operationId: cmsFeatureFlagCatalog
+      tags: [cms]
+      summary: 'Ops: every configurable key, its type and its default'
+      description: >
+        The registry of keys something in the backend actually reads. A key is
+        added by shipping the code that reads it, so the console can never
+        write a value nothing consumes.
+
+
+        Needed to edit safely: without the default, "not configured" and
+        "configured to zero" look identical, and a `version` field has no way
+        to show what it falls back to.
+      responses:
+        '200':
+          description: Flag definitions in registry order
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CmsFeatureFlagDefinition' }
+
   /cms/feature-flags/{key}:
     put:
       operationId: cmsSetFeatureFlag
       tags: [cms]
-      summary: 'Ops: toggle a feature flag / kill switch'
+      summary: 'Ops: set a flag for an environment and platform (audited)'
+      description: >
+        Validated against the key's declared type: a `version` that is not
+        `1.2.3` is refused here rather than tolerated by one client and crashed
+        on by another, and an unknown key is a 404 rather than a row nothing
+        reads.
+
+
+        A boolean flag's value is `enabled` — that is the column the kill
+        switches read, and an incident is the wrong moment to discover it moved.
+        For every other type the value goes in `value`; `payload` is the old
+        name for the same field and still accepted.
+
+
+        Omitting `environment` / `platform` writes the unscoped `(all, all)`
+        row, which is what every resolution falls back to.
       parameters:
         - { name: key, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -3389,10 +3437,32 @@ paths:
               type: object
               required: [enabled]
               properties:
-                enabled: { type: boolean }
-                payload: {}
+                enabled:
+                  type: boolean
+                  description: >
+                    For a boolean flag this is the value. For any other type it
+                    is whether the override applies at all — switching it off
+                    returns the key to its registry default.
+                value:
+                  description: Typed per the key's `valueType`. Absent for boolean flags.
+                payload:
+                  deprecated: true
+                  description: Old name for `value`. Sending both with different values is a 400.
+                environment: { $ref: '#/components/schemas/FlagEnvironment' }
+                platform: { $ref: '#/components/schemas/FlagPlatform' }
       responses:
-        '200': { description: Flag updated (audited) }
+        '200':
+          description: Flag updated (audited with before/after)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsFeatureFlagWriteResult' }
+        '400':
+          description: >
+            Value does not match the declared type (`INVALID_FLAG_VALUE`), or a
+            platform override was asked for on a key that has no per-platform
+            form (`FLAG_NOT_PLATFORM_SCOPED`).
+        '404':
+          description: No such key in the registry (`FLAG_UNKNOWN`)
 
   /cms/emergency/places/{id}/suspend:
     post:
@@ -4557,19 +4627,76 @@ components:
         activatedAt: { type: [string, 'null'], format: date-time }
         createdAt: { type: string, format: date-time }
 
+    FlagValueType:
+      type: string
+      enum: [boolean, string, number, json, version]
+
+    FlagEnvironment:
+      type: string
+      enum: [all, dev, staging, production]
+      description: >
+        `all` is the unscoped row every resolution falls back to; a named
+        environment overrides it for that deployment only.
+
+    FlagPlatform:
+      type: string
+      enum: [all, ios, android, web]
+
     CmsFeatureFlag:
       type: object
-      required: [key, enabled, updatedAt]
+      required: [key, valueType, environment, platform, enabled, known, updatedAt]
       properties:
         key: { type: string }
-        enabled: { type: boolean }
-        payload: { description: Free-form flag configuration. }
+        valueType: { $ref: '#/components/schemas/FlagValueType' }
+        environment: { $ref: '#/components/schemas/FlagEnvironment' }
+        platform: { $ref: '#/components/schemas/FlagPlatform' }
+        enabled:
+          type: boolean
+          description: >
+            The value itself for a boolean flag; for any other type, whether
+            this override applies at all.
+        value:
+          description: Typed per `valueType`. For a boolean flag this equals `enabled`.
+        payload:
+          deprecated: true
+          description: Old name for `value`, same content.
         description: { type: [string, 'null'] }
+        known:
+          type: boolean
+          description: >
+            False when the row's key is no longer in the registry — a value left
+            behind by a removed feature, which nothing reads any more.
         updatedBy:
           oneOf:
             - { $ref: '#/components/schemas/CmsAdminRef' }
             - { type: 'null' }
         updatedAt: { type: string, format: date-time }
+
+    CmsFeatureFlagDefinition:
+      type: object
+      required: [key, valueType, defaultValue, description, platformScoped]
+      properties:
+        key: { type: string }
+        valueType: { $ref: '#/components/schemas/FlagValueType' }
+        defaultValue:
+          description: What the backend uses when no override matches. Never null.
+        description: { type: string }
+        platformScoped:
+          type: boolean
+          description: >
+            False means a per-platform override is refused for this key rather
+            than stored and ignored.
+
+    CmsFeatureFlagWriteResult:
+      type: object
+      required: [key, valueType, environment, platform, enabled]
+      properties:
+        key: { type: string }
+        valueType: { $ref: '#/components/schemas/FlagValueType' }
+        environment: { $ref: '#/components/schemas/FlagEnvironment' }
+        platform: { $ref: '#/components/schemas/FlagPlatform' }
+        enabled: { type: boolean }
+        value: { description: The stored value, as the server now holds it. }
 
     CmsAuditEntry:
       type: object

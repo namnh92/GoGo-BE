@@ -7,6 +7,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -157,14 +158,50 @@ export const rankingConfigs = pgTable(
   ],
 );
 
-export const featureFlags = pgTable('feature_flags', {
-  key: text('key').primaryKey(),
-  enabled: boolean('enabled').notNull().default(false),
-  payload: jsonb('payload'),
-  description: text('description'),
-  updatedByAdminId: uuid('updated_by_admin_id'),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const featureFlagEnvironment = pgEnum('feature_flag_environment', [
+  'all',
+  'dev',
+  'staging',
+  'production',
+]);
+export const featureFlagPlatform = pgEnum('feature_flag_platform', [
+  'all',
+  'ios',
+  'android',
+  'web',
+]);
+
+/**
+ * BE-CMS-G3 (#221) — application configuration, scoped.
+ *
+ * The value's type and its default live in code
+ * (`libs/modules/shared/feature-flags.ts`), next to whatever reads the flag:
+ * storing the type per row would let two rows for one key disagree, and the
+ * reader has only one expectation. What is stored is what an operator sets —
+ * which environment and which platform this row applies to. `(all, all)` is
+ * the unscoped row every resolution falls back to.
+ *
+ * `enabled` is the boolean flag's value, unchanged: it is the column the kill
+ * switches read, and an incident is the wrong time to discover it moved.
+ * `payload` carries the typed value for every other kind.
+ */
+export const featureFlags = pgTable(
+  'feature_flags',
+  {
+    key: text('key').notNull(),
+    environment: featureFlagEnvironment('environment').notNull().default('all'),
+    platform: featureFlagPlatform('platform').notNull().default('all'),
+    enabled: boolean('enabled').notNull().default(false),
+    payload: jsonb('payload'),
+    description: text('description'),
+    updatedByAdminId: uuid('updated_by_admin_id'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.key, t.environment, t.platform] }),
+    index('feature_flags_key_idx').on(t.key),
+  ],
+);
 
 export const collectionStatus = pgEnum('collection_status', [
   'draft',

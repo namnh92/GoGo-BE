@@ -13,6 +13,7 @@ import {
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
+import { FLAG_ENVIRONMENTS, FLAG_PLATFORMS } from '../../shared/feature-flags';
 import {
   CHECKIN_MODERATION_STATUSES,
   ModerationQueueService,
@@ -616,9 +617,29 @@ const searchAnalyticsQuery = z.object({
   days: z.coerce.number().int().min(1).max(90).default(7),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
-const flagSchema = z.object({
-  enabled: z.boolean(),
-  payload: z.unknown().optional(),
+/**
+ * BE-CMS-G3 (#221) — a flag write carries what it applies to and what it is.
+ *
+ * `payload` is still accepted so the shipped flags console keeps working; it
+ * means the same thing as `value`, and sending both disagreeing values is a
+ * rejection rather than a silent pick.
+ */
+const flagSchema = z
+  .object({
+    enabled: z.boolean(),
+    value: z.unknown().optional(),
+    /** @deprecated use `value`. */
+    payload: z.unknown().optional(),
+    environment: z.enum(FLAG_ENVIRONMENTS).optional(),
+    platform: z.enum(FLAG_PLATFORMS).optional(),
+  })
+  .refine(
+    (body) => body.value === undefined || body.payload === undefined || body.value === body.payload,
+    { message: 'value and payload disagree', path: ['value'] },
+  );
+const flagListQuery = z.object({
+  environment: z.enum(FLAG_ENVIRONMENTS).optional(),
+  platform: z.enum(FLAG_PLATFORMS).optional(),
 });
 
 /**
@@ -744,17 +765,35 @@ export class CmsOpsController {
   }
 
   @Get('feature-flags')
-  listFlags() {
-    return this.ops.listFeatureFlags();
+  listFlags(@Query(new ZodValidationPipe(flagListQuery)) query: z.infer<typeof flagListQuery>) {
+    return this.ops.listFeatureFlags(query);
+  }
+
+  /**
+   * Every configurable key with its type and default. Without it the console
+   * cannot tell "not configured" from "does not exist", and a number or a
+   * version cannot be edited safely without seeing what it falls back to.
+   *
+   * Declared before `feature-flags/:key` — Nest matches in declaration order.
+   */
+  @Get('feature-flags/catalog')
+  flagCatalog() {
+    return this.ops.flagCatalog();
   }
 
   @Put('feature-flags/:key')
   setFlag(
     @CurrentActor() actor: Actor,
     @Param('key') key: string,
-    @Body(new ZodValidationPipe(flagSchema)) body: { enabled: boolean; payload?: unknown },
+    @Body(new ZodValidationPipe(flagSchema)) body: z.infer<typeof flagSchema>,
   ) {
-    return this.ops.setFeatureFlag(actor.id, key, body.enabled, body.payload);
+    const { enabled, environment, platform } = body;
+    return this.ops.setFeatureFlag(actor.id, key, {
+      enabled,
+      value: body.value ?? body.payload,
+      environment,
+      platform,
+    });
   }
 
   @Get('ops/kpis')

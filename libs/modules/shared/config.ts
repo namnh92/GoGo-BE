@@ -6,6 +6,9 @@ export const APP_CONFIG = Symbol('APP_CONFIG');
 
 export type MediaConfig = { MEDIA_PUBLIC_BASE_URL: string };
 
+/** The deployment a flag row is scoped to (#221). */
+export type PlatformConfig = { APP_ENV: 'dev' | 'staging' | 'prod' | 'production' };
+
 export type IdentityConfig = {
   NODE_ENV: 'development' | 'test' | 'production';
   /** The deployment, not the build mode. See apps/api/src/config/env.ts. */

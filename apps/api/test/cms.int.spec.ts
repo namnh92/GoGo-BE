@@ -1691,7 +1691,7 @@ describe('CMS read endpoints', () => {
     const ops = await createAdmin('read-flags@gogo.local', 'ops_admin');
     await api().inject({
       method: 'PUT',
-      url: '/v1/cms/feature-flags/ai.refinement',
+      url: '/v1/cms/feature-flags/feature_ai_recommendation',
       remoteAddress: ip(),
       headers: auth(ops.token),
       payload: { enabled: false },
@@ -1704,9 +1704,198 @@ describe('CMS read endpoints', () => {
       headers: auth(ops.token),
     });
     expect(res.statusCode).toBe(200);
-    const flag = res.json().find((f: { key: string }) => f.key === 'ai.refinement');
+    const flag = res.json().find((f: { key: string }) => f.key === 'feature_ai_recommendation');
     expect(flag.enabled).toBe(false);
     expect(flag.updatedBy.id).toBe(ops.id);
+  });
+});
+
+/**
+ * BE-CMS-G3 (#221) — typed application flags. The contract was
+ * `enabled: boolean` plus an opaque `payload`, so a version, a limit and an
+ * iOS-only switch all had to be smuggled through the same field.
+ */
+describe('typed app flags (BE-CMS-G3 #221)', () => {
+  let opsToken: string;
+  let opsId: string;
+
+  beforeAll(async () => {
+    const ops = await createAdmin('flags221@gogo.local', 'ops_admin');
+    opsToken = ops.token;
+    opsId = ops.id;
+  });
+
+  const put = (key: string, payload: unknown, token = opsToken) =>
+    api().inject({
+      method: 'PUT',
+      url: `/v1/cms/feature-flags/${key}`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: payload as object,
+    });
+  const get = (qs = '', token = opsToken) =>
+    api().inject({ method: 'GET', url: `/v1/cms/feature-flags${qs}`, headers: auth(token) });
+
+  it('publishes a catalog of keys with their type and default', async () => {
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/feature-flags/catalog',
+      headers: auth(opsToken),
+    });
+    expect(res.statusCode).toBe(200);
+    const byKey = Object.fromEntries(res.json().map((d: { key: string }) => [d.key, d])) as Record<
+      string,
+      { valueType: string; defaultValue: unknown; platformScoped: boolean }
+    >;
+
+    expect(byKey['minimum_app_version']).toMatchObject({
+      valueType: 'version',
+      platformScoped: true,
+    });
+    expect(byKey['recommendation_limit']).toMatchObject({ valueType: 'number', defaultValue: 20 });
+    // A default is never null: "not configured" has to be distinguishable from
+    // a value of zero or false.
+    for (const definition of res.json()) expect(definition.defaultValue).not.toBeNull();
+  });
+
+  it('refuses a key nothing reads, rather than storing a value with no reader', async () => {
+    const res = await put('marketing.banner.color', { enabled: true });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().code).toBe('FLAG_UNKNOWN');
+  });
+
+  it('validates the value against the declared type at the API, not in the client', async () => {
+    const badVersion = await put('minimum_app_version', { enabled: true, value: 'v2.1' });
+    expect(badVersion.statusCode).toBe(400);
+    expect(badVersion.json().code).toBe('INVALID_FLAG_VALUE');
+    expect(badVersion.json().field_errors[0].field).toBe('value');
+
+    const badNumber = await put('recommendation_limit', { enabled: true, value: '25' });
+    expect(badNumber.statusCode).toBe(400);
+
+    const badJson = await put('place_import.rules', { enabled: true, value: 'nope' });
+    expect(badJson.statusCode).toBe(400);
+
+    const good = await put('minimum_app_version', { enabled: true, value: '2.1.0' });
+    expect(good.statusCode).toBe(200);
+    expect(good.json()).toMatchObject({ valueType: 'version', value: '2.1.0', environment: 'all' });
+  });
+
+  it('a boolean flag is set through `enabled` and carries no second value', async () => {
+    const withValue = await put('maintenance_mode', { enabled: true, value: true });
+    expect(withValue.statusCode).toBe(400);
+
+    const ok = await put('maintenance_mode', { enabled: true });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ valueType: 'boolean', enabled: true, value: true });
+  });
+
+  it('refuses a platform override on a key that has no per-platform form', async () => {
+    const res = await put('recommendation_limit', { enabled: true, value: 30, platform: 'ios' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('FLAG_NOT_PLATFORM_SCOPED');
+  });
+
+  it('stores one row per (key, environment, platform) instead of one per key', async () => {
+    expect((await put('minimum_app_version', { enabled: true, value: '2.0.0' })).statusCode).toBe(
+      200,
+    );
+    expect(
+      (
+        await put('minimum_app_version', {
+          enabled: true,
+          value: '2.5.0',
+          environment: 'production',
+          platform: 'ios',
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    const all = (await get()).json() as { key: string; environment: string; platform: string }[];
+    const rows = all.filter((f) => f.key === 'minimum_app_version');
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => `${r.environment}/${r.platform}`).sort()).toEqual([
+      'all/all',
+      'production/ios',
+    ]);
+
+    const scoped = (await get('?environment=production&platform=ios')).json() as {
+      key: string;
+      value: unknown;
+    }[];
+    expect(scoped.find((f) => f.key === 'minimum_app_version')?.value).toBe('2.5.0');
+  });
+
+  it('keeps `payload` working for the console that already ships against it', async () => {
+    const res = await put('place_import.rules', { enabled: true, payload: { minReviews: 4 } });
+    expect(res.statusCode).toBe(200);
+
+    const listed = (await get()).json() as { key: string; value: unknown; payload: unknown }[];
+    const rules = listed.find((f) => f.key === 'place_import.rules');
+    expect(rules?.value).toEqual({ minReviews: 4 });
+    expect(rules?.payload).toEqual({ minReviews: 4 });
+
+    // Two names for one field must not be able to say different things.
+    const conflicting = await put('place_import.rules', {
+      enabled: true,
+      value: { minReviews: 4 },
+      payload: { minReviews: 9 },
+    });
+    expect(conflicting.statusCode).toBe(400);
+  });
+
+  it('audits the change with before and after, not just who touched it', async () => {
+    await put('feature_group_planning', { enabled: false });
+    await put('feature_group_planning', { enabled: true });
+
+    const audit = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/audit?actorId=${opsId}&action=feature_flag.set&resourceId=feature_group_planning&limit=1`,
+      headers: auth(opsToken),
+    });
+    expect(audit.statusCode).toBe(200);
+    const diff = audit.json().items[0].diff;
+    expect(diff.before).toMatchObject({ enabled: false });
+    expect(diff.after).toMatchObject({ enabled: true });
+    expect(diff.environment).toBe('all');
+  });
+
+  it('the import kill switch still reads the flag it always read', async () => {
+    // #221 changed the primary key underneath this reader; the behaviour it
+    // gates must not have moved with it.
+    await put('place_import.autopublish', { enabled: false });
+    const off = await resolveImportAutoPublish();
+    expect(off).toBe(false);
+
+    await put('place_import.autopublish', { enabled: true });
+    expect(await resolveImportAutoPublish()).toBe(true);
+
+    // A more specific row for another environment must not leak into this one.
+    await put('place_import.autopublish', { enabled: false, environment: 'production' });
+    expect(await resolveImportAutoPublish()).toBe(true);
+  });
+
+  async function resolveImportAutoPublish(): Promise<boolean> {
+    const { resolveFlag } = await import('../../../libs/modules/shared/feature-flags.js');
+    const resolved = await resolveFlag(db, 'place_import.autopublish', { environment: 'dev' });
+    return resolved.enabled;
+  }
+
+  it('stays an ops_admin write, and is never a place for a secret', async () => {
+    const editor = await createAdmin('flags221-editor@gogo.local', 'editor');
+    expect((await put('maintenance_mode', { enabled: true }, editor.token)).statusCode).toBe(403);
+    // Reads do not climb (BE-IMP-008): the flag console stays ops-only, both
+    // ways, and #221 does not widen who can see it.
+    expect((await get('', editor.token)).statusCode).toBe(403);
+    expect(
+      (
+        await api().inject({
+          method: 'GET',
+          url: '/v1/cms/feature-flags/catalog',
+          headers: auth(editor.token),
+        })
+      ).statusCode,
+    ).toBe(403);
   });
 });
 
@@ -1824,13 +2013,22 @@ describe('audit read (BE-IMP-010, #158, FR-CMS-008)', () => {
 
   it('pages by cursor without repeating a row, newest first', async () => {
     const ops = await createAdmin('audit-page@gogo.local', 'ops_admin');
-    for (let i = 0; i < 5; i += 1) {
+    // Five distinct registry keys: #221 closed the key space, so an audit
+    // trail of five writes needs five keys something actually reads.
+    for (const key of [
+      'maintenance_mode',
+      'feature_group_planning',
+      'feature_ai_recommendation',
+      'place_import.autopublish',
+      'minimum_app_version',
+    ]) {
       await api().inject({
         method: 'PUT',
-        url: `/v1/cms/feature-flags/audit.page.${i}`,
+        url: `/v1/cms/feature-flags/${key}`,
         remoteAddress: ip(),
         headers: auth(ops.token),
-        payload: { enabled: true },
+        payload:
+          key === 'minimum_app_version' ? { enabled: true, value: '2.1.0' } : { enabled: true },
       });
     }
 
