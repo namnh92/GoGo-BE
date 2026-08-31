@@ -83,7 +83,7 @@ afterAll(async () => {
 
 describe('place import (BE-BFF-013, FR-PLACE-001..006)', () => {
   it('verifies a good link → community_submitted place with provider facts', async () => {
-    const { token } = await register('imp1@gogo.vn');
+    const { token } = await register('imp1@gogo.id.vn');
     fakePlaces.seed({
       providerPlaceId: 'good-place',
       name: 'Quán Mới Nổi',
@@ -125,7 +125,7 @@ describe('place import (BE-BFF-013, FR-PLACE-001..006)', () => {
   });
 
   it('dedups by provider id instead of creating a duplicate (FR-PLACE-005)', async () => {
-    const { token } = await register('imp2@gogo.vn');
+    const { token } = await register('imp2@gogo.id.vn');
     const res = await api().inject({
       method: 'POST',
       url: '/v1/places/imports',
@@ -142,7 +142,7 @@ describe('place import (BE-BFF-013, FR-PLACE-001..006)', () => {
   });
 
   it('returns exact reason codes per failed rule (FR-PLACE-003)', async () => {
-    const { token } = await register('imp3@gogo.vn');
+    const { token } = await register('imp3@gogo.id.vn');
     const cases: [string, Parameters<FakePlaceProvider['seed']>[0] | null, string][] = [
       ['not-a-maps-link', null, 'INVALID_URL'],
       ['https://maps.google.com/maps?place_id=ghost', null, 'NOT_FOUND'],
@@ -191,7 +191,7 @@ describe('place import (BE-BFF-013, FR-PLACE-001..006)', () => {
   });
 
   it('provider outage → PROVIDER_ERROR rejection, no catalog record', async () => {
-    const { token } = await register('imp4@gogo.vn');
+    const { token } = await register('imp4@gogo.id.vn');
     fakePlaces.failing = true;
     const res = await api().inject({
       method: 'POST',
@@ -232,7 +232,7 @@ describe('areas autocomplete (BE-BFF-016, FR-PLACE-007)', () => {
 
 describe('saved/review/profile/privacy (BE-BFF-009)', () => {
   it('save/unsave, review lifecycle, profile update', async () => {
-    const { token } = await register('user1@gogo.vn');
+    const { token } = await register('user1@gogo.id.vn');
     const [place] = await db
       .insert(schema.places)
       .values({
@@ -265,7 +265,7 @@ describe('saved/review/profile/privacy (BE-BFF-009)', () => {
     expect(review.json().status).toBe('pending'); // moderation first
 
     // Another user cannot edit my review (ownership rule FR-USER-002).
-    const { token: other } = await register('user2@gogo.vn');
+    const { token: other } = await register('user2@gogo.id.vn');
     const foreignEdit = await api().inject({
       method: 'PATCH',
       url: `/v1/reviews/${review.json().id}`,
@@ -286,7 +286,7 @@ describe('saved/review/profile/privacy (BE-BFF-009)', () => {
   });
 
   it('export returns owned data; delete anonymizes and kills sessions', async () => {
-    const { token, userId } = await register('gone@gogo.vn');
+    const { token, userId } = await register('gone@gogo.id.vn');
     const exportRes = await api().inject({
       method: 'GET',
       url: '/v1/me/export',
@@ -294,7 +294,7 @@ describe('saved/review/profile/privacy (BE-BFF-009)', () => {
       headers: auth(token),
     });
     expect(exportRes.statusCode).toBe(200);
-    expect(exportRes.json().profile.email).toBe('gone@gogo.vn');
+    expect(exportRes.json().profile.email).toBe('gone@gogo.id.vn');
 
     const del = await api().inject({
       method: 'DELETE',
@@ -315,7 +315,7 @@ describe('saved/review/profile/privacy (BE-BFF-009)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email: 'gone@gogo.vn', password: 'sufficiently-long-pw', displayName: 'Mới' },
+      payload: { email: 'gone@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'Mới' },
     });
     expect(again.statusCode).toBe(201);
   });
@@ -323,7 +323,7 @@ describe('saved/review/profile/privacy (BE-BFF-009)', () => {
 
 describe('outbox dispatcher (BE-BFF-010)', () => {
   it('fans out plan.published to member notifications and push, idempotently', async () => {
-    const { userId } = await register('notif@gogo.vn');
+    const { userId } = await register('notif@gogo.id.vn');
     const [room] = await db
       .insert(schema.rooms)
       .values({
@@ -368,13 +368,13 @@ describe('outbox dispatcher (BE-BFF-010)', () => {
     const inbox = await api().inject({
       method: 'GET',
       url: '/v1/me/notifications',
-      headers: auth((await loginAgain('notif@gogo.vn')).token),
+      headers: auth((await loginAgain('notif@gogo.id.vn')).token),
     });
     expect(inbox.json().notifications[0].kind).toBe('plan_ready');
   });
 
   it('respects per-kind opt-out for push while keeping the in-app row', async () => {
-    const { userId, token } = await register('optout@gogo.vn');
+    const { userId, token } = await register('optout@gogo.id.vn');
     await api().inject({
       method: 'PUT',
       url: '/v1/me/notification-preferences',
@@ -429,7 +429,7 @@ describe('privacy retention jobs (DB-010)', () => {
       succeeded: false,
       createdAt: new Date(Date.now() - 40 * 24 * 3600 * 1000),
     });
-    const { userId } = await register('privacy@gogo.vn');
+    const { userId } = await register('privacy@gogo.id.vn');
     const [room] = await db
       .insert(schema.rooms)
       .values({
@@ -546,7 +546,7 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
   }
 
   it('a redelivered event does not put the same notification in an inbox twice', async () => {
-    const { userId, roomId } = await roomWithHost('outbox-dedupe@gogo.vn');
+    const { userId, roomId } = await roomWithHost('outbox-dedupe@gogo.id.vn');
     const event = await queueEvent(roomId);
     const dispatcher = new OutboxDispatcher(db as never, new FakePush());
 
@@ -567,7 +567,7 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
   });
 
   it('backs off instead of retrying a broken event every tick', async () => {
-    const { roomId } = await roomWithHost('outbox-backoff@gogo.vn');
+    const { roomId } = await roomWithHost('outbox-backoff@gogo.id.vn');
     const event = await queueEvent(roomId);
     // A push failure alone is swallowed by design, so break the write the
     // fan-out depends on. `select` and `update` still work, which is what
@@ -588,7 +588,7 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
   });
 
   it('dead-letters after the attempts run out, so it stops blocking the queue', async () => {
-    const { roomId } = await roomWithHost('outbox-deadletter@gogo.vn');
+    const { roomId } = await roomWithHost('outbox-deadletter@gogo.id.vn');
     const event = await queueEvent(roomId);
     await db
       .update(schema.outboxEvents)
@@ -617,7 +617,7 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
   });
 
   it('one dead device token does not fail the event for everyone else', async () => {
-    const { userId, roomId } = await roomWithHost('outbox-badtoken@gogo.vn');
+    const { userId, roomId } = await roomWithHost('outbox-badtoken@gogo.id.vn');
     await db
       .insert(schema.deviceTokens)
       .values({ userId, platform: 'ios', token: `dead-${Date.now()}` });

@@ -81,7 +81,7 @@ describe('CMS auth + RBAC (CMS-001, FR-CMS-001, SRS §15.7)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email: 'user@gogo.vn', password: 'sufficiently-long-pw', displayName: 'U' },
+      payload: { email: 'user@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'U' },
     });
     const res = await api().inject({
       method: 'GET',
@@ -334,7 +334,7 @@ describe('moderation queue (CMS-007, FR-CMS-005)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email: 'reviewer@gogo.vn', password: 'sufficiently-long-pw', displayName: 'R' },
+      payload: { email: 'reviewer@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'R' },
     });
     const [place] = await db
       .insert(schema.places)
@@ -429,7 +429,7 @@ describe('moderation queues: filter, count, cursor paging (BE-CMS-G1 #219)', () 
 
     const [author] = await db
       .insert(schema.users)
-      .values({ email: 'queue-author@gogo.vn', displayName: 'Người Đánh Giá' })
+      .values({ email: 'queue-author@gogo.id.vn', displayName: 'Người Đánh Giá' })
       .returning();
     authorId = author!.id;
 
@@ -501,7 +501,7 @@ describe('moderation queues: filter, count, cursor paging (BE-CMS-G1 #219)', () 
     const item = res.json().items[0];
     expect(item.authorDisplayName).toBe('Người Đánh Giá');
     expect(item.authorUserId).toBe(authorId);
-    expect(JSON.stringify(res.json())).not.toContain('queue-author@gogo.vn');
+    expect(JSON.stringify(res.json())).not.toContain('queue-author@gogo.id.vn');
   });
 
   it('`reported` filters on undecided reports, both ways', async () => {
@@ -615,7 +615,7 @@ describe('moderation queues: filter, count, cursor paging (BE-CMS-G1 #219)', () 
   it('check-in queue filters on the verified bill and joins its place', async () => {
     const [host] = await db
       .insert(schema.users)
-      .values({ email: 'queue-host@gogo.vn', displayName: 'Host' })
+      .values({ email: 'queue-host@gogo.id.vn', displayName: 'Host' })
       .returning();
     const [room] = await db
       .insert(schema.rooms)
@@ -683,7 +683,7 @@ describe('moderation queues: filter, count, cursor paging (BE-CMS-G1 #219)', () 
       url: '/v1/auth/register',
       remoteAddress: ip(),
       payload: {
-        email: 'queue-outsider@gogo.vn',
+        email: 'queue-outsider@gogo.id.vn',
         password: 'sufficiently-long-pw',
         displayName: 'O',
       },
@@ -825,7 +825,7 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
       url: '/v1/auth/register',
       remoteAddress: ip(),
       payload: {
-        email: 'acctlist-outsider@gogo.vn',
+        email: 'acctlist-outsider@gogo.id.vn',
         password: 'sufficiently-long-pw',
         displayName: 'O',
       },
@@ -965,7 +965,7 @@ describe('CMS media upload (BE-CMS-G5 #227)', () => {
       url: '/v1/auth/register',
       remoteAddress: ip(),
       payload: {
-        email: 'upload227-outsider@gogo.vn',
+        email: 'upload227-outsider@gogo.id.vn',
         password: 'sufficiently-long-pw',
         displayName: 'O',
       },
@@ -1437,7 +1437,7 @@ describe('plan templates (BE-CMS-G4b #223)', () => {
 
     const [host] = await db
       .insert(schema.users)
-      .values({ email: `tpl-host-${suffix()}@gogo.vn`, displayName: 'Host' })
+      .values({ email: `tpl-host-${suffix()}@gogo.id.vn`, displayName: 'Host' })
       .returning();
     const [room] = await db
       .insert(schema.rooms)
@@ -1742,9 +1742,9 @@ describe('notification campaigns (BE-CMS-G4e #226)', () => {
     const users = await db
       .insert(schema.users)
       .values([
-        { email: `camp-a-${suffix()}@gogo.vn`, displayName: 'A' },
-        { email: `camp-b-${suffix()}@gogo.vn`, displayName: 'B' },
-        { email: `camp-c-${suffix()}@gogo.vn`, displayName: 'C' },
+        { email: `camp-a-${suffix()}@gogo.id.vn`, displayName: 'A' },
+        { email: `camp-b-${suffix()}@gogo.id.vn`, displayName: 'B' },
+        { email: `camp-c-${suffix()}@gogo.id.vn`, displayName: 'C' },
       ])
       .returning();
     recipients = users.map((u) => u.id);
@@ -1810,10 +1810,10 @@ describe('notification campaigns (BE-CMS-G4e #226)', () => {
     expect(contradiction.statusCode).toBe(400);
 
     for (const url of [
-      'http://gogo.vn/promo',
+      'http://gogo.id.vn/promo',
       'https://127.0.0.1/admin',
       'https://localhost:8080',
-      'https://user:pw@gogo.vn',
+      'https://user:pw@gogo.id.vn',
       'https://10.0.0.5/internal',
       'javascript:alert(1)',
     ]) {
@@ -1825,7 +1825,7 @@ describe('notification campaigns (BE-CMS-G4e #226)', () => {
       (
         await post(
           '',
-          draft({ destinationType: 'external_url', destinationValue: 'https://gogo.vn/tet' }),
+          draft({ destinationType: 'external_url', destinationValue: 'https://gogo.id.vn/tet' }),
         )
       ).statusCode,
     ).toBe(201);
@@ -2052,7 +2052,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
 
     const [twoDevices] = await db
       .insert(schema.users)
-      .values({ email: `disp-a-${suffix()}@gogo.vn`, displayName: 'Two devices' })
+      .values({ email: `disp-a-${suffix()}@gogo.id.vn`, displayName: 'Two devices' })
       .returning();
     userWithTwoDevices = twoDevices!.id;
     await db.insert(schema.deviceTokens).values([
@@ -2062,7 +2062,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
 
     const [optedOut] = await db
       .insert(schema.users)
-      .values({ email: `disp-b-${suffix()}@gogo.vn`, displayName: 'Opted out' })
+      .values({ email: `disp-b-${suffix()}@gogo.id.vn`, displayName: 'Opted out' })
       .returning();
     userOptedOut = optedOut!.id;
     await db
@@ -2441,7 +2441,7 @@ describe('banners (BE-CMS-G4c #224)', () => {
       ['place', placeId],
       ['recommendation', recommendationId],
       ['campaign', campaignId],
-      ['external_url', 'https://gogo.vn/tet'],
+      ['external_url', 'https://gogo.id.vn/tet'],
     ] as const) {
       const res = await post(await valid({ destinationType, destinationValue }));
       expect(res.statusCode, destinationType).toBe(201);
@@ -2471,10 +2471,10 @@ describe('banners (BE-CMS-G4c #224)', () => {
 
   it('refuses an external URL that is unsafe to open at scale', async () => {
     for (const url of [
-      'http://gogo.vn/promo',
+      'http://gogo.id.vn/promo',
       'https://127.0.0.1/admin',
       'https://192.168.1.1',
-      'https://user:pw@gogo.vn',
+      'https://user:pw@gogo.id.vn',
       'not-a-url',
     ]) {
       const res = await post(
@@ -2801,7 +2801,7 @@ describe('RBAC: hierarchical read, exact-match write (BE-IMP-008, #143)', () => 
       url: '/v1/auth/register',
       remoteAddress: ip(),
       payload: {
-        email: 'rbac-reviewer@gogo.vn',
+        email: 'rbac-reviewer@gogo.id.vn',
         password: 'sufficiently-long-pw',
         displayName: 'R',
       },
@@ -2876,7 +2876,7 @@ describe('audit request context (BE-IMP-007)', () => {
       url: '/v1/auth/register',
       remoteAddress: '10.99.0.8',
       payload: {
-        email: 'audit-user@gogo.vn',
+        email: 'audit-user@gogo.id.vn',
         password: 'sufficiently-long-pw',
         displayName: 'U',
       },
@@ -3049,7 +3049,11 @@ describe('SEC-001 emergency takedown (break-glass)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email: 'bg-reviewer@gogo.vn', password: 'sufficiently-long-pw', displayName: 'R' },
+      payload: {
+        email: 'bg-reviewer@gogo.id.vn',
+        password: 'sufficiently-long-pw',
+        displayName: 'R',
+      },
     });
     const review = await api().inject({
       method: 'POST',

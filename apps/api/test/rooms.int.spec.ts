@@ -111,7 +111,7 @@ afterAll(async () => {
 
 describe('room lifecycle (BE-BFF-003)', () => {
   it('creates a group room with constraint v1 and host membership', async () => {
-    const { token } = await registerUser('host1@gogo.vn', 'Chủ Kèo');
+    const { token } = await registerUser('host1@gogo.id.vn', 'Chủ Kèo');
     const room = await createGroupRoom(token);
     expect(room.type).toBe('group');
     // #155: a room exists to be joined, so it starts open to joining rather
@@ -125,7 +125,7 @@ describe('room lifecycle (BE-BFF-003)', () => {
   });
 
   it('rejects couple rooms with vote mode or wrong participant count', async () => {
-    const { token } = await registerUser('host2@gogo.vn');
+    const { token } = await registerUser('host2@gogo.id.vn');
     const badMode = await api().inject({
       method: 'POST',
       url: '/v1/rooms',
@@ -157,7 +157,7 @@ describe('room lifecycle (BE-BFF-003)', () => {
   });
 
   it('rejects unpublished seed places (FR-ROOM-010)', async () => {
-    const { token } = await registerUser('host3@gogo.vn');
+    const { token } = await registerUser('host3@gogo.id.vn');
     const res = await api().inject({
       method: 'POST',
       url: '/v1/rooms',
@@ -176,7 +176,7 @@ describe('room lifecycle (BE-BFF-003)', () => {
   });
 
   it('validates status transitions', async () => {
-    const { token } = await registerUser('host4@gogo.vn');
+    const { token } = await registerUser('host4@gogo.id.vn');
     const room = await createGroupRoom(token);
     const bad = await api().inject({
       method: 'PATCH',
@@ -202,8 +202,8 @@ describe('room lifecycle (BE-BFF-003)', () => {
 
 describe('permission matrix (SRS §15.7 — hand-crafted requests)', () => {
   it('non-members cannot read a room', async () => {
-    const { token: hostToken } = await registerUser('host5@gogo.vn');
-    const { token: otherToken } = await registerUser('other5@gogo.vn');
+    const { token: hostToken } = await registerUser('host5@gogo.id.vn');
+    const { token: otherToken } = await registerUser('other5@gogo.id.vn');
     const room = await createGroupRoom(hostToken);
     const res = await api().inject({
       method: 'GET',
@@ -215,8 +215,8 @@ describe('permission matrix (SRS §15.7 — hand-crafted requests)', () => {
   });
 
   it('members cannot edit constraints, transition, invite or remove members', async () => {
-    const { token: hostToken } = await registerUser('host6@gogo.vn');
-    const { token: memberToken } = await registerUser('member6@gogo.vn');
+    const { token: hostToken } = await registerUser('host6@gogo.id.vn');
+    const { token: memberToken } = await registerUser('member6@gogo.id.vn');
     const room = await createGroupRoom(hostToken);
     await api().inject({
       method: 'PATCH',
@@ -279,7 +279,7 @@ describe('permission matrix (SRS §15.7 — hand-crafted requests)', () => {
   });
 
   it('a guest token from another room cannot touch this room', async () => {
-    const { token: hostToken } = await registerUser('host7@gogo.vn');
+    const { token: hostToken } = await registerUser('host7@gogo.id.vn');
     const roomA = await createGroupRoom(hostToken);
     const roomB = await createGroupRoom(hostToken);
     // guest joins room B via share code
@@ -306,7 +306,7 @@ describe('permission matrix (SRS §15.7 — hand-crafted requests)', () => {
   });
 
   it('guests cannot create rooms', async () => {
-    const { token: hostToken } = await registerUser('host8@gogo.vn');
+    const { token: hostToken } = await registerUser('host8@gogo.id.vn');
     const room = await createGroupRoom(hostToken);
     const [row] = await db.select().from(schema.rooms).where(eq(schema.rooms.id, room.id));
     await db.update(schema.rooms).set({ status: 'collecting' }).where(eq(schema.rooms.id, room.id));
@@ -334,7 +334,7 @@ describe('permission matrix (SRS §15.7 — hand-crafted requests)', () => {
 
 describe('constraints + staleness (core rule #6)', () => {
   it('host edit bumps version and marks plans/scores stale; version conflict is 409', async () => {
-    const { token } = await registerUser('host9@gogo.vn');
+    const { token } = await registerUser('host9@gogo.id.vn');
     const room = await createGroupRoom(token);
 
     // Fabricate a run + score + current plan directly.
@@ -406,7 +406,7 @@ describe('constraints + staleness (core rule #6)', () => {
 
 describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
   it('revoked invites stop working; guest join via invite works', async () => {
-    const { token } = await registerUser('host10@gogo.vn');
+    const { token } = await registerUser('host10@gogo.id.vn');
     const room = await createGroupRoom(token);
     await api().inject({
       method: 'PATCH',
@@ -450,7 +450,7 @@ describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
   });
 
   it('maxUses is enforced atomically', async () => {
-    const { token } = await registerUser('host11@gogo.vn');
+    const { token } = await registerUser('host11@gogo.id.vn');
     const room = await createGroupRoom(token);
     await api().inject({
       method: 'PATCH',
@@ -484,7 +484,7 @@ describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
   });
 
   it('host can remove a member; removed guest session is revoked', async () => {
-    const { token } = await registerUser('host12@gogo.vn');
+    const { token } = await registerUser('host12@gogo.id.vn');
     const room = await createGroupRoom(token);
     await api().inject({
       method: 'PATCH',
@@ -543,7 +543,7 @@ describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
 
 describe('preferences (BE-BFF-005, FR-PREF-003/005)', () => {
   it('autosave with optimistic concurrency; complete moves room to matching', async () => {
-    const { token: hostToken } = await registerUser('host13@gogo.vn');
+    const { token: hostToken } = await registerUser('host13@gogo.id.vn');
     const room = await createGroupRoom(hostToken, 2);
     await api().inject({
       method: 'PATCH',
@@ -634,7 +634,7 @@ describe('preferences (BE-BFF-005, FR-PREF-003/005)', () => {
   });
 
   it("host never sees another member's selections (FR-PREF-005)", async () => {
-    const { token: hostToken } = await registerUser('host14@gogo.vn');
+    const { token: hostToken } = await registerUser('host14@gogo.id.vn');
     const room = await createGroupRoom(hostToken);
     await api().inject({
       method: 'PATCH',

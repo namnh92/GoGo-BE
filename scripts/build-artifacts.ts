@@ -37,7 +37,7 @@ function eventEnvelopeSchema(): string {
   return JSON.stringify(
     {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
-      $id: 'https://gogo.vn/schemas/domain-event.json',
+      $id: 'https://gogo.id.vn/schemas/domain-event.json',
       title: 'GoGo domain event envelope',
       description:
         'Every domain event carries this envelope. Field names are snake_case because that is the event convention, not the REST DTO convention.',
@@ -82,10 +82,10 @@ function roomEventSchema(): string {
   return JSON.stringify(
     {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
-      $id: 'https://gogo.vn/schemas/room-event.json',
+      $id: 'https://gogo.id.vn/schemas/room-event.json',
       title: 'GoGo room realtime event',
       description: 'Payload of the SSE stream at GET /v1/rooms/{id}/events.',
-      allOf: [{ $ref: 'https://gogo.vn/schemas/domain-event.json' }],
+      allOf: [{ $ref: 'https://gogo.id.vn/schemas/domain-event.json' }],
       properties: { event_type: { enum: [...ROOM_EVENT_TYPES] } },
     },
     null,
