@@ -27,13 +27,19 @@ COPY openapi ./openapi
 ENV NODE_ENV=production
 ENV SWC_NODE_PROJECT=/app/tsconfig.base.json
 
-# PROCESS=api (default) | worker | migrate
+# PROCESS=api (default) | worker | migrate | seed
+#
+# seed is here rather than left to a command override so the entry points this
+# image offers stay this repository's to name. A deploy pipeline that spells out
+# libs/database/src/seed.ts breaks silently when the file moves.
 ENV PROCESS=api
 CMD ["sh", "-c", "\
   if [ \"$PROCESS\" = 'worker' ]; then \
     exec node -r @swc-node/register apps/worker/src/main.ts; \
   elif [ \"$PROCESS\" = 'migrate' ]; then \
     exec node -r @swc-node/register libs/database/src/migrate.ts; \
+  elif [ \"$PROCESS\" = 'seed' ]; then \
+    exec node -r @swc-node/register libs/database/src/seed.ts; \
   else \
     exec node -r @swc-node/register apps/api/src/main.ts; \
   fi"]

@@ -75,3 +75,21 @@ services:
       PROCESS: migrate
     env_file:
       - ../${ENV_FILE:-.env.prod}
+
+  # Reference data and, outside production, a bootstrap CMS admin. Behind the
+  # same `tools` profile as migrate: `up` must never run it, because seeding a
+  # shared environment on every deploy overwrites whatever someone was testing.
+  #
+  # APP_ENV decides whether the bootstrap admin is created at all, and it
+  # defaults to dev when unset. Whoever runs this passes it deliberately —
+  # `docker compose run --rm -e APP_ENV=prod seed` — rather than relying on the
+  # env file carrying it.
+  seed:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    profiles: ['tools']
+    environment:
+      PROCESS: seed
+    env_file:
+      - ../${ENV_FILE:-.env.prod}
