@@ -4557,6 +4557,33 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
 
   /cms/moderation/reviews/{id}:
+    get:
+      operationId: cmsGetModerationReview
+      tags: [cms]
+      summary: 'Moderator: read one review'
+      description: >
+        BE-CMS-G6. **Not filtered by status.** The queue list defaults to
+        `pending`, which is right for a queue and wrong for a link: a shared
+        URL pointing at a review somebody already decided has to open, rather
+        than the console saying "not in the current filter" about a row that
+        plainly exists.
+
+
+        Same projection as the list — one definition, so a field cannot appear
+        on one and quietly go missing from the other.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The review, whatever its status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsModerationReview' }
+        '404':
+          description: '`REVIEW_NOT_FOUND`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     post:
       operationId: cmsDecideReview
       tags: [cms]

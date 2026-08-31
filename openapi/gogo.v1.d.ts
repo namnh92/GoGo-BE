@@ -2642,7 +2642,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Moderator: read one review
+         * @description BE-CMS-G6. **Not filtered by status.** The queue list defaults to `pending`, which is right for a queue and wrong for a link: a shared URL pointing at a review somebody already decided has to open, rather than the console saying "not in the current filter" about a row that plainly exists.
+         *
+         *     Same projection as the list — one definition, so a field cannot appear on one and quietly go missing from the other.
+         */
+        get: operations["cmsGetModerationReview"];
         put?: never;
         /** Moderator: publish or reject a review (reason required, audited) */
         post: operations["cmsDecideReview"];
@@ -9782,6 +9788,37 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsGetModerationReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The review, whatever its status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsModerationReview"];
+                };
+            };
+            /** @description `REVIEW_NOT_FOUND` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsDecideReview: {

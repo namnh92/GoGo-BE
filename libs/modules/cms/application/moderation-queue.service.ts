@@ -3,6 +3,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import { DB } from '../../shared/tokens';
 import { decodeKeysetCursor, encodeKeysetCursor, toIso } from '../../shared/cursor';
+import { AppError } from '../../shared/app-error';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 
 /**
@@ -85,6 +86,65 @@ type Page<T> = { items: T[]; nextCursor: string | null; totalCount: number };
 
 type Keyed = { id: string; created_at: Date | string };
 
+/**
+ * One projection of a review, shared by the queue and by `reviewById` (#232).
+ *
+ * Kept together on purpose: two projections of the same resource drift, and
+ * the way that shows up is a detail view quietly missing a field the list has.
+ *
+ * Author name, not the account: a moderator needs to see who wrote the text
+ * and whether one person is filling the queue. Email and phone are not part of
+ * that judgement, so they are not selected at all.
+ */
+const REVIEW_SELECT = sql`
+  select r.id, r.status, r.rating, r.text, r.place_id, p.name as place_name,
+         r.plan_id, r.user_id, u.display_name as author_display_name,
+         (select count(*)::int from reports rep
+           where rep.target_type = 'review' and rep.target_id = r.id
+             and rep.status = 'open') as open_report_count,
+         r.moderated_by_admin_id, r.moderation_reason,
+         r.created_at, r.updated_at
+  from reviews r
+  left join places p on p.id = r.place_id
+  left join users u on u.id = r.user_id
+`;
+
+type ReviewRow = {
+  id: string;
+  status: string;
+  rating: number;
+  text: string | null;
+  place_id: string | null;
+  place_name: string | null;
+  plan_id: string | null;
+  user_id: string;
+  author_display_name: string | null;
+  open_report_count: number;
+  moderated_by_admin_id: string | null;
+  moderation_reason: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
+function toModerationReview(r: ReviewRow) {
+  return {
+    id: r.id,
+    status: r.status,
+    rating: r.rating,
+    text: r.text ?? undefined,
+    placeId: r.place_id ?? undefined,
+    placeName: r.place_name ?? undefined,
+    planId: r.plan_id ?? undefined,
+    authorUserId: r.user_id,
+    authorDisplayName: r.author_display_name ?? undefined,
+    openReportCount: r.open_report_count,
+    moderatedByAdminId: r.moderated_by_admin_id ?? undefined,
+    moderationReason: r.moderation_reason ?? undefined,
+    createdAt: toIso(r.created_at),
+    updatedAt: toIso(r.updated_at),
+  };
+}
+
 @Injectable()
 export class ModerationQueueService {
   constructor(@Inject(DB) private readonly db: Db) {}
@@ -136,22 +196,7 @@ export class ModerationQueueService {
       where.push(query.reported ? exists : sql`not ${exists}`);
     }
 
-    return this.page<{
-      id: string;
-      status: string;
-      rating: number;
-      text: string | null;
-      place_id: string | null;
-      place_name: string | null;
-      plan_id: string | null;
-      user_id: string;
-      author_display_name: string | null;
-      open_report_count: number;
-      moderated_by_admin_id: string | null;
-      moderation_reason: string | null;
-      created_at: Date | string;
-      updated_at: Date | string;
-    }>({
+    return this.page<ReviewRow>({
       where,
       limit: query.limit,
       cursor: query.cursor,
@@ -159,37 +204,34 @@ export class ModerationQueueService {
       // Author name, not the account: a moderator needs to see who wrote the
       // text and whether one person is filling the queue. Email and phone are
       // not part of that judgement, so they are not selected at all.
-      select: sql`
-        select r.id, r.status, r.rating, r.text, r.place_id, p.name as place_name,
-               r.plan_id, r.user_id, u.display_name as author_display_name,
-               (select count(*)::int from reports rep
-                 where rep.target_type = 'review' and rep.target_id = r.id
-                   and rep.status = 'open') as open_report_count,
-               r.moderated_by_admin_id, r.moderation_reason,
-               r.created_at, r.updated_at
-        from reviews r
-        left join places p on p.id = r.place_id
-        left join users u on u.id = r.user_id
-      `,
+      select: REVIEW_SELECT,
       count: sql`select count(*)::int as n from reviews r`,
       orderBy: sql`order by r.created_at desc, r.id desc`,
-      map: (r) => ({
-        id: r.id,
-        status: r.status,
-        rating: r.rating,
-        text: r.text ?? undefined,
-        placeId: r.place_id ?? undefined,
-        placeName: r.place_name ?? undefined,
-        planId: r.plan_id ?? undefined,
-        authorUserId: r.user_id,
-        authorDisplayName: r.author_display_name ?? undefined,
-        openReportCount: r.open_report_count,
-        moderatedByAdminId: r.moderated_by_admin_id ?? undefined,
-        moderationReason: r.moderation_reason ?? undefined,
-        createdAt: toIso(r.created_at),
-        updatedAt: toIso(r.updated_at),
-      }),
+      map: toModerationReview,
     });
+  }
+
+  /**
+   * BE-CMS-G6 (#232) — one review by id.
+   *
+   * **Deliberately not filtered by status.** The list defaults to `pending`,
+   * which is right for a queue and wrong for a link: a shared URL pointing at
+   * a review someone already decided must still open, or the console has to
+   * say "not in the current filter" about a row that plainly exists.
+   *
+   * Shares `REVIEW_SELECT` and `toModerationReview` with the list rather than
+   * repeating them. Two projections of the same resource drift, and the
+   * symptom is a detail view quietly missing a field the list has.
+   */
+  async reviewById(id: string) {
+    const result = await this.db.execute(sql`
+      ${REVIEW_SELECT}
+      where r.id = ${id}::uuid
+      limit 1
+    `);
+    const row = result.rows[0] as ReviewRow | undefined;
+    if (!row) throw AppError.notFound('REVIEW_NOT_FOUND', 'No such review');
+    return toModerationReview(row);
   }
 
   async reports(query: ReportQueueQuery) {

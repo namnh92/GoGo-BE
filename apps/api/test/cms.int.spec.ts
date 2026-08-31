@@ -1069,6 +1069,48 @@ describe('moderation queues: filter, count, cursor paging (BE-CMS-G1 #219)', () 
   const q = (url: string, token = moderatorToken) =>
     api().inject({ method: 'GET', url, headers: auth(token) });
 
+  /*
+   * The whole reason this endpoint exists. The queue list defaults to
+   * `pending`; a link shared to a review someone already decided must still
+   * open, or the console has to claim it is "not in the current filter" about
+   * a row that plainly exists.
+   */
+  it('reads one review by id, whatever its status', async () => {
+    const listed = await q(`/v1/cms/moderation/reviews?placeId=${placeId}`);
+    const target = listed.json().items[0];
+    expect(target).toBeTruthy();
+
+    const byId = await q(`/v1/cms/moderation/reviews/${target.id}`);
+    expect(byId.statusCode).toBe(200);
+    // Same projection as the list, field for field — one definition, so a
+    // field cannot appear on one and quietly go missing from the other.
+    expect(byId.json()).toEqual(target);
+
+    await db
+      .update(schema.reviews)
+      .set({ status: 'rejected', moderationReason: 'spam' })
+      .where(eq(schema.reviews.id, target.id));
+
+    const decided = await q(`/v1/cms/moderation/reviews/${target.id}`);
+    expect(decided.statusCode).toBe(200);
+    expect(decided.json()).toMatchObject({ status: 'rejected', moderationReason: 'spam' });
+
+    // The pending queue no longer lists it; the link still resolves.
+    const stillListed = await q(`/v1/cms/moderation/reviews?placeId=${placeId}`);
+    expect(stillListed.json().items.map((r: { id: string }) => r.id)).not.toContain(target.id);
+
+    await db
+      .update(schema.reviews)
+      .set({ status: 'pending', moderationReason: null })
+      .where(eq(schema.reviews.id, target.id));
+  });
+
+  it('404s an id that does not exist', async () => {
+    const res = await q('/v1/cms/moderation/reviews/00000000-0000-4000-8000-000000000000');
+    expect(res.statusCode).toBe(404);
+    expect(res.json().code).toBe('REVIEW_NOT_FOUND');
+  });
+
   it('counts the backlog, not the page', async () => {
     const res = await q('/v1/cms/moderation/counts');
     expect(res.statusCode).toBe(200);
