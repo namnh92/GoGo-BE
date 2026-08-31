@@ -8,6 +8,7 @@ import { CmsCatalogService } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsUploadsService } from '../application/cms-uploads.service';
 import { RecommendationsService } from '../application/recommendations.service';
+import { PlanTemplatesService } from '../application/plan-templates.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { ModerationQueueService } from '../application/moderation-queue.service';
 import { EmergencyTakedownService } from '../application/emergency-takedown.service';
@@ -23,6 +24,7 @@ import {
   CmsContentController,
   CmsModerationController,
   CmsOpsController,
+  CmsPlanTemplatesController,
   CmsRecommendationsController,
   CmsUploadsController,
 } from './cms.controllers';
@@ -36,6 +38,7 @@ import {
     CmsContentController,
     CmsModerationController,
     CmsOpsController,
+    CmsPlanTemplatesController,
     CmsRecommendationsController,
     CmsUploadsController,
     EmergencyController,
@@ -47,6 +50,7 @@ import {
     CmsContentService,
     CmsUploadsService,
     RecommendationsService,
+    PlanTemplatesService,
     CmsOpsService,
     ModerationQueueService,
     EmergencyTakedownService,

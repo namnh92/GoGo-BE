@@ -17,6 +17,11 @@ import {
   RecommendationsService,
 } from '../application/recommendations.service';
 import { CONTENT_AUDIENCES } from '../../shared/audience';
+import {
+  BUDGET_SCOPES,
+  PLAN_TEMPLATE_STATUSES,
+  PlanTemplatesService,
+} from '../application/plan-templates.service';
 import { CMS_UPLOAD_PURPOSES, MAX_UPLOAD_BYTES } from '../../uploads/application/uploads.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
@@ -543,6 +548,111 @@ export class CmsRecommendationsController {
     body: z.infer<typeof recommendationPlacesSchema>,
   ) {
     return this.recommendations.setPlaces(actor.id, id, body.placeIds);
+  }
+}
+
+// ---------------------------------------------------------------- plan templates
+
+/**
+ * BE-CMS-G4b (#223) — templates the CMS owns, as source material for future
+ * plans. Nothing here reaches a live plan, and nothing should be added that
+ * does.
+ */
+const budgetSchema = z.object({
+  /** Integer minor units — 150000 is 1.500,00 ₫, never 150000.0. */
+  min: z.number().int().min(0),
+  max: z.number().int().min(0),
+  currency: z.string().regex(/^[A-Z]{3}$/, 'ISO-4217, uppercase'),
+  /** What the amount is *per*. Never assumed. */
+  scope: z.enum(BUDGET_SCOPES),
+});
+const templateStopSchema = z.object({
+  categoryTaxonomyId: z.string().uuid(),
+  preferredPlaceId: z.string().uuid().optional(),
+  isOptional: z.boolean().optional(),
+  expectedDurationMinutes: z.number().int().min(5).max(1440),
+  budget: budgetSchema.optional(),
+  note: z.string().max(500).optional(),
+});
+const templateBody = {
+  internalName: z.string().trim().min(1).max(120),
+  title: z.string().trim().min(1).max(120),
+  description: z.string().max(2000).optional(),
+  locale: z.string().max(8).optional(),
+  audience: z.enum(CONTENT_AUDIENCES).optional(),
+  areaKey: z.string().trim().max(64).optional(),
+  budget: budgetSchema.optional(),
+  expectedDurationMinutes: z.number().int().min(15).max(1440).optional(),
+  /** Mood/setting keys for the template as a whole. */
+  taxonomyIds: z.array(z.string().uuid()).max(20).optional(),
+  /** Ordered: the array index becomes the stored position. */
+  stops: z.array(templateStopSchema).max(20).optional(),
+};
+const templateCreateSchema = z.object({
+  slug: z.string().regex(/^[a-z0-9-]{2,60}$/),
+  ...templateBody,
+});
+const templatePatchSchema = z.object(templateBody).partial();
+const templateStatusSchema = z.object({ status: z.enum(PLAN_TEMPLATE_STATUSES) });
+const templateStopsSchema = z.object({ stops: z.array(templateStopSchema).max(20) });
+const templateListQuery = z.object({
+  status: z.enum(PLAN_TEMPLATE_STATUSES).optional(),
+  audience: z.enum(CONTENT_AUDIENCES).optional(),
+  areaKey: z.string().trim().max(64).optional(),
+  q: z.string().trim().min(1).max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
+
+@RequireRole('editor', 'ops_admin')
+@Controller('cms/plan-templates')
+export class CmsPlanTemplatesController {
+  constructor(private readonly templates: PlanTemplatesService) {}
+
+  @Get()
+  list(@Query(new ZodValidationPipe(templateListQuery)) query: z.infer<typeof templateListQuery>) {
+    return this.templates.list(query);
+  }
+
+  @Post()
+  create(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(templateCreateSchema))
+    body: z.infer<typeof templateCreateSchema>,
+  ) {
+    return this.templates.create(actor.id, body);
+  }
+
+  @Get(':id')
+  detail(@Param('id', Uuid) id: string) {
+    return this.templates.get(id);
+  }
+
+  @Patch(':id')
+  update(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(templatePatchSchema)) body: z.infer<typeof templatePatchSchema>,
+  ) {
+    return this.templates.update(actor.id, id, body);
+  }
+
+  @Patch(':id/status')
+  setStatus(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(templateStatusSchema)) body: z.infer<typeof templateStatusSchema>,
+  ) {
+    return this.templates.setStatus(actor.id, id, body.status);
+  }
+
+  @Put(':id/stops')
+  setStops(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(templateStopsSchema)) body: z.infer<typeof templateStopsSchema>,
+  ) {
+    return this.templates.setStops(actor.id, id, body.stops);
   }
 }
 

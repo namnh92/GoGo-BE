@@ -2949,6 +2949,166 @@ paths:
       responses:
         '200': { description: Items replaced }
 
+  /cms/plan-templates:
+    get:
+      operationId: cmsListPlanTemplates
+      tags: [cms]
+      summary: 'Editor/ops: plan templates, filtered and cursor-paged'
+      description: >
+        Templates are **source material for future plans, not live ones**.
+        Nothing in this resource references a room, a plan or a plan stop, and
+        editing a template never reaches a plan somebody already has — the
+        separation is in the schema, not in a rule a service has to remember.
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/PlanTemplateStatus' } }
+        - { name: audience, in: query, schema: { $ref: '#/components/schemas/ContentAudience' } }
+        - { name: areaKey, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: q, in: query, schema: { type: string, maxLength: 120 } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Templates, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsPlanTemplatePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      operationId: cmsCreatePlanTemplate
+      tags: [cms]
+      summary: 'Editor/ops: create a plan template'
+      description: >
+        `stops` is ordered — the array index becomes the stored position, so a
+        client cannot send two stops claiming the same one or a gap that means
+        nothing.
+
+
+        Every budget is integer minor units and carries its currency and what it
+        is *per*; there is no amount in this contract whose scope a client has
+        to assume.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsPlanTemplateCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsPlanTemplateDetail' }
+        '400':
+          description: >
+            Unknown preferred place (`PLACE_NOT_FOUND`), unknown or wrong-kind
+            taxonomy (`TAXONOMY_NOT_FOUND`, `TAXONOMY_KIND_INVALID`), or an
+            inverted budget range (`INVALID_BUDGET`).
+        '409': { description: 'Template key already used (`SLUG_TAKEN`)' }
+
+  /cms/plan-templates/{id}:
+    get:
+      operationId: cmsGetPlanTemplate
+      tags: [cms]
+      summary: 'Editor/ops: one template with its ordered stops'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Template
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsPlanTemplateDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: cmsUpdatePlanTemplate
+      tags: [cms]
+      summary: 'Editor/ops: edit a template'
+      description: >
+        Omitted fields are left alone; a sent `stops` or `taxonomyIds` replaces
+        that list wholesale. Editing a template does not touch any plan built
+        from it earlier — a plan is a copy at the moment it was made, not a
+        live view of its template.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsPlanTemplatePatch' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsPlanTemplateDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/plan-templates/{id}/status:
+    patch:
+      operationId: cmsSetPlanTemplateStatus
+      tags: [cms]
+      summary: 'Editor/ops: move a template along its lifecycle'
+      description: >
+        Declared transitions only; `archived` is terminal. Publishing needs at
+        least one stop — a template with none is not a plan anyone can be given.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/PlanTemplateStatus' }
+      responses:
+        '200':
+          description: Status changed (audited)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { $ref: '#/components/schemas/PlanTemplateStatus' }
+        '400': { description: 'Publishing with no stops (`EMPTY_TEMPLATE`)' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 'The lifecycle has no such edge (`INVALID_STATUS_TRANSITION`)' }
+
+  /cms/plan-templates/{id}/stops:
+    put:
+      operationId: cmsSetPlanTemplateStops
+      tags: [cms]
+      summary: 'Editor/ops: replace the ordered stop list'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stops]
+              properties:
+                stops:
+                  type: array
+                  maxItems: 20
+                  items: { $ref: '#/components/schemas/CmsPlanTemplateStopInput' }
+      responses:
+        '200':
+          description: Stops replaced
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsPlanTemplateDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /cms/recommendations:
     get:
       operationId: cmsListRecommendations
@@ -4943,6 +5103,151 @@ components:
         platform: { $ref: '#/components/schemas/FlagPlatform' }
         enabled: { type: boolean }
         value: { description: The stored value, as the server now holds it. }
+
+    PlanTemplateStatus:
+      type: string
+      enum: [draft, published, archived]
+      description: '`archived` is terminal — a retired template comes back as a new row.'
+
+    BudgetScope:
+      type: string
+      enum: [per_person, per_group]
+      description: >
+        What an amount is *per*. These are different numbers, so no amount in
+        this contract is returned without one.
+
+    BudgetRange:
+      type: object
+      required: [min, max, currency, scope]
+      description: >
+        Integer minor units with its currency and scope. Present as a whole or
+        absent as a whole — there is no half of this object.
+      properties:
+        min: { type: integer, minimum: 0 }
+        max: { type: integer, minimum: 0 }
+        currency: { type: string, pattern: '^[A-Z]{3}$', description: ISO-4217. }
+        scope: { $ref: '#/components/schemas/BudgetScope' }
+
+    CmsPlanTemplateStopInput:
+      type: object
+      required: [categoryTaxonomyId, expectedDurationMinutes]
+      properties:
+        categoryTaxonomyId:
+          type: string
+          format: uuid
+          description: Taxonomy of kind `category` — what sort of stop this is.
+        preferredPlaceId:
+          type: string
+          format: uuid
+          description: >
+            Optional. A template may name a place or leave the choice to
+            matching.
+        isOptional:
+          type: boolean
+          description: A property of the stop, not a convention the reader infers.
+        expectedDurationMinutes: { type: integer, minimum: 5, maximum: 1440 }
+        budget: { $ref: '#/components/schemas/BudgetRange' }
+        note: { type: string, maxLength: 500 }
+
+    CmsPlanTemplateStop:
+      allOf:
+        - $ref: '#/components/schemas/CmsPlanTemplateStopInput'
+        - type: object
+          required: [id, position, categoryKey, isOptional]
+          properties:
+            id: { type: string, format: uuid }
+            position: { type: integer }
+            categoryKey: { type: string, description: Stable taxonomy key, never a label. }
+            preferredPlaceName: { type: string }
+
+    CmsPlanTemplate:
+      type: object
+      required:
+        [id, slug, locale, internalName, title, status, stopCount, taxonomies, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string, description: The template key. Unique per locale. }
+        locale: { type: string }
+        internalName: { type: string }
+        title: { type: string }
+        description: { type: string }
+        audience: { $ref: '#/components/schemas/ContentAudience' }
+        areaKey: { type: string }
+        budget: { $ref: '#/components/schemas/BudgetRange' }
+        expectedDurationMinutes: { type: integer }
+        status: { $ref: '#/components/schemas/PlanTemplateStatus' }
+        stopCount: { type: integer }
+        taxonomies:
+          type: array
+          description: Mood/setting keys for the template as a whole.
+          items: { $ref: '#/components/schemas/CmsRecommendationTaxonomy' }
+        createdByAdminId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CmsPlanTemplateDetail:
+      allOf:
+        - $ref: '#/components/schemas/CmsPlanTemplate'
+        - type: object
+          required: [stops]
+          properties:
+            stops:
+              type: array
+              items: { $ref: '#/components/schemas/CmsPlanTemplateStop' }
+
+    CmsPlanTemplatePage:
+      type: object
+      required: [items, nextCursor, totalCount]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsPlanTemplate' }
+        nextCursor: { type: [string, 'null'] }
+        totalCount: { type: integer }
+
+    CmsPlanTemplateCreate:
+      type: object
+      required: [slug, internalName, title]
+      properties:
+        slug: { type: string, pattern: '^[a-z0-9-]{2,60}$' }
+        internalName: { type: string, maxLength: 120 }
+        title: { type: string, maxLength: 120 }
+        description: { type: string, maxLength: 2000 }
+        locale: { type: string, maxLength: 8 }
+        audience: { $ref: '#/components/schemas/ContentAudience' }
+        areaKey: { type: string, maxLength: 64 }
+        budget: { $ref: '#/components/schemas/BudgetRange' }
+        expectedDurationMinutes: { type: integer, minimum: 15, maximum: 1440 }
+        taxonomyIds:
+          type: array
+          maxItems: 20
+          items: { type: string, format: uuid }
+        stops:
+          type: array
+          maxItems: 20
+          description: Ordered — the index becomes the stored position.
+          items: { $ref: '#/components/schemas/CmsPlanTemplateStopInput' }
+
+    CmsPlanTemplatePatch:
+      type: object
+      description: Omitted fields are left alone; a sent list replaces that list wholesale.
+      properties:
+        internalName: { type: string, maxLength: 120 }
+        title: { type: string, maxLength: 120 }
+        description: { type: string, maxLength: 2000 }
+        locale: { type: string, maxLength: 8 }
+        audience: { $ref: '#/components/schemas/ContentAudience' }
+        areaKey: { type: string, maxLength: 64 }
+        budget: { $ref: '#/components/schemas/BudgetRange' }
+        expectedDurationMinutes: { type: integer, minimum: 15, maximum: 1440 }
+        taxonomyIds:
+          type: array
+          maxItems: 20
+          items: { type: string, format: uuid }
+        stops:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/CmsPlanTemplateStopInput' }
 
     RecommendationStatus:
       type: string
