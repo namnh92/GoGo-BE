@@ -1636,6 +1636,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/rooms/{id}/guests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: the guests of one room
+         * @description BE-CMS-G11. Room-scoped on purpose — there is no global guest directory: no moderation case needs one, and a list of every guest's name and activity would be a new PII surface with no reader. The guest bearer credential (`token_hash`) is never returned.
+         */
+        get: operations["cmsRoomGuests"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/rooms/{id}/guests/{memberId}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: remove a guest from a room
+         * @description **Not a ban.** A guest has no durable identity — only a session tied to this room through the invite flow — so whoever holds a still-valid invite can join again and receive a fresh session. What this does is exactly "out of the room now": the active session is revoked (denylist included, so an access token already issued dies immediately) and the membership row is marked removed but kept, because votes, reports and moderation history reference it.
+         *
+         *     Preventing a return is a different action — rotating or revoking the room invite — and this endpoint does not pretend to include it.
+         */
+        post: operations["cmsRemoveGuest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/plans": {
         parameters: {
             query?: never;
@@ -7805,6 +7847,89 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CmsRoomPage"];
+                };
+            };
+        };
+    };
+    cmsRoomGuests: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every guest membership of the room, removed ones included */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        guests: {
+                            /** Format: uuid */
+                            memberId: string;
+                            /** Format: uuid */
+                            guestSessionId: string;
+                            displayName: string;
+                            selectionStatus: string;
+                            /** Format: date-time */
+                            joinedAt: string;
+                            /** Format: date-time */
+                            sessionExpiresAt: string;
+                            /** Format: date-time */
+                            sessionRevokedAt?: string;
+                            /** Format: date-time */
+                            removedAt?: string;
+                            /** @description The session was claimed by a registered account. */
+                            claimed: boolean;
+                        }[];
+                    };
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsRemoveGuest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                memberId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminActionReason"];
+            };
+        };
+        responses: {
+            /** @description Removed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        memberId: string;
+                        removed: boolean;
+                    };
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `NOT_A_GUEST` — registered members have a different moderation path; or `ALREADY_REMOVED`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
         };

@@ -760,6 +760,160 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
   });
 });
 
+describe('CMS guest console (BE-CMS-G11 #254)', () => {
+  const REASON = { reason: 'quấy rối trong phòng, ticket OPS-311' };
+  const get = async (token: string, url: string) =>
+    await api().inject({ method: 'GET', url, headers: auth(token) });
+  const post = async (token: string, url: string, payload: Record<string, unknown> = REASON) =>
+    await api().inject({ method: 'POST', url, remoteAddress: ip(), headers: auth(token), payload });
+
+  async function roomWithGuest(tag: string) {
+    const [host] = await db
+      .insert(schema.users)
+      .values({
+        email: `g11-host-${tag}@example.com`,
+        displayName: `Host ${tag}`,
+        passwordHash: 'x',
+      })
+      .returning();
+    const [room] = await db
+      .insert(schema.rooms)
+      .values({
+        code: `G11${tag.toUpperCase()}XYZ`,
+        type: 'group',
+        status: 'collecting',
+        decisionMode: 'vote',
+        hostUserId: host!.id,
+        participantCount: 4,
+      })
+      .returning();
+    const join = await api().inject({
+      method: 'POST',
+      url: '/v1/sessions/guest',
+      remoteAddress: ip(),
+      payload: { roomCode: room!.code, displayName: `Khách ${tag}` },
+    });
+    expect(join.statusCode).toBe(201);
+    return {
+      room: room!,
+      guestAccess: join.json().accessToken as string,
+      guestToken: join.json().guestToken as string,
+    };
+  }
+
+  it('lists the guests of one room, without the bearer credential', async () => {
+    const ops = await createAdmin('g11-ops@gogo.id.vn', 'ops_admin');
+    const { room } = await roomWithGuest('list');
+
+    const res = await get(ops.token, `/v1/cms/rooms/${room.id}/guests`);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().guests).toHaveLength(1);
+    expect(res.json().guests[0]).toMatchObject({ displayName: 'Khách list', claimed: false });
+    const raw = JSON.stringify(res.json());
+    expect(raw).not.toContain('tokenHash');
+    expect(raw).not.toContain('token_hash');
+  });
+
+  /*
+   * The load-bearing test: removal must kill a token already in someone's
+   * hands, not just flip columns. And the membership row survives, because
+   * votes and reports reference it.
+   */
+  it('remove revokes the live session and keeps the membership row', async () => {
+    const ops = await createAdmin('g11-remover@gogo.id.vn', 'ops_admin');
+    const { room, guestAccess, guestToken } = await roomWithGuest('rm');
+
+    // The guest is genuinely inside before the removal.
+    const before = await api().inject({
+      method: 'GET',
+      url: `/v1/rooms/${room.id}`,
+      headers: auth(guestAccess),
+    });
+    expect(before.statusCode).toBe(200);
+
+    const listed = await get(ops.token, `/v1/cms/rooms/${room.id}/guests`);
+    const memberId = listed.json().guests[0].memberId as string;
+
+    const removed = await post(ops.token, `/v1/cms/rooms/${room.id}/guests/${memberId}/remove`);
+    expect(removed.statusCode).toBe(201);
+
+    // Access token already issued: dead via the denylist, not at expiry.
+    const after = await api().inject({
+      method: 'GET',
+      url: `/v1/rooms/${room.id}`,
+      headers: auth(guestAccess),
+    });
+    expect(after.statusCode).toBe(401);
+
+    // The opaque guest token can no longer mint new access tokens either.
+    const refresh = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/refresh',
+      remoteAddress: ip(),
+      payload: { guestToken },
+    });
+    expect(refresh.statusCode).toBe(401);
+
+    // Row kept, marked removed — history stays referenceable.
+    const [member] = await db
+      .select()
+      .from(schema.roomMembers)
+      .where(eq(schema.roomMembers.id, memberId));
+    expect(member).toBeTruthy();
+    expect(member!.removedAt).not.toBeNull();
+
+    const again = await post(ops.token, `/v1/cms/rooms/${room.id}/guests/${memberId}/remove`);
+    expect(again.statusCode).toBe(409);
+    expect(again.json().code).toBe('ALREADY_REMOVED');
+  });
+
+  /*
+   * The decision says this out loud, so a test says it too: removal is not a
+   * ban. A still-valid invite readmits the person with a fresh session. If
+   * this test starts failing, the product semantics changed — update the
+   * console copy and the contract description before "fixing" it.
+   */
+  it('a removed guest can rejoin with the still-valid invite', async () => {
+    const ops = await createAdmin('g11-rejoin@gogo.id.vn', 'ops_admin');
+    const { room } = await roomWithGuest('rj');
+    const listed = await get(ops.token, `/v1/cms/rooms/${room.id}/guests`);
+    const memberId = listed.json().guests[0].memberId as string;
+    await post(ops.token, `/v1/cms/rooms/${room.id}/guests/${memberId}/remove`);
+
+    const rejoin = await api().inject({
+      method: 'POST',
+      url: '/v1/sessions/guest',
+      remoteAddress: ip(),
+      payload: { roomCode: room.code, displayName: 'Khách rj quay lại' },
+    });
+    expect(rejoin.statusCode).toBe(201);
+
+    const guests = (await get(ops.token, `/v1/cms/rooms/${room.id}/guests`)).json().guests;
+    expect(guests).toHaveLength(2); // the removed row and the new one
+  });
+
+  it('refuses to remove a registered member through the guest path', async () => {
+    const ops = await createAdmin('g11-notguest@gogo.id.vn', 'ops_admin');
+    const { room } = await roomWithGuest('ng');
+    // The host is a registered member of nothing yet — add them as a member row.
+    const [host] = await db.select().from(schema.rooms).where(eq(schema.rooms.id, room.id));
+    const [memberRow] = await db
+      .insert(schema.roomMembers)
+      .values({ roomId: room.id, userId: host!.hostUserId, role: 'host', displayName: 'Chủ phòng' })
+      .returning();
+
+    const res = await post(ops.token, `/v1/cms/rooms/${room.id}/guests/${memberRow!.id}/remove`);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('NOT_A_GUEST');
+  });
+
+  it('is closed to editors', async () => {
+    const editor = await createAdmin('g11-editor@gogo.id.vn', 'editor');
+    const { room } = await roomWithGuest('ed');
+    expect((await get(editor.token, `/v1/cms/rooms/${room.id}/guests`)).statusCode).toBe(403);
+  });
+});
+
 describe('place workflow + search sync (CMS-002, SRS §15.5)', () => {
   it('draft → review → published appears in search; suspended disappears', async () => {
     const editor = await createAdmin('editor2@gogo.local', 'editor');
