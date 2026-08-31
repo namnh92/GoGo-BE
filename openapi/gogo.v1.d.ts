@@ -3997,6 +3997,11 @@ export interface components {
             /** Format: date-time */
             completedAt?: string;
         };
+        /**
+         * @description A column an import source can be mapped onto. Generated from `CANONICAL_FIELDS` in `libs/modules/ingestion/domain/column-mapping.ts`, which is the single source of truth; `import-parsing.spec.ts` fails if the two drift. A mapping naming anything outside this list is rejected with `MAPPING_FIELD_UNKNOWN` — never silently ignored.
+         * @enum {string}
+         */
+        ImportCanonicalField: "source_row_id" | "name" | "city" | "district" | "google_maps_url" | "google_maps_query" | "category" | "category_raw" | "price_min" | "price_max" | "price_unit" | "price_raw" | "audiences" | "audiences_raw" | "vibes" | "vibes_raw" | "highlight" | "note";
         ImportJob: components["schemas"]["ImportJobSummary"] & {
             defaultCity?: string | null;
             rowsByStatus?: {
@@ -6998,7 +7003,7 @@ export interface operations {
                      */
                     mode?: "dry_run" | "create_drafts" | "publish_approved" | "update_existing";
                     defaultCity?: string;
-                    /** @description JSON object mapping raw header → canonical field */
+                    /** @description JSON object mapping raw header → `ImportCanonicalField`. Multipart carries it as a string, so the enum cannot be expressed here; the values are validated against `ImportCanonicalField` all the same, and an unknown one is a 400 `MAPPING_FIELD_UNKNOWN`. A header left out of the object is auto-detected; a header mapped to `""` is ignored. */
                     mapping?: string;
                 };
             };
@@ -7039,8 +7044,9 @@ export interface operations {
                     tabCityMapping?: {
                         [key: string]: string;
                     };
+                    /** @description Raw header → canonical field. A header left out is auto-detected; a header mapped to `""` is ignored. An unknown field is a 400 `MAPPING_FIELD_UNKNOWN`. */
                     mapping?: {
-                        [key: string]: string;
+                        [key: string]: components["schemas"]["ImportCanonicalField"];
                     };
                 };
             };

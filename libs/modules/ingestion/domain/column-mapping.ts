@@ -32,6 +32,54 @@ export type CanonicalField = (typeof CANONICAL_FIELDS)[number];
 
 const CANONICAL_SET = new Set<string>(CANONICAL_FIELDS);
 
+export function isCanonicalField(value: unknown): value is CanonicalField {
+  return typeof value === 'string' && CANONICAL_SET.has(value);
+}
+
+/** One offending column, so the caller can point at the row that is wrong. */
+export type InvalidMappingEntry = { header: string; value: string };
+
+export class InvalidColumnMappingError extends Error {
+  constructor(readonly entries: InvalidMappingEntry[]) {
+    super(
+      `mapping có canonical field không hợp lệ: ${entries
+        .map((e) => `${e.header} → ${e.value}`)
+        .join(', ')}`,
+    );
+    this.name = 'InvalidColumnMappingError';
+  }
+}
+
+/**
+ * Validates a wizard-supplied mapping against the canonical vocabulary.
+ *
+ * This is the only gate. `resolveMapping` used to skip any explicit choice it
+ * did not recognise and quietly fall through to auto-detection, so a client
+ * sending its own vocabulary (`googleMapsUrl` for `google_maps_url`) got a
+ * successful import in which its mapping screen had done nothing at all. A
+ * mapping the server cannot honour is now a rejected request, not a silent
+ * downgrade — auto-detection is for columns the caller said nothing about.
+ */
+export function parseColumnMapping(raw: unknown): Record<string, CanonicalField> {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new InvalidColumnMappingError([{ header: '(mapping)', value: String(raw) }]);
+  }
+
+  const out: Record<string, CanonicalField> = {};
+  const invalid: InvalidMappingEntry[] = [];
+  for (const [header, value] of Object.entries(raw as Record<string, unknown>)) {
+    const trimmed = header.trim();
+    // A blank header maps nothing; an empty value is how a wizard says
+    // "ignore this column", which is not an error.
+    if (!trimmed || value === '' || value === null || value === undefined) continue;
+    if (isCanonicalField(value)) out[trimmed] = value;
+    else invalid.push({ header: trimmed, value: String(value) });
+  }
+  if (invalid.length > 0) throw new InvalidColumnMappingError(invalid);
+  return out;
+}
+
 /** Canonical headers as they appear in the published template. */
 const TEMPLATE_ALIASES: Record<string, CanonicalField> = {
   'source row id': 'source_row_id',
@@ -63,7 +111,7 @@ export type MappingResult = {
 
 export function resolveMapping(
   headers: string[],
-  explicit?: Record<string, string> | null,
+  explicit?: Record<string, CanonicalField> | null,
 ): MappingResult {
   const mapping: Record<string, CanonicalField> = {};
   const unmapped: string[] = [];
@@ -72,9 +120,12 @@ export function resolveMapping(
     const trimmed = header.trim();
     if (!trimmed) continue;
 
+    // Already validated by `parseColumnMapping` at the edge, so an explicit
+    // choice is authoritative: auto-detection only ever runs for a column the
+    // caller did not name.
     const chosen = explicit?.[trimmed] ?? explicit?.[normalizeVietnamese(trimmed)];
-    if (chosen && CANONICAL_SET.has(chosen)) {
-      mapping[trimmed] = chosen as CanonicalField;
+    if (chosen) {
+      mapping[trimmed] = chosen;
       continue;
     }
     const normalized = normalizeVietnamese(trimmed);

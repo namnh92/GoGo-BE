@@ -58,7 +58,7 @@ export class PlaceImportJobService {
     fileName: string;
     mode: ImportMode;
     defaultCity?: string | undefined;
-    mapping?: Record<string, string> | undefined;
+    mapping?: Record<string, CanonicalField> | undefined;
     adminId: string;
   }) {
     let grids: SheetGrid[];
@@ -91,7 +91,7 @@ export class PlaceImportJobService {
     tabCityMapping?: Record<string, string> | undefined;
     mode: ImportMode;
     defaultCity?: string | undefined;
-    mapping?: Record<string, string> | undefined;
+    mapping?: Record<string, CanonicalField> | undefined;
     adminId: string;
   }) {
     let spreadsheetId: string;
@@ -146,7 +146,7 @@ export class PlaceImportJobService {
     grids: SheetGrid[];
     mode: ImportMode;
     defaultCity?: string | undefined;
-    mapping?: Record<string, string> | undefined;
+    mapping?: Record<string, CanonicalField> | undefined;
     adminId: string;
     tabCityMapping?: Record<string, string> | undefined;
   }) {

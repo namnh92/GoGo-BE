@@ -36,6 +36,22 @@ Resolution order per header: explicit wizard mapping → canonical template name
 → legacy GOGO sheet header (`Tên địa điểm`, `Khoảng giá/người`, `Đi cùng ai?`,
 …). Unmapped headers are reported in `unmappedHeaders`, never guessed.
 
+The canonical vocabulary is `CANONICAL_FIELDS` in `domain/column-mapping.ts` —
+one list, published to clients as the OpenAPI enum `ImportCanonicalField`. The
+YAML is handwritten, so `import-parsing.spec.ts` fails the build if the two
+drift; a published vocabulary the parser does not implement is how the CMS came
+to offer `address`, `phone` and `website`, which nothing could ever accept.
+
+**An explicit mapping is honoured or the request is refused.** `resolveMapping`
+used to skip any value it did not recognise and quietly fall through to
+auto-detection, so a client sending its own vocabulary (`googleMapsUrl` for
+`google_maps_url`) got a clean 201 in which its mapping screen had done nothing
+at all. `parseColumnMapping` now validates at the edge: an unknown field is a
+400 `MAPPING_FIELD_UNKNOWN` naming every offending column in `field_errors`.
+Auto-detection is for headers the caller said nothing about; mapping a header
+to `""` means ignore it. Malformed JSON on the multipart route stays a separate
+`MAPPING_INVALID` — a typo and a wrong vocabulary are different mistakes.
+
 Free text becomes structured facts: `45 - 75k` → `{min: 45000, max: 75000,
 unit: per_person}`, `Cặp đôi|Bạn bè` → `['couple','group']`. A tab named
 `HCM`/`HN` supplies the city via `tabCityMapping`.
