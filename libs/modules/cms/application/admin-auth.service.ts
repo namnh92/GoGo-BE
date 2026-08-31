@@ -193,6 +193,67 @@ export class AdminAuthService {
   }
 
   /**
+   * #62 / ADR-0010 — open a console session from a verified Cloudflare Access
+   * identity. `CloudflareAccessService` has already established *who*; this
+   * decides *whether*, and the split matters:
+   *
+   * **No auto-provisioning.** A verified assertion is not an account. The
+   * Access allow-list and `admin_users` answer different questions — the first
+   * says who may reach the hostname, the second who may act in the console —
+   * and they are maintained by different people. Creating a row here would let
+   * anyone added to an Access policy silently become staff, with a role
+   * nobody chose.
+   *
+   * **No password, no TOTP.** Both factors were already presented upstream:
+   * Access authenticated against the identity provider and enforced MFA there
+   * before signing the assertion. Asking again is not defence in depth, it is
+   * a second password to phish. What this path does *not* skip is the admin
+   * row check — a suspended account is refused here exactly as it is on every
+   * request.
+   *
+   * The session issued is an ordinary admin session: same rotating refresh,
+   * same revocation family, same 8-hour lifetime. Nothing downstream needs to
+   * know which door was used.
+   */
+  async loginWithAccessIdentity(identity: { email: string }, meta?: ClientMeta) {
+    const [admin] = await this.db
+      .select()
+      .from(schema.adminUsers)
+      .where(sql`lower(${schema.adminUsers.email}) = lower(${identity.email})`)
+      .limit(1);
+
+    // Deliberately distinguishable from a bad assertion: the caller proved a
+    // real identity, and "you are not staff here" is the true and actionable
+    // answer. Enumeration is not a risk on this path — reaching it already
+    // required an assertion signed by Cloudflare for this application.
+    if (!admin || admin.status !== 'active') {
+      throw AppError.forbidden('ADMIN_ONLY', 'This identity has no active staff account');
+    }
+
+    await this.db
+      .update(schema.adminUsers)
+      .set({ lastLoginAt: sql`now()` })
+      .where(eq(schema.adminUsers.id, admin.id));
+    // A distinct action from `admin.login`: which door someone came through is
+    // the first question asked when reviewing an incident, and it is
+    // unrecoverable if both write the same row.
+    await writeAudit(this.db, {
+      actorType: 'admin',
+      actorId: admin.id,
+      action: 'admin.login.sso',
+      resourceType: 'admin_user',
+      resourceId: admin.id,
+    });
+
+    const session = await this.openSession(admin.id, randomUUID(), undefined, meta);
+    return {
+      ...session,
+      role: admin.role,
+      displayName: admin.displayName,
+    };
+  }
+
+  /**
    * SEC-003 — rotating refresh for CMS. Same theft response as ADR-0003: a
    * refresh token is single-use, and presenting a superseded one revokes the
    * whole family rather than just failing the call.

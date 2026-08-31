@@ -50,4 +50,14 @@ export class AppError extends Error {
   static internal(message = 'Internal server error'): AppError {
     return new AppError('INTERNAL', message, 500, { retryable: true });
   }
+
+  /**
+   * A dependency this route needs is not answering, or was never configured.
+   * `retryable` separates the two: a provider outage clears on its own, a
+   * missing configuration never does, and a client that keeps retrying the
+   * second is generating load instead of a support ticket.
+   */
+  static serviceUnavailable(code: string, message: string, retryable = true): AppError {
+    return new AppError(code, message, 503, { retryable });
+  }
 }

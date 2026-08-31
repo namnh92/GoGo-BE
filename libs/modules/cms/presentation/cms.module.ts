@@ -3,6 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { IdentityModule } from '../../identity/presentation/identity.module';
 import { SuggestionsModule } from '../../suggestions/presentation/suggestions.module';
 import { AdminAuthService } from '../application/admin-auth.service';
+import { CloudflareAccessService } from '../application/cf-access.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsCatalogService } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
@@ -54,6 +55,7 @@ import {
   ],
   providers: [
     AdminAuthService,
+    CloudflareAccessService,
     CmsAuditService,
     CmsCatalogService,
     CmsContentService,

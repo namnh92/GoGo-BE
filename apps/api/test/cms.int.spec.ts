@@ -127,6 +127,35 @@ describe('CMS auth + RBAC (CMS-001, FR-CMS-001, SRS §15.7)', () => {
   });
 });
 
+describe('CMS single sign-on exchange (#62, ADR-0010)', () => {
+  const exchange = (headers: Record<string, string> = {}) =>
+    api().inject({ method: 'POST', url: '/v1/cms/auth/access-exchange', headers });
+
+  /*
+   * Reachable without a session on purpose — it is how a session begins. What
+   * it must never be is reachable without an assertion.
+   */
+  it('refuses a call that did not come through Access', async () => {
+    const res = await exchange();
+    expect(res.statusCode).toBe(401);
+    expect(res.json().code).toBe('ACCESS_ASSERTION_MISSING');
+  });
+
+  /*
+   * `.claude/rules/core.md` #16 — a control that exists but is not configured
+   * says so. A 404 here would read as "this build does not have SSO" and send
+   * somebody looking for the wrong thing; the test environment has no Access
+   * application, which is exactly the state being described.
+   */
+  it('answers 503 where SSO is not configured, not 404 and not a login failure', async () => {
+    const res = await exchange({ 'cf-access-jwt-assertion': 'a.b.c' });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().code).toBe('ACCESS_SSO_NOT_CONFIGURED');
+    // Not retryable: retrying a missing configuration produces load, not a fix.
+    expect(res.json().retryable).toBe(false);
+  });
+});
+
 describe('place workflow + search sync (CMS-002, SRS §15.5)', () => {
   it('draft → review → published appears in search; suspended disappears', async () => {
     const editor = await createAdmin('editor2@gogo.local', 'editor');
