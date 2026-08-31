@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { localClock, startPeriodic, type JobLock, type PeriodicLogger } from './periodic';
 
-const logger: PeriodicLogger = { info: () => undefined, warn: () => undefined, error: () => undefined };
+const logger: PeriodicLogger = {
+  info: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+};
 
 function lock(granted = true): JobLock & { acquired: number; released: number } {
   const l = {
