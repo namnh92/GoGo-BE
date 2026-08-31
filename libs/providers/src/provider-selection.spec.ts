@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { fakedProviders, warnFakedProviders } from './provider-selection';
+import {
+  fakedProviders,
+  placeProviderStatus,
+  resolvePlaceProviderMode,
+  warnFakedProviders,
+} from './provider-selection';
 
 const KEY = 'AIzaSyExampleNotARealCredential0000000000';
 
@@ -88,5 +93,75 @@ describe('PI-BE-021 — faked provider reporting', () => {
     expect(serialized).not.toContain(KEY);
     expect(serialized).not.toContain(KEY.slice(0, 8));
     expect(serialized).not.toContain(String(KEY.length));
+  });
+});
+
+describe('#279 — place provider mode is decided before anyone looks at a secret', () => {
+  it('follows the build when unset: a deployed environment means google', () => {
+    expect(resolvePlaceProviderMode({ NODE_ENV: 'production' })).toBe('google');
+  });
+
+  it('follows the build when unset: a laptop and the test suite mean fake', () => {
+    expect(resolvePlaceProviderMode({ NODE_ENV: 'development' })).toBe('fake');
+    expect(resolvePlaceProviderMode({ NODE_ENV: 'test' })).toBe('fake');
+  });
+
+  it('lets an explicit setting win in both directions', () => {
+    expect(resolvePlaceProviderMode({ NODE_ENV: 'production', PLACE_PROVIDER_MODE: 'fake' })).toBe(
+      'fake',
+    );
+    expect(
+      resolvePlaceProviderMode({ NODE_ENV: 'development', PLACE_PROVIDER_MODE: 'google' }),
+    ).toBe('google');
+  });
+
+  it('does NOT fall back to the fake when google mode has no credential', () => {
+    // The defect in one assertion. Binding the fake here is what answered a
+    // real Google Maps link with "no such place".
+    expect(placeProviderStatus({ NODE_ENV: 'production', GOOGLE_PLACES_API_KEY: '' })).toEqual({
+      mode: 'google',
+      provider: 'unconfigured',
+      ready: false,
+      reason: 'MISSING_CREDENTIAL',
+    });
+  });
+
+  it('is ready on google with a credential', () => {
+    expect(
+      placeProviderStatus({ NODE_ENV: 'production', GOOGLE_PLACES_API_KEY: 'AIzaExample' }),
+    ).toEqual({ mode: 'google', provider: 'google', ready: true });
+  });
+
+  it('is ready on a deliberately fake environment, credential or not', () => {
+    expect(
+      placeProviderStatus({
+        NODE_ENV: 'production',
+        PLACE_PROVIDER_MODE: 'fake',
+        GOOGLE_PLACES_API_KEY: '',
+      }),
+    ).toEqual({ mode: 'fake', provider: 'fake', ready: true });
+  });
+
+  it('stops calling the port "bound to a fake" when it is not', () => {
+    // The warn line has to stay true: in google mode the effect sentence
+    // ("answers from a fixed in-memory set") would describe something that no
+    // longer happens.
+    const faked = fakedProviders({
+      ...HEALTHY,
+      GOOGLE_PLACES_API_KEY: '',
+      PLACE_PROVIDER_MODE: 'google',
+    });
+
+    expect(faked.map((f) => f.port)).not.toContain('PLACE_PROVIDER');
+    expect(faked.map((f) => f.port)).not.toContain('AREA_AUTOCOMPLETE');
+  });
+
+  it('never puts a credential in the status', () => {
+    const status = placeProviderStatus({
+      NODE_ENV: 'production',
+      GOOGLE_PLACES_API_KEY: 'AIzaSyExampleNotARealCredential0000000000',
+    });
+
+    expect(JSON.stringify(status)).not.toContain('AIza');
   });
 });

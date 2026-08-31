@@ -173,6 +173,20 @@ const envSchema = z
     // Separate keys are also what isolates quota and bounds a leak.
     /** Places Details/Search/Autocomplete. Server-side only. */
     GOOGLE_PLACES_API_KEY: z.string().default(''),
+    /**
+     * #279 — which Place provider this process is meant to be running.
+     *
+     * Left unset it follows the build: a deployed environment (NODE_ENV
+     * production, which `render-env.sh` writes for every one of them) means
+     * `google`; a developer's machine and the test suite mean `fake`.
+     *
+     * Set it explicitly to `fake` for an environment that is *supposed* to run
+     * without Google. What it must never do again is decide itself, silently,
+     * from whether a credential happened to be present — that is how a missing
+     * key became "địa điểm không tồn tại" on a user's screen instead of an
+     * alert on ours.
+     */
+    PLACE_PROVIDER_MODE: z.enum(['google', 'fake']).optional(),
     /** Sheets values API, read by the CMS bulk import only. */
     GOOGLE_SHEETS_API_KEY: z.string().default(''),
     /** Routes API, behind FLAG_ROUTES_API. */

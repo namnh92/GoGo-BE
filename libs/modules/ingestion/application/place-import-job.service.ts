@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { schema, type Db, type IngestMessage, type MatchCandidate } from '@gogo/database';
 import {
+  ProviderConfigurationError,
   ProviderQuotaExceededError,
+  ProviderUnavailableError,
   SHEETS_PROVIDER,
   SheetAccessError,
   parseSpreadsheetId,
@@ -613,7 +615,16 @@ export class PlaceImportJobService {
           knownCategories,
         );
       } catch (err) {
-        if (err instanceof ProviderQuotaExceededError) {
+        // #279: a provider that could not answer must park the job, not consume
+        // rows. Quota already did; a disabled API, an invalid key and an
+        // upstream outage now reach here too instead of being swallowed into
+        // "unresolved", and every one of them would otherwise burn a whole
+        // spreadsheet of good rows on a fault that has nothing to do with them.
+        const operational =
+          err instanceof ProviderQuotaExceededError ||
+          err instanceof ProviderConfigurationError ||
+          err instanceof ProviderUnavailableError;
+        if (operational) {
           // Park the job: the remaining rows go back to pending untouched so a
           // resume re-processes exactly what was left (spec §9.4).
           await this.db
@@ -632,6 +643,16 @@ export class PlaceImportJobService {
           this.metrics.increment('place_import_jobs_total', {
             status: 'paused_provider_quota',
             source_type: job.sourceType,
+            // The status enum has one paused value and adding another needs a
+            // migration, so the distinction rides the metric until GoGo-BE#284
+            // renames it: quota clears by waiting, a configuration fault does
+            // not, and a runbook has to be able to tell them apart.
+            reason:
+              err instanceof ProviderQuotaExceededError
+                ? 'QUOTA_EXHAUSTED'
+                : err instanceof ProviderConfigurationError
+                  ? err.faultCode
+                  : 'UPSTREAM_UNAVAILABLE',
           });
           return { processed: 0, hasMore: false };
         }

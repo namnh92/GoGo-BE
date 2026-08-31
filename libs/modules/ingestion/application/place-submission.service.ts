@@ -1,7 +1,12 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
-import type { ResolvedProviderPlace } from '@gogo/providers';
+import {
+  ProviderConfigurationError,
+  ProviderQuotaExceededError,
+  ProviderUnavailableError,
+  type ResolvedProviderPlace,
+} from '@gogo/providers';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
 import { writeOutbox } from '../../shared/outbox';
@@ -75,7 +80,11 @@ export class PlaceSubmissionService {
     url: string;
     cityHint?: string | undefined;
   }): Promise<ResolveLinkResponse> {
-    const outcome = await this.resolver.resolveFromUrl(input.url, { city: input.cityHint });
+    const outcome = await this.resolver
+      .resolveFromUrl(input.url, { city: input.cityHint })
+      .catch((err: unknown) => {
+        throw placeProviderUnavailable(err);
+      });
 
     if (outcome.status === 'UNRESOLVED') {
       return { status: 'UNRESOLVED', reasonCodes: [outcome.reasonCode] };
@@ -388,9 +397,11 @@ export class PlaceSubmissionService {
   private async createDraftFromSubmission(
     row: typeof schema.placeSubmissions.$inferSelect,
   ): Promise<string> {
-    const outcome = await this.resolver.resolveFromUrl(
-      `https://www.google.com/maps?place_id=${row.googlePlaceId}`,
-    );
+    const outcome = await this.resolver
+      .resolveFromUrl(`https://www.google.com/maps?place_id=${row.googlePlaceId}`)
+      .catch((err: unknown) => {
+        throw placeProviderUnavailable(err);
+      });
     if (outcome.status !== 'RESOLVED') {
       throw AppError.conflict('PROVIDER_UNAVAILABLE', 'Cannot verify provider place right now');
     }
@@ -450,4 +461,32 @@ export class PlaceSubmissionService {
         return placeId;
       });
   }
+}
+
+/**
+ * #279 — one operational failure, one HTTP answer.
+ *
+ * The client is told the service cannot verify a place right now, and nothing
+ * else. Which secret is missing, which adapter was bound, and what Google
+ * said are facts about our infrastructure; they ride the `cause` into the log
+ * and Sentry, where an operator can act on them, and they never reach the
+ * envelope. Same split PI-BE-022 already settled for the Sheets path.
+ *
+ * `retryable: true` because every one of these is true again on the next
+ * request only if someone fixes it — but the client's correct behaviour is
+ * identical in all of them: back off and try later, do not tell the user
+ * their place does not exist.
+ */
+export function placeProviderUnavailable(err: unknown): AppError {
+  const operational =
+    err instanceof ProviderConfigurationError ||
+    err instanceof ProviderQuotaExceededError ||
+    err instanceof ProviderUnavailableError;
+  if (!operational) return err instanceof AppError ? err : AppError.internal();
+  return new AppError(
+    'PLACE_PROVIDER_UNAVAILABLE',
+    'GoGo đang tạm thời không xác minh được địa điểm',
+    503,
+    { retryable: true, cause: err },
+  );
 }
