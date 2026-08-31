@@ -174,7 +174,14 @@ export class CmsContentService {
     const [row] = await this.db
       .update(schema.contentCollections)
       .set({ status, updatedAt: sql`now()` })
-      .where(eq(schema.contentCollections.id, collectionId))
+      .where(
+        and(
+          eq(schema.contentCollections.id, collectionId),
+          // A recommendation's status moves through its own machine
+          // (ADR-0009); this path would skip those checks.
+          eq(schema.contentCollections.kind, 'collection'),
+        ),
+      )
       .returning();
     if (!row) throw AppError.notFound('COLLECTION_NOT_FOUND', 'Collection not found');
     await this.audit(adminId, 'collection.status_changed', 'collection', collectionId, { status });
@@ -182,6 +189,18 @@ export class CmsContentService {
   }
 
   async setCollectionItems(adminId: string, collectionId: string, placeIds: string[]) {
+    const [collection] = await this.db
+      .select({ id: schema.contentCollections.id })
+      .from(schema.contentCollections)
+      .where(
+        and(
+          eq(schema.contentCollections.id, collectionId),
+          eq(schema.contentCollections.kind, 'collection'),
+        ),
+      )
+      .limit(1);
+    if (!collection) throw AppError.notFound('COLLECTION_NOT_FOUND', 'Collection not found');
+
     await this.db.transaction(async (tx) => {
       await tx
         .delete(schema.collectionItems)
@@ -263,7 +282,12 @@ export class CmsContentService {
     const [collection] = await this.db
       .select({ id: schema.contentCollections.id })
       .from(schema.contentCollections)
-      .where(eq(schema.contentCollections.id, collectionId))
+      .where(
+        and(
+          eq(schema.contentCollections.id, collectionId),
+          eq(schema.contentCollections.kind, 'collection'),
+        ),
+      )
       .limit(1);
     if (!collection) throw AppError.notFound('COLLECTION_NOT_FOUND', 'Collection not found');
 
@@ -287,11 +311,25 @@ export class CmsContentService {
     };
   }
 
+  /**
+   * Curated collections only.
+   *
+   * ADR-0009 put recommendations in this table under `kind =
+   * 'recommendation'`, because a recommendation is a collection that knows who
+   * it is for. This endpoint is the collections screen, which cannot edit
+   * targeting — so it must not start listing rows it would silently strip the
+   * audience from on the next save.
+   */
   async listCollections(filter: { status?: CollectionStatus | undefined }) {
     const rows = await this.db
       .select()
       .from(schema.contentCollections)
-      .where(filter.status ? and(eq(schema.contentCollections.status, filter.status)) : undefined)
+      .where(
+        and(
+          eq(schema.contentCollections.kind, 'collection'),
+          ...(filter.status ? [eq(schema.contentCollections.status, filter.status)] : []),
+        ),
+      )
       .orderBy(asc(schema.contentCollections.slug));
     return rows.map((c) => ({
       id: c.id,

@@ -1750,6 +1750,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/recommendations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Editor/ops: recommendations, filtered and cursor-paged
+         * @description A recommendation is a targeted collection (ADR-0009): the same ordered list of places, the same schedule and status machine, plus who it is for. It shares `content_collections` with curated collections rather than forking editorial content into a second store, and `GET /cms/collections` returns only the untargeted ones.
+         *
+         *     Sorted newest first; `priority` orders recommendations competing for one surface and is returned so the console can show it, not used as the pagination key — it is editable, so a row whose priority changed mid-traversal would jump pages.
+         */
+        get: operations["cmsListRecommendations"];
+        put?: never;
+        /**
+         * Editor/ops: create a recommendation
+         * @description Every referenced place and taxonomy must exist, and a taxonomy must be of a kind that can target content (`category` or `mood`) — a recommendation pointing at an id nothing resolves would render as a shorter list with no explanation.
+         *
+         *     `placeIds` is ordered: the array index becomes the stored position, and the order round-trips.
+         */
+        post: operations["cmsCreateRecommendation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/recommendations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Editor/ops: one recommendation with its ordered places */
+        get: operations["cmsGetRecommendation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Editor/ops: edit a recommendation
+         * @description Omitted fields are left alone. Sending `placeIds` or `taxonomyIds` replaces that list wholesale — a partial reorder is not expressible, and pretending otherwise is how an ordering silently loses a row.
+         */
+        patch: operations["cmsUpdateRecommendation"];
+        trace?: never;
+    };
+    "/cms/recommendations/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Editor/ops: move a recommendation along its lifecycle
+         * @description Declared transitions only. `archived` is terminal: bringing retired content back is a new row, not a resurrection. Scheduling needs a start time, and publishing needs at least one place — an empty published recommendation is a surface with nothing on it.
+         */
+        patch: operations["cmsSetRecommendationStatus"];
+        trace?: never;
+    };
+    "/cms/recommendations/{id}/places": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Editor/ops: replace the ordered place list */
+        put: operations["cmsSetRecommendationPlaces"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/uploads": {
         parameters: {
             query?: never;
@@ -3078,6 +3164,106 @@ export interface components {
             enabled: boolean;
             /** @description The stored value */
             value?: unknown;
+        };
+        /**
+         * @description `archived` is terminal — retired content comes back as a new row, not a resurrection.
+         * @enum {string}
+         */
+        RecommendationStatus: "draft" | "scheduled" | "published" | "archived";
+        /**
+         * @description Who a piece of editorial content is aimed at. One vocabulary across content types rather than one per resource. Stable key; the label resolves client-side through i18n.
+         * @enum {string}
+         */
+        ContentAudience: "couple" | "group" | "family" | "solo";
+        CmsRecommendationTaxonomy: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "category" | "mood";
+            /** @description Stable taxonomy key, never a display label. */
+            key: string;
+        };
+        CmsRecommendation: {
+            /** Format: uuid */
+            id: string;
+            /** @description The internal key. Unique per locale. */
+            slug: string;
+            locale: string;
+            /** @description The editorial name. What an editor searches; never what a user reads. */
+            internalName?: string;
+            title: string;
+            subtitle?: string;
+            description?: string;
+            audience?: components["schemas"]["ContentAudience"];
+            /** @description Same vocabulary as a place's `areaKey` — "city" is one concept. */
+            areaKey?: string;
+            /** @description Higher first, between recommendations competing for one surface. */
+            priority: number;
+            status: components["schemas"]["RecommendationStatus"];
+            /** Format: date-time */
+            startsAt?: string;
+            /** Format: date-time */
+            endsAt?: string;
+            placeCount: number;
+            taxonomies: components["schemas"]["CmsRecommendationTaxonomy"][];
+            /** Format: uuid */
+            createdByAdminId?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CmsRecommendationPlace: {
+            position: number;
+            /** Format: uuid */
+            placeId: string;
+            name: string;
+            addressText?: string;
+            /** @description The place's catalog status, so a published recommendation quietly holding a suspended place is visible rather than silently short. */
+            status: string;
+        };
+        CmsRecommendationDetail: components["schemas"]["CmsRecommendation"] & {
+            places: components["schemas"]["CmsRecommendationPlace"][];
+        };
+        CmsRecommendationPage: {
+            items: components["schemas"]["CmsRecommendation"][];
+            nextCursor: string | null;
+            totalCount: number;
+        };
+        CmsRecommendationCreate: {
+            slug: string;
+            internalName: string;
+            title: string;
+            subtitle?: string;
+            description?: string;
+            locale?: string;
+            audience: components["schemas"]["ContentAudience"];
+            areaKey?: string;
+            priority?: number;
+            /** Format: date-time */
+            startsAt?: string;
+            /** Format: date-time */
+            endsAt?: string;
+            taxonomyIds?: string[];
+            /** @description Ordered — the index becomes the stored position. */
+            placeIds?: string[];
+        };
+        /** @description Omitted fields are left alone; a sent list replaces that list wholesale. */
+        CmsRecommendationPatch: {
+            internalName?: string;
+            title?: string;
+            subtitle?: string;
+            description?: string;
+            locale?: string;
+            audience?: components["schemas"]["ContentAudience"];
+            areaKey?: string;
+            priority?: number;
+            /** Format: date-time */
+            startsAt?: string;
+            /** Format: date-time */
+            endsAt?: string;
+            taxonomyIds?: string[];
+            placeIds?: string[];
         };
         CmsUpload: {
             /** Format: uuid */
@@ -6649,6 +6835,204 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    cmsListRecommendations: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["RecommendationStatus"];
+                audience?: components["schemas"]["ContentAudience"];
+                areaKey?: string;
+                /** @description Substring of internal name */
+                q?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recommendations, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsRecommendationPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsCreateRecommendation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsRecommendationCreate"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsRecommendationDetail"];
+                };
+            };
+            /** @description Unknown place (`PLACE_NOT_FOUND`), duplicate place (`DUPLICATE_PLACE`), unknown or untargetable taxonomy (`TAXONOMY_NOT_FOUND`, `TAXONOMY_KIND_INVALID`), or a window that ends before it starts (`INVALID_SCHEDULE`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal key already used (`SLUG_TAKEN`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsGetRecommendation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recommendation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsRecommendationDetail"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsUpdateRecommendation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsRecommendationPatch"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsRecommendationDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsSetRecommendationStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    status: components["schemas"]["RecommendationStatus"];
+                };
+            };
+        };
+        responses: {
+            /** @description Status changed (audited) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        id: string;
+                        status: components["schemas"]["RecommendationStatus"];
+                    };
+                };
+            };
+            /** @description Scheduling without a start time (`SCHEDULE_REQUIRED`) or publishing with no places (`EMPTY_RECOMMENDATION`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+            /** @description The lifecycle has no such edge (`INVALID_STATUS_TRANSITION`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsSetRecommendationPlaces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Order is meaning — the index becomes the stored position. */
+                    placeIds: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Places replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsRecommendationDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
         };
     };
     cmsCreateUpload: {

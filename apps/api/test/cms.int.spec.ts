@@ -963,6 +963,260 @@ describe('CMS media upload (BE-CMS-G5 #227)', () => {
   });
 });
 
+/**
+ * BE-CMS-G4a (#222) — recommendations as targeted collections (ADR-0009).
+ */
+describe('recommendations (BE-CMS-G4a #222)', () => {
+  let editor: { id: string; token: string };
+  let moderator: { id: string; token: string };
+  let placeA: string;
+  let placeB: string;
+  let placeC: string;
+  let categoryId: string;
+  let moodId: string;
+  let dietaryId: string;
+
+  const suffix = () => Math.random().toString(36).slice(2, 8);
+
+  beforeAll(async () => {
+    editor = await createAdmin('rec222@gogo.local', 'editor');
+    moderator = await createAdmin('rec222-mod@gogo.local', 'moderator');
+
+    const places = await db
+      .insert(schema.places)
+      .values(
+        ['Rec Place A', 'Rec Place B', 'Rec Place C'].map((name) => ({
+          name,
+          nameNormalized: name.toLowerCase(),
+          status: 'published' as const,
+          geom: { x: 106.7, y: 10.77 },
+        })),
+      )
+      .returning();
+    [placeA, placeB, placeC] = places.map((p) => p.id) as [string, string, string];
+
+    const taxonomies = await db
+      .insert(schema.taxonomies)
+      .values([
+        { kind: 'category', key: `rec_cat_${suffix()}` },
+        { kind: 'mood', key: `rec_mood_${suffix()}` },
+        { kind: 'dietary', key: `rec_diet_${suffix()}` },
+      ])
+      .returning();
+    [categoryId, moodId, dietaryId] = taxonomies.map((t) => t.id) as [string, string, string];
+  });
+
+  const post = (payload: unknown, token = editor.token) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/recommendations',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: payload as object,
+    });
+  const patch = (path: string, payload: unknown, token = editor.token) =>
+    api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/recommendations/${path}`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: payload as object,
+    });
+  const get = (path = '', token = editor.token) =>
+    api().inject({ method: 'GET', url: `/v1/cms/recommendations${path}`, headers: auth(token) });
+
+  const valid = (extra: Record<string, unknown> = {}) => ({
+    slug: `rec-${suffix()}`,
+    internalName: 'Tết 2027 — đợt 1',
+    title: 'Hẹn hò cuối tuần',
+    subtitle: 'Gần bạn',
+    audience: 'couple',
+    areaKey: 'q1',
+    priority: 10,
+    placeIds: [placeA, placeB],
+    taxonomyIds: [categoryId, moodId],
+    ...extra,
+  });
+
+  it('creates one and reads back the places in the order they were sent', async () => {
+    const created = await post(valid({ placeIds: [placeC, placeA, placeB] }));
+    expect(created.statusCode).toBe(201);
+    const body = created.json();
+    expect(body.status).toBe('draft');
+    expect(body.audience).toBe('couple');
+    expect(body.priority).toBe(10);
+    expect(body.places.map((p: { placeId: string }) => p.placeId)).toEqual([
+      placeC,
+      placeA,
+      placeB,
+    ]);
+    expect(body.places.map((p: { position: number }) => p.position)).toEqual([0, 1, 2]);
+
+    // And the order survives a re-read, not just the response of the write.
+    const read = await get(`/${body.id}`);
+    expect(read.json().places.map((p: { placeId: string }) => p.placeId)).toEqual([
+      placeC,
+      placeA,
+      placeB,
+    ]);
+  });
+
+  it('carries taxonomy as stable keys, not display labels', async () => {
+    const body = (await post(valid())).json();
+    const kinds = body.taxonomies.map((t: { kind: string }) => t.kind).sort();
+    expect(kinds).toEqual(['category', 'mood']);
+    for (const taxonomy of body.taxonomies) {
+      expect(taxonomy.key).toMatch(/^rec_(cat|mood)_/);
+      expect(taxonomy).not.toHaveProperty('label');
+    }
+  });
+
+  it('refuses a place or taxonomy that does not resolve', async () => {
+    const ghost = '00000000-0000-4000-8000-000000000000';
+    const noPlace = await post(valid({ placeIds: [ghost] }));
+    expect(noPlace.statusCode).toBe(400);
+    expect(noPlace.json().code).toBe('PLACE_NOT_FOUND');
+
+    const noTaxonomy = await post(valid({ taxonomyIds: [ghost] }));
+    expect(noTaxonomy.statusCode).toBe(400);
+    expect(noTaxonomy.json().code).toBe('TAXONOMY_NOT_FOUND');
+
+    // A dietary key is a fact about a place, not something content targets.
+    const wrongKind = await post(valid({ taxonomyIds: [dietaryId] }));
+    expect(wrongKind.statusCode).toBe(400);
+    expect(wrongKind.json().code).toBe('TAXONOMY_KIND_INVALID');
+
+    const duplicate = await post(valid({ placeIds: [placeA, placeA] }));
+    expect(duplicate.statusCode).toBe(400);
+    expect(duplicate.json().code).toBe('DUPLICATE_PLACE');
+  });
+
+  it('refuses a window that ends before it starts, and a key already used', async () => {
+    const backwards = await post(
+      valid({ startsAt: '2027-02-01T00:00:00Z', endsAt: '2027-01-01T00:00:00Z' }),
+    );
+    expect(backwards.statusCode).toBe(400);
+    expect(backwards.json().code).toBe('INVALID_SCHEDULE');
+
+    const slug = `rec-dup-${suffix()}`;
+    expect((await post(valid({ slug }))).statusCode).toBe(201);
+    const again = await post(valid({ slug }));
+    expect(again.statusCode).toBe(409);
+    expect(again.json().code).toBe('SLUG_TAKEN');
+  });
+
+  it('moves along declared transitions and refuses the rest', async () => {
+    const id = (await post(valid())).json().id;
+
+    const scheduleWithoutStart = await patch(`${id}/status`, { status: 'scheduled' });
+    expect(scheduleWithoutStart.statusCode).toBe(400);
+    expect(scheduleWithoutStart.json().code).toBe('SCHEDULE_REQUIRED');
+
+    await patch(id, { startsAt: '2027-01-01T00:00:00Z' });
+    expect((await patch(`${id}/status`, { status: 'scheduled' })).statusCode).toBe(200);
+    expect((await patch(`${id}/status`, { status: 'published' })).statusCode).toBe(200);
+
+    // Archived is terminal: retired content comes back as a new row.
+    expect((await patch(`${id}/status`, { status: 'archived' })).statusCode).toBe(200);
+    const revive = await patch(`${id}/status`, { status: 'published' });
+    expect(revive.statusCode).toBe(409);
+    expect(revive.json().code).toBe('INVALID_STATUS_TRANSITION');
+  });
+
+  it('will not publish an empty recommendation', async () => {
+    const id = (await post(valid({ placeIds: [] }))).json().id;
+    const res = await patch(`${id}/status`, { status: 'published' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('EMPTY_RECOMMENDATION');
+  });
+
+  it('replaces the ordered list wholesale and audits the change', async () => {
+    const id = (await post(valid())).json().id;
+    const res = await api().inject({
+      method: 'PUT',
+      url: `/v1/cms/recommendations/${id}/places`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: { placeIds: [placeB, placeC] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().places.map((p: { placeId: string }) => p.placeId)).toEqual([placeB, placeC]);
+    expect(res.json().placeCount).toBe(2);
+
+    const audit = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/audit?resourceType=recommendation&resourceId=${id}&action=recommendation.places_set`,
+      headers: auth(editor.token),
+    });
+    expect(audit.json().items[0].diff).toMatchObject({ count: 2 });
+  });
+
+  it('filters and pages, and the total counts the filtered set', async () => {
+    const areaKey = `zone-${suffix()}`;
+    for (let i = 0; i < 3; i += 1) {
+      await post(valid({ areaKey, audience: 'group' }));
+    }
+
+    const filtered = await get(`?areaKey=${areaKey}&audience=group`);
+    expect(filtered.json().totalCount).toBe(3);
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 3; page += 1) {
+      const res = await get(
+        `?areaKey=${areaKey}&limit=2` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''),
+      );
+      expect(res.json().totalCount).toBe(3);
+      seen.push(...res.json().items.map((r: { id: string }) => r.id));
+      cursor = res.json().nextCursor;
+      if (!cursor) break;
+    }
+    expect(new Set(seen).size).toBe(3);
+
+    const byAudience = await get(`?areaKey=${areaKey}&audience=couple`);
+    expect(byAudience.json().totalCount).toBe(0);
+  });
+
+  it('stays out of the collections screen, and collections stay out of this one', async () => {
+    const recommendation = (await post(valid())).json();
+
+    const collections = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/collections',
+      headers: auth(editor.token),
+    });
+    expect(collections.statusCode).toBe(200);
+    expect(collections.json().map((c: { id: string }) => c.id)).not.toContain(recommendation.id);
+
+    // A collection id is a 404 here: two resources in the contract, one table.
+    const [collection] = await db
+      .insert(schema.contentCollections)
+      .values({
+        slug: `plain-${suffix()}`,
+        title: 'Bộ sưu tập thường',
+        createdByAdminId: editor.id,
+      })
+      .returning();
+    expect((await get(`/${collection!.id}`)).statusCode).toBe(404);
+
+    // And the collections status route will not touch a recommendation.
+    const cross = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/collections/${recommendation.id}/status`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: { status: 'published' },
+    });
+    expect(cross.statusCode).toBe(404);
+  });
+
+  it('is an editorial write: a moderator cannot create one', async () => {
+    expect((await post(valid(), moderator.token)).statusCode).toBe(403);
+    // Reads climb by rank, so a moderator can still see what is scheduled.
+    expect((await get('', moderator.token)).statusCode).toBe(200);
+  });
+});
+
 describe('ops KPIs (CMS-010)', () => {
   it('KPIs endpoint aggregates health metrics (FR-CMS-010)', async () => {
     const ops = await createAdmin('ops4@gogo.local', 'ops_admin');

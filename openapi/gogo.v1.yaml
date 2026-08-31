@@ -2949,6 +2949,188 @@ paths:
       responses:
         '200': { description: Items replaced }
 
+  /cms/recommendations:
+    get:
+      operationId: cmsListRecommendations
+      tags: [cms]
+      summary: 'Editor/ops: recommendations, filtered and cursor-paged'
+      description: >
+        A recommendation is a targeted collection (ADR-0009): the same ordered
+        list of places, the same schedule and status machine, plus who it is
+        for. It shares `content_collections` with curated collections rather
+        than forking editorial content into a second store, and
+        `GET /cms/collections` returns only the untargeted ones.
+
+
+        Sorted newest first; `priority` orders recommendations competing for one
+        surface and is returned so the console can show it, not used as the
+        pagination key — it is editable, so a row whose priority changed
+        mid-traversal would jump pages.
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/RecommendationStatus' } }
+        - { name: audience, in: query, schema: { $ref: '#/components/schemas/ContentAudience' } }
+        - { name: areaKey, in: query, schema: { type: string, maxLength: 64 } }
+        - {
+            name: q,
+            in: query,
+            description: Substring of internal name,
+            title or key.,
+            schema: { type: string, maxLength: 120 },
+          }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Recommendations, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsRecommendationPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      operationId: cmsCreateRecommendation
+      tags: [cms]
+      summary: 'Editor/ops: create a recommendation'
+      description: >
+        Every referenced place and taxonomy must exist, and a taxonomy must be
+        of a kind that can target content (`category` or `mood`) — a
+        recommendation pointing at an id nothing resolves would render as a
+        shorter list with no explanation.
+
+
+        `placeIds` is ordered: the array index becomes the stored position, and
+        the order round-trips.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsRecommendationCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsRecommendationDetail' }
+        '400':
+          description: >
+            Unknown place (`PLACE_NOT_FOUND`), duplicate place
+            (`DUPLICATE_PLACE`), unknown or untargetable taxonomy
+            (`TAXONOMY_NOT_FOUND`, `TAXONOMY_KIND_INVALID`), or a window that
+            ends before it starts (`INVALID_SCHEDULE`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409': { description: 'Internal key already used (`SLUG_TAKEN`)' }
+
+  /cms/recommendations/{id}:
+    get:
+      operationId: cmsGetRecommendation
+      tags: [cms]
+      summary: 'Editor/ops: one recommendation with its ordered places'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Recommendation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsRecommendationDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: cmsUpdateRecommendation
+      tags: [cms]
+      summary: 'Editor/ops: edit a recommendation'
+      description: >
+        Omitted fields are left alone. Sending `placeIds` or `taxonomyIds`
+        replaces that list wholesale — a partial reorder is not expressible, and
+        pretending otherwise is how an ordering silently loses a row.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsRecommendationPatch' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsRecommendationDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/recommendations/{id}/status:
+    patch:
+      operationId: cmsSetRecommendationStatus
+      tags: [cms]
+      summary: 'Editor/ops: move a recommendation along its lifecycle'
+      description: >
+        Declared transitions only. `archived` is terminal: bringing retired
+        content back is a new row, not a resurrection. Scheduling needs a start
+        time, and publishing needs at least one place — an empty published
+        recommendation is a surface with nothing on it.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/RecommendationStatus' }
+      responses:
+        '200':
+          description: Status changed (audited)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { $ref: '#/components/schemas/RecommendationStatus' }
+        '400':
+          description: >
+            Scheduling without a start time (`SCHEDULE_REQUIRED`) or publishing
+            with no places (`EMPTY_RECOMMENDATION`).
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 'The lifecycle has no such edge (`INVALID_STATUS_TRANSITION`)' }
+
+  /cms/recommendations/{id}/places:
+    put:
+      operationId: cmsSetRecommendationPlaces
+      tags: [cms]
+      summary: 'Editor/ops: replace the ordered place list'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [placeIds]
+              properties:
+                placeIds:
+                  type: array
+                  maxItems: 100
+                  description: Order is meaning — the index becomes the stored position.
+                  items: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Places replaced
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsRecommendationDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /cms/uploads:
     post:
       operationId: cmsCreateUpload
@@ -4761,6 +4943,147 @@ components:
         platform: { $ref: '#/components/schemas/FlagPlatform' }
         enabled: { type: boolean }
         value: { description: The stored value, as the server now holds it. }
+
+    RecommendationStatus:
+      type: string
+      enum: [draft, scheduled, published, archived]
+      description: >
+        `archived` is terminal — retired content comes back as a new row, not a
+        resurrection.
+
+    ContentAudience:
+      type: string
+      enum: [couple, group, family, solo]
+      description: >
+        Who a piece of editorial content is aimed at. One vocabulary across
+        content types rather than one per resource. Stable key; the label
+        resolves client-side through i18n.
+
+    CmsRecommendationTaxonomy:
+      type: object
+      required: [id, kind, key]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [category, mood] }
+        key:
+          type: string
+          description: Stable taxonomy key, never a display label.
+
+    CmsRecommendation:
+      type: object
+      required:
+        [id, slug, locale, title, priority, status, placeCount, taxonomies, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        slug:
+          type: string
+          description: The internal key. Unique per locale.
+        locale: { type: string }
+        internalName:
+          type: string
+          description: The editorial name. What an editor searches; never what a user reads.
+        title: { type: string }
+        subtitle: { type: string }
+        description: { type: string }
+        audience: { $ref: '#/components/schemas/ContentAudience' }
+        areaKey:
+          type: string
+          description: Same vocabulary as a place's `areaKey` — "city" is one concept.
+        priority:
+          type: integer
+          description: Higher first, between recommendations competing for one surface.
+        status: { $ref: '#/components/schemas/RecommendationStatus' }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        placeCount: { type: integer }
+        taxonomies:
+          type: array
+          items: { $ref: '#/components/schemas/CmsRecommendationTaxonomy' }
+        createdByAdminId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CmsRecommendationPlace:
+      type: object
+      required: [position, placeId, name, status]
+      properties:
+        position: { type: integer }
+        placeId: { type: string, format: uuid }
+        name: { type: string }
+        addressText: { type: string }
+        status:
+          type: string
+          description: >
+            The place's catalog status, so a published recommendation quietly
+            holding a suspended place is visible rather than silently short.
+
+    CmsRecommendationDetail:
+      allOf:
+        - $ref: '#/components/schemas/CmsRecommendation'
+        - type: object
+          required: [places]
+          properties:
+            places:
+              type: array
+              items: { $ref: '#/components/schemas/CmsRecommendationPlace' }
+
+    CmsRecommendationPage:
+      type: object
+      required: [items, nextCursor, totalCount]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsRecommendation' }
+        nextCursor: { type: [string, 'null'] }
+        totalCount: { type: integer }
+
+    CmsRecommendationCreate:
+      type: object
+      required: [slug, internalName, title, audience]
+      properties:
+        slug: { type: string, pattern: '^[a-z0-9-]{2,60}$' }
+        internalName: { type: string, maxLength: 120 }
+        title: { type: string, maxLength: 120 }
+        subtitle: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        locale: { type: string, maxLength: 8 }
+        audience: { $ref: '#/components/schemas/ContentAudience' }
+        areaKey: { type: string, maxLength: 64 }
+        priority: { type: integer, minimum: 0, maximum: 1000 }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        taxonomyIds:
+          type: array
+          maxItems: 30
+          items: { type: string, format: uuid }
+        placeIds:
+          type: array
+          maxItems: 100
+          description: Ordered — the index becomes the stored position.
+          items: { type: string, format: uuid }
+
+    CmsRecommendationPatch:
+      type: object
+      description: Omitted fields are left alone; a sent list replaces that list wholesale.
+      properties:
+        internalName: { type: string, maxLength: 120 }
+        title: { type: string, maxLength: 120 }
+        subtitle: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        locale: { type: string, maxLength: 8 }
+        audience: { $ref: '#/components/schemas/ContentAudience' }
+        areaKey: { type: string, maxLength: 64 }
+        priority: { type: integer, minimum: 0, maximum: 1000 }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        taxonomyIds:
+          type: array
+          maxItems: 30
+          items: { type: string, format: uuid }
+        placeIds:
+          type: array
+          maxItems: 100
+          items: { type: string, format: uuid }
 
     CmsUpload:
       type: object
