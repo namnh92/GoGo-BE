@@ -431,6 +431,87 @@ describe('CMS single sign-on exchange (#62, ADR-0010)', () => {
   });
 });
 
+describe('CMS ops observability (BE-CMS-G8 #247)', () => {
+  const get = (token: string, url: string) =>
+    api().inject({ method: 'GET', url, headers: auth(token) });
+
+  /*
+   * The whole point of the endpoint. The test environment has no Redis, so
+   * redis and worker genuinely cannot be measured — and the contract's answer
+   * for that is `unknown`, not a green tick that would make this screen the
+   * last place to learn about an outage.
+   */
+  it('reports unknown where nothing measured, not healthy', async () => {
+    const ops = await createAdmin('g8-ops@gogo.id.vn', 'ops_admin');
+    const res = await get(ops.token, '/v1/cms/ops/health');
+    expect(res.statusCode).toBe(200);
+
+    const byKey = Object.fromEntries(
+      (res.json().services as { key: string; status: string; detail?: string }[]).map((s) => [
+        s.key,
+        s,
+      ]),
+    );
+    // Answering at all is the only claim this row makes, and it is true.
+    expect(byKey.api.status).toBe('healthy');
+    expect(byKey.db.status).toBe('healthy');
+    expect(byKey.db.latencyMs).toBeTypeOf('number');
+    expect(byKey.redis.status).toBe('unknown');
+    expect(byKey.worker.status).toBe('unknown');
+    // An unknown that does not say why sends someone hunting.
+    expect(byKey.worker.detail).toBeTruthy();
+  });
+
+  /*
+   * A provider nobody has called must be absent rather than green. Listing
+   * every known provider and defaulting it to healthy is the exact failure
+   * `unknown` exists to prevent.
+   */
+  it('does not invent a row for a provider with no traffic', async () => {
+    const ops = await createAdmin('g8-providers@gogo.id.vn', 'ops_admin');
+    const keys = (await get(ops.token, '/v1/cms/ops/health'))
+      .json()
+      .services.map((s: { key: string }) => s.key);
+    expect(keys).toEqual(expect.arrayContaining(['api', 'db', 'redis', 'worker']));
+    expect(keys).not.toContain('push_provider');
+  });
+
+  /*
+   * The outbox is a queue that lives in Postgres, so BullMQ cannot see it.
+   * Leaving it out would hide the backlog that actually delays notifications.
+   */
+  it('includes the transactional outbox, which the broker cannot see', async () => {
+    const ops = await createAdmin('g8-queues@gogo.id.vn', 'ops_admin');
+    const res = await get(ops.token, '/v1/cms/ops/queues');
+    expect(res.statusCode).toBe(200);
+
+    const outbox = (res.json().queues as { name: string; source: string }[]).find(
+      (q) => q.name === 'outbox_events',
+    );
+    expect(outbox).toMatchObject({ source: 'database', failed24hTruncated: false });
+    expect(outbox).toHaveProperty('oldestPendingSeconds');
+  });
+
+  /*
+   * `providers: []` with `sourcesConfigured: false` says "we do not know".
+   * Rendering that as `0 đ` would be a different and false claim — the same
+   * class of bug as a price with no unit (`core.md` #13).
+   */
+  it('reports no cost source rather than a zero it cannot support', async () => {
+    const ops = await createAdmin('g8-costs@gogo.id.vn', 'ops_admin');
+    const res = await get(ops.token, '/v1/cms/ops/costs');
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ providers: [], sourcesConfigured: false });
+  });
+
+  it('is closed to editors and moderators', async () => {
+    const editor = await createAdmin('g8-editor@gogo.id.vn', 'editor');
+    for (const url of ['/v1/cms/ops/health', '/v1/cms/ops/queues', '/v1/cms/ops/costs']) {
+      expect((await get(editor.token, url)).statusCode).toBe(403);
+    }
+  });
+});
+
 describe('place workflow + search sync (CMS-002, SRS §15.5)', () => {
   it('draft → review → published appears in search; suspended disappears', async () => {
     const editor = await createAdmin('editor2@gogo.local', 'editor');

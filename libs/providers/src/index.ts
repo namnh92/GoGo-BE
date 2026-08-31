@@ -1,9 +1,15 @@
 export * from './ports';
-export { withResilience, resetBreakers } from './resilience';
+export {
+  withResilience,
+  resetBreakers,
+  breakerSnapshots,
+  type BreakerSnapshot,
+} from './resilience';
 export {
   FakeAreaAutocomplete,
   FakePlaceProvider,
   FakePush,
+  FakeQueueStats,
   FakeSheets,
   FakeStorage,
 } from './fake.adapters';

@@ -50,6 +50,7 @@ import {
 import { CMS_UPLOAD_PURPOSES, MAX_UPLOAD_BYTES } from '../../uploads/application/uploads.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
+import { CmsObservabilityService } from '../application/cms-observability.service';
 import { FLAG_ENVIRONMENTS, FLAG_PLATFORMS } from '../../shared/feature-flags';
 import {
   CHECKIN_MODERATION_STATUSES,
@@ -1390,6 +1391,7 @@ export class CmsOpsController {
     private readonly searchAnalyticsService: SearchAnalyticsService,
     private readonly evaluation: RankingEvaluationService,
     private readonly experimentsAdmin: ExperimentsAdminService,
+    private readonly observability: CmsObservabilityService,
   ) {}
 
   @Post('ranking-configs')
@@ -1483,6 +1485,35 @@ export class CmsOpsController {
   @Get('ops/kpis')
   kpis() {
     return this.ops.kpis();
+  }
+
+  /**
+   * BE-CMS-G8 (#247) — the operations view.
+   *
+   * `/health` and `/metrics` already exist and neither is reachable from the
+   * console: the CMS Worker proxies `/v1/*` only, and Prometheus text is not
+   * something a client should parse. Same information, inside the contract,
+   * shaped for a screen.
+   *
+   * `ops_admin` and above. Dependency topology and queue depth describe how
+   * the system is built and where it is weak, which is not editorial data.
+   */
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/health')
+  opsHealth() {
+    return this.observability.health();
+  }
+
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/queues')
+  opsQueues() {
+    return this.observability.queueStats();
+  }
+
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/costs')
+  opsCosts() {
+    return this.observability.costs();
   }
 
   /**

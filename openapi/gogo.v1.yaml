@@ -4723,6 +4723,103 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /cms/ops/health:
+    get:
+      operationId: cmsOpsHealth
+      tags: [cms]
+      summary: 'Ops: dependency health for the console'
+      description: >
+        BE-CMS-G8. `/health` and `/metrics` exist but neither reaches the
+        console — the CMS Worker proxies `/v1/*` only, and Prometheus text is
+        not something a client should parse.
+
+
+        `unknown` is a first-class value, not a fallback. A dependency nobody
+        has checked is not healthy, and reporting it as healthy is how a
+        dashboard becomes the last place to learn about an outage. Provider
+        rows come from the circuit breaker rather than from live calls:
+        probing Google to colour a screen would spend the quota whose
+        exhaustion this view is meant to reveal — so a provider with no
+        traffic yet is absent rather than green.
+
+
+        Cached ~20s server-side. This is a screen, not an alerting path.
+      responses:
+        '200':
+          description: One row per dependency this deployment can say anything about
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [services]
+                properties:
+                  services:
+                    type: array
+                    items: { $ref: '#/components/schemas/CmsServiceHealth' }
+
+  /cms/ops/queues:
+    get:
+      operationId: cmsOpsQueues
+      tags: [cms]
+      summary: 'Ops: background queue depth'
+      description: >
+        The BullMQ queues plus `outbox_events`, the transactional outbox —
+        a queue in every sense that matters here, living in Postgres where
+        BullMQ cannot see it. Omitting it would hide the backlog that actually
+        delays notifications.
+
+
+        A broker that is unreachable contributes no rows rather than rows of
+        zeros; `/cms/ops/health` is where that is reported.
+      responses:
+        '200':
+          description: Queue depths
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [queues]
+                properties:
+                  queues:
+                    type: array
+                    items: { $ref: '#/components/schemas/CmsQueueStats' }
+
+  /cms/ops/costs:
+    get:
+      operationId: cmsOpsCosts
+      tags: [cms]
+      summary: 'Ops: provider cost and quota, where a real source exists'
+      description: >
+        Only providers with a real source appear — a billing API, or a
+        persisted internal counter. A provider with no source is **absent**,
+        never estimated into existence.
+
+
+        **`providers: []` means "no cost source connected", never "nothing was
+        spent".** `sourcesConfigured` says which, so the console can render the
+        difference: a zero and an unknown are different claims, and today only
+        the second is supportable. No billing API is wired up, and the in-process
+        `places_provider_cost_units` counter measures SKU units rather than
+        money and resets on deploy, so it cannot answer "today" or "month to
+        date".
+      responses:
+        '200':
+          description: Cost lines, possibly none
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers, sourcesConfigured]
+                properties:
+                  providers:
+                    type: array
+                    items: { $ref: '#/components/schemas/CmsCostLine' }
+                  sourcesConfigured:
+                    type: boolean
+                    description: >
+                      False when no provider has a usable source. An empty list
+                      with this false must not render as a zero amount.
+
   /cms/ops/kpis:
     get:
       operationId: cmsOpsKpis
@@ -4928,6 +5025,86 @@ components:
             Recorded in the audit log. Mandatory: a row that records what
             changed but not why answers the easy half of the question a
             reviewer is asking.
+
+    CmsServiceHealth:
+      type: object
+      required: [key, status, checkedAt]
+      properties:
+        key:
+          type: string
+          description: >
+            `api`, `db`, `redis`, `worker`, or a provider name discovered from
+            the circuit breaker. Not a closed enum: a provider appears once it
+            has been called, and pinning the list here would mean a new
+            provider silently missing from the view.
+        status:
+          type: string
+          enum: [healthy, degraded, down, unknown]
+          description: >
+            `unknown` is a real answer — nothing has measured this dependency
+            in this process. It is not a synonym for healthy.
+        latencyMs:
+          type: integer
+          description: Present only where the check actually timed something.
+        checkedAt: { type: string, format: date-time }
+        detail:
+          type: string
+          description: Why it is degraded or unknown, in words the console can show.
+
+    CmsQueueStats:
+      type: object
+      required: [name, source, pending, running, failed24h, failed24hTruncated, deadLetter]
+      properties:
+        name: { type: string }
+        source:
+          type: string
+          enum: [bullmq, database]
+          description: Where these numbers came from, so the console can say so.
+        pending: { type: integer, description: Waiting plus delayed. }
+        running: { type: integer }
+        failed24h:
+          type: integer
+          description: >
+            Failures finished in the last 24 hours — computed from job
+            timestamps, not from BullMQ's retained `failed` count, which
+            answers "how many are still on disk" and moves when retention
+            changes.
+        failed24hTruncated:
+          type: boolean
+          description: >
+            True when the scan hit its cap, so `failed24h` is a floor rather
+            than a count. A truncated number that does not say so is what an
+            incident review discovers afterwards.
+        deadLetter:
+          type: integer
+          description: Jobs whose attempts are exhausted; they will not be retried.
+        oldestPendingSeconds:
+          type: [integer, 'null']
+          description: Age of the oldest waiting job. Null when nothing is waiting.
+        workers:
+          type: [integer, 'null']
+          description: >
+            Connected consumers. Null when the backend does not report it —
+            null and 0 are different facts, and zero on a queue with work is
+            the alarm.
+
+    CmsCostLine:
+      type: object
+      required: [key, today, monthToDate, currency, basis]
+      properties:
+        key: { type: string }
+        today: { type: integer, description: Minor units. }
+        monthToDate: { type: integer, description: Minor units. }
+        currency: { type: string }
+        basis:
+          type: string
+          enum: [billed, estimated]
+          description: >
+            Where the number came from. A line never omits this: an estimate
+            and an invoice are different claims about the same provider.
+        quotaUsedRatio:
+          type: number
+          description: 0–1, present only where the provider reports a quota.
 
     CmsAdminPage:
       type: object

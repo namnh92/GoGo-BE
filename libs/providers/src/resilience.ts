@@ -10,8 +10,46 @@ export type ResilienceOptions = {
   breakerCooldownMs: number;
 };
 
-type BreakerState = { consecutiveFailures: number; openedAt: number | null };
+type BreakerState = {
+  consecutiveFailures: number;
+  openedAt: number | null;
+  /** When a call through this breaker last succeeded, and last failed. */
+  lastSuccessAt: number | null;
+  lastFailureAt: number | null;
+};
 const breakers = new Map<string, BreakerState>();
+
+/** What the breaker knows about one dependency, for #247's health view. */
+export type BreakerSnapshot = {
+  name: string;
+  open: boolean;
+  consecutiveFailures: number;
+  lastSuccessAt: number | null;
+  lastFailureAt: number | null;
+};
+
+/**
+ * #247 — read-only view of every breaker this process has seen.
+ *
+ * Two limits, both of which the health endpoint has to state rather than
+ * paper over:
+ *
+ * - **Per process.** The map is module state, so an API replica knows only its
+ *   own calls and nothing about the worker's or another replica's.
+ * - **Traffic, not liveness.** A dependency nobody has called has no entry —
+ *   which is `unknown`, not `healthy`. Reporting an untested provider as
+ *   healthy is how a dashboard ends up being the last thing to notice an
+ *   outage.
+ */
+export function breakerSnapshots(): BreakerSnapshot[] {
+  return [...breakers.entries()].map(([name, state]) => ({
+    name,
+    open: state.openedAt !== null,
+    consecutiveFailures: state.consecutiveFailures,
+    lastSuccessAt: state.lastSuccessAt,
+    lastFailureAt: state.lastFailureAt,
+  }));
+}
 
 function jitteredBackoff(attempt: number): number {
   return Math.min(1000, 100 * 2 ** attempt) * (0.5 + Math.random() * 0.5);
@@ -33,7 +71,12 @@ export async function withResilience<T>(
   options: ResilienceOptions,
   fn: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
-  const state = breakers.get(options.name) ?? { consecutiveFailures: 0, openedAt: null };
+  const state = breakers.get(options.name) ?? {
+    consecutiveFailures: 0,
+    openedAt: null,
+    lastSuccessAt: null,
+    lastFailureAt: null,
+  };
   breakers.set(options.name, state);
 
   if (state.openedAt !== null) {
@@ -51,6 +94,7 @@ export async function withResilience<T>(
       const result = await fn(controller.signal);
       state.consecutiveFailures = 0;
       state.openedAt = null;
+      state.lastSuccessAt = Date.now();
       return result;
     } catch (err) {
       // Quota exhaustion is a budget decision, not a transient fault: retrying
@@ -58,6 +102,7 @@ export async function withResilience<T>(
       if (err instanceof ProviderQuotaExceededError) throw err;
       lastError = err;
       state.consecutiveFailures += 1;
+      state.lastFailureAt = Date.now();
       if (state.consecutiveFailures >= options.breakerThreshold) {
         state.openedAt = Date.now();
       }
