@@ -9,7 +9,6 @@ export {
   FakeAreaAutocomplete,
   FakePlaceProvider,
   FakePush,
-  FakeQueueStats,
   FakeSheets,
   FakeStorage,
 } from './fake.adapters';

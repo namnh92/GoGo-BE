@@ -218,6 +218,13 @@
       "when": 1787837552888,
       "tag": "0030_privacy_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1788185958649,
+      "tag": "0031_worker_heartbeats",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,3 @@
-import type { QueueStats, QueueStatsPort } from './ports';
 import { ProviderQuotaExceededError, ProviderUnavailableError, SheetAccessError } from './ports';
 import type {
   AreaAutocompletePort,
@@ -153,13 +152,3 @@ export class FakeSheets implements SheetsPort {
  * fabricates a backlog teaches a dashboard test to pass against numbers no
  * deployment will ever produce.
  */
-export class FakeQueueStats implements QueueStatsPort {
-  /** No broker behind this. Anything derived from Redis stays `unknown`. */
-  readonly backend = 'none' as const;
-
-  constructor(private readonly queues: QueueStats[] = []) {}
-
-  async list(): Promise<QueueStats[]> {
-    return this.queues.map((q) => ({ ...q }));
-  }
-}

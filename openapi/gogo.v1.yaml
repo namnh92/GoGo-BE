@@ -5471,10 +5471,10 @@ paths:
       tags: [cms]
       summary: 'Ops: background queue depth'
       description: >
-        The BullMQ queues plus `outbox_events`, the transactional outbox —
-        a queue in every sense that matters here, living in Postgres where
-        BullMQ cannot see it. Omitting it would hide the backlog that actually
-        delays notifications.
+        `outbox_events`, the transactional outbox — a queue in every sense
+        that matters here, living in Postgres. It is the only row now: the
+        worker stopped using a broker (GoGo-BE#262), so there are no broker
+        queues left to report.
 
 
         A broker that is unreachable contributes no rows rather than rows of
@@ -5773,10 +5773,9 @@ components:
         failed24h:
           type: integer
           description: >
-            Failures finished in the last 24 hours — computed from job
-            timestamps, not from BullMQ's retained `failed` count, which
-            answers "how many are still on disk" and moves when retention
-            changes.
+            Failures finished in the last 24 hours, computed from
+            timestamps — not from a retained failure count, which answers
+            "how many are still on disk" and moves when retention changes.
         failed24hTruncated:
           type: boolean
           description: >

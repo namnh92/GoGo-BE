@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { createDb } from '@gogo/database';
 import {
   CampaignDispatcher,
@@ -43,6 +44,12 @@ const pollIntervalMs = (name: string, fallback: number): number => {
 const OUTBOX_POLL_MS = pollIntervalMs('OUTBOX_POLL_MS', 5000);
 const INGEST_POLL_MS = pollIntervalMs('INGEST_POLL_MS', 5000);
 const PRIVACY_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/**
+ * How often this process says it is alive. Its own job, on its own cadence:
+ * tying it to a business tick would make "worker alive" mean "outbox tick
+ * ran", and those stop being the same thing the day the outbox tick hangs.
+ */
+const HEARTBEAT_INTERVAL_MS = 60_000;
 
 /**
  * Dead-man-switch heartbeats (healthchecks.io style): ping ONLY after a
@@ -81,6 +88,10 @@ async function bootstrap(): Promise<void> {
   }
 
   const { db, pool } = createDb(databaseUrl);
+  // The container id under compose, the machine name elsewhere. Stable for the
+  // life of the process, which is what makes one row per process work.
+  const WORKER_ID = process.env.HOSTNAME || os.hostname();
+  const STARTED_AT = new Date();
   const metrics = new LogMetrics(logger);
   // Real push provider lands with credentials (GoGo-BE#60); fake logs sends.
   const push = new FakePush();
@@ -149,6 +160,18 @@ async function bootstrap(): Promise<void> {
             );
           }
           await heartbeat(process.env.HEARTBEAT_URL_PRIVACY, 0);
+        },
+      },
+      {
+        name: 'gogo:worker:heartbeat',
+        schedule: { everyMs: HEARTBEAT_INTERVAL_MS },
+        run: async () => {
+          await pool.query(
+            `insert into worker_heartbeats (worker_id, started_at, last_seen_at)
+             values ($1, $2, now())
+             on conflict (worker_id) do update set last_seen_at = now()`,
+            [WORKER_ID, STARTED_AT],
+          );
         },
       },
     ],
