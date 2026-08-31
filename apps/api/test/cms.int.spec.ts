@@ -1484,6 +1484,206 @@ describe('plan templates (BE-CMS-G4b #223)', () => {
   });
 });
 
+/**
+ * BE-CMS-G4d (#225) — Trust & Safety rule definitions. Closed conditions, no
+ * rule builder, no expression language.
+ */
+describe('trust & safety rules (BE-CMS-G4d #225)', () => {
+  let ops: { id: string; token: string };
+  let moderator: { id: string; token: string };
+  const suffix = () => Math.random().toString(36).slice(2, 8);
+
+  beforeAll(async () => {
+    ops = await createAdmin('ts225@gogo.local', 'ops_admin');
+    moderator = await createAdmin('ts225-mod@gogo.local', 'moderator');
+  });
+
+  const post = (payload: unknown, token = ops.token) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/safety-rules',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: payload as object,
+    });
+  const patch = (path: string, payload: unknown, token = ops.token) =>
+    api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/safety-rules/${path}`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: payload as object,
+    });
+  const get = (path = '', token = ops.token) =>
+    api().inject({ method: 'GET', url: `/v1/cms/safety-rules${path}`, headers: auth(token) });
+
+  const blockedWords = (extra: Record<string, unknown> = {}) => ({
+    name: `Chặn từ khoá ${suffix()}`,
+    ruleType: 'blocked_words',
+    trigger: 'review_created',
+    conditions: { terms: ['spam', 'lừa đảo'] },
+    action: 'auto_hide',
+    severity: 'medium',
+    reasonCode: 'blocked_word_match',
+    ...extra,
+  });
+
+  it('stores a rule with its conditions normalized and its defaults filled in', async () => {
+    const res = await post(blockedWords());
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.status).toBe('draft');
+    expect(body.priority).toBe(100);
+    expect(body.conditions).toEqual({
+      terms: ['spam', 'lừa đảo'],
+      matchMode: 'substring',
+      caseSensitive: false,
+    });
+    expect(body.reasonCode).toBe('blocked_word_match');
+    expect(body.createdBy.id).toBe(ops.id);
+  });
+
+  it('refuses conditions that do not fit the rule type, and anything expression-shaped', async () => {
+    const wrongShape = await post(blockedWords({ conditions: { minReports: 3 } }));
+    expect(wrongShape.statusCode).toBe(400);
+    expect(wrongShape.json().code).toBe('INVALID_RULE_CONDITIONS');
+
+    // The whole point of the closed schema: no DSL reaches the database.
+    for (const conditions of [
+      { terms: ['x'], expression: 'user.reports > 3' },
+      { terms: ['x'], script: 'return true' },
+      { terms: ['x'], query: 'select 1' },
+    ]) {
+      const res = await post(blockedWords({ conditions }));
+      expect(res.statusCode, JSON.stringify(conditions)).toBe(400);
+      expect(res.json().code).toBe('INVALID_RULE_CONDITIONS');
+      expect(res.json().field_errors[0].field).toMatch(/^conditions/);
+    }
+
+    const emptyTerms = await post(blockedWords({ conditions: { terms: [] } }));
+    expect(emptyTerms.statusCode).toBe(400);
+  });
+
+  it('refuses an action or trigger the rule type cannot support', async () => {
+    const badAction = await post(blockedWords({ action: 'suspend_user', severity: 'critical' }));
+    expect(badAction.statusCode).toBe(400);
+    expect(badAction.json().code).toBe('ACTION_NOT_ALLOWED');
+
+    const badTrigger = await post(blockedWords({ trigger: 'user_registered' }));
+    expect(badTrigger.statusCode).toBe(400);
+    expect(badTrigger.json().code).toBe('TRIGGER_NOT_ALLOWED');
+  });
+
+  it('will not let a low-severity rule suspend accounts on its own', async () => {
+    const low = await post({
+      name: `Lạm dụng ${suffix()}`,
+      ruleType: 'user_abuse',
+      trigger: 'report_created',
+      conditions: { maxReportsAgainstUser: 5 },
+      action: 'suspend_user',
+      severity: 'low',
+      reasonCode: 'user_abuse_threshold',
+    });
+    expect(low.statusCode).toBe(400);
+    expect(low.json().code).toBe('SEVERITY_TOO_LOW');
+
+    const high = await post({
+      name: `Lạm dụng ${suffix()}`,
+      ruleType: 'user_abuse',
+      trigger: 'report_created',
+      conditions: { maxReportsAgainstUser: 5, upheldOnly: true },
+      action: 'suspend_user',
+      severity: 'high',
+      reasonCode: 'user_abuse_threshold',
+    });
+    expect(high.statusCode).toBe(201);
+    expect(high.json().action).toBe('suspend_user');
+  });
+
+  it('requires a machine-readable reason code for whatever it does to someone', async () => {
+    expect((await post(blockedWords({ reasonCode: 'Không hợp lệ' }))).statusCode).toBe(400);
+    expect((await post(blockedWords({ reasonCode: 'AB' }))).statusCode).toBe(400);
+    expect((await post(blockedWords({ reasonCode: 'ok_code_1' }))).statusCode).toBe(201);
+  });
+
+  it('revalidates the whole rule on edit, since one field can invalidate another', async () => {
+    const id = (await post(blockedWords())).json().id;
+
+    // blocked_words cannot suspend, whatever the severity.
+    const escalate = await patch(id, { action: 'suspend_user', severity: 'critical' });
+    expect(escalate.statusCode).toBe(400);
+    expect(escalate.json().code).toBe('ACTION_NOT_ALLOWED');
+
+    const ok = await patch(id, { action: 'flag_for_review', priority: 5 });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().action).toBe('flag_for_review');
+    expect(ok.json().priority).toBe(5);
+  });
+
+  it('audits creation, edit and activation with the reason code attached', async () => {
+    const rule = (await post(blockedWords())).json();
+    await patch(`${rule.id}/status`, { status: 'active' });
+    await patch(`${rule.id}/status`, { status: 'disabled' });
+
+    const audit = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/audit?resourceType=safety_rule&resourceId=${rule.id}&limit=10`,
+      headers: auth(ops.token),
+    });
+    expect(audit.statusCode).toBe(200);
+    const actions = audit.json().items.map((e: { action: string }) => e.action);
+    expect(actions).toContain('safety_rule.created');
+    expect(actions).toContain('safety_rule.status_changed');
+
+    const created = audit
+      .json()
+      .items.find((e: { action: string }) => e.action === 'safety_rule.created');
+    expect(created.diff.reasonCode).toBe('blocked_word_match');
+    expect(created.diff.conditions.terms).toContain('spam');
+
+    const activation = audit
+      .json()
+      .items.filter((e: { action: string }) => e.action === 'safety_rule.status_changed');
+    // Both directions are recorded: disabling a rule is as consequential as
+    // enabling one.
+    expect(activation.map((e: { diff: { after: string } }) => e.diff.after).sort()).toEqual([
+      'active',
+      'disabled',
+    ]);
+  });
+
+  it('filters and pages the list', async () => {
+    const reasonCode = `probe_${suffix()}`;
+    for (let i = 0; i < 3; i += 1) await post(blockedWords({ reasonCode }));
+
+    const byReason = await get(`?q=${reasonCode}`);
+    expect(byReason.json().totalCount).toBe(3);
+
+    const firstPage = await get(`?q=${reasonCode}&limit=2`);
+    expect(firstPage.json().items).toHaveLength(2);
+    const secondPage = await get(
+      `?q=${reasonCode}&limit=2&cursor=${encodeURIComponent(firstPage.json().nextCursor)}`,
+    );
+    expect(secondPage.json().items).toHaveLength(1);
+    expect(secondPage.json().nextCursor).toBeNull();
+
+    expect((await get('?ruleType=rate_limit&status=active')).json().totalCount).toBe(0);
+  });
+
+  it('refuses a duplicate rule name', async () => {
+    const name = `Quy tắc ${suffix()}`;
+    expect((await post(blockedWords({ name }))).statusCode).toBe(201);
+    const again = await post(blockedWords({ name }));
+    expect(again.statusCode).toBe(409);
+    expect(again.json().code).toBe('RULE_NAME_TAKEN');
+  });
+
+  it('is ops-only in both directions — reads do not climb (BE-IMP-008)', async () => {
+    expect((await post(blockedWords(), moderator.token)).statusCode).toBe(403);
+    expect((await get('', moderator.token)).statusCode).toBe(403);
+  });
+});
+
 describe('ops KPIs (CMS-010)', () => {
   it('KPIs endpoint aggregates health metrics (FR-CMS-010)', async () => {
     const ops = await createAdmin('ops4@gogo.local', 'ops_admin');

@@ -302,3 +302,73 @@ export const experiments = pgTable('experiments', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ------------------------------------------------------------ trust & safety
+
+export const safetyRuleType = pgEnum('safety_rule_type', [
+  'spam',
+  'abusive_content',
+  'blocked_words',
+  'review_abuse',
+  'user_abuse',
+  'repeated_reports',
+  'rate_limit',
+]);
+export const safetyRuleTrigger = pgEnum('safety_rule_trigger', [
+  'review_created',
+  'review_updated',
+  'report_created',
+  'checkin_created',
+  'place_submitted',
+  'user_registered',
+]);
+export const safetyRuleAction = pgEnum('safety_rule_action', [
+  'flag_for_review',
+  'auto_hide',
+  'require_moderation',
+  'suspend_user',
+  'block_action',
+]);
+export const safetyRuleSeverity = pgEnum('safety_rule_severity', [
+  'low',
+  'medium',
+  'high',
+  'critical',
+]);
+export const safetyRuleStatus = pgEnum('safety_rule_status', ['draft', 'active', 'disabled']);
+
+/**
+ * BE-CMS-G4d (#225) — Trust & Safety rule definitions.
+ *
+ * `conditions` is jsonb, but the shape it may hold is closed and enumerated per
+ * rule type in `cms/domain/safety-rule-conditions.ts` and validated on every
+ * write. There is no expression language here and nothing is evaluated as
+ * code: a free-form condition DSL is how a console write turns into remote
+ * code execution.
+ */
+export const safetyRules = pgTable(
+  'safety_rules',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    description: text('description'),
+    ruleType: safetyRuleType('rule_type').notNull(),
+    trigger: safetyRuleTrigger('trigger').notNull(),
+    conditions: jsonb('conditions').notNull().default({}),
+    action: safetyRuleAction('action').notNull(),
+    severity: safetyRuleSeverity('severity').notNull().default('medium'),
+    status: safetyRuleStatus('status').notNull().default('draft'),
+    /** Lower runs first, so two matching rules resolve the same way every time. */
+    priority: integer('priority').notNull().default(100),
+    /** Stamped on every decision the rule causes, so a person can trace it. */
+    reasonCode: text('reason_code').notNull(),
+    createdByAdminId: uuid('created_by_admin_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('safety_rules_name_unique').on(t.name),
+    index('safety_rules_active_idx').on(t.trigger, t.priority, t.id),
+    index('safety_rules_list_idx').on(t.createdAt, t.id),
+  ],
+);
