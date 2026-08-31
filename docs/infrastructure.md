@@ -204,7 +204,7 @@ một chỗ: `.env.prod` trên VPS (chmod 600) + GitHub Actions secrets nếu CI
 
 | #   | Key                 | Slot chờ (đã có trong `.env.example`)                                               | Ghi chú bảo mật                                                                                                 |
 | --- | ------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| 1   | Google Maps API key | `GOOGLE_MAPS_API_KEY`                                                               | Restrict theo IP VPS; enable đúng "Places API (New)"; budget alert $10                                          |
+| 1   | Google API keys, một key mỗi API | `GOOGLE_PLACES_API_KEY` / `GOOGLE_ROUTES_API_KEY` / `GOOGLE_SHEETS_API_KEY`   | Mỗi key restrict đúng một API + IP VPS; budget alert riêng từng key. Không key nào fallback cho key nào          |
 | 2   | R2 S3 token         | `R2_ACCOUNT_ID/ACCESS_KEY_ID/SECRET_ACCESS_KEY/R2_BUCKET/R2_BACKUP_BUCKET`          | Token scope đúng 2 bucket; bucket backup riêng                                                                  |
 | 3   | Sentry DSN          | `SENTRY_DSN`                                                                        | DSN không phải secret nghiêm ngặt nhưng vẫn để .env                                                             |
 | 4   | OneSignal           | `ONESIGNAL_APP_ID`, `ONESIGNAL_REST_API_KEY`, `ONESIGNAL_IDENTITY_VERIFICATION_KEY` | REST key chỉ worker dùng. APNs `.p8` và FCM V1 nằm **trong OneSignal app**, không đi qua BE — xem GoGo-Infra#13 |

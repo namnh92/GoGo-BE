@@ -17,7 +17,7 @@ const RESILIENCE = {
 
 /**
  * Google Places adapter (ADR-0004). Key stays server-side; attribution and
- * cache windows follow FR-PLACE-006. Only exercised when GOOGLE_MAPS_API_KEY
+ * cache windows follow FR-PLACE-006. Only exercised when GOOGLE_PLACES_API_KEY
  * is configured — CI and dev use the fakes.
  */
 export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompletePort {
