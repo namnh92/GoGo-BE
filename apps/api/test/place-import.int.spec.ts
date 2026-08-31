@@ -558,11 +558,46 @@ describe('PI-BE-019 — explicit column mapping is strict', () => {
     expect(res.statusCode).toBe(201);
   });
 
-  it('rejects a value no shipped client ever sent', async () => {
+  it('accepts an unknown value and leaves its column unmapped', async () => {
+    const editor = await createAdmin('mapping-unknown@gogo.local', 'editor');
+    sheets.seed('4MappingUnknownMappingUnkno01234567', 'HCM', [
+      ['Tên địa điểm', 'category', 'city'],
+      ['Quán A', 'cafe', 'Hồ Chí Minh'],
+    ]);
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: '4MappingUnknownMappingUnkno01234567',
+        sheets: ['HCM'],
+        mode: 'dry_run',
+        mapping: { 'Tên địa điểm': 'placeName' },
+      },
+    });
+
+    // `/v1` answered 200 for any string here, and still does.
+    expect(res.statusCode).toBe(201);
+    // `Tên địa điểm` would auto-detect to `name`; it must not, because the
+    // operator named the column and got it wrong.
+    expect(res.json().unmappedHeaders).toContain('HCM:Tên địa điểm');
+
+    const rows = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${res.json().id}/rows`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    expect(rows.json().items[0].normalized.name).toBeNull();
+  });
+
+  it('still refuses a mapping that is not a JSON object of strings', async () => {
     const editor = await createAdmin('mapping-bad-file@gogo.local', 'editor');
     const body = multipart(
-      { mode: 'dry_run', mapping: JSON.stringify({ name: 'gmapsLink' }) },
-      { name: 'mapping.csv', content: csv(['M-1,Quán A,Hồ Chí Minh,Quận 1,,cafe,,,']) },
+      { mode: 'dry_run', mapping: '{not json' },
+      { name: 'mapping3.csv', content: csv(['M-3,Quán A,Hồ Chí Minh,Quận 1,,cafe,,,']) },
     );
 
     const res = await api().inject({
@@ -573,9 +608,9 @@ describe('PI-BE-019 — explicit column mapping is strict', () => {
       payload: body.payload,
     });
 
-    // The only behavioural change: a typo cannot silently do nothing.
+    // Unchanged from `/v1`: the shape was always enforced.
     expect(res.statusCode).toBe(400);
-    expect(res.json().code).toBe('MAPPING_FIELD_UNKNOWN');
+    expect(res.json().code).toBe('MAPPING_INVALID');
   });
 
   it('still reports malformed JSON as a different mistake', async () => {
