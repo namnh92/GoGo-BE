@@ -2914,12 +2914,185 @@ paths:
   /cms/moderation:
     get:
       operationId: cmsModerationQueue
+      deprecated: true
       tags: [cms]
       summary: 'Moderator: pending reviews, reports, check-ins and community places'
+      description: >
+        Superseded by `/cms/moderation/counts` and the per-type queues below.
+
+
+        This returns four arrays that share one `limit`, with no filter and no
+        total, so the console could only filter the page it had already been
+        handed and the sidebar badge had to add the four array lengths together
+        — a number that stops being true as soon as a queue is longer than
+        `limit`. Kept working because the console ships against it today.
       parameters:
         - { name: limit, in: query, schema: { type: integer, maximum: 200, default: 50 } }
       responses:
         '200': { description: Unified queue }
+
+  /cms/moderation/counts:
+    get:
+      operationId: cmsModerationCounts
+      tags: [cms]
+      summary: 'Moderator: how much is actually waiting, per queue'
+      description: >
+        The number behind the sidebar badge. Counted in the database over the
+        whole backlog, so it does not change with the page size the console
+        happens to ask for.
+      responses:
+        '200':
+          description: Pending counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsModerationCounts' }
+
+  /cms/moderation/reviews:
+    get:
+      operationId: cmsListModerationReviews
+      tags: [cms]
+      summary: 'Moderator: review queue, filtered and cursor-paged'
+      description: >
+        Keyset pagination on `(createdAt, id)`, newest first: the queue is
+        written to by users while a moderator reads it, so an offset page would
+        repeat rows that shifted down and skip rows that shifted up.
+
+
+        `totalCount` is the size of the filtered set, not of the page — it is
+        what the pager needs and what the console previously had to guess.
+
+
+        The author's display name is returned because moderating text means
+        knowing who wrote it and whether one account is filling the queue.
+        Email and phone are not part of that judgement and are never selected.
+      parameters:
+        - name: status
+          in: query
+          description: Defaults to `pending` — the work queue.
+          schema:
+            type: string
+            enum: [pending, published, rejected, removed, hidden]
+        - { name: rating, in: query, schema: { type: integer, minimum: 1, maximum: 5 } }
+        - name: reported
+          in: query
+          description: Reviews with (or without) an undecided report pointing at them.
+          schema: { type: boolean }
+        - { name: placeId, in: query, schema: { type: string, format: uuid } }
+        - { name: userId, in: query, schema: { type: string, format: uuid } }
+        - { name: dateFrom, in: query, schema: { type: string, format: date-time } }
+        - name: dateTo
+          in: query
+          description: Exclusive, so consecutive day filters tile without double-counting.
+          schema: { type: string, format: date-time }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Reviews, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsModerationReviewPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /cms/moderation/reports:
+    get:
+      operationId: cmsListModerationReports
+      tags: [cms]
+      summary: 'Moderator: report queue, filtered and cursor-paged'
+      description: >
+        `reporterKind` says whether a report came from a signed-in user, a guest
+        or neither. The guest session id itself is an internal handle and is not
+        returned: that a guest reported is the whole of the fact a moderator
+        needs.
+      parameters:
+        - name: status
+          in: query
+          description: Defaults to `open`.
+          schema: { type: string, enum: [open, actioned, dismissed] }
+        - { name: targetType, in: query, schema: { type: string, enum: [place, review, member] } }
+        - { name: targetId, in: query, schema: { type: string, format: uuid } }
+        - { name: reasonCode, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: dateFrom, in: query, schema: { type: string, format: date-time } }
+        - { name: dateTo, in: query, schema: { type: string, format: date-time } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Reports, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsModerationReportPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /cms/moderation/checkins:
+    get:
+      operationId: cmsListModerationCheckins
+      tags: [cms]
+      summary: 'Moderator: check-in queue, filtered and cursor-paged'
+      parameters:
+        - name: status
+          in: query
+          description: Defaults to `pending`.
+          schema: { type: string, enum: [pending, approved, rejected] }
+        - { name: rating, in: query, schema: { type: integer, minimum: 1, maximum: 5 } }
+        - name: hasBill
+          in: query
+          description: Check-ins carrying a verified bill (FR-PLAN-009).
+          schema: { type: boolean }
+        - { name: placeId, in: query, schema: { type: string, format: uuid } }
+        - { name: dateFrom, in: query, schema: { type: string, format: date-time } }
+        - { name: dateTo, in: query, schema: { type: string, format: date-time } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Check-ins, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsModerationCheckinPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /cms/moderation/community-places:
+    get:
+      operationId: cmsListModerationCommunityPlaces
+      tags: [cms]
+      summary: 'Moderator: community-submitted places awaiting review'
+      parameters:
+        - {
+            name: q,
+            in: query,
+            description: Accent-insensitive name search,
+            same normalization as consumer search.,
+            schema: { type: string, maxLength: 120 },
+          }
+        - { name: areaKey, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: dateFrom, in: query, schema: { type: string, format: date-time } }
+        - { name: dateTo, in: query, schema: { type: string, format: date-time } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Submitted places, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsCommunityPlacePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
 
   /cms/moderation/reviews/{id}:
     post:
@@ -4369,6 +4542,150 @@ components:
         nextCursor:
           type: [string, 'null']
           description: Keyset cursor over (occurredAt, id); the log is appended to while it is read.
+
+    CmsModerationCounts:
+      type: object
+      required: [reviews, reports, checkins, communityPlaces, total]
+      description: >
+        Counted over the whole backlog, not over a returned page. The console
+        used to sum four array lengths, which was only correct while every queue
+        fitted in one page.
+      properties:
+        reviews: { type: integer, description: Reviews in `pending`. }
+        reports: { type: integer, description: Reports in `open`. }
+        checkins: { type: integer, description: Check-ins in `pending`. }
+        communityPlaces: { type: integer, description: Places in `community_submitted`. }
+        total: { type: integer }
+
+    CmsModerationPageMeta:
+      type: object
+      required: [nextCursor, totalCount]
+      properties:
+        nextCursor:
+          type: [string, 'null']
+          description: >
+            Keyset cursor over (createdAt, id). Null only when there is
+            genuinely nothing more.
+        totalCount:
+          type: integer
+          description: Rows matching the filter, not rows in this page.
+
+    CmsModerationReview:
+      type: object
+      required: [id, status, rating, authorUserId, openReportCount, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, published, rejected, removed, hidden] }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        text: { type: string }
+        placeId: { type: string, format: uuid }
+        placeName: { type: string }
+        planId: { type: string, format: uuid }
+        authorUserId: { type: string, format: uuid }
+        authorDisplayName:
+          type: string
+          description: The name shown on the review. Email and phone are never returned here.
+        openReportCount:
+          type: integer
+          description: Undecided reports pointing at this review.
+        moderatedByAdminId: { type: string, format: uuid }
+        moderationReason: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CmsModerationReviewPage:
+      allOf:
+        - $ref: '#/components/schemas/CmsModerationPageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/CmsModerationReview' }
+
+    CmsModerationReport:
+      type: object
+      required: [id, status, targetType, targetId, reasonCode, reporterKind, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [open, actioned, dismissed] }
+        targetType: { type: string, enum: [place, review, member] }
+        targetId: { type: string, format: uuid }
+        reasonCode: { type: string }
+        note: { type: string }
+        reporterKind:
+          type: string
+          enum: [user, guest, anonymous]
+          description: >
+            Where the report came from. The guest session id is internal and is
+            not returned.
+        reporterUserId: { type: string, format: uuid }
+        decidedByAdminId: { type: string, format: uuid }
+        decisionReason: { type: string }
+        decidedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    CmsModerationReportPage:
+      allOf:
+        - $ref: '#/components/schemas/CmsModerationPageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/CmsModerationReport' }
+
+    CmsModerationCheckin:
+      type: object
+      required: [id, moderation, tags, photoCount, hasBill, planStopId, memberId, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        moderation: { type: string, enum: [pending, approved, rejected] }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        note: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+          description: Stable `checkin_tag` taxonomy keys; labels resolve client-side.
+        photoCount: { type: integer }
+        hasBill:
+          type: boolean
+          description: A bill total is present, which FR-PLAN-009 only allows with its photo.
+        planStopId: { type: string, format: uuid }
+        placeId: { type: string, format: uuid }
+        placeName: { type: string }
+        memberId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+
+    CmsModerationCheckinPage:
+      allOf:
+        - $ref: '#/components/schemas/CmsModerationPageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/CmsModerationCheckin' }
+
+    CmsCommunityPlace:
+      type: object
+      required: [id, name, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        addressText: { type: string }
+        areaKey: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    CmsCommunityPlacePage:
+      allOf:
+        - $ref: '#/components/schemas/CmsModerationPageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/CmsCommunityPlace' }
 
     RoomEvent:
       type: object

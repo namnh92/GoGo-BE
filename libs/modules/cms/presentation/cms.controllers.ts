@@ -13,6 +13,13 @@ import {
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
+import {
+  CHECKIN_MODERATION_STATUSES,
+  ModerationQueueService,
+  REPORT_MODERATION_STATUSES,
+  REPORT_TARGET_TYPES,
+  REVIEW_MODERATION_STATUSES,
+} from '../application/moderation-queue.service';
 import { ExperimentsAdminService } from '../application/experiments-admin.service';
 import { RankingEvaluationService } from '../application/ranking-evaluation.service';
 import { SearchAnalyticsService } from '../application/search-analytics.service';
@@ -418,14 +425,105 @@ const decisionSchema = z.object({
   reason: z.string().trim().min(3).max(500),
 });
 
+/**
+ * BE-CMS-G1 (#219) — filters shared by every moderation queue.
+ *
+ * `dateTo` is exclusive so consecutive day filters tile without dropping or
+ * double-counting the row on the seam.
+ */
+const queuePaging = {
+  dateFrom: z.string().datetime({ offset: true }).optional(),
+  dateTo: z.string().datetime({ offset: true }).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+};
+const bool = z
+  .enum(['true', 'false'])
+  .transform((value) => value === 'true')
+  .optional();
+
+const reviewQueueQuery = z.object({
+  status: z.enum(REVIEW_MODERATION_STATUSES).optional(),
+  rating: z.coerce.number().int().min(1).max(5).optional(),
+  reported: bool,
+  placeId: z.string().uuid().optional(),
+  userId: z.string().uuid().optional(),
+  ...queuePaging,
+});
+const reportQueueQuery = z.object({
+  status: z.enum(REPORT_MODERATION_STATUSES).optional(),
+  targetType: z.enum(REPORT_TARGET_TYPES).optional(),
+  targetId: z.string().uuid().optional(),
+  reasonCode: z.string().trim().max(64).optional(),
+  ...queuePaging,
+});
+const checkinQueueQuery = z.object({
+  status: z.enum(CHECKIN_MODERATION_STATUSES).optional(),
+  rating: z.coerce.number().int().min(1).max(5).optional(),
+  hasBill: bool,
+  placeId: z.string().uuid().optional(),
+  ...queuePaging,
+});
+const communityPlaceQueueQuery = z.object({
+  q: z.string().trim().min(1).max(120).optional(),
+  areaKey: z.string().trim().max(64).optional(),
+  ...queuePaging,
+});
+
 @RequireRole('moderator')
 @Controller('cms/moderation')
 export class CmsModerationController {
-  constructor(private readonly ops: CmsOpsService) {}
+  constructor(
+    private readonly ops: CmsOpsService,
+    private readonly queues: ModerationQueueService,
+  ) {}
 
+  /**
+   * Superseded by the per-queue reads below (#219). Kept because the console
+   * ships against it today: four unfiltered arrays sharing one `limit`, with
+   * no total, so the badge had to add the array lengths together and was
+   * wrong for any backlog longer than a page.
+   *
+   * @deprecated Use `/cms/moderation/counts` and the per-type queues.
+   */
   @Get()
   queue(@Query('limit') limit?: string) {
     return this.ops.moderationQueue(Math.min(Number(limit) || 50, 200));
+  }
+
+  /** The sidebar badge: what is waiting, not what this page happens to hold. */
+  @Get('counts')
+  counts() {
+    return this.queues.counts();
+  }
+
+  @Get('reviews')
+  listReviews(
+    @Query(new ZodValidationPipe(reviewQueueQuery)) query: z.infer<typeof reviewQueueQuery>,
+  ) {
+    return this.queues.reviews(query);
+  }
+
+  @Get('reports')
+  listReports(
+    @Query(new ZodValidationPipe(reportQueueQuery)) query: z.infer<typeof reportQueueQuery>,
+  ) {
+    return this.queues.reports(query);
+  }
+
+  @Get('checkins')
+  listCheckins(
+    @Query(new ZodValidationPipe(checkinQueueQuery)) query: z.infer<typeof checkinQueueQuery>,
+  ) {
+    return this.queues.checkins(query);
+  }
+
+  @Get('community-places')
+  listCommunityPlaces(
+    @Query(new ZodValidationPipe(communityPlaceQueueQuery))
+    query: z.infer<typeof communityPlaceQueueQuery>,
+  ) {
+    return this.queues.communityPlaces(query);
   }
 
   @Post('reviews/:id')

@@ -357,6 +357,317 @@ describe('moderation queue (CMS-007, FR-CMS-005)', () => {
   });
 });
 
+/**
+ * BE-CMS-G1 (#219) — the queue reads the console binds to: server-side
+ * filters, keyset paging and a total that is the size of the backlog rather
+ * than the size of the page.
+ */
+describe('moderation queues: filter, count, cursor paging (BE-CMS-G1 #219)', () => {
+  let moderatorToken: string;
+  let editorToken: string;
+  let placeId: string;
+  let otherPlaceId: string;
+  let authorId: string;
+  let reviewIds: string[] = [];
+  let reportedReviewId: string;
+
+  const at = (minutes: number) => new Date(Date.UTC(2026, 0, 10, 12, 0, 0) + minutes * 60_000);
+
+  beforeAll(async () => {
+    moderatorToken = (await createAdmin('modq@gogo.local', 'moderator')).token;
+    editorToken = (await createAdmin('modq-editor@gogo.local', 'editor')).token;
+
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Quán Cà Phê Hàng Đợi',
+        nameNormalized: 'quan ca phe hang doi',
+        status: 'published',
+        geom: { x: 106.7, y: 10.77 },
+      })
+      .returning();
+    placeId = place!.id;
+    const [other] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Elsewhere',
+        nameNormalized: 'elsewhere',
+        status: 'published',
+        geom: { x: 106.71, y: 10.78 },
+      })
+      .returning();
+    otherPlaceId = other!.id;
+
+    const [author] = await db
+      .insert(schema.users)
+      .values({ email: 'queue-author@gogo.vn', displayName: 'Người Đánh Giá' })
+      .returning();
+    authorId = author!.id;
+
+    // Five pending reviews one minute apart, so the keyset order is known.
+    const rows = await db
+      .insert(schema.reviews)
+      .values(
+        [1, 2, 3, 4, 5].map((n) => ({
+          userId: authorId,
+          placeId,
+          rating: ((n % 5) + 1) as number,
+          text: `đánh giá ${n}`,
+          createdAt: at(n),
+          updatedAt: at(n),
+        })),
+      )
+      .returning();
+    reviewIds = rows.map((r) => r.id);
+
+    // One of them is reported, and one already published — neither should show
+    // up in the default pending queue by accident.
+    reportedReviewId = reviewIds[0]!;
+    await db.insert(schema.reports).values({
+      reporterUserId: authorId,
+      targetType: 'review',
+      targetId: reportedReviewId,
+      reasonCode: 'spam',
+      note: 'trùng lặp',
+      createdAt: at(10),
+    });
+  });
+
+  const q = (url: string, token = moderatorToken) =>
+    api().inject({ method: 'GET', url, headers: auth(token) });
+
+  it('counts the backlog, not the page', async () => {
+    const res = await q('/v1/cms/moderation/counts');
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    const [{ n }] = (
+      await db.execute(sql`select count(*)::int as n from reviews where status = 'pending'`)
+    ).rows as [{ n: number }];
+    expect(body.reviews).toBe(n);
+    expect(body.reviews).toBeGreaterThanOrEqual(5);
+    expect(body.total).toBe(body.reviews + body.reports + body.checkins + body.communityPlaces);
+  });
+
+  it('filters reviews server-side by place, author and rating', async () => {
+    const byPlace = await q(`/v1/cms/moderation/reviews?placeId=${placeId}`);
+    expect(byPlace.statusCode).toBe(200);
+    expect(byPlace.json().items).toHaveLength(5);
+    expect(byPlace.json().totalCount).toBe(5);
+
+    const elsewhere = await q(`/v1/cms/moderation/reviews?placeId=${otherPlaceId}`);
+    expect(elsewhere.json().items).toEqual([]);
+    expect(elsewhere.json().totalCount).toBe(0);
+    expect(elsewhere.json().nextCursor).toBeNull();
+
+    const byRating = await q(`/v1/cms/moderation/reviews?placeId=${placeId}&rating=1`);
+    expect(byRating.json().items.every((r: { rating: number }) => r.rating === 1)).toBe(true);
+
+    const byAuthor = await q(`/v1/cms/moderation/reviews?userId=${authorId}&placeId=${placeId}`);
+    expect(byAuthor.json().totalCount).toBe(5);
+  });
+
+  it('reports the author by display name and never by email', async () => {
+    const res = await q(`/v1/cms/moderation/reviews?placeId=${placeId}`);
+    const item = res.json().items[0];
+    expect(item.authorDisplayName).toBe('Người Đánh Giá');
+    expect(item.authorUserId).toBe(authorId);
+    expect(JSON.stringify(res.json())).not.toContain('queue-author@gogo.vn');
+  });
+
+  it('`reported` filters on undecided reports, both ways', async () => {
+    const reported = await q(`/v1/cms/moderation/reviews?placeId=${placeId}&reported=true`);
+    expect(reported.json().items.map((r: { id: string }) => r.id)).toEqual([reportedReviewId]);
+    expect(reported.json().items[0].openReportCount).toBe(1);
+
+    const clean = await q(`/v1/cms/moderation/reviews?placeId=${placeId}&reported=false`);
+    expect(clean.json().totalCount).toBe(4);
+    expect(clean.json().items.map((r: { id: string }) => r.id)).not.toContain(reportedReviewId);
+  });
+
+  it('date range is half-open, so consecutive filters tile', async () => {
+    const first = at(1).toISOString();
+    const third = at(3).toISOString();
+    const res = await q(
+      `/v1/cms/moderation/reviews?placeId=${placeId}&dateFrom=${first}&dateTo=${third}`,
+    );
+    // Rows at minute 1 and 2; minute 3 belongs to the next window.
+    expect(res.json().totalCount).toBe(2);
+  });
+
+  it('pages by keyset, newest first, without repeating or skipping a row', async () => {
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 5; page += 1) {
+      const url =
+        `/v1/cms/moderation/reviews?placeId=${placeId}&limit=2` +
+        (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
+      const res = await q(url);
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      // The total is the filtered set on every page, not what is left.
+      expect(body.totalCount).toBe(5);
+      seen.push(...body.items.map((r: { id: string }) => r.id));
+      cursor = body.nextCursor;
+      if (!cursor) break;
+    }
+    expect(cursor).toBeNull();
+    expect(seen).toHaveLength(5);
+    expect(new Set(seen).size).toBe(5);
+    // Newest first: the reviews were written a minute apart, ascending.
+    expect(seen).toEqual([...reviewIds].reverse());
+  });
+
+  it('a row written mid-traversal cannot push a row onto a second page', async () => {
+    const firstPage = await q(`/v1/cms/moderation/reviews?placeId=${placeId}&limit=2`);
+    const cursor = firstPage.json().nextCursor as string;
+
+    // Newer than everything already returned — an offset pager would now show
+    // one of page 1's rows again on page 2.
+    await db.insert(schema.reviews).values({
+      userId: authorId,
+      placeId,
+      rating: 3,
+      text: 'chen ngang',
+      createdAt: at(99),
+      updatedAt: at(99),
+    });
+
+    const secondPage = await q(
+      `/v1/cms/moderation/reviews?placeId=${placeId}&limit=2&cursor=${encodeURIComponent(cursor)}`,
+    );
+    const firstIds = firstPage.json().items.map((r: { id: string }) => r.id);
+    const secondIds = secondPage.json().items.map((r: { id: string }) => r.id);
+    expect(secondIds.filter((id: string) => firstIds.includes(id))).toEqual([]);
+  });
+
+  it('rejects a malformed cursor and an out-of-range filter', async () => {
+    const badCursor = await q(`/v1/cms/moderation/reviews?cursor=not-a-cursor`);
+    expect(badCursor.statusCode).toBe(400);
+    expect(badCursor.json().code).toBe('INVALID_CURSOR');
+
+    expect((await q('/v1/cms/moderation/reviews?rating=9')).statusCode).toBe(400);
+    expect((await q('/v1/cms/moderation/reviews?status=nonsense')).statusCode).toBe(400);
+    expect((await q('/v1/cms/moderation/reviews?limit=500')).statusCode).toBe(400);
+    expect((await q('/v1/cms/moderation/reviews?dateFrom=yesterday')).statusCode).toBe(400);
+  });
+
+  it('reports queue filters by target and reason, and hides the guest session id', async () => {
+    const res = await q(
+      `/v1/cms/moderation/reports?targetType=review&targetId=${reportedReviewId}`,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.json().totalCount).toBe(1);
+    const item = res.json().items[0];
+    expect(item.reasonCode).toBe('spam');
+    expect(item.reporterKind).toBe('user');
+    expect(item).not.toHaveProperty('reporterGuestSessionId');
+
+    const byReason = await q('/v1/cms/moderation/reports?reasonCode=does-not-exist');
+    expect(byReason.json().totalCount).toBe(0);
+  });
+
+  it('community-place queue searches accent-insensitively', async () => {
+    await db.insert(schema.places).values({
+      name: 'Quán Ốc Cộng Đồng',
+      nameNormalized: 'quan oc cong dong',
+      status: 'community_submitted',
+      areaKey: 'q1',
+      geom: { x: 106.7, y: 10.77 },
+    });
+    const res = await q('/v1/cms/moderation/community-places?q=cong dong');
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items.map((p: { name: string }) => p.name)).toContain('Quán Ốc Cộng Đồng');
+
+    const byArea = await q('/v1/cms/moderation/community-places?areaKey=q1');
+    expect(byArea.json().totalCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('check-in queue filters on the verified bill and joins its place', async () => {
+    const [host] = await db
+      .insert(schema.users)
+      .values({ email: 'queue-host@gogo.vn', displayName: 'Host' })
+      .returning();
+    const [room] = await db
+      .insert(schema.rooms)
+      .values({
+        code: 'QUEUE01',
+        type: 'couple',
+        decisionMode: 'match',
+        hostUserId: host!.id,
+      })
+      .returning();
+    const [member] = await db
+      .insert(schema.roomMembers)
+      .values({ roomId: room!.id, userId: host!.id, role: 'host', displayName: 'Host' })
+      .returning();
+    const [plan] = await db
+      .insert(schema.plans)
+      .values({
+        roomId: room!.id,
+        version: 1,
+        constraintVersion: 1,
+        totals: {
+          costMin: 0,
+          costMax: 0,
+          currency: 'VND',
+          durationMinutes: 60,
+          travelDistanceM: 0,
+          overBudget: false,
+          uncertain: false,
+        },
+      })
+      .returning();
+    const [stop] = await db
+      .insert(schema.planStops)
+      .values({ planId: plan!.id, placeId, position: 0, durationMinutes: 60 })
+      .returning();
+    await db.insert(schema.stopCheckins).values({
+      planStopId: stop!.id,
+      memberId: member!.id,
+      rating: 5,
+      note: 'ngon',
+      billTotal: 250_000,
+      billPhotoKey: 'u/user/bill.jpg',
+      createdAt: at(20),
+      updatedAt: at(20),
+    });
+
+    const withBill = await q(`/v1/cms/moderation/checkins?placeId=${placeId}&hasBill=true`);
+    expect(withBill.statusCode).toBe(200);
+    expect(withBill.json().totalCount).toBe(1);
+    const item = withBill.json().items[0];
+    expect(item.hasBill).toBe(true);
+    expect(item.placeName).toBe('Quán Cà Phê Hàng Đợi');
+    expect(item.photoCount).toBe(0);
+
+    const withoutBill = await q(`/v1/cms/moderation/checkins?placeId=${placeId}&hasBill=false`);
+    expect(withoutBill.json().totalCount).toBe(0);
+  });
+
+  it('an editor may read the queues; a consumer token may not', async () => {
+    expect((await q('/v1/cms/moderation/counts', editorToken)).statusCode).toBe(200);
+    expect((await q('/v1/cms/moderation/reviews?limit=1', editorToken)).statusCode).toBe(200);
+
+    const reg = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: ip(),
+      payload: {
+        email: 'queue-outsider@gogo.vn',
+        password: 'sufficiently-long-pw',
+        displayName: 'O',
+      },
+    });
+    const denied = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/moderation/reviews',
+      headers: auth(reg.json().accessToken),
+    });
+    expect(denied.statusCode).toBe(403);
+  });
+});
+
 describe('ops KPIs (CMS-010)', () => {
   it('KPIs endpoint aggregates health metrics (FR-CMS-010)', async () => {
     const ops = await createAdmin('ops4@gogo.local', 'ops_admin');

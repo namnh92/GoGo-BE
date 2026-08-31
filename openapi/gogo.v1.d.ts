@@ -1749,8 +1749,112 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Moderator: pending reviews, reports, check-ins and community places */
+        /**
+         * Moderator: pending reviews, reports, check-ins and community places
+         * @deprecated
+         * @description Superseded by `/cms/moderation/counts` and the per-type queues below.
+         *
+         *     This returns four arrays that share one `limit`, with no filter and no total, so the console could only filter the page it had already been handed and the sidebar badge had to add the four array lengths together — a number that stops being true as soon as a queue is longer than `limit`. Kept working because the console ships against it today.
+         */
         get: operations["cmsModerationQueue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/moderation/counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Moderator: how much is actually waiting, per queue
+         * @description The number behind the sidebar badge. Counted in the database over the whole backlog, so it does not change with the page size the console happens to ask for.
+         */
+        get: operations["cmsModerationCounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/moderation/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Moderator: review queue, filtered and cursor-paged
+         * @description Keyset pagination on `(createdAt, id)`, newest first: the queue is written to by users while a moderator reads it, so an offset page would repeat rows that shifted down and skip rows that shifted up.
+         *
+         *     `totalCount` is the size of the filtered set, not of the page — it is what the pager needs and what the console previously had to guess.
+         *
+         *     The author's display name is returned because moderating text means knowing who wrote it and whether one account is filling the queue. Email and phone are not part of that judgement and are never selected.
+         */
+        get: operations["cmsListModerationReviews"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/moderation/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Moderator: report queue, filtered and cursor-paged
+         * @description `reporterKind` says whether a report came from a signed-in user, a guest or neither. The guest session id itself is an internal handle and is not returned: that a guest reported is the whole of the fact a moderator needs.
+         */
+        get: operations["cmsListModerationReports"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/moderation/checkins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Moderator: check-in queue, filtered and cursor-paged */
+        get: operations["cmsListModerationCheckins"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/moderation/community-places": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Moderator: community-submitted places awaiting review */
+        get: operations["cmsListModerationCommunityPlaces"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2877,6 +2981,119 @@ export interface components {
             items: components["schemas"]["CmsAuditEntry"][];
             /** @description Keyset cursor over (occurredAt, id); the log is appended to while it is read. */
             nextCursor: string | null;
+        };
+        /** @description Counted over the whole backlog, not over a returned page. The console used to sum four array lengths, which was only correct while every queue fitted in one page. */
+        CmsModerationCounts: {
+            /** @description Reviews in `pending`. */
+            reviews: number;
+            /** @description Reports in `open`. */
+            reports: number;
+            /** @description Check-ins in `pending`. */
+            checkins: number;
+            /** @description Places in `community_submitted`. */
+            communityPlaces: number;
+            total: number;
+        };
+        CmsModerationPageMeta: {
+            /** @description Keyset cursor over (createdAt, id). Null only when there is genuinely nothing more. */
+            nextCursor: string | null;
+            /** @description Rows matching the filter, not rows in this page. */
+            totalCount: number;
+        };
+        CmsModerationReview: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            status: "pending" | "published" | "rejected" | "removed" | "hidden";
+            rating: number;
+            text?: string;
+            /** Format: uuid */
+            placeId?: string;
+            placeName?: string;
+            /** Format: uuid */
+            planId?: string;
+            /** Format: uuid */
+            authorUserId: string;
+            /** @description The name shown on the review. Email and phone are never returned here. */
+            authorDisplayName?: string;
+            /** @description Undecided reports pointing at this review. */
+            openReportCount: number;
+            /** Format: uuid */
+            moderatedByAdminId?: string;
+            moderationReason?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CmsModerationReviewPage: components["schemas"]["CmsModerationPageMeta"] & {
+            items: components["schemas"]["CmsModerationReview"][];
+        };
+        CmsModerationReport: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            status: "open" | "actioned" | "dismissed";
+            /** @enum {string} */
+            targetType: "place" | "review" | "member";
+            /** Format: uuid */
+            targetId: string;
+            reasonCode: string;
+            note?: string;
+            /**
+             * @description Where the report came from. The guest session id is internal and is not returned.
+             * @enum {string}
+             */
+            reporterKind: "user" | "guest" | "anonymous";
+            /** Format: uuid */
+            reporterUserId?: string;
+            /** Format: uuid */
+            decidedByAdminId?: string;
+            decisionReason?: string;
+            /** Format: date-time */
+            decidedAt?: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        CmsModerationReportPage: components["schemas"]["CmsModerationPageMeta"] & {
+            items: components["schemas"]["CmsModerationReport"][];
+        };
+        CmsModerationCheckin: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            moderation: "pending" | "approved" | "rejected";
+            rating?: number;
+            note?: string;
+            /** @description Stable `checkin_tag` taxonomy keys; labels resolve client-side. */
+            tags: string[];
+            photoCount: number;
+            /** @description A bill total is present, which FR-PLAN-009 only allows with its photo. */
+            hasBill: boolean;
+            /** Format: uuid */
+            planStopId: string;
+            /** Format: uuid */
+            placeId?: string;
+            placeName?: string;
+            /** Format: uuid */
+            memberId: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        CmsModerationCheckinPage: components["schemas"]["CmsModerationPageMeta"] & {
+            items: components["schemas"]["CmsModerationCheckin"][];
+        };
+        CmsCommunityPlace: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            addressText?: string;
+            areaKey?: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        CmsCommunityPlacePage: components["schemas"]["CmsModerationPageMeta"] & {
+            items: components["schemas"]["CmsCommunityPlace"][];
         };
         /** @description The domain-event envelope from the api-contract rules, unchanged. Field names are snake_case here because that is the event convention, not the REST DTO convention. */
         RoomEvent: {
@@ -6275,6 +6492,152 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    cmsModerationCounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pending counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsModerationCounts"];
+                };
+            };
+        };
+    };
+    cmsListModerationReviews: {
+        parameters: {
+            query?: {
+                /** @description Defaults to `pending` — the work queue. */
+                status?: "pending" | "published" | "rejected" | "removed" | "hidden";
+                rating?: number;
+                /** @description Reviews with (or without) an undecided report pointing at them. */
+                reported?: boolean;
+                placeId?: string;
+                userId?: string;
+                dateFrom?: string;
+                /** @description Exclusive, so consecutive day filters tile without double-counting. */
+                dateTo?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reviews, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsModerationReviewPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsListModerationReports: {
+        parameters: {
+            query?: {
+                /** @description Defaults to `open`. */
+                status?: "open" | "actioned" | "dismissed";
+                targetType?: "place" | "review" | "member";
+                targetId?: string;
+                reasonCode?: string;
+                dateFrom?: string;
+                dateTo?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reports, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsModerationReportPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsListModerationCheckins: {
+        parameters: {
+            query?: {
+                /** @description Defaults to `pending`. */
+                status?: "pending" | "approved" | "rejected";
+                rating?: number;
+                /** @description Check-ins carrying a verified bill (FR-PLAN-009). */
+                hasBill?: boolean;
+                placeId?: string;
+                dateFrom?: string;
+                dateTo?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Check-ins, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsModerationCheckinPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsListModerationCommunityPlaces: {
+        parameters: {
+            query?: {
+                /** @description Accent-insensitive name search */
+                q?: string;
+                areaKey?: string;
+                dateFrom?: string;
+                dateTo?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Submitted places, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsCommunityPlacePage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
         };
     };
     cmsDecideReview: {
