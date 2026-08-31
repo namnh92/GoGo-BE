@@ -9,42 +9,62 @@
  * This does not choose the adapters — the two processes construct different
  * ones and inject them differently. It answers the one question they share:
  * after choosing, is anything pretending?
+ *
+ * TRAVEL_TIME_PROVIDER is reported only when FLAG_ROUTES_API is on. With the
+ * flag off, the straight-line estimate is the product's answer and not a
+ * stand-in, so warning about it would train operators to ignore these lines.
+ * With the flag on and no key, someone asked for real travel times and is
+ * silently getting estimates — which is the same defect as the others here.
  */
 export type FakedProvider = {
   /** Port that ended up bound to a fake. */
   port: string;
-  /** Any one of these, non-empty, would have bound the real adapter. */
-  envVars: readonly string[];
+  /** The one variable that would have bound the real adapter. */
+  envVar: string;
   /** What the fake does instead — the operator-facing consequence. */
   effect: string;
 };
 
 export type ProviderKeys = {
-  GOOGLE_MAPS_API_KEY: string;
+  GOOGLE_PLACES_API_KEY: string;
   GOOGLE_SHEETS_API_KEY: string;
+  GOOGLE_ROUTES_API_KEY: string;
+  /** Routes is opt-in; without the flag its absence is not a fault. */
+  FLAG_ROUTES_API: boolean;
 };
 
 export function fakedProviders(keys: ProviderKeys): FakedProvider[] {
   const faked: FakedProvider[] = [];
 
-  if (!keys.GOOGLE_MAPS_API_KEY) {
+  // One variable per port, because one key per Google API. There used to be a
+  // fallback chain here, and a chain means a warning has to explain which of
+  // several names it wanted — the operator's next question after reading it.
+  if (!keys.GOOGLE_PLACES_API_KEY) {
     faked.push({
       port: 'PLACE_PROVIDER',
-      envVars: ['GOOGLE_MAPS_API_KEY'],
+      envVar: 'GOOGLE_PLACES_API_KEY',
       effect: 'place lookup and resolution answer from a fixed in-memory set',
     });
     faked.push({
       port: 'AREA_AUTOCOMPLETE',
-      envVars: ['GOOGLE_MAPS_API_KEY'],
+      envVar: 'GOOGLE_PLACES_API_KEY',
       effect: 'area suggestions answer from a fixed in-memory set',
     });
   }
 
-  if (!keys.GOOGLE_SHEETS_API_KEY && !keys.GOOGLE_MAPS_API_KEY) {
+  if (!keys.GOOGLE_SHEETS_API_KEY) {
     faked.push({
       port: 'SHEETS_PROVIDER',
-      envVars: ['GOOGLE_SHEETS_API_KEY', 'GOOGLE_MAPS_API_KEY'],
+      envVar: 'GOOGLE_SHEETS_API_KEY',
       effect: 'every CMS Google Sheet import fails with SHEET_PROVIDER_NOT_CONFIGURED',
+    });
+  }
+
+  if (keys.FLAG_ROUTES_API && !keys.GOOGLE_ROUTES_API_KEY) {
+    faked.push({
+      port: 'TRAVEL_TIME_PROVIDER',
+      envVar: 'GOOGLE_ROUTES_API_KEY',
+      effect: 'travel times are straight-line estimates despite FLAG_ROUTES_API being on',
     });
   }
 
@@ -69,7 +89,7 @@ export function warnFakedProviders(
   const faked = fakedProviders(keys);
   for (const provider of faked) {
     warn(
-      { port: provider.port, missing_env: provider.envVars, effect: provider.effect },
+      { port: provider.port, missing_env: provider.envVar, effect: provider.effect },
       'provider not configured — bound to a fake',
     );
   }

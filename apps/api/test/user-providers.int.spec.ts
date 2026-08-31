@@ -50,7 +50,7 @@ beforeAll(async () => {
   process.env.REDIS_URL = 'redis://localhost:6380';
   process.env.NODE_ENV = 'test';
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
-  process.env.GOOGLE_MAPS_API_KEY = ''; // force fakes
+  process.env.GOOGLE_PLACES_API_KEY = ''; // force fakes
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
   // The container is stopped in afterAll; an idle client erroring as the

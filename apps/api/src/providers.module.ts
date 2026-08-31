@@ -41,28 +41,28 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     {
       provide: PLACE_PROVIDER,
       useFactory: (config: AppConfig, metrics: MetricsPort) =>
-        config.GOOGLE_MAPS_API_KEY
-          ? new GooglePlacesAdapter(config.GOOGLE_MAPS_API_KEY, metrics)
+        config.GOOGLE_PLACES_API_KEY
+          ? new GooglePlacesAdapter(config.GOOGLE_PLACES_API_KEY, metrics)
           : new FakePlaceProvider(),
       inject: [APP_CONFIG, METRICS],
     },
     {
       provide: AREA_AUTOCOMPLETE,
       useFactory: (config: AppConfig) =>
-        config.GOOGLE_MAPS_API_KEY
-          ? new GooglePlacesAdapter(config.GOOGLE_MAPS_API_KEY)
+        config.GOOGLE_PLACES_API_KEY
+          ? new GooglePlacesAdapter(config.GOOGLE_PLACES_API_KEY)
           : new FakeAreaAutocomplete(),
       inject: [APP_CONFIG],
     },
     {
-      // PI-BE-012: the Sheets read falls back to the Maps key when no key of
-      // its own is set. PI-BE-021: without either, the fake is bound and every
-      // import fails — exercisable end to end is what it does in a test, not
-      // what it does in a deployed environment. onModuleInit says so out loud.
+      // PI-BE-012: the Sheets read takes its own key and no other. PI-BE-021:
+      // without it the fake is bound and every import fails — exercisable end
+      // to end is what it does in a test, not what it does in a deployed
+      // environment. onModuleInit says so out loud.
       provide: SHEETS_PROVIDER,
       useFactory: (config: AppConfig) =>
-        config.GOOGLE_SHEETS_API_KEY || config.GOOGLE_MAPS_API_KEY
-          ? new GoogleSheetsAdapter(config.GOOGLE_SHEETS_API_KEY || config.GOOGLE_MAPS_API_KEY)
+        config.GOOGLE_SHEETS_API_KEY
+          ? new GoogleSheetsAdapter(config.GOOGLE_SHEETS_API_KEY)
           : new FakeSheets(),
       inject: [APP_CONFIG],
     },
@@ -84,16 +84,14 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       inject: [APP_CONFIG, METRICS_REGISTRY],
     },
     {
-      // ADR-0007: the real adapter is only bound when the flag *and* a key are
-      // present. Everywhere else the straight-line estimate answers, which is
-      // also the fallback path when quota runs out.
+      // ADR-0007: the real adapter is only bound when the flag *and* the Routes
+      // key are present. Everywhere else the straight-line estimate answers,
+      // which is also the fallback path when quota runs out.
       provide: TRAVEL_TIME_PROVIDER,
-      useFactory: (config: AppConfig, metrics: MetricsPort) => {
-        const key = config.GOOGLE_ROUTES_API_KEY || config.GOOGLE_MAPS_API_KEY;
-        return config.FLAG_ROUTES_API && key
-          ? new GoogleRoutesAdapter(key, metrics)
-          : new HaversineTravelTime();
-      },
+      useFactory: (config: AppConfig, metrics: MetricsPort) =>
+        config.FLAG_ROUTES_API && config.GOOGLE_ROUTES_API_KEY
+          ? new GoogleRoutesAdapter(config.GOOGLE_ROUTES_API_KEY, metrics)
+          : new HaversineTravelTime(),
       inject: [APP_CONFIG, METRICS],
     },
     { provide: PUSH_PROVIDER, useClass: FakePush },

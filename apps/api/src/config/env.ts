@@ -166,10 +166,16 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
-    GOOGLE_MAPS_API_KEY: z.string().default(''),
-    /** Optional split key for the Sheets read scope; falls back to the Maps key. */
+    // One key per Google API, and no key covers for another. Each is restricted
+    // to its own API in the console, so a fallback cannot work anyway: a
+    // Places-scoped key sent to Sheets comes back 403 API_KEY_SERVICE_BLOCKED,
+    // which is a worse failure than the missing-credential one it replaced.
+    // Separate keys are also what isolates quota and bounds a leak.
+    /** Places Details/Search/Autocomplete. Server-side only. */
+    GOOGLE_PLACES_API_KEY: z.string().default(''),
+    /** Sheets values API, read by the CMS bulk import only. */
     GOOGLE_SHEETS_API_KEY: z.string().default(''),
-    /** Optional split key for Routes; falls back to the Maps key. */
+    /** Routes API, behind FLAG_ROUTES_API. */
     GOOGLE_ROUTES_API_KEY: z.string().default(''),
     R2_ACCOUNT_ID: z.string().default(''),
     R2_ACCESS_KEY_ID: z.string().default(''),

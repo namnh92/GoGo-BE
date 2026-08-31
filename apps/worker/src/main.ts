@@ -105,20 +105,25 @@ async function bootstrap(): Promise<void> {
   // PI-BE-015: bulk import chunks run here, not in the API process. The tick
   // polls for jobs an admin has started rather than consuming an enqueue, so a
   // start survives an API restart and no message can strand a job.
-  const mapsKey = process.env.GOOGLE_MAPS_API_KEY ?? '';
-  const sheetsKey = process.env.GOOGLE_SHEETS_API_KEY || mapsKey;
+  const placesKey = process.env.GOOGLE_PLACES_API_KEY ?? '';
+  const sheetsKey = process.env.GOOGLE_SHEETS_API_KEY ?? '';
+  const routesKey = process.env.GOOGLE_ROUTES_API_KEY ?? '';
   // PI-BE-021: the worker runs the import chunks, so a missing Sheets key
   // strands jobs here as surely as it rejects them in the API. Same warning,
   // because this process makes the same choice from its own copy of the env.
   warnFakedProviders(
     {
-      GOOGLE_MAPS_API_KEY: mapsKey,
-      GOOGLE_SHEETS_API_KEY: process.env.GOOGLE_SHEETS_API_KEY ?? '',
+      GOOGLE_PLACES_API_KEY: placesKey,
+      GOOGLE_SHEETS_API_KEY: sheetsKey,
+      GOOGLE_ROUTES_API_KEY: routesKey,
+      // The worker binds no travel-time provider, but it reads the same env and
+      // a warn here is what an operator sees when only the worker is restarted.
+      FLAG_ROUTES_API: process.env.FLAG_ROUTES_API === 'true',
     },
     (meta, message) => logger.warn(meta, message),
   );
-  const placeProvider = mapsKey
-    ? new GooglePlacesAdapter(mapsKey, metrics)
+  const placeProvider = placesKey
+    ? new GooglePlacesAdapter(placesKey, metrics)
     : new FakePlaceProvider();
   const imports = new PlaceImportJobService(
     db,

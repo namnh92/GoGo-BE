@@ -119,8 +119,10 @@ polls every 5s for started jobs (`gogo-ingest` scheduler) rather than consuming
 an enqueue, so a start survives an API restart and no lost message can strand a
 job. Heartbeat: `HEARTBEAT_URL_INGEST`.
 
-Without `GOOGLE_MAPS_API_KEY` / `GOOGLE_SHEETS_API_KEY` the fakes are bound and
-the whole flow is exercisable locally — resolve returns seeded places only.
+Without `GOOGLE_PLACES_API_KEY` / `GOOGLE_SHEETS_API_KEY` the fakes are bound
+and the whole flow is exercisable locally — resolve returns seeded places only.
+Each key covers one API and no other; neither stands in for the other, and boot
+logs a warn naming whichever is missing.
 
 ## The only import path
 

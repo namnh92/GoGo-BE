@@ -117,7 +117,9 @@ Not a data error. Rows are intact and the job is waiting.
 
 1. Distinguish key problems from outages: a wrong or expired key fails every
    call, an outage fails some.
-2. Key problems — rotate `GOOGLE_MAPS_API_KEY` from the secret manager and
+2. Key problems — rotate the key for the failing API from the secret manager
+   (`GOOGLE_PLACES_API_KEY`, `GOOGLE_ROUTES_API_KEY` or `GOOGLE_SHEETS_API_KEY`
+   — they are separate, so only one surface is down) and
    restart. The circuit breaker will have opened; it closes on its own after
    the cooldown, so no manual reset.
 3. Outage — nothing to do but wait. Ingestion pauses, search and suggestions

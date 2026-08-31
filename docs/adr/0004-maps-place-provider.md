@@ -11,7 +11,7 @@ GoGo needs place resolution (Google Maps link import), area autocomplete, and ge
 ## Decision
 
 1. **Google Places API is the primary provider** (link resolve, place details, autocomplete) — it is the only provider whose data users share links from (FR-PLACE-001) and has the best Vietnam coverage.
-2. Every provider call goes through interfaces in `libs/providers` (`PlaceProviderPort`, `AreaAutocompletePort`, …) with a **fake implementation** used in tests and whenever `GOOGLE_MAPS_API_KEY` is empty. No domain code imports a provider SDK.
+2. Every provider call goes through interfaces in `libs/providers` (`PlaceProviderPort`, `AreaAutocompletePort`, …) with a **fake implementation** used in tests and whenever `GOOGLE_PLACES_API_KEY` is empty. No domain code imports a provider SDK.
 3. **Key handling:** API key server-side only; autocomplete uses provider session tokens per typing session; per-route rate limits + Redis caching within Google's allowed caching window (place IDs cacheable indefinitely; details/atmosphere data not persisted beyond permitted TTL).
 4. **Attribution** fields are stored alongside cached provider data and returned in DTOs so clients can render required attribution (FR-PLACE-006).
 5. Resilience per NFR: timeout, retry with jitter, circuit breaker, and a static cached fallback list for area autocomplete.
