@@ -1241,7 +1241,12 @@ function sheetError(err: unknown): AppError {
     // and it hides an outage inside a metric that counts user mistakes.
     // retryable=false: this one never clears on its own.
     if (err.code === 'SHEET_PROVIDER_NOT_CONFIGURED') {
-      return AppError.serviceUnavailable(err.code, err.message, false);
+      // PI-BE-022: cause carries the provider's reason into the 5xx log and
+      // Sentry, where an operator can tell SERVICE_DISABLED from a revoked key.
+      // It never reaches the envelope — the filter builds that from code and
+      // message alone, and the reason's siblings in Google's body name our
+      // project.
+      return new AppError(err.code, err.message, 503, { retryable: false, cause: err });
     }
     return err.code === 'SHEET_PERMISSION_DENIED'
       ? AppError.forbidden(err.code, err.message)

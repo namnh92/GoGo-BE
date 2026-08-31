@@ -18,9 +18,10 @@ const RESILIENCE = {
  * PI-BE-012 — Google Sheets v4 reader.
  *
  * Uses the values API with an explicit A1 range so a 100k-row sheet cannot
- * turn into a 100k-row read, and maps provider status codes to the permission
- * errors the CMS wizard shows verbatim. The API key stays in this adapter and
- * is never echoed into an error, a log line, or a job record.
+ * turn into a 100k-row read, and maps provider failures to the errors the CMS
+ * wizard shows verbatim — by reason code where Google gives one, by status only
+ * where it does not (PI-BE-022). The API key stays in this adapter and is never
+ * echoed into an error, a log line, or a job record.
  */
 export class GoogleSheetsAdapter implements SheetsPort {
   constructor(private readonly apiKey: string) {}
@@ -62,6 +63,23 @@ export class GoogleSheetsAdapter implements SheetsPort {
           headers: { 'X-Goog-Api-Key': this.apiKey, Accept: 'application/json' },
         });
         if (res.ok) return (await res.json()) as T;
+
+        const reason = await errorReason(res);
+
+        // PI-BE-022: the status alone does not say whose fault it is. Google
+        // answers 403 PERMISSION_DENIED both for a sheet nobody shared with us
+        // and for an API we never enabled on our own project, and the second
+        // was reaching editors as "Không có quyền đọc Google Sheet này" — a
+        // sentence about their document, describing our console. The reason
+        // code is the only thing that separates them, so it is read before the
+        // status is looked at.
+        if (reason && PROVIDER_MISCONFIGURED_REASONS.has(reason)) {
+          throw new SheetAccessError(
+            'SHEET_PROVIDER_NOT_CONFIGURED',
+            'GoGo chưa cấu hình kết nối Google Sheets',
+            reason,
+          );
+        }
         // Quota and permission outcomes are decisions, not transient faults —
         // rethrown as-is so the retry loop does not burn more quota.
         if (res.status === 429) throw new ProviderQuotaExceededError('google.sheets');
@@ -69,13 +87,18 @@ export class GoogleSheetsAdapter implements SheetsPort {
           throw new SheetAccessError(
             'SHEET_PERMISSION_DENIED',
             'Không có quyền đọc Google Sheet này',
+            reason,
           );
         }
         if (res.status === 404) {
-          throw new SheetAccessError('SHEET_NOT_FOUND', 'Không tìm thấy Google Sheet');
+          throw new SheetAccessError('SHEET_NOT_FOUND', 'Không tìm thấy Google Sheet', reason);
         }
         if (res.status === 400) {
-          throw new SheetAccessError('SHEET_TAB_NOT_FOUND', 'Tab không tồn tại trong sheet');
+          throw new SheetAccessError(
+            'SHEET_TAB_NOT_FOUND',
+            'Tab không tồn tại trong sheet',
+            reason,
+          );
         }
         throw new Error(`sheets ${res.status}`);
       });
@@ -87,6 +110,50 @@ export class GoogleSheetsAdapter implements SheetsPort {
       }
       throw new SheetAccessError('SHEET_UNAVAILABLE', 'Google Sheets tạm thời không phản hồi');
     }
+  }
+}
+
+/**
+ * PI-BE-022 — reasons that describe GoGo's Google setup rather than the
+ * caller's document. Every one of them is fixed in a console we own, by an
+ * operator, and by nobody else; none of them clears by waiting or by the caller
+ * re-sharing anything.
+ *
+ * Verified against the live DEV response: an API that was never enabled on the
+ * project answers 403 with `status: PERMISSION_DENIED` and
+ * `reason: SERVICE_DISABLED` — indistinguishable from a sharing failure if you
+ * only read the status, which is exactly how this shipped.
+ */
+const PROVIDER_MISCONFIGURED_REASONS = new Set([
+  'SERVICE_DISABLED',
+  'API_KEY_SERVICE_BLOCKED',
+  'API_KEY_INVALID',
+  'API_KEY_HTTP_REFERRER_BLOCKED',
+  'API_KEY_IP_ADDRESS_BLOCKED',
+]);
+
+type GoogleErrorBody = {
+  error?: { details?: { '@type'?: string; reason?: string }[] };
+};
+
+/**
+ * The machine-readable reason from a Google error body, or undefined.
+ *
+ * Never throws: an error path that can fail to parse its own error is an error
+ * path that loses the original failure. A body that is empty, truncated, or not
+ * JSON simply yields no reason, and the caller falls back to the status.
+ *
+ * Only the reason is lifted out. The rest of the body carries the project
+ * number and an activation URL, which belong in an operator's console and not
+ * in anything an editor can read.
+ */
+async function errorReason(res: Response): Promise<string | undefined> {
+  try {
+    const body = (await res.json()) as GoogleErrorBody;
+    const info = body.error?.details?.find((d) => d['@type']?.endsWith('google.rpc.ErrorInfo'));
+    return typeof info?.reason === 'string' ? info.reason : undefined;
+  } catch {
+    return undefined;
   }
 }
 

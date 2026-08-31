@@ -7061,7 +7061,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description SHEET_PERMISSION_DENIED, or the caller lacks the CMS role */
+            /** @description SHEET_PERMISSION_DENIED — the spreadsheet exists and GoGo may not read it — or the caller lacks the CMS role. A Google setup fault that also arrives as HTTP 403 (an API disabled on the project, a blocked or invalid key) is reported as 503 SHEET_PROVIDER_NOT_CONFIGURED instead, so a client may treat this status as a statement about the document. */
             403: {
                 headers: {
                     [name: string]: unknown;
