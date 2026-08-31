@@ -136,12 +136,11 @@ describe('#273 — GooglePlacesAdapter failure classification', () => {
     respond(403, SERVICE_DISABLED_BODY);
     const adapter = new GooglePlacesAdapter(API_KEY);
 
-    const err = await adapter.details('ChIJexample').catch((e: unknown) => e);
-    const serialized = JSON.stringify({
-      message: (err as Error).message,
-      ...(err as ProviderConfigurationError),
-    });
+    const err = (await adapter.details('ChIJexample').catch((e: unknown) => e)) as Error;
+    // Own enumerable fields plus the message, which is what a log serializer
+    // and an error reporter each pick up.
+    const serialized = JSON.stringify({ ...err, message: err.message });
     expect(serialized).not.toContain(API_KEY);
-    expect((err as Error).stack ?? '').not.toContain(API_KEY);
+    expect(err.stack ?? '').not.toContain(API_KEY);
   });
 });
