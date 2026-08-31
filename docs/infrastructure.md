@@ -182,7 +182,7 @@ CMS và Web chạy ở origin khác API, gửi kèm cookie session, nên CORS ph
 # dev
 CORS_ORIGINS=http://localhost:5173,http://localhost:5174
 # production
-CORS_ORIGINS=https://app.gogo.vn,https://cms.gogo.vn
+CORS_ORIGINS=https://app.gogo.id.vn,https://cms.gogo.id.vn
 ```
 
 Không bao giờ dùng `*` hoặc `origin: true`. Cookie có `credentials` cộng

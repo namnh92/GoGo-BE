@@ -144,8 +144,8 @@ describe('resolve link (PI-BE-018, FR-INGEST-002/010)', () => {
 
 describe('submission dedupe + moderation (PI-BE-019, FR-INGEST-012)', () => {
   it('two users submitting the same link produce one pending draft', async () => {
-    const t1 = await register('sub1@gogo.vn');
-    const t2 = await register('sub2@gogo.vn');
+    const t1 = await register('sub1@gogo.id.vn');
+    const t2 = await register('sub2@gogo.id.vn');
     const payload = {
       googlePlaceId: 'ChIJfight',
       category: 'cafe',
@@ -186,7 +186,7 @@ describe('submission dedupe + moderation (PI-BE-019, FR-INGEST-012)', () => {
       lat: 10.78,
       lng: 106.7,
     });
-    const t = await register('closed@gogo.vn');
+    const t = await register('closed@gogo.id.vn');
     const res = await api().inject({
       method: 'POST',
       url: '/v1/place-submissions',
@@ -271,7 +271,7 @@ describe('submission dedupe + moderation (PI-BE-019, FR-INGEST-012)', () => {
   });
 
   it('re-submitting an already-linked provider place returns the canonical id', async () => {
-    const t = await register('again@gogo.vn');
+    const t = await register('again@gogo.id.vn');
     const res = await api().inject({
       method: 'POST',
       url: '/v1/place-submissions',
@@ -301,7 +301,7 @@ describe('permissions (FR-INGEST-011)', () => {
   });
 
   it('a normal user cannot reach the CMS decision endpoint', async () => {
-    const t = await register('nobody@gogo.vn');
+    const t = await register('nobody@gogo.id.vn');
     const res = await api().inject({
       method: 'POST',
       url: '/v1/cms/place-submissions/00000000-0000-0000-0000-000000000000/decide',
@@ -318,7 +318,7 @@ describe('PI-CMS-007 — submission queue (list)', () => {
     const moderator = await createAdmin('sub-queue@gogo.local', 'moderator');
     for (let i = 0; i < 4; i++) {
       places.seed({ providerPlaceId: `fake-queue-${i}`, name: `Quán Queue ${i}` });
-      const token = await register(`queue-user-${i}@gogo.vn`);
+      const token = await register(`queue-user-${i}@gogo.id.vn`);
       const res = await api().inject({
         method: 'POST',
         url: '/v1/place-submissions',
@@ -360,7 +360,7 @@ describe('PI-CMS-007 — submission queue (list)', () => {
     const moderator = await createAdmin('sub-dupe@gogo.local', 'moderator');
     places.seed({ providerPlaceId: 'fake-popular', name: 'Quán Ai Cũng Gửi' });
     for (let i = 0; i < 3; i++) {
-      const token = await register(`popular-${i}@gogo.vn`);
+      const token = await register(`popular-${i}@gogo.id.vn`);
       await api().inject({
         method: 'POST',
         url: '/v1/place-submissions',
@@ -387,7 +387,7 @@ describe('PI-CMS-007 — submission queue (list)', () => {
   it('a decided submission leaves the pending queue and keeps its reason', async () => {
     const moderator = await createAdmin('sub-decide@gogo.local', 'moderator');
     places.seed({ providerPlaceId: 'fake-decide', name: 'Quán Quyết Định' });
-    const token = await register('decide-user@gogo.vn');
+    const token = await register('decide-user@gogo.id.vn');
     const submitted = await api().inject({
       method: 'POST',
       url: '/v1/place-submissions',

@@ -49,7 +49,7 @@ beforeAll(async () => {
 
   const [host] = await db
     .insert(schema.users)
-    .values({ displayName: 'Host', email: 'host@gogo.vn' })
+    .values({ displayName: 'Host', email: 'host@gogo.id.vn' })
     .returning();
   hostUserId = host!.id;
   const [room] = await db
@@ -84,7 +84,7 @@ describe('register / login', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'an@gogo.vn', password: 'sufficiently-long-pw', displayName: 'An' },
+      payload: { email: 'an@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'An' },
     });
     expect(res.statusCode).toBe(201);
     const body = res.json();
@@ -103,7 +103,7 @@ describe('register / login', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'an@gogo.vn', password: 'sufficiently-long-pw', displayName: 'An2' },
+      payload: { email: 'an@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'An2' },
     });
     expect(dup.statusCode).toBe(409);
     expect(dup.json().code).toBe('REGISTRATION_FAILED');
@@ -112,13 +112,13 @@ describe('register / login', () => {
       method: 'POST',
       url: '/v1/auth/login',
       remoteAddress: freshIp(),
-      payload: { email: 'an@gogo.vn', password: 'wrong-password-123' },
+      payload: { email: 'an@gogo.id.vn', password: 'wrong-password-123' },
     });
     const noAccount = await api().inject({
       method: 'POST',
       url: '/v1/auth/login',
       remoteAddress: freshIp(),
-      payload: { email: 'nobody@gogo.vn', password: 'wrong-password-123' },
+      payload: { email: 'nobody@gogo.id.vn', password: 'wrong-password-123' },
     });
     expect(wrongPw.statusCode).toBe(401);
     expect(noAccount.statusCode).toBe(401);
@@ -130,21 +130,21 @@ describe('register / login', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'lock@gogo.vn', password: 'sufficiently-long-pw', displayName: 'L' },
+      payload: { email: 'lock@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'L' },
     });
     for (let i = 0; i < 5; i++) {
       await api().inject({
         method: 'POST',
         url: '/v1/auth/login',
         remoteAddress: freshIp(), // distinct IPs — lockout keys on the account
-        payload: { email: 'lock@gogo.vn', password: `wrong-${i}-xxxxxxx` },
+        payload: { email: 'lock@gogo.id.vn', password: `wrong-${i}-xxxxxxx` },
       });
     }
     const blocked = await api().inject({
       method: 'POST',
       url: '/v1/auth/login',
       remoteAddress: freshIp(),
-      payload: { email: 'lock@gogo.vn', password: 'sufficiently-long-pw' },
+      payload: { email: 'lock@gogo.id.vn', password: 'sufficiently-long-pw' },
     });
     expect(blocked.statusCode).toBe(429);
     expect(blocked.json().retryable).toBe(true);
@@ -158,7 +158,7 @@ describe('register / login', () => {
         method: 'POST',
         url: '/v1/auth/login',
         remoteAddress: ip,
-        payload: { email: `probe${i}@gogo.vn`, password: 'whatever-long-pw' },
+        payload: { email: `probe${i}@gogo.id.vn`, password: 'whatever-long-pw' },
       });
       last = res.statusCode;
     }
@@ -178,7 +178,7 @@ describe('refresh rotation + revoke chain (ADR-0003)', () => {
   }
 
   it('rotates refresh tokens; old token still marked, new one works', async () => {
-    const t0 = await registerUser('rot@gogo.vn');
+    const t0 = await registerUser('rot@gogo.id.vn');
     const r1 = await api().inject({
       method: 'POST',
       url: '/v1/auth/refresh',
@@ -191,7 +191,7 @@ describe('refresh rotation + revoke chain (ADR-0003)', () => {
   });
 
   it('reusing a superseded refresh token revokes the entire family', async () => {
-    const t0 = await registerUser('theft@gogo.vn');
+    const t0 = await registerUser('theft@gogo.id.vn');
     const r1 = await api().inject({
       method: 'POST',
       url: '/v1/auth/refresh',
@@ -221,7 +221,7 @@ describe('refresh rotation + revoke chain (ADR-0003)', () => {
   });
 
   it('logout revokes the session and cookies are cleared', async () => {
-    const t0 = await registerUser('bye@gogo.vn');
+    const t0 = await registerUser('bye@gogo.id.vn');
     const res = await api().inject({
       method: 'DELETE',
       url: '/v1/sessions/current',
@@ -307,7 +307,7 @@ describe('guest sessions (FR-AUTH-002/003)', () => {
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
       payload: {
-        email: 'claimed@gogo.vn',
+        email: 'claimed@gogo.id.vn',
         password: 'sufficiently-long-pw',
         displayName: 'Đã Đăng Ký',
         claimGuestToken: guestBody.guestToken,
@@ -341,7 +341,7 @@ describe('session revocation closes the access-token window', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'revoke1@gogo.vn', password: 'sufficiently-long-pw', displayName: 'R' },
+      payload: { email: 'revoke1@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'R' },
     });
     const token = reg.json().accessToken as string;
     expect(
@@ -380,7 +380,7 @@ describe('session revocation closes the access-token window', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'revoke2@gogo.vn', password: 'sufficiently-long-pw', displayName: 'R' },
+      payload: { email: 'revoke2@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'R' },
     });
     const first = reg.json();
     const rotated = await api().inject({
@@ -421,7 +421,7 @@ describe('authorization surface', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'csrf@gogo.vn', password: 'sufficiently-long-pw', displayName: 'C' },
+      payload: { email: 'csrf@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'C' },
     });
     const cookies = reg.headers['set-cookie'] as string[];
     const cookieHeader = cookies.map((c) => c.split(';')[0]).join('; ');

@@ -131,7 +131,7 @@ describe('injection (A03)', () => {
 
 describe('broken authentication (A07)', () => {
   it('refuses a token signed with the wrong secret', async () => {
-    const { token } = await register('sec-wrongsig@gogo.vn');
+    const { token } = await register('sec-wrongsig@gogo.id.vn');
     const [header, payload] = token.split('.');
     const forged = createHmac('sha256', 'not-the-real-secret')
       .update(`${header}.${payload}`)
@@ -146,7 +146,7 @@ describe('broken authentication (A07)', () => {
   });
 
   it('refuses an unsigned token claiming alg none', async () => {
-    const { token } = await register('sec-algnone@gogo.vn');
+    const { token } = await register('sec-algnone@gogo.id.vn');
     const payload = token.split('.')[1]!;
     const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
 
@@ -161,8 +161,8 @@ describe('broken authentication (A07)', () => {
   });
 
   it('refuses a token whose payload was edited to another user', async () => {
-    const { token } = await register('sec-swap@gogo.vn');
-    const other = await register('sec-swap-victim@gogo.vn');
+    const { token } = await register('sec-swap@gogo.id.vn');
+    const other = await register('sec-swap-victim@gogo.id.vn');
     const [header, payload, signature] = token.split('.');
     const claims = JSON.parse(Buffer.from(payload!, 'base64url').toString());
     claims.sub = other.userId;
@@ -177,7 +177,7 @@ describe('broken authentication (A07)', () => {
   });
 
   it('refuses an expired token even with a valid signature', async () => {
-    const { token } = await register('sec-expired@gogo.vn');
+    const { token } = await register('sec-expired@gogo.id.vn');
     const [, payload] = token.split('.');
     const claims = JSON.parse(Buffer.from(payload!, 'base64url').toString());
     claims.exp = Math.floor(Date.now() / 1000) - 60;
@@ -199,7 +199,7 @@ describe('broken authentication (A07)', () => {
       url: '/v1/auth/register',
       remoteAddress: ip(),
       payload: {
-        email: 'sec-refresh-as-access@gogo.vn',
+        email: 'sec-refresh-as-access@gogo.id.vn',
         password: 'sufficiently-long-pw',
         displayName: 'U',
       },
@@ -219,18 +219,18 @@ describe('broken authentication (A07)', () => {
 
 describe('enumeration', () => {
   it('does not reveal whether an email exists', async () => {
-    await register('sec-known@gogo.vn');
+    await register('sec-known@gogo.id.vn');
     const known = await api().inject({
       method: 'POST',
       url: '/v1/auth/login',
       remoteAddress: ip(),
-      payload: { email: 'sec-known@gogo.vn', password: 'wrong-password-here' },
+      payload: { email: 'sec-known@gogo.id.vn', password: 'wrong-password-here' },
     });
     const unknown = await api().inject({
       method: 'POST',
       url: '/v1/auth/login',
       remoteAddress: ip(),
-      payload: { email: 'sec-nobody@gogo.vn', password: 'wrong-password-here' },
+      payload: { email: 'sec-nobody@gogo.id.vn', password: 'wrong-password-here' },
     });
     expect(known.statusCode).toBe(unknown.statusCode);
     expect(known.json().code).toBe(unknown.json().code);
@@ -268,7 +268,7 @@ describe('access control (A01)', () => {
   });
 
   it('a consumer token cannot reach the CMS, however it is presented', async () => {
-    const { token } = await register('sec-consumer@gogo.vn');
+    const { token } = await register('sec-consumer@gogo.id.vn');
     for (const url of ['/v1/cms/places', '/v1/cms/audit', '/v1/cms/experiments']) {
       const res = await api().inject({
         method: 'GET',
@@ -281,8 +281,8 @@ describe('access control (A01)', () => {
   });
 
   it('ignores client-supplied fields that would change ownership', async () => {
-    const owner = await register('sec-owner@gogo.vn');
-    const attacker = await register('sec-attacker@gogo.vn');
+    const owner = await register('sec-owner@gogo.id.vn');
+    const attacker = await register('sec-attacker@gogo.id.vn');
     const res = await api().inject({
       method: 'POST',
       url: '/v1/rooms',
@@ -305,7 +305,7 @@ describe('access control (A01)', () => {
 
 describe('rate limiting', () => {
   it('cannot be evaded by spoofing X-Forwarded-For', async () => {
-    const email = 'sec-spoof@gogo.vn';
+    const email = 'sec-spoof@gogo.id.vn';
     await register(email);
 
     // Same source, a different claimed address on every attempt. If the
@@ -347,7 +347,7 @@ describe('rate limiting', () => {
 
 describe('logging and PII', () => {
   it('never puts a token in a URL', async () => {
-    const { token } = await register('sec-url-token@gogo.vn');
+    const { token } = await register('sec-url-token@gogo.id.vn');
     const res = await api().inject({
       method: 'GET',
       url: `/v1/me?access_token=${token}`,

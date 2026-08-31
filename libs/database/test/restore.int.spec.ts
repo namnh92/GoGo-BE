@@ -47,7 +47,7 @@ beforeAll(async () => {
   // Enough real data that a restore has something to get wrong.
   const [host] = await db
     .insert(schema.users)
-    .values({ displayName: 'Host', email: 'restore-host@gogo.vn' })
+    .values({ displayName: 'Host', email: 'restore-host@gogo.id.vn' })
     .returning();
   const [room] = await db
     .insert(schema.rooms)

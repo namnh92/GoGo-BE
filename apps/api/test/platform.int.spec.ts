@@ -47,7 +47,7 @@ beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
   // BE-IMP-003: browser clients (CMS, Web) are an explicit allowlist.
-  process.env.CORS_ORIGINS = 'http://localhost:5174,https://cms.gogo.vn';
+  process.env.CORS_ORIGINS = 'http://localhost:5174,https://cms.gogo.id.vn';
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 2 });
   // The container is stopped in afterAll; an idle client erroring as the
@@ -81,7 +81,7 @@ async function register(email: string) {
 
 describe('Idempotency-Key (api-contract rule)', () => {
   it('replays the original response instead of re-applying the mutation', async () => {
-    const token = await register('idem1@gogo.vn');
+    const token = await register('idem1@gogo.id.vn');
     const key = 'client-key-0001';
     const first = await api().inject({
       method: 'POST',
@@ -107,7 +107,7 @@ describe('Idempotency-Key (api-contract rule)', () => {
   });
 
   it('same key + different body → 422 IDEMPOTENCY_KEY_REUSED', async () => {
-    const token = await register('idem2@gogo.vn');
+    const token = await register('idem2@gogo.id.vn');
     const key = 'client-key-0002';
     await api().inject({
       method: 'POST',
@@ -128,8 +128,8 @@ describe('Idempotency-Key (api-contract rule)', () => {
   });
 
   it('keys are scoped per actor — same key from another user is independent', async () => {
-    const tokenA = await register('idem3a@gogo.vn');
-    const tokenB = await register('idem3b@gogo.vn');
+    const tokenA = await register('idem3a@gogo.id.vn');
+    const tokenB = await register('idem3b@gogo.id.vn');
     const key = 'shared-key-0003';
     const a = await api().inject({
       method: 'POST',
@@ -151,7 +151,7 @@ describe('Idempotency-Key (api-contract rule)', () => {
   });
 
   it('a failed request releases the key so retry works', async () => {
-    const token = await register('idem4@gogo.vn');
+    const token = await register('idem4@gogo.id.vn');
     const key = 'client-key-0004';
     const bad = await api().inject({
       method: 'POST',
@@ -173,7 +173,7 @@ describe('Idempotency-Key (api-contract rule)', () => {
   });
 
   it('rejects malformed keys', async () => {
-    const token = await register('idem5@gogo.vn');
+    const token = await register('idem5@gogo.id.vn');
     const res = await api().inject({
       method: 'POST',
       url: '/v1/rooms',
