@@ -452,6 +452,121 @@ export class CmsUsersService {
     };
   }
 
+  /**
+   * BE-CMS-G11 (#254) — the guests of one room.
+   *
+   * Room-scoped on purpose: there is no global guest directory in v1, because
+   * no moderation case needs one and a list of every guest's display name and
+   * activity would be a new PII surface with no reader.
+   *
+   * `token_hash` is never selected. It is the credential.
+   */
+  async roomGuests(roomId: string) {
+    const [room] = await this.db
+      .select({ id: schema.rooms.id })
+      .from(schema.rooms)
+      .where(eq(schema.rooms.id, roomId))
+      .limit(1);
+    if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'No such room');
+
+    const result = await this.db.execute(sql`
+      select m.id as member_id, m.display_name, m.selection_status, m.joined_at,
+             m.removed_at,
+             g.id as guest_session_id, g.expires_at, g.revoked_at,
+             (g.claimed_by_user_id is not null) as claimed
+      from room_members m
+      join guest_sessions g on g.id = m.guest_session_id
+      where m.room_id = ${roomId} and m.guest_session_id is not null
+      order by m.joined_at desc
+    `);
+    return {
+      guests: (
+        result.rows as {
+          member_id: string;
+          display_name: string;
+          selection_status: string;
+          joined_at: Date | string;
+          removed_at: Date | string | null;
+          guest_session_id: string;
+          expires_at: Date | string;
+          revoked_at: Date | string | null;
+          claimed: boolean;
+        }[]
+      ).map((g) => ({
+        memberId: g.member_id,
+        guestSessionId: g.guest_session_id,
+        displayName: g.display_name,
+        selectionStatus: g.selection_status,
+        joinedAt: toIso(g.joined_at),
+        sessionExpiresAt: toIso(g.expires_at),
+        ...(g.revoked_at ? { sessionRevokedAt: toIso(g.revoked_at) } : {}),
+        ...(g.removed_at ? { removedAt: toIso(g.removed_at) } : {}),
+        claimed: g.claimed,
+      })),
+    };
+  }
+
+  /**
+   * BE-CMS-G11 (#254) — remove a guest from a room.
+   *
+   * **Not a ban, and never described as one.** A guest has no durable
+   * identity — only a session tied to this room through the invite flow — so
+   * whoever holds a still-valid invite can join again and receive a fresh
+   * session. This action is "out of the room now": the session is revoked
+   * (denylist included, so an access token already in flight dies) and the
+   * membership is marked removed.
+   *
+   * The membership row is kept, not deleted: votes, reports and moderation
+   * history reference it, and erasing the row would erase the context of the
+   * removal itself.
+   */
+  async removeGuest(input: { roomId: string; memberId: string; reason: string; actorId: string }) {
+    return this.db.transaction(async (tx) => {
+      const [member] = await tx
+        .select()
+        .from(schema.roomMembers)
+        .where(
+          and(
+            eq(schema.roomMembers.id, input.memberId),
+            eq(schema.roomMembers.roomId, input.roomId),
+          ),
+        )
+        .limit(1);
+      if (!member) throw AppError.notFound('MEMBER_NOT_FOUND', 'No such member in this room');
+      if (!member.guestSessionId) {
+        // Registered members have an account and a different moderation path
+        // (#246); this action is scoped to the identity kind it can actually
+        // clean up after.
+        throw AppError.conflict('NOT_A_GUEST', 'This member is a registered user, not a guest');
+      }
+      if (member.removedAt) {
+        throw AppError.conflict('ALREADY_REMOVED', 'This guest was already removed');
+      }
+
+      await tx
+        .update(schema.roomMembers)
+        .set({ removedAt: sql`now()` })
+        .where(eq(schema.roomMembers.id, member.id));
+      await tx
+        .update(schema.guestSessions)
+        .set({ revokedAt: sql`now()` })
+        .where(eq(schema.guestSessions.id, member.guestSessionId));
+      // The denylist is what stops an access token already issued; the row
+      // update only stops the opaque token from minting new ones.
+      await this.revocations.revokeSession(member.guestSessionId);
+
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: input.actorId,
+        action: 'guest.removed_by_staff',
+        resourceType: 'room_member',
+        resourceId: member.id,
+        diff: { reason: input.reason, roomId: input.roomId, guestSessionId: member.guestSessionId },
+      });
+      return { memberId: member.id, removed: true };
+    });
+  }
+
   private async revokeSessions(
     tx: Pick<Db, 'update'>,
     userId: string,

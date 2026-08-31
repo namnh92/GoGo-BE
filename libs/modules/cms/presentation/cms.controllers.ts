@@ -446,6 +446,27 @@ export class CmsUsersController {
     return this.users.listRooms(query);
   }
 
+  /** BE-CMS-G11 (#254) — room-scoped only; there is no global guest list. */
+  @Get('rooms/:id/guests')
+  roomGuests(@Param('id', Uuid) id: string) {
+    return this.users.roomGuests(id);
+  }
+
+  /**
+   * #254 — "remove from room", which is what it actually does. Not a ban:
+   * a guest holding a still-valid invite can rejoin with a fresh session, and
+   * both the contract and the console say so instead of promising otherwise.
+   */
+  @Post('rooms/:id/guests/:memberId/remove')
+  removeGuest(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Param('memberId', Uuid) memberId: string,
+    @Body(new ZodValidationPipe(userReasonSchema)) body: { reason: string },
+  ) {
+    return this.users.removeGuest({ roomId: id, memberId, ...body, actorId: actor.id });
+  }
+
   @Get('plans')
   listPlans(@Query(new ZodValidationPipe(planListQuery)) query: z.infer<typeof planListQuery>) {
     return this.users.listPlans(query);
