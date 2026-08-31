@@ -2499,6 +2499,270 @@ paths:
         '201': { description: Created }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /cms/users:
+    get:
+      operationId: cmsListUsers
+      tags: [cms]
+      summary: 'Ops: app accounts'
+      description: >
+        BE-CMS-G7. `ops_admin` and above, and deliberately outside the guard's
+        rank-read: an editor reading catalogue data is ordinary, an editor
+        reading the user base is not.
+
+
+        **Minimum PII by construction.** No coordinates, no device tokens, no
+        raw preference selections — support work needs to know who someone is
+        and what they have done, not where they were. A field that is not
+        returned cannot leak from a console session, a screenshot, or a cache.
+      parameters:
+        - {
+            name: q,
+            in: query,
+            schema: { type: string, maxLength: 120 },
+            description: Display name or email substring.,
+          }
+        - {
+            name: status,
+            in: query,
+            schema: { type: string, enum: [active, suspended, banned, deleted] },
+          }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+          description: >
+            Capped at 100: every row costs four indexed counter lookups, and
+            the page size is what keeps this from being a table scan.
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
+      responses:
+        '200':
+          description: Accounts, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAppUserPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /cms/users/{id}:
+    get:
+      operationId: cmsUserDetail
+      tags: [cms]
+      summary: 'Ops: one account, with the rooms it has been in'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Account detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAppUserDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/users/{id}/suspend:
+    post:
+      operationId: cmsSuspendUser
+      tags: [cms]
+      summary: 'Ops: suspend an account (expected back)'
+      description: >
+        Revokes every session as well as setting the status. `AuthGuard` trusts
+        the access token until the session is revoked, so flipping the status
+        alone would leave the account working for up to the token lifetime —
+        long enough to matter during an incident, short enough to pass testing.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminActionReason' }
+      responses:
+        '201':
+          description: Suspended
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsUserStatusResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`USER_DELETED` — a deleted account cannot change status.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/users/{id}/ban:
+    post:
+      operationId: cmsBanUser
+      tags: [cms]
+      summary: 'Ops: ban an account (not expected back)'
+      description: >
+        Same enforcement as suspend. The two are separate values because what
+        distinguishes them is whether the account is expected back, and an
+        operator reviewing one needs to know which they are looking at without
+        reading a free-text note.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminActionReason' }
+      responses:
+        '201':
+          description: Banned
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsUserStatusResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`USER_DELETED` — a deleted account cannot change status.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/users/{id}/reactivate:
+    post:
+      operationId: cmsReactivateUser
+      tags: [cms]
+      summary: 'Ops: lift a suspension or ban'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminActionReason' }
+      responses:
+        '201':
+          description: Reactivated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsUserStatusResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `USER_DELETED` — a deleted account is anonymized and its address
+            freed for re-registration, so reviving it would attach a stranger's
+            history to whoever now holds that address.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/users/{id}/delete:
+    post:
+      operationId: cmsDeleteUser
+      tags: [cms]
+      summary: "Super admin: erase an account on its holder's behalf"
+      description: >
+        Runs the same erasure as the consumer `DELETE /me` — PII nulled,
+        sessions revoked, content pseudonymized, address freed. One
+        implementation, not two: two versions of "erase this person" drift, and
+        the one that drifts is the one that leaves a table behind.
+
+
+        `super_admin` only. It is the only action here that cannot be undone,
+        and the account it destroys belongs to someone else.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminActionReason' }
+      responses:
+        '201':
+          description: Erased; idempotent on an already-deleted account
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: { type: boolean }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/users/{id}/export:
+    post:
+      operationId: cmsExportUser
+      tags: [cms]
+      summary: 'Ops: subject-access export, made through support'
+      description: >
+        The same payload as `/me/export`. The audit entry is the point: a staff
+        member reading somebody's data is an event, and it must be attributable
+        even though the bytes are identical to the self-service export.
+
+
+        Rate limited per actor — the payload is one person's whole history, and
+        a loop over the user list is a data export nobody authorized.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminActionReason' }
+      responses:
+        '201':
+          description: The account's own data
+          content:
+            application/json:
+              schema: { type: object }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/rooms:
+    get:
+      operationId: cmsListRooms
+      tags: [cms]
+      summary: 'Ops: rooms, read-only'
+      description: >
+        `code` is never returned. It is a bearer secret — whoever holds it can
+        join the room — and an operations list is exactly the kind of place a
+        value like that gets copied out of.
+
+
+        The host appears as an id, not a name or an address: it links to the
+        account detail, which is where identifying data belongs and is
+        access-controlled.
+      parameters:
+        - {
+            name: status,
+            in: query,
+            schema: { type: string, enum: [draft, active, planning, completed, archived] },
+          }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
+      responses:
+        '200':
+          description: Rooms, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsRoomPage' }
+
+  /cms/plans:
+    get:
+      operationId: cmsListPlans
+      tags: [cms]
+      summary: 'Ops: plans, read-only'
+      parameters:
+        - {
+            name: status,
+            in: query,
+            schema: { type: string, enum: [draft, current, superseded, archived] },
+          }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
+      responses:
+        '200':
+          description: Plans, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsPlanPage' }
+
   /cms/places:
     get:
       operationId: cmsListPlaces
@@ -5105,6 +5369,149 @@ components:
         quotaUsedRatio:
           type: number
           description: 0–1, present only where the provider reports a quota.
+
+    CmsAppUser:
+      type: object
+      required: [id, displayName, status, authMethod, locale, createdAt, counters, reportCount]
+      properties:
+        id: { type: string, format: uuid }
+        displayName: { type: string }
+        email:
+          type: [string, 'null']
+          description: Null on a deleted account — the address is freed for re-registration.
+        status: { type: string, enum: [active, suspended, banned, deleted] }
+        authMethod:
+          type: string
+          enum: [password, none]
+          description: >
+            How this account signs in. One real value today, because email +
+            password is the only method that exists; it is reported rather than
+            assumed so the console does not have to guess when a second lands.
+            There is deliberately no filter on it — a control that can only
+            return everything is not a control.
+        locale: { type: string }
+        createdAt: { type: string, format: date-time }
+        lastActiveAt:
+          type: [string, 'null']
+          format: date-time
+          description: Newest session use. Null for an account that never signed in.
+        counters:
+          type: object
+          required: [roomsCreated, roomsJoined, reviews, savedPlaces]
+          properties:
+            roomsCreated: { type: integer }
+            roomsJoined: { type: integer }
+            reviews: { type: integer }
+            savedPlaces: { type: integer }
+        reportCount:
+          type: integer
+          description: Reports filed against this person, open or decided.
+
+    CmsAppUserDetail:
+      allOf:
+        - $ref: '#/components/schemas/CmsAppUser'
+        - type: object
+          required: [rooms]
+          properties:
+            statusReason:
+              type: string
+              description: >
+                From the audit log, not a column — the reason is already
+                written there with who set it and when, and a second copy on
+                the row is one that drifts. Absent while the account is active.
+            statusChangedAt: { type: string, format: date-time }
+            rooms:
+              type: array
+              description: The 20 most recently joined. No invite code.
+              items:
+                type: object
+                required:
+                  [id, type, status, decisionMode, participantCount, role, joinedAt, createdAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  type: { type: string }
+                  status: { type: string }
+                  decisionMode: { type: string }
+                  participantCount: { type: integer }
+                  title: { type: string }
+                  role: { type: string }
+                  joinedAt: { type: string, format: date-time }
+                  createdAt: { type: string, format: date-time }
+
+    CmsAppUserPage:
+      type: object
+      required: [items, nextCursor, totalCount]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsAppUser' }
+        nextCursor: { type: [string, 'null'] }
+        totalCount: { type: integer }
+
+    CmsUserStatusResult:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [active, suspended, banned] }
+
+    CmsRoomPage:
+      type: object
+      required: [items, nextCursor, totalCount]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required:
+              [
+                id,
+                type,
+                status,
+                decisionMode,
+                participantCount,
+                hostUserId,
+                memberCount,
+                planCount,
+                createdAt,
+              ]
+            properties:
+              id: { type: string, format: uuid }
+              type: { type: string }
+              status: { type: string }
+              decisionMode: { type: string }
+              participantCount: { type: integer }
+              title: { type: string }
+              hostUserId:
+                type: string
+                format: uuid
+                description: An id, not a name — it links to the account detail.
+              memberCount: { type: integer }
+              planCount: { type: integer }
+              scheduledDate: { type: string, format: date-time }
+              createdAt: { type: string, format: date-time }
+        nextCursor: { type: [string, 'null'] }
+        totalCount: { type: integer }
+
+    CmsPlanPage:
+      type: object
+      required: [items, nextCursor, totalCount]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, roomId, version, status, isStale, stopCount, createdAt]
+            properties:
+              id: { type: string, format: uuid }
+              roomId: { type: string, format: uuid }
+              version: { type: integer }
+              status: { type: string }
+              isStale: { type: boolean }
+              stopCount: { type: integer }
+              createdAt: { type: string, format: date-time }
+        nextCursor: { type: [string, 'null'] }
+        totalCount: { type: integer }
 
     CmsAdminPage:
       type: object

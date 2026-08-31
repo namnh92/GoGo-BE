@@ -522,6 +522,244 @@ describe('CMS ops observability (BE-CMS-G8 #247)', () => {
   });
 });
 
+describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
+  const REASON = { reason: 'abuse report OPS-204' };
+  const get = async (token: string, url: string) =>
+    await api().inject({ method: 'GET', url, headers: auth(token) });
+  const post = async (token: string, url: string, payload: Record<string, unknown> = REASON) =>
+    await api().inject({ method: 'POST', url, remoteAddress: ip(), headers: auth(token), payload });
+
+  async function createUser(email: string) {
+    const [row] = await db
+      .insert(schema.users)
+      .values({ email, displayName: email.split('@')[0]!, passwordHash: 'x' })
+      .returning();
+    return row!;
+  }
+
+  it('lists accounts with counters, and without location or device data', async () => {
+    const ops = await createAdmin('g7-ops@gogo.id.vn', 'ops_admin');
+    const user = await createUser('g7-listed@example.com');
+
+    const res = await get(ops.token, `/v1/cms/users?q=g7-listed`);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().totalCount).toBe(1);
+
+    const item = res.json().items[0];
+    expect(item).toMatchObject({
+      id: user.id,
+      email: 'g7-listed@example.com',
+      status: 'active',
+      authMethod: 'password',
+    });
+    expect(item.counters).toEqual({
+      roomsCreated: 0,
+      roomsJoined: 0,
+      reviews: 0,
+      savedPlaces: 0,
+    });
+    // Never signed in — null rather than a timestamp standing in for one.
+    expect(item.lastActiveAt).toBeNull();
+
+    /*
+     * The subtractive half of the contract. Support work needs to know who
+     * someone is and what they did, not where they were; a field that is not
+     * returned cannot leak from a console session or a screenshot.
+     */
+    const raw = JSON.stringify(res.json());
+    expect(raw).not.toContain('passwordHash');
+    expect(raw).not.toContain('password_hash');
+    expect(raw).not.toContain('analyticsId');
+    expect(raw).not.toContain('lat');
+    expect(raw).not.toContain('deviceToken');
+  });
+
+  /*
+   * `AuthGuard` trusts the access token until the session is revoked — it does
+   * not re-read the user row. Flipping the status alone would leave a
+   * suspended account working for up to the token lifetime.
+   */
+  it('suspending kills live sessions, not just the status', async () => {
+    const ops = await createAdmin('g7-suspender@gogo.id.vn', 'ops_admin');
+    const email = 'g7-victim@example.com';
+    const register = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: ip(),
+      payload: { email, password: 'user-password-123', displayName: 'Nạn nhân' },
+    });
+    expect(register.statusCode).toBe(201);
+    const userToken = register.json().accessToken as string;
+    const userId = (
+      await db.select().from(schema.users).where(eq(schema.users.email, email)).limit(1)
+    )[0]!.id;
+
+    expect(
+      (await api().inject({ method: 'GET', url: '/v1/me', headers: auth(userToken) })).statusCode,
+    ).toBe(200);
+
+    const suspended = await post(ops.token, `/v1/cms/users/${userId}/suspend`);
+    expect(suspended.statusCode).toBe(201);
+    expect(suspended.json().status).toBe('suspended');
+
+    const after = await api().inject({ method: 'GET', url: '/v1/me', headers: auth(userToken) });
+    expect(after.statusCode).toBe(401);
+
+    // And the reason is readable back from the audit log, not from a column.
+    const detail = await get(ops.token, `/v1/cms/users/${userId}`);
+    expect(detail.json().statusReason).toBe(REASON.reason);
+    expect(detail.json().statusChangedAt).toBeTypeOf('string');
+  });
+
+  it('ban is a separate status from suspend, and both block a login', async () => {
+    const ops = await createAdmin('g7-banner@gogo.id.vn', 'ops_admin');
+    const email = 'g7-banned@example.com';
+    await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: ip(),
+      payload: { email, password: 'user-password-123', displayName: 'Bị cấm' },
+    });
+    const userId = (
+      await db.select().from(schema.users).where(eq(schema.users.email, email)).limit(1)
+    )[0]!.id;
+
+    expect((await post(ops.token, `/v1/cms/users/${userId}/ban`)).json().status).toBe('banned');
+
+    const login = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      remoteAddress: ip(),
+      payload: { email, password: 'user-password-123' },
+    });
+    expect(login.statusCode).toBe(401);
+  });
+
+  /*
+   * A deleted account is anonymized and its address freed for
+   * re-registration. Reviving it would attach a stranger's history to whoever
+   * now holds that address.
+   */
+  it('refuses to change the status of a deleted account', async () => {
+    const boss = await createAdmin('g7-boss@gogo.id.vn', 'super_admin');
+    const user = await createUser('g7-gone@example.com');
+    expect((await post(boss.token, `/v1/cms/users/${user.id}/delete`)).statusCode).toBe(201);
+
+    const revive = await post(boss.token, `/v1/cms/users/${user.id}/reactivate`);
+    expect(revive.statusCode).toBe(409);
+    expect(revive.json().code).toBe('USER_DELETED');
+  });
+
+  it('deletes through the consumer flow, so nothing is left behind twice', async () => {
+    const boss = await createAdmin('g7-eraser@gogo.id.vn', 'super_admin');
+    const user = await createUser('g7-erase@example.com');
+
+    expect((await post(boss.token, `/v1/cms/users/${user.id}/delete`)).statusCode).toBe(201);
+
+    const [row] = await db.select().from(schema.users).where(eq(schema.users.id, user.id));
+    expect(row?.status).toBe('deleted');
+    // The address is freed: the partial unique index only covers live rows.
+    expect(row?.email).toBeNull();
+    expect(row?.passwordHash).toBeNull();
+
+    // Attributed to the staff member who ordered it, not to the account.
+    const [entry] = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(
+        and(
+          eq(schema.auditLogs.resourceId, user.id),
+          eq(schema.auditLogs.action, 'user.account_deleted'),
+        ),
+      )
+      .limit(1);
+    expect(entry?.actorType).toBe('admin');
+    expect(entry?.actorId).toBe(boss.id);
+  });
+
+  it('erasure is idempotent rather than an error on a second call', async () => {
+    const boss = await createAdmin('g7-twice@gogo.id.vn', 'super_admin');
+    const user = await createUser('g7-twice-user@example.com');
+    expect((await post(boss.token, `/v1/cms/users/${user.id}/delete`)).statusCode).toBe(201);
+    expect((await post(boss.token, `/v1/cms/users/${user.id}/delete`)).json().deleted).toBe(true);
+  });
+
+  /*
+   * The bytes are the same as the self-service export; the audit row is what
+   * makes a staff member reading somebody's data an attributable event.
+   */
+  it("exports on the holder's behalf and records who read it", async () => {
+    const ops = await createAdmin('g7-exporter@gogo.id.vn', 'ops_admin');
+    const user = await createUser('g7-export@example.com');
+
+    const res = await post(ops.token, `/v1/cms/users/${user.id}/export`);
+    expect(res.statusCode).toBe(201);
+    expect(res.json().profile.email).toBe('g7-export@example.com');
+
+    const [entry] = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(
+        and(
+          eq(schema.auditLogs.resourceId, user.id),
+          eq(schema.auditLogs.action, 'user.data_exported'),
+        ),
+      )
+      .limit(1);
+    expect(entry?.actorType).toBe('admin');
+    expect(entry?.actorId).toBe(ops.id);
+  });
+
+  /*
+   * `rooms.code` is a bearer secret: whoever holds it can join. An operations
+   * list is exactly the sort of place a value like that gets copied out of.
+   */
+  it('never returns a room invite code', async () => {
+    const ops = await createAdmin('g7-rooms@gogo.id.vn', 'ops_admin');
+    const host = await createUser('g7-host@example.com');
+    await db.insert(schema.rooms).values({
+      code: 'SECRETCODE1',
+      type: 'couple',
+      decisionMode: 'match',
+      hostUserId: host.id,
+    });
+
+    const res = await get(ops.token, '/v1/cms/rooms?limit=100');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.stringify(res.json())).not.toContain('SECRETCODE1');
+    const room = res.json().items.find((r: { hostUserId: string }) => r.hostUserId === host.id);
+    expect(room).toMatchObject({ type: 'couple', memberCount: 0, planCount: 0 });
+  });
+
+  it('lists plans read-only', async () => {
+    const ops = await createAdmin('g7-plans@gogo.id.vn', 'ops_admin');
+    const res = await get(ops.token, '/v1/cms/plans');
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toHaveProperty('totalCount');
+  });
+
+  /*
+   * Account data is the one collection here where the read is as sensitive as
+   * the write, so it stays outside the guard's rank-read.
+   */
+  it('is closed to editors and moderators, and erasure to super_admin only', async () => {
+    const editor = await createAdmin('g7-editor@gogo.id.vn', 'editor');
+    expect((await get(editor.token, '/v1/cms/users')).statusCode).toBe(403);
+    expect((await get(editor.token, '/v1/cms/rooms')).statusCode).toBe(403);
+
+    const ops = await createAdmin('g7-notboss@gogo.id.vn', 'ops_admin');
+    const user = await createUser('g7-protected@example.com');
+    expect((await post(ops.token, `/v1/cms/users/${user.id}/delete`)).statusCode).toBe(403);
+  });
+
+  it('rejects a mutation with no reason', async () => {
+    const ops = await createAdmin('g7-noreason@gogo.id.vn', 'ops_admin');
+    const user = await createUser('g7-noreason-user@example.com');
+    const res = await post(ops.token, `/v1/cms/users/${user.id}/suspend`, {});
+    expect(res.statusCode).toBe(400);
+  });
+});
+
 describe('place workflow + search sync (CMS-002, SRS §15.5)', () => {
   it('draft → review → published appears in search; suspended disappears', async () => {
     const editor = await createAdmin('editor2@gogo.local', 'editor');

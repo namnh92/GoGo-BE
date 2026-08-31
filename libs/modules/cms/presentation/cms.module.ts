@@ -2,6 +2,9 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { IdentityModule } from '../../identity/presentation/identity.module';
 import { SuggestionsModule } from '../../suggestions/presentation/suggestions.module';
+// #246 — the console reuses the consumer erase/export rather than growing a
+// second implementation of them.
+import { ReviewsModule } from '../../reviews/presentation/reviews.module';
 import { AdminAuthService } from '../application/admin-auth.service';
 import { CloudflareAccessService } from '../application/cf-access.service';
 import { CmsAuditService } from '../application/cms-audit.service';
@@ -15,6 +18,7 @@ import { RecommendationsService } from '../application/recommendations.service';
 import { PlanTemplatesService } from '../application/plan-templates.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { CmsObservabilityService } from '../application/cms-observability.service';
+import { CmsUsersService } from '../application/cms-users.service';
 import { ModerationQueueService } from '../application/moderation-queue.service';
 import { EmergencyTakedownService } from '../application/emergency-takedown.service';
 import { ExperimentsAdminService } from '../application/experiments-admin.service';
@@ -35,10 +39,11 @@ import {
   CmsRecommendationsController,
   CmsSafetyRulesController,
   CmsUploadsController,
+  CmsUsersController,
 } from './cms.controllers';
 
 @Module({
-  imports: [IdentityModule, SuggestionsModule],
+  imports: [IdentityModule, SuggestionsModule, ReviewsModule],
   controllers: [
     CmsAuditController,
     CmsAuthController,
@@ -52,6 +57,7 @@ import {
     CmsRecommendationsController,
     CmsSafetyRulesController,
     CmsUploadsController,
+    CmsUsersController,
     EmergencyController,
   ],
   providers: [
@@ -62,6 +68,7 @@ import {
     CmsContentService,
     CmsUploadsService,
     CmsObservabilityService,
+    CmsUsersService,
     BannersService,
     CampaignsService,
     SafetyRulesService,

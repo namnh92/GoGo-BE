@@ -1474,6 +1474,185 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: app accounts
+         * @description BE-CMS-G7. `ops_admin` and above, and deliberately outside the guard's rank-read: an editor reading catalogue data is ordinary, an editor reading the user base is not.
+         *
+         *     **Minimum PII by construction.** No coordinates, no device tokens, no raw preference selections — support work needs to know who someone is and what they have done, not where they were. A field that is not returned cannot leak from a console session, a screenshot, or a cache.
+         */
+        get: operations["cmsListUsers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ops: one account, with the rooms it has been in */
+        get: operations["cmsUserDetail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/users/{id}/suspend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: suspend an account (expected back)
+         * @description Revokes every session as well as setting the status. `AuthGuard` trusts the access token until the session is revoked, so flipping the status alone would leave the account working for up to the token lifetime — long enough to matter during an incident, short enough to pass testing.
+         */
+        post: operations["cmsSuspendUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/users/{id}/ban": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: ban an account (not expected back)
+         * @description Same enforcement as suspend. The two are separate values because what distinguishes them is whether the account is expected back, and an operator reviewing one needs to know which they are looking at without reading a free-text note.
+         */
+        post: operations["cmsBanUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/users/{id}/reactivate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ops: lift a suspension or ban */
+        post: operations["cmsReactivateUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/users/{id}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Super admin: erase an account on its holder's behalf
+         * @description Runs the same erasure as the consumer `DELETE /me` — PII nulled, sessions revoked, content pseudonymized, address freed. One implementation, not two: two versions of "erase this person" drift, and the one that drifts is the one that leaves a table behind.
+         *
+         *     `super_admin` only. It is the only action here that cannot be undone, and the account it destroys belongs to someone else.
+         */
+        post: operations["cmsDeleteUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/users/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: subject-access export, made through support
+         * @description The same payload as `/me/export`. The audit entry is the point: a staff member reading somebody's data is an event, and it must be attributable even though the bytes are identical to the self-service export.
+         *
+         *     Rate limited per actor — the payload is one person's whole history, and a loop over the user list is a data export nobody authorized.
+         */
+        post: operations["cmsExportUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/rooms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: rooms, read-only
+         * @description `code` is never returned. It is a bearer secret — whoever holds it can join the room — and an operations list is exactly the kind of place a value like that gets copied out of.
+         *
+         *     The host appears as an id, not a name or an address: it links to the account detail, which is where identifying data belongs and is access-controlled.
+         */
+        get: operations["cmsListRooms"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ops: plans, read-only */
+        get: operations["cmsListPlans"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/places": {
         parameters: {
             query?: never;
@@ -3043,6 +3222,108 @@ export interface components {
             basis: "billed" | "estimated";
             /** @description 0–1, present only where the provider reports a quota. */
             quotaUsedRatio?: number;
+        };
+        CmsAppUser: {
+            /** Format: uuid */
+            id: string;
+            displayName: string;
+            /** @description Null on a deleted account — the address is freed for re-registration. */
+            email?: string | null;
+            /** @enum {string} */
+            status: "active" | "suspended" | "banned" | "deleted";
+            /**
+             * @description How this account signs in. One real value today, because email + password is the only method that exists; it is reported rather than assumed so the console does not have to guess when a second lands. There is deliberately no filter on it — a control that can only return everything is not a control.
+             * @enum {string}
+             */
+            authMethod: "password" | "none";
+            locale: string;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Newest session use. Null for an account that never signed in.
+             */
+            lastActiveAt?: string | null;
+            counters: {
+                roomsCreated: number;
+                roomsJoined: number;
+                reviews: number;
+                savedPlaces: number;
+            };
+            /** @description Reports filed against this person, open or decided. */
+            reportCount: number;
+        };
+        CmsAppUserDetail: components["schemas"]["CmsAppUser"] & {
+            /** @description From the audit log, not a column — the reason is already written there with who set it and when, and a second copy on the row is one that drifts. Absent while the account is active. */
+            statusReason?: string;
+            /** Format: date-time */
+            statusChangedAt?: string;
+            /** @description The 20 most recently joined. No invite code. */
+            rooms: {
+                /** Format: uuid */
+                id: string;
+                type: string;
+                status: string;
+                decisionMode: string;
+                participantCount: number;
+                title?: string;
+                role: string;
+                /** Format: date-time */
+                joinedAt: string;
+                /** Format: date-time */
+                createdAt: string;
+            }[];
+        };
+        CmsAppUserPage: {
+            items: components["schemas"]["CmsAppUser"][];
+            nextCursor: string | null;
+            totalCount: number;
+        };
+        CmsUserStatusResult: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            status: "active" | "suspended" | "banned";
+        };
+        CmsRoomPage: {
+            items: {
+                /** Format: uuid */
+                id: string;
+                type: string;
+                status: string;
+                decisionMode: string;
+                participantCount: number;
+                title?: string;
+                /**
+                 * Format: uuid
+                 * @description An id, not a name — it links to the account detail.
+                 */
+                hostUserId: string;
+                memberCount: number;
+                planCount: number;
+                /** Format: date-time */
+                scheduledDate?: string;
+                /** Format: date-time */
+                createdAt: string;
+            }[];
+            nextCursor: string | null;
+            totalCount: number;
+        };
+        CmsPlanPage: {
+            items: {
+                /** Format: uuid */
+                id: string;
+                /** Format: uuid */
+                roomId: string;
+                version: number;
+                status: string;
+                isStale: boolean;
+                stopCount: number;
+                /** Format: date-time */
+                createdAt: string;
+            }[];
+            nextCursor: string | null;
+            totalCount: number;
         };
         CmsAdminPage: {
             items: components["schemas"]["CmsAdmin"][];
@@ -7280,6 +7561,270 @@ export interface operations {
                 content?: never;
             };
             403: components["responses"]["Forbidden"];
+        };
+    };
+    cmsListUsers: {
+        parameters: {
+            query?: {
+                /** @description Display name or email substring. */
+                q?: string;
+                status?: "active" | "suspended" | "banned" | "deleted";
+                /** @description Capped at 100: every row costs four indexed counter lookups, and the page size is what keeps this from being a table scan. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accounts, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAppUserPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsUserDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Account detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAppUserDetail"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsSuspendUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminActionReason"];
+            };
+        };
+        responses: {
+            /** @description Suspended */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsUserStatusResult"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `USER_DELETED` — a deleted account cannot change status. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsBanUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminActionReason"];
+            };
+        };
+        responses: {
+            /** @description Banned */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsUserStatusResult"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `USER_DELETED` — a deleted account cannot change status. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsReactivateUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminActionReason"];
+            };
+        };
+        responses: {
+            /** @description Reactivated */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsUserStatusResult"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `USER_DELETED` — a deleted account is anonymized and its address freed for re-registration, so reviving it would attach a stranger's history to whoever now holds that address. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsDeleteUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminActionReason"];
+            };
+        };
+        responses: {
+            /** @description Erased; idempotent on an already-deleted account */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        deleted: boolean;
+                    };
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsExportUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminActionReason"];
+            };
+        };
+        responses: {
+            /** @description The account's own data */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    cmsListRooms: {
+        parameters: {
+            query?: {
+                status?: "draft" | "active" | "planning" | "completed" | "archived";
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rooms, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsRoomPage"];
+                };
+            };
+        };
+    };
+    cmsListPlans: {
+        parameters: {
+            query?: {
+                status?: "draft" | "current" | "superseded" | "archived";
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Plans, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsPlanPage"];
+                };
+            };
         };
     };
     cmsListPlaces: {
