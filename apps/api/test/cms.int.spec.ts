@@ -130,8 +130,14 @@ describe('CMS auth + RBAC (CMS-001, FR-CMS-001, SRS §15.7)', () => {
 describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
   const REASON = { reason: 'offboarding, ticket OPS-118' };
 
-  const post = (token: string, url: string, payload: unknown = REASON) =>
-    api().inject({ method: 'POST', url, remoteAddress: ip(), headers: auth(token), payload });
+  /*
+   * Awaited inside the helper, not returned as the chainable. `inject()` is
+   * overloaded — hand back the un-awaited value and it types as
+   * `void & Promise<Response> & Chain`, which has neither `statusCode` nor
+   * `json` on it.
+   */
+  const post = async (token: string, url: string, payload: Record<string, unknown> = REASON) =>
+    await api().inject({ method: 'POST', url, remoteAddress: ip(), headers: auth(token), payload });
 
   it('edits role and display name, and records both sides of the change', async () => {
     const boss = await createAdmin('g9-boss@gogo.id.vn', 'super_admin');
