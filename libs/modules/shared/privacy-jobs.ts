@@ -7,6 +7,14 @@ export type PrivacyRunReport = {
   idempotencyKeysPurged: number;
   guestSessionsAnonymized: number;
   originsCleared: number;
+  /** #255 — closed privacy requests past retention, hard-deleted. */
+  privacyRequestsPurged: number;
+  /**
+   * #255 — retention holds whose review date has passed. Reported, never
+   * auto-released and never auto-deleted: a lapsed review date does not mean
+   * the legal basis lapsed with it. Somebody has to look.
+   */
+  privacyHoldReviewsOverdue: number;
 };
 
 /**
@@ -23,6 +31,8 @@ export class PrivacyJobs {
       idempotencyKeysPurged: 0,
       guestSessionsAnonymized: 0,
       originsCleared: 0,
+      privacyRequestsPurged: 0,
+      privacyHoldReviewsOverdue: 0,
     };
 
     const count = async (query: string): Promise<number> => {
@@ -121,6 +131,38 @@ export class PrivacyJobs {
           ${JSON.stringify(report)}::jsonb)
       `);
     }
+    // #255 — the privacy-request ledger's own retention. HARD delete, not
+    // anonymize (product decision on #246): timestamps are quasi-identifiers,
+    // operator notes cannot be machine-anonymized with confidence, and a
+    // half-scrubbed row is liability without value. The monthly aggregates
+    // were written when the events happened and survive this on purpose.
+    //
+    // `retention_hold_at is null` is the legal-hold mechanism working: a held
+    // row is skipped for as long as the hold stands, however old it is.
+    const purgeQ = `select id from privacy_requests
+      where retention_at is not null
+        and retention_at <= now()
+        and retention_hold_at is null`;
+    report.privacyRequestsPurged = await count(purgeQ);
+    if (!dryRun && report.privacyRequestsPurged > 0) {
+      await this.db.execute(sql`
+        delete from privacy_requests
+        where retention_at is not null
+          and retention_at <= now()
+          and retention_hold_at is null
+      `);
+    }
+
+    // Holds whose review date has passed. Counted and surfaced — the report
+    // is logged and the worker's alerting watches it — but nothing here
+    // releases the hold or deletes the row. Review is a human's job.
+    report.privacyHoldReviewsOverdue = await count(
+      `select id from privacy_requests
+        where retention_hold_at is not null
+          and released_at is null
+          and review_at <= now()`,
+    );
+
     return report;
   }
 }

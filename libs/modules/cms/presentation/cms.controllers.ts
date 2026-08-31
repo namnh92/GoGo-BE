@@ -52,6 +52,7 @@ import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { CmsObservabilityService } from '../application/cms-observability.service';
 import { CmsUsersService } from '../application/cms-users.service';
+import { PrivacyRequestsService } from '../application/privacy-requests.service';
 import { FLAG_ENVIRONMENTS, FLAG_PLATFORMS } from '../../shared/feature-flags';
 import {
   CHECKIN_MODERATION_STATUSES,
@@ -470,6 +471,150 @@ export class CmsUsersController {
   @Get('plans')
   listPlans(@Query(new ZodValidationPipe(planListQuery)) query: z.infer<typeof planListQuery>) {
     return this.users.listPlans(query);
+  }
+}
+
+// ---------------------------------------------------------------- privacy requests
+
+const privacyTypes = z.enum(['export', 'delete', 'correction']);
+const privacyOutcomes = z.enum([
+  'completed',
+  'no_account_found',
+  'identity_not_verified',
+  'rejected',
+  'failed',
+]);
+/**
+ * #255 — operator note is deliberately short. Privacy systems grow their own
+ * PII through free text; 256 characters holds a ticket id and a sentence, not
+ * a conversation. The console shows guidance next to the field.
+ */
+const operatorNote = z.string().trim().max(256).optional();
+const privacyCreateSchema = z
+  .object({
+    type: privacyTypes,
+    subjectType: z.enum(['user', 'email', 'external']),
+    userId: z.string().uuid().optional(),
+    contactEmail: z.string().email().max(254).optional(),
+    externalReference: z.string().trim().min(1).max(120).optional(),
+    reasonCode: z.string().trim().max(64).optional(),
+    ticketReference: z.string().trim().max(64).optional(),
+    operatorNote,
+  })
+  .refine(
+    (v) =>
+      (v.subjectType === 'user' && v.userId) ||
+      (v.subjectType === 'email' && v.contactEmail) ||
+      (v.subjectType === 'external' && v.externalReference),
+    { message: 'subjectType must be accompanied by its identifier' },
+  );
+const privacyListQuery = z.object({
+  status: z.enum(['open', 'acknowledged', 'in_progress', 'closed']).optional(),
+  type: privacyTypes.optional(),
+  outcome: privacyOutcomes.optional(),
+  sla: z.enum(['overdue', 'due_soon']).optional(),
+  userId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
+const privacyCloseSchema = z.object({
+  outcome: z.enum(['no_account_found', 'identity_not_verified', 'rejected', 'failed']),
+  reasonCode: z.string().trim().max(64).optional(),
+  operatorNote,
+});
+const privacyDeliveredSchema = z.object({
+  deliveryMethod: z.enum(['in_app', 'secure_download', 'other']),
+});
+const retentionHoldSchema = z.object({
+  reason: z.string().trim().min(3).max(500),
+  legalBasis: z.string().trim().min(3).max(500),
+  reviewAt: z.coerce.date(),
+  holdUntil: z.coerce.date().optional(),
+});
+
+/**
+ * BE-CMS-G12 (#255) — the privacy-request compliance ledger. ADR-0011.
+ *
+ * `ops_admin` and above for the workflow; `super_admin` for the two actions
+ * that are irreversible or legal in nature: executing a delete, and placing or
+ * releasing a retention hold.
+ */
+@RequireRole('ops_admin', 'super_admin')
+@Controller('cms/privacy-requests')
+export class PrivacyRequestsController {
+  constructor(private readonly requests: PrivacyRequestsService) {}
+
+  @Post()
+  create(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(privacyCreateSchema)) body: z.infer<typeof privacyCreateSchema>,
+  ) {
+    return this.requests.create({ ...body, actorId: actor.id });
+  }
+
+  @Get()
+  list(@Query(new ZodValidationPipe(privacyListQuery)) query: z.infer<typeof privacyListQuery>) {
+    return this.requests.list(query);
+  }
+
+  @Get(':id')
+  detail(@Param('id', Uuid) id: string) {
+    return this.requests.detail(id);
+  }
+
+  @Post(':id/acknowledge')
+  acknowledge(@CurrentActor() actor: Actor, @Param('id', Uuid) id: string) {
+    return this.requests.acknowledge({ id, actorId: actor.id });
+  }
+
+  /**
+   * Executes THIS request. The role check for a delete lives in the service
+   * because the route cannot know the type before loading the row; an
+   * `ops_admin` executing a delete request gets 403 from there.
+   */
+  @RateLimit({ action: 'cms.privacy_execute', limit: 10, windowSeconds: 300, keyBy: 'actor' })
+  @Post(':id/execute')
+  execute(@CurrentActor() actor: AdminActor, @Param('id', Uuid) id: string) {
+    return this.requests.execute({ id, actorId: actor.id, actorRole: actor.role });
+  }
+
+  @Post(':id/close')
+  close(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(privacyCloseSchema)) body: z.infer<typeof privacyCloseSchema>,
+  ) {
+    return this.requests.close({ id, ...body, actorId: actor.id });
+  }
+
+  @Post(':id/delivered')
+  delivered(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(privacyDeliveredSchema))
+    body: z.infer<typeof privacyDeliveredSchema>,
+  ) {
+    return this.requests.markDelivered({ id, ...body, actorId: actor.id });
+  }
+
+  @RequireRole('super_admin')
+  @Post(':id/retention-hold')
+  hold(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(retentionHoldSchema)) body: z.infer<typeof retentionHoldSchema>,
+  ) {
+    return this.requests.holdRetention({ id, ...body, actorId: actor.id });
+  }
+
+  @RequireRole('super_admin')
+  @Post(':id/retention-hold/release')
+  release(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(userReasonSchema)) body: { reason: string },
+  ) {
+    return this.requests.releaseHold({ id, ...body, actorId: actor.id });
   }
 }
 

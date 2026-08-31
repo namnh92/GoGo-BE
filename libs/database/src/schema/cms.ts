@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -12,8 +13,10 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  varchar,
 } from 'drizzle-orm/pg-core';
 import { places } from './places';
+import { users } from './identity';
 
 /**
  * DB-008 — CMS RBAC/audit/config/collection schema.
@@ -436,3 +439,134 @@ export const banners = pgTable(
     index('banners_list_idx').on(t.createdAt, t.id),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// BE-CMS-G12 (#255) — the privacy-request compliance ledger.
+//
+// The audit log answers "who did what"; this answers "what requests did we
+// receive, where are they, what is the deadline, how did they end". Neither
+// stands in for the other. Full rationale: migration 0030 and ADR-0011.
+
+export const privacyRequestType = pgEnum('privacy_request_type', [
+  'export',
+  'delete',
+  'correction',
+]);
+export const privacyRequestSource = pgEnum('privacy_request_source', [
+  'self_service',
+  'support',
+  'cms',
+]);
+export const privacyRequestStatus = pgEnum('privacy_request_status', [
+  'open',
+  'acknowledged',
+  'in_progress',
+  'closed',
+]);
+export const privacyRequestOutcome = pgEnum('privacy_request_outcome', [
+  'completed',
+  'no_account_found',
+  'identity_not_verified',
+  'rejected',
+  'failed',
+]);
+export const privacySubjectType = pgEnum('privacy_subject_type', ['user', 'email', 'external']);
+export const privacyIdentityStatus = pgEnum('privacy_identity_status', [
+  'matched',
+  'no_account_found',
+  'unverified',
+]);
+export const privacyDeliveryMethod = pgEnum('privacy_delivery_method', [
+  'in_app',
+  'secure_download',
+  'other',
+]);
+
+export const privacyRequests = pgTable(
+  'privacy_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    type: privacyRequestType('type').notNull(),
+    source: privacyRequestSource('source').notNull(),
+    status: privacyRequestStatus('status').notNull().default('open'),
+    outcome: privacyRequestOutcome('outcome'),
+
+    subjectType: privacySubjectType('subject_type').notNull(),
+    /**
+     * No cascade: after the account is erased this row may deliberately be
+     * the last record that the person existed (ADR-0011 §4).
+     */
+    userId: uuid('user_id').references(() => users.id),
+    contactEmail: text('contact_email'),
+    externalReference: text('external_reference'),
+    identityStatus: privacyIdentityStatus('identity_status').notNull(),
+
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    ackDueAt: timestamp('ack_due_at', { withTimezone: true }).notNull(),
+    acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+    fulfillmentDueAt: timestamp('fulfillment_due_at', { withTimezone: true }).notNull(),
+    extendedDueAt: timestamp('extended_due_at', { withTimezone: true }),
+    extensionReason: text('extension_reason'),
+    executedAt: timestamp('executed_at', { withTimezone: true }),
+    executedByAdminId: uuid('executed_by_admin_id').references(() => adminUsers.id),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+
+    deliveryMethod: privacyDeliveryMethod('delivery_method'),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+
+    retentionAt: timestamp('retention_at', { withTimezone: true }),
+    retentionHoldAt: timestamp('retention_hold_at', { withTimezone: true }),
+    retentionHoldBy: uuid('retention_hold_by').references(() => adminUsers.id),
+    retentionHoldReason: text('retention_hold_reason'),
+    legalBasis: text('legal_basis'),
+    reviewAt: timestamp('review_at', { withTimezone: true }),
+    holdUntil: timestamp('hold_until', { withTimezone: true }),
+    releasedAt: timestamp('released_at', { withTimezone: true }),
+    releasedBy: uuid('released_by').references(() => adminUsers.id),
+
+    reasonCode: text('reason_code'),
+    ticketReference: text('ticket_reference'),
+    /** Short by design: a ticket id and a sentence, not a conversation. */
+    operatorNote: varchar('operator_note', { length: 256 }),
+    createdByAdminId: uuid('created_by_admin_id').references(() => adminUsers.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'privacy_requests_subject_shape',
+      sql`(${t.subjectType} = 'user' and ${t.userId} is not null)
+        or (${t.subjectType} = 'email' and ${t.contactEmail} is not null)
+        or (${t.subjectType} = 'external' and ${t.externalReference} is not null)`,
+    ),
+    check(
+      'privacy_requests_closed_has_outcome',
+      sql`(${t.status} = 'closed') = (${t.outcome} is not null)`,
+    ),
+    index('privacy_requests_status_idx').on(t.status, t.fulfillmentDueAt),
+    index('privacy_requests_user_idx')
+      .on(t.userId)
+      .where(sql`${t.userId} is not null`),
+    index('privacy_requests_retention_idx')
+      .on(t.retentionAt)
+      .where(sql`${t.retentionAt} is not null and ${t.retentionHoldAt} is null`),
+  ],
+);
+
+/**
+ * Long-term reporting that survives the hard delete. Integer counters only —
+ * nothing joins back to a person, which is what lets these rows live forever.
+ */
+export const privacyMetricsMonthly = pgTable('privacy_metrics_monthly', {
+  month: text('month').primaryKey(),
+  deleteReceived: integer('delete_received').notNull().default(0),
+  deleteCompleted: integer('delete_completed').notNull().default(0),
+  deleteFailed: integer('delete_failed').notNull().default(0),
+  exportReceived: integer('export_received').notNull().default(0),
+  exportCompleted: integer('export_completed').notNull().default(0),
+  exportFailed: integer('export_failed').notNull().default(0),
+  correctionReceived: integer('correction_received').notNull().default(0),
+  slaBreached: integer('sla_breached').notNull().default(0),
+  noAccountFound: integer('no_account_found').notNull().default(0),
+});

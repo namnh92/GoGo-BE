@@ -1614,6 +1614,172 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/privacy-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: the privacy-request ledger
+         * @description `sla=overdue` and `sla=due_soon` are computed against the same stored dates the `sla` badge uses, so the list a person filters and the badge they see cannot disagree.
+         */
+        get: operations["cmsListPrivacyRequests"];
+        put?: never;
+        /**
+         * Ops: record a privacy request that arrived through support
+         * @description BE-CMS-G12 / ADR-0011. The ledger, not the audit log: the audit log says who did what, this says what was received, where it stands, what the deadline is and how it ended.
+         *
+         *     The subject is **structured** — a user id, an email, or an external reference — never a single free-text field, which becomes a PII dumping ground the first time a conversation is pasted into it. A non-user subject starts `unverified` and says so.
+         *
+         *     Self-service `/me/export` and `/me/delete` also write here, as born-completed rows; they do not use this endpoint.
+         */
+        post: operations["cmsCreatePrivacyRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/privacy-requests/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ops: one privacy request */
+        get: operations["cmsGetPrivacyRequest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/privacy-requests/{id}/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ops: acknowledge receipt (stops the ack clock) */
+        post: operations["cmsAcknowledgePrivacyRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/privacy-requests/{id}/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: run the export or delete for THIS request and close it
+         * @description **Explicit linkage.** Same user is not same request: one person may have an export, a delete, a duplicate and a rejected request open at once. Only the request executed here transitions to `completed`. A `POST /cms/users/{id}/delete` outside this workflow never touches the ledger; the console warns instead (`openPrivacyRequestCount`).
+         *
+         *     Executing a **delete** requires `super_admin` — the same bar as the direct user delete. An export returns the payload to the caller and nowhere else; the ledger then records only delivery metadata. Correction requests are worked by hand and cannot be executed.
+         */
+        post: operations["cmsExecutePrivacyRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/privacy-requests/{id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: close without executing
+         * @description The outcomes that end a request unfulfilled. `no_account_found` and `identity_not_verified` are real results — those requests count in the compliance metrics even though nothing was exported or erased.
+         */
+        post: operations["cmsClosePrivacyRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/privacy-requests/{id}/delivered": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: record how an export was handed over
+         * @description Metadata only, ever — never the bytes, never a signed URL. The record outlives any artifact and must not be a way back to the data. `secure_download` is the target method (BE-CMS-G13); the runbook forbids raw exports over ordinary email.
+         */
+        post: operations["cmsPrivacyRequestDelivered"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/privacy-requests/{id}/retention-hold": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Super admin: place a legal retention hold
+         * @description The mechanism behind "Legal may override retention" — so an override never means editing the database by hand. Reason, legal basis and a future review date are all mandatory; the retention job skips held rows. A hold only ever **extends** retention.
+         *
+         *     When `reviewAt` passes, nothing is auto-released and nothing is auto-deleted: the request is flagged `reviewOverdue` and the worker alerts. A lapsed review date does not mean the legal basis lapsed.
+         */
+        post: operations["cmsPrivacyRetentionHold"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/privacy-requests/{id}/retention-hold/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Super admin: release a retention hold
+         * @description Standard retention resumes from the date already stamped on the row — never an earlier one. Quietly shortening retention is destroying evidence, so there is no path that does it.
+         */
+        post: operations["cmsPrivacyRetentionHoldRelease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/rooms": {
         parameters: {
             query?: never;
@@ -3302,6 +3468,8 @@ export interface components {
             reportCount: number;
         };
         CmsAppUserDetail: components["schemas"]["CmsAppUser"] & {
+            /** @description #255. Open privacy requests naming this account. The console warns before a direct delete — a direct delete does not close any of them, because the same user is not the same request. */
+            openPrivacyRequestCount: number;
             /** @description From the audit log, not a column — the reason is already written there with who set it and when, and a second copy on the row is one that drifts. Absent while the account is active. */
             statusReason?: string;
             /** Format: date-time */
@@ -3372,6 +3540,82 @@ export interface components {
             }[];
             nextCursor: string | null;
             totalCount: number;
+        };
+        /** @enum {string} */
+        PrivacyRequestType: "export" | "delete" | "correction";
+        /**
+         * @description How a request ended. Separate from `status` on purpose: one enum that mixes "acknowledged" with "no_account_found" forces every query to know which values mean still-moving and which mean ended-and-how.
+         * @enum {string}
+         */
+        PrivacyRequestOutcome: "completed" | "no_account_found" | "identity_not_verified" | "rejected" | "failed";
+        PrivacyRequest: {
+            /** Format: uuid */
+            id: string;
+            type: components["schemas"]["PrivacyRequestType"];
+            /** @enum {string} */
+            source: "self_service" | "support" | "cms";
+            /** @enum {string} */
+            status: "open" | "acknowledged" | "in_progress" | "closed";
+            outcome?: components["schemas"]["PrivacyRequestOutcome"];
+            subject: {
+                /** @enum {string} */
+                subjectType: "user" | "email" | "external";
+                /** Format: uuid */
+                userId?: string;
+                /** Format: email */
+                contactEmail?: string;
+                externalReference?: string;
+                /** @enum {string} */
+                identityStatus: "matched" | "no_account_found" | "unverified";
+            };
+            /** Format: date-time */
+            receivedAt: string;
+            /** Format: date-time */
+            ackDueAt: string;
+            /** Format: date-time */
+            acknowledgedAt?: string;
+            /** Format: date-time */
+            fulfillmentDueAt: string;
+            /** Format: date-time */
+            extendedDueAt?: string;
+            extensionReason?: string;
+            /** Format: date-time */
+            executedAt?: string;
+            /** Format: date-time */
+            completedAt?: string;
+            /** Format: date-time */
+            closedAt?: string;
+            /** @enum {string} */
+            deliveryMethod?: "in_app" | "secure_download" | "other";
+            /** Format: date-time */
+            deliveredAt?: string;
+            /**
+             * Format: date-time
+             * @description Stamped at closure: closed_at + the retention policy. The job hard-deletes the row at this time unless a hold is in place.
+             */
+            retentionAt?: string;
+            retentionHold?: {
+                /** Format: date-time */
+                heldAt: string;
+                /** Format: uuid */
+                heldBy: string;
+                reason: string;
+                legalBasis: string;
+                /** Format: date-time */
+                reviewAt: string;
+                /** Format: date-time */
+                holdUntil?: string;
+                /** @description HOLD_REVIEW_OVERDUE — a person must review. Nothing is released or deleted automatically. */
+                reviewOverdue: boolean;
+            };
+            reasonCode?: string;
+            ticketReference?: string;
+            operatorNote?: string;
+            /**
+             * @description Computed server-side from the stored due dates. `DUE_SOON` is the last quarter of the window, floored at 24 hours. Production SLA values are provisional until Legal confirms them against current law.
+             * @enum {string}
+             */
+            sla: "ON_TRACK" | "DUE_SOON" | "OVERDUE" | "COMPLETED";
         };
         CmsAdminPage: {
             items: components["schemas"]["CmsAdmin"][];
@@ -7825,6 +8069,346 @@ export interface operations {
             };
             404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
+        };
+    };
+    cmsListPrivacyRequests: {
+        parameters: {
+            query?: {
+                status?: "open" | "acknowledged" | "in_progress" | "closed";
+                type?: components["schemas"]["PrivacyRequestType"];
+                outcome?: components["schemas"]["PrivacyRequestOutcome"];
+                sla?: "overdue" | "due_soon";
+                userId?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Requests, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["PrivacyRequest"][];
+                        nextCursor: string | null;
+                        totalCount: number;
+                    };
+                };
+            };
+        };
+    };
+    cmsCreatePrivacyRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    type: components["schemas"]["PrivacyRequestType"];
+                    /** @enum {string} */
+                    subjectType: "user" | "email" | "external";
+                    /** Format: uuid */
+                    userId?: string;
+                    /** Format: email */
+                    contactEmail?: string;
+                    externalReference?: string;
+                    reasonCode?: string;
+                    ticketReference?: string;
+                    /** @description Deliberately short. UI guidance: "Chỉ ghi mã ticket hoặc thông tin vận hành cần thiết. Không nhập dữ liệu cá nhân, nội dung trao đổi hoặc chi tiết vụ việc." */
+                    operatorNote?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded, with SLA dates computed from per-type configuration */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsGetPrivacyRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The request */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsAcknowledgePrivacyRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Acknowledged */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `NOT_OPEN` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsExecutePrivacyRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Executed and closed as `completed` */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        request: components["schemas"]["PrivacyRequest"];
+                        /** @description Present for an export — the same payload `/me/export` returns. */
+                        data?: Record<string, never>;
+                    };
+                };
+            };
+            /** @description `ROLE_DENIED` — a delete request needs super_admin. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `ALREADY_CLOSED`, `NOT_EXECUTABLE` (correction), or `IDENTITY_NOT_MATCHED` — match the request to an account first. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    cmsClosePrivacyRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    outcome: "no_account_found" | "identity_not_verified" | "rejected" | "failed";
+                    reasonCode?: string;
+                    operatorNote?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Closed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `ALREADY_CLOSED` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsPrivacyRequestDelivered: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    deliveryMethod: "in_app" | "secure_download" | "other";
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `NOT_AN_EXPORT` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsPrivacyRetentionHold: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    reason: string;
+                    legalBasis: string;
+                    /** Format: date-time */
+                    reviewAt: string;
+                    /** Format: date-time */
+                    holdUntil?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Held */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            /** @description `REVIEW_IN_PAST` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `NOT_CLOSED` or `ALREADY_HELD` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsPrivacyRetentionHoldRelease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminActionReason"];
+            };
+        };
+        responses: {
+            /** @description Released */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `NOT_HELD` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsListRooms: {

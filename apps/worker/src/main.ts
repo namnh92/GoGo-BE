@@ -140,6 +140,14 @@ async function bootstrap(): Promise<void> {
     async () => {
       const report = await privacy.run(false);
       logger.info({ report }, 'privacy retention run complete');
+      // #255 — a lapsed review date is a person's job, not the job's. It is
+      // never auto-released or auto-deleted; it is made loud.
+      if (report.privacyHoldReviewsOverdue > 0) {
+        logger.warn(
+          { count: report.privacyHoldReviewsOverdue },
+          'privacy retention holds past review date — HOLD_REVIEW_OVERDUE',
+        );
+      }
       await heartbeat(process.env.HEARTBEAT_URL_PRIVACY, 0);
     },
     { connection, concurrency: 1 },

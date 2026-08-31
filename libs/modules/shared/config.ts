@@ -31,6 +31,12 @@ export type IdentityConfig = {
  * minted for any application in the account, which is a different door with a
  * different allow-list.
  */
+/** #255 — the privacy-request ledger's knobs. See shared/privacy-ledger.ts. */
+export type PrivacyLedgerConfig = {
+  PRIVACY_SLA_JSON: string;
+  PRIVACY_RETENTION_MONTHS: number;
+};
+
 export type CloudflareAccessConfig = {
   /** e.g. `gogo.cloudflareaccess.com`. Also the JWKS host. */
   CF_ACCESS_TEAM_DOMAIN: string;
