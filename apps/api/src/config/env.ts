@@ -131,13 +131,6 @@ const envSchema = z
     MEDIA_PUBLIC_BASE_URL: z.string().default(''),
     R2_BACKUP_BUCKET: z.string().default(''),
     SENTRY_DSN: z.string().default(''),
-    // Push providers — waiting slots; fakes are bound while empty.
-    FCM_SERVICE_ACCOUNT_B64: z.string().default(''),
-    APNS_KEY_ID: z.string().default(''),
-    APNS_TEAM_ID: z.string().default(''),
-    APNS_BUNDLE_ID: z.string().default(''),
-    APNS_PRIVATE_KEY_B64: z.string().default(''),
-    APNS_ENV: z.enum(['sandbox', 'production']).default('sandbox'),
     /**
      * PI-SRE-001 — bearer token for `GET /metrics`. Empty means the endpoint
      * answers 404: series names and label values describe internal structure,

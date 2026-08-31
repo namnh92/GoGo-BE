@@ -202,16 +202,15 @@ Kênh: gửi qua kênh riêng (không chat thường/không email plaintext — 
 1Password share / age-encrypted file). **Không bao giờ commit.** Key vào đúng
 một chỗ: `.env.prod` trên VPS (chmod 600) + GitHub Actions secrets nếu CI cần.
 
-| #   | Key                 | Slot chờ (đã có trong `.env.example`)                                      | Ghi chú bảo mật                                                              |
-| --- | ------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| 1   | Google Maps API key | `GOOGLE_MAPS_API_KEY`                                                      | Restrict theo IP VPS; enable đúng "Places API (New)"; budget alert $10       |
-| 2   | R2 S3 token         | `R2_ACCOUNT_ID/ACCESS_KEY_ID/SECRET_ACCESS_KEY/R2_BUCKET/R2_BACKUP_BUCKET` | Token scope đúng 2 bucket; bucket backup riêng                               |
-| 3   | Sentry DSN          | `SENTRY_DSN`                                                               | DSN không phải secret nghiêm ngặt nhưng vẫn để .env                          |
-| 4   | FCM service account | `FCM_SERVICE_ACCOUNT_B64` (base64 1 dòng)                                  | Role tối thiểu: Firebase Cloud Messaging API                                 |
-| 5   | APNs .p8            | `APNS_KEY_ID/TEAM_ID/BUNDLE_ID/PRIVATE_KEY_B64` + `APNS_ENV`               | .p8 không thu hồi từng phần được — giữ 1 bản duy nhất trong password manager |
+| #   | Key                 | Slot chờ (đã có trong `.env.example`)                                               | Ghi chú bảo mật                                                                                                 |
+| --- | ------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| 1   | Google Maps API key | `GOOGLE_MAPS_API_KEY`                                                               | Restrict theo IP VPS; enable đúng "Places API (New)"; budget alert $10                                          |
+| 2   | R2 S3 token         | `R2_ACCOUNT_ID/ACCESS_KEY_ID/SECRET_ACCESS_KEY/R2_BUCKET/R2_BACKUP_BUCKET`          | Token scope đúng 2 bucket; bucket backup riêng                                                                  |
+| 3   | Sentry DSN          | `SENTRY_DSN`                                                                        | DSN không phải secret nghiêm ngặt nhưng vẫn để .env                                                             |
+| 4   | OneSignal           | `ONESIGNAL_APP_ID`, `ONESIGNAL_REST_API_KEY`, `ONESIGNAL_IDENTITY_VERIFICATION_KEY` | REST key chỉ worker dùng. APNs `.p8` và FCM V1 nằm **trong OneSignal app**, không đi qua BE — xem GoGo-Infra#13 |
 
 Khi nhận key: tôi bật adapter thật tương ứng (place import/areas → #80,
-media presign → #81/#70, push → #59 APNs/FCM adapter) + smoke test từng cái.
+media presign → #81/#70, push → #193 OneSignal adapter) + smoke test từng cái.
 
 ## 5. Những gì cố tình KHÔNG dùng ở MVP (tiết kiệm)
 
