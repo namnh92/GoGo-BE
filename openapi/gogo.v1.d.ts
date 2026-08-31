@@ -7071,6 +7071,15 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+            /** @description SHEET_PROVIDER_NOT_CONFIGURED — GoGo has no working Google Sheets credential. A statement about this deployment, not about the caller's spreadsheet, so the client must not present it as a sharing or permission problem. `retryable` is false: it clears only when an operator sets the key. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     getPlaceImportJob: {

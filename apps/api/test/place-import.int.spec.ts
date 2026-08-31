@@ -240,6 +240,29 @@ describe('PI-BE-012 — Google Sheets source', () => {
     expect(res.json().code).toBe('SHEET_PERMISSION_DENIED');
   });
 
+  it('reports an unconfigured provider as 503, not as a missing sheet', async () => {
+    // PI-BE-021: this is the exact shape of the DEV incident — a valid, public
+    // spreadsheet URL against a process with no Sheets credential. It answered
+    // 400 SHEET_NOT_FOUND, and the editor went looking at their sharing
+    // settings. The status is what tells them, and alerting, whose fault it is.
+    const editor = await createAdmin('sheet-editor-unconfigured@gogo.local', 'editor');
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl:
+          'https://docs.google.com/spreadsheets/d/3NeverSeededNeverSeeded00000000000/edit?usp=sharing',
+        mode: 'dry_run',
+      },
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().code).toBe('SHEET_PROVIDER_NOT_CONFIGURED');
+    // Never retryable: no amount of waiting puts a key in the environment.
+    expect(res.json().retryable).toBe(false);
+  });
+
   it('rejects a non-Google spreadsheet URL', async () => {
     const editor = await createAdmin('sheet-editor3@gogo.local', 'editor');
     const res = await api().inject({

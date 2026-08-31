@@ -1236,6 +1236,13 @@ function dbPriceUnit(unit: NormalizedImportRow['priceUnit']): 'per_person' | 'pe
 
 function sheetError(err: unknown): AppError {
   if (err instanceof SheetAccessError) {
+    // PI-BE-021: a missing credential is not a bad request. Nothing the caller
+    // sends can succeed, so 4xx is both the wrong status and the wrong advice —
+    // and it hides an outage inside a metric that counts user mistakes.
+    // retryable=false: this one never clears on its own.
+    if (err.code === 'SHEET_PROVIDER_NOT_CONFIGURED') {
+      return AppError.serviceUnavailable(err.code, err.message, false);
+    }
     return err.code === 'SHEET_PERMISSION_DENIED'
       ? AppError.forbidden(err.code, err.message)
       : AppError.badRequest(err.code, err.message);
