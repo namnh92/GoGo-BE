@@ -107,6 +107,7 @@ async function bootstrap(): Promise<void> {
   // start survives an API restart and no message can strand a job.
   const placesKey = process.env.GOOGLE_PLACES_API_KEY ?? '';
   const sheetsKey = process.env.GOOGLE_SHEETS_API_KEY ?? '';
+  const routesKey = process.env.GOOGLE_ROUTES_API_KEY ?? '';
   // PI-BE-021: the worker runs the import chunks, so a missing Sheets key
   // strands jobs here as surely as it rejects them in the API. Same warning,
   // because this process makes the same choice from its own copy of the env.
@@ -114,7 +115,7 @@ async function bootstrap(): Promise<void> {
     {
       GOOGLE_PLACES_API_KEY: placesKey,
       GOOGLE_SHEETS_API_KEY: sheetsKey,
-      GOOGLE_ROUTES_API_KEY: process.env.GOOGLE_ROUTES_API_KEY ?? '',
+      GOOGLE_ROUTES_API_KEY: routesKey,
       // The worker binds no travel-time provider, but it reads the same env and
       // a warn here is what an operator sees when only the worker is restarted.
       FLAG_ROUTES_API: process.env.FLAG_ROUTES_API === 'true',
