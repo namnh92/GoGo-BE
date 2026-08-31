@@ -1694,7 +1694,13 @@ paths:
                 defaultCity: { type: string, maxLength: 80 }
                 mapping:
                   type: string
-                  description: JSON object mapping raw header → canonical field
+                  description: >-
+                    JSON object mapping raw header → `ImportCanonicalField`.
+                    Multipart carries it as a string, so the enum cannot be
+                    expressed here; the values are validated against
+                    `ImportCanonicalField` all the same, and an unknown one is
+                    a 400 `MAPPING_FIELD_UNKNOWN`. A header left out of the
+                    object is auto-detected; a header mapped to `""` is ignored.
       responses:
         '201':
           description: Job created (or an identical one reused)
@@ -1762,7 +1768,11 @@ paths:
                   additionalProperties: { type: string }
                 mapping:
                   type: object
-                  additionalProperties: { type: string }
+                  description: >-
+                    Raw header → canonical field. A header left out is
+                    auto-detected; a header mapped to `""` is ignored. An
+                    unknown field is a 400 `MAPPING_FIELD_UNKNOWN`.
+                  additionalProperties: { $ref: '#/components/schemas/ImportCanonicalField' }
       responses:
         '201':
           description: Job created
@@ -6540,6 +6550,33 @@ components:
         totals: { $ref: '#/components/schemas/ImportTotals' }
         createdAt: { type: string, format: date-time }
         completedAt: { type: string, format: date-time }
+    ImportCanonicalField:
+      type: string
+      description: >-
+        A column an import source can be mapped onto. Generated from
+        `CANONICAL_FIELDS` in `libs/modules/ingestion/domain/column-mapping.ts`,
+        which is the single source of truth; `import-parsing.spec.ts` fails if
+        the two drift. A mapping naming anything outside this list is rejected
+        with `MAPPING_FIELD_UNKNOWN` — never silently ignored.
+      enum:
+        - source_row_id
+        - name
+        - city
+        - district
+        - google_maps_url
+        - google_maps_query
+        - category
+        - category_raw
+        - price_min
+        - price_max
+        - price_unit
+        - price_raw
+        - audiences
+        - audiences_raw
+        - vibes
+        - vibes_raw
+        - highlight
+        - note
     ImportJob:
       allOf:
         - $ref: '#/components/schemas/ImportJobSummary'

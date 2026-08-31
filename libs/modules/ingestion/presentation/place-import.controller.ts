@@ -6,6 +6,12 @@ import type { Actor } from '../../identity/domain/actor';
 import { CurrentActor, RateLimit } from '../../identity/presentation/decorators';
 import { RequireRole } from '../../cms/presentation/admin.guard';
 import { sanitizeFileName } from '../domain/tabular';
+import {
+  CANONICAL_FIELDS,
+  InvalidColumnMappingError,
+  parseColumnMapping,
+  type CanonicalField,
+} from '../domain/column-mapping';
 import { PlaceImportJobService, type ImportMode } from '../application/place-import-job.service';
 
 const Uuid = new ZodValidationPipe(z.string().uuid());
@@ -41,6 +47,34 @@ const sheetSchema = z.object({
   tabCityMapping: z.record(z.string().max(120), z.string().max(80)).optional(),
   mapping: z.record(z.string().max(200), z.string().max(64)).optional(),
 });
+
+/**
+ * Both entry points answer with the same code, so a client has one thing to
+ * handle: the multipart route carries `mapping` as a JSON string and the sheet
+ * route as an object, but a bad canonical field is the same mistake either way.
+ */
+function toMappingError(err: unknown): AppError {
+  if (!(err instanceof InvalidColumnMappingError))
+    return AppError.badRequest('MAPPING_INVALID', 'mapping không hợp lệ');
+  return AppError.badRequest(
+    'MAPPING_FIELD_UNKNOWN',
+    `${err.message}. Giá trị hợp lệ: ${CANONICAL_FIELDS.join(', ')}`,
+    err.entries.map((entry) => ({
+      field: `mapping.${entry.header}`,
+      code: 'MAPPING_FIELD_UNKNOWN',
+      message: `${entry.value} không phải canonical field`,
+    })),
+  );
+}
+
+function readMapping(raw: unknown): Record<string, CanonicalField> | undefined {
+  try {
+    const parsed = parseColumnMapping(raw);
+    return Object.keys(parsed).length > 0 ? parsed : undefined;
+  } catch (err) {
+    throw toMappingError(err);
+  }
+}
 
 const confirmSchema = z.object({ googlePlaceId: z.string().trim().min(5).max(255) });
 const mergeSchema = z.object({ placeId: z.string().uuid() });
@@ -88,14 +122,17 @@ export class PlaceImportController {
       throw AppError.badRequest('MODE_INVALID', `mode không hợp lệ: ${mode}`);
     }
     const mappingRaw = field('mapping');
-    let mapping: Record<string, string> | undefined;
+    let mapping: Record<string, CanonicalField> | undefined;
     if (mappingRaw) {
+      let parsed: unknown;
       try {
-        const parsed: unknown = JSON.parse(mappingRaw);
-        mapping = z.record(z.string().max(200), z.string().max(64)).parse(parsed);
+        parsed = JSON.parse(mappingRaw);
       } catch {
         throw AppError.badRequest('MAPPING_INVALID', 'mapping phải là JSON object hợp lệ');
       }
+      // Malformed JSON and an unknown field are different mistakes and get
+      // different codes — the second one names the column to fix.
+      mapping = readMapping(parsed);
     }
 
     return this.jobs.createFromFile({
@@ -120,7 +157,7 @@ export class PlaceImportController {
       tabCityMapping: body.tabCityMapping,
       mode: body.mode,
       defaultCity: body.defaultCity,
-      mapping: body.mapping,
+      mapping: readMapping(body.mapping),
       adminId: actor.id,
     });
   }

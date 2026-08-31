@@ -1,6 +1,15 @@
 import { deflateRawSync } from 'node:zlib';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { parse as parseYaml } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import { applyMapping, resolveMapping } from './column-mapping';
+import {
+  CANONICAL_FIELDS,
+  InvalidColumnMappingError,
+  applyMapping,
+  parseColumnMapping,
+  resolveMapping,
+} from './column-mapping';
 import { buildErrorReportCsv, escapeCsvCell } from './error-report';
 import { validateRow } from './template';
 import {
@@ -431,6 +440,96 @@ describe('source_row_id fallback', () => {
     expect(validateRow(row, { fallbackRowId: '   ' }).errors.map((e) => e.code)).toContain(
       'ROW_ID_MISSING',
     );
+  });
+});
+
+// --- #276 canonical mapping vocabulary --------------------------------------
+
+describe('parseColumnMapping', () => {
+  it('accepts every field the parser actually understands', () => {
+    const mapping = Object.fromEntries(CANONICAL_FIELDS.map((f) => [`col ${f}`, f]));
+    expect(parseColumnMapping(mapping)).toEqual(mapping);
+  });
+
+  it('rejects a foreign vocabulary instead of ignoring it', () => {
+    // Exactly what the CMS wizard used to send. It parsed, imported, and did
+    // nothing the operator had asked for.
+    let caught: InvalidColumnMappingError | undefined;
+    try {
+      parseColumnMapping({ Link: 'googleMapsUrl', 'Giá từ': 'priceMin' });
+    } catch (err) {
+      caught = err as InvalidColumnMappingError;
+    }
+
+    expect(caught).toBeInstanceOf(InvalidColumnMappingError);
+    // Both offenders are named, not just the first — one round trip per bad
+    // column would be a miserable way to fix a mapping screen.
+    expect(caught!.entries).toEqual([
+      { header: 'Link', value: 'googleMapsUrl' },
+      { header: 'Giá từ', value: 'priceMin' },
+    ]);
+  });
+
+  it('rejects fields no canonical column exists for', () => {
+    // CMS offered these three; the parser has nowhere to put them.
+    for (const field of ['address', 'phone', 'website']) {
+      expect(() => parseColumnMapping({ Cột: field })).toThrow(InvalidColumnMappingError);
+    }
+  });
+
+  it('treats an empty value as “ignore this column”, not as an error', () => {
+    expect(parseColumnMapping({ Thừa: '', Tên: 'name' })).toEqual({ Tên: 'name' });
+  });
+
+  it('returns an empty mapping for a missing one', () => {
+    expect(parseColumnMapping(undefined)).toEqual({});
+    expect(parseColumnMapping(null)).toEqual({});
+  });
+
+  it('rejects a non-object mapping', () => {
+    expect(() => parseColumnMapping('name')).toThrow(InvalidColumnMappingError);
+    expect(() => parseColumnMapping([['a', 'name']])).toThrow(InvalidColumnMappingError);
+  });
+});
+
+describe('explicit mapping vs auto-detection', () => {
+  it('lets an explicit choice beat what auto-detection would have picked', () => {
+    // `Tên địa điểm` auto-detects to `name`; the operator says `highlight`.
+    const { mapping } = resolveMapping(
+      ['Tên địa điểm'],
+      parseColumnMapping({
+        'Tên địa điểm': 'highlight',
+      }),
+    );
+    expect(mapping['Tên địa điểm']).toBe('highlight');
+  });
+
+  it('auto-detects only the columns the caller said nothing about', () => {
+    const { mapping } = resolveMapping(
+      ['Tên địa điểm', 'city'],
+      parseColumnMapping({ 'Tên địa điểm': 'highlight' }),
+    );
+    expect(mapping['Tên địa điểm']).toBe('highlight');
+    expect(mapping['city']).toBe('city');
+  });
+
+  it('auto-detects everything when no mapping is supplied', () => {
+    const { mapping } = resolveMapping(['Tên địa điểm', 'city']);
+    expect(mapping['Tên địa điểm']).toBe('name');
+    expect(mapping['city']).toBe('city');
+  });
+});
+
+describe('OpenAPI ImportCanonicalField', () => {
+  it('carries exactly the runtime canonical fields, in order', () => {
+    // The YAML is handwritten, so this is what stops it drifting from the
+    // parser. Publishing a vocabulary the parser does not implement is how the
+    // CMS ended up with three fields nothing could accept.
+    const spec = parseYaml(
+      readFileSync(path.resolve(__dirname, '../../../../openapi/gogo.v1.yaml'), 'utf8'),
+    ) as { components: { schemas: Record<string, { enum?: string[] }> } };
+
+    expect(spec.components.schemas.ImportCanonicalField?.enum).toEqual([...CANONICAL_FIELDS]);
   });
 });
 

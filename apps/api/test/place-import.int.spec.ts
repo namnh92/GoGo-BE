@@ -404,6 +404,198 @@ describe('PI-BE-012 — Google Sheets source', () => {
   });
 });
 
+// #276 — one canonical vocabulary, and no way to have a mapping ignored.
+describe('PI-BE-019 — explicit column mapping is strict', () => {
+  /** The enum the OpenAPI file publishes, read back through the wire. */
+  const PUBLISHED_FIELDS = [
+    'source_row_id',
+    'name',
+    'city',
+    'district',
+    'google_maps_url',
+    'google_maps_query',
+    'category',
+    'category_raw',
+    'price_min',
+    'price_max',
+    'price_unit',
+    'price_raw',
+    'audiences',
+    'audiences_raw',
+    'vibes',
+    'vibes_raw',
+    'highlight',
+    'note',
+  ];
+
+  it('accepts every field the contract publishes', async () => {
+    const editor = await createAdmin('mapping-all@gogo.local', 'editor');
+    // Deliberately opaque headers: nothing here auto-detects, so the mapping
+    // is the only thing that can have placed them.
+    const headers = PUBLISHED_FIELDS.map((_, i) => `col_${i}`);
+    const mapping = Object.fromEntries(PUBLISHED_FIELDS.map((f, i) => [`col_${i}`, f]));
+    sheets.seed('6MappingAllFieldsMappingAll012345678', 'HCM', [
+      headers,
+      headers.map((_, i) => (PUBLISHED_FIELDS[i] === 'category' ? 'cafe' : `v${i}`)),
+    ]);
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: '6MappingAllFieldsMappingAll012345678',
+        sheets: ['HCM'],
+        mode: 'dry_run',
+        mapping,
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    // Every published value was honoured; none fell through to auto-detection.
+    expect(res.json().unmappedHeaders).toEqual([]);
+  });
+
+  it('rejects a mapping onto a field the parser does not have', async () => {
+    const editor = await createAdmin('mapping-bad-sheet@gogo.local', 'editor');
+    sheets.seed('7MappingRejectMappingReject01234567', 'HCM', [
+      ['Link', 'Tên'],
+      ['https://www.google.com/maps?place_id=fake-a', 'Quán A'],
+    ]);
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: '7MappingRejectMappingReject01234567',
+        sheets: ['HCM'],
+        mode: 'dry_run',
+        // The CMS wizard's own vocabulary. This used to import happily with
+        // the mapping silently discarded.
+        mapping: { Link: 'googleMapsUrl', Tên: 'name' },
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('MAPPING_FIELD_UNKNOWN');
+    expect(res.json().field_errors).toEqual([
+      expect.objectContaining({ field: 'mapping.Link', code: 'MAPPING_FIELD_UNKNOWN' }),
+    ]);
+    // The valid half of the mapping does not rescue the request: a partially
+    // honoured mapping screen is the thing being fixed.
+    expect(res.json().message).toContain('googleMapsUrl');
+  });
+
+  it('rejects an unknown field on the multipart route with the same code', async () => {
+    const editor = await createAdmin('mapping-bad-file@gogo.local', 'editor');
+    const body = multipart(
+      { mode: 'dry_run', mapping: JSON.stringify({ name: 'address' }) },
+      { name: 'mapping.csv', content: csv(['M-1,Quán A,Hồ Chí Minh,Quận 1,,cafe,,,']) },
+    );
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(editor.token), ...body.headers },
+      payload: body.payload,
+    });
+
+    expect(res.statusCode).toBe(400);
+    // `address` is one of the three CMS-only fields with no canonical home.
+    expect(res.json().code).toBe('MAPPING_FIELD_UNKNOWN');
+  });
+
+  it('still reports malformed JSON as a different mistake', async () => {
+    const editor = await createAdmin('mapping-bad-json@gogo.local', 'editor');
+    const body = multipart(
+      { mode: 'dry_run', mapping: '{not json' },
+      { name: 'mapping2.csv', content: csv(['M-2,Quán B,Hồ Chí Minh,Quận 1,,cafe,,,']) },
+    );
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(editor.token), ...body.headers },
+      payload: body.payload,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('MAPPING_INVALID');
+  });
+
+  it('lets an explicit mapping override what auto-detection would pick', async () => {
+    const editor = await createAdmin('mapping-override@gogo.local', 'editor');
+    // `Tên địa điểm` auto-detects to `name`; the operator says it is the
+    // highlight column and `Ghi chú` holds the real name.
+    sheets.seed('8MappingOverrideMappingOver01234567', 'HCM', [
+      ['Tên địa điểm', 'Ghi chú', 'category', 'city'],
+      ['Bò né sốt tiêu', 'Quán Ăn Sáng', 'cafe', 'Hồ Chí Minh'],
+    ]);
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: '8MappingOverrideMappingOver01234567',
+        sheets: ['HCM'],
+        mode: 'dry_run',
+        mapping: { 'Tên địa điểm': 'highlight', 'Ghi chú': 'name' },
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const rows = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${res.json().id}/rows`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    const normalized = rows.json().items[0].normalized;
+    expect(normalized.name).toBe('Quán Ăn Sáng');
+    expect(normalized.highlight).toBe('Bò né sốt tiêu');
+  });
+
+  it('auto-detects the columns the mapping says nothing about', async () => {
+    const editor = await createAdmin('mapping-partial@gogo.local', 'editor');
+    sheets.seed('9MappingPartialMappingPartia1234567', 'HCM', [
+      ['Tên địa điểm', 'category', 'city'],
+      ['Quán A', 'cafe', 'Hồ Chí Minh'],
+    ]);
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: '9MappingPartialMappingPartia1234567',
+        sheets: ['HCM'],
+        mode: 'dry_run',
+        mapping: { 'Tên địa điểm': 'name' },
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().unmappedHeaders).toEqual([]);
+    const rows = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${res.json().id}/rows`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    // `category` and `city` were never named, and still landed.
+    expect(rows.json().items[0].normalized.categoryKey).toBe('cafe');
+    expect(rows.json().items[0].normalized.city).toBe('Hồ Chí Minh');
+  });
+});
+
 describe('PI-BE-015/016 — processing, quota pause, publish RBAC', () => {
   async function createJob(token: string, rows: string[], mode = 'create_drafts') {
     const body = multipart(
