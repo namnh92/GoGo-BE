@@ -2236,6 +2236,105 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/auth/admins/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Super admin: change a staff account's role or display name
+         * @description BE-CMS-G9. An admin cannot change their own role — not because self-promotion is the risk, a `super_admin` is already the top of the model, but because a one-person path from any role to any other removes the only check the model has.
+         */
+        patch: operations["cmsUpdateAdmin"];
+        trace?: never;
+    };
+    "/cms/auth/admins/{id}/suspend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Super admin: suspend a staff account
+         * @description Revokes every session as well as flipping the status. Both are true and they answer different questions: the guard stops the account being used, the revoke stops the refresh chain being continued.
+         */
+        post: operations["cmsSuspendAdmin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/auth/admins/{id}/reactivate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Super admin: reactivate a suspended staff account */
+        post: operations["cmsReactivateAdmin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/auth/admins/{id}/reset-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Super admin: issue a one-time temporary password
+         * @description The temporary password is in this response and nowhere else — not in a log, not readable again, not recoverable if the tab closes. Every existing session is revoked (a reset happens because control of the account is in doubt) and the account then owes a change, enforced by the server on every other CMS route.
+         *
+         *     MFA is deliberately left alone: resetting it here would turn one `super_admin` into a complete account takeover with no second factor in the way.
+         */
+        post: operations["cmsResetAdminPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/auth/change-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Staff: replace your own password
+         * @description The only route reachable while a password change is owed, which is what keeps the obligation from being a deadlock. The current password is required even then: it proves the caller is the person the temporary password was handed to, and without it a leaked session id would be enough. Every other session of this account is revoked.
+         */
+        post: operations["cmsChangeOwnPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/moderation": {
         parameters: {
             query?: never;
@@ -2817,6 +2916,14 @@ export interface components {
              * @description Absent on an account that has never signed in.
              */
             lastLoginAt?: string;
+            /** @description #248. Whether a second factor is enrolled — the status, never anything about the secret. It is what lets the console show which accounts are unprotected. */
+            mfaEnrolled: boolean;
+            /** @description A temporary password is outstanding on this account. */
+            mustChangePassword: boolean;
+        };
+        AdminActionReason: {
+            /** @description Recorded in the audit log. Mandatory: a row that records what changed but not why answers the easy half of the question a reviewer is asking. */
+            reason: string;
         };
         CmsAdminPage: {
             items: components["schemas"]["CmsAdmin"][];
@@ -3284,6 +3391,8 @@ export interface components {
             refreshExpiresIn?: number;
             role?: components["schemas"]["AdminRole"];
             displayName?: string;
+            /** @description #248. True when a `super_admin` issued a temporary password that has not been replaced. The console must route to the change screen; the obligation itself is enforced server-side — every other CMS route answers 403 `PASSWORD_CHANGE_REQUIRED` until it is cleared. */
+            mustChangePassword?: boolean;
         };
         PlaceSubmissionSummary: {
             /** Format: uuid */
@@ -8640,6 +8749,209 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    cmsUpdateAdmin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    role?: components["schemas"]["AdminRole"];
+                    displayName?: string;
+                    /** @description Recorded in the audit log. Mandatory on every staff-account mutation. */
+                    reason: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAdmin"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description `SELF_ROLE_CHANGE` — another super_admin must change your role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `LAST_SUPER_ADMIN` — demoting the only active super_admin would leave a console nobody can administer. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsSuspendAdmin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminActionReason"];
+            };
+        };
+        responses: {
+            /** @description Suspended */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAdmin"];
+                };
+            };
+            /** @description `SELF_SUSPEND` — you cannot suspend your own account. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `LAST_SUPER_ADMIN` — the only active super_admin cannot be suspended. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsReactivateAdmin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminActionReason"];
+            };
+        };
+        responses: {
+            /** @description Reactivated */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAdmin"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsResetAdminPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminActionReason"];
+            };
+        };
+        responses: {
+            /** @description Temporary password issued — shown exactly once */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        temporaryPassword: string;
+                        /** @enum {boolean} */
+                        mustChangePassword: true;
+                    };
+                };
+            };
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    cmsChangeOwnPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    currentPassword: string;
+                    newPassword: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Changed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        changed: boolean;
+                    };
+                };
+            };
+            /** @description `PASSWORD_UNCHANGED` — the new password must differ from the old. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `INVALID_CREDENTIALS` — current password is incorrect. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
         };
     };
     cmsModerationQueue: {

@@ -3926,6 +3926,189 @@ paths:
         '503':
           description: Object storage is not configured in this environment (`UPLOAD_NOT_CONFIGURED`)
 
+  /cms/auth/admins/{id}:
+    patch:
+      operationId: cmsUpdateAdmin
+      tags: [cms]
+      summary: "Super admin: change a staff account's role or display name"
+      description: >
+        BE-CMS-G9. An admin cannot change their own role — not because
+        self-promotion is the risk, a `super_admin` is already the top of the
+        model, but because a one-person path from any role to any other removes
+        the only check the model has.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                role: { $ref: '#/components/schemas/AdminRole' }
+                displayName: { type: string, minLength: 1, maxLength: 50 }
+                reason:
+                  type: string
+                  minLength: 3
+                  maxLength: 500
+                  description: Recorded in the audit log. Mandatory on every staff-account mutation.
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAdmin' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403':
+          description: >
+            `SELF_ROLE_CHANGE` — another super_admin must change your role.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `LAST_SUPER_ADMIN` — demoting the only active super_admin would
+            leave a console nobody can administer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/auth/admins/{id}/suspend:
+    post:
+      operationId: cmsSuspendAdmin
+      tags: [cms]
+      summary: 'Super admin: suspend a staff account'
+      description: >
+        Revokes every session as well as flipping the status. Both are true and
+        they answer different questions: the guard stops the account being
+        used, the revoke stops the refresh chain being continued.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminActionReason' }
+      responses:
+        '201':
+          description: Suspended
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAdmin' }
+        '403':
+          description: '`SELF_SUSPEND` — you cannot suspend your own account.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`LAST_SUPER_ADMIN` — the only active super_admin cannot be suspended.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/auth/admins/{id}/reactivate:
+    post:
+      operationId: cmsReactivateAdmin
+      tags: [cms]
+      summary: 'Super admin: reactivate a suspended staff account'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminActionReason' }
+      responses:
+        '201':
+          description: Reactivated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAdmin' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/auth/admins/{id}/reset-password:
+    post:
+      operationId: cmsResetAdminPassword
+      tags: [cms]
+      summary: 'Super admin: issue a one-time temporary password'
+      description: >
+        The temporary password is in this response and nowhere else — not in a
+        log, not readable again, not recoverable if the tab closes. Every
+        existing session is revoked (a reset happens because control of the
+        account is in doubt) and the account then owes a change, enforced by
+        the server on every other CMS route.
+
+
+        MFA is deliberately left alone: resetting it here would turn one
+        `super_admin` into a complete account takeover with no second factor in
+        the way.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminActionReason' }
+      responses:
+        '201':
+          description: Temporary password issued — shown exactly once
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [temporaryPassword, mustChangePassword]
+                properties:
+                  temporaryPassword: { type: string }
+                  mustChangePassword: { type: boolean, enum: [true] }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/auth/change-password:
+    post:
+      operationId: cmsChangeOwnPassword
+      tags: [cms]
+      summary: 'Staff: replace your own password'
+      description: >
+        The only route reachable while a password change is owed, which is what
+        keeps the obligation from being a deadlock. The current password is
+        required even then: it proves the caller is the person the temporary
+        password was handed to, and without it a leaked session id would be
+        enough. Every other session of this account is revoked.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 12, maxLength: 128 }
+      responses:
+        '201':
+          description: Changed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [changed]
+                properties:
+                  changed: { type: boolean }
+        '400':
+          description: '`PASSWORD_UNCHANGED` — the new password must differ from the old.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401':
+          description: '`INVALID_CREDENTIALS` — current password is incorrect.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
   /cms/moderation:
     get:
       operationId: cmsModerationQueue
@@ -4708,7 +4891,7 @@ components:
 
     CmsAdmin:
       type: object
-      required: [id, email, displayName, role, status, createdAt]
+      required: [id, email, displayName, role, status, createdAt, mfaEnrolled, mustChangePassword]
       properties:
         id: { type: string, format: uuid }
         email:
@@ -4723,6 +4906,28 @@ components:
           type: string
           format: date-time
           description: Absent on an account that has never signed in.
+        mfaEnrolled:
+          type: boolean
+          description: >
+            #248. Whether a second factor is enrolled — the status, never
+            anything about the secret. It is what lets the console show which
+            accounts are unprotected.
+        mustChangePassword:
+          type: boolean
+          description: A temporary password is outstanding on this account.
+
+    AdminActionReason:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 500
+          description: >
+            Recorded in the audit log. Mandatory: a row that records what
+            changed but not why answers the easy half of the question a
+            reviewer is asking.
 
     CmsAdminPage:
       type: object
@@ -5337,6 +5542,13 @@ components:
             app's (security rule): a shift, not a month.
         role: { $ref: '#/components/schemas/AdminRole' }
         displayName: { type: string }
+        mustChangePassword:
+          type: boolean
+          description: >
+            #248. True when a `super_admin` issued a temporary password that
+            has not been replaced. The console must route to the change screen;
+            the obligation itself is enforced server-side — every other CMS
+            route answers 403 `PASSWORD_CHANGE_REQUIRED` until it is cleared.
     PlaceSubmissionSummary:
       type: object
       required: [id, googlePlaceId, status, submissionCount, createdAt]

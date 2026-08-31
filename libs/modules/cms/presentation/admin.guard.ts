@@ -17,6 +17,15 @@ import type { Actor } from '../../identity/domain/actor';
 import type { AdminRole } from '../application/admin-auth.service';
 
 export const ADMIN_ROLES_KEY = 'gogo:admin_roles';
+export const PASSWORD_CHANGE_EXEMPT_KEY = 'gogo:password_change_exempt';
+
+/**
+ * #248 — marks the one route an account owing a password change may still
+ * call. Without an exemption the obligation is a deadlock: every CMS route
+ * refuses, including the one that would clear it.
+ */
+export const AllowWhilePasswordChangePending = (): CustomDecorator =>
+  SetMetadata(PASSWORD_CHANGE_EXEMPT_KEY, true);
 /** Role gate for CMS routes. Applied per controller/handler. */
 export const RequireRole = (...roles: AdminRole[]): CustomDecorator =>
   SetMetadata(ADMIN_ROLES_KEY, roles);
@@ -85,6 +94,24 @@ export class AdminGuard implements CanActivate {
     if (!admin || admin.status !== 'active') {
       throw AppError.forbidden('ADMIN_ONLY', 'Staff account is not active');
     }
+
+    // #248 — a temporary password is a credential two people know. Until it is
+    // replaced the account may do exactly one thing. Enforced here rather than
+    // by the console skipping a screen: `.claude/rules/core.md` #5 — hiding a
+    // route in the UI is not authorization.
+    if (admin.mustChangePasswordAt) {
+      const exempt = this.reflector.getAllAndOverride<boolean | undefined>(
+        PASSWORD_CHANGE_EXEMPT_KEY,
+        [context.getHandler(), context.getClass()],
+      );
+      if (!exempt) {
+        throw AppError.forbidden(
+          'PASSWORD_CHANGE_REQUIRED',
+          'Change the temporary password before using the console',
+        );
+      }
+    }
+
     const byExactRole = roles.includes(admin.role);
     const byRankRead =
       SAFE_METHODS.has((req.method ?? 'GET').toUpperCase()) &&

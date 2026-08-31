@@ -43,6 +43,13 @@ export const adminUsers = pgTable(
      */
     mfaTotpLastStep: bigint('mfa_totp_last_step', { mode: 'number' }),
     mfaEnrolledAt: timestamp('mfa_enrolled_at', { withTimezone: true }),
+    /**
+     * #248 — set when a `super_admin` issues a temporary password. A temporary
+     * credential that is never replaced is worse than the lockout it fixed:
+     * two people know it and only one is named in the audit trail. NULL means
+     * nothing is owed; the guard refuses every other CMS route until it is.
+     */
+    mustChangePasswordAt: timestamp('must_change_password_at', { withTimezone: true }),
     displayName: text('display_name').notNull(),
     role: adminRole('role').notNull(),
     status: adminStatus('status').notNull().default('active'),

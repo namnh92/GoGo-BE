@@ -34,6 +34,14 @@ export type AdminListEntry = {
   status: AdminStatus;
   createdAt: string;
   lastLoginAt?: string | undefined;
+  /**
+   * #248 — whether a second factor is enrolled. The status, never the secret:
+   * the console needs to show which accounts are unprotected, and nothing
+   * about the TOTP seed helps it do that.
+   */
+  mfaEnrolled: boolean;
+  /** #248 — a temporary password is outstanding and owes a replacement. */
+  mustChangePassword: boolean;
 };
 
 export type AdminListPage = {
@@ -41,6 +49,14 @@ export type AdminListPage = {
   nextCursor: string | null;
   totalCount: number;
 };
+
+/**
+ * Accepts a transaction as well as the pool — the same structural trick
+ * `writeAudit` uses. Drizzle's `PgTransaction` is not assignable to `Db`, so a
+ * cast compiles under the editor's config and fails the build; naming the
+ * methods actually used is both honest and portable.
+ */
+type DbLike = Pick<Db, 'select' | 'update' | 'execute'>;
 
 type AdminRow = {
   id: string;
@@ -50,7 +66,24 @@ type AdminRow = {
   status: AdminStatus;
   created_at: Date | string;
   last_login_at: Date | string | null;
+  mfa_enrolled: boolean;
+  must_change_password: boolean;
 };
+
+/** One shape for an account, whether it came back from a list or a mutation. */
+function toAdminEntry(row: typeof schema.adminUsers.$inferSelect): AdminListEntry {
+  return {
+    id: row.id,
+    email: row.email,
+    displayName: row.displayName,
+    role: row.role,
+    status: row.status,
+    createdAt: row.createdAt.toISOString(),
+    ...(row.lastLoginAt ? { lastLoginAt: row.lastLoginAt.toISOString() } : {}),
+    mfaEnrolled: row.mfaTotpSecretEnc !== null,
+    mustChangePassword: row.mustChangePasswordAt !== null,
+  };
+}
 
 /**
  * Same numbers as consumer login. The console is the higher-privilege door;
@@ -189,6 +222,9 @@ export class AdminAuthService {
       ...session,
       role: admin.role,
       displayName: admin.displayName,
+      // #248 — the console needs to know it must route to the change screen.
+      // The obligation itself is enforced by AdminGuard, not by this flag.
+      mustChangePassword: admin.mustChangePasswordAt !== null,
     };
   }
 
@@ -250,6 +286,7 @@ export class AdminAuthService {
       ...session,
       role: admin.role,
       displayName: admin.displayName,
+      mustChangePassword: admin.mustChangePasswordAt !== null,
     };
   }
 
@@ -295,7 +332,12 @@ export class AdminAuthService {
       .where(eq(schema.adminSessions.id, session.id));
 
     const next = await this.openSession(admin.id, session.familyId, session.id, meta);
-    return { ...next, role: admin.role, displayName: admin.displayName };
+    return {
+      ...next,
+      role: admin.role,
+      displayName: admin.displayName,
+      mustChangePassword: admin.mustChangePasswordAt !== null,
+    };
   }
 
   /** Ends one session; the outstanding access token stops working immediately. */
@@ -497,13 +539,35 @@ export class AdminAuthService {
     return { confirmed: true };
   }
 
-  /** Ends every live session for one admin. */
-  private async revokeAllSessions(adminId: string, reason: string): Promise<void> {
-    const rows = await this.db
+  /**
+   * Ends every live session for one admin.
+   *
+   * `tx` when the revoke has to land with the write that caused it — suspending
+   * an account that stays reachable because the surrounding transaction rolled
+   * back is the failure this prevents. `keepSessionId` for a self-service
+   * password change, where the session doing the changing survives and every
+   * other one does not.
+   */
+  private async revokeAllSessions(
+    adminId: string,
+    reason: string,
+    opts: { tx?: DbLike; keepSessionId?: string } = {},
+  ): Promise<void> {
+    const rows = await (opts.tx ?? this.db)
       .update(schema.adminSessions)
       .set({ revokedAt: sql`now()`, revokeReason: reason })
-      .where(and(eq(schema.adminSessions.adminId, adminId), isNull(schema.adminSessions.revokedAt)))
+      .where(
+        and(
+          eq(schema.adminSessions.adminId, adminId),
+          isNull(schema.adminSessions.revokedAt),
+          ...(opts.keepSessionId
+            ? [sql`${schema.adminSessions.id} <> ${opts.keepSessionId}::uuid`]
+            : []),
+        ),
+      )
       .returning({ id: schema.adminSessions.id });
+    // The denylist is what stops an access token already in someone's hands;
+    // revoking the row only closes the refresh path.
     await this.revocations.revokeMany(rows.map((r) => r.id));
   }
 
@@ -547,6 +611,232 @@ export class AdminAuthService {
    * password hash and both TOTP secrets, and a response built by spreading it
    * would leak all three the first time someone added a field.
    */
+  /**
+   * #248 — the last `super_admin` is load-bearing. Demoting or suspending it
+   * leaves a console nobody can administer: role changes, account creation and
+   * ranking approval are all `super_admin`, so recovery means an engineer with
+   * database access. Counted inside the caller's transaction so two concurrent
+   * demotions cannot each see the other's subject still in place.
+   */
+  private static async assertNotLastSuperAdmin(
+    tx: DbLike,
+    subject: { id: string; role: AdminRole; status: AdminStatus },
+  ): Promise<void> {
+    if (subject.role !== 'super_admin' || subject.status !== 'active') return;
+    const result = await tx.execute(
+      sql`select count(*)::int as n from admin_users
+          where role = 'super_admin' and status = 'active' and id <> ${subject.id}`,
+    );
+    if ((result.rows[0] as { n: number }).n === 0) {
+      throw AppError.conflict(
+        'LAST_SUPER_ADMIN',
+        'This is the only active super_admin; promote another one first',
+      );
+    }
+  }
+
+  private async loadAdmin(tx: DbLike, id: string) {
+    const [admin] = await tx
+      .select()
+      .from(schema.adminUsers)
+      .where(eq(schema.adminUsers.id, id))
+      .limit(1);
+    if (!admin) throw AppError.notFound('ADMIN_NOT_FOUND', 'No such staff account');
+    return admin;
+  }
+
+  /**
+   * #248 — edit role or display name.
+   *
+   * **An admin cannot change their own role.** Not because self-promotion is
+   * the risk — a `super_admin` is already the top of the model — but because
+   * the one-person path from any role to any other role removes the only
+   * check the model has. Two people, or nothing.
+   */
+  async updateAdmin(input: {
+    id: string;
+    role?: AdminRole | undefined;
+    displayName?: string | undefined;
+    reason: string;
+    actorId: string;
+  }) {
+    if (input.role && input.id === input.actorId) {
+      throw AppError.forbidden('SELF_ROLE_CHANGE', 'Another super_admin must change your role');
+    }
+    return this.db.transaction(async (tx) => {
+      const before = await this.loadAdmin(tx, input.id);
+      if (input.role && input.role !== before.role) {
+        await AdminAuthService.assertNotLastSuperAdmin(tx, before);
+      }
+
+      const [after] = await tx
+        .update(schema.adminUsers)
+        .set({
+          ...(input.role ? { role: input.role } : {}),
+          ...(input.displayName ? { displayName: input.displayName } : {}),
+          updatedAt: sql`now()`,
+        })
+        .where(eq(schema.adminUsers.id, input.id))
+        .returning();
+
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: input.actorId,
+        action: 'admin.updated',
+        resourceType: 'admin_user',
+        resourceId: input.id,
+        // Before and after both: "role changed to ops_admin" does not tell a
+        // reviewer whether that was a promotion or a demotion.
+        diff: {
+          reason: input.reason,
+          before: { role: before.role, displayName: before.displayName },
+          after: { role: after!.role, displayName: after!.displayName },
+        },
+      });
+      return toAdminEntry(after!);
+    });
+  }
+
+  /**
+   * #248 — suspend or reactivate.
+   *
+   * Suspending revokes every session rather than relying on `AdminGuard`
+   * refusing the next request. Both are true, and they answer different
+   * questions: the guard stops the account being *used*, the revoke stops the
+   * refresh chain being *continued* — and it is what makes the session list
+   * afterwards mean what it says.
+   */
+  async setAdminStatus(input: {
+    id: string;
+    status: AdminStatus;
+    reason: string;
+    actorId: string;
+  }) {
+    if (input.status === 'suspended' && input.id === input.actorId) {
+      // The failure mode is immediate and total, and no product need justifies
+      // it: signing out is the operation this person actually wants.
+      throw AppError.forbidden('SELF_SUSPEND', 'You cannot suspend your own account');
+    }
+    return this.db.transaction(async (tx) => {
+      const before = await this.loadAdmin(tx, input.id);
+      if (input.status === 'suspended') {
+        await AdminAuthService.assertNotLastSuperAdmin(tx, before);
+      }
+
+      const [after] = await tx
+        .update(schema.adminUsers)
+        .set({ status: input.status, updatedAt: sql`now()` })
+        .where(eq(schema.adminUsers.id, input.id))
+        .returning();
+
+      if (input.status === 'suspended') {
+        await this.revokeAllSessions(input.id, 'admin_suspended', { tx: tx });
+      }
+
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: input.actorId,
+        action: input.status === 'suspended' ? 'admin.suspended' : 'admin.reactivated',
+        resourceType: 'admin_user',
+        resourceId: input.id,
+        diff: { reason: input.reason, before: before.status, after: after!.status },
+      });
+      return toAdminEntry(after!);
+    });
+  }
+
+  /**
+   * #248 — issue a one-time temporary password.
+   *
+   * Three things have to be true together, and dropping any one of them makes
+   * this a way in rather than a way back in:
+   *
+   * - The password is **returned once and never stored in the clear**, like
+   *   every other credential here.
+   * - Every existing session is revoked. A reset happens because control of
+   *   the account is in doubt; leaving a live session open answers the
+   *   question the wrong way.
+   * - The account owes a change (`mustChangePasswordAt`), enforced by
+   *   `AdminGuard`, not by the console hiding a screen.
+   *
+   * MFA is deliberately left alone. Resetting it here would turn one
+   * `super_admin` into a complete account takeover with no second factor to
+   * stop it; re-enrolling MFA stays a separate, deliberate act.
+   */
+  async resetAdminPassword(input: { id: string; reason: string; actorId: string }) {
+    return this.db.transaction(async (tx) => {
+      await this.loadAdmin(tx, input.id);
+      const temporary = this.tokens.generateOpaqueToken().slice(0, 24);
+      const passwordHash = await this.passwords.hash(temporary);
+
+      await tx
+        .update(schema.adminUsers)
+        .set({
+          passwordHash,
+          mustChangePasswordAt: sql`now()`,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(schema.adminUsers.id, input.id));
+      await this.revokeAllSessions(input.id, 'password_reset', { tx: tx });
+
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: input.actorId,
+        action: 'admin.password_reset',
+        resourceType: 'admin_user',
+        resourceId: input.id,
+        // The reason, never the password.
+        diff: { reason: input.reason },
+      });
+      return { temporaryPassword: temporary, mustChangePassword: true };
+    });
+  }
+
+  /**
+   * #248 — an admin replaces their own password, which is the only way to
+   * clear the obligation a reset creates.
+   *
+   * The current password is required even when a reset is outstanding: it is
+   * what proves the person typing is the one the temporary password was
+   * handed to, and without it a leaked session id would be enough.
+   */
+  async changeOwnPassword(input: {
+    adminId: string;
+    currentPassword: string;
+    newPassword: string;
+    keepSessionId: string;
+  }) {
+    const admin = await this.loadAdmin(this.db, input.adminId);
+    const valid = await this.passwords.verifyOrBurn(admin.passwordHash, input.currentPassword);
+    if (!valid) throw AppError.unauthorized('INVALID_CREDENTIALS', 'Current password is incorrect');
+    if (input.currentPassword === input.newPassword) {
+      throw AppError.badRequest('PASSWORD_UNCHANGED', 'The new password must differ from the old');
+    }
+
+    const passwordHash = await this.passwords.hash(input.newPassword);
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(schema.adminUsers)
+        .set({ passwordHash, mustChangePasswordAt: null, updatedAt: sql`now()` })
+        .where(eq(schema.adminUsers.id, input.adminId));
+      // Every other session dies: a password change is also how someone
+      // responds to a suspected compromise, and leaving the other sessions
+      // alive would make it useless for that.
+      await this.revokeAllSessions(input.adminId, 'password_changed', {
+        tx: tx,
+        keepSessionId: input.keepSessionId,
+      });
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: input.adminId,
+        action: 'admin.password_changed',
+        resourceType: 'admin_user',
+        resourceId: input.adminId,
+      });
+    });
+    return { changed: true };
+  }
+
   async listAdmins(query: AdminListQuery): Promise<AdminListPage> {
     const where: SQL[] = [];
     if (query.role) where.push(sql`a.role = ${query.role}`);
@@ -568,7 +858,9 @@ export class AdminAuthService {
     const [page, total] = await Promise.all([
       this.db.execute(sql`
         select a.id, a.email, a.display_name, a.role, a.status,
-               a.created_at, a.last_login_at
+               a.created_at, a.last_login_at,
+               (a.mfa_totp_secret_enc is not null) as mfa_enrolled,
+               (a.must_change_password_at is not null) as must_change_password
         from admin_users a
         where ${pageWhere.length ? sql.join(pageWhere, sql` and `) : sql`true`}
         order by a.created_at desc, a.id desc
@@ -590,6 +882,8 @@ export class AdminAuthService {
         status: r.status,
         createdAt: toIso(r.created_at),
         lastLoginAt: r.last_login_at ? toIso(r.last_login_at) : undefined,
+        mfaEnrolled: r.mfa_enrolled,
+        mustChangePassword: r.must_change_password,
       })),
       nextCursor:
         rows.length > query.limit && last ? encodeKeysetCursor(last.created_at, last.id) : null,
