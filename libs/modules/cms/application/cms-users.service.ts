@@ -188,8 +188,17 @@ export class CmsUsersService {
     const status = statusEntry.rows[0] as
       { action: string; diff: { reason?: string } | null; created_at: Date | string } | undefined;
 
+    // #255 — so the console can warn before a direct delete: "this user has
+    // an open privacy request". A direct delete does not close the request
+    // (same user is not same request); the operator has to go through it.
+    const openRequests = await this.db.execute(sql`
+      select count(*)::int as n from privacy_requests
+      where user_id = ${id} and status <> 'closed'
+    `);
+
     return {
       ...toAppUser(row),
+      openPrivacyRequestCount: (openRequests.rows[0] as { n: number }).n,
       ...(status?.diff?.reason
         ? {
             statusReason: status.diff.reason,

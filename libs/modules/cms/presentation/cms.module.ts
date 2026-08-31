@@ -19,6 +19,7 @@ import { PlanTemplatesService } from '../application/plan-templates.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { CmsObservabilityService } from '../application/cms-observability.service';
 import { CmsUsersService } from '../application/cms-users.service';
+import { PrivacyRequestsService } from '../application/privacy-requests.service';
 import { ModerationQueueService } from '../application/moderation-queue.service';
 import { EmergencyTakedownService } from '../application/emergency-takedown.service';
 import { ExperimentsAdminService } from '../application/experiments-admin.service';
@@ -40,6 +41,7 @@ import {
   CmsSafetyRulesController,
   CmsUploadsController,
   CmsUsersController,
+  PrivacyRequestsController,
 } from './cms.controllers';
 
 @Module({
@@ -58,6 +60,7 @@ import {
     CmsSafetyRulesController,
     CmsUploadsController,
     CmsUsersController,
+    PrivacyRequestsController,
     EmergencyController,
   ],
   providers: [
@@ -69,6 +72,7 @@ import {
     CmsUploadsService,
     CmsObservabilityService,
     CmsUsersService,
+    PrivacyRequestsService,
     BannersService,
     CampaignsService,
     SafetyRulesService,

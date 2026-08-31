@@ -4,6 +4,8 @@ import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
+import { APP_CONFIG, type PrivacyLedgerConfig } from '../../shared/config';
+import { recordSelfServiceRequest, slaConfigFrom } from '../../shared/privacy-ledger';
 import { pgArray } from '../../search/infrastructure/search.repository';
 import type { Actor } from '../../identity/domain/actor';
 import { writeAudit } from '../../shared/audit';
@@ -18,7 +20,10 @@ function requireUser(actor: Actor): string {
 /** BE-BFF-009 — saved items, reviews, profile, privacy (export/delete). */
 @Injectable()
 export class UserContentService {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Inject(APP_CONFIG) private readonly config: PrivacyLedgerConfig,
+  ) {}
 
   // --- saved (FR-USER-001) --------------------------------------------------
 
@@ -165,10 +170,19 @@ export class UserContentService {
 
   /** Data export — every actor-owned row, JSON, no internal ids beyond needed. */
   async exportData(actor: Actor) {
-    return this.exportForUser(requireUser(actor), {
-      actorType: 'user',
-      actorId: requireUser(actor),
+    const userId = requireUser(actor);
+    const data = await this.exportForUser(userId, { actorType: 'user', actorId: userId });
+    // #255 — the ledger records self-service too, born-completed. A report
+    // that silently omits self-service undercounts most real requests. Only
+    // here, in the actor-facing wrapper: the CMS execute path already has a
+    // ledger row and must not grow a duplicate.
+    await recordSelfServiceRequest(this.db, {
+      type: 'export',
+      userId,
+      sla: slaConfigFrom(this.config.PRIVACY_SLA_JSON),
+      retentionMonths: this.config.PRIVACY_RETENTION_MONTHS,
     });
+    return data;
   }
 
   /**
@@ -249,7 +263,16 @@ export class UserContentService {
    */
   async deleteAccount(actor: Actor) {
     const userId = requireUser(actor);
-    return this.deleteForUser(userId, { actorType: 'user', actorId: userId });
+    const result = await this.deleteForUser(userId, { actorType: 'user', actorId: userId });
+    // #255 — see exportData. Recorded after the delete succeeds, so a failed
+    // erasure cannot leave a ledger row claiming completion.
+    await recordSelfServiceRequest(this.db, {
+      type: 'delete',
+      userId,
+      sla: slaConfigFrom(this.config.PRIVACY_SLA_JSON),
+      retentionMonths: this.config.PRIVACY_RETENTION_MONTHS,
+    });
+    return result;
   }
 
   /**

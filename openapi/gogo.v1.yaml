@@ -2706,6 +2706,329 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /cms/privacy-requests:
+    post:
+      operationId: cmsCreatePrivacyRequest
+      tags: [cms]
+      summary: 'Ops: record a privacy request that arrived through support'
+      description: >
+        BE-CMS-G12 / ADR-0011. The ledger, not the audit log: the audit log
+        says who did what, this says what was received, where it stands, what
+        the deadline is and how it ended.
+
+
+        The subject is **structured** — a user id, an email, or an external
+        reference — never a single free-text field, which becomes a PII
+        dumping ground the first time a conversation is pasted into it. A
+        non-user subject starts `unverified` and says so.
+
+
+        Self-service `/me/export` and `/me/delete` also write here, as
+        born-completed rows; they do not use this endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, subjectType]
+              properties:
+                type: { $ref: '#/components/schemas/PrivacyRequestType' }
+                subjectType: { type: string, enum: [user, email, external] }
+                userId: { type: string, format: uuid }
+                contactEmail: { type: string, format: email }
+                externalReference: { type: string, maxLength: 120 }
+                reasonCode: { type: string, maxLength: 64 }
+                ticketReference: { type: string, maxLength: 64 }
+                operatorNote:
+                  type: string
+                  maxLength: 256
+                  description: >
+                    Deliberately short. UI guidance: "Chỉ ghi mã ticket hoặc
+                    thông tin vận hành cần thiết. Không nhập dữ liệu cá nhân,
+                    nội dung trao đổi hoặc chi tiết vụ việc."
+      responses:
+        '201':
+          description: Recorded, with SLA dates computed from per-type configuration
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      operationId: cmsListPrivacyRequests
+      tags: [cms]
+      summary: 'Ops: the privacy-request ledger'
+      description: >
+        `sla=overdue` and `sla=due_soon` are computed against the same stored
+        dates the `sla` badge uses, so the list a person filters and the badge
+        they see cannot disagree.
+      parameters:
+        - {
+            name: status,
+            in: query,
+            schema: { type: string, enum: [open, acknowledged, in_progress, closed] },
+          }
+        - { name: type, in: query, schema: { $ref: '#/components/schemas/PrivacyRequestType' } }
+        - {
+            name: outcome,
+            in: query,
+            schema: { $ref: '#/components/schemas/PrivacyRequestOutcome' },
+          }
+        - { name: sla, in: query, schema: { type: string, enum: [overdue, due_soon] } }
+        - { name: userId, in: query, schema: { type: string, format: uuid } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
+      responses:
+        '200':
+          description: Requests, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor, totalCount]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PrivacyRequest' }
+                  nextCursor: { type: [string, 'null'] }
+                  totalCount: { type: integer }
+
+  /cms/privacy-requests/{id}:
+    get:
+      operationId: cmsGetPrivacyRequest
+      tags: [cms]
+      summary: 'Ops: one privacy request'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/privacy-requests/{id}/acknowledge:
+    post:
+      operationId: cmsAcknowledgePrivacyRequest
+      tags: [cms]
+      summary: 'Ops: acknowledge receipt (stops the ack clock)'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: Acknowledged
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`NOT_OPEN`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/privacy-requests/{id}/execute:
+    post:
+      operationId: cmsExecutePrivacyRequest
+      tags: [cms]
+      summary: 'Ops: run the export or delete for THIS request and close it'
+      description: >
+        **Explicit linkage.** Same user is not same request: one person may
+        have an export, a delete, a duplicate and a rejected request open at
+        once. Only the request executed here transitions to `completed`. A
+        `POST /cms/users/{id}/delete` outside this workflow never touches the
+        ledger; the console warns instead (`openPrivacyRequestCount`).
+
+
+        Executing a **delete** requires `super_admin` — the same bar as the
+        direct user delete. An export returns the payload to the caller and
+        nowhere else; the ledger then records only delivery metadata.
+        Correction requests are worked by hand and cannot be executed.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: Executed and closed as `completed`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request]
+                properties:
+                  request: { $ref: '#/components/schemas/PrivacyRequest' }
+                  data:
+                    type: object
+                    description: Present for an export — the same payload `/me/export` returns.
+        '403':
+          description: '`ROLE_DENIED` — a delete request needs super_admin.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `ALREADY_CLOSED`, `NOT_EXECUTABLE` (correction), or
+            `IDENTITY_NOT_MATCHED` — match the request to an account first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/privacy-requests/{id}/close:
+    post:
+      operationId: cmsClosePrivacyRequest
+      tags: [cms]
+      summary: 'Ops: close without executing'
+      description: >
+        The outcomes that end a request unfulfilled. `no_account_found` and
+        `identity_not_verified` are real results — those requests count in the
+        compliance metrics even though nothing was exported or erased.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome]
+              properties:
+                outcome:
+                  {
+                    type: string,
+                    enum: [no_account_found, identity_not_verified, rejected, failed],
+                  }
+                reasonCode: { type: string, maxLength: 64 }
+                operatorNote: { type: string, maxLength: 256 }
+      responses:
+        '201':
+          description: Closed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`ALREADY_CLOSED`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/privacy-requests/{id}/delivered:
+    post:
+      operationId: cmsPrivacyRequestDelivered
+      tags: [cms]
+      summary: 'Ops: record how an export was handed over'
+      description: >
+        Metadata only, ever — never the bytes, never a signed URL. The record
+        outlives any artifact and must not be a way back to the data.
+        `secure_download` is the target method (BE-CMS-G13); the runbook
+        forbids raw exports over ordinary email.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deliveryMethod]
+              properties:
+                deliveryMethod: { type: string, enum: [in_app, secure_download, other] }
+      responses:
+        '201':
+          description: Recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`NOT_AN_EXPORT`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/privacy-requests/{id}/retention-hold:
+    post:
+      operationId: cmsPrivacyRetentionHold
+      tags: [cms]
+      summary: 'Super admin: place a legal retention hold'
+      description: >
+        The mechanism behind "Legal may override retention" — so an override
+        never means editing the database by hand. Reason, legal basis and a
+        future review date are all mandatory; the retention job skips held
+        rows. A hold only ever **extends** retention.
+
+
+        When `reviewAt` passes, nothing is auto-released and nothing is
+        auto-deleted: the request is flagged `reviewOverdue` and the worker
+        alerts. A lapsed review date does not mean the legal basis lapsed.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, legalBasis, reviewAt]
+              properties:
+                reason: { type: string, minLength: 3, maxLength: 500 }
+                legalBasis: { type: string, minLength: 3, maxLength: 500 }
+                reviewAt: { type: string, format: date-time }
+                holdUntil: { type: string, format: date-time }
+      responses:
+        '201':
+          description: Held
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyRequest' }
+        '400':
+          description: '`REVIEW_IN_PAST`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`NOT_CLOSED` or `ALREADY_HELD`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/privacy-requests/{id}/retention-hold/release:
+    post:
+      operationId: cmsPrivacyRetentionHoldRelease
+      tags: [cms]
+      summary: 'Super admin: release a retention hold'
+      description: >
+        Standard retention resumes from the date already stamped on the row —
+        never an earlier one. Quietly shortening retention is destroying
+        evidence, so there is no path that does it.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminActionReason' }
+      responses:
+        '201':
+          description: Released
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`NOT_HELD`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /cms/rooms:
     get:
       operationId: cmsListRooms
@@ -5532,8 +5855,14 @@ components:
       allOf:
         - $ref: '#/components/schemas/CmsAppUser'
         - type: object
-          required: [rooms]
+          required: [rooms, openPrivacyRequestCount]
           properties:
+            openPrivacyRequestCount:
+              type: integer
+              description: >
+                #255. Open privacy requests naming this account. The console
+                warns before a direct delete — a direct delete does not close
+                any of them, because the same user is not the same request.
             statusReason:
               type: string
               description: >
@@ -5633,6 +5962,77 @@ components:
               createdAt: { type: string, format: date-time }
         nextCursor: { type: [string, 'null'] }
         totalCount: { type: integer }
+
+    PrivacyRequestType:
+      type: string
+      enum: [export, delete, correction]
+
+    PrivacyRequestOutcome:
+      type: string
+      enum: [completed, no_account_found, identity_not_verified, rejected, failed]
+      description: >
+        How a request ended. Separate from `status` on purpose: one enum that
+        mixes "acknowledged" with "no_account_found" forces every query to know
+        which values mean still-moving and which mean ended-and-how.
+
+    PrivacyRequest:
+      type: object
+      required: [id, type, source, status, subject, receivedAt, ackDueAt, fulfillmentDueAt, sla]
+      properties:
+        id: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/PrivacyRequestType' }
+        source: { type: string, enum: [self_service, support, cms] }
+        status: { type: string, enum: [open, acknowledged, in_progress, closed] }
+        outcome: { $ref: '#/components/schemas/PrivacyRequestOutcome' }
+        subject:
+          type: object
+          required: [subjectType, identityStatus]
+          properties:
+            subjectType: { type: string, enum: [user, email, external] }
+            userId: { type: string, format: uuid }
+            contactEmail: { type: string, format: email }
+            externalReference: { type: string }
+            identityStatus: { type: string, enum: [matched, no_account_found, unverified] }
+        receivedAt: { type: string, format: date-time }
+        ackDueAt: { type: string, format: date-time }
+        acknowledgedAt: { type: string, format: date-time }
+        fulfillmentDueAt: { type: string, format: date-time }
+        extendedDueAt: { type: string, format: date-time }
+        extensionReason: { type: string }
+        executedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time }
+        deliveryMethod: { type: string, enum: [in_app, secure_download, other] }
+        deliveredAt: { type: string, format: date-time }
+        retentionAt:
+          type: string
+          format: date-time
+          description: >
+            Stamped at closure: closed_at + the retention policy. The job
+            hard-deletes the row at this time unless a hold is in place.
+        retentionHold:
+          type: object
+          required: [heldAt, heldBy, reason, legalBasis, reviewAt, reviewOverdue]
+          properties:
+            heldAt: { type: string, format: date-time }
+            heldBy: { type: string, format: uuid }
+            reason: { type: string }
+            legalBasis: { type: string }
+            reviewAt: { type: string, format: date-time }
+            holdUntil: { type: string, format: date-time }
+            reviewOverdue:
+              type: boolean
+              description: HOLD_REVIEW_OVERDUE — a person must review. Nothing is released or deleted automatically.
+        reasonCode: { type: string }
+        ticketReference: { type: string }
+        operatorNote: { type: string, maxLength: 256 }
+        sla:
+          type: string
+          enum: [ON_TRACK, DUE_SOON, OVERDUE, COMPLETED]
+          description: >
+            Computed server-side from the stored due dates. `DUE_SOON` is the
+            last quarter of the window, floored at 24 hours. Production SLA
+            values are provisional until Legal confirms them against current law.
 
     CmsAdminPage:
       type: object

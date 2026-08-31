@@ -72,6 +72,46 @@ const envSchema = z
     CF_ACCESS_TEAM_DOMAIN: z.string().default(''),
     CF_ACCESS_AUD: z.string().default(''),
     /**
+     * #255 — per-type SLA override for the privacy-request ledger, JSON:
+     * `{"delete":{"ackHours":72,"fulfillHours":720},...}`. Empty uses the
+     * PROVISIONAL engineering defaults in shared/privacy-ledger.ts — Legal
+     * must confirm production values against current law before launch.
+     */
+    PRIVACY_SLA_JSON: z
+      .string()
+      .default('')
+      .refine(
+        (v) => {
+          if (!v) return true;
+          try {
+            const parsed = JSON.parse(v) as Record<
+              string,
+              { ackHours: number; fulfillHours: number }
+            >;
+            return Object.entries(parsed).every(
+              ([k, w]) =>
+                ['export', 'delete', 'correction'].includes(k) &&
+                Number.isFinite(w?.ackHours) &&
+                Number.isFinite(w?.fulfillHours) &&
+                w.ackHours > 0 &&
+                w.fulfillHours >= w.ackHours,
+            );
+          } catch {
+            return false;
+          }
+        },
+        {
+          message:
+            'PRIVACY_SLA_JSON must be JSON of {export|delete|correction: {ackHours, fulfillHours}} with fulfillHours >= ackHours',
+        },
+      ),
+    /**
+     * #255 — how long a closed privacy request is kept before the retention
+     * job hard-deletes it. Product default 12; Legal sign-off required before
+     * production.
+     */
+    PRIVACY_RETENTION_MONTHS: z.coerce.number().int().min(1).max(120).default(12),
+    /**
      * #154 — the SSE transport, per environment. Default on: a client that
      * cannot open the stream falls back to polling, so the failure mode of
      * having it on is worse latency, not a broken app.

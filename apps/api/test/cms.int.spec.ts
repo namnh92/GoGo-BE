@@ -914,6 +914,301 @@ describe('CMS guest console (BE-CMS-G11 #254)', () => {
   });
 });
 
+describe('privacy-request ledger (BE-CMS-G12 #255, ADR-0011)', () => {
+  const get = async (token: string, url: string) =>
+    await api().inject({ method: 'GET', url, headers: auth(token) });
+  const post = async (token: string, url: string, payload: Record<string, unknown> = {}) =>
+    await api().inject({ method: 'POST', url, remoteAddress: ip(), headers: auth(token), payload });
+
+  async function registeredUser(email: string) {
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: ip(),
+      payload: { email, password: 'user-password-123', displayName: email.split('@')[0] },
+    });
+    expect(res.statusCode).toBe(201);
+    const [row] = await db.select().from(schema.users).where(eq(schema.users.email, email));
+    return { id: row!.id, token: res.json().accessToken as string };
+  }
+
+  /*
+   * §2.1 — self-service writes to the ledger, born-completed. A report that
+   * omits self-service undercounts most real requests; no PENDING is faked
+   * for something that never pended.
+   */
+  it('self-service export and delete land in the ledger already completed', async () => {
+    const ops = await createAdmin('g12-self@gogo.id.vn', 'ops_admin');
+    const user = await registeredUser('g12-self-user@example.com');
+
+    expect(
+      (await api().inject({ method: 'GET', url: '/v1/me/export', headers: auth(user.token) }))
+        .statusCode,
+    ).toBe(200);
+    expect(
+      (await api().inject({ method: 'DELETE', url: '/v1/me', headers: auth(user.token) }))
+        .statusCode,
+    ).toBe(200);
+
+    const res = await get(ops.token, `/v1/cms/privacy-requests?userId=${user.id}`);
+    expect(res.statusCode).toBe(200);
+    const items = res.json().items as {
+      type: string;
+      source: string;
+      status: string;
+      outcome: string;
+      sla: string;
+      retentionAt?: string;
+      deliveryMethod?: string;
+    }[];
+    expect(items).toHaveLength(2);
+    for (const item of items) {
+      expect(item).toMatchObject({
+        source: 'self_service',
+        status: 'closed',
+        outcome: 'completed',
+        sla: 'COMPLETED',
+      });
+      // Stamped at closure, so the retention job's predicate is a comparison.
+      expect(item.retentionAt).toBeTypeOf('string');
+    }
+    expect(items.find((i) => i.type === 'export')?.deliveryMethod).toBe('in_app');
+  });
+
+  it('records a support request with a structured subject and SLA dates', async () => {
+    const ops = await createAdmin('g12-support@gogo.id.vn', 'ops_admin');
+    const res = await post(ops.token, '/v1/cms/privacy-requests', {
+      type: 'delete',
+      subjectType: 'email',
+      contactEmail: 'someone@example.com',
+      ticketReference: 'SUP-4411',
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({
+      type: 'delete',
+      source: 'support',
+      status: 'open',
+      subject: { subjectType: 'email', identityStatus: 'unverified' },
+      sla: 'ON_TRACK',
+    });
+    expect(new Date(res.json().ackDueAt).getTime()).toBeGreaterThan(Date.now());
+    expect(new Date(res.json().fulfillmentDueAt).getTime()).toBeGreaterThan(
+      new Date(res.json().ackDueAt).getTime(),
+    );
+  });
+
+  /*
+   * §2.3 — a subject is structured or it is nothing. One free-text field
+   * becomes a PII dumping ground the first time a conversation is pasted in.
+   */
+  it('refuses a subject without its identifier, and an over-long operator note', async () => {
+    const ops = await createAdmin('g12-shape@gogo.id.vn', 'ops_admin');
+    expect(
+      (await post(ops.token, '/v1/cms/privacy-requests', { type: 'export', subjectType: 'email' }))
+        .statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await post(ops.token, '/v1/cms/privacy-requests', {
+          type: 'export',
+          subjectType: 'external',
+          externalReference: 'ZD-1',
+          operatorNote: 'x'.repeat(257),
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
+
+  /*
+   * §2.2 — the load-bearing test. Same user is not same request: a direct
+   * user delete must not close the ledger row, and executing one request
+   * must not close the other.
+   */
+  it('execute closes exactly the linked request; a direct delete closes none', async () => {
+    const boss = await createAdmin('g12-boss@gogo.id.vn', 'super_admin');
+    const user = await registeredUser('g12-linked@example.com');
+
+    const exportReq = (
+      await post(boss.token, '/v1/cms/privacy-requests', {
+        type: 'export',
+        subjectType: 'user',
+        userId: user.id,
+      })
+    ).json();
+    const deleteReq = (
+      await post(boss.token, '/v1/cms/privacy-requests', {
+        type: 'delete',
+        subjectType: 'user',
+        userId: user.id,
+      })
+    ).json();
+
+    // The console can see there is something open before acting directly.
+    const detail = await get(boss.token, `/v1/cms/users/${user.id}`);
+    expect(detail.json().openPrivacyRequestCount).toBe(2);
+
+    // Execute the export: returns the payload, closes ONLY that request.
+    const executed = await post(boss.token, `/v1/cms/privacy-requests/${exportReq.id}/execute`);
+    expect(executed.statusCode).toBe(201);
+    expect(executed.json().request).toMatchObject({ status: 'closed', outcome: 'completed' });
+    expect(executed.json().data.profile.email).toBe('g12-linked@example.com');
+
+    const stillOpen = await get(boss.token, `/v1/cms/privacy-requests/${deleteReq.id}`);
+    expect(stillOpen.json().status).toBe('open');
+
+    // A direct delete outside the workflow: erases the account, touches no
+    // ledger row. The operator has to go back and close the request properly.
+    expect(
+      (
+        await post(boss.token, `/v1/cms/users/${user.id}/delete`, {
+          reason: 'moderation, unrelated',
+        })
+      ).statusCode,
+    ).toBe(201);
+    const afterDirect = await get(boss.token, `/v1/cms/privacy-requests/${deleteReq.id}`);
+    expect(afterDirect.json().status).toBe('open');
+  });
+
+  it('executing a delete request needs super_admin; a correction cannot be executed', async () => {
+    const ops = await createAdmin('g12-ops2@gogo.id.vn', 'ops_admin');
+    const user = await registeredUser('g12-role@example.com');
+    const deleteReq = (
+      await post(ops.token, '/v1/cms/privacy-requests', {
+        type: 'delete',
+        subjectType: 'user',
+        userId: user.id,
+      })
+    ).json();
+    const denied = await post(ops.token, `/v1/cms/privacy-requests/${deleteReq.id}/execute`);
+    expect(denied.statusCode).toBe(403);
+
+    const correction = (
+      await post(ops.token, '/v1/cms/privacy-requests', {
+        type: 'correction',
+        subjectType: 'user',
+        userId: user.id,
+      })
+    ).json();
+    const notExecutable = await post(
+      ops.token,
+      `/v1/cms/privacy-requests/${correction.id}/execute`,
+    );
+    expect(notExecutable.statusCode).toBe(409);
+    expect(notExecutable.json().code).toBe('NOT_EXECUTABLE');
+  });
+
+  it('closes an unmatched request as no_account_found and counts it', async () => {
+    const ops = await createAdmin('g12-noacct@gogo.id.vn', 'ops_admin');
+    const req = (
+      await post(ops.token, '/v1/cms/privacy-requests', {
+        type: 'delete',
+        subjectType: 'email',
+        contactEmail: 'ghost@example.com',
+      })
+    ).json();
+    const closed = await post(ops.token, `/v1/cms/privacy-requests/${req.id}/close`, {
+      outcome: 'no_account_found',
+    });
+    expect(closed.statusCode).toBe(201);
+    expect(closed.json()).toMatchObject({ status: 'closed', outcome: 'no_account_found' });
+
+    const [metrics] = await db
+      .select()
+      .from(schema.privacyMetricsMonthly)
+      .where(eq(schema.privacyMetricsMonthly.month, new Date().toISOString().slice(0, 7)));
+    expect(metrics!.noAccountFound).toBeGreaterThanOrEqual(1);
+    expect(metrics!.deleteReceived).toBeGreaterThanOrEqual(1);
+  });
+
+  /*
+   * §4/§5 — the retention job hard-deletes past retention_at, skips a held
+   * row, and reports an overdue review without releasing or deleting.
+   */
+  it('retention job purges eligible rows, skips held ones, flags overdue reviews', async () => {
+    const boss = await createAdmin('g12-retain@gogo.id.vn', 'super_admin');
+    const mk = async () =>
+      (
+        await post(boss.token, '/v1/cms/privacy-requests', {
+          type: 'export',
+          subjectType: 'external',
+          externalReference: `ZD-${Math.random()}`,
+        })
+      ).json().id as string;
+    const purgeMe = await mk();
+    const holdMe = await mk();
+    for (const id of [purgeMe, holdMe]) {
+      await post(boss.token, `/v1/cms/privacy-requests/${id}/close`, { outcome: 'rejected' });
+    }
+    // Both are past retention; one is held with a review date already lapsed.
+    await db
+      .update(schema.privacyRequests)
+      .set({ retentionAt: sql`now() - interval '1 day'` })
+      .where(sql`${schema.privacyRequests.id} in (${purgeMe}::uuid, ${holdMe}::uuid)`);
+    const held = await post(boss.token, `/v1/cms/privacy-requests/${holdMe}/retention-hold`, {
+      reason: 'litigation hold',
+      legalBasis: 'Điều 9 Luật 91/2025/QH15',
+      reviewAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(held.statusCode).toBe(201);
+    await db
+      .update(schema.privacyRequests)
+      .set({ reviewAt: sql`now() - interval '1 hour'` })
+      .where(eq(schema.privacyRequests.id, holdMe));
+
+    const { PrivacyJobs } = await import('@gogo/modules');
+    const report = await new PrivacyJobs(db as never).run(false);
+    expect(report.privacyRequestsPurged).toBeGreaterThanOrEqual(1);
+    expect(report.privacyHoldReviewsOverdue).toBeGreaterThanOrEqual(1);
+
+    expect((await get(boss.token, `/v1/cms/privacy-requests/${purgeMe}`)).statusCode).toBe(404);
+    const survivor = await get(boss.token, `/v1/cms/privacy-requests/${holdMe}`);
+    expect(survivor.statusCode).toBe(200);
+    expect(survivor.json().retentionHold.reviewOverdue).toBe(true);
+  });
+
+  it('a hold needs a future review date, and release keeps the retention date', async () => {
+    const boss = await createAdmin('g12-hold@gogo.id.vn', 'super_admin');
+    const id = (
+      await post(boss.token, '/v1/cms/privacy-requests', {
+        type: 'export',
+        subjectType: 'external',
+        externalReference: 'ZD-hold',
+      })
+    ).json().id as string;
+    await post(boss.token, `/v1/cms/privacy-requests/${id}/close`, { outcome: 'rejected' });
+    const before = (await get(boss.token, `/v1/cms/privacy-requests/${id}`)).json().retentionAt;
+
+    const past = await post(boss.token, `/v1/cms/privacy-requests/${id}/retention-hold`, {
+      reason: 'x',
+      legalBasis: 'y',
+      reviewAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    expect(past.statusCode).toBe(400);
+
+    await post(boss.token, `/v1/cms/privacy-requests/${id}/retention-hold`, {
+      reason: 'audit',
+      legalBasis: 'basis',
+      reviewAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    const released = await post(
+      boss.token,
+      `/v1/cms/privacy-requests/${id}/retention-hold/release`,
+      {
+        reason: 'basis no longer applies',
+      },
+    );
+    expect(released.statusCode).toBe(201);
+    expect(released.json().retentionHold).toBeUndefined();
+    // Never shortened: quietly shortening retention is destroying evidence.
+    expect(released.json().retentionAt).toBe(before);
+  });
+
+  it('is closed to editors and moderators', async () => {
+    const editor = await createAdmin('g12-editor@gogo.id.vn', 'editor');
+    expect((await get(editor.token, '/v1/cms/privacy-requests')).statusCode).toBe(403);
+  });
+});
+
 describe('place workflow + search sync (CMS-002, SRS §15.5)', () => {
   it('draft → review → published appears in search; suspended disappears', async () => {
     const editor = await createAdmin('editor2@gogo.local', 'editor');
