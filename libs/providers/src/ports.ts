@@ -172,6 +172,7 @@ export const TRAVEL_TIME_PROVIDER = Symbol('TRAVEL_TIME_PROVIDER');
 export type QueueStats = {
   name: string;
   /** Where the numbers came from, so the console can say so. */
+  /** `bullmq` is retained in the contract for older clients; nothing emits it since GoGo-BE#265. */
   source: 'bullmq' | 'database';
   pending: number;
   running: number;
@@ -190,19 +191,3 @@ export type QueueStats = {
   /** Consumers currently connected. Zero on a queue with work is the alarm. */
   workers: number | null;
 };
-
-export interface QueueStatsPort {
-  /**
-   * Whether this implementation talks to a real broker.
-   *
-   * Without it, a fake that returns no queues is indistinguishable from a
-   * healthy broker that happens to have none — and "the call did not throw"
-   * then reads as "Redis is up" in a deployment with no Redis at all. That is
-   * precisely the false green this endpoint exists to prevent, so the
-   * distinction is in the type rather than inferred from the result.
-   */
-  readonly backend: 'broker' | 'none';
-  list(): Promise<QueueStats[]>;
-}
-
-export const QUEUE_STATS = Symbol('QUEUE_STATS');

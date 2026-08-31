@@ -1,12 +1,9 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
-import {
-  breakerSnapshots,
-  QUEUE_STATS,
-  type QueueStats,
-  type QueueStatsPort,
-} from '@gogo/providers';
+import IORedis from 'ioredis';
+import { breakerSnapshots, type QueueStats } from '@gogo/providers';
 import { type Db } from '@gogo/database';
+import { APP_CONFIG } from '../../shared/config';
 import { DB } from '../../shared/tokens';
 
 /**
@@ -41,6 +38,52 @@ export type CostLine = {
 const HEALTH_CACHE_MS = 20_000;
 
 /**
+ * A worker whose newest heartbeat is older than this is down. The worker
+ * writes every 60s; three missed beats is a stop, not a slow tick.
+ */
+export const WORKER_HEARTBEAT_STALE_MS = 3 * 60_000;
+
+export type HeartbeatRow = { worker_id: string; last_seen_at: Date | string };
+
+/**
+ * Worker liveness from the heartbeats it writes. Pure, so the thresholds can
+ * be tested without a database.
+ *
+ * This replaced an inference from BullMQ — "a queue with work and no
+ * consumer" — which stopped meaning anything when the worker stopped using a
+ * broker (#262) and reported healthy unconditionally from then on. A heartbeat
+ * that stops being written exactly when the worker stops is not a weakness of
+ * the method; it is the whole method.
+ */
+export function workerHealthFrom(
+  rows: readonly HeartbeatRow[],
+  now: number,
+  checkedAt: string,
+): ServiceHealth {
+  if (rows.length === 0) {
+    return {
+      key: 'worker',
+      status: 'unknown',
+      checkedAt,
+      detail: 'No worker has written a heartbeat yet',
+    };
+  }
+  const ages = rows.map((r) => now - new Date(r.last_seen_at).getTime());
+  const newest = Math.min(...ages);
+  if (newest <= WORKER_HEARTBEAT_STALE_MS) {
+    return { key: 'worker', status: 'healthy', checkedAt };
+  }
+  return {
+    key: 'worker',
+    status: 'down',
+    checkedAt,
+    detail: `Last heartbeat ${Math.round(newest / 60_000)} min ago`,
+  };
+}
+
+type ObservabilityConfig = { REDIS_URL?: string; NODE_ENV?: string };
+
+/**
  * BE-CMS-G8 (#247) — the operations view.
  *
  * `/health` and `/metrics` already exist, but neither is reachable from the
@@ -51,10 +94,11 @@ const HEALTH_CACHE_MS = 20_000;
 @Injectable()
 export class CmsObservabilityService {
   private cached: { at: number; services: ServiceHealth[] } | null = null;
+  private redis: IORedis | null = null;
 
   constructor(
     @Inject(DB) private readonly db: Db,
-    @Optional() @Inject(QUEUE_STATS) private readonly queues?: QueueStatsPort,
+    @Inject(APP_CONFIG) private readonly config: ObservabilityConfig,
   ) {}
 
   async health(): Promise<{ services: ServiceHealth[] }> {
@@ -63,23 +107,15 @@ export class CmsObservabilityService {
     }
     const checkedAt = new Date().toISOString();
 
-    const db = await this.probe('db', () => this.db.execute(sql`select 1`));
+    const [db, redis, worker] = await Promise.all([
+      this.probe('db', () => this.db.execute(sql`select 1`)),
+      this.redisHealth(checkedAt),
+      this.workerHealth(checkedAt),
+    ]);
     // Answering at all is the only claim this row makes, and it is a true one.
     const api: ServiceHealth = { key: 'api', status: 'healthy', checkedAt };
 
-    /*
-     * Redis and the worker come out of one queue read rather than two checks.
-     * A successful `list()` is already a Redis round-trip, so opening a second
-     * connection to ping would add a failure mode without adding information —
-     * and would let the two rows disagree about the same server.
-     */
-    const queues = await this.readQueues();
-    const services: ServiceHealth[] = [
-      api,
-      db,
-      this.redisHealth(queues, checkedAt),
-      this.workerHealth(queues, checkedAt),
-    ];
+    const services: ServiceHealth[] = [api, db, redis, worker];
 
     /*
      * Providers come from the circuit breaker rather than from live calls.
@@ -106,75 +142,48 @@ export class CmsObservabilityService {
     return { services };
   }
 
-  /** One queue read, shared by the redis row, the worker row and `/queues`. */
-  private async readQueues(): Promise<QueueStats[] | 'unconfigured' | 'unreachable'> {
-    // A port with no broker behind it measures nothing about Redis, whatever
-    // it returns. Treating its empty answer as a successful round-trip is how
-    // a deployment with no queue connection reports itself healthy.
-    if (!this.queues || this.queues.backend === 'none') return 'unconfigured';
-    try {
-      return await this.queues.list();
-    } catch {
-      return 'unreachable';
-    }
-  }
-
-  private redisHealth(
-    queues: QueueStats[] | 'unconfigured' | 'unreachable',
-    checkedAt: string,
-  ): ServiceHealth {
-    if (queues === 'unconfigured') {
+  /**
+   * One PING, behind the 20-second cache above. That is the entire Redis cost
+   * of an open dashboard — it used to read three broker queues per refresh.
+   */
+  private async redisHealth(checkedAt: string): Promise<ServiceHealth> {
+    if (!this.config.REDIS_URL || this.config.NODE_ENV === 'test') {
       return {
         key: 'redis',
         status: 'unknown',
         checkedAt,
-        detail: 'No queue connection configured for this deployment',
+        detail: 'No Redis configured for this deployment',
       };
     }
-    if (queues === 'unreachable') {
-      return { key: 'redis', status: 'down', checkedAt, detail: 'Queue backend did not answer' };
+    if (!this.redis) {
+      this.redis = new IORedis(this.config.REDIS_URL, {
+        lazyConnect: true,
+        maxRetriesPerRequest: 1,
+        connectTimeout: 800,
+        enableOfflineQueue: true,
+        retryStrategy: (times) => (times > 2 ? null : 200),
+      });
+      this.redis.on('error', () => undefined);
     }
-    return { key: 'redis', status: 'healthy', checkedAt };
+    const client = this.redis;
+    return this.probe('redis', async () => {
+      const pong = await Promise.race([
+        client.ping(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 800)),
+      ]);
+      if (pong !== 'PONG') throw new Error('unexpected reply');
+    });
   }
 
-  /**
-   * Worker liveness from the queues it consumes. A queue with work and no
-   * connected consumer is the shape of a dead worker, and it is a fact read
-   * from Redis rather than a claim the worker makes about itself — a heartbeat
-   * the worker writes stops being evidence exactly when the worker stops.
-   *
-   * Idle with an empty queue is not evidence either way, so it stays
-   * `healthy`: a correctly-running deployment with nothing to do must not page
-   * anyone.
-   */
-  private workerHealth(
-    queues: QueueStats[] | 'unconfigured' | 'unreachable',
-    checkedAt: string,
-  ): ServiceHealth {
-    if (queues === 'unconfigured') {
-      return {
-        key: 'worker',
-        status: 'unknown',
-        checkedAt,
-        detail: 'No queue connection configured for this deployment',
-      };
+  private async workerHealth(checkedAt: string): Promise<ServiceHealth> {
+    try {
+      const result = await this.db.execute(
+        sql`select worker_id, last_seen_at from worker_heartbeats`,
+      );
+      return workerHealthFrom(result.rows as HeartbeatRow[], Date.now(), checkedAt);
+    } catch {
+      return { key: 'worker', status: 'unknown', checkedAt, detail: 'Heartbeat table unreadable' };
     }
-    if (queues === 'unreachable') {
-      return { key: 'worker', status: 'unknown', checkedAt, detail: 'Queue backend unreachable' };
-    }
-    const measurable = queues.filter((q) => q.workers !== null);
-    if (measurable.length === 0) {
-      return { key: 'worker', status: 'unknown', checkedAt, detail: 'Consumer count not reported' };
-    }
-    const idle = measurable.filter((q) => q.workers === 0 && q.pending > 0);
-    return {
-      key: 'worker',
-      status: idle.length > 0 ? 'down' : 'healthy',
-      checkedAt,
-      ...(idle.length > 0
-        ? { detail: `No consumer on: ${idle.map((q) => q.name).join(', ')}` }
-        : {}),
-    };
   }
 
   private async probe(key: string, fn: () => Promise<unknown>): Promise<ServiceHealth> {
@@ -198,15 +207,12 @@ export class CmsObservabilityService {
   }
 
   /**
-   * Queue depth, plus the transactional outbox — which is a queue in every
-   * sense that matters here and lives in Postgres, so BullMQ cannot see it.
-   * Leaving it out would hide the backlog that actually delays notifications.
+   * Queue depth. Only the transactional outbox — a queue in every sense that
+   * matters here, living in Postgres. The worker stopped using a broker
+   * (#262), so there is nothing else to report.
    */
   async queueStats(): Promise<{ queues: QueueStats[] }> {
-    const [fromBroker, outbox] = await Promise.all([this.readQueues(), this.outboxStats()]);
-    // A broker that is unconfigured or unreachable contributes no rows rather
-    // than rows of zeros; `/health` is where that distinction is reported.
-    return { queues: [...(Array.isArray(fromBroker) ? fromBroker : []), outbox] };
+    return { queues: [await this.outboxStats()] };
   }
 
   private async outboxStats(): Promise<QueueStats> {

@@ -148,3 +148,15 @@ export const aiFeedbackRuns = pgTable(
   },
   (t) => [index('ai_feedback_runs_plan_idx').on(t.planId, t.createdAt)],
 );
+
+/**
+ * Worker liveness, written by the worker itself every minute. One row per
+ * process, keyed by hostname, overwritten in place. The console reads the age
+ * of `last_seen_at`; a row that stops moving is the evidence a dead-man switch
+ * is built on.
+ */
+export const workerHeartbeats = pgTable('worker_heartbeats', {
+  workerId: text('worker_id').primaryKey(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+});
