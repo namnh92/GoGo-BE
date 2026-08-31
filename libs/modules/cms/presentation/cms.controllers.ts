@@ -11,6 +11,8 @@ import {
   type PlaceEditInput,
 } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
+import { CmsUploadsService } from '../application/cms-uploads.service';
+import { CMS_UPLOAD_PURPOSES, MAX_UPLOAD_BYTES } from '../../uploads/application/uploads.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { FLAG_ENVIRONMENTS, FLAG_PLATFORMS } from '../../shared/feature-flags';
@@ -436,6 +438,41 @@ export class CmsContentController {
     @Body(new ZodValidationPipe(collectionItemsSchema)) body: { placeIds: string[] },
   ) {
     return this.content.setCollectionItems(actor.id, id, body.placeIds);
+  }
+}
+
+// ---------------------------------------------------------------- uploads
+
+/**
+ * BE-CMS-G5 (#227) — the console's own upload door.
+ *
+ * Same presigner, allowlist and size ceiling as `/v1/uploads`; what differs is
+ * that the key is bound to a staff account and to a purpose only staff may ask
+ * for. `contentLength` is declared up front so an oversized file is refused
+ * before a URL exists, rather than after the bytes have crossed the network.
+ */
+const cmsUploadSchema = z.object({
+  purpose: z.enum(CMS_UPLOAD_PURPOSES),
+  contentType: z.string().min(1).max(100),
+  contentLength: z.number().int().positive().max(MAX_UPLOAD_BYTES),
+});
+
+@RequireRole('editor', 'ops_admin')
+@Controller('cms/uploads')
+export class CmsUploadsController {
+  constructor(private readonly uploads: CmsUploadsService) {}
+
+  /**
+   * Rate-limited per actor like the consumer path: each call costs a signature
+   * and a pending row, and an unbounded loop would fill the table.
+   */
+  @RateLimit({ action: 'cms.uploads.create', limit: 30, windowSeconds: 60, keyBy: 'actor' })
+  @Post()
+  create(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(cmsUploadSchema)) body: z.infer<typeof cmsUploadSchema>,
+  ) {
+    return this.uploads.create(actor, body);
   }
 }
 

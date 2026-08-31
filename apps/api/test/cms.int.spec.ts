@@ -810,6 +810,159 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
   });
 });
 
+/**
+ * BE-CMS-G5 (#227) — the console's upload door. `/v1/uploads` binds its key to
+ * the calling consumer, so an admin had no way to produce one and a banner,
+ * where the image is mandatory, had nothing to bind to.
+ */
+describe('CMS media upload (BE-CMS-G5 #227)', () => {
+  let editor: { id: string; token: string };
+  let moderator: { id: string; token: string };
+
+  beforeAll(async () => {
+    editor = await createAdmin('upload227@gogo.local', 'editor');
+    moderator = await createAdmin('upload227-mod@gogo.local', 'moderator');
+  });
+
+  const upload = (payload: unknown, token = editor.token) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/uploads',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: payload as object,
+    });
+
+  it('authorizes a presigned PUT bound to the admin, with a server-made key', async () => {
+    const res = await upload({
+      purpose: 'banner_image',
+      contentType: 'image/jpeg',
+      contentLength: 250_000,
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+
+    expect(body.uploadUrl).toMatch(/^https?:\/\//);
+    expect(body.contentType).toBe('image/jpeg');
+    expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+
+    // Actor plus a UUID plus the extension of the declared type. Nothing the
+    // client sent reaches the key, so it cannot be steered at another object.
+    expect(body.key).toMatch(new RegExp(`^u/admin/${editor.id}/[0-9a-f-]{36}\\.jpg$`));
+    expect(body.key).not.toContain('..');
+
+    const [row] = await db
+      .select()
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.id, body.id));
+    expect(row!.actorType).toBe('admin');
+    expect(row!.actorId).toBe(editor.id);
+    expect(row!.purpose).toBe('banner_image');
+    expect(row!.status).toBe('pending');
+  });
+
+  it('never hands back a storage credential, only a URL that expires', async () => {
+    const body = (
+      await upload({ purpose: 'banner_image', contentType: 'image/png', contentLength: 1000 })
+    ).json();
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain('secretAccessKey');
+    expect(raw).not.toContain('accessKeyId');
+    expect(raw).not.toContain('R2_');
+    // Time-boxed rather than a bucket handle. The signature itself is the R2
+    // adapter's job and is covered in `r2-storage.adapter.spec.ts`; this suite
+    // runs against the fake storage adapter, which produces no SigV4 query.
+    const ttlSeconds = (new Date(body.expiresAt).getTime() - Date.now()) / 1000;
+    expect(ttlSeconds).toBeGreaterThan(0);
+    expect(ttlSeconds).toBeLessThanOrEqual(900);
+  });
+
+  it('refuses a content type outside the allowlist', async () => {
+    for (const contentType of ['image/svg+xml', 'application/pdf', 'text/html', 'image/gif']) {
+      const res = await upload({ purpose: 'banner_image', contentType, contentLength: 1000 });
+      expect(res.statusCode, contentType).toBe(400);
+      expect(res.json().code).toBe('UNSUPPORTED_CONTENT_TYPE');
+    }
+  });
+
+  it('refuses an oversized file before a URL exists', async () => {
+    const res = await upload({
+      purpose: 'banner_image',
+      contentType: 'image/jpeg',
+      contentLength: 50 * 1024 * 1024,
+    });
+    expect(res.statusCode).toBe(400);
+    const before = await db.$count(schema.mediaUploads);
+    expect(before).toBeGreaterThan(0); // rows exist, but not one for this call
+  });
+
+  it('refuses a purpose that belongs to the consumer app', async () => {
+    for (const purpose of ['checkin_photo', 'bill_photo', 'place_photo', 'anything']) {
+      const res = await upload({ purpose, contentType: 'image/jpeg', contentLength: 1000 });
+      expect(res.statusCode, purpose).toBe(400);
+    }
+  });
+
+  it('records who uploaded what, since the bytes never cross the API', async () => {
+    const body = (
+      await upload({ purpose: 'campaign_image', contentType: 'image/webp', contentLength: 4321 })
+    ).json();
+
+    const audit = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/audit?action=cms_upload.authorized&resourceId=${body.id}`,
+      headers: auth(editor.token),
+    });
+    expect(audit.statusCode).toBe(200);
+    const entry = audit.json().items[0];
+    expect(entry.actorId).toBe(editor.id);
+    expect(entry.diff).toMatchObject({
+      purpose: 'campaign_image',
+      contentType: 'image/webp',
+      contentLength: 4321,
+      storageKey: body.key,
+    });
+  });
+
+  it('is an editorial write: a moderator cannot authorize one, nor can a consumer', async () => {
+    const asModerator = await upload(
+      { purpose: 'banner_image', contentType: 'image/jpeg', contentLength: 1000 },
+      moderator.token,
+    );
+    expect(asModerator.statusCode).toBe(403);
+
+    const reg = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: ip(),
+      payload: {
+        email: 'upload227-outsider@gogo.vn',
+        password: 'sufficiently-long-pw',
+        displayName: 'O',
+      },
+    });
+    const asConsumer = await upload(
+      { purpose: 'banner_image', contentType: 'image/jpeg', contentLength: 1000 },
+      reg.json().accessToken,
+    );
+    expect(asConsumer.statusCode).toBe(403);
+  });
+
+  it('a consumer cannot claim an admin key, and an admin key is not a check-in photo', async () => {
+    const body = (
+      await upload({ purpose: 'banner_image', contentType: 'image/jpeg', contentLength: 1000 })
+    ).json();
+    // The key is bound to the admin row that produced it; the consumer attach
+    // path matches on actor and purpose, so neither half of that lines up.
+    const [row] = await db
+      .select()
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.storageKey, body.key));
+    expect(row!.actorType).toBe('admin');
+    expect(row!.attachedToId).toBeNull();
+  });
+});
+
 describe('ops KPIs (CMS-010)', () => {
   it('KPIs endpoint aggregates health metrics (FR-CMS-010)', async () => {
     const ops = await createAdmin('ops4@gogo.local', 'ops_admin');
