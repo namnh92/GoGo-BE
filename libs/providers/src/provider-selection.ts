@@ -10,10 +10,11 @@
  * ones and inject them differently. It answers the one question they share:
  * after choosing, is anything pretending?
  *
- * TRAVEL_TIME_PROVIDER is deliberately absent. Its fallback is a deliberate
- * product choice behind FLAG_ROUTES_API — a straight-line estimate is a real
- * answer, not a stand-in — so warning about it would train operators to ignore
- * these lines.
+ * TRAVEL_TIME_PROVIDER is reported only when FLAG_ROUTES_API is on. With the
+ * flag off, the straight-line estimate is the product's answer and not a
+ * stand-in, so warning about it would train operators to ignore these lines.
+ * With the flag on and no key, someone asked for real travel times and is
+ * silently getting estimates — which is the same defect as the others here.
  */
 export type FakedProvider = {
   /** Port that ended up bound to a fake. */
@@ -27,6 +28,9 @@ export type FakedProvider = {
 export type ProviderKeys = {
   GOOGLE_PLACES_API_KEY: string;
   GOOGLE_SHEETS_API_KEY: string;
+  GOOGLE_ROUTES_API_KEY: string;
+  /** Routes is opt-in; without the flag its absence is not a fault. */
+  FLAG_ROUTES_API: boolean;
 };
 
 export function fakedProviders(keys: ProviderKeys): FakedProvider[] {
@@ -53,6 +57,14 @@ export function fakedProviders(keys: ProviderKeys): FakedProvider[] {
       port: 'SHEETS_PROVIDER',
       envVar: 'GOOGLE_SHEETS_API_KEY',
       effect: 'every CMS Google Sheet import fails with SHEET_PROVIDER_NOT_CONFIGURED',
+    });
+  }
+
+  if (keys.FLAG_ROUTES_API && !keys.GOOGLE_ROUTES_API_KEY) {
+    faked.push({
+      port: 'TRAVEL_TIME_PROVIDER',
+      envVar: 'GOOGLE_ROUTES_API_KEY',
+      effect: 'travel times are straight-line estimates despite FLAG_ROUTES_API being on',
     });
   }
 

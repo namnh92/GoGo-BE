@@ -111,7 +111,14 @@ async function bootstrap(): Promise<void> {
   // strands jobs here as surely as it rejects them in the API. Same warning,
   // because this process makes the same choice from its own copy of the env.
   warnFakedProviders(
-    { GOOGLE_PLACES_API_KEY: placesKey, GOOGLE_SHEETS_API_KEY: sheetsKey },
+    {
+      GOOGLE_PLACES_API_KEY: placesKey,
+      GOOGLE_SHEETS_API_KEY: sheetsKey,
+      GOOGLE_ROUTES_API_KEY: process.env.GOOGLE_ROUTES_API_KEY ?? '',
+      // The worker binds no travel-time provider, but it reads the same env and
+      // a warn here is what an operator sees when only the worker is restarted.
+      FLAG_ROUTES_API: process.env.FLAG_ROUTES_API === 'true',
+    },
     (meta, message) => logger.warn(meta, message),
   );
   const placeProvider = placesKey
