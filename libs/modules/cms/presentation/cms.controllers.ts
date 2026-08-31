@@ -45,6 +45,13 @@ const loginSchema = z.object({
 });
 const totpSetupSchema = z.object({ password: z.string().min(1).max(128) });
 const totpConfirmSchema = z.object({ code: z.string().regex(/^\d{6}$/) });
+const adminListQuery = z.object({
+  q: z.string().trim().min(1).max(120).optional(),
+  role: z.enum(['editor', 'moderator', 'ops_admin', 'super_admin']).optional(),
+  status: z.enum(['active', 'suspended']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
 const createAdminSchema = z.object({
   email: z.string().email(),
   password: z.string().min(12).max(128),
@@ -141,6 +148,19 @@ export class CmsAuthController {
     @Body(new ZodValidationPipe(createAdminSchema)) body: z.infer<typeof createAdminSchema>,
   ) {
     return this.auth.createAdmin({ ...body, createdBy: actor.id });
+  }
+
+  /**
+   * BE-CMS-G2 (#220) — the read that was missing next to the create.
+   *
+   * `super_admin` only, matching the write: who holds which role is the shape
+   * of the whole authorization model, and the guard's rank-read does not open
+   * it up because no lower rank reaches 3.
+   */
+  @RequireRole('super_admin')
+  @Get('admins')
+  listAdmins(@Query(new ZodValidationPipe(adminListQuery)) query: z.infer<typeof adminListQuery>) {
+    return this.auth.listAdmins(query);
   }
 }
 

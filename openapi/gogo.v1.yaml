@@ -2379,6 +2379,44 @@ paths:
           description: No enrollment is pending
 
   /cms/auth/admins:
+    get:
+      operationId: cmsListAdmins
+      tags: [cms]
+      summary: 'Super admin: staff accounts, filtered and cursor-paged'
+      description: >
+        The read that was missing beside `cmsCreateAdmin`: the console could
+        create a staff account and then never show it again.
+
+
+        `super_admin` only, matching the write — who holds which role is the
+        shape of the authorization model itself, so it is not a rank-read for
+        lower roles.
+
+
+        Never returns the password hash, the TOTP secret (enrolled or pending),
+        or any session material. `email` is returned because it is how a staff
+        account is identified; nothing beyond it is.
+      parameters:
+        - name: q
+          in: query
+          description: Substring of email or display name, case-insensitive.
+          schema: { type: string, maxLength: 120 }
+        - { name: role, in: query, schema: { $ref: '#/components/schemas/AdminRole' } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/AdminStatus' } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Staff accounts, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAdminPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       operationId: cmsCreateAdmin
       tags: [cms]
@@ -3612,6 +3650,47 @@ components:
     AdminRole:
       type: string
       enum: [editor, moderator, ops_admin, super_admin]
+    AdminStatus:
+      type: string
+      enum: [active, suspended]
+      description: >
+        The two states the server actually enforces: `suspended` loses access on
+        the next request, whatever token the account still holds. There is no
+        third "disabled" state — a status the guard does not act on would be a
+        claim in the data that nothing backs.
+
+    CmsAdmin:
+      type: object
+      required: [id, email, displayName, role, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        email:
+          type: string
+          format: email
+          description: How a staff account is identified. No other contact detail is returned.
+        displayName: { type: string }
+        role: { $ref: '#/components/schemas/AdminRole' }
+        status: { $ref: '#/components/schemas/AdminStatus' }
+        createdAt: { type: string, format: date-time }
+        lastLoginAt:
+          type: string
+          format: date-time
+          description: Absent on an account that has never signed in.
+
+    CmsAdminPage:
+      type: object
+      required: [items, nextCursor, totalCount]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsAdmin' }
+        nextCursor:
+          type: [string, 'null']
+          description: Keyset cursor over (createdAt, id).
+        totalCount:
+          type: integer
+          description: Accounts matching the filter, not accounts in this page.
+
     ModerationDecision:
       type: object
       required: [decision, reason]
