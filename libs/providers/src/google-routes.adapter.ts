@@ -1,10 +1,12 @@
 import {
+  ProviderConfigurationError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   type LatLng,
   type TravelLeg,
   type TravelTimePort,
 } from './ports';
+import { errorReason, googleFailure } from './google-error';
 import { withResilience } from './resilience';
 
 const RESILIENCE = {
@@ -80,14 +82,27 @@ export class GoogleRoutesAdapter implements TravelTimePort {
             elements: destinations.length,
           });
         }
-        if (res.status === 429) throw new ProviderQuotaExceededError('google.routes');
-        if (!res.ok) throw new Error(`routes ${res.status}`);
-        return (await res.json()) as MatrixElement[];
+        if (res.ok) return (await res.json()) as MatrixElement[];
+
+        // #273: Routes not being enabled on the project is a permanent answer.
+        // Presented as an outage it produced a breaker that opened and closed
+        // on a cycle while the itinerary silently used straight-line estimates.
+        const reason = await errorReason(res);
+        this.metrics.increment('places_provider_failures_total', {
+          method: 'google.routeMatrix',
+          status: res.status,
+          reason: reason ?? 'unknown',
+        });
+        const fault = googleFailure('google.routes', res.status, reason);
+        if (fault) throw fault;
+        throw new Error(`routes ${res.status}`);
       },
     ).catch((err: unknown) => {
       if (err instanceof ProviderQuotaExceededError) throw err;
+      if (err instanceof ProviderConfigurationError) throw err;
       const cause = (err as { cause?: unknown }).cause;
       if (cause instanceof ProviderQuotaExceededError) throw cause;
+      if (cause instanceof ProviderConfigurationError) throw cause;
       throw err instanceof ProviderUnavailableError
         ? err
         : new ProviderUnavailableError('google.routes', err);

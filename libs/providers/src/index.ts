@@ -12,6 +12,12 @@ export {
   FakeSheets,
   FakeStorage,
 } from './fake.adapters';
+export {
+  errorReason,
+  googleFailure,
+  isMisconfiguredReason,
+  PROVIDER_MISCONFIGURED_REASONS,
+} from './google-error';
 export { GooglePlacesAdapter } from './google-places.adapter';
 export { GoogleRoutesAdapter } from './google-routes.adapter';
 export { HaversineTravelTime } from './haversine-travel.adapter';

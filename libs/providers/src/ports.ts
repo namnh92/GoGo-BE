@@ -145,6 +145,34 @@ export interface SheetsPort {
   readTab(spreadsheetId: string, title: string, maxRows: number): Promise<string[][]>;
 }
 
+/**
+ * #273 — the provider cannot be used, and no amount of waiting or retrying
+ * changes that: the API is not enabled on our project, the key is invalid, or
+ * its restrictions forbid this call.
+ *
+ * Distinct from `ProviderUnavailableError`, which says "upstream is having a
+ * bad time, try later" — the sentence a runbook acts on by waiting. Reporting
+ * a configuration fault as an outage is how an API nobody enabled turns into a
+ * breaker that opens and closes forever with no one asking why.
+ *
+ * Never carries the credential. `providerReason` is Google's own reason code
+ * (`SERVICE_DISABLED`, `API_KEY_SERVICE_BLOCKED`, …) — a fact about our
+ * console, safe to log, and the only thing that tells an operator which
+ * console page to open.
+ */
+export class ProviderConfigurationError extends Error {
+  constructor(
+    readonly provider: string,
+    /** Normalized for the ops signal; `providerReason` keeps the detail. */
+    readonly faultCode: 'MISSING_CREDENTIAL' | 'AUTH_FAILED',
+    readonly providerReason?: string,
+    cause?: unknown,
+  ) {
+    super(`provider ${provider} misconfigured (${faultCode})`, { cause });
+    this.name = 'ProviderConfigurationError';
+  }
+}
+
 /** Raised when the provider refuses further calls (quota/rate limit). */
 export class ProviderQuotaExceededError extends Error {
   constructor(provider: string, cause?: unknown) {

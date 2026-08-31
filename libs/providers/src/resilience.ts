@@ -1,4 +1,8 @@
-import { ProviderQuotaExceededError, ProviderUnavailableError } from './ports';
+import {
+  ProviderConfigurationError,
+  ProviderQuotaExceededError,
+  ProviderUnavailableError,
+} from './ports';
 
 export type ResilienceOptions = {
   name: string;
@@ -100,6 +104,12 @@ export async function withResilience<T>(
       // Quota exhaustion is a budget decision, not a transient fault: retrying
       // only burns more of it, so it propagates untouched to the caller.
       if (err instanceof ProviderQuotaExceededError) throw err;
+      // #273: neither is a configuration fault. An API that is not enabled on
+      // our project answers the second and third attempt exactly as it
+      // answered the first, and each of those attempts counts toward the
+      // breaker — which is why a disabled API presented as a breaker cycling
+      // open and closed rather than as the one-line console fix it is.
+      if (err instanceof ProviderConfigurationError) throw err;
       lastError = err;
       state.consecutiveFailures += 1;
       state.lastFailureAt = Date.now();
