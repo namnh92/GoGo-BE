@@ -85,6 +85,59 @@ export class FallbackRevocationStore implements RevocationStore {
   }
 }
 
+/**
+ * Remembers "not revoked" for a few seconds, so an authenticated request does
+ * not cost a Redis round trip.
+ *
+ * Every request through AuthGuard asked Redis whether its session was revoked.
+ * Measured on DEV: one phone polling a room screen was 225 GETs a minute on
+ * this key alone, and DEV is billed per command. The answer is "no" for every
+ * request but the handful after a logout, so it is the one worth caching.
+ *
+ * What the cache costs: a logout performed on ANOTHER api instance takes effect
+ * here up to `negativeTtlMs` later. On this instance it is immediate — `revoke`
+ * drops the cached entry before writing through. The access token itself lives
+ * fifteen minutes past a logout by design; this denylist narrows that window,
+ * and five seconds of it are now spent on the cache.
+ *
+ * "Revoked" is never cached here: the layer below already remembers it locally
+ * for the token's lifetime, and a revoked session is rejected on the first
+ * request, after which the client stops sending it.
+ */
+export class CachedRevocationStore implements RevocationStore {
+  private readonly clearedUntil = new Map<string, number>();
+
+  constructor(
+    private readonly inner: RevocationStore,
+    private readonly negativeTtlMs = 5_000,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  async revoke(sessionId: string, ttlSeconds: number): Promise<void> {
+    this.clearedUntil.delete(sessionId);
+    await this.inner.revoke(sessionId, ttlSeconds);
+  }
+
+  async isRevoked(sessionId: string): Promise<boolean> {
+    const until = this.clearedUntil.get(sessionId);
+    if (until !== undefined && until > this.now()) return false;
+
+    const revoked = await this.inner.isRevoked(sessionId);
+    if (revoked) {
+      this.clearedUntil.delete(sessionId);
+      return true;
+    }
+    this.clearedUntil.set(sessionId, this.now() + this.negativeTtlMs);
+    if (this.clearedUntil.size > 50_000) this.sweep();
+    return false;
+  }
+
+  private sweep(): void {
+    const now = this.now();
+    for (const [id, until] of this.clearedUntil) if (until <= now) this.clearedUntil.delete(id);
+  }
+}
+
 @Injectable()
 export class SessionRevocationService {
   constructor(

@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { AuthService, AUTH_OPTIONS, type AuthOptions } from '../application/auth.service';
 import {
+  CachedRevocationStore,
   FallbackRevocationStore,
   InMemoryRevocationStore,
   RedisRevocationStore,
@@ -17,7 +18,11 @@ import { IdentityRepository } from '../infrastructure/identity.repository';
 import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { RateLimitGuard } from './rate-limit.guard';
-import { InMemoryRateLimitStore, RATE_LIMIT_STORE } from './rate-limit.service';
+import {
+  BASELINE_RATE_LIMIT_STORE,
+  InMemoryRateLimitStore,
+  RATE_LIMIT_STORE,
+} from './rate-limit.service';
 import { FallbackRateLimitStore, RedisRateLimitStore } from './redis-rate-limit.store';
 import { SessionsController } from './sessions.controller';
 
@@ -68,9 +73,18 @@ import { SessionsController } from './sessions.controller';
           enableOfflineQueue: true,
         });
         redis.on('error', () => undefined);
-        return new FallbackRevocationStore(new RedisRevocationStore(redis));
+        // Fallback keeps this instance correct through a Redis blip; the cache
+        // in front of it keeps an ordinary request off Redis altogether.
+        return new CachedRevocationStore(
+          new FallbackRevocationStore(new RedisRevocationStore(redis)),
+        );
       },
       inject: [APP_CONFIG],
+    },
+    {
+      // Per process by design — see BASELINE_RATE_LIMIT_STORE.
+      provide: BASELINE_RATE_LIMIT_STORE,
+      useClass: InMemoryRateLimitStore,
     },
     SessionRevocationService,
     AuthService,

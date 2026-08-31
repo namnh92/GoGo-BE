@@ -29,4 +29,18 @@ export class InMemoryRateLimitStore implements RateLimitStore {
   }
 }
 
+/** Store for the per-action `@RateLimit` specs: exact, shared across instances. */
 export const RATE_LIMIT_STORE = Symbol('RATE_LIMIT_STORE');
+
+/**
+ * Store for the per-actor baseline: a flood ceiling, per process on purpose.
+ *
+ * The baseline ran through the shared store, which made every authenticated
+ * request one Redis INCR before it reached a controller — on DEV, billed per
+ * command, that was most of the free tier. A ceiling of 300 requests a minute
+ * does not need to be exact across instances: with N instances it is N times
+ * looser, and a flood that stays under N × 300 a minute is not the flood it is
+ * there to stop. The limits that must be exact — login, OTP, invite lookup,
+ * provider quota — stay on RATE_LIMIT_STORE.
+ */
+export const BASELINE_RATE_LIMIT_STORE = Symbol('BASELINE_RATE_LIMIT_STORE');
