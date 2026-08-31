@@ -3291,6 +3291,150 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /cms/safety-rules:
+    get:
+      operationId: cmsListSafetyRules
+      tags: [cms]
+      summary: 'Ops: Trust & Safety rules, filtered and cursor-paged'
+      description: >
+        `ops_admin` only, in both directions — a rule here can suspend an
+        account with no human in the loop, which is policy rather than
+        day-to-day moderation.
+
+
+        Rule **definitions**. Nothing evaluates them yet — the enforcement path
+        is separate work — and when it lands, every automated decision carries
+        the rule's `reasonCode` so a person reviewing it can trace why.
+
+
+        There is no rule builder and no expression language: `conditions` is a
+        closed, typed shape per `ruleType`, validated on write. Nothing here is
+        evaluated as code.
+      parameters:
+        - { name: ruleType, in: query, schema: { $ref: '#/components/schemas/SafetyRuleType' } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/SafetyRuleStatus' } }
+        - { name: action, in: query, schema: { $ref: '#/components/schemas/SafetyRuleAction' } }
+        - { name: severity, in: query, schema: { $ref: '#/components/schemas/SafetyRuleSeverity' } }
+        - { name: trigger, in: query, schema: { $ref: '#/components/schemas/SafetyRuleTrigger' } }
+        - { name: q, in: query, schema: { type: string, maxLength: 120 } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Rules, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsSafetyRulePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      operationId: cmsCreateSafetyRule
+      tags: [cms]
+      summary: 'Ops: define a Trust & Safety rule'
+      description: >
+        Three things are checked beyond the shape of `conditions`: the action
+        must be one the rule type can take, the trigger one it can be evaluated
+        on, and `suspend_user` requires severity `high` or `critical` —
+        suspension removes an account from a person with no human in the loop,
+        and a `low` rule doing that at scale is the mistake worth refusing.
+
+
+        `reasonCode` is mandatory and machine-readable (`^[a-z][a-z0-9_]{2,63}$`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsSafetyRuleCreate' }
+      responses:
+        '201':
+          description: Created (audited with the whole definition)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsSafetyRule' }
+        '400':
+          description: >
+            Conditions do not fit the rule type (`INVALID_RULE_CONDITIONS`), the
+            action or trigger is not available for it (`ACTION_NOT_ALLOWED`,
+            `TRIGGER_NOT_ALLOWED`), or automatic suspension was asked for below
+            `high` severity (`SEVERITY_TOO_LOW`).
+        '409': { description: 'A rule with that name exists (`RULE_NAME_TAKEN`)' }
+
+  /cms/safety-rules/{id}:
+    get:
+      operationId: cmsGetSafetyRule
+      tags: [cms]
+      summary: 'Ops: one rule'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Rule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsSafetyRule' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: cmsUpdateSafetyRule
+      tags: [cms]
+      summary: 'Ops: edit a rule'
+      description: >
+        `ruleType` is immutable — it decides which condition schema applies, and
+        changing it would reinterpret stored conditions rather than revalidate
+        them. The rule is revalidated as a whole on every edit, because changing
+        the action alone can make an already-stored condition set illegal.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsSafetyRulePatch' }
+      responses:
+        '200':
+          description: Updated (audited before/after)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsSafetyRule' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/safety-rules/{id}/status:
+    patch:
+      operationId: cmsSetSafetyRuleStatus
+      tags: [cms]
+      summary: 'Ops: activate or disable a rule'
+      description: >
+        Reversible in both directions on purpose — the point of a switch is that
+        it can be thrown back. Activating revalidates the definition first: a
+        rule may have been left in draft precisely because it was unfinished.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/SafetyRuleStatus' }
+      responses:
+        '200':
+          description: Status changed (audited)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { $ref: '#/components/schemas/SafetyRuleStatus' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /cms/uploads:
     post:
       operationId: cmsCreateUpload
@@ -5389,6 +5533,154 @@ components:
           type: array
           maxItems: 100
           items: { type: string, format: uuid }
+
+    SafetyRuleType:
+      type: string
+      enum:
+        [
+          spam,
+          abusive_content,
+          blocked_words,
+          review_abuse,
+          user_abuse,
+          repeated_reports,
+          rate_limit,
+        ]
+
+    SafetyRuleTrigger:
+      type: string
+      enum:
+        [
+          review_created,
+          review_updated,
+          report_created,
+          checkin_created,
+          place_submitted,
+          user_registered,
+        ]
+
+    SafetyRuleAction:
+      type: string
+      enum: [flag_for_review, auto_hide, require_moderation, suspend_user, block_action]
+      description: >
+        `suspend_user` acts on a person with no human in the loop, so it is
+        available only to rule types that are about that person's conduct and
+        only at `high` severity or above.
+
+    SafetyRuleSeverity:
+      type: string
+      enum: [low, medium, high, critical]
+
+    SafetyRuleStatus:
+      type: string
+      enum: [draft, active, disabled]
+
+    CmsSafetyRuleConditions:
+      type: object
+      description: >
+        A closed shape chosen by `ruleType`, never an expression. Unknown keys
+        are rejected on write rather than stored and never read.
+
+
+        `blocked_words`: `terms[]`, `matchMode` (exact | substring),
+        `caseSensitive`.
+
+        `spam`: `maxLinks`, `maxDuplicatesPerWindow`, `windowHours`,
+        `minAccountAgeHours` — at least one of the first two.
+
+        `abusive_content`: `terms[]`, `minReports`, `windowHours`.
+
+        `review_abuse`: `maxReviewsPerWindow`, `windowHours`,
+        `maxReviewsPerPlace`.
+
+        `user_abuse`: `maxReportsAgainstUser`, `windowHours`, `upheldOnly`.
+
+        `repeated_reports`: `minReports`, `windowHours`, `distinctReporters`.
+
+        `rate_limit`: `action` (review_create | report_create | checkin_create |
+        place_submit | room_join), `limit`, `windowSeconds`.
+      additionalProperties: true
+
+    CmsSafetyRule:
+      type: object
+      required:
+        [
+          id,
+          name,
+          ruleType,
+          trigger,
+          conditions,
+          action,
+          severity,
+          status,
+          priority,
+          reasonCode,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        ruleType: { $ref: '#/components/schemas/SafetyRuleType' }
+        trigger: { $ref: '#/components/schemas/SafetyRuleTrigger' }
+        conditions: { $ref: '#/components/schemas/CmsSafetyRuleConditions' }
+        action: { $ref: '#/components/schemas/SafetyRuleAction' }
+        severity: { $ref: '#/components/schemas/SafetyRuleSeverity' }
+        status: { $ref: '#/components/schemas/SafetyRuleStatus' }
+        priority:
+          type: integer
+          description: >
+            Lower runs first, so two rules matching one event resolve the same
+            way every time rather than by insertion order.
+        reasonCode:
+          type: string
+          description: >
+            Stamped on every decision this rule causes, so an automated action
+            can be traced back by a person reviewing it.
+        createdBy:
+          oneOf:
+            - { $ref: '#/components/schemas/CmsAdminRef' }
+            - { type: 'null' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CmsSafetyRulePage:
+      type: object
+      required: [items, nextCursor, totalCount]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsSafetyRule' }
+        nextCursor: { type: [string, 'null'] }
+        totalCount: { type: integer }
+
+    CmsSafetyRuleCreate:
+      type: object
+      required: [name, ruleType, trigger, action, reasonCode]
+      properties:
+        name: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
+        ruleType: { $ref: '#/components/schemas/SafetyRuleType' }
+        trigger: { $ref: '#/components/schemas/SafetyRuleTrigger' }
+        conditions: { $ref: '#/components/schemas/CmsSafetyRuleConditions' }
+        action: { $ref: '#/components/schemas/SafetyRuleAction' }
+        severity: { $ref: '#/components/schemas/SafetyRuleSeverity' }
+        priority: { type: integer, minimum: 0, maximum: 1000 }
+        reasonCode: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+
+    CmsSafetyRulePatch:
+      type: object
+      description: '`ruleType` is immutable; it decides which condition schema applies.'
+      properties:
+        name: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
+        trigger: { $ref: '#/components/schemas/SafetyRuleTrigger' }
+        conditions: { $ref: '#/components/schemas/CmsSafetyRuleConditions' }
+        action: { $ref: '#/components/schemas/SafetyRuleAction' }
+        severity: { $ref: '#/components/schemas/SafetyRuleSeverity' }
+        priority: { type: integer, minimum: 0, maximum: 1000 }
+        reasonCode: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
 
     CmsUpload:
       type: object

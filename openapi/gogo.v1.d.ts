@@ -1920,6 +1920,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/safety-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: Trust & Safety rules, filtered and cursor-paged
+         * @description `ops_admin` only, in both directions — a rule here can suspend an account with no human in the loop, which is policy rather than day-to-day moderation.
+         *
+         *     Rule **definitions**. Nothing evaluates them yet — the enforcement path is separate work — and when it lands, every automated decision carries the rule's `reasonCode` so a person reviewing it can trace why.
+         *
+         *     There is no rule builder and no expression language: `conditions` is a closed, typed shape per `ruleType`, validated on write. Nothing here is evaluated as code.
+         */
+        get: operations["cmsListSafetyRules"];
+        put?: never;
+        /**
+         * Ops: define a Trust & Safety rule
+         * @description Three things are checked beyond the shape of `conditions`: the action must be one the rule type can take, the trigger one it can be evaluated on, and `suspend_user` requires severity `high` or `critical` — suspension removes an account from a person with no human in the loop, and a `low` rule doing that at scale is the mistake worth refusing.
+         *
+         *     `reasonCode` is mandatory and machine-readable (`^[a-z][a-z0-9_]{2,63}$`).
+         */
+        post: operations["cmsCreateSafetyRule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/safety-rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ops: one rule */
+        get: operations["cmsGetSafetyRule"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Ops: edit a rule
+         * @description `ruleType` is immutable — it decides which condition schema applies, and changing it would reinterpret stored conditions rather than revalidate them. The rule is revalidated as a whole on every edit, because changing the action alone can make an already-stored condition set illegal.
+         */
+        patch: operations["cmsUpdateSafetyRule"];
+        trace?: never;
+    };
+    "/cms/safety-rules/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Ops: activate or disable a rule
+         * @description Reversible in both directions on purpose — the point of a switch is that it can be thrown back. Activating revalidates the definition first: a rule may have been left in draft precisely because it was unfinished.
+         */
+        patch: operations["cmsSetSafetyRuleStatus"];
+        trace?: never;
+    };
     "/cms/uploads": {
         parameters: {
             query?: never;
@@ -3450,6 +3521,81 @@ export interface components {
             endsAt?: string;
             taxonomyIds?: string[];
             placeIds?: string[];
+        };
+        /** @enum {string} */
+        SafetyRuleType: "spam" | "abusive_content" | "blocked_words" | "review_abuse" | "user_abuse" | "repeated_reports" | "rate_limit";
+        /** @enum {string} */
+        SafetyRuleTrigger: "review_created" | "review_updated" | "report_created" | "checkin_created" | "place_submitted" | "user_registered";
+        /**
+         * @description `suspend_user` acts on a person with no human in the loop, so it is available only to rule types that are about that person's conduct and only at `high` severity or above.
+         * @enum {string}
+         */
+        SafetyRuleAction: "flag_for_review" | "auto_hide" | "require_moderation" | "suspend_user" | "block_action";
+        /** @enum {string} */
+        SafetyRuleSeverity: "low" | "medium" | "high" | "critical";
+        /** @enum {string} */
+        SafetyRuleStatus: "draft" | "active" | "disabled";
+        /**
+         * @description A closed shape chosen by `ruleType`, never an expression. Unknown keys are rejected on write rather than stored and never read.
+         *
+         *     `blocked_words`: `terms[]`, `matchMode` (exact | substring), `caseSensitive`.
+         *     `spam`: `maxLinks`, `maxDuplicatesPerWindow`, `windowHours`, `minAccountAgeHours` — at least one of the first two.
+         *     `abusive_content`: `terms[]`, `minReports`, `windowHours`.
+         *     `review_abuse`: `maxReviewsPerWindow`, `windowHours`, `maxReviewsPerPlace`.
+         *     `user_abuse`: `maxReportsAgainstUser`, `windowHours`, `upheldOnly`.
+         *     `repeated_reports`: `minReports`, `windowHours`, `distinctReporters`.
+         *     `rate_limit`: `action` (review_create | report_create | checkin_create | place_submit | room_join), `limit`, `windowSeconds`.
+         */
+        CmsSafetyRuleConditions: {
+            [key: string]: unknown;
+        };
+        CmsSafetyRule: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            description?: string;
+            ruleType: components["schemas"]["SafetyRuleType"];
+            trigger: components["schemas"]["SafetyRuleTrigger"];
+            conditions: components["schemas"]["CmsSafetyRuleConditions"];
+            action: components["schemas"]["SafetyRuleAction"];
+            severity: components["schemas"]["SafetyRuleSeverity"];
+            status: components["schemas"]["SafetyRuleStatus"];
+            /** @description Lower runs first, so two rules matching one event resolve the same way every time rather than by insertion order. */
+            priority: number;
+            /** @description Stamped on every decision this rule causes, so an automated action can be traced back by a person reviewing it. */
+            reasonCode: string;
+            createdBy?: components["schemas"]["CmsAdminRef"] | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CmsSafetyRulePage: {
+            items: components["schemas"]["CmsSafetyRule"][];
+            nextCursor: string | null;
+            totalCount: number;
+        };
+        CmsSafetyRuleCreate: {
+            name: string;
+            description?: string;
+            ruleType: components["schemas"]["SafetyRuleType"];
+            trigger: components["schemas"]["SafetyRuleTrigger"];
+            conditions?: components["schemas"]["CmsSafetyRuleConditions"];
+            action: components["schemas"]["SafetyRuleAction"];
+            severity?: components["schemas"]["SafetyRuleSeverity"];
+            priority?: number;
+            reasonCode: string;
+        };
+        /** @description `ruleType` is immutable; it decides which condition schema applies. */
+        CmsSafetyRulePatch: {
+            name?: string;
+            description?: string;
+            trigger?: components["schemas"]["SafetyRuleTrigger"];
+            conditions?: components["schemas"]["CmsSafetyRuleConditions"];
+            action?: components["schemas"]["SafetyRuleAction"];
+            severity?: components["schemas"]["SafetyRuleSeverity"];
+            priority?: number;
+            reasonCode?: string;
         };
         CmsUpload: {
             /** Format: uuid */
@@ -7409,6 +7555,159 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CmsRecommendationDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsListSafetyRules: {
+        parameters: {
+            query?: {
+                ruleType?: components["schemas"]["SafetyRuleType"];
+                status?: components["schemas"]["SafetyRuleStatus"];
+                action?: components["schemas"]["SafetyRuleAction"];
+                severity?: components["schemas"]["SafetyRuleSeverity"];
+                trigger?: components["schemas"]["SafetyRuleTrigger"];
+                q?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rules, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsSafetyRulePage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsCreateSafetyRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsSafetyRuleCreate"];
+            };
+        };
+        responses: {
+            /** @description Created (audited with the whole definition) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsSafetyRule"];
+                };
+            };
+            /** @description Conditions do not fit the rule type (`INVALID_RULE_CONDITIONS`), the action or trigger is not available for it (`ACTION_NOT_ALLOWED`, `TRIGGER_NOT_ALLOWED`), or automatic suspension was asked for below `high` severity (`SEVERITY_TOO_LOW`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A rule with that name exists (`RULE_NAME_TAKEN`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsGetSafetyRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rule */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsSafetyRule"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsUpdateSafetyRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsSafetyRulePatch"];
+            };
+        };
+        responses: {
+            /** @description Updated (audited before/after) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsSafetyRule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsSetSafetyRuleStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    status: components["schemas"]["SafetyRuleStatus"];
+                };
+            };
+        };
+        responses: {
+            /** @description Status changed (audited) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        id: string;
+                        status: components["schemas"]["SafetyRuleStatus"];
+                    };
                 };
             };
             400: components["responses"]["BadRequest"];

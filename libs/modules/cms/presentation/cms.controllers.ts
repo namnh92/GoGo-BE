@@ -12,6 +12,14 @@ import {
 } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsUploadsService } from '../application/cms-uploads.service';
+import { SafetyRulesService } from '../application/safety-rules.service';
+import {
+  SAFETY_RULE_ACTIONS,
+  SAFETY_RULE_SEVERITIES,
+  SAFETY_RULE_STATUSES,
+  SAFETY_RULE_TRIGGERS,
+  SAFETY_RULE_TYPES,
+} from '../domain/safety-rule-conditions';
 import {
   RECOMMENDATION_STATUSES,
   RecommendationsService,
@@ -653,6 +661,95 @@ export class CmsPlanTemplatesController {
     @Body(new ZodValidationPipe(templateStopsSchema)) body: z.infer<typeof templateStopsSchema>,
   ) {
     return this.templates.setStops(actor.id, id, body.stops);
+  }
+}
+
+// ---------------------------------------------------------------- trust & safety
+
+/**
+ * BE-CMS-G4d (#225) — rule definitions, not a rule builder.
+ *
+ * `conditions` is passed through as `unknown` here on purpose: the closed
+ * schema for the rule type lives in the domain and is applied in the service,
+ * so there is exactly one place that decides what a condition may say.
+ */
+const safetyRuleCreateSchema = z.object({
+  name: z.string().trim().min(3).max(120),
+  description: z.string().max(1000).optional(),
+  ruleType: z.enum(SAFETY_RULE_TYPES),
+  trigger: z.enum(SAFETY_RULE_TRIGGERS),
+  conditions: z.unknown().optional(),
+  action: z.enum(SAFETY_RULE_ACTIONS),
+  severity: z.enum(SAFETY_RULE_SEVERITIES).optional(),
+  priority: z.number().int().min(0).max(1000).optional(),
+  /** Machine-readable: what a decision this rule causes will be tagged with. */
+  reasonCode: z.string().regex(/^[a-z][a-z0-9_]{2,63}$/),
+});
+const safetyRulePatchSchema = safetyRuleCreateSchema.omit({ ruleType: true }).partial();
+const safetyRuleStatusSchema = z.object({ status: z.enum(SAFETY_RULE_STATUSES) });
+const safetyRuleListQuery = z.object({
+  ruleType: z.enum(SAFETY_RULE_TYPES).optional(),
+  status: z.enum(SAFETY_RULE_STATUSES).optional(),
+  action: z.enum(SAFETY_RULE_ACTIONS).optional(),
+  severity: z.enum(SAFETY_RULE_SEVERITIES).optional(),
+  trigger: z.enum(SAFETY_RULE_TRIGGERS).optional(),
+  q: z.string().trim().min(1).max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
+
+/**
+ * `ops_admin`, both ways.
+ *
+ * A rule here can suspend an account with no human in the loop — that is
+ * policy, not day-to-day moderation. Reads do not climb (BE-IMP-008), so a
+ * moderator sees neither the list nor a rule; the queue they work is the
+ * moderation resource, not this one.
+ */
+@RequireRole('ops_admin')
+@Controller('cms/safety-rules')
+export class CmsSafetyRulesController {
+  constructor(private readonly rules: SafetyRulesService) {}
+
+  @Get()
+  list(
+    @Query(new ZodValidationPipe(safetyRuleListQuery)) query: z.infer<typeof safetyRuleListQuery>,
+  ) {
+    return this.rules.list(query);
+  }
+
+  @Post()
+  create(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(safetyRuleCreateSchema))
+    body: z.infer<typeof safetyRuleCreateSchema>,
+  ) {
+    return this.rules.create(actor.id, body);
+  }
+
+  @Get(':id')
+  detail(@Param('id', Uuid) id: string) {
+    return this.rules.get(id);
+  }
+
+  @Patch(':id')
+  update(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(safetyRulePatchSchema))
+    body: z.infer<typeof safetyRulePatchSchema>,
+  ) {
+    return this.rules.update(actor.id, id, body);
+  }
+
+  @Patch(':id/status')
+  setStatus(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(safetyRuleStatusSchema))
+    body: z.infer<typeof safetyRuleStatusSchema>,
+  ) {
+    return this.rules.setStatus(actor.id, id, body.status);
   }
 }
 
