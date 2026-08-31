@@ -7,6 +7,7 @@ import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsCatalogService } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsOpsService } from '../application/cms-ops.service';
+import { ModerationQueueService } from '../application/moderation-queue.service';
 import { EmergencyTakedownService } from '../application/emergency-takedown.service';
 import { ExperimentsAdminService } from '../application/experiments-admin.service';
 import { RankingEvaluationService } from '../application/ranking-evaluation.service';
@@ -39,6 +40,7 @@ import {
     CmsCatalogService,
     CmsContentService,
     CmsOpsService,
+    ModerationQueueService,
     EmergencyTakedownService,
     SearchAnalyticsService,
     RankingEvaluationService,
