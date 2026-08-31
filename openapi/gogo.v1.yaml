@@ -1780,6 +1780,15 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: >-
+            SHEET_PROVIDER_NOT_CONFIGURED — GoGo has no working Google Sheets credential.
+            A statement about this deployment, not about the caller's spreadsheet, so the
+            client must not present it as a sharing or permission problem. `retryable` is
+            false: it clears only when an operator sets the key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/place-imports/{jobId}:
     get:

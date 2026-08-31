@@ -1,4 +1,4 @@
-import { Global, Module } from '@nestjs/common';
+import { Global, Inject, Module, type OnModuleInit } from '@nestjs/common';
 import {
   AREA_AUTOCOMPLETE,
   FakeAreaAutocomplete,
@@ -16,6 +16,7 @@ import {
   R2StorageAdapter,
   STORAGE_PROVIDER,
   TRAVEL_TIME_PROVIDER,
+  warnFakedProviders,
 } from '@gogo/providers';
 import {
   LogMetrics,
@@ -54,8 +55,10 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       inject: [APP_CONFIG],
     },
     {
-      // PI-BE-012: the Sheets read uses the same Google key; without it the
-      // fake keeps the import wizard exercisable end to end.
+      // PI-BE-012: the Sheets read falls back to the Maps key when no key of
+      // its own is set. PI-BE-021: without either, the fake is bound and every
+      // import fails — exercisable end to end is what it does in a test, not
+      // what it does in a deployed environment. onModuleInit says so out loud.
       provide: SHEETS_PROVIDER,
       useFactory: (config: AppConfig) =>
         config.GOOGLE_SHEETS_API_KEY || config.GOOGLE_MAPS_API_KEY
@@ -121,4 +124,17 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     METRICS,
   ],
 })
-export class ProvidersModule {}
+export class ProvidersModule implements OnModuleInit {
+  constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
+
+  /**
+   * PI-BE-021 — a fake bound in a deployed environment is a defect, and it used
+   * to be an invisible one. Boot is the only moment the choice is still cheap
+   * to notice; after that it surfaces as a support ticket about someone's
+   * spreadsheet.
+   */
+  onModuleInit(): void {
+    const logger = createLogger({ level: this.config.LOG_LEVEL, name: 'gogo-api' });
+    warnFakedProviders(this.config, (meta, message) => logger.warn(meta, message));
+  }
+}

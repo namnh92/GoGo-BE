@@ -112,7 +112,12 @@ export class SheetAccessError extends Error {
       | 'SHEET_PERMISSION_DENIED'
       | 'SHEET_TAB_NOT_FOUND'
       | 'SHEET_TOO_LARGE'
-      | 'SHEET_UNAVAILABLE',
+      | 'SHEET_UNAVAILABLE'
+      // PI-BE-021: GoGo has no working Sheets credential — nothing about the
+      // caller's spreadsheet is known, and nothing they do to it will help.
+      // Distinct from SHEET_NOT_FOUND and SHEET_PERMISSION_DENIED, which are
+      // both statements about their document.
+      | 'SHEET_PROVIDER_NOT_CONFIGURED',
     message: string,
   ) {
     super(message);

@@ -108,6 +108,12 @@ export class FakeStorage implements StoragePort {
 /**
  * PI-BE-012 — in-memory Sheets source. Bound whenever no Sheets credential is
  * configured, so the whole import pipeline is exercisable without Google.
+ *
+ * PI-BE-021: an id this fake was never seeded with is not a missing sheet. The
+ * fake has no backing store to miss it in — it is standing in for a Google it
+ * cannot reach. Reporting SHEET_NOT_FOUND sent an editor to check the sharing
+ * settings of a document that was fine, eight times, while the actual fault was
+ * an empty GOOGLE_SHEETS_API_KEY. Say whose fault it is.
  */
 export class FakeSheets implements SheetsPort {
   readonly books = new Map<string, Map<string, string[][]>>();
@@ -139,7 +145,12 @@ export class FakeSheets implements SheetsPort {
       throw new SheetAccessError('SHEET_PERMISSION_DENIED', 'Không có quyền đọc Google Sheet này');
     }
     const book = this.books.get(spreadsheetId);
-    if (!book) throw new SheetAccessError('SHEET_NOT_FOUND', 'Không tìm thấy Google Sheet');
+    if (!book) {
+      throw new SheetAccessError(
+        'SHEET_PROVIDER_NOT_CONFIGURED',
+        'GoGo chưa cấu hình kết nối Google Sheets',
+      );
+    }
     return book;
   }
 }

@@ -15,6 +15,7 @@ import {
   FakePlaceProvider,
   GooglePlacesAdapter,
   GoogleSheetsAdapter,
+  warnFakedProviders,
 } from '@gogo/providers';
 import { AdvisoryLock, startPeriodic } from './periodic';
 
@@ -106,6 +107,16 @@ async function bootstrap(): Promise<void> {
   // start survives an API restart and no message can strand a job.
   const mapsKey = process.env.GOOGLE_MAPS_API_KEY ?? '';
   const sheetsKey = process.env.GOOGLE_SHEETS_API_KEY || mapsKey;
+  // PI-BE-021: the worker runs the import chunks, so a missing Sheets key
+  // strands jobs here as surely as it rejects them in the API. Same warning,
+  // because this process makes the same choice from its own copy of the env.
+  warnFakedProviders(
+    {
+      GOOGLE_MAPS_API_KEY: mapsKey,
+      GOOGLE_SHEETS_API_KEY: process.env.GOOGLE_SHEETS_API_KEY ?? '',
+    },
+    (meta, message) => logger.warn(meta, message),
+  );
   const placeProvider = mapsKey
     ? new GooglePlacesAdapter(mapsKey, metrics)
     : new FakePlaceProvider();

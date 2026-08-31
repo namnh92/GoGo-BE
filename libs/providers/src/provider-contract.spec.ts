@@ -85,7 +85,11 @@ describe('SheetsPort contract', () => {
     await expect(sheets.readTab('book-1', 'HN', 10)).rejects.toMatchObject({
       code: 'SHEET_TAB_NOT_FOUND',
     });
-    await expect(sheets.listTabs('nope')).rejects.toMatchObject({ code: 'SHEET_NOT_FOUND' });
+    // PI-BE-021: an unseeded id means this fake cannot reach Google at all —
+    // it is not a claim that the spreadsheet is missing.
+    await expect(sheets.listTabs('nope')).rejects.toMatchObject({
+      code: 'SHEET_PROVIDER_NOT_CONFIGURED',
+    });
 
     sheets.denied.add('book-1');
     await expect(sheets.listTabs('book-1')).rejects.toBeInstanceOf(SheetAccessError);
