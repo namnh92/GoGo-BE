@@ -86,7 +86,23 @@ export type ColumnMappingResult = {
   normalizedLegacy: { header: string; from: string; to: CanonicalField }[];
   /** Accepted for compatibility, mapped nowhere; the column is skipped. */
   retired: { header: string; value: string }[];
+  /**
+   * A value in no vocabulary at all — a typo, or a client's invented name.
+   * `/v1` accepted these, so they stay accepted; the column they claimed is
+   * left unmapped rather than auto-detected, so the mistake is visible.
+   */
+  unknown: { header: string; value: string }[];
 };
+
+/**
+ * Headers an explicit mapping claimed but could not use. Auto-detection must
+ * not run for these: the operator did choose something, and quietly detecting
+ * a different field would hide the mistake exactly the way the old silent
+ * fall-through did.
+ */
+export function unusableHeaders(result: ColumnMappingResult): Set<string> {
+  return new Set(result.unknown.map((entry) => entry.header));
+}
 
 /**
  * Validates a wizard-supplied mapping against the canonical vocabulary.
@@ -96,21 +112,30 @@ export type ColumnMappingResult = {
  * vocabulary (`googleMapsUrl` for `google_maps_url`) got a successful import
  * in which its mapping screen had done nothing at all.
  *
- * The fix keeps `/v1` compatible with everything that was ever sent: the three
- * legacy spellings normalise, the three destination-less fields stay accepted
- * and skipped. Only a value **no shipped client has ever emitted** — a typo,
- * or a vocabulary invented by some future caller — is refused, because that is
- * precisely the case where silence hides a mistake nobody can see.
+ * Nothing here rejects a mapping. `/v1` answered 200 for every value a client
+ * could put in this object, so it still does: canonical values are used, the
+ * three legacy spellings normalise, and everything else — the three retired
+ * fields and any unknown value — leaves its column unmapped. Strict rejection
+ * of an unknown value is a `/v2` change.
+ *
+ * What is no longer true is that an unusable choice silently becomes a
+ * different field: the column stays unmapped, is reported, and is counted.
+ *
+ * A mapping that is not an object at all is still a bad request — that was a
+ * 400 in `/v1` too, from the schema layer above this one.
  */
 export function parseColumnMapping(raw: unknown): ColumnMappingResult {
-  const empty: ColumnMappingResult = { mapping: {}, normalizedLegacy: [], retired: [] };
-  if (raw === undefined || raw === null) return empty;
+  const result: ColumnMappingResult = {
+    mapping: {},
+    normalizedLegacy: [],
+    retired: [],
+    unknown: [],
+  };
+  if (raw === undefined || raw === null) return result;
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw new InvalidColumnMappingError([{ header: '(mapping)', value: String(raw) }]);
   }
 
-  const result: ColumnMappingResult = { mapping: {}, normalizedLegacy: [], retired: [] };
-  const invalid: InvalidMappingEntry[] = [];
   for (const [header, value] of Object.entries(raw as Record<string, unknown>)) {
     const trimmed = header.trim();
     // A blank header maps nothing; an empty value is how a wizard says
@@ -121,22 +146,19 @@ export function parseColumnMapping(raw: unknown): ColumnMappingResult {
       result.mapping[trimmed] = value;
       continue;
     }
-    if (typeof value === 'string') {
-      const alias = LEGACY_FIELD_ALIASES[value];
-      if (alias) {
-        // Behaves exactly like an explicit canonical mapping from here on.
-        result.mapping[trimmed] = alias;
-        result.normalizedLegacy.push({ header: trimmed, from: value, to: alias });
-        continue;
-      }
-      if (RETIRED_FIELDS.includes(value)) {
-        result.retired.push({ header: trimmed, value });
-        continue;
-      }
+    const alias = typeof value === 'string' ? LEGACY_FIELD_ALIASES[value] : undefined;
+    if (alias) {
+      // Behaves exactly like an explicit canonical mapping from here on.
+      result.mapping[trimmed] = alias;
+      result.normalizedLegacy.push({ header: trimmed, from: value as string, to: alias });
+      continue;
     }
-    invalid.push({ header: trimmed, value: String(value) });
+    if (typeof value === 'string' && RETIRED_FIELDS.includes(value)) {
+      result.retired.push({ header: trimmed, value });
+      continue;
+    }
+    result.unknown.push({ header: trimmed, value: String(value) });
   }
-  if (invalid.length > 0) throw new InvalidColumnMappingError(invalid);
   return result;
 }
 
@@ -172,6 +194,8 @@ export type MappingResult = {
 export function resolveMapping(
   headers: string[],
   explicit?: Record<string, CanonicalField> | null,
+  /** Headers whose explicit choice was unusable — see `unusableHeaders`. */
+  unusable?: ReadonlySet<string> | null,
 ): MappingResult {
   const mapping: Record<string, CanonicalField> = {};
   const unmapped: string[] = [];
@@ -180,12 +204,18 @@ export function resolveMapping(
     const trimmed = header.trim();
     if (!trimmed) continue;
 
-    // Already validated by `parseColumnMapping` at the edge, so an explicit
-    // choice is authoritative: auto-detection only ever runs for a column the
-    // caller did not name.
+    // Resolved by `parseColumnMapping` at the edge, so an explicit choice is
+    // authoritative: auto-detection only ever runs for a column the caller did
+    // not name.
     const chosen = explicit?.[trimmed] ?? explicit?.[normalizeVietnamese(trimmed)];
     if (chosen) {
       mapping[trimmed] = chosen;
+      continue;
+    }
+    // The caller named this column but the value was unusable. Detecting some
+    // other field for it would hide the mistake all over again.
+    if (unusable?.has(trimmed)) {
+      unmapped.push(trimmed);
       continue;
     }
     const normalized = normalizeVietnamese(trimmed);

@@ -11,6 +11,7 @@ import {
   applyMapping,
   parseColumnMapping,
   resolveMapping,
+  unusableHeaders,
 } from './column-mapping';
 import { buildErrorReportCsv, escapeCsvCell } from './error-report';
 import { validateRow } from './template';
@@ -453,21 +454,23 @@ describe('parseColumnMapping', () => {
     expect(parseColumnMapping(mapping).mapping).toEqual(mapping);
   });
 
-  it('rejects a vocabulary no shipped client ever sent', () => {
-    let caught: InvalidColumnMappingError | undefined;
-    try {
-      parseColumnMapping({ Link: 'gmapsLink', 'Giá từ': 'costFrom' });
-    } catch (err) {
-      caught = err as InvalidColumnMappingError;
-    }
+  it('accepts an unknown value and records it instead of rejecting', () => {
+    // `/v1` answered 200 for any string here, so it still does. Strict
+    // rejection is a `/v2` change.
+    const result = parseColumnMapping({ Link: 'gmapsLink', 'Giá từ': 'costFrom' });
 
-    expect(caught).toBeInstanceOf(InvalidColumnMappingError);
-    // Both offenders are named, not just the first — one round trip per bad
-    // column would be a miserable way to fix a mapping screen.
-    expect(caught!.entries).toEqual([
+    expect(result.mapping).toEqual({});
+    // Both offenders recorded, not just the first.
+    expect(result.unknown).toEqual([
       { header: 'Link', value: 'gmapsLink' },
       { header: 'Giá từ', value: 'costFrom' },
     ]);
+  });
+
+  it('still refuses a mapping that is not an object at all', () => {
+    // This was a 400 in `/v1` too — from the schema layer, not the vocabulary.
+    expect(() => parseColumnMapping('name')).toThrow(InvalidColumnMappingError);
+    expect(() => parseColumnMapping([['a', 'name']])).toThrow(InvalidColumnMappingError);
   });
 
   it('treats an empty value as “ignore this column”, not as an error', () => {
@@ -477,11 +480,6 @@ describe('parseColumnMapping', () => {
   it('returns an empty mapping for a missing one', () => {
     expect(parseColumnMapping(undefined).mapping).toEqual({});
     expect(parseColumnMapping(null).mapping).toEqual({});
-  });
-
-  it('rejects a non-object mapping', () => {
-    expect(() => parseColumnMapping('name')).toThrow(InvalidColumnMappingError);
-    expect(() => parseColumnMapping([['a', 'name']])).toThrow(InvalidColumnMappingError);
   });
 });
 
@@ -545,6 +543,31 @@ describe('/v1 legacy mapping compatibility', () => {
       expect(result.mapping).toEqual({});
       expect(result.retired).toEqual([{ header: 'Cột', value: field }]);
     }
+  });
+
+  it('leaves a column unmapped rather than auto-detecting after an unknown value', () => {
+    // `Tên địa điểm` auto-detects to `name`. The operator named this column,
+    // so quietly detecting something else would hide the mistake again.
+    const parsed = parseColumnMapping({ 'Tên địa điểm': 'placeName' });
+    const { mapping, unmapped } = resolveMapping(
+      ['Tên địa điểm'],
+      parsed.mapping,
+      unusableHeaders(parsed),
+    );
+
+    expect(mapping['Tên địa điểm']).toBeUndefined();
+    expect(unmapped).toEqual(['Tên địa điểm']);
+  });
+
+  it('still auto-detects a column the mapping never mentioned', () => {
+    const parsed = parseColumnMapping({ 'Tên địa điểm': 'placeName' });
+    const { mapping } = resolveMapping(
+      ['Tên địa điểm', 'city'],
+      parsed.mapping,
+      unusableHeaders(parsed),
+    );
+
+    expect(mapping['city']).toBe('city');
   });
 
   it('accepts the full vocabulary the shipped CMS could emit', () => {

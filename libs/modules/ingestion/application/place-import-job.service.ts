@@ -16,6 +16,7 @@ import { DB } from '../../shared/tokens';
 import {
   applyMapping,
   resolveMapping,
+  unusableHeaders,
   type CanonicalField,
   type ColumnMappingResult,
 } from '../domain/column-mapping';
@@ -189,10 +190,26 @@ export class PlaceImportJobService {
         to: legacy.to,
       });
     }
+    // `/v1` accepted an unusable mapping value and carried on, so it still
+    // does. The counter is a structured log line (`LogMetrics`), which is the
+    // warning: the field is operator-authored config, never sheet content, and
+    // it is truncated so a real exporter does not get one series per typo.
+    for (const unknown of input.mapping?.unknown ?? []) {
+      this.metrics.increment('place_import_unknown_mapping_total', {
+        code: 'IMPORT_MAPPING_UNKNOWN',
+        field: unknown.value.slice(0, 64),
+      });
+    }
+
+    const unusable = input.mapping ? unusableHeaders(input.mapping) : undefined;
 
     let rowNumber = 0;
     for (const grid of input.grids) {
-      const { mapping, unmapped, missing } = resolveMapping(grid.headers, input.mapping?.mapping);
+      const { mapping, unmapped, missing } = resolveMapping(
+        grid.headers,
+        input.mapping?.mapping,
+        unusable,
+      );
       unmapped.forEach((h) => unmappedHeaders.add(`${grid.name}:${h}`));
       // A column mapped onto a retired field has nowhere to go, so it is
       // skipped like any unmapped column — and reported like one, rather than

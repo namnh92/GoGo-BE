@@ -6,12 +6,7 @@ import type { Actor } from '../../identity/domain/actor';
 import { CurrentActor, RateLimit } from '../../identity/presentation/decorators';
 import { RequireRole } from '../../cms/presentation/admin.guard';
 import { sanitizeFileName } from '../domain/tabular';
-import {
-  CANONICAL_FIELDS,
-  InvalidColumnMappingError,
-  parseColumnMapping,
-  type ColumnMappingResult,
-} from '../domain/column-mapping';
+import { parseColumnMapping, type ColumnMappingResult } from '../domain/column-mapping';
 import { PlaceImportJobService, type ImportMode } from '../application/place-import-job.service';
 
 const Uuid = new ZodValidationPipe(z.string().uuid());
@@ -39,45 +34,39 @@ const rowsQuery = listQuery.extend({
     .optional(),
 });
 
+/** The only thing `/v1` ever enforced about `mapping`: shape and lengths. */
+const mappingShape = z.record(z.string().max(200), z.string().max(64)).optional();
+
 const sheetSchema = z.object({
   spreadsheetUrl: z.string().trim().min(10).max(2000),
   sheets: z.array(z.string().trim().min(1).max(120)).max(20).optional(),
   mode: z.enum(MODES).default('dry_run'),
   defaultCity: z.string().trim().max(80).optional(),
   tabCityMapping: z.record(z.string().max(120), z.string().max(80)).optional(),
-  mapping: z.record(z.string().max(200), z.string().max(64)).optional(),
+  mapping: mappingShape,
 });
 
 /**
- * Both entry points answer with the same code, so a client has one thing to
- * handle: the multipart route carries `mapping` as a JSON string and the sheet
- * route as an object, but a bad canonical field is the same mistake either way.
+ * A mapping value outside every vocabulary is **not** an error in `/v1`: the
+ * shape was all this endpoint ever enforced, and it answered 200 for any
+ * string. The column is left unmapped instead, counted, and reported — see
+ * `parseColumnMapping`. Rejecting one belongs in `/v2`.
+ *
+ * `MAPPING_INVALID` therefore stays what it always was: the mapping is not a
+ * JSON object of strings.
  */
-function toMappingError(err: unknown): AppError {
-  if (!(err instanceof InvalidColumnMappingError))
-    return AppError.badRequest('MAPPING_INVALID', 'mapping không hợp lệ');
-  return AppError.badRequest(
-    'MAPPING_FIELD_UNKNOWN',
-    `${err.message}. Giá trị hợp lệ: ${CANONICAL_FIELDS.join(', ')}`,
-    err.entries.map((entry) => ({
-      field: `mapping.${entry.header}`,
-      code: 'MAPPING_FIELD_UNKNOWN',
-      message: `${entry.value} không phải canonical field`,
-    })),
-  );
-}
-
 function readMapping(raw: unknown): ColumnMappingResult | undefined {
   let parsed: ColumnMappingResult;
   try {
-    parsed = parseColumnMapping(raw);
-  } catch (err) {
-    throw toMappingError(err);
+    parsed = parseColumnMapping(mappingShape.parse(raw));
+  } catch {
+    throw AppError.badRequest('MAPPING_INVALID', 'mapping phải là JSON object hợp lệ');
   }
   const empty =
     Object.keys(parsed.mapping).length === 0 &&
     parsed.normalizedLegacy.length === 0 &&
-    parsed.retired.length === 0;
+    parsed.retired.length === 0 &&
+    parsed.unknown.length === 0;
   return empty ? undefined : parsed;
 }
 
@@ -135,8 +124,6 @@ export class PlaceImportController {
       } catch {
         throw AppError.badRequest('MAPPING_INVALID', 'mapping phải là JSON object hợp lệ');
       }
-      // Malformed JSON and an unknown field are different mistakes and get
-      // different codes — the second one names the column to fix.
       mapping = readMapping(parsed);
     }
 
