@@ -61,7 +61,7 @@ import {
 import { ExperimentsAdminService } from '../application/experiments-admin.service';
 import { RankingEvaluationService } from '../application/ranking-evaluation.service';
 import { SearchAnalyticsService } from '../application/search-analytics.service';
-import { RequireRole, type AdminActor } from './admin.guard';
+import { AllowWhilePasswordChangePending, RequireRole, type AdminActor } from './admin.guard';
 import { Inject, Req, Res } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
@@ -89,6 +89,28 @@ const adminListQuery = z.object({
   status: z.enum(['active', 'suspended']).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().max(512).optional(),
+});
+/**
+ * #248 — a reason is required on every staff-account mutation. An audit row
+ * that records what changed but not why answers the easy half of the question
+ * a reviewer is actually asking.
+ */
+const reasonSchema = z.string().trim().min(3).max(500);
+const updateAdminSchema = z
+  .object({
+    role: z.enum(['editor', 'moderator', 'ops_admin', 'super_admin']).optional(),
+    displayName: z.string().trim().min(1).max(50).optional(),
+    reason: reasonSchema,
+  })
+  .refine((v) => v.role !== undefined || v.displayName !== undefined, {
+    message: 'Nothing to change: provide role or displayName',
+  });
+const adminReasonSchema = z.object({ reason: reasonSchema });
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(128),
+  // Same floor as account creation: a temporary password must not be
+  // replaceable by something weaker than the account was created with.
+  newPassword: z.string().min(12).max(128),
 });
 const createAdminSchema = z.object({
   email: z.string().email(),
@@ -232,6 +254,84 @@ export class CmsAuthController {
   @Get('admins')
   listAdmins(@Query(new ZodValidationPipe(adminListQuery)) query: z.infer<typeof adminListQuery>) {
     return this.auth.listAdmins(query);
+  }
+
+  /**
+   * BE-CMS-G9 (#248) — edit a staff account.
+   *
+   * `super_admin` only, like the create and the list: who holds which role is
+   * the shape of the authorization model, so changing it is not an editorial
+   * action.
+   */
+  @RequireRole('super_admin')
+  @Patch('admins/:id')
+  updateAdmin(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(updateAdminSchema)) body: z.infer<typeof updateAdminSchema>,
+  ) {
+    return this.auth.updateAdmin({ ...body, id, actorId: actor.id });
+  }
+
+  @RequireRole('super_admin')
+  @Post('admins/:id/suspend')
+  suspendAdmin(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(adminReasonSchema)) body: { reason: string },
+  ) {
+    return this.auth.setAdminStatus({ id, status: 'suspended', ...body, actorId: actor.id });
+  }
+
+  @RequireRole('super_admin')
+  @Post('admins/:id/reactivate')
+  reactivateAdmin(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(adminReasonSchema)) body: { reason: string },
+  ) {
+    return this.auth.setAdminStatus({ id, status: 'active', ...body, actorId: actor.id });
+  }
+
+  /**
+   * #248 — the temporary password is in the response body and nowhere else:
+   * not in a log, not readable again, not recoverable if the tab closes. It is
+   * a credential, and it is handed over exactly like one.
+   *
+   * Rate-limited per actor rather than per IP. The limit here is not about
+   * brute force — the caller is already `super_admin` — it is about a script
+   * looping over the account list and resetting everyone.
+   */
+  @RequireRole('super_admin')
+  @RateLimit({ action: 'cms.admin_password_reset', limit: 5, windowSeconds: 300, keyBy: 'actor' })
+  @Post('admins/:id/reset-password')
+  resetAdminPassword(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(adminReasonSchema)) body: { reason: string },
+  ) {
+    return this.auth.resetAdminPassword({ id, ...body, actorId: actor.id });
+  }
+
+  /**
+   * #248 — an admin replaces their own password. Every role, because everyone
+   * has one; and the only route reachable while a change is owed, which is
+   * what keeps the obligation from being a deadlock.
+   */
+  @RequireRole('editor', 'moderator', 'ops_admin', 'super_admin')
+  @AllowWhilePasswordChangePending()
+  @RateLimit({ action: 'cms.change_password', limit: 5, windowSeconds: 300, keyBy: 'actor' })
+  @Post('change-password')
+  changePassword(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(changePasswordSchema)) body: z.infer<typeof changePasswordSchema>,
+  ) {
+    return this.auth.changeOwnPassword({
+      adminId: actor.id,
+      ...body,
+      // The session doing the changing survives; every other one does not.
+      keepSessionId: actor.sessionId,
+    });
   }
 }
 

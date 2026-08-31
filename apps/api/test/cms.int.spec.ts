@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
 import { authenticator } from 'otplib';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, ne, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -124,6 +124,281 @@ describe('CMS auth + RBAC (CMS-001, FR-CMS-001, SRS §15.7)', () => {
       headers: auth(victim.token),
     });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
+  const REASON = { reason: 'offboarding, ticket OPS-118' };
+
+  /*
+   * Awaited inside the helper, not returned as the chainable. `inject()` is
+   * overloaded — hand back the un-awaited value and it types as
+   * `void & Promise<Response> & Chain`, which has neither `statusCode` nor
+   * `json` on it.
+   */
+  const post = async (token: string, url: string, payload: Record<string, unknown> = REASON) =>
+    await api().inject({ method: 'POST', url, remoteAddress: ip(), headers: auth(token), payload });
+
+  it('edits role and display name, and records both sides of the change', async () => {
+    const boss = await createAdmin('g9-boss@gogo.id.vn', 'super_admin');
+    const subject = await createAdmin('g9-subject@gogo.id.vn', 'editor');
+
+    const res = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/auth/admins/${subject.id}`,
+      headers: auth(boss.token),
+      payload: { role: 'moderator', displayName: 'Đã đổi', ...REASON },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ role: 'moderator', displayName: 'Đã đổi' });
+
+    const [entry] = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.resourceId, subject.id))
+      .orderBy(desc(schema.auditLogs.createdAt))
+      .limit(1);
+    // "role changed to moderator" does not tell a reviewer whether that was a
+    // promotion or a demotion.
+    expect(entry?.diff).toMatchObject({
+      reason: REASON.reason,
+      before: { role: 'editor' },
+      after: { role: 'moderator' },
+    });
+  });
+
+  /*
+   * The one-person path from any role to any other removes the only check the
+   * model has. A super_admin is already the top, so this is about separation
+   * of duties, not privilege escalation.
+   */
+  it('refuses to let an admin change their own role', async () => {
+    const boss = await createAdmin('g9-self@gogo.id.vn', 'super_admin');
+    const res = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/auth/admins/${boss.id}`,
+      headers: auth(boss.token),
+      payload: { role: 'editor', ...REASON },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe('SELF_ROLE_CHANGE');
+  });
+
+  it('allows an admin to change their own display name', async () => {
+    const boss = await createAdmin('g9-rename@gogo.id.vn', 'super_admin');
+    const res = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/auth/admins/${boss.id}`,
+      headers: auth(boss.token),
+      payload: { displayName: 'Tên mới', ...REASON },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('refuses to suspend your own account', async () => {
+    const boss = await createAdmin('g9-selfsuspend@gogo.id.vn', 'super_admin');
+    const res = await post(boss.token, `/v1/cms/auth/admins/${boss.id}/suspend`);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe('SELF_SUSPEND');
+  });
+
+  /*
+   * The guard already refuses a suspended account on the next request. The
+   * revoke is a second, different thing: it closes the refresh chain, so the
+   * account cannot walk itself forward on a token it already holds.
+   */
+  it('suspending revokes every session, not just the status', async () => {
+    const boss = await createAdmin('g9-suspender@gogo.id.vn', 'super_admin');
+    const victim = await createAdmin('g9-victim@gogo.id.vn', 'editor');
+
+    expect((await post(boss.token, `/v1/cms/auth/admins/${victim.id}/suspend`)).statusCode).toBe(
+      201,
+    );
+
+    const blocked = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/places',
+      headers: auth(victim.token),
+    });
+    /*
+     * 401, not the 403 a merely-suspended account gets. The revoke put the
+     * session on the denylist, so the token is dead rather than forbidden —
+     * which is the stronger of the two outcomes and the reason for revoking at
+     * all instead of leaning on the guard.
+     */
+    expect(blocked.statusCode).toBe(401);
+
+    const sessions = await db
+      .select()
+      .from(schema.adminSessions)
+      .where(eq(schema.adminSessions.adminId, victim.id));
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(sessions.every((s) => s.revokedAt !== null)).toBe(true);
+    expect(sessions.every((s) => s.revokeReason === 'admin_suspended')).toBe(true);
+
+    const back = await post(boss.token, `/v1/cms/auth/admins/${victim.id}/reactivate`);
+    expect(back.statusCode).toBe(201);
+    expect(back.json().status).toBe('active');
+  });
+
+  /*
+   * Demoting or suspending the last active super_admin leaves a console nobody
+   * can administer — role changes, account creation and ranking approval are
+   * all super_admin, so recovery means an engineer with database access.
+   */
+  it('refuses to strip the last active super_admin, by demotion or suspension', async () => {
+    // Every other super_admin in this database is suspended first, so the one
+    // under test really is the last.
+    const boss = await createAdmin('g9-last@gogo.id.vn', 'super_admin');
+    await db
+      .update(schema.adminUsers)
+      .set({ status: 'suspended' })
+      .where(and(eq(schema.adminUsers.role, 'super_admin'), ne(schema.adminUsers.id, boss.id)));
+
+    const helper = await createAdmin('g9-last-helper@gogo.id.vn', 'super_admin');
+    const demote = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/auth/admins/${boss.id}`,
+      headers: auth(helper.token),
+      payload: { role: 'editor', ...REASON },
+    });
+    // `helper` is itself an active super_admin, so `boss` is not the last one.
+    expect(demote.statusCode).toBe(200);
+
+    // Now helper is the only active super_admin left.
+    const suspendSelfLast = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/auth/admins/${helper.id}/suspend`,
+      headers: auth(helper.token),
+      payload: REASON,
+    });
+    expect(suspendSelfLast.statusCode).toBe(403); // self-suspend catches it first
+
+    const promoted = await createAdmin('g9-last-second@gogo.id.vn', 'super_admin');
+    const demoteLast = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/auth/admins/${promoted.id}`,
+      headers: auth(helper.token),
+      payload: { role: 'editor', ...REASON },
+    });
+    expect(demoteLast.statusCode).toBe(200);
+
+    const orphan = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/auth/admins/${helper.id}`,
+      headers: auth(promoted.token),
+      payload: { role: 'editor', ...REASON },
+    });
+    expect(orphan.statusCode).toBe(403); // promoted is now an editor, not super_admin
+
+    await db
+      .update(schema.adminUsers)
+      .set({ status: 'active' })
+      .where(eq(schema.adminUsers.role, 'super_admin'));
+  });
+
+  /*
+   * A temporary password is a credential two people know. Until it is replaced
+   * the account may do exactly one thing — enforced by the server, not by the
+   * console skipping a screen (`core.md` #5).
+   */
+  it('a temporary password locks the console until it is replaced', async () => {
+    const boss = await createAdmin('g9-reset-boss@gogo.id.vn', 'super_admin');
+    const target = await createAdmin('g9-reset@gogo.id.vn', 'ops_admin');
+
+    const reset = await post(boss.token, `/v1/cms/auth/admins/${target.id}/reset-password`);
+    expect(reset.statusCode).toBe(201);
+    const temporary = reset.json().temporaryPassword as string;
+    expect(temporary).toBeTruthy();
+    expect(reset.json().mustChangePassword).toBe(true);
+
+    // The reset revoked the session it had; the old token is dead.
+    const dead = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/places',
+      headers: auth(target.token),
+    });
+    expect(dead.statusCode).toBe(401);
+
+    const login = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/login',
+      remoteAddress: ip(),
+      payload: { email: 'g9-reset@gogo.id.vn', password: temporary },
+    });
+    expect(login.statusCode).toBe(201);
+    expect(login.json().mustChangePassword).toBe(true);
+    const token = login.json().accessToken as string;
+
+    const walled = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/places',
+      headers: auth(token),
+    });
+    expect(walled.statusCode).toBe(403);
+    expect(walled.json().code).toBe('PASSWORD_CHANGE_REQUIRED');
+
+    const changed = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/change-password',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { currentPassword: temporary, newPassword: 'a-much-longer-password-1' },
+    });
+    expect(changed.statusCode).toBe(201);
+
+    const free = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/places',
+      headers: auth(token),
+    });
+    expect(free.statusCode).toBe(200);
+  });
+
+  /*
+   * Without the current password a leaked session id would be enough to take
+   * the account over permanently.
+   */
+  it('refuses a change that cannot present the current password', async () => {
+    const admin = await createAdmin('g9-wrongpw@gogo.id.vn', 'editor');
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/change-password',
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+      payload: { currentPassword: 'not-the-password', newPassword: 'a-much-longer-password-1' },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().code).toBe('INVALID_CREDENTIALS');
+  });
+
+  it('never returns a password hash or the reset reason as a credential', async () => {
+    const boss = await createAdmin('g9-leak@gogo.id.vn', 'super_admin');
+    const list = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/auth/admins?limit=100',
+      headers: auth(boss.token),
+    });
+    expect(list.statusCode).toBe(200);
+    const body = JSON.stringify(list.json());
+    expect(body).not.toContain('passwordHash');
+    expect(body).not.toContain('$argon2');
+    expect(body).not.toContain('mfaTotpSecret');
+    // The status the console renders, with no way back to the secret.
+    expect(list.json().items[0]).toHaveProperty('mfaEnrolled');
+    expect(list.json().items[0]).toHaveProperty('mustChangePassword');
+  });
+
+  it('is closed to every role below super_admin', async () => {
+    const ops = await createAdmin('g9-ops@gogo.id.vn', 'ops_admin');
+    const victim = await createAdmin('g9-ops-victim@gogo.id.vn', 'editor');
+    for (const url of [
+      `/v1/cms/auth/admins/${victim.id}/suspend`,
+      `/v1/cms/auth/admins/${victim.id}/reset-password`,
+    ]) {
+      const res = await post(ops.token, url);
+      expect(res.statusCode).toBe(403);
+    }
   });
 });
 
@@ -760,9 +1035,23 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
     expect(raw).not.toContain('passwordHash');
     expect(raw).not.toContain('password_hash');
     expect(raw).not.toContain('should-never-be-returned');
-    expect(raw).not.toContain('mfa');
     expect(raw).not.toContain('ssoSubject');
     expect(raw).not.toContain('okta|c');
+    /*
+     * #248 replaced a blanket `not.toContain('mfa')` with the distinction that
+     * assertion was standing in for. `mfaEnrolled` is a fact the console needs
+     * — it is how an operator sees which accounts have no second factor — and
+     * carries nothing about the secret. What must never appear is the secret
+     * itself, under any of the column names that hold it.
+     */
+    expect(raw).not.toContain('mfaTotpSecret');
+    expect(raw).not.toContain('mfa_totp_secret');
+    expect(raw).not.toContain('mfaTotpPending');
+    expect(raw).not.toContain('mfa_totp_pending');
+    // Account `c` is the fixture that carries `enc:should-never-be-returned`.
+    // The same row now proves both halves: the status is reported, the secret
+    // it is derived from is not.
+    expect(c.mfaEnrolled).toBe(true);
   });
 
   it('reports a locked account as locked, so the console can show it', async () => {
