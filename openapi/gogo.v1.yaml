@@ -2243,6 +2243,68 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /cms/auth/access-exchange:
+    post:
+      operationId: cmsAccessExchange
+      tags: [cms]
+      summary: Exchange a Cloudflare Access assertion for a staff session (SSO)
+      description: >
+        ADR-0010. Cloudflare Access authenticates the operator against the
+        upstream identity provider and enforces MFA there, then signs a
+        short-lived assertion which the CMS Worker forwards on
+        `Cf-Access-Jwt-Assertion`. This endpoint verifies that assertion's
+        signature, issuer and audience against the team's published key set and
+        opens an ordinary staff session.
+
+
+        The assertion is **not** trusted because it is present: this API is
+        reachable without passing through Access, so the header is
+        client-settable and only the signature makes it meaningful. A verified
+        identity is also not an account — the address must already have an
+        active `admin_users` row, and no account is created here.
+      security: []
+      parameters:
+        - name: Cf-Access-Jwt-Assertion
+          in: header
+          required: true
+          description: Set by Cloudflare Access. Absent when the caller did not come through it.
+          schema: { type: string }
+      responses:
+        '201':
+          description: >
+            Session opened, identical in shape and lifetime to `cmsLogin`.
+            Same cookies, same rotating refresh, same revocation family.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminSession' }
+        '401':
+          description: >
+            Assertion missing (`ACCESS_ASSERTION_MISSING`) or not valid
+            (`ACCESS_ASSERTION_INVALID` — one code for every rejection, so
+            signature, audience, issuer and expiry failures cannot be told
+            apart by probing).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403':
+          description: >
+            The identity is genuine but has no active staff account
+            (`ADMIN_ONLY`). Being on the Access allow-list does not make
+            somebody staff.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: >
+            SSO is not configured for this environment
+            (`ACCESS_SSO_NOT_CONFIGURED`, not retryable), or the identity
+            provider's key set is unreachable (`ACCESS_KEYS_UNAVAILABLE`,
+            retryable). Password + TOTP remains available in both cases.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /cms/auth/refresh:
     post:
       operationId: cmsRefresh

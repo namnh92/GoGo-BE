@@ -1345,6 +1345,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/auth/access-exchange": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange a Cloudflare Access assertion for a staff session (SSO)
+         * @description ADR-0010. Cloudflare Access authenticates the operator against the upstream identity provider and enforces MFA there, then signs a short-lived assertion which the CMS Worker forwards on `Cf-Access-Jwt-Assertion`. This endpoint verifies that assertion's signature, issuer and audience against the team's published key set and opens an ordinary staff session.
+         *
+         *     The assertion is **not** trusted because it is present: this API is reachable without passing through Access, so the header is client-settable and only the signature makes it meaningful. A verified identity is also not an account — the address must already have an active `admin_users` row, and no account is created here.
+         */
+        post: operations["cmsAccessExchange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/auth/refresh": {
         parameters: {
             query?: never;
@@ -6783,6 +6805,57 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+        };
+    };
+    cmsAccessExchange: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Set by Cloudflare Access. Absent when the caller did not come through it. */
+                "Cf-Access-Jwt-Assertion": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session opened, identical in shape and lifetime to `cmsLogin`. Same cookies, same rotating refresh, same revocation family. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminSession"];
+                };
+            };
+            /** @description Assertion missing (`ACCESS_ASSERTION_MISSING`) or not valid (`ACCESS_ASSERTION_INVALID` — one code for every rejection, so signature, audience, issuer and expiry failures cannot be told apart by probing). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description The identity is genuine but has no active staff account (`ADMIN_ONLY`). Being on the Access allow-list does not make somebody staff. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description SSO is not configured for this environment (`ACCESS_SSO_NOT_CONFIGURED`, not retryable), or the identity provider's key set is unreachable (`ACCESS_KEYS_UNAVAILABLE`, retryable). Password + TOTP remains available in both cases. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsRefresh: {

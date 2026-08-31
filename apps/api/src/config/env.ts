@@ -60,6 +60,18 @@ const envSchema = z
      */
     AUTH_ADMIN_REFRESH_TTL_SECONDS: z.coerce.number().int().positive().default(28_800),
     /**
+     * #62 / ADR-0010 — the Cloudflare Access application whose assertions are
+     * accepted as CMS identity. `CF_ACCESS_TEAM_DOMAIN` is the team hostname
+     * (`<team>.cloudflareaccess.com`), which is also where the signing keys
+     * are published; `CF_ACCESS_AUD` is the application's audience tag.
+     *
+     * Empty means single sign-on is off for this environment and
+     * `POST /v1/cms/auth/access-exchange` answers 503 saying so. Password +
+     * TOTP is unaffected either way.
+     */
+    CF_ACCESS_TEAM_DOMAIN: z.string().default(''),
+    CF_ACCESS_AUD: z.string().default(''),
+    /**
      * #154 — the SSE transport, per environment. Default on: a client that
      * cannot open the stream falls back to polling, so the failure mode of
      * having it on is worse latency, not a broken app.
@@ -190,6 +202,31 @@ const envSchema = z
           message: 'COOKIE_SECURE must be true in production',
         });
       }
+    }
+
+    // #62 / ADR-0010 — half-configured single sign-on is worse than none. A
+    // team domain without an audience tag accepts an assertion minted for any
+    // application in the Cloudflare account, and those are different doors
+    // with different allow-lists.
+    if (Boolean(env.CF_ACCESS_TEAM_DOMAIN) !== Boolean(env.CF_ACCESS_AUD)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CF_ACCESS_AUD'],
+        message:
+          'CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD must be set together: a team domain without an audience tag would accept an assertion issued for any other application in the account',
+      });
+    }
+
+    // Security rule: the CMS requires SSO in production. Keyed on APP_ENV, not
+    // NODE_ENV — every deployed environment runs the production build, so
+    // NODE_ENV would demand this of DEV too (the mistake fixed in #215/#216).
+    if ((env.APP_ENV === 'prod' || env.APP_ENV === 'production') && !env.CF_ACCESS_TEAM_DOMAIN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CF_ACCESS_TEAM_DOMAIN'],
+        message:
+          'CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in production: the CMS requires SSO there',
+      });
     }
   });
 

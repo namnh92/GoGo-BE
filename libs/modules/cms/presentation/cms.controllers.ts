@@ -5,6 +5,10 @@ import { CurrentActor, Public, RateLimit } from '../../identity/presentation/dec
 import type { Actor } from '../../identity/domain/actor';
 import { AdminAuthService } from '../application/admin-auth.service';
 import {
+  CF_ACCESS_ASSERTION_HEADER,
+  CloudflareAccessService,
+} from '../application/cf-access.service';
+import {
   CmsCatalogService,
   PLACE_SORTS,
   PLACE_SOURCES,
@@ -97,6 +101,7 @@ const createAdminSchema = z.object({
 export class CmsAuthController {
   constructor(
     private readonly auth: AdminAuthService,
+    private readonly access: CloudflareAccessService,
     @Inject(APP_CONFIG) private readonly config: IdentityConfig,
   ) {}
 
@@ -111,6 +116,38 @@ export class CmsAuthController {
     const result = await this.auth.login({ ...body, meta: clientMeta(req) });
     // Browser clients authenticate by cookie; the body tokens exist for
     // non-browser callers. A CMS that stores the body token is doing it wrong.
+    setAuthCookies(reply, result, this.cookieOpts());
+    return result;
+  }
+
+  /**
+   * #62 / ADR-0010 — exchange a Cloudflare Access assertion for a console
+   * session. `@Public()` in the sense that no GoGo session is required yet;
+   * the request still has to carry an assertion this deployment can verify.
+   *
+   * An exchange rather than per-request header trust: one place decides that
+   * an identity is real, and everything downstream — `AdminGuard`, the audit
+   * trail, session revocation, logout-all — keeps working on the session model
+   * it already has. Reading the header on every request would mean an admin
+   * revoked in the console keeps their access until Cloudflare's own session
+   * expires, because nothing of ours would be in the loop.
+   */
+  @Public()
+  @RateLimit({ action: 'cms.access_exchange', limit: 10, windowSeconds: 60, keyBy: 'ip' })
+  @Post('access-exchange')
+  async accessExchange(
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    const assertion = req.headers[CF_ACCESS_ASSERTION_HEADER];
+    if (typeof assertion !== 'string' || !assertion) {
+      throw AppError.unauthorized(
+        'ACCESS_ASSERTION_MISSING',
+        'This endpoint is reachable only through Cloudflare Access',
+      );
+    }
+    const identity = await this.access.verify(assertion);
+    const result = await this.auth.loginWithAccessIdentity(identity, clientMeta(req));
     setAuthCookies(reply, result, this.cookieOpts());
     return result;
   }
