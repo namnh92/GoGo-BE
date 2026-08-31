@@ -63,6 +63,17 @@ export const placeIngestJobs = pgTable(
     defaultCity: text('default_city'),
     /** Column mapping chosen in the wizard (raw header → canonical field). */
     mapping: jsonb('mapping').$type<Record<string, string>>(),
+    /**
+     * Header diagnostics from parse time, as `tabName:value`. Stored rather
+     * than returned once: the wizard navigates to the job detail immediately
+     * after creating, so anything living only on the create response is lost
+     * before anyone can read it.
+     */
+    unmappedHeaders: jsonb('unmapped_headers').$type<string[]>().notNull().default([]),
+    missingRequiredColumns: jsonb('missing_required_columns')
+      .$type<string[]>()
+      .notNull()
+      .default([]),
     totalRows: integer('total_rows').notNull().default(0),
     processedRows: integer('processed_rows').notNull().default(0),
     successRows: integer('success_rows').notNull().default(0),

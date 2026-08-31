@@ -173,13 +173,27 @@ export class PlaceImportJobService {
       warnings: IngestMessage[];
     }[] = [];
     const unmappedHeaders = new Set<string>();
+    const missingRequiredColumns = new Set<string>();
 
     let rowNumber = 0;
     for (const grid of input.grids) {
-      const { mapping, unmapped } = resolveMapping(grid.headers, input.mapping);
+      const { mapping, unmapped, missing } = resolveMapping(grid.headers, input.mapping);
       unmapped.forEach((h) => unmappedHeaders.add(`${grid.name}:${h}`));
       // A tab named HCM/HN is the city fallback for its rows (spec §4.4).
       const tabCity = input.tabCityMapping?.[grid.name] ?? input.defaultCity;
+      // This list is what the wizard blocks on, so it holds only columns the
+      // operator actually has to go and add. A requirement the job satisfies
+      // by itself is not one of them:
+      //   - `source_row_id` is always derivable here, because every row in a
+      //     grid has a position. The cost of that derivation is per-row and
+      //     positional, so it is reported per-row as `ROW_ID_DERIVED` — not
+      //     here, where it would read as "this file cannot be imported".
+      //   - `city` is covered whenever a default or tab mapping supplies one.
+      // Anything left is genuinely blocking; padding it would teach editors to
+      // skim past the one list that is meant to stop them.
+      missing
+        .filter((field) => field !== 'source_row_id' && (field !== 'city' || !tabCity))
+        .forEach((field) => missingRequiredColumns.add(`${grid.name}:${field}`));
 
       for (const cells of grid.rows) {
         rowNumber += 1;
@@ -196,10 +210,13 @@ export class PlaceImportJobService {
           knownCategoryKeys: taxonomy.category,
           knownVibeKeys: taxonomy.vibe,
           knownAudienceKeys: taxonomy.suitability,
+          // Bounded to the 100-char rule (spec §4.3) here rather than in the
+          // validator: a tab title may run to 120 chars on its own.
+          fallbackRowId: `${grid.name.slice(0, 80)}#${rowNumber}`,
         });
 
         const errors = [...validated.errors];
-        const sourceRowId = validated.normalized.sourceRowId || `${grid.name}#${rowNumber}`;
+        const sourceRowId = validated.normalized.sourceRowId;
         if (seenRowIds.has(sourceRowId)) {
           errors.push({
             code: 'ROW_ID_DUPLICATE',
@@ -242,6 +259,8 @@ export class PlaceImportJobService {
           mode: input.mode,
           defaultCity: input.defaultCity ?? null,
           mapping: input.mapping ?? null,
+          unmappedHeaders: [...unmappedHeaders],
+          missingRequiredColumns: [...missingRequiredColumns],
           totalRows: prepared.length,
           processedRows: input.mode === 'dry_run' ? prepared.length : failedRows,
           failedRows,
@@ -279,11 +298,9 @@ export class PlaceImportJobService {
       failedRows,
     });
 
-    return {
-      ...(await this.getJob(job.id)),
-      reused: false,
-      unmappedHeaders: [...unmappedHeaders],
-    };
+    // `getJob` reads the diagnostics back off the row it just wrote, so the
+    // create response and every later refetch agree by construction.
+    return { ...(await this.getJob(job.id)), reused: false };
   }
 
   // --- reads ---------------------------------------------------------------
@@ -343,6 +360,9 @@ export class PlaceImportJobService {
         failed: job.failedRows,
       },
       rowsByStatus: Object.fromEntries(counts.map((c) => [c.status, c.n])),
+      // Parse-time diagnostics survive the navigation away from the wizard.
+      unmappedHeaders: job.unmappedHeaders,
+      missingRequiredColumns: job.missingRequiredColumns,
       createdAt: job.createdAt.toISOString(),
       startedAt: job.startedAt?.toISOString(),
       completedAt: job.completedAt?.toISOString(),

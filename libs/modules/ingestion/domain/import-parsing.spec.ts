@@ -372,6 +372,92 @@ describe('validateRow', () => {
   });
 });
 
+// --- #274 row identity ------------------------------------------------------
+
+describe('source_row_id fallback', () => {
+  const row = { name: 'Lacàph', city: 'Ho Chi Minh City', category: 'cafe' };
+
+  it('derives the id from row position instead of failing the row', () => {
+    const { normalized, errors, warnings } = validateRow(row, { fallbackRowId: 'HCM#1' });
+
+    expect(errors).toEqual([]);
+    expect(normalized.sourceRowId).toBe('HCM#1');
+    expect(warnings.map((w) => w.code)).toContain('ROW_ID_DERIVED');
+  });
+
+  it('says in the warning that a derived id moves when rows move', () => {
+    const { warnings } = validateRow(row, { fallbackRowId: 'HCM#1' });
+    const derived = warnings.find((w) => w.code === 'ROW_ID_DERIVED');
+
+    // The whole risk of a positional id is invisible unless it is spelled out
+    // on the row itself — an editor re-syncing this sheet needs to read it.
+    expect(derived?.field).toBe('source_row_id');
+    expect(derived?.message).toContain('HCM#1');
+    expect(derived?.message).toMatch(/thứ tự dòng/);
+  });
+
+  it('still fails the row when no fallback is offered', () => {
+    // The API/mobile path has no row position to fall back on, so the
+    // requirement stands there.
+    const { errors, warnings } = validateRow(row);
+
+    expect(errors.map((e) => e.code)).toContain('ROW_ID_MISSING');
+    expect(warnings.map((w) => w.code)).not.toContain('ROW_ID_DERIVED');
+  });
+
+  it('prefers the sheet’s own id over the fallback, and warns about neither', () => {
+    const { normalized, errors, warnings } = validateRow(
+      { ...row, source_row_id: 'HCM-0001' },
+      { fallbackRowId: 'HCM#1' },
+    );
+
+    expect(errors).toEqual([]);
+    expect(normalized.sourceRowId).toBe('HCM-0001');
+    expect(warnings.map((w) => w.code)).not.toContain('ROW_ID_DERIVED');
+  });
+
+  it('rejects an over-long authored id rather than truncating it', () => {
+    // Truncating would let two authored rows collapse onto one identity, which
+    // `(job_id, source_row_id)` would then read as a retry of the same row.
+    const { errors } = validateRow(
+      { ...row, source_row_id: 'x'.repeat(101) },
+      { fallbackRowId: 'HCM#1' },
+    );
+
+    expect(errors.map((e) => e.code)).toContain('ROW_ID_TOO_LONG');
+  });
+
+  it('treats a blank fallback as no fallback', () => {
+    expect(validateRow(row, { fallbackRowId: '   ' }).errors.map((e) => e.code)).toContain(
+      'ROW_ID_MISSING',
+    );
+  });
+});
+
+describe('missing required columns', () => {
+  it('names the required fields the HCM sheet has no header for', () => {
+    // The real sheet from the failing import, verbatim.
+    const { mapping, unmapped, missing } = resolveMapping([
+      'name',
+      'category',
+      'district',
+      'google_maps_url',
+      'tags',
+      'source',
+      'import_status',
+      'notes',
+      'city',
+    ]);
+
+    expect(missing).toEqual(['source_row_id']);
+    // `notes` is not an alias of `note`, so its text is dropped — the editor
+    // only finds out because it is reported here.
+    expect(unmapped).toEqual(['tags', 'source', 'import_status', 'notes']);
+    expect(mapping['google_maps_url']).toBe('google_maps_url');
+    expect(mapping['city']).toBe('city');
+  });
+});
+
 // --- error report -----------------------------------------------------------
 
 describe('error report CSV', () => {

@@ -223,6 +223,133 @@ describe('PI-BE-012 — Google Sheets source', () => {
     expect(res.json().totals.failed).toBe(0);
   });
 
+  // #274 — the HCM sheet that failed every row on ROW_ID_MISSING.
+  it('imports a sheet with no source_row_id column, deriving row identity', async () => {
+    const editor = await createAdmin('sheet-editor-norowid@gogo.local', 'editor');
+    sheets.seed('3NoRowIdNoRowIdNoRowIdNoRowId1234567', 'HCM', [
+      // The real failing sheet's headers, verbatim.
+      ['name', 'category', 'district', 'google_maps_url', 'tags', 'source', 'notes', 'city'],
+      [
+        'Lacàph Coffee Experiences Space',
+        'cafe',
+        'District 1',
+        'https://www.google.com/maps/search/?api=1&query=Lacaph+Coffee',
+        'coffee,date,indoor',
+        'Google Maps',
+        'Specialty coffee',
+        'Ho Chi Minh City',
+      ],
+      [
+        'Quán Thứ Hai',
+        'cafe',
+        'District 3',
+        'https://www.google.com/maps?place_id=fake-a',
+        'coffee',
+        'Google Maps',
+        '',
+        'Ho Chi Minh City',
+      ],
+    ]);
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: '3NoRowIdNoRowIdNoRowIdNoRowId1234567',
+        sheets: ['HCM'],
+        mode: 'dry_run',
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const job = res.json();
+    // Before #274 both rows failed on ROW_ID_MISSING even though the service
+    // went on to derive and store the very id the validator had rejected.
+    expect(job.totals.failed).toBe(0);
+    expect(job.totals.rows).toBe(2);
+
+    const rows = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${job.id}/rows`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    const items = rows.json().items;
+    expect(items.map((r: { sourceRowId: string }) => r.sourceRowId)).toEqual(['HCM#1', 'HCM#2']);
+    for (const row of items) {
+      expect(row.status).not.toBe('validation_failed');
+      expect(row.errors).toEqual([]);
+      expect(row.warnings.map((w: { code: string }) => w.code)).toContain('ROW_ID_DERIVED');
+    }
+  });
+
+  it('keeps the create-time column diagnostics readable from the job detail', async () => {
+    const editor = await createAdmin('sheet-editor-diagnostics@gogo.local', 'editor');
+    sheets.seed('4DiagnosticsDiagnosticsDiag01234567', 'HCM', [
+      ['name', 'category', 'tags', 'notes', 'city'],
+      ['Quán A', 'cafe', 'coffee', 'ghi chú', 'Ho Chi Minh City'],
+    ]);
+
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: '4DiagnosticsDiagnosticsDiag01234567',
+        sheets: ['HCM'],
+        mode: 'dry_run',
+      },
+    });
+    expect(created.statusCode).toBe(201);
+
+    // The wizard navigates away immediately, so the refetch is what an editor
+    // actually reads. It used to carry neither field.
+    const detail = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${created.json().id}`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+
+    const body = detail.json();
+    // Derivable on its own, so it is not the operator's problem to fix — the
+    // per-row ROW_ID_DERIVED warning carries that fact instead.
+    expect(body.missingRequiredColumns).not.toContain('HCM:source_row_id');
+    // `notes` is not an alias of `note`; both columns are silently dropped
+    // unless the job says so.
+    expect(body.unmappedHeaders).toEqual(expect.arrayContaining(['HCM:tags', 'HCM:notes']));
+    expect(body.unmappedHeaders).toEqual(created.json().unmappedHeaders);
+  });
+
+  it('lists only the required columns the operator must actually add', async () => {
+    const editor = await createAdmin('sheet-editor-defaultcity@gogo.local', 'editor');
+    // No `source_row_id` (derivable), no `city` (defaulted below), and no
+    // `category` — which nothing can supply, so it is the one that blocks.
+    sheets.seed('5DefaultCityDefaultCityDefau1234567', 'HCM', [['name'], ['Quán B']]);
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: '5DefaultCityDefaultCityDefau1234567',
+        sheets: ['HCM'],
+        mode: 'dry_run',
+        defaultCity: 'Hồ Chí Minh',
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const missing = res.json().missingRequiredColumns;
+    expect(missing).toEqual(['HCM:category']);
+    // And it blocks for real: the row fails on the column the list names.
+    expect(res.json().totals.failed).toBe(1);
+  });
+
   it('surfaces a permission error as 403, not a 500', async () => {
     const editor = await createAdmin('sheet-editor2@gogo.local', 'editor');
     sheets.denied.add('2DeniedDeniedDeniedDenied0000000');

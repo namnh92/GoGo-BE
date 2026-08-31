@@ -43,6 +43,52 @@ unit: per_person}`, `Cặp đôi|Bạn bè` → `['couple','group']`. A tab name
 Unknown taxonomy keys are a **validation error** (`CATEGORY_UNKNOWN`) or a
 warning (`CATEGORY_UNMAPPED`). Import never creates taxonomy.
 
+Headers the parser could not place are returned in `unmappedHeaders`; required
+canonical fields no header covers are returned in `missingRequiredColumns`.
+Both are `tabName:value` strings, both are **persisted on the job**, and both
+come back from `GET …/{jobId}` — not just the create response. They used to be
+create-only, which meant the CMS rendered them into a job detail that had never
+been sent them, and an editor never found out that `tags` and `notes` had been
+dropped from their sheet.
+
+`missingRequiredColumns` holds only what an operator must go and add. A
+requirement the job satisfies by itself is left out: `source_row_id`, which is
+always derivable from row position on a grid source, and `city` whenever
+`defaultCity` or `tabCityMapping` supplies one. What remains genuinely blocks —
+the wizard is meant to stop on this list, so padding it teaches editors to skim
+past the one list that matters. The cost of a derived `source_row_id` is
+reported per row instead, as `ROW_ID_DERIVED`.
+
+## Row identity: `source_row_id` and its fallback
+
+Rows are keyed `(job_id, source_row_id)`. A sheet with no such column used to
+fail **every** row on `ROW_ID_MISSING`, even though the service went on to
+derive `Tab#12` from the row's position and store that. Requiring a human to
+hand-author unique ids in a Google Sheet was the design error, not the sheets
+that lacked them — so the derived id is now applied **before** validation and
+reported as a `ROW_ID_DERIVED` warning.
+
+**A derived id is positional, and position is not identity.** `Tab#12` names
+whatever row sits twelfth today. Insert a row above it and the same place
+imports under a different id while `Tab#12` points at its neighbour. The case
+this breaks is re-importing an edited sheet: `(job_id, source_row_id)` no
+longer lines up with the previous job, so `update_existing` re-resolves rows it
+had already matched, and the sheet's edits land on the wrong place. A sheet
+meant to be re-synced needs a real `source_row_id` column; the warning on every
+row says so.
+
+Intended precedence, once the stronger sources are wired (#274):
+
+```
+explicit source_row_id  >  Google Place ID  >  normalized Maps URL identity  >  sheet/row fallback
+```
+
+Only the first and last exist today. The middle two are available on rows that
+carry a `google_maps_url` — a `place_id` URL parameter is already extracted by
+`parseMapsUrl`, and it is stable across reorder in a way position never is.
+Moving a row up the list is a strict improvement and needs no migration: the
+fallback stays as the floor for rows that have nothing better.
+
 ## Mode `update_existing`
 
 Re-sync một sheet đã sửa lên place đã tồn tại. Trước khi có mode này, sửa giá trong sheet rồi import lại **không có tác dụng gì**: dòng khớp provider id, thành `duplicate`, dừng.
