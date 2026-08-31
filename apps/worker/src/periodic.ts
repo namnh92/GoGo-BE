@@ -14,17 +14,18 @@
  * from running the same job at once. The lock lives in Postgres because the
  * work does — a database that cannot hand out a lock cannot serve the tick
  * either, and there is no second system to keep alive.
+ *
+ * Every job is an interval, none is a wall-clock time. A "daily at 03:00"
+ * schedule existed briefly and was removed: the jobs here are due-work — each
+ * tick processes whatever is due and nothing if nothing is — so running the
+ * privacy sweep every few hours is the same work as running it nightly, and a
+ * restart can delay it by at most one interval instead of skipping a day.
  */
 export interface PeriodicJob {
   /** Names the log line and the advisory lock. */
   name: string;
   run: () => Promise<void>;
-  schedule: { everyMs: number } | DailySchedule;
-}
-
-/** Once a day at a wall-clock time in a zone, however long the process has been up. */
-export interface DailySchedule {
-  dailyAt: { hour: number; minute?: number; timeZone: string };
+  schedule: { everyMs: number };
 }
 
 /** Returns a release function when the lock was taken, null when someone else holds it. */
@@ -41,8 +42,6 @@ export interface PeriodicLogger {
 export interface PeriodicOptions {
   lock: JobLock;
   logger: PeriodicLogger;
-  /** Injected for tests; every timestamp decision goes through this. */
-  now?: () => number;
 }
 
 export interface PeriodicHandle {
@@ -50,35 +49,12 @@ export interface PeriodicHandle {
   stop(): Promise<void>;
 }
 
-/** How often a daily job checks whether its minute has arrived. */
-const DAILY_CHECK_MS = 60_000;
-
 export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): PeriodicHandle {
-  const now = options.now ?? Date.now;
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const inFlight = new Map<string, Promise<void>>();
-  const lastDailyRun = new Map<string, string>();
   let stopping = false;
 
-  const delayFor = (job: PeriodicJob): number =>
-    'everyMs' in job.schedule ? job.schedule.everyMs : DAILY_CHECK_MS;
-
-  /**
-   * A daily job runs on the first check inside its target minute on a local
-   * date it has not yet run on. A restart that lands in that minute runs it
-   * again — every daily job here is re-runnable SQL, so that is cheap; a
-   * restart straddling the minute skips the day, which is the trade for
-   * keeping no state outside the process.
-   */
-  const dueNow = (job: PeriodicJob): boolean => {
-    if ('everyMs' in job.schedule) return true;
-    const { hour, minute = 0, timeZone } = job.schedule.dailyAt;
-    const local = localClock(now(), timeZone);
-    if (local.hour !== hour || local.minute !== minute) return false;
-    if (lastDailyRun.get(job.name) === local.date) return false;
-    lastDailyRun.set(job.name, local.date);
-    return true;
-  };
+  const delayFor = (job: PeriodicJob): number => job.schedule.everyMs;
 
   const schedule = (job: PeriodicJob, delayMs: number) => {
     if (stopping) return;
@@ -93,7 +69,6 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
     if (stopping || inFlight.has(job.name)) return;
 
     const work = (async () => {
-      if (!dueNow(job)) return;
       const release = await options.lock.tryAcquire(job.name).catch((err: unknown) => {
         options.logger.error({ err, job: job.name }, 'periodic job could not reach the lock');
         return undefined;
@@ -130,29 +105,6 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
       timers.clear();
       await Promise.allSettled([...inFlight.values()]);
     },
-  };
-}
-
-/** Date, hour and minute of an instant as seen in a time zone. */
-export function localClock(
-  epochMs: number,
-  timeZone: string,
-): { date: string; hour: number; minute: number } {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(epochMs));
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '00';
-  return {
-    date: `${get('year')}-${get('month')}-${get('day')}`,
-    // "24" is how some ICU builds spell midnight with hour12: false.
-    hour: Number(get('hour')) % 24,
-    minute: Number(get('minute')),
   };
 }
 

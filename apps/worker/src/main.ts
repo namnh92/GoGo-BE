@@ -42,6 +42,7 @@ const pollIntervalMs = (name: string, fallback: number): number => {
 
 const OUTBOX_POLL_MS = pollIntervalMs('OUTBOX_POLL_MS', 5000);
 const INGEST_POLL_MS = pollIntervalMs('INGEST_POLL_MS', 5000);
+const PRIVACY_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Dead-man-switch heartbeats (healthchecks.io style): ping ONLY after a
@@ -131,7 +132,11 @@ async function bootstrap(): Promise<void> {
       },
       {
         name: 'gogo:worker:privacy',
-        schedule: { dailyAt: { hour: 3, timeZone: 'Asia/Ho_Chi_Minh' } },
+        // Every six hours rather than nightly at 03:00. The sweep is due-work
+        // — `delete … where day < current_date - 90` — so each run touches
+        // only what crossed the line since the last one, and a restart delays
+        // it by at most six hours instead of skipping a day.
+        schedule: { everyMs: PRIVACY_INTERVAL_MS },
         run: async () => {
           const report = await privacy.run(false);
           logger.info({ report }, 'privacy retention run complete');
@@ -152,7 +157,7 @@ async function bootstrap(): Promise<void> {
 
   logger.info(
     { outboxPollMs: OUTBOX_POLL_MS, ingestPollMs: INGEST_POLL_MS },
-    'worker booted: privacy daily 03:00 ICT',
+    'worker booted: privacy sweep every 6h',
   );
 
   const shutdown = async () => {

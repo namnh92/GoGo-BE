@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { localClock, startPeriodic, type JobLock, type PeriodicLogger } from './periodic';
+import { startPeriodic, type JobLock, type PeriodicLogger } from './periodic';
 
 const logger: PeriodicLogger = {
   info: () => undefined,
@@ -136,49 +136,5 @@ describe('startPeriodic', () => {
     expect(stopped).toBe(true);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(started).toBe(1);
-  });
-
-  it('a daily job runs once on its minute in its zone, and again the next day', async () => {
-    // 2026-08-31T02:59:30 in Asia/Ho_Chi_Minh (UTC+7) = 2026-08-30T19:59:30Z
-    let clock = Date.UTC(2026, 7, 30, 19, 59, 30);
-    const runs: string[] = [];
-    const handle = startPeriodic(
-      [
-        {
-          name: 'daily',
-          schedule: { dailyAt: { hour: 3, timeZone: 'Asia/Ho_Chi_Minh' } },
-          run: async () => void runs.push(localClock(clock, 'Asia/Ho_Chi_Minh').date),
-        },
-      ],
-      { lock: lock(), logger, now: () => clock },
-    );
-
-    const step = async (ms: number) => {
-      clock += ms;
-      await vi.advanceTimersByTimeAsync(ms);
-    };
-
-    await step(60_000); // 03:00:30 — due
-    expect(runs).toEqual(['2026-08-31']);
-    await step(60_000); // 03:01:30 — not the minute
-    await step(60_000 * 60); // 04:01:30 — not the minute
-    expect(runs).toEqual(['2026-08-31']);
-    await step(60_000 * 60 * 23); // 03:01:30 next day — minute passed, check lands at :01
-    // The check lands a minute late because the fake clock stepped by an hour;
-    // walk back to the exact minute to model a real minute-by-minute checker.
-    clock -= 60_000;
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(runs).toEqual(['2026-08-31', '2026-09-01']);
-    await handle.stop();
-  });
-});
-
-describe('localClock', () => {
-  it('reads the wall clock of a zone', () => {
-    expect(localClock(Date.UTC(2026, 7, 30, 20, 0, 0), 'Asia/Ho_Chi_Minh')).toEqual({
-      date: '2026-08-31',
-      hour: 3,
-      minute: 0,
-    });
   });
 });
