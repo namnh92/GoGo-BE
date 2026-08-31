@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AppError } from '../../shared/app-error';
+import { assertExternalUrl } from '../../shared/external-url';
 
 /**
  * BE-CMS-G4e (#226) — what a campaign is allowed to say and who it can reach.
@@ -63,37 +64,6 @@ export const DESTINATION_REFERENCES: Partial<Record<CampaignDestination, 'uuid' 
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Hosts an external destination may never point at.
- *
- * A campaign link is opened by tens of thousands of phones; a link to an
- * internal address turns that into a request flood against our own network,
- * and a link with credentials in it leaks them into every device's history.
- * `.claude/rules/security.md` requires SSRF and open-redirect defence wherever
- * a URL is accepted from an operator.
- */
-const PRIVATE_HOST =
-  /^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1)/i;
-
-export function assertExternalUrl(value: string): string {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw badDestination('destinationValue', 'must be an absolute URL');
-  }
-  if (url.protocol !== 'https:') {
-    throw badDestination('destinationValue', 'must be https');
-  }
-  if (url.username || url.password) {
-    throw badDestination('destinationValue', 'must not carry credentials');
-  }
-  if (PRIVATE_HOST.test(url.hostname)) {
-    throw badDestination('destinationValue', 'must not point inside the network');
-  }
-  return url.toString();
-}
 
 function badDestination(field: string, message: string): AppError {
   return AppError.badRequest('INVALID_DESTINATION', 'That destination cannot be used', [

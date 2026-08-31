@@ -2265,6 +2265,295 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
   });
 });
 
+/**
+ * BE-CMS-G4c (#224) — banners. Destination is cross-checked against the type
+ * it names, and `expired` is the server's answer, not the client's guess.
+ */
+describe('banners (BE-CMS-G4c #224)', () => {
+  let editor: { id: string; token: string };
+  let otherEditor: { id: string; token: string };
+  let moderator: { id: string; token: string };
+  let placeId: string;
+  let recommendationId: string;
+  let campaignId: string;
+  const suffix = () => Math.random().toString(36).slice(2, 8);
+
+  /** A real key through the real upload path, as the CMS would get one. */
+  async function uploadKey(token: string, purpose = 'banner_image') {
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/uploads',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { purpose, contentType: 'image/jpeg', contentLength: 120_000 },
+    });
+    expect(res.statusCode).toBe(201);
+    return res.json().key as string;
+  }
+
+  beforeAll(async () => {
+    editor = await createAdmin('banner224@gogo.local', 'editor');
+    otherEditor = await createAdmin('banner224-other@gogo.local', 'editor');
+    moderator = await createAdmin('banner224-mod@gogo.local', 'moderator');
+    const ops = await createAdmin('banner224-ops@gogo.local', 'ops_admin');
+
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Banner Place',
+        nameNormalized: 'banner place',
+        status: 'published',
+        geom: { x: 106.7, y: 10.77 },
+      })
+      .returning();
+    placeId = place!.id;
+
+    const recommendation = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/recommendations',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        slug: `banner-rec-${suffix()}`,
+        internalName: 'Rec for banner',
+        title: 'Gợi ý',
+        audience: 'couple',
+      },
+    });
+    recommendationId = recommendation.json().id;
+
+    const campaign = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/campaigns',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {
+        name: `Banner campaign ${suffix()}`,
+        title: 'Ưu đãi',
+        body: 'Xem ngay',
+        audienceType: 'all',
+      },
+    });
+    campaignId = campaign.json().id;
+  });
+
+  const post = (payload: unknown, token = editor.token) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/banners',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: payload as object,
+    });
+  const patch = (path: string, payload: unknown, token = editor.token) =>
+    api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/banners/${path}`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: payload as object,
+    });
+  const get = (path = '', token = editor.token) =>
+    api().inject({ method: 'GET', url: `/v1/cms/banners${path}`, headers: auth(token) });
+
+  async function valid(extra: Record<string, unknown> = {}) {
+    return {
+      name: `Banner ${suffix()}`,
+      imageKey: await uploadKey(editor.token),
+      title: 'Cuối tuần này',
+      placement: 'home_hero',
+      priority: 10,
+      ...extra,
+    };
+  }
+
+  it('creates one and binds the image to it', async () => {
+    const payload = await valid();
+    const res = await post(payload);
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.status).toBe('draft');
+    expect(body.lifecycleStatus).toBe('draft');
+    expect(body.destinationType).toBe('none');
+    expect(body.imageKey).toBe(payload.imageKey);
+
+    // The upload is now this banner's, through the same attach path check-in
+    // photos use — not an unowned string sitting in a column.
+    const [media] = await db
+      .select()
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.storageKey, payload.imageKey));
+    expect(media!.status).toBe('attached');
+    expect(media!.attachedToType).toBe('banner');
+    expect(media!.attachedToId).toBe(body.id);
+  });
+
+  it('refuses an image that is not the caller’s, or not a banner image', async () => {
+    const foreign = await uploadKey(otherEditor.token);
+    const notMine = await post(await valid({ imageKey: foreign }));
+    expect(notMine.statusCode).toBe(400);
+    expect(notMine.json().code).toBe('INVALID_UPLOAD_KEY');
+
+    const wrongPurpose = await uploadKey(editor.token, 'campaign_image');
+    const mismatched = await post(await valid({ imageKey: wrongPurpose }));
+    expect(mismatched.statusCode).toBe(400);
+    expect(mismatched.json().code).toBe('INVALID_UPLOAD_KEY');
+
+    // An image is mandatory: a banner without one is not a banner.
+    const payload = await valid();
+    const { imageKey: _dropped, ...withoutImage } = payload;
+    expect((await post(withoutImage)).statusCode).toBe(400);
+  });
+
+  it('cross-validates the destination against the type it names', async () => {
+    const ghost = '00000000-0000-4000-8000-000000000000';
+
+    for (const [destinationType, destinationValue] of [
+      ['place', placeId],
+      ['recommendation', recommendationId],
+      ['campaign', campaignId],
+      ['external_url', 'https://gogo.vn/tet'],
+    ] as const) {
+      const res = await post(await valid({ destinationType, destinationValue }));
+      expect(res.statusCode, destinationType).toBe(201);
+      expect(res.json().destinationType).toBe(destinationType);
+    }
+
+    // A place id in the recommendation slot resolves to nothing: the type
+    // decides which table is checked, so this is caught rather than shipped.
+    const crossed = await post(
+      await valid({ destinationType: 'recommendation', destinationValue: placeId }),
+    );
+    expect(crossed.statusCode).toBe(400);
+    expect(crossed.json().code).toBe('DESTINATION_NOT_FOUND');
+
+    const missing = await post(await valid({ destinationType: 'place', destinationValue: ghost }));
+    expect(missing.json().code).toBe('DESTINATION_NOT_FOUND');
+
+    const noneWithValue = await post(
+      await valid({ destinationType: 'none', destinationValue: placeId }),
+    );
+    expect(noneWithValue.statusCode).toBe(400);
+
+    const missingValue = await post(await valid({ destinationType: 'place' }));
+    expect(missingValue.statusCode).toBe(400);
+    expect(missingValue.json().code).toBe('INVALID_DESTINATION');
+  });
+
+  it('refuses an external URL that is unsafe to open at scale', async () => {
+    for (const url of [
+      'http://gogo.vn/promo',
+      'https://127.0.0.1/admin',
+      'https://192.168.1.1',
+      'https://user:pw@gogo.vn',
+      'not-a-url',
+    ]) {
+      const res = await post(
+        await valid({ destinationType: 'external_url', destinationValue: url }),
+      );
+      expect(res.statusCode, url).toBe(400);
+      expect(res.json().code).toBe('INVALID_DESTINATION');
+    }
+  });
+
+  it('computes `expired` from the clock rather than storing it', async () => {
+    const id = (
+      await post(
+        await valid({
+          startsAt: '2026-01-01T00:00:00Z',
+          endsAt: '2026-02-01T00:00:00Z',
+        }),
+      )
+    ).json().id;
+
+    // Publishing a window that has already closed would produce a banner the
+    // very next read calls expired.
+    const early = await patch(`${id}/status`, { status: 'published' });
+    expect(early.statusCode).toBe(400);
+    expect(early.json().code).toBe('WINDOW_CLOSED');
+
+    // Publish with an open window, then move the end into the past directly:
+    // no job runs, and the read must still be right.
+    await patch(id, { endsAt: '2099-01-01T00:00:00Z' });
+    expect((await patch(`${id}/status`, { status: 'published' })).statusCode).toBe(200);
+    expect((await get(`/${id}`)).json().status).toBe('published');
+
+    await db
+      .update(schema.banners)
+      .set({ endsAt: new Date('2026-02-01T00:00:00Z') })
+      .where(eq(schema.banners.id, id));
+
+    const read = await get(`/${id}`);
+    expect(read.json().status).toBe('expired');
+    // And what a person set is still visible beside it.
+    expect(read.json().lifecycleStatus).toBe('published');
+
+    const expiredList = await get('?status=expired');
+    expect(expiredList.json().items.map((b: { id: string }) => b.id)).toContain(id);
+    const publishedList = await get('?status=published');
+    expect(publishedList.json().items.map((b: { id: string }) => b.id)).not.toContain(id);
+  });
+
+  it('refuses an inverted window and a scheduled banner with no start', async () => {
+    const inverted = await post(
+      await valid({ startsAt: '2027-02-01T00:00:00Z', endsAt: '2027-01-01T00:00:00Z' }),
+    );
+    expect(inverted.statusCode).toBe(400);
+    expect(inverted.json().code).toBe('INVALID_SCHEDULE');
+
+    const id = (await post(await valid())).json().id;
+    const noStart = await patch(`${id}/status`, { status: 'scheduled' });
+    expect(noStart.statusCode).toBe(400);
+    expect(noStart.json().code).toBe('SCHEDULE_REQUIRED');
+  });
+
+  it('archived is terminal, and the lifecycle refuses undeclared moves', async () => {
+    const id = (await post(await valid())).json().id;
+    expect((await patch(`${id}/status`, { status: 'published' })).statusCode).toBe(200);
+    expect((await patch(`${id}/status`, { status: 'archived' })).statusCode).toBe(200);
+    const revive = await patch(`${id}/status`, { status: 'published' });
+    expect(revive.statusCode).toBe(409);
+    expect(revive.json().code).toBe('INVALID_STATUS_TRANSITION');
+  });
+
+  it('filters by placement and pages, and refuses a duplicate name', async () => {
+    const marker = `probe-${suffix()}`;
+    for (let i = 0; i < 3; i += 1) {
+      await post(await valid({ name: `${marker}-${i}`, placement: 'home_secondary' }));
+    }
+    const filtered = await get(`?q=${marker}&placement=home_secondary`);
+    expect(filtered.json().totalCount).toBe(3);
+    expect((await get(`?q=${marker}&placement=home_hero`)).json().totalCount).toBe(0);
+
+    const first = await get(`?q=${marker}&limit=2`);
+    expect(first.json().items).toHaveLength(2);
+    const second = await get(
+      `?q=${marker}&limit=2&cursor=${encodeURIComponent(first.json().nextCursor)}`,
+    );
+    expect(second.json().items).toHaveLength(1);
+    expect(second.json().nextCursor).toBeNull();
+
+    const name = `Banner dup ${suffix()}`;
+    expect((await post(await valid({ name }))).statusCode).toBe(201);
+    const again = await post(await valid({ name }));
+    expect(again.statusCode).toBe(409);
+    expect(again.json().code).toBe('BANNER_NAME_TAKEN');
+  });
+
+  it('audits the write, and stays an editorial resource', async () => {
+    const id = (await post(await valid())).json().id;
+    const audit = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/audit?resourceType=banner&resourceId=${id}`,
+      headers: auth(editor.token),
+    });
+    expect(audit.json().items[0].action).toBe('banner.created');
+
+    expect((await post(await valid(), moderator.token)).statusCode).toBe(403);
+    expect((await get('', moderator.token)).statusCode).toBe(200);
+  });
+});
+
 describe('ops KPIs (CMS-010)', () => {
   it('KPIs endpoint aggregates health metrics (FR-CMS-010)', async () => {
     const ops = await createAdmin('ops4@gogo.local', 'ops_admin');

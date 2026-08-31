@@ -3435,6 +3435,147 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /cms/banners:
+    get:
+      operationId: cmsListBanners
+      tags: [cms]
+      summary: 'Editor/ops: banners, filtered and cursor-paged'
+      description: >
+        `status` accepts `expired`, which is **computed by the server** from the
+        banner's end time rather than stored — a stored expiry is wrong for as
+        long as it takes something to notice, or forever if nothing runs. Each
+        item carries both: `status` (what it is now) and `lifecycleStatus`
+        (what a person set).
+      parameters:
+        - { name: placement, in: query, schema: { $ref: '#/components/schemas/BannerPlacement' } }
+        - {
+            name: status,
+            in: query,
+            schema: { $ref: '#/components/schemas/BannerEffectiveStatus' },
+          }
+        - { name: audience, in: query, schema: { $ref: '#/components/schemas/ContentAudience' } }
+        - { name: q, in: query, schema: { type: string, maxLength: 120 } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Banners, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsBannerPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      operationId: cmsCreateBanner
+      tags: [cms]
+      summary: 'Editor/ops: create a banner'
+      description: >
+        `imageKey` is mandatory — a banner is an image. The key comes from
+        `POST /cms/uploads` with purpose `banner_image` and is bound to this
+        banner on save, through the same attach path check-in photos use: a key
+        belonging to another actor, an expired one, or one issued for a
+        different purpose is refused rather than becoming a broken image.
+
+
+        The destination is cross-checked against the type it names: a `place`,
+        `recommendation`, `plan_template` or `campaign` id must resolve, and an
+        `external_url` must be https, carry no credentials and not point inside
+        the network.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsBannerCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsBanner' }
+        '400':
+          description: >
+            Destination is malformed, unsafe or missing (`INVALID_DESTINATION`),
+            points at nothing (`DESTINATION_NOT_FOUND`), the window is inverted
+            (`INVALID_SCHEDULE`), or the image key is not usable
+            (`INVALID_UPLOAD_KEY`).
+        '409': { description: 'A banner with that name exists (`BANNER_NAME_TAKEN`)' }
+
+  /cms/banners/{id}:
+    get:
+      operationId: cmsGetBanner
+      tags: [cms]
+      summary: 'Editor/ops: one banner'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Banner
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsBanner' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: cmsUpdateBanner
+      tags: [cms]
+      summary: 'Editor/ops: edit a banner'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsBannerPatch' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsBanner' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/banners/{id}/status:
+    patch:
+      operationId: cmsSetBannerStatus
+      tags: [cms]
+      summary: 'Editor/ops: move a banner along its lifecycle'
+      description: >
+        Takes only the statuses a person controls — `expired` is not one of
+        them. Scheduling needs a start time, and publishing a banner whose
+        window has already closed is refused rather than producing something the
+        very next read reports as expired.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/BannerStatus' }
+      responses:
+        '200':
+          description: Status changed (audited)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { $ref: '#/components/schemas/BannerStatus' }
+        '400':
+          description: >
+            Scheduling without a start time (`SCHEDULE_REQUIRED`) or publishing
+            a closed window (`WINDOW_CLOSED`).
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 'The lifecycle has no such edge (`INVALID_STATUS_TRANSITION`)' }
+
   /cms/campaigns:
     get:
       operationId: cmsListCampaigns
@@ -5905,6 +6046,124 @@ components:
         severity: { $ref: '#/components/schemas/SafetyRuleSeverity' }
         priority: { type: integer, minimum: 0, maximum: 1000 }
         reasonCode: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+
+    BannerPlacement:
+      type: string
+      enum: [home_hero, home_secondary]
+      description: Stable key; the label resolves client-side.
+
+    BannerStatus:
+      type: string
+      enum: [draft, scheduled, published, archived]
+      description: The lifecycle a person controls. `expired` is not settable.
+
+    BannerEffectiveStatus:
+      type: string
+      enum: [draft, scheduled, published, archived, expired]
+      description: >
+        What the banner is right now. `expired` is computed by the server from
+        the end time on every read, never stored — a stored copy would be wrong
+        between the moment the window closes and whatever noticed.
+
+    BannerDestination:
+      type: string
+      enum: [none, place, recommendation, plan_template, campaign, external_url]
+
+    CmsBanner:
+      type: object
+      required:
+        [
+          id,
+          name,
+          imageKey,
+          imageUrl,
+          destinationType,
+          placement,
+          priority,
+          status,
+          lifecycleStatus,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, description: The editorial name. }
+        imageKey: { type: string }
+        imageUrl:
+          type: [string, 'null']
+          description: >
+            Where the image is readable. Null until media hosting is configured,
+            rather than a URL that would 404.
+        title: { type: string }
+        subtitle: { type: string }
+        ctaLabel: { type: string }
+        destinationType: { $ref: '#/components/schemas/BannerDestination' }
+        destinationValue: { type: string }
+        audience: { $ref: '#/components/schemas/ContentAudience' }
+        placement: { $ref: '#/components/schemas/BannerPlacement' }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        priority:
+          type: integer
+          description: Higher first, between banners competing for one placement.
+        status: { $ref: '#/components/schemas/BannerEffectiveStatus' }
+        lifecycleStatus:
+          allOf:
+            - $ref: '#/components/schemas/BannerStatus'
+          description: What a person set, as opposed to what the clock made of it.
+        createdByAdminId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CmsBannerPage:
+      type: object
+      required: [items, nextCursor, totalCount]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsBanner' }
+        nextCursor: { type: [string, 'null'] }
+        totalCount: { type: integer }
+
+    CmsBannerCreate:
+      type: object
+      required: [name, imageKey, placement]
+      properties:
+        name: { type: string, minLength: 3, maxLength: 120 }
+        imageKey:
+          type: string
+          maxLength: 300
+          description: From `POST /cms/uploads`, purpose `banner_image`.
+        title: { type: string, maxLength: 120 }
+        subtitle: { type: string, maxLength: 200 }
+        ctaLabel: { type: string, maxLength: 40 }
+        destinationType: { $ref: '#/components/schemas/BannerDestination' }
+        destinationValue:
+          type: string
+          maxLength: 2000
+          description: Required unless `destinationType` is `none`, which takes nothing.
+        audience: { $ref: '#/components/schemas/ContentAudience' }
+        placement: { $ref: '#/components/schemas/BannerPlacement' }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        priority: { type: integer, minimum: 0, maximum: 1000 }
+
+    CmsBannerPatch:
+      type: object
+      description: Omitted fields are left alone.
+      properties:
+        name: { type: string, minLength: 3, maxLength: 120 }
+        imageKey: { type: string, maxLength: 300 }
+        title: { type: string, maxLength: 120 }
+        subtitle: { type: string, maxLength: 200 }
+        ctaLabel: { type: string, maxLength: 40 }
+        destinationType: { $ref: '#/components/schemas/BannerDestination' }
+        destinationValue: { type: string, maxLength: 2000 }
+        audience: { $ref: '#/components/schemas/ContentAudience' }
+        placement: { $ref: '#/components/schemas/BannerPlacement' }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        priority: { type: integer, minimum: 0, maximum: 1000 }
 
     CampaignStatus:
       type: string
