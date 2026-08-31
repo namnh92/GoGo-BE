@@ -1,0 +1,16 @@
+-- BE-CMS-G7 (#246) — `banned` joins the account status enum.
+--
+-- Suspended and banned both stop a login, and collapsing them into one value
+-- would lose the only thing that distinguishes them: whether the account is
+-- expected back. An operator reviewing a suspension needs to know if they are
+-- looking at a cooling-off period or a decision nobody intends to revisit, and
+-- a free-text note is not something a query can filter on.
+--
+-- `deleted` stays separate from both: it is the privacy outcome, not a
+-- moderation one, and it is the state that frees the email address for
+-- re-registration.
+--
+-- ADD VALUE is safe to run here: PostgreSQL 12+ allows it inside a
+-- transaction as long as the new value is not used in the same one, and this
+-- migration only declares it.
+ALTER TYPE user_status ADD VALUE IF NOT EXISTS 'banned';

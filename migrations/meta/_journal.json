@@ -204,6 +204,13 @@
       "when": 1787837550888,
       "tag": "0028_admin_password_reset",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1787837551888,
+      "tag": "0029_user_banned_status",
+      "breakpoints": true
     }
   ]
 }

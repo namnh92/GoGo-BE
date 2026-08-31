@@ -16,7 +16,13 @@ import {
  * with a rotation family + revoke chain; no plaintext credentials anywhere.
  */
 
-export const userStatus = pgEnum('user_status', ['active', 'suspended', 'deleted']);
+/**
+ * #246 — `suspended` and `banned` both stop a login; what separates them is
+ * whether the account is expected back. `deleted` is not a moderation outcome
+ * at all: it is the privacy one, and the state that frees the address for
+ * re-registration.
+ */
+export const userStatus = pgEnum('user_status', ['active', 'suspended', 'banned', 'deleted']);
 
 export const users = pgTable(
   'users',

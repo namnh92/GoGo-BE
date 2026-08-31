@@ -51,6 +51,7 @@ import { CMS_UPLOAD_PURPOSES, MAX_UPLOAD_BYTES } from '../../uploads/application
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { CmsObservabilityService } from '../application/cms-observability.service';
+import { CmsUsersService } from '../application/cms-users.service';
 import { FLAG_ENVIRONMENTS, FLAG_PLATFORMS } from '../../shared/feature-flags';
 import {
   CHECKIN_MODERATION_STATUSES,
@@ -333,6 +334,121 @@ export class CmsAuthController {
       // The session doing the changing survives; every other one does not.
       keepSessionId: actor.sessionId,
     });
+  }
+}
+
+// ---------------------------------------------------------------- app users
+
+const appUserListQuery = z.object({
+  q: z.string().trim().min(1).max(120).optional(),
+  status: z.enum(['active', 'suspended', 'banned', 'deleted']).optional(),
+  // Each row costs four indexed counter lookups, so the page size is what
+  // keeps this from being a table scan wearing a filter.
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
+const userReasonSchema = z.object({ reason: z.string().trim().min(3).max(500) });
+const roomListQuery = z.object({
+  status: z.enum(['draft', 'active', 'planning', 'completed', 'archived']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
+const planListQuery = z.object({
+  status: z.enum(['draft', 'current', 'superseded', 'archived']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
+
+/**
+ * BE-CMS-G7 (#246) — app users, rooms and plans.
+ *
+ * `ops_admin` and above, and deliberately **not** open to the guard's
+ * rank-read: an editor reading catalogue data is ordinary, an editor reading
+ * the user base is not. Account data is the one collection here where the
+ * read is as sensitive as the write.
+ */
+@RequireRole('ops_admin', 'super_admin')
+@Controller('cms')
+export class CmsUsersController {
+  constructor(private readonly users: CmsUsersService) {}
+
+  @Get('users')
+  listUsers(
+    @Query(new ZodValidationPipe(appUserListQuery)) query: z.infer<typeof appUserListQuery>,
+  ) {
+    return this.users.list(query);
+  }
+
+  @Get('users/:id')
+  userDetail(@Param('id', Uuid) id: string) {
+    return this.users.detail(id);
+  }
+
+  @Post('users/:id/suspend')
+  suspendUser(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(userReasonSchema)) body: { reason: string },
+  ) {
+    return this.users.setStatus({ id, status: 'suspended', ...body, actorId: actor.id });
+  }
+
+  @Post('users/:id/ban')
+  banUser(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(userReasonSchema)) body: { reason: string },
+  ) {
+    return this.users.setStatus({ id, status: 'banned', ...body, actorId: actor.id });
+  }
+
+  @Post('users/:id/reactivate')
+  reactivateUser(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(userReasonSchema)) body: { reason: string },
+  ) {
+    return this.users.setStatus({ id, status: 'active', ...body, actorId: actor.id });
+  }
+
+  /**
+   * Erasure, run on the account holder's behalf. `super_admin` only: it is the
+   * one action here that cannot be undone, and the account it destroys is
+   * somebody else's.
+   */
+  @RequireRole('super_admin')
+  @Post('users/:id/delete')
+  deleteUser(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(userReasonSchema)) body: { reason: string },
+  ) {
+    return this.users.deleteAccount({ id, ...body, actorId: actor.id });
+  }
+
+  /**
+   * A subject-access request made through support instead of the app. Rate
+   * limited per actor: the payload is one person's entire history, and a loop
+   * over the user list is a data export nobody authorized.
+   */
+  @RateLimit({ action: 'cms.user_export', limit: 10, windowSeconds: 300, keyBy: 'actor' })
+  @Post('users/:id/export')
+  exportUser(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(userReasonSchema)) body: { reason: string },
+  ) {
+    return this.users.exportData({ id, ...body, actorId: actor.id });
+  }
+
+  @Get('rooms')
+  listRooms(@Query(new ZodValidationPipe(roomListQuery)) query: z.infer<typeof roomListQuery>) {
+    return this.users.listRooms(query);
+  }
+
+  @Get('plans')
+  listPlans(@Query(new ZodValidationPipe(planListQuery)) query: z.infer<typeof planListQuery>) {
+    return this.users.listPlans(query);
   }
 }
 

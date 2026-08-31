@@ -165,7 +165,24 @@ export class UserContentService {
 
   /** Data export — every actor-owned row, JSON, no internal ids beyond needed. */
   async exportData(actor: Actor) {
-    const userId = requireUser(actor);
+    return this.exportForUser(requireUser(actor), {
+      actorType: 'user',
+      actorId: requireUser(actor),
+    });
+  }
+
+  /**
+   * #246 — the same export, addressable by user id.
+   *
+   * `by` rather than an assumed self-service actor: staff can run this for a
+   * subject-access request made through support, and an audit row saying the
+   * user exported their own data when a staff member did is the kind of
+   * untruth an audit log exists to prevent.
+   */
+  async exportForUser(
+    userId: string,
+    by: { actorType: 'user' | 'admin'; actorId: string; reason?: string },
+  ) {
     const [user] = await this.db.select().from(schema.users).where(eq(schema.users.id, userId));
     const memberships = await this.db
       .select()
@@ -198,11 +215,12 @@ export class UserContentService {
       .where(eq(schema.reviews.userId, userId));
 
     await writeAudit(this.db, {
-      actorType: 'user',
-      actorId: userId,
+      actorType: by.actorType,
+      actorId: by.actorId,
       action: 'user.data_exported',
       resourceType: 'user',
       resourceId: userId,
+      ...(by.reason ? { diff: { reason: by.reason } } : {}),
     });
 
     return {
@@ -231,6 +249,18 @@ export class UserContentService {
    */
   async deleteAccount(actor: Actor) {
     const userId = requireUser(actor);
+    return this.deleteForUser(userId, { actorType: 'user', actorId: userId });
+  }
+
+  /**
+   * #246 — the same erasure, addressable by user id, so the console does not
+   * grow a second implementation. Two implementations of "erase this person"
+   * drift, and the one that drifts is the one that leaves a table behind.
+   */
+  async deleteForUser(
+    userId: string,
+    by: { actorType: 'user' | 'admin'; actorId: string; reason?: string },
+  ) {
     await this.db.transaction(async (tx) => {
       await tx
         .update(schema.users)
@@ -258,11 +288,12 @@ export class UserContentService {
         .set({ displayName: 'Đã rời' })
         .where(eq(schema.roomMembers.userId, userId));
       await writeAudit(tx, {
-        actorType: 'user',
-        actorId: userId,
+        actorType: by.actorType,
+        actorId: by.actorId,
         action: 'user.account_deleted',
         resourceType: 'user',
         resourceId: userId,
+        ...(by.reason ? { diff: { reason: by.reason } } : {}),
       });
     });
     return { deleted: true };
