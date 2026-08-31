@@ -210,14 +210,37 @@ export const collectionStatus = pgEnum('collection_status', [
   'archived',
 ]);
 
+export const collectionKind = pgEnum('collection_kind', ['collection', 'recommendation']);
+/** Shared by every kind of editorial content; see `shared/audience.ts`. */
+export const contentAudience = pgEnum('content_audience', ['couple', 'group', 'family', 'solo']);
+
+/**
+ * Editorial lists of places — curated collections and, per ADR-0009, the
+ * targeted ones the console calls recommendations.
+ *
+ * One table because a recommendation *is* a collection that knows who it is
+ * for: same ordered items, same schedule, same status machine. Splitting them
+ * would fork editorial content across two stores that every later feature —
+ * scheduling, a place-removal cascade, "which lists contain this place" —
+ * would have to keep in agreement.
+ */
 export const contentCollections = pgTable(
   'content_collections',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    kind: collectionKind('kind').notNull().default('collection'),
     slug: text('slug').notNull(),
     locale: text('locale').notNull().default('vi'),
     title: text('title').notNull(),
+    /** The editorial name. Never what a user reads; what an editor searches. */
+    internalName: text('internal_name'),
+    subtitle: text('subtitle'),
     description: text('description'),
+    audience: contentAudience('audience'),
+    /** Same vocabulary as `places.area_key`, so "city" is one concept. */
+    areaKey: text('area_key'),
+    /** Higher first, between recommendations competing for one surface. */
+    priority: integer('priority').notNull().default(0),
     status: collectionStatus('status').notNull().default('draft'),
     startsAt: timestamp('starts_at', { withTimezone: true }),
     endsAt: timestamp('ends_at', { withTimezone: true }),
@@ -225,7 +248,25 @@ export const contentCollections = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('content_collections_slug_locale_unique').on(t.slug, t.locale)],
+  (t) => [
+    uniqueIndex('content_collections_slug_locale_unique').on(t.slug, t.locale),
+    index('content_collections_kind_idx').on(t.kind, t.priority, t.createdAt, t.id),
+  ],
+);
+
+/** Categories and vibes as stable taxonomy keys, never display labels. */
+export const contentCollectionTaxonomies = pgTable(
+  'content_collection_taxonomies',
+  {
+    collectionId: uuid('collection_id')
+      .notNull()
+      .references(() => contentCollections.id, { onDelete: 'cascade' }),
+    taxonomyId: uuid('taxonomy_id').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.collectionId, t.taxonomyId] }),
+    index('content_collection_taxonomies_taxonomy_idx').on(t.taxonomyId),
+  ],
 );
 
 export const collectionItems = pgTable(

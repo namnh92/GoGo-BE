@@ -12,6 +12,11 @@ import {
 } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsUploadsService } from '../application/cms-uploads.service';
+import {
+  RECOMMENDATION_STATUSES,
+  RecommendationsService,
+} from '../application/recommendations.service';
+import { CONTENT_AUDIENCES } from '../../shared/audience';
 import { CMS_UPLOAD_PURPOSES, MAX_UPLOAD_BYTES } from '../../uploads/application/uploads.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
@@ -438,6 +443,106 @@ export class CmsContentController {
     @Body(new ZodValidationPipe(collectionItemsSchema)) body: { placeIds: string[] },
   ) {
     return this.content.setCollectionItems(actor.id, id, body.placeIds);
+  }
+}
+
+// ---------------------------------------------------------------- recommendations
+
+/**
+ * BE-CMS-G4a (#222) — a recommendation is a targeted collection (ADR-0009):
+ * the same ordered list of places, plus who it is for.
+ */
+const recommendationBody = {
+  internalName: z.string().trim().min(1).max(120),
+  title: z.string().trim().min(1).max(120),
+  subtitle: z.string().trim().max(200).optional(),
+  description: z.string().max(2000).optional(),
+  locale: z.string().max(8).optional(),
+  audience: z.enum(CONTENT_AUDIENCES),
+  /** Same vocabulary as `places.areaKey`; "city" is one concept, not two. */
+  areaKey: z.string().trim().max(64).optional(),
+  priority: z.number().int().min(0).max(1000).optional(),
+  startsAt: z.coerce.date().optional(),
+  endsAt: z.coerce.date().optional(),
+  /** Stable taxonomy ids (category / mood); labels resolve client-side. */
+  taxonomyIds: z.array(z.string().uuid()).max(30).optional(),
+  /** Ordered: position is the index, and the order round-trips. */
+  placeIds: z.array(z.string().uuid()).max(100).optional(),
+};
+const recommendationCreateSchema = z.object({
+  slug: z.string().regex(/^[a-z0-9-]{2,60}$/),
+  ...recommendationBody,
+});
+const recommendationPatchSchema = z.object(recommendationBody).partial();
+const recommendationStatusSchema = z.object({ status: z.enum(RECOMMENDATION_STATUSES) });
+const recommendationPlacesSchema = z.object({
+  placeIds: z.array(z.string().uuid()).max(100),
+});
+const recommendationListQuery = z.object({
+  status: z.enum(RECOMMENDATION_STATUSES).optional(),
+  audience: z.enum(CONTENT_AUDIENCES).optional(),
+  areaKey: z.string().trim().max(64).optional(),
+  q: z.string().trim().min(1).max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
+
+@RequireRole('editor', 'ops_admin')
+@Controller('cms/recommendations')
+export class CmsRecommendationsController {
+  constructor(private readonly recommendations: RecommendationsService) {}
+
+  @Get()
+  list(
+    @Query(new ZodValidationPipe(recommendationListQuery))
+    query: z.infer<typeof recommendationListQuery>,
+  ) {
+    return this.recommendations.list(query);
+  }
+
+  @Post()
+  create(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(recommendationCreateSchema))
+    body: z.infer<typeof recommendationCreateSchema>,
+  ) {
+    return this.recommendations.create(actor.id, body);
+  }
+
+  @Get(':id')
+  detail(@Param('id', Uuid) id: string) {
+    return this.recommendations.get(id);
+  }
+
+  @Patch(':id')
+  update(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(recommendationPatchSchema))
+    body: z.infer<typeof recommendationPatchSchema>,
+  ) {
+    return this.recommendations.update(actor.id, id, body);
+  }
+
+  @Patch(':id/status')
+  setStatus(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(recommendationStatusSchema))
+    body: z.infer<typeof recommendationStatusSchema>,
+  ) {
+    return this.recommendations.setStatus(actor.id, id, body.status);
+  }
+
+  /** Replaces the ordered list wholesale; the array order is the order. */
+  @Put(':id/places')
+  setPlaces(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(recommendationPlacesSchema))
+    body: z.infer<typeof recommendationPlacesSchema>,
+  ) {
+    return this.recommendations.setPlaces(actor.id, id, body.placeIds);
   }
 }
 
