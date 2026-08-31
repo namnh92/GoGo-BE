@@ -1750,6 +1750,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/plan-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Editor/ops: plan templates, filtered and cursor-paged
+         * @description Templates are **source material for future plans, not live ones**. Nothing in this resource references a room, a plan or a plan stop, and editing a template never reaches a plan somebody already has — the separation is in the schema, not in a rule a service has to remember.
+         */
+        get: operations["cmsListPlanTemplates"];
+        put?: never;
+        /**
+         * Editor/ops: create a plan template
+         * @description `stops` is ordered — the array index becomes the stored position, so a client cannot send two stops claiming the same one or a gap that means nothing.
+         *
+         *     Every budget is integer minor units and carries its currency and what it is *per*; there is no amount in this contract whose scope a client has to assume.
+         */
+        post: operations["cmsCreatePlanTemplate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/plan-templates/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Editor/ops: one template with its ordered stops */
+        get: operations["cmsGetPlanTemplate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Editor/ops: edit a template
+         * @description Omitted fields are left alone; a sent `stops` or `taxonomyIds` replaces that list wholesale. Editing a template does not touch any plan built from it earlier — a plan is a copy at the moment it was made, not a live view of its template.
+         */
+        patch: operations["cmsUpdatePlanTemplate"];
+        trace?: never;
+    };
+    "/cms/plan-templates/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Editor/ops: move a template along its lifecycle
+         * @description Declared transitions only; `archived` is terminal. Publishing needs at least one stop — a template with none is not a plan anyone can be given.
+         */
+        patch: operations["cmsSetPlanTemplateStatus"];
+        trace?: never;
+    };
+    "/cms/plan-templates/{id}/stops": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Editor/ops: replace the ordered stop list */
+        put: operations["cmsSetPlanTemplateStops"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/recommendations": {
         parameters: {
             query?: never;
@@ -3164,6 +3248,108 @@ export interface components {
             enabled: boolean;
             /** @description The stored value */
             value?: unknown;
+        };
+        /**
+         * @description `archived` is terminal — a retired template comes back as a new row.
+         * @enum {string}
+         */
+        PlanTemplateStatus: "draft" | "published" | "archived";
+        /**
+         * @description What an amount is *per*. These are different numbers, so no amount in this contract is returned without one.
+         * @enum {string}
+         */
+        BudgetScope: "per_person" | "per_group";
+        /** @description Integer minor units with its currency and scope. Present as a whole or absent as a whole — there is no half of this object. */
+        BudgetRange: {
+            min: number;
+            max: number;
+            /** @description ISO-4217. */
+            currency: string;
+            scope: components["schemas"]["BudgetScope"];
+        };
+        CmsPlanTemplateStopInput: {
+            /**
+             * Format: uuid
+             * @description Taxonomy of kind `category` — what sort of stop this is.
+             */
+            categoryTaxonomyId: string;
+            /**
+             * Format: uuid
+             * @description Optional. A template may name a place or leave the choice to matching.
+             */
+            preferredPlaceId?: string;
+            /** @description A property of the stop, not a convention the reader infers. */
+            isOptional?: boolean;
+            expectedDurationMinutes: number;
+            budget?: components["schemas"]["BudgetRange"];
+            note?: string;
+        };
+        CmsPlanTemplateStop: components["schemas"]["CmsPlanTemplateStopInput"] & {
+            /** Format: uuid */
+            id: string;
+            position: number;
+            /** @description Stable taxonomy key */
+            categoryKey: string;
+            preferredPlaceName?: string;
+        };
+        CmsPlanTemplate: {
+            /** Format: uuid */
+            id: string;
+            /** @description The template key. Unique per locale. */
+            slug: string;
+            locale: string;
+            internalName: string;
+            title: string;
+            description?: string;
+            audience?: components["schemas"]["ContentAudience"];
+            areaKey?: string;
+            budget?: components["schemas"]["BudgetRange"];
+            expectedDurationMinutes?: number;
+            status: components["schemas"]["PlanTemplateStatus"];
+            stopCount: number;
+            /** @description Mood/setting keys for the template as a whole. */
+            taxonomies: components["schemas"]["CmsRecommendationTaxonomy"][];
+            /** Format: uuid */
+            createdByAdminId?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CmsPlanTemplateDetail: components["schemas"]["CmsPlanTemplate"] & {
+            stops: components["schemas"]["CmsPlanTemplateStop"][];
+        };
+        CmsPlanTemplatePage: {
+            items: components["schemas"]["CmsPlanTemplate"][];
+            nextCursor: string | null;
+            totalCount: number;
+        };
+        CmsPlanTemplateCreate: {
+            slug: string;
+            internalName: string;
+            title: string;
+            description?: string;
+            locale?: string;
+            audience?: components["schemas"]["ContentAudience"];
+            areaKey?: string;
+            budget?: components["schemas"]["BudgetRange"];
+            expectedDurationMinutes?: number;
+            taxonomyIds?: string[];
+            /** @description Ordered — the index becomes the stored position. */
+            stops?: components["schemas"]["CmsPlanTemplateStopInput"][];
+        };
+        /** @description Omitted fields are left alone; a sent list replaces that list wholesale. */
+        CmsPlanTemplatePatch: {
+            internalName?: string;
+            title?: string;
+            description?: string;
+            locale?: string;
+            audience?: components["schemas"]["ContentAudience"];
+            areaKey?: string;
+            budget?: components["schemas"]["BudgetRange"];
+            expectedDurationMinutes?: number;
+            taxonomyIds?: string[];
+            stops?: components["schemas"]["CmsPlanTemplateStopInput"][];
         };
         /**
          * @description `archived` is terminal — retired content comes back as a new row, not a resurrection.
@@ -6835,6 +7021,200 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    cmsListPlanTemplates: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["PlanTemplateStatus"];
+                audience?: components["schemas"]["ContentAudience"];
+                areaKey?: string;
+                q?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Templates, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsPlanTemplatePage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsCreatePlanTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsPlanTemplateCreate"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsPlanTemplateDetail"];
+                };
+            };
+            /** @description Unknown preferred place (`PLACE_NOT_FOUND`), unknown or wrong-kind taxonomy (`TAXONOMY_NOT_FOUND`, `TAXONOMY_KIND_INVALID`), or an inverted budget range (`INVALID_BUDGET`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Template key already used (`SLUG_TAKEN`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsGetPlanTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Template */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsPlanTemplateDetail"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsUpdatePlanTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsPlanTemplatePatch"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsPlanTemplateDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsSetPlanTemplateStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    status: components["schemas"]["PlanTemplateStatus"];
+                };
+            };
+        };
+        responses: {
+            /** @description Status changed (audited) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        id: string;
+                        status: components["schemas"]["PlanTemplateStatus"];
+                    };
+                };
+            };
+            /** @description Publishing with no stops (`EMPTY_TEMPLATE`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+            /** @description The lifecycle has no such edge (`INVALID_STATUS_TRANSITION`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsSetPlanTemplateStops: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    stops: components["schemas"]["CmsPlanTemplateStopInput"][];
+                };
+            };
+        };
+        responses: {
+            /** @description Stops replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsPlanTemplateDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
         };
     };
     cmsListRecommendations: {

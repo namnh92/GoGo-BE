@@ -169,6 +169,13 @@
       "when": 1787837545888,
       "tag": "0023_recommendations",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787837546888,
+      "tag": "0024_plan-templates",
+      "breakpoints": true
     }
   ]
 }

@@ -1217,6 +1217,273 @@ describe('recommendations (BE-CMS-G4a #222)', () => {
   });
 });
 
+/**
+ * BE-CMS-G4b (#223) — plan templates: source material for future plans, never
+ * live ones.
+ */
+describe('plan templates (BE-CMS-G4b #223)', () => {
+  let editor: { id: string; token: string };
+  let moderator: { id: string; token: string };
+  let placeId: string;
+  let categoryId: string;
+  let moodId: string;
+  let dietaryId: string;
+
+  const suffix = () => Math.random().toString(36).slice(2, 8);
+
+  beforeAll(async () => {
+    editor = await createAdmin('tpl223@gogo.local', 'editor');
+    moderator = await createAdmin('tpl223-mod@gogo.local', 'moderator');
+
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Template Place',
+        nameNormalized: 'template place',
+        status: 'published',
+        geom: { x: 106.7, y: 10.77 },
+      })
+      .returning();
+    placeId = place!.id;
+
+    const taxonomies = await db
+      .insert(schema.taxonomies)
+      .values([
+        { kind: 'category', key: `tpl_cat_${suffix()}` },
+        { kind: 'mood', key: `tpl_mood_${suffix()}` },
+        { kind: 'dietary', key: `tpl_diet_${suffix()}` },
+      ])
+      .returning();
+    [categoryId, moodId, dietaryId] = taxonomies.map((t) => t.id) as [string, string, string];
+  });
+
+  const post = (payload: unknown, token = editor.token) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/plan-templates',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: payload as object,
+    });
+  const patch = (path: string, payload: unknown, token = editor.token) =>
+    api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/plan-templates/${path}`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: payload as object,
+    });
+  const get = (path = '', token = editor.token) =>
+    api().inject({ method: 'GET', url: `/v1/cms/plan-templates${path}`, headers: auth(token) });
+
+  const stop = (extra: Record<string, unknown> = {}) => ({
+    categoryTaxonomyId: categoryId,
+    expectedDurationMinutes: 90,
+    budget: { min: 150_000, max: 300_000, currency: 'VND', scope: 'per_person' },
+    ...extra,
+  });
+  const valid = (extra: Record<string, unknown> = {}) => ({
+    slug: `tpl-${suffix()}`,
+    internalName: 'Hẹn hò tối — mẫu 1',
+    title: 'Tối lãng mạn',
+    audience: 'couple',
+    areaKey: 'q1',
+    expectedDurationMinutes: 240,
+    budget: { min: 500_000, max: 900_000, currency: 'VND', scope: 'per_group' },
+    taxonomyIds: [moodId],
+    stops: [stop({ preferredPlaceId: placeId }), stop({ isOptional: true })],
+    ...extra,
+  });
+
+  it('keeps every amount in minor units with its currency and its scope', async () => {
+    const created = await post(valid());
+    expect(created.statusCode).toBe(201);
+    const body = created.json();
+
+    expect(body.budget).toEqual({
+      min: 500_000,
+      max: 900_000,
+      currency: 'VND',
+      scope: 'per_group',
+    });
+    // Integers, not floats: 500000 is 500.000 ₫ and never 500000.0.
+    expect(Number.isInteger(body.budget.min)).toBe(true);
+    expect(Number.isInteger(body.budget.max)).toBe(true);
+    // The template is per_group; its stops are per_person. Two different
+    // numbers, and each says which it is.
+    expect(body.stops[0].budget.scope).toBe('per_person');
+
+    const read = await get(`/${body.id}`);
+    expect(read.json().budget).toEqual(body.budget);
+    expect(read.json().stops[0].budget).toEqual(body.stops[0].budget);
+  });
+
+  it('refuses an amount that cannot say what it is per, or an inverted range', async () => {
+    const noScope = await post(valid({ budget: { min: 1000, max: 2000, currency: 'VND' } }));
+    expect(noScope.statusCode).toBe(400);
+
+    const noCurrency = await post(valid({ budget: { min: 1000, max: 2000, scope: 'per_person' } }));
+    expect(noCurrency.statusCode).toBe(400);
+
+    const badCurrency = await post(
+      valid({ budget: { min: 1000, max: 2000, currency: 'dong', scope: 'per_person' } }),
+    );
+    expect(badCurrency.statusCode).toBe(400);
+
+    const float = await post(
+      valid({ budget: { min: 1000.5, max: 2000, currency: 'VND', scope: 'per_person' } }),
+    );
+    expect(float.statusCode).toBe(400);
+
+    const inverted = await post(
+      valid({
+        stops: [
+          stop({ budget: { min: 900_000, max: 100_000, currency: 'VND', scope: 'per_person' } }),
+        ],
+      }),
+    );
+    expect(inverted.statusCode).toBe(400);
+    expect(inverted.json().code).toBe('INVALID_BUDGET');
+  });
+
+  it('keeps stops in order, with `optional` carried on the stop itself', async () => {
+    const body = (await post(valid())).json();
+    expect(body.stops.map((s: { position: number }) => s.position)).toEqual([0, 1]);
+    expect(body.stops[0].isOptional).toBe(false);
+    expect(body.stops[1].isOptional).toBe(true);
+    expect(body.stops[0].preferredPlaceId).toBe(placeId);
+    expect(body.stops[0].preferredPlaceName).toBe('Template Place');
+    // A stop without a preferred place is a shape the template supports, not
+    // an error: matching fills it in later.
+    expect(body.stops[1].preferredPlaceId).toBeUndefined();
+
+    const reordered = await api().inject({
+      method: 'PUT',
+      url: `/v1/cms/plan-templates/${body.id}/stops`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: { stops: [stop({ note: 'thứ hai' }), stop({ preferredPlaceId: placeId })] },
+    });
+    expect(reordered.statusCode).toBe(200);
+    expect(reordered.json().stops.map((s: { note?: string }) => s.note)).toEqual([
+      'thứ hai',
+      undefined,
+    ]);
+    expect(reordered.json().stops.map((s: { position: number }) => s.position)).toEqual([0, 1]);
+  });
+
+  it('validates referenced places and taxonomy kinds', async () => {
+    const ghost = '00000000-0000-4000-8000-000000000000';
+    const noPlace = await post(valid({ stops: [stop({ preferredPlaceId: ghost })] }));
+    expect(noPlace.statusCode).toBe(400);
+    expect(noPlace.json().code).toBe('PLACE_NOT_FOUND');
+
+    // A stop is categorised, so a mood key is the wrong kind there …
+    const wrongStopKind = await post(valid({ stops: [stop({ categoryTaxonomyId: moodId })] }));
+    expect(wrongStopKind.statusCode).toBe(400);
+    expect(wrongStopKind.json().code).toBe('TAXONOMY_KIND_INVALID');
+
+    // … and a dietary key is not a mood.
+    const wrongTemplateKind = await post(valid({ taxonomyIds: [dietaryId] }));
+    expect(wrongTemplateKind.statusCode).toBe(400);
+    expect(wrongTemplateKind.json().code).toBe('TAXONOMY_KIND_INVALID');
+  });
+
+  it('moves along declared transitions and will not publish an empty template', async () => {
+    const empty = (await post(valid({ stops: [] }))).json();
+    const publishEmpty = await patch(`${empty.id}/status`, { status: 'published' });
+    expect(publishEmpty.statusCode).toBe(400);
+    expect(publishEmpty.json().code).toBe('EMPTY_TEMPLATE');
+
+    const id = (await post(valid())).json().id;
+    expect((await patch(`${id}/status`, { status: 'published' })).statusCode).toBe(200);
+    expect((await patch(`${id}/status`, { status: 'archived' })).statusCode).toBe(200);
+    const revive = await patch(`${id}/status`, { status: 'published' });
+    expect(revive.statusCode).toBe(409);
+    expect(revive.json().code).toBe('INVALID_STATUS_TRANSITION');
+  });
+
+  it('editing a template does not touch a plan that already exists', async () => {
+    const id = (await post(valid())).json().id;
+
+    const [host] = await db
+      .insert(schema.users)
+      .values({ email: `tpl-host-${suffix()}@gogo.vn`, displayName: 'Host' })
+      .returning();
+    const [room] = await db
+      .insert(schema.rooms)
+      .values({
+        code: `TPL${suffix().toUpperCase()}`,
+        type: 'couple',
+        decisionMode: 'match',
+        hostUserId: host!.id,
+      })
+      .returning();
+    const [plan] = await db
+      .insert(schema.plans)
+      .values({
+        roomId: room!.id,
+        version: 1,
+        constraintVersion: 1,
+        totals: {
+          costMin: 100,
+          costMax: 200,
+          currency: 'VND',
+          durationMinutes: 90,
+          travelDistanceM: 0,
+          overBudget: false,
+          uncertain: false,
+        },
+      })
+      .returning();
+    const [stopRow] = await db
+      .insert(schema.planStops)
+      .values({ planId: plan!.id, placeId, position: 0, durationMinutes: 90 })
+      .returning();
+
+    await patch(id, {
+      title: 'Đổi tên',
+      stops: [stop({ expectedDurationMinutes: 30 })],
+    });
+
+    const [planAfter] = await db.select().from(schema.plans).where(eq(schema.plans.id, plan!.id));
+    const [stopAfter] = await db
+      .select()
+      .from(schema.planStops)
+      .where(eq(schema.planStops.id, stopRow!.id));
+    expect(planAfter!.updatedAt.getTime()).toBe(plan!.updatedAt.getTime());
+    expect(stopAfter!.durationMinutes).toBe(90);
+  });
+
+  it('filters, pages and refuses a duplicate template key', async () => {
+    const areaKey = `tplzone-${suffix()}`;
+    for (let i = 0; i < 3; i += 1) await post(valid({ areaKey }));
+
+    const filtered = await get(`?areaKey=${areaKey}&audience=couple`);
+    expect(filtered.json().totalCount).toBe(3);
+
+    const firstPage = await get(`?areaKey=${areaKey}&limit=2`);
+    expect(firstPage.json().items).toHaveLength(2);
+    expect(firstPage.json().totalCount).toBe(3);
+    const second = await get(
+      `?areaKey=${areaKey}&limit=2&cursor=${encodeURIComponent(firstPage.json().nextCursor)}`,
+    );
+    expect(second.json().items).toHaveLength(1);
+    expect(second.json().nextCursor).toBeNull();
+
+    const slug = `tpl-dup-${suffix()}`;
+    expect((await post(valid({ slug }))).statusCode).toBe(201);
+    const again = await post(valid({ slug }));
+    expect(again.statusCode).toBe(409);
+    expect(again.json().code).toBe('SLUG_TAKEN');
+  });
+
+  it('is an editorial write: a moderator cannot create one', async () => {
+    expect((await post(valid(), moderator.token)).statusCode).toBe(403);
+    expect((await get('', moderator.token)).statusCode).toBe(200);
+  });
+});
+
 describe('ops KPIs (CMS-010)', () => {
   it('KPIs endpoint aggregates health metrics (FR-CMS-010)', async () => {
     const ops = await createAdmin('ops4@gogo.local', 'ops_admin');

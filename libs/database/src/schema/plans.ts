@@ -8,6 +8,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   smallint,
   text,
   timestamp,
@@ -16,6 +17,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { places } from './places';
 import { roomMembers, rooms } from './rooms';
+import { contentAudience } from './cms';
 
 /**
  * DB-006 — vote/candidate/plan/version/stop schema.
@@ -219,5 +221,100 @@ export const stopCheckins = pgTable(
       'stop_checkins_bill_photo_required',
       sql`${t.billTotal} is null or ${t.billPhotoKey} is not null`,
     ),
+  ],
+);
+
+// --------------------------------------------------------- plan templates
+
+export const planTemplateStatus = pgEnum('plan_template_status', [
+  'draft',
+  'published',
+  'archived',
+]);
+
+/**
+ * What an amount is *per*. `per_person` and `per_group` are different numbers,
+ * so an amount is never stored without one (`.claude/rules/core.md` §13).
+ */
+export const budgetScope = pgEnum('budget_scope', ['per_person', 'per_group']);
+
+/**
+ * BE-CMS-G4b (#223) — CMS-managed plan templates.
+ *
+ * Source material for future plans, not live ones. Nothing here references a
+ * room, a plan or a plan stop, and that is deliberate: editing a template must
+ * never reach a plan somebody already has, and the surest way to guarantee it
+ * is to have no path from one to the other.
+ */
+export const planTemplates = pgTable(
+  'plan_templates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    slug: text('slug').notNull(),
+    locale: text('locale').notNull().default('vi'),
+    /** The editorial name; `title` is what a user would read. */
+    internalName: text('internal_name').notNull(),
+    title: text('title').notNull(),
+    description: text('description'),
+    audience: contentAudience('audience'),
+    areaKey: text('area_key'),
+    /** Integer minor units, with the currency and scope beside them. */
+    budgetMin: bigint('budget_min', { mode: 'number' }),
+    budgetMax: bigint('budget_max', { mode: 'number' }),
+    budgetCurrency: text('budget_currency'),
+    budgetScope: budgetScope('budget_scope'),
+    expectedDurationMinutes: integer('expected_duration_minutes'),
+    status: planTemplateStatus('status').notNull().default('draft'),
+    createdByAdminId: uuid('created_by_admin_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('plan_templates_slug_locale_unique').on(t.slug, t.locale),
+    index('plan_templates_list_idx').on(t.status, t.createdAt, t.id),
+  ],
+);
+
+export const planTemplateStops = pgTable(
+  'plan_template_stops',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    templateId: uuid('template_id')
+      .notNull()
+      .references(() => planTemplates.id, { onDelete: 'cascade' }),
+    /** Order is meaning: a template is a sequence, not a set. */
+    position: integer('position').notNull(),
+    categoryTaxonomyId: uuid('category_taxonomy_id').notNull(),
+    /** A template may name a place or leave the choice to matching. */
+    preferredPlaceId: uuid('preferred_place_id').references(() => places.id, {
+      onDelete: 'set null',
+    }),
+    /** A property of the stop, not a convention the reader has to infer. */
+    isOptional: boolean('is_optional').notNull().default(false),
+    expectedDurationMinutes: integer('expected_duration_minutes').notNull(),
+    budgetMin: bigint('budget_min', { mode: 'number' }),
+    budgetMax: bigint('budget_max', { mode: 'number' }),
+    budgetCurrency: text('budget_currency'),
+    budgetScope: budgetScope('budget_scope'),
+    note: text('note'),
+  },
+  (t) => [
+    uniqueIndex('plan_template_stops_position_unique').on(t.templateId, t.position),
+    index('plan_template_stops_template_idx').on(t.templateId, t.position),
+  ],
+);
+
+/** Mood/vibe as stable taxonomy keys, never display labels. */
+export const planTemplateTaxonomies = pgTable(
+  'plan_template_taxonomies',
+  {
+    templateId: uuid('template_id')
+      .notNull()
+      .references(() => planTemplates.id, { onDelete: 'cascade' }),
+    taxonomyId: uuid('taxonomy_id').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.templateId, t.taxonomyId] }),
+    index('plan_template_taxonomies_taxonomy_idx').on(t.taxonomyId),
   ],
 );
