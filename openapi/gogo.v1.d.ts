@@ -2772,6 +2772,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/ops/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: dependency health for the console
+         * @description BE-CMS-G8. `/health` and `/metrics` exist but neither reaches the console — the CMS Worker proxies `/v1/*` only, and Prometheus text is not something a client should parse.
+         *
+         *     `unknown` is a first-class value, not a fallback. A dependency nobody has checked is not healthy, and reporting it as healthy is how a dashboard becomes the last place to learn about an outage. Provider rows come from the circuit breaker rather than from live calls: probing Google to colour a screen would spend the quota whose exhaustion this view is meant to reveal — so a provider with no traffic yet is absent rather than green.
+         *
+         *     Cached ~20s server-side. This is a screen, not an alerting path.
+         */
+        get: operations["cmsOpsHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/ops/queues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: background queue depth
+         * @description The BullMQ queues plus `outbox_events`, the transactional outbox — a queue in every sense that matters here, living in Postgres where BullMQ cannot see it. Omitting it would hide the backlog that actually delays notifications.
+         *
+         *     A broker that is unreachable contributes no rows rather than rows of zeros; `/cms/ops/health` is where that is reported.
+         */
+        get: operations["cmsOpsQueues"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/ops/costs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: provider cost and quota, where a real source exists
+         * @description Only providers with a real source appear — a billing API, or a persisted internal counter. A provider with no source is **absent**, never estimated into existence.
+         *
+         *     **`providers: []` means "no cost source connected", never "nothing was spent".** `sourcesConfigured` says which, so the console can render the difference: a zero and an unknown are different claims, and today only the second is supportable. No billing API is wired up, and the in-process `places_provider_cost_units` counter measures SKU units rather than money and resets on deploy, so it cannot answer "today" or "month to date".
+         */
+        get: operations["cmsOpsCosts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/ops/kpis": {
         parameters: {
             query?: never;
@@ -2924,6 +2992,57 @@ export interface components {
         AdminActionReason: {
             /** @description Recorded in the audit log. Mandatory: a row that records what changed but not why answers the easy half of the question a reviewer is asking. */
             reason: string;
+        };
+        CmsServiceHealth: {
+            /** @description `api`, `db`, `redis`, `worker`, or a provider name discovered from the circuit breaker. Not a closed enum: a provider appears once it has been called, and pinning the list here would mean a new provider silently missing from the view. */
+            key: string;
+            /**
+             * @description `unknown` is a real answer — nothing has measured this dependency in this process. It is not a synonym for healthy.
+             * @enum {string}
+             */
+            status: "healthy" | "degraded" | "down" | "unknown";
+            /** @description Present only where the check actually timed something. */
+            latencyMs?: number;
+            /** Format: date-time */
+            checkedAt: string;
+            /** @description Why it is degraded or unknown, in words the console can show. */
+            detail?: string;
+        };
+        CmsQueueStats: {
+            name: string;
+            /**
+             * @description Where these numbers came from, so the console can say so.
+             * @enum {string}
+             */
+            source: "bullmq" | "database";
+            /** @description Waiting plus delayed. */
+            pending: number;
+            running: number;
+            /** @description Failures finished in the last 24 hours — computed from job timestamps, not from BullMQ's retained `failed` count, which answers "how many are still on disk" and moves when retention changes. */
+            failed24h: number;
+            /** @description True when the scan hit its cap, so `failed24h` is a floor rather than a count. A truncated number that does not say so is what an incident review discovers afterwards. */
+            failed24hTruncated: boolean;
+            /** @description Jobs whose attempts are exhausted; they will not be retried. */
+            deadLetter: number;
+            /** @description Age of the oldest waiting job. Null when nothing is waiting. */
+            oldestPendingSeconds?: number | null;
+            /** @description Connected consumers. Null when the backend does not report it — null and 0 are different facts, and zero on a queue with work is the alarm. */
+            workers?: number | null;
+        };
+        CmsCostLine: {
+            key: string;
+            /** @description Minor units. */
+            today: number;
+            /** @description Minor units. */
+            monthToDate: number;
+            currency: string;
+            /**
+             * @description Where the number came from. A line never omits this: an estimate and an invoice are different claims about the same provider.
+             * @enum {string}
+             */
+            basis: "billed" | "estimated";
+            /** @description 0–1, present only where the provider reports a quota. */
+            quotaUsedRatio?: number;
         };
         CmsAdminPage: {
             items: components["schemas"]["CmsAdmin"][];
@@ -9614,6 +9733,74 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
+        };
+    };
+    cmsOpsHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One row per dependency this deployment can say anything about */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        services: components["schemas"]["CmsServiceHealth"][];
+                    };
+                };
+            };
+        };
+    };
+    cmsOpsQueues: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Queue depths */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        queues: components["schemas"]["CmsQueueStats"][];
+                    };
+                };
+            };
+        };
+    };
+    cmsOpsCosts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cost lines, possibly none */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        providers: components["schemas"]["CmsCostLine"][];
+                        /** @description False when no provider has a usable source. An empty list with this false must not render as a zero amount. */
+                        sourcesConfigured: boolean;
+                    };
+                };
+            };
         };
     };
     cmsOpsKpis: {

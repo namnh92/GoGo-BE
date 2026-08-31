@@ -1,9 +1,12 @@
+import { BullMqQueueStats } from './ops/bullmq-queue-stats.adapter';
+import { WORKER_QUEUES } from './ops/queues';
 import { Global, Module } from '@nestjs/common';
 import {
   AREA_AUTOCOMPLETE,
   FakeAreaAutocomplete,
   FakePlaceProvider,
   FakePush,
+  FakeQueueStats,
   FakeSheets,
   FakeStorage,
   GooglePlacesAdapter,
@@ -12,6 +15,8 @@ import {
   HaversineTravelTime,
   PLACE_PROVIDER,
   PUSH_PROVIDER,
+  QUEUE_STATS,
+  type QueueStatsPort,
   SHEETS_PROVIDER,
   R2StorageAdapter,
   STORAGE_PROVIDER,
@@ -109,6 +114,25 @@ import { APP_CONFIG, type AppConfig } from './config/env';
           : new FakeStorage(),
       inject: [APP_CONFIG],
     },
+    {
+      /*
+       * #247 — queue depth for the ops view.
+       *
+       * Read-only: `Queue` handles, never a `Worker`, so an API replica
+       * inspecting a queue cannot start consuming from it.
+       *
+       * Off in tests, where there is no Redis and a lazy connection would
+       * retry in the background for the whole run. The endpoint then reports
+       * redis and worker as `unknown` — which is the truth about a deployment
+       * with no queue connection, and the thing the console is built to show.
+       */
+      provide: QUEUE_STATS,
+      useFactory: (config: AppConfig): QueueStatsPort => {
+        if (!config.REDIS_URL || config.NODE_ENV === 'test') return new FakeQueueStats();
+        return new BullMqQueueStats([...WORKER_QUEUES], config.REDIS_URL);
+      },
+      inject: [APP_CONFIG],
+    },
   ],
   exports: [
     METRICS_REGISTRY,
@@ -118,6 +142,7 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     TRAVEL_TIME_PROVIDER,
     PUSH_PROVIDER,
     STORAGE_PROVIDER,
+    QUEUE_STATS,
     METRICS,
   ],
 })

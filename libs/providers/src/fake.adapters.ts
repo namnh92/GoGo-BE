@@ -1,3 +1,4 @@
+import type { QueueStats, QueueStatsPort } from './ports';
 import { ProviderQuotaExceededError, ProviderUnavailableError, SheetAccessError } from './ports';
 import type {
   AreaAutocompletePort,
@@ -141,5 +142,24 @@ export class FakeSheets implements SheetsPort {
     const book = this.books.get(spreadsheetId);
     if (!book) throw new SheetAccessError('SHEET_NOT_FOUND', 'Không tìm thấy Google Sheet');
     return book;
+  }
+}
+
+/**
+ * #247 — a queue inspector for environments with no Redis (tests, a boot
+ * without a worker). Returns the queues it was given, or none.
+ *
+ * It reports nothing rather than inventing plausible depths: a fake that
+ * fabricates a backlog teaches a dashboard test to pass against numbers no
+ * deployment will ever produce.
+ */
+export class FakeQueueStats implements QueueStatsPort {
+  /** No broker behind this. Anything derived from Redis stays `unknown`. */
+  readonly backend = 'none' as const;
+
+  constructor(private readonly queues: QueueStats[] = []) {}
+
+  async list(): Promise<QueueStats[]> {
+    return this.queues.map((q) => ({ ...q }));
   }
 }

@@ -14,6 +14,7 @@ import { SafetyRulesService } from '../application/safety-rules.service';
 import { RecommendationsService } from '../application/recommendations.service';
 import { PlanTemplatesService } from '../application/plan-templates.service';
 import { CmsOpsService } from '../application/cms-ops.service';
+import { CmsObservabilityService } from '../application/cms-observability.service';
 import { ModerationQueueService } from '../application/moderation-queue.service';
 import { EmergencyTakedownService } from '../application/emergency-takedown.service';
 import { ExperimentsAdminService } from '../application/experiments-admin.service';
@@ -60,6 +61,7 @@ import {
     CmsCatalogService,
     CmsContentService,
     CmsUploadsService,
+    CmsObservabilityService,
     BannersService,
     CampaignsService,
     SafetyRulesService,

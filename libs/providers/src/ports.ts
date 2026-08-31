@@ -160,3 +160,49 @@ export interface TravelTimePort {
 }
 
 export const TRAVEL_TIME_PROVIDER = Symbol('TRAVEL_TIME_PROVIDER');
+
+/**
+ * #247 — what one background queue looks like from outside it.
+ *
+ * `null` where the number is genuinely unknown rather than zero. An empty
+ * queue and a queue nobody could measure are different facts, and a dashboard
+ * that renders both as `0` is worse than one that renders nothing: it reports
+ * calm during an outage.
+ */
+export type QueueStats = {
+  name: string;
+  /** Where the numbers came from, so the console can say so. */
+  source: 'bullmq' | 'database';
+  pending: number;
+  running: number;
+  /** Failures finished within the last 24 hours. */
+  failed24h: number;
+  /**
+   * True when the failed scan hit its cap, so `failed24h` is a floor rather
+   * than a count. A truncated number that does not say it is truncated is the
+   * kind of thing an incident review discovers afterwards.
+   */
+  failed24hTruncated: boolean;
+  /** Jobs that will not be retried again. */
+  deadLetter: number;
+  /** Age of the oldest thing still waiting; `null` when nothing waits. */
+  oldestPendingSeconds: number | null;
+  /** Consumers currently connected. Zero on a queue with work is the alarm. */
+  workers: number | null;
+};
+
+export interface QueueStatsPort {
+  /**
+   * Whether this implementation talks to a real broker.
+   *
+   * Without it, a fake that returns no queues is indistinguishable from a
+   * healthy broker that happens to have none — and "the call did not throw"
+   * then reads as "Redis is up" in a deployment with no Redis at all. That is
+   * precisely the false green this endpoint exists to prevent, so the
+   * distinction is in the type rather than inferred from the result.
+   */
+  readonly backend: 'broker' | 'none';
+  list(): Promise<QueueStats[]>;
+}
+
+export const QUEUE_STATS = Symbol('QUEUE_STATS');
