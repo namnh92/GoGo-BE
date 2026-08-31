@@ -225,6 +225,13 @@
       "when": 1788185958649,
       "tag": "0031_worker_heartbeats",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788185958650,
+      "tag": "0032_ingest-column-diagnostics",
+      "breakpoints": true
     }
   ]
 }

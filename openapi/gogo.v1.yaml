@@ -6556,6 +6556,16 @@ components:
               description: True when identical bytes/mode returned the existing job.
             unmappedHeaders:
               type: array
+              description: >-
+                Headers the parser recognised no canonical field for, as
+                `tabName:header`. Their cells are dropped, never guessed.
+              items: { type: string }
+            missingRequiredColumns:
+              type: array
+              description: >-
+                Required canonical fields no header covers, as
+                `tabName:field`. `source_row_id` here means row identities were
+                derived from position and will not survive a row reorder.
               items: { type: string }
     ImportCandidate:
       type: object

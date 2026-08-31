@@ -4008,7 +4008,10 @@ export interface components {
             cancelledAt?: string;
             /** @description True when identical bytes/mode returned the existing job. */
             reused?: boolean;
+            /** @description Headers the parser recognised no canonical field for, as `tabName:header`. Their cells are dropped, never guessed. */
             unmappedHeaders?: string[];
+            /** @description Required canonical fields no header covers, as `tabName:field`. `source_row_id` here means row identities were derived from position and will not survive a row reorder. */
+            missingRequiredColumns?: string[];
         };
         ImportCandidate: {
             googlePlaceId?: string;

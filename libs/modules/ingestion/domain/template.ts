@@ -45,6 +45,25 @@ export type ValidationContext = {
   knownCategoryKeys?: ReadonlySet<string>;
   knownVibeKeys?: ReadonlySet<string>;
   knownAudienceKeys?: ReadonlySet<string>;
+  /**
+   * Identity of last resort for a sheet with no `source_row_id` column.
+   *
+   * **Positional, therefore not stable.** `Tab#12` names whatever row sits
+   * twelfth today; insert a row above it and the same place imports under a
+   * different id, while `Tab#12` now points at its neighbour. Re-importing an
+   * edited sheet is the case that breaks: `(job_id, source_row_id)` no longer
+   * lines up with the previous job, so `update_existing` re-resolves rows it
+   * had already matched.
+   *
+   * A caller passing this is saying "positional identity beats refusing the
+   * file" — true for a first import, false for a sheet meant to be re-synced.
+   * Callers must bound it to 100 chars; it is not length-checked here.
+   *
+   * Intended precedence once the stronger sources are wired (issue #274):
+   * explicit `source_row_id` > Google Place ID > normalized Maps URL identity
+   * > this positional fallback.
+   */
+  fallbackRowId?: string | null;
 };
 
 const msg = (code: string, field: string, message: string): IngestMessage => ({
@@ -67,11 +86,31 @@ export function validateRow(
   const errors: IngestMessage[] = [];
   const warnings: IngestMessage[] = [];
 
-  const sourceRowId = (raw.source_row_id ?? '').trim();
-  if (!sourceRowId) {
-    errors.push(msg('ROW_ID_MISSING', 'source_row_id', 'source_row_id là bắt buộc'));
-  } else if (sourceRowId.length > 100) {
-    errors.push(msg('ROW_ID_TOO_LONG', 'source_row_id', 'source_row_id tối đa 100 ký tự'));
+  // The sheet's own id wins whenever it has one; the fallback only fills a gap.
+  // Length is checked on the authored value only — a derived id is constructed
+  // by the caller within the limit, and truncating it here would silently make
+  // two rows share an identity.
+  let sourceRowId = (raw.source_row_id ?? '').trim();
+  if (sourceRowId) {
+    if (sourceRowId.length > 100) {
+      errors.push(msg('ROW_ID_TOO_LONG', 'source_row_id', 'source_row_id tối đa 100 ký tự'));
+    }
+  } else {
+    const fallback = ctx.fallbackRowId?.trim() || null;
+    if (fallback) {
+      sourceRowId = fallback;
+      warnings.push(
+        msg(
+          'ROW_ID_DERIVED',
+          'source_row_id',
+          `source_row_id suy ra từ vị trí dòng: ${fallback}. ` +
+            `Thêm cột source_row_id nếu sheet này còn được import lại — ` +
+            `chèn hoặc đổi thứ tự dòng sẽ đổi định danh.`,
+        ),
+      );
+    } else {
+      errors.push(msg('ROW_ID_MISSING', 'source_row_id', 'source_row_id là bắt buộc'));
+    }
   }
 
   const name = raw.name?.trim() || null;
