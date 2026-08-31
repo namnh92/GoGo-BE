@@ -1991,6 +1991,70 @@ export interface paths {
         patch: operations["cmsSetSafetyRuleStatus"];
         trace?: never;
     };
+    "/cms/banners": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Editor/ops: banners, filtered and cursor-paged
+         * @description `status` accepts `expired`, which is **computed by the server** from the banner's end time rather than stored — a stored expiry is wrong for as long as it takes something to notice, or forever if nothing runs. Each item carries both: `status` (what it is now) and `lifecycleStatus` (what a person set).
+         */
+        get: operations["cmsListBanners"];
+        put?: never;
+        /**
+         * Editor/ops: create a banner
+         * @description `imageKey` is mandatory — a banner is an image. The key comes from `POST /cms/uploads` with purpose `banner_image` and is bound to this banner on save, through the same attach path check-in photos use: a key belonging to another actor, an expired one, or one issued for a different purpose is refused rather than becoming a broken image.
+         *
+         *     The destination is cross-checked against the type it names: a `place`, `recommendation`, `plan_template` or `campaign` id must resolve, and an `external_url` must be https, carry no credentials and not point inside the network.
+         */
+        post: operations["cmsCreateBanner"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/banners/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Editor/ops: one banner */
+        get: operations["cmsGetBanner"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Editor/ops: edit a banner */
+        patch: operations["cmsUpdateBanner"];
+        trace?: never;
+    };
+    "/cms/banners/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Editor/ops: move a banner along its lifecycle
+         * @description Takes only the statuses a person controls — `expired` is not one of them. Scheduling needs a start time, and publishing a banner whose window has already closed is refused rather than producing something the very next read reports as expired.
+         */
+        patch: operations["cmsSetBannerStatus"];
+        trace?: never;
+    };
     "/cms/campaigns": {
         parameters: {
             query?: never;
@@ -3729,6 +3793,94 @@ export interface components {
             severity?: components["schemas"]["SafetyRuleSeverity"];
             priority?: number;
             reasonCode?: string;
+        };
+        /**
+         * @description Stable key; the label resolves client-side.
+         * @enum {string}
+         */
+        BannerPlacement: "home_hero" | "home_secondary";
+        /**
+         * @description The lifecycle a person controls. `expired` is not settable.
+         * @enum {string}
+         */
+        BannerStatus: "draft" | "scheduled" | "published" | "archived";
+        /**
+         * @description What the banner is right now. `expired` is computed by the server from the end time on every read, never stored — a stored copy would be wrong between the moment the window closes and whatever noticed.
+         * @enum {string}
+         */
+        BannerEffectiveStatus: "draft" | "scheduled" | "published" | "archived" | "expired";
+        /** @enum {string} */
+        BannerDestination: "none" | "place" | "recommendation" | "plan_template" | "campaign" | "external_url";
+        CmsBanner: {
+            /** Format: uuid */
+            id: string;
+            /** @description The editorial name. */
+            name: string;
+            imageKey: string;
+            /** @description Where the image is readable. Null until media hosting is configured, rather than a URL that would 404. */
+            imageUrl: string | null;
+            title?: string;
+            subtitle?: string;
+            ctaLabel?: string;
+            destinationType: components["schemas"]["BannerDestination"];
+            destinationValue?: string;
+            audience?: components["schemas"]["ContentAudience"];
+            placement: components["schemas"]["BannerPlacement"];
+            /** Format: date-time */
+            startsAt?: string;
+            /** Format: date-time */
+            endsAt?: string;
+            /** @description Higher first, between banners competing for one placement. */
+            priority: number;
+            status: components["schemas"]["BannerEffectiveStatus"];
+            /** @description What a person set, as opposed to what the clock made of it. */
+            lifecycleStatus: components["schemas"]["BannerStatus"];
+            /** Format: uuid */
+            createdByAdminId?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CmsBannerPage: {
+            items: components["schemas"]["CmsBanner"][];
+            nextCursor: string | null;
+            totalCount: number;
+        };
+        CmsBannerCreate: {
+            name: string;
+            /** @description From `POST /cms/uploads`, purpose `banner_image`. */
+            imageKey: string;
+            title?: string;
+            subtitle?: string;
+            ctaLabel?: string;
+            destinationType?: components["schemas"]["BannerDestination"];
+            /** @description Required unless `destinationType` is `none`, which takes nothing. */
+            destinationValue?: string;
+            audience?: components["schemas"]["ContentAudience"];
+            placement: components["schemas"]["BannerPlacement"];
+            /** Format: date-time */
+            startsAt?: string;
+            /** Format: date-time */
+            endsAt?: string;
+            priority?: number;
+        };
+        /** @description Omitted fields are left alone. */
+        CmsBannerPatch: {
+            name?: string;
+            imageKey?: string;
+            title?: string;
+            subtitle?: string;
+            ctaLabel?: string;
+            destinationType?: components["schemas"]["BannerDestination"];
+            destinationValue?: string;
+            audience?: components["schemas"]["ContentAudience"];
+            placement?: components["schemas"]["BannerPlacement"];
+            /** Format: date-time */
+            startsAt?: string;
+            /** Format: date-time */
+            endsAt?: string;
+            priority?: number;
         };
         /**
          * @description `sending` has no way back — once the worker has started handing messages to the provider, some are already delivered.
@@ -7943,6 +8095,170 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    cmsListBanners: {
+        parameters: {
+            query?: {
+                placement?: components["schemas"]["BannerPlacement"];
+                status?: components["schemas"]["BannerEffectiveStatus"];
+                audience?: components["schemas"]["ContentAudience"];
+                q?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Banners, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsBannerPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsCreateBanner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsBannerCreate"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsBanner"];
+                };
+            };
+            /** @description Destination is malformed, unsafe or missing (`INVALID_DESTINATION`), points at nothing (`DESTINATION_NOT_FOUND`), the window is inverted (`INVALID_SCHEDULE`), or the image key is not usable (`INVALID_UPLOAD_KEY`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A banner with that name exists (`BANNER_NAME_TAKEN`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsGetBanner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Banner */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsBanner"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsUpdateBanner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsBannerPatch"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsBanner"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsSetBannerStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    status: components["schemas"]["BannerStatus"];
+                };
+            };
+        };
+        responses: {
+            /** @description Status changed (audited) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        id: string;
+                        status: components["schemas"]["BannerStatus"];
+                    };
+                };
+            };
+            /** @description Scheduling without a start time (`SCHEDULE_REQUIRED`) or publishing a closed window (`WINDOW_CLOSED`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+            /** @description The lifecycle has no such edge (`INVALID_STATUS_TRANSITION`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     cmsListCampaigns: {

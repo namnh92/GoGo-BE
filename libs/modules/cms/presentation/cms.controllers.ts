@@ -12,6 +12,13 @@ import {
 } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsUploadsService } from '../application/cms-uploads.service';
+import {
+  BANNER_DESTINATIONS,
+  BANNER_EFFECTIVE_STATUSES,
+  BANNER_PLACEMENTS,
+  BANNER_STATUSES,
+  BannersService,
+} from '../application/banners.service';
 import { CampaignsService } from '../../notifications/application/campaigns.service';
 import {
   CAMPAIGN_AUDIENCES,
@@ -863,6 +870,84 @@ export class CmsCampaignsController {
   @Post(':id/test-send')
   testSend(@CurrentActor() actor: Actor, @Param('id', Uuid) id: string) {
     return this.campaigns.requestTestSend(actor.id, id);
+  }
+}
+
+// ---------------------------------------------------------------- banners
+
+/**
+ * BE-CMS-G4c (#224) — banners.
+ *
+ * `image` is mandatory because a banner is an image; the key comes from
+ * `POST /cms/uploads` (purpose `banner_image`) and is bound to the banner on
+ * save through the same attach path check-in uses.
+ */
+const bannerBody = {
+  name: z.string().trim().min(3).max(120),
+  imageKey: z.string().min(1).max(300),
+  title: z.string().trim().max(120).optional(),
+  subtitle: z.string().trim().max(200).optional(),
+  ctaLabel: z.string().trim().max(40).optional(),
+  destinationType: z.enum(BANNER_DESTINATIONS).optional(),
+  destinationValue: z.string().max(2000).optional(),
+  audience: z.enum(CONTENT_AUDIENCES).optional(),
+  placement: z.enum(BANNER_PLACEMENTS),
+  startsAt: z.coerce.date().optional(),
+  endsAt: z.coerce.date().optional(),
+  priority: z.number().int().min(0).max(1000).optional(),
+};
+const bannerCreateSchema = z.object(bannerBody);
+const bannerPatchSchema = z.object(bannerBody).partial();
+const bannerStatusSchema = z.object({ status: z.enum(BANNER_STATUSES) });
+const bannerListQuery = z.object({
+  placement: z.enum(BANNER_PLACEMENTS).optional(),
+  /** Includes `expired`, which the server computes rather than stores. */
+  status: z.enum(BANNER_EFFECTIVE_STATUSES).optional(),
+  audience: z.enum(CONTENT_AUDIENCES).optional(),
+  q: z.string().trim().min(1).max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
+
+@RequireRole('editor', 'ops_admin')
+@Controller('cms/banners')
+export class CmsBannersController {
+  constructor(private readonly banners: BannersService) {}
+
+  @Get()
+  list(@Query(new ZodValidationPipe(bannerListQuery)) query: z.infer<typeof bannerListQuery>) {
+    return this.banners.list(query);
+  }
+
+  @Post()
+  create(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(bannerCreateSchema)) body: z.infer<typeof bannerCreateSchema>,
+  ) {
+    return this.banners.create(actor, body);
+  }
+
+  @Get(':id')
+  detail(@Param('id', Uuid) id: string) {
+    return this.banners.get(id);
+  }
+
+  @Patch(':id')
+  update(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(bannerPatchSchema)) body: z.infer<typeof bannerPatchSchema>,
+  ) {
+    return this.banners.update(actor, id, body);
+  }
+
+  @Patch(':id/status')
+  setStatus(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(bannerStatusSchema)) body: z.infer<typeof bannerStatusSchema>,
+  ) {
+    return this.banners.setStatus(actor.id, id, body.status);
   }
 }
 

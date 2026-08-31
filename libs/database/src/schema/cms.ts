@@ -372,3 +372,60 @@ export const safetyRules = pgTable(
     index('safety_rules_list_idx').on(t.createdAt, t.id),
   ],
 );
+
+// ------------------------------------------------------------------ banners
+
+export const bannerPlacement = pgEnum('banner_placement', ['home_hero', 'home_secondary']);
+export const bannerStatus = pgEnum('banner_status', [
+  'draft',
+  'scheduled',
+  'published',
+  'archived',
+]);
+export const bannerDestination = pgEnum('banner_destination', [
+  'none',
+  'place',
+  'recommendation',
+  'plan_template',
+  'campaign',
+  'external_url',
+]);
+
+/**
+ * BE-CMS-G4c (#224) — banners.
+ *
+ * `expired` is not a stored status. It is a fact about the clock, and a stored
+ * copy would be wrong for as long as it took a job to notice — or forever, if
+ * none ran. What a person controls is stored; expiry is computed on read, by
+ * the server, so no client has to derive it.
+ */
+export const banners = pgTable(
+  'banners',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** The editorial name; `title` is what a user reads on the banner. */
+    name: text('name').notNull(),
+    /** Mandatory: a banner is an image. Bound to this row on save. */
+    imageKey: text('image_key').notNull(),
+    title: text('title'),
+    subtitle: text('subtitle'),
+    ctaLabel: text('cta_label'),
+    destinationType: bannerDestination('destination_type').notNull().default('none'),
+    destinationValue: text('destination_value'),
+    audience: contentAudience('audience'),
+    placement: bannerPlacement('placement').notNull(),
+    startsAt: timestamp('starts_at', { withTimezone: true }),
+    endsAt: timestamp('ends_at', { withTimezone: true }),
+    /** Higher first, between banners competing for one placement. */
+    priority: integer('priority').notNull().default(0),
+    status: bannerStatus('status').notNull().default('draft'),
+    createdByAdminId: uuid('created_by_admin_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('banners_name_unique').on(t.name),
+    index('banners_live_idx').on(t.placement, t.priority, t.id),
+    index('banners_list_idx').on(t.createdAt, t.id),
+  ],
+);
