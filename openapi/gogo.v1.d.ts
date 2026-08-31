@@ -1434,7 +1434,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Super admin: staff accounts, filtered and cursor-paged
+         * @description The read that was missing beside `cmsCreateAdmin`: the console could create a staff account and then never show it again.
+         *
+         *     `super_admin` only, matching the write — who holds which role is the shape of the authorization model itself, so it is not a rank-read for lower roles.
+         *
+         *     Never returns the password hash, the TOTP secret (enrolled or pending), or any session material. `email` is returned because it is how a staff account is identified; nothing beyond it is.
+         */
+        get: operations["cmsListAdmins"];
         put?: never;
         /** Super admin: create a staff account */
         post: operations["cmsCreateAdmin"];
@@ -2269,6 +2277,37 @@ export interface components {
         };
         /** @enum {string} */
         AdminRole: "editor" | "moderator" | "ops_admin" | "super_admin";
+        /**
+         * @description The two states the server actually enforces: `suspended` loses access on the next request, whatever token the account still holds. There is no third "disabled" state — a status the guard does not act on would be a claim in the data that nothing backs.
+         * @enum {string}
+         */
+        AdminStatus: "active" | "suspended";
+        CmsAdmin: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: email
+             * @description How a staff account is identified. No other contact detail is returned.
+             */
+            email: string;
+            displayName: string;
+            role: components["schemas"]["AdminRole"];
+            status: components["schemas"]["AdminStatus"];
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Absent on an account that has never signed in.
+             */
+            lastLoginAt?: string;
+        };
+        CmsAdminPage: {
+            items: components["schemas"]["CmsAdmin"][];
+            /** @description Keyset cursor over (createdAt, id). */
+            nextCursor: string | null;
+            /** @description Accounts matching the filter, not accounts in this page. */
+            totalCount: number;
+        };
         /** @description The reason is mandatory and stored in the audit log. */
         ModerationDecision: {
             /** @enum {string} */
@@ -5872,6 +5911,35 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    cmsListAdmins: {
+        parameters: {
+            query?: {
+                /** @description Substring of email or display name, case-insensitive. */
+                q?: string;
+                role?: components["schemas"]["AdminRole"];
+                status?: components["schemas"]["AdminStatus"];
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Staff accounts, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAdminPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
         };
     };
     cmsCreateAdmin: {

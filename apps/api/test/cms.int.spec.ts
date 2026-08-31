@@ -668,6 +668,148 @@ describe('moderation queues: filter, count, cursor paging (BE-CMS-G1 #219)', () 
   });
 });
 
+/**
+ * BE-CMS-G2 (#220) — the read beside `POST /cms/auth/admins`. Without it the
+ * console could create a staff account and never show it again.
+ */
+describe('CMS account list (BE-CMS-G2 #220)', () => {
+  let superToken: string;
+  let opsToken: string;
+  let editorToken: string;
+  const prefix = 'acctlist';
+
+  beforeAll(async () => {
+    superToken = (await createAdmin(`${prefix}-super@gogo.local`, 'super_admin')).token;
+    opsToken = (await createAdmin(`${prefix}-ops@gogo.local`, 'ops_admin')).token;
+    editorToken = (await createAdmin(`${prefix}-editor@gogo.local`, 'editor')).token;
+
+    const passwordHash = await argon2.hash('admin-password-123', { type: argon2.argon2id });
+    await db.insert(schema.adminUsers).values([
+      {
+        email: `${prefix}-a@gogo.local`,
+        passwordHash,
+        displayName: 'Nguyễn A',
+        role: 'moderator',
+        createdAt: new Date(Date.UTC(2026, 0, 1)),
+      },
+      {
+        email: `${prefix}-b@gogo.local`,
+        passwordHash,
+        displayName: 'Trần B',
+        role: 'moderator',
+        status: 'suspended',
+        createdAt: new Date(Date.UTC(2026, 0, 2)),
+      },
+      {
+        email: `${prefix}-c@gogo.local`,
+        // SSO account: no password at all, and it must still list.
+        ssoSubject: 'okta|c',
+        displayName: 'Lê C',
+        role: 'editor',
+        mfaTotpSecretEnc: 'enc:should-never-be-returned',
+        createdAt: new Date(Date.UTC(2026, 0, 3)),
+      },
+    ]);
+  });
+
+  const list = (qs: string, token = superToken) =>
+    api().inject({ method: 'GET', url: `/v1/cms/auth/admins${qs}`, headers: auth(token) });
+
+  it('lists accounts with what account administration needs, and nothing else', async () => {
+    const res = await list(`?q=${prefix}-`);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.totalCount).toBe(6);
+
+    const c = body.items.find((a: { email: string }) => a.email === `${prefix}-c@gogo.local`);
+    expect(c).toMatchObject({ displayName: 'Lê C', role: 'editor', status: 'active' });
+    expect(c.createdAt).toBeTypeOf('string');
+    // Never signed in: absent rather than a null pretending to be a timestamp.
+    expect(c.lastLoginAt).toBeUndefined();
+
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain('passwordHash');
+    expect(raw).not.toContain('password_hash');
+    expect(raw).not.toContain('should-never-be-returned');
+    expect(raw).not.toContain('mfa');
+    expect(raw).not.toContain('ssoSubject');
+    expect(raw).not.toContain('okta|c');
+  });
+
+  it('reports a locked account as locked, so the console can show it', async () => {
+    const res = await list(`?q=${prefix}-&status=suspended`);
+    expect(res.json().items.map((a: { email: string }) => a.email)).toEqual([
+      `${prefix}-b@gogo.local`,
+    ]);
+    expect(res.json().items[0].status).toBe('suspended');
+  });
+
+  it('filters by role and by a substring of email or display name', async () => {
+    const moderators = await list(`?q=${prefix}-&role=moderator`);
+    expect(moderators.json().totalCount).toBe(2);
+
+    const byName = await list('?q=Trần');
+    expect(byName.json().items.map((a: { displayName: string }) => a.displayName)).toEqual([
+      'Trần B',
+    ]);
+
+    const byEmail = await list(`?q=${prefix}-C@GOGO`);
+    expect(byEmail.json().totalCount).toBe(1);
+  });
+
+  it('records the last login, which is what tells a stale account from a new one', async () => {
+    const res = await list(`?q=${prefix}-super`);
+    expect(res.json().items[0].lastLoginAt).toBeTypeOf('string');
+  });
+
+  it('pages by cursor, newest first, without repeating an account', async () => {
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 6; page += 1) {
+      const res = await list(
+        `?q=${prefix}-&limit=2` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''),
+      );
+      expect(res.statusCode).toBe(200);
+      expect(res.json().totalCount).toBe(6);
+      seen.push(...res.json().items.map((a: { id: string }) => a.id));
+      cursor = res.json().nextCursor;
+      if (!cursor) break;
+    }
+    expect(cursor).toBeNull();
+    expect(seen).toHaveLength(6);
+    expect(new Set(seen).size).toBe(6);
+  });
+
+  it('rejects a malformed cursor and a role that is not in the model', async () => {
+    expect((await list('?cursor=nope')).statusCode).toBe(400);
+    expect((await list('?role=owner')).statusCode).toBe(400);
+    expect((await list('?status=disabled')).statusCode).toBe(400);
+    expect((await list('?limit=1000')).statusCode).toBe(400);
+  });
+
+  it('is super_admin only — rank-read does not open it to ops_admin', async () => {
+    expect((await list('', opsToken)).statusCode).toBe(403);
+    expect((await list('', editorToken)).statusCode).toBe(403);
+
+    const reg = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: ip(),
+      payload: {
+        email: 'acctlist-outsider@gogo.vn',
+        password: 'sufficiently-long-pw',
+        displayName: 'O',
+      },
+    });
+    const denied = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/auth/admins',
+      headers: auth(reg.json().accessToken),
+    });
+    expect(denied.statusCode).toBe(403);
+  });
+});
+
 describe('ops KPIs (CMS-010)', () => {
   it('KPIs endpoint aggregates health metrics (FR-CMS-010)', async () => {
     const ops = await createAdmin('ops4@gogo.local', 'ops_admin');

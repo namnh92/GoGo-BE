@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { authenticator } from 'otplib';
 import { createHash, randomUUID } from 'node:crypto';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
@@ -12,9 +12,45 @@ import { SessionRevocationService } from '../../identity/application/session-rev
 import type { ClientMeta } from '../../identity/application/auth.service';
 import { writeAudit } from '../../shared/audit';
 import { SecretBox } from '../../shared/secret-box';
+import { decodeKeysetCursor, encodeKeysetCursor, toIso } from '../../shared/cursor';
 import { IdentityRepository } from '../../identity/infrastructure/identity.repository';
 
 export type AdminRole = (typeof schema.adminUsers.$inferSelect)['role'];
+export type AdminStatus = (typeof schema.adminUsers.$inferSelect)['status'];
+
+export type AdminListQuery = {
+  q?: string | undefined;
+  role?: AdminRole | undefined;
+  status?: AdminStatus | undefined;
+  limit: number;
+  cursor?: string | undefined;
+};
+
+export type AdminListEntry = {
+  id: string;
+  email: string;
+  displayName: string;
+  role: AdminRole;
+  status: AdminStatus;
+  createdAt: string;
+  lastLoginAt?: string | undefined;
+};
+
+export type AdminListPage = {
+  items: AdminListEntry[];
+  nextCursor: string | null;
+  totalCount: number;
+};
+
+type AdminRow = {
+  id: string;
+  email: string;
+  display_name: string;
+  role: AdminRole;
+  status: AdminStatus;
+  created_at: Date | string;
+  last_login_at: Date | string | null;
+};
 
 /**
  * Same numbers as consumer login. The console is the higher-privilege door;
@@ -437,5 +473,66 @@ export class AdminAuthService {
       diff: { role: input.role },
     });
     return { id: row!.id, email: row!.email, role: row!.role };
+  }
+
+  /**
+   * BE-CMS-G2 (#220) — reading staff accounts back.
+   *
+   * `POST /cms/auth/admins` existed with no read beside it: the console could
+   * create an account and then never show it again, so the create screen
+   * shipped and the list could not.
+   *
+   * Columns are selected one by one rather than `select()`: the row carries the
+   * password hash and both TOTP secrets, and a response built by spreading it
+   * would leak all three the first time someone added a field.
+   */
+  async listAdmins(query: AdminListQuery): Promise<AdminListPage> {
+    const where: SQL[] = [];
+    if (query.role) where.push(sql`a.role = ${query.role}`);
+    if (query.status) where.push(sql`a.status = ${query.status}`);
+    if (query.q) {
+      // Email and display name are the two things a person searches an account
+      // list by, and both are already known to whoever can call this.
+      const needle = `%${query.q.trim().toLowerCase()}%`;
+      where.push(sql`(lower(a.email) like ${needle} or lower(a.display_name) like ${needle})`);
+    }
+
+    const countWhere = where.length ? sql.join(where, sql` and `) : sql`true`;
+    const pageWhere = [...where];
+    if (query.cursor) {
+      const { at, id } = decodeKeysetCursor(query.cursor);
+      pageWhere.push(sql`(a.created_at, a.id) < (${at}::timestamptz, ${id}::uuid)`);
+    }
+
+    const [page, total] = await Promise.all([
+      this.db.execute(sql`
+        select a.id, a.email, a.display_name, a.role, a.status,
+               a.created_at, a.last_login_at
+        from admin_users a
+        where ${pageWhere.length ? sql.join(pageWhere, sql` and `) : sql`true`}
+        order by a.created_at desc, a.id desc
+        limit ${query.limit + 1}
+      `),
+      this.db.execute(sql`select count(*)::int as n from admin_users a where ${countWhere}`),
+    ]);
+
+    const rows = page.rows as AdminRow[];
+    const items = rows.slice(0, query.limit);
+    const last = items[items.length - 1];
+
+    return {
+      items: items.map((r) => ({
+        id: r.id,
+        email: r.email,
+        displayName: r.display_name,
+        role: r.role,
+        status: r.status,
+        createdAt: toIso(r.created_at),
+        lastLoginAt: r.last_login_at ? toIso(r.last_login_at) : undefined,
+      })),
+      nextCursor:
+        rows.length > query.limit && last ? encodeKeysetCursor(last.created_at, last.id) : null,
+      totalCount: (total.rows[0] as { n: number }).n,
+    };
   }
 }
