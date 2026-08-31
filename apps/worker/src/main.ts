@@ -2,6 +2,7 @@ import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { createDb } from '@gogo/database';
 import {
+  CampaignDispatcher,
   OutboxDispatcher,
   PlaceDedupService,
   PlaceImportJobService,
@@ -89,7 +90,12 @@ async function bootstrap(): Promise<void> {
   const { db, pool } = createDb(databaseUrl);
   const metrics = new LogMetrics(logger);
   // Real push provider lands with credentials (GoGo-BE#60); fake logs sends.
-  const dispatcher = new OutboxDispatcher(db, new FakePush(), metrics);
+  const push = new FakePush();
+  const dispatcher = new OutboxDispatcher(db, push, metrics);
+  // BE-CMS-G4e (#226): campaigns are sent here, never from a request. Same
+  // tick as the outbox rather than its own scheduler — an idle poll costs
+  // Redis commands, and DEV is billed per command.
+  const campaigns = new CampaignDispatcher(db, push, metrics);
   const privacy = new PrivacyJobs(db);
 
   // PI-BE-015: bulk import chunks run here, not in the API process. The tick
@@ -123,6 +129,8 @@ async function bootstrap(): Promise<void> {
     async () => {
       const handled = await dispatcher.dispatchBatch(100);
       if (handled > 0) logger.info({ handled }, 'outbox batch dispatched');
+      const sent = await campaigns.tick();
+      if (sent.campaigns > 0 || sent.testSends > 0) logger.info(sent, 'campaigns dispatched');
       await heartbeat(process.env.HEARTBEAT_URL_OUTBOX);
     },
     { connection, concurrency: 1 },

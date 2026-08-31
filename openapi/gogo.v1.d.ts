@@ -1991,6 +1991,139 @@ export interface paths {
         patch: operations["cmsSetSafetyRuleStatus"];
         trace?: never;
     };
+    "/cms/campaigns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: notification campaigns, filtered and cursor-paged
+         * @description A campaign is composed here and **sent by the worker**, never from a request. The API only ever writes a row; a scheduled row is what a worker tick picks up, resolves an audience for, and hands to the push provider adapter. A campaign that has gone out cannot be recalled, so there is deliberately no API path that reaches a provider.
+         */
+        get: operations["cmsListCampaigns"];
+        put?: never;
+        /**
+         * Ops: compose a campaign (draft)
+         * @description Created as a `draft`; nothing is sent until it is scheduled.
+         *
+         *     The destination is validated against real data: a `place`, `recommendation` or `plan_template` id must resolve, and an `external_url` must be https, carry no credentials and not point inside the network. A deep link into content that does not exist is a dead notification on every phone that receives it.
+         */
+        post: operations["cmsCreateCampaign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/campaigns/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ops: one campaign with its delivery counters */
+        get: operations["cmsGetCampaign"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Ops: edit a campaign that has not been sent
+         * @description Editable only in `draft`, `cancelled` or `failed`. Editing a scheduled campaign would silently change what is about to go out — unschedule it first, which is a deliberate, audited act.
+         */
+        patch: operations["cmsUpdateCampaign"];
+        trace?: never;
+    };
+    "/cms/campaigns/{id}/audience-estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: how many people this would reach, right now
+         * @description A read with no side effect — nothing is written and nothing is sent. The number is a snapshot: the audience is resolved again at send time by the same predicate, so it can move between the estimate and the send.
+         *
+         *     Counts only accounts with a registered device: a "recipient" with nothing to receive on inflates the number and makes the delivery counters unreadable.
+         */
+        get: operations["cmsEstimateCampaignAudience"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/campaigns/{id}/schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: make a campaign due (send now, or at a time)
+         * @description Marks the campaign `scheduled` and returns. **No message exists yet**: the worker picks up what is due on its next tick, resolves the audience then, and dispatches through the provider adapter.
+         *
+         *     Omitting `sendAt` means now. Scheduling revalidates the destination, because the place or recommendation it points at may have been removed since the draft was written.
+         */
+        post: operations["cmsScheduleCampaign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/campaigns/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: cancel a campaign that has not started
+         * @description Works while `scheduled`. Once the worker is `sending`, some messages are already on phones and there is nothing to recall — the request is refused with how far the send got, rather than reporting a cancellation the backend cannot perform.
+         */
+        post: operations["cmsCancelCampaign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/campaigns/{id}/test-send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: send one copy to your own account
+         * @description Separate from a real send in every way that matters: it never changes `status`, it reaches exactly one account, and that account is the caller's own — matched on a **verified** email between the staff account and a consumer account, so this cannot push a message at somebody else.
+         *
+         *     Queued like everything else; the worker delivers it. Rate-limited, because it is the one send path a person can trigger repeatedly.
+         */
+        post: operations["cmsTestSendCampaign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/uploads": {
         parameters: {
             query?: never;
@@ -3596,6 +3729,104 @@ export interface components {
             severity?: components["schemas"]["SafetyRuleSeverity"];
             priority?: number;
             reasonCode?: string;
+        };
+        /**
+         * @description `sending` has no way back — once the worker has started handing messages to the provider, some are already delivered.
+         * @enum {string}
+         */
+        CampaignStatus: "draft" | "scheduled" | "sending" | "sent" | "cancelled" | "failed";
+        /**
+         * @description Only what the backend can resolve from data it holds. `city`, `app_version` and `custom_segment` from the mockup are absent on purpose: nothing stores a user's city or their app version, and a campaign aimed at a segment the server has to guess at reaches the wrong people — the one failure with no undo.
+         * @enum {string}
+         */
+        CampaignAudience: "all" | "couple" | "group" | "platform";
+        /**
+         * @description `plan_template` rather than `plan`: a campaign points every recipient at the same thing, and a plan belongs to one room.
+         * @enum {string}
+         */
+        CampaignDestination: "home" | "place" | "recommendation" | "plan_template" | "saved" | "external_url";
+        CmsCampaign: {
+            /** Format: uuid */
+            id: string;
+            /** @description The editorial name. `title` is what lands on a screen. */
+            name: string;
+            title: string;
+            body: string;
+            /** @description Key from `POST /cms/uploads`, purpose `campaign_image`. */
+            imageKey?: string;
+            ctaLabel?: string;
+            audienceType: components["schemas"]["CampaignAudience"];
+            /** @description Closed per audience type. `platform` takes `{ platform }`; the rest take `{}`. */
+            audienceFilter: {
+                [key: string]: unknown;
+            };
+            destinationType: components["schemas"]["CampaignDestination"];
+            destinationValue?: string;
+            status: components["schemas"]["CampaignStatus"];
+            /** Format: date-time */
+            scheduledAt?: string;
+            /** Format: date-time */
+            startedAt?: string;
+            /** Format: date-time */
+            completedAt?: string;
+            /** @description Resolved at send time, not at schedule time. */
+            recipientCount?: number;
+            /** @description How many the provider accepted. Not "seen", and not a guarantee of delivery to a device. */
+            sentCount: number;
+            failedCount: number;
+            lastError?: string;
+            /** Format: date-time */
+            testSendRequestedAt?: string;
+            /** Format: date-time */
+            testSendCompletedAt?: string;
+            /** Format: uuid */
+            createdByAdminId?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CmsCampaignPage: {
+            items: components["schemas"]["CmsCampaign"][];
+            nextCursor: string | null;
+            totalCount: number;
+        };
+        CmsCampaignAudienceEstimate: {
+            /** Format: uuid */
+            campaignId: string;
+            audienceType: components["schemas"]["CampaignAudience"];
+            /** @description Accounts with a registered device that match right now. */
+            estimatedRecipients: number;
+            /** Format: date-time */
+            estimatedAt: string;
+        };
+        CmsCampaignCreate: {
+            name: string;
+            title: string;
+            body: string;
+            imageKey?: string;
+            ctaLabel?: string;
+            audienceType: components["schemas"]["CampaignAudience"];
+            audienceFilter?: {
+                [key: string]: unknown;
+            };
+            destinationType?: components["schemas"]["CampaignDestination"];
+            /** @description Required for `place`, `recommendation`, `plan_template` and `external_url`; forbidden for `home` and `saved`. */
+            destinationValue?: string;
+        };
+        /** @description Editable only while nothing has been sent. */
+        CmsCampaignPatch: {
+            name?: string;
+            title?: string;
+            body?: string;
+            imageKey?: string;
+            ctaLabel?: string;
+            audienceType?: components["schemas"]["CampaignAudience"];
+            audienceFilter?: {
+                [key: string]: unknown;
+            };
+            destinationType?: components["schemas"]["CampaignDestination"];
+            destinationValue?: string;
         };
         CmsUpload: {
             /** Format: uuid */
@@ -7712,6 +7943,265 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    cmsListCampaigns: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["CampaignStatus"];
+                audienceType?: components["schemas"]["CampaignAudience"];
+                q?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Campaigns, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsCampaignPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+        };
+    };
+    cmsCreateCampaign: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsCampaignCreate"];
+            };
+        };
+        responses: {
+            /** @description Draft created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsCampaign"];
+                };
+            };
+            /** @description Audience filter does not fit the audience type (`INVALID_AUDIENCE`), destination is malformed or unsafe (`INVALID_DESTINATION`), or it points at something that does not exist (`DESTINATION_NOT_FOUND`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A campaign with that name exists (`CAMPAIGN_NAME_TAKEN`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsGetCampaign: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Campaign */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsCampaign"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsUpdateCampaign: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsCampaignPatch"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsCampaign"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description Not in an editable state (`CAMPAIGN_NOT_EDITABLE`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsEstimateCampaignAudience: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Estimate */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsCampaignAudienceEstimate"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsScheduleCampaign: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: date-time
+                     * @description Omit for "send now". A past time is also due immediately.
+                     */
+                    sendAt?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Scheduled (audited) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsCampaign"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description Not schedulable from its current state (`INVALID_STATUS_TRANSITION`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsCancelCampaign: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancelled (audited) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsCampaign"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Sending has started (`CAMPAIGN_ALREADY_SENDING`) — the message says how many were delivered — or the state is not cancellable (`INVALID_STATUS_TRANSITION`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsTestSendCampaign: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Test send queued for the worker */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        campaignId: string;
+                        status: components["schemas"]["CampaignStatus"];
+                        testSendQueued: boolean;
+                    };
+                };
+            };
+            /** @description The caller has no verified consumer account on the same address (`NO_TEST_RECIPIENT`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Too many test sends */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     cmsCreateUpload: {

@@ -1684,6 +1684,587 @@ describe('trust & safety rules (BE-CMS-G4d #225)', () => {
   });
 });
 
+/**
+ * BE-CMS-G4e (#226) — campaigns. The API composes; the worker sends.
+ */
+describe('notification campaigns (BE-CMS-G4e #226)', () => {
+  let ops: { id: string; token: string };
+  let editor: { id: string; token: string };
+  let placeId: string;
+  let recipients: string[] = [];
+  const suffix = () => Math.random().toString(36).slice(2, 8);
+
+  beforeAll(async () => {
+    ops = await createAdmin('camp226@gogo.local', 'ops_admin');
+    editor = await createAdmin('camp226-editor@gogo.local', 'editor');
+
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Campaign Place',
+        nameNormalized: 'campaign place',
+        status: 'published',
+        geom: { x: 106.7, y: 10.77 },
+      })
+      .returning();
+    placeId = place!.id;
+
+    // Two reachable accounts (a device each) and one with no device at all.
+    const users = await db
+      .insert(schema.users)
+      .values([
+        { email: `camp-a-${suffix()}@gogo.vn`, displayName: 'A' },
+        { email: `camp-b-${suffix()}@gogo.vn`, displayName: 'B' },
+        { email: `camp-c-${suffix()}@gogo.vn`, displayName: 'C' },
+      ])
+      .returning();
+    recipients = users.map((u) => u.id);
+    await db.insert(schema.deviceTokens).values([
+      { userId: recipients[0]!, platform: 'ios', token: `tok-ios-${suffix()}` },
+      { userId: recipients[1]!, platform: 'android', token: `tok-android-${suffix()}` },
+    ]);
+  });
+
+  const post = (path: string, payload: unknown = {}, token = ops.token) =>
+    api().inject({
+      method: 'POST',
+      url: `/v1/cms/campaigns${path}`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: payload as object,
+    });
+  const get = (path = '', token = ops.token) =>
+    api().inject({ method: 'GET', url: `/v1/cms/campaigns${path}`, headers: auth(token) });
+
+  const draft = (extra: Record<string, unknown> = {}) => ({
+    name: `Chiến dịch ${suffix()}`,
+    title: 'Cuối tuần đi đâu?',
+    body: 'Gợi ý mới cho hai bạn',
+    audienceType: 'all',
+    destinationType: 'home',
+    ...extra,
+  });
+
+  it('creates a draft and sends nothing', async () => {
+    const res = await post('', draft());
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.status).toBe('draft');
+    expect(body.sentCount).toBe(0);
+    expect(body.scheduledAt).toBeUndefined();
+
+    // Nothing queued, nothing delivered: composing is not sending.
+    const notifications = await db.$count(schema.notifications);
+    expect(typeof notifications).toBe('number');
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, body.id));
+    expect(row!.startedAt).toBeNull();
+    expect(row!.dispatchKey).toBeNull();
+  });
+
+  it('validates the destination against real data, and refuses an unsafe URL', async () => {
+    const ghost = '00000000-0000-4000-8000-000000000000';
+    const missing = await post('', draft({ destinationType: 'place', destinationValue: ghost }));
+    expect(missing.statusCode).toBe(400);
+    expect(missing.json().code).toBe('DESTINATION_NOT_FOUND');
+
+    const real = await post('', draft({ destinationType: 'place', destinationValue: placeId }));
+    expect(real.statusCode).toBe(201);
+
+    // home carries nothing; a value alongside it is a contradiction.
+    const contradiction = await post(
+      '',
+      draft({ destinationType: 'home', destinationValue: placeId }),
+    );
+    expect(contradiction.statusCode).toBe(400);
+
+    for (const url of [
+      'http://gogo.vn/promo',
+      'https://127.0.0.1/admin',
+      'https://localhost:8080',
+      'https://user:pw@gogo.vn',
+      'https://10.0.0.5/internal',
+      'javascript:alert(1)',
+    ]) {
+      const res = await post('', draft({ destinationType: 'external_url', destinationValue: url }));
+      expect(res.statusCode, url).toBe(400);
+      expect(res.json().code).toBe('INVALID_DESTINATION');
+    }
+    expect(
+      (
+        await post(
+          '',
+          draft({ destinationType: 'external_url', destinationValue: 'https://gogo.vn/tet' }),
+        )
+      ).statusCode,
+    ).toBe(201);
+  });
+
+  it('refuses an audience the backend cannot compute', async () => {
+    // `city`, `app_version` and `custom_segment` are in the mockup and not in
+    // the contract: nothing stores either fact.
+    for (const audienceType of ['city', 'app_version', 'custom_segment']) {
+      expect((await post('', draft({ audienceType }))).statusCode, audienceType).toBe(400);
+    }
+    const badFilter = await post(
+      '',
+      draft({ audienceType: 'platform', audienceFilter: { os: 'ios' } }),
+    );
+    expect(badFilter.statusCode).toBe(400);
+    expect(badFilter.json().code).toBe('INVALID_AUDIENCE');
+
+    const good = await post(
+      '',
+      draft({ audienceType: 'platform', audienceFilter: { platform: 'ios' } }),
+    );
+    expect(good.statusCode).toBe(201);
+  });
+
+  it('estimates the audience without writing or sending anything', async () => {
+    const id = (await post('', draft())).json().id;
+    const before = await db.$count(schema.notifications);
+
+    const estimate = await get(`/${id}/audience-estimate`);
+    expect(estimate.statusCode).toBe(200);
+    expect(estimate.json().estimatedRecipients).toBeGreaterThanOrEqual(2);
+    expect(estimate.json().audienceType).toBe('all');
+
+    expect(await db.$count(schema.notifications)).toBe(before);
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(row!.status).toBe('draft');
+
+    // Only reachable accounts count: the user with no device is not a recipient.
+    const platform = (
+      await post('', draft({ audienceType: 'platform', audienceFilter: { platform: 'ios' } }))
+    ).json();
+    const iosEstimate = await get(`/${platform.id}/audience-estimate`);
+    expect(iosEstimate.json().estimatedRecipients).toBeLessThan(
+      estimate.json().estimatedRecipients,
+    );
+  });
+
+  it('scheduling writes a row and dispatches nothing in the request path', async () => {
+    const id = (await post('', draft())).json().id;
+    const res = await post(`/${id}/schedule`);
+    expect(res.statusCode).toBe(201);
+    expect(res.json().status).toBe('scheduled');
+
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    // The request path leaves a due row and nothing else: no start time, no
+    // recipients resolved, no notification. Only the worker changes that.
+    expect(row!.status).toBe('scheduled');
+    expect(row!.dispatchKey).toBeTruthy();
+    expect(row!.startedAt).toBeNull();
+    expect(row!.recipientCount).toBeNull();
+
+    const delivered = await db.$count(
+      schema.notifications,
+      eq(schema.notifications.kind, 'campaign'),
+    );
+    expect(delivered).toBe(0);
+  });
+
+  it('cannot be edited once scheduled, and can be cancelled until it starts', async () => {
+    const id = (await post('', draft())).json().id;
+    await post(`/${id}/schedule`);
+
+    const edit = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/campaigns/${id}`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { title: 'Đổi tiêu đề' },
+    });
+    expect(edit.statusCode).toBe(409);
+    expect(edit.json().code).toBe('CAMPAIGN_NOT_EDITABLE');
+
+    const cancelled = await post(`/${id}/cancel`);
+    expect(cancelled.statusCode).toBe(201);
+    expect(cancelled.json().status).toBe('cancelled');
+    expect(cancelled.json().scheduledAt).toBeUndefined();
+
+    // Cancelling frees it for editing and re-scheduling again.
+    expect(
+      (
+        await api().inject({
+          method: 'PATCH',
+          url: `/v1/cms/campaigns/${id}`,
+          remoteAddress: ip(),
+          headers: auth(ops.token),
+          payload: { title: 'Đổi tiêu đề' },
+        })
+      ).statusCode,
+    ).toBe(200);
+  });
+
+  it('refuses to cancel a send that has already started, and says how far it got', async () => {
+    const id = (await post('', draft())).json().id;
+    await post(`/${id}/schedule`);
+    // Stand in for the worker having claimed it.
+    await db
+      .update(schema.notificationCampaigns)
+      .set({ status: 'sending', startedAt: new Date(), recipientCount: 10, sentCount: 4 })
+      .where(eq(schema.notificationCampaigns.id, id));
+
+    const res = await post(`/${id}/cancel`);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('CAMPAIGN_ALREADY_SENDING');
+    // An honest answer rather than a rollback the backend cannot perform.
+    expect(res.json().message).toContain('4');
+    expect(res.json().message).toMatch(/cannot be recalled/i);
+  });
+
+  it('queues a test send to the composer, and refuses when there is no such account', async () => {
+    const id = (await post('', draft())).json().id;
+
+    const noAccount = await post(`/${id}/test-send`);
+    expect(noAccount.statusCode).toBe(400);
+    expect(noAccount.json().code).toBe('NO_TEST_RECIPIENT');
+
+    // The staff address, registered and verified on the consumer side.
+    const [self] = await db
+      .insert(schema.users)
+      .values({
+        email: 'camp226@gogo.local',
+        displayName: 'Ops Self',
+        emailVerifiedAt: new Date(),
+      })
+      .returning();
+    await db
+      .insert(schema.deviceTokens)
+      .values({ userId: self!.id, platform: 'ios', token: `tok-self-${suffix()}` });
+
+    const queued = await post(`/${id}/test-send`);
+    expect(queued.statusCode).toBe(201);
+    expect(queued.json().testSendQueued).toBe(true);
+
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    // A test is not a send: the request queued work for the worker and left
+    // the campaign exactly where it was.
+    expect(row!.testSendRequestedAt).toBeTruthy();
+    expect(row!.testSendUserId).toBe(self!.id);
+    expect(row!.status).toBe('draft');
+  });
+
+  it('audits composing, scheduling and cancelling', async () => {
+    const id = (await post('', draft())).json().id;
+    await post(`/${id}/schedule`);
+    await post(`/${id}/cancel`);
+
+    const audit = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/audit?resourceType=notification_campaign&resourceId=${id}&limit=10`,
+      headers: auth(ops.token),
+    });
+    const actions = audit.json().items.map((e: { action: string }) => e.action);
+    expect(actions).toContain('campaign.created');
+    expect(actions).toContain('campaign.scheduled');
+    expect(actions).toContain('campaign.cancelled');
+  });
+
+  it('is an ops resource: an editor cannot compose or send one', async () => {
+    expect((await post('', draft(), editor.token)).statusCode).toBe(403);
+    expect((await get('', editor.token)).statusCode).toBe(403);
+  });
+
+  it('filters and pages the list', async () => {
+    const name = `probe-${suffix()}`;
+    for (let i = 0; i < 3; i += 1) await post('', draft({ name: `${name}-${i}` }));
+
+    const filtered = await get(`?q=${name}`);
+    expect(filtered.json().totalCount).toBe(3);
+    const first = await get(`?q=${name}&limit=2`);
+    expect(first.json().items).toHaveLength(2);
+    const second = await get(
+      `?q=${name}&limit=2&cursor=${encodeURIComponent(first.json().nextCursor)}`,
+    );
+    expect(second.json().items).toHaveLength(1);
+    expect(second.json().nextCursor).toBeNull();
+    expect((await get(`?q=${name}&status=sent`)).json().totalCount).toBe(0);
+  });
+});
+
+/**
+ * BE-CMS-G4e (#226) — the worker half. Delivery is at-least-once, so the test
+ * that matters is what a second run does.
+ */
+describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
+  let ops: { id: string; token: string };
+  let userWithTwoDevices: string;
+  let userOptedOut: string;
+  const suffix = () => Math.random().toString(36).slice(2, 8);
+
+  /** Counts every push, so a double send is visible rather than inferred. */
+  class CountingPush {
+    readonly sent: { token: string; title: string }[] = [];
+    async send(token: string, payload: { title: string; body: string }) {
+      this.sent.push({ token, title: payload.title });
+    }
+  }
+
+  async function dispatcher(push: CountingPush) {
+    const { CampaignDispatcher } = await import('@gogo/modules');
+    return new CampaignDispatcher(db as never, push);
+  }
+
+  beforeAll(async () => {
+    ops = await createAdmin('dispatch226@gogo.local', 'ops_admin');
+
+    const [twoDevices] = await db
+      .insert(schema.users)
+      .values({ email: `disp-a-${suffix()}@gogo.vn`, displayName: 'Two devices' })
+      .returning();
+    userWithTwoDevices = twoDevices!.id;
+    await db.insert(schema.deviceTokens).values([
+      { userId: userWithTwoDevices, platform: 'ios', token: `disp-ios-${suffix()}` },
+      { userId: userWithTwoDevices, platform: 'android', token: `disp-and-${suffix()}` },
+    ]);
+
+    const [optedOut] = await db
+      .insert(schema.users)
+      .values({ email: `disp-b-${suffix()}@gogo.vn`, displayName: 'Opted out' })
+      .returning();
+    userOptedOut = optedOut!.id;
+    await db
+      .insert(schema.deviceTokens)
+      .values({ userId: userOptedOut, platform: 'ios', token: `disp-out-${suffix()}` });
+    await db
+      .insert(schema.notificationPreferences)
+      .values({ userId: userOptedOut, channel: 'push', kind: 'campaign', enabled: false });
+  });
+
+  async function scheduledCampaign(extra: Record<string, unknown> = {}) {
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/campaigns',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {
+        name: `Gửi thử ${suffix()}`,
+        title: 'Ưu đãi cuối tuần',
+        body: 'Mở app để xem gợi ý',
+        audienceType: 'all',
+        ...extra,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const id = created.json().id as string;
+    const scheduled = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/campaigns/${id}/schedule`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(scheduled.statusCode).toBe(201);
+    return id;
+  }
+
+  it('claims a due campaign, sends once per device, and records what it did', async () => {
+    const id = await scheduledCampaign();
+    const push = new CountingPush();
+    const handled = await (await dispatcher(push)).dispatchDue();
+    expect(handled).toBeGreaterThanOrEqual(1);
+
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(row!.status).toBe('sent');
+    expect(row!.startedAt).not.toBeNull();
+    expect(row!.completedAt).not.toBeNull();
+    expect(row!.recipientCount).toBeGreaterThanOrEqual(1);
+    expect(row!.sentCount).toBeGreaterThanOrEqual(1);
+
+    // One notification per recipient, one push per device of that recipient.
+    const rows = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, userWithTwoDevices));
+    const forThis = rows.filter((n) => (n.payload as { campaignId?: string }).campaignId === id);
+    expect(forThis).toHaveLength(1);
+    expect(forThis[0]!.kind).toBe('campaign');
+    expect(forThis[0]!.dedupeKey).toMatch(/^campaign:/);
+    expect(push.sent.filter((s) => s.title === 'Ưu đãi cuối tuần').length).toBeGreaterThanOrEqual(
+      2,
+    );
+  });
+
+  it('a second run sends nothing: the dedupe key is the record of "already sent"', async () => {
+    const id = await scheduledCampaign();
+    const first = new CountingPush();
+    await (await dispatcher(first)).dispatchDue();
+    const afterFirst = await db.$count(
+      schema.notifications,
+      eq(schema.notifications.kind, 'campaign'),
+    );
+    expect(first.sent.length).toBeGreaterThan(0);
+
+    // Put it back on the queue with the same dispatch key — exactly what a
+    // crash between "claimed" and "finished" leaves behind.
+    await db
+      .update(schema.notificationCampaigns)
+      .set({ status: 'scheduled' })
+      .where(eq(schema.notificationCampaigns.id, id));
+
+    const second = new CountingPush();
+    await (await dispatcher(second)).dispatchDue();
+
+    expect(second.sent).toHaveLength(0);
+    expect(await db.$count(schema.notifications, eq(schema.notifications.kind, 'campaign'))).toBe(
+      afterFirst,
+    );
+  });
+
+  it('a re-send after a cancel is a new dispatch, not a suppressed retry', async () => {
+    const id = await scheduledCampaign();
+    await (await dispatcher(new CountingPush())).dispatchDue();
+    const afterFirst = await db.$count(
+      schema.notifications,
+      eq(schema.notifications.kind, 'campaign'),
+    );
+
+    // A deliberate second send gets a new dispatch key, so the dedupe key that
+    // silenced the retry above does not silence this.
+    await db
+      .update(schema.notificationCampaigns)
+      .set({ status: 'cancelled', scheduledAt: null, dispatchKey: null })
+      .where(eq(schema.notificationCampaigns.id, id));
+    const rescheduled = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/campaigns/${id}/schedule`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(rescheduled.statusCode).toBe(201);
+
+    const push = new CountingPush();
+    await (await dispatcher(push)).dispatchDue();
+    expect(push.sent.length).toBeGreaterThan(0);
+    expect(
+      await db.$count(schema.notifications, eq(schema.notifications.kind, 'campaign')),
+    ).toBeGreaterThan(afterFirst);
+  });
+
+  it('does not send to someone who turned campaigns off', async () => {
+    const id = await scheduledCampaign();
+    await (await dispatcher(new CountingPush())).dispatchDue();
+
+    const rows = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, userOptedOut));
+    expect(rows.filter((n) => (n.payload as { campaignId?: string }).campaignId === id)).toEqual(
+      [],
+    );
+  });
+
+  it('a provider outage fails the campaign visibly instead of leaving it sending', async () => {
+    const id = await scheduledCampaign();
+    const exploding = {
+      sent: [],
+      async send() {
+        throw new Error('provider unavailable');
+      },
+    };
+    const { CampaignDispatcher } = await import('@gogo/modules');
+    // A per-device push failure is caught by design, so the outage simulated
+    // here is the one that is not: resolving the audience.
+    const literalText = (query: unknown): string =>
+      ((query as { queryChunks?: { value?: string[] }[] }).queryChunks ?? [])
+        .map((chunk) => (Array.isArray(chunk?.value) ? chunk.value.join('') : ''))
+        .join(' ');
+    const broken = new CampaignDispatcher(
+      {
+        execute: async (query: unknown) => {
+          if (literalText(query).includes('from users u')) {
+            throw new Error('audience resolution failed');
+          }
+          return db.execute(query as never);
+        },
+      } as never,
+      exploding as never,
+    );
+    await broken.dispatchDue();
+
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(row!.status).toBe('failed');
+    expect(row!.lastError).toContain('audience resolution failed');
+    expect(row!.completedAt).not.toBeNull();
+  });
+
+  it('delivers a queued test send to exactly one account, without touching status', async () => {
+    const [self] = await db
+      .insert(schema.users)
+      .values({
+        email: 'dispatch226@gogo.local',
+        displayName: 'Ops Self',
+        emailVerifiedAt: new Date(),
+      })
+      .returning();
+    await db
+      .insert(schema.deviceTokens)
+      .values({ userId: self!.id, platform: 'ios', token: `disp-self-${suffix()}` });
+
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/campaigns',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {
+        name: `Thử nghiệm ${suffix()}`,
+        title: 'Bản xem trước',
+        body: 'Chỉ gửi cho người soạn',
+        audienceType: 'all',
+      },
+    });
+    const id = created.json().id as string;
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/campaigns/${id}/test-send`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+
+    const push = new CountingPush();
+    const delivered = await (await dispatcher(push)).deliverTestSends();
+    expect(delivered).toBeGreaterThanOrEqual(1);
+    expect(push.sent.some((s) => s.title === 'Bản xem trước')).toBe(true);
+
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(row!.status).toBe('draft');
+    expect(row!.testSendRequestedAt).toBeNull();
+    expect(row!.testSendCompletedAt).not.toBeNull();
+
+    const others = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, userWithTwoDevices));
+    expect(others.filter((n) => (n.payload as { campaignId?: string }).campaignId === id)).toEqual(
+      [],
+    );
+  });
+});
+
 describe('ops KPIs (CMS-010)', () => {
   it('KPIs endpoint aggregates health metrics (FR-CMS-010)', async () => {
     const ops = await createAdmin('ops4@gogo.local', 'ops_admin');

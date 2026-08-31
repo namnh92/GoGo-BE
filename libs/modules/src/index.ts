@@ -66,6 +66,7 @@ export {
   MAX_DELIVERY_ATTEMPTS,
   RETRY_BACKOFF_SECONDS,
 } from '../notifications/application/outbox-dispatcher';
+export { CampaignDispatcher } from '../notifications/application/campaign-dispatcher';
 
 // Place import + areas (BE-BFF-013/016)
 export { PlaceImportService } from '../places/application/place-import.service';
