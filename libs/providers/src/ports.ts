@@ -119,6 +119,16 @@ export class SheetAccessError extends Error {
       // both statements about their document.
       | 'SHEET_PROVIDER_NOT_CONFIGURED',
     message: string,
+    /**
+     * PI-BE-022 — the provider's own machine-readable reason, when it gave one
+     * (Google: `error.details[].reason` on a `google.rpc.ErrorInfo`).
+     *
+     * Diagnostic only. `message` is what a caller may read; this is what an
+     * operator needs to tell SERVICE_DISABLED from a sheet nobody shared, and
+     * it rides the 5xx log through AppError's cause. Never a credential, and
+     * never merged into `message`.
+     */
+    readonly providerReason?: string,
   ) {
     super(message);
     this.name = 'SheetAccessError';
