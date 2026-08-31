@@ -3198,7 +3198,7 @@ export interface paths {
         };
         /**
          * Ops: background queue depth
-         * @description The BullMQ queues plus `outbox_events`, the transactional outbox — a queue in every sense that matters here, living in Postgres where BullMQ cannot see it. Omitting it would hide the backlog that actually delays notifications.
+         * @description `outbox_events`, the transactional outbox — a queue in every sense that matters here, living in Postgres. It is the only row now: the worker stopped using a broker (GoGo-BE#262), so there are no broker queues left to report.
          *
          *     A broker that is unreachable contributes no rows rather than rows of zeros; `/cms/ops/health` is where that is reported.
          */
@@ -3411,7 +3411,7 @@ export interface components {
             /** @description Waiting plus delayed. */
             pending: number;
             running: number;
-            /** @description Failures finished in the last 24 hours — computed from job timestamps, not from BullMQ's retained `failed` count, which answers "how many are still on disk" and moves when retention changes. */
+            /** @description Failures finished in the last 24 hours, computed from timestamps — not from a retained failure count, which answers "how many are still on disk" and moves when retention changes. */
             failed24h: number;
             /** @description True when the scan hit its cap, so `failed24h` is a floor rather than a count. A truncated number that does not say so is what an incident review discovers afterwards. */
             failed24hTruncated: boolean;
