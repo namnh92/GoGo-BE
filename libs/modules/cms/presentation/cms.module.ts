@@ -6,6 +6,7 @@ import { AdminAuthService } from '../application/admin-auth.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsCatalogService } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
+import { CmsUploadsService } from '../application/cms-uploads.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { ModerationQueueService } from '../application/moderation-queue.service';
 import { EmergencyTakedownService } from '../application/emergency-takedown.service';
@@ -21,6 +22,7 @@ import {
   CmsContentController,
   CmsModerationController,
   CmsOpsController,
+  CmsUploadsController,
 } from './cms.controllers';
 
 @Module({
@@ -32,6 +34,7 @@ import {
     CmsContentController,
     CmsModerationController,
     CmsOpsController,
+    CmsUploadsController,
     EmergencyController,
   ],
   providers: [
@@ -39,6 +42,7 @@ import {
     CmsAuditService,
     CmsCatalogService,
     CmsContentService,
+    CmsUploadsService,
     CmsOpsService,
     ModerationQueueService,
     EmergencyTakedownService,

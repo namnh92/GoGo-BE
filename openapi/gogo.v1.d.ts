@@ -1750,6 +1750,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Editor/ops: presigned upload for CMS-managed media
+         * @description `/v1/uploads` authorizes a presigned PUT for the **calling consumer** — the key it returns is bound to that actor and to a purpose a mobile client writes — so an admin had no way to produce a key, and a banner, where the image is mandatory, had nothing to bind to.
+         *
+         *     The same pipeline, not a second one: the same presigner, the same content-type allowlist, the same size ceiling, the same `media_uploads` row that makes a key mean something. What differs is who may ask, what for, and that the authorization is audited.
+         *
+         *     The client PUTs the bytes straight to storage with `uploadUrl` and sends only `key` back to whichever resource references it. Image bytes never cross the API, so the server cannot report the image's pixel dimensions here — they are not known until something reads the object.
+         *
+         *     Authentication is the ordinary CMS session: the admin cookie plus the CSRF double-submit header on this mutation, or a bearer token. No second credential path is opened, and no storage credential is ever returned — only a URL that expires and is signed for one key and one content type.
+         */
+        post: operations["cmsCreateUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/moderation": {
         parameters: {
             query?: never;
@@ -3052,6 +3078,20 @@ export interface components {
             enabled: boolean;
             /** @description The stored value */
             value?: unknown;
+        };
+        CmsUpload: {
+            /** Format: uuid */
+            id: string;
+            /** @description Server-generated — actor and a UUID, never anything the client supplied — so a key cannot be steered at another object. */
+            key: string;
+            /** @description Presigned PUT. Signed for this key and this content type, and it expires. */
+            uploadUrl: string;
+            /** Format: date-time */
+            expiresAt: string;
+            maxBytes: number;
+            contentType: string;
+            /** @description Where the object will be readable once uploaded. Null until media hosting is configured — an honest absence rather than a URL that would 404. */
+            readUrl: string | null;
         };
         CmsAuditEntry: {
             /** Format: uuid */
@@ -6604,6 +6644,55 @@ export interface operations {
         responses: {
             /** @description Items replaced */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsCreateUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Staff-only purposes. Deliberately disjoint from the consumer set, so a phone cannot authorize a banner image and an editor's key is not accepted by the check-in flow.
+                     * @enum {string}
+                     */
+                    purpose: "banner_image" | "campaign_image";
+                    /** @enum {string} */
+                    contentType: "image/jpeg" | "image/png" | "image/webp" | "image/heic";
+                    /** @description Declared up front, so an oversized file is refused before a URL exists. */
+                    contentLength: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Upload authorized (audited) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsUpload"];
+                };
+            };
+            /** @description Unsupported content type (`UNSUPPORTED_CONTENT_TYPE`) or over the size ceiling (`FILE_TOO_LARGE`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+            /** @description Object storage is not configured in this environment (`UPLOAD_NOT_CONFIGURED`) */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

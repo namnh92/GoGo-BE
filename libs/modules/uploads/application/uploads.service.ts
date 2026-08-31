@@ -15,7 +15,18 @@ import type { Actor } from '../../identity/domain/actor';
  * would be the same bytes, an extra hop, and a memory cost per request.
  */
 export const UPLOAD_PURPOSES = ['checkin_photo', 'bill_photo', 'place_photo'] as const;
-export type UploadPurpose = (typeof UPLOAD_PURPOSES)[number];
+
+/**
+ * BE-CMS-G5 (#227) — purposes only a staff account may ask for.
+ *
+ * Kept apart from the consumer set rather than merged into it: a phone must
+ * not be able to authorize a banner image, and an editor uploading a banner
+ * must not be handed a key the check-in flow would accept. Each controller
+ * validates against its own list, so the split is enforced at the door.
+ */
+export const CMS_UPLOAD_PURPOSES = ['banner_image', 'campaign_image'] as const;
+
+export type UploadPurpose = (typeof UPLOAD_PURPOSES)[number] | (typeof CMS_UPLOAD_PURPOSES)[number];
 
 /**
  * Enforced server-side, not advertised. The content type is part of what gets
@@ -78,17 +89,21 @@ export class UploadsService {
     const presigned = await this.storage.presignUpload(key, input.contentType);
     const expiresAt = new Date(Date.now() + UPLOAD_TTL_SECONDS * 1000);
 
-    await this.db.insert(schema.mediaUploads).values({
-      storageKey: key,
-      actorType: actor.type,
-      actorId: actor.id,
-      purpose: input.purpose,
-      contentType: input.contentType,
-      contentLength: input.contentLength,
-      expiresAt,
-    });
+    const [row] = await this.db
+      .insert(schema.mediaUploads)
+      .values({
+        storageKey: key,
+        actorType: actor.type,
+        actorId: actor.id,
+        purpose: input.purpose,
+        contentType: input.contentType,
+        contentLength: input.contentLength,
+        expiresAt,
+      })
+      .returning({ id: schema.mediaUploads.id });
 
     return {
+      id: row!.id,
       key,
       uploadUrl: presigned.url,
       expiresAt: expiresAt.toISOString(),
