@@ -1,10 +1,19 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { desc, eq, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import { SCORING_WEIGHT_BOUNDS } from '../../suggestions/domain/types';
 import { writeAudit } from '../../shared/audit';
+import {
+  FEATURE_FLAG_KEYS,
+  FEATURE_FLAGS,
+  flagDefinition,
+  isFeatureFlagKey,
+  validateFlagValue,
+  type FlagEnvironment,
+  type FlagPlatform,
+} from '../../shared/feature-flags';
 
 type RankingConfigRow = {
   id: string;
@@ -23,6 +32,8 @@ type RankingConfigRow = {
 
 type FeatureFlagRow = {
   key: string;
+  environment: FlagEnvironment;
+  platform: FlagPlatform;
   enabled: boolean;
   payload: unknown;
   description: string | null;
@@ -258,24 +269,66 @@ export class CmsOpsService {
    * BE-IMP-012 — flags were a blind write, including the AI kill switch, which
    * is exactly the control someone reaches for when things are already wrong.
    */
-  async listFeatureFlags() {
+  async listFeatureFlags(
+    filter: {
+      environment?: FlagEnvironment | undefined;
+      platform?: FlagPlatform | undefined;
+    } = {},
+  ) {
+    const where = [sql`true`];
+    if (filter.environment) where.push(sql`f.environment = ${filter.environment}`);
+    if (filter.platform) where.push(sql`f.platform = ${filter.platform}`);
+
     const rows = await this.db.execute(sql`
-      select f.key, f.enabled, f.payload, f.description, f.updated_at,
-             f.updated_by_admin_id, a.display_name as updated_by_name
+      select f.key, f.environment, f.platform, f.enabled, f.payload, f.description,
+             f.updated_at, f.updated_by_admin_id, a.display_name as updated_by_name
       from feature_flags f
       left join admin_users a on a.id = f.updated_by_admin_id
-      order by f.key
+      where ${sql.join(where, sql` and `)}
+      order by f.key, f.environment, f.platform
     `);
 
-    return (rows.rows as FeatureFlagRow[]).map((f) => ({
-      key: f.key,
-      enabled: f.enabled,
-      payload: f.payload,
-      description: f.description,
-      updatedBy: f.updated_by_admin_id
-        ? { id: f.updated_by_admin_id, displayName: f.updated_by_name }
-        : null,
-      updatedAt: toIso(f.updated_at)!,
+    return (rows.rows as FeatureFlagRow[]).map((f) => {
+      // The type comes from the registry rather than the row: the code that
+      // reads the flag has one expectation, and two rows for one key must not
+      // be able to disagree about what it is.
+      const definition = isFeatureFlagKey(f.key) ? FEATURE_FLAGS[f.key] : undefined;
+      return {
+        key: f.key,
+        valueType: definition?.valueType ?? 'json',
+        environment: f.environment,
+        platform: f.platform,
+        enabled: f.enabled,
+        // A boolean flag's value is `enabled`; nothing else carries one.
+        value: definition?.valueType === 'boolean' ? f.enabled : f.payload,
+        /** @deprecated superseded by `value`; identical content. */
+        payload: f.payload,
+        description: f.description ?? definition?.description ?? null,
+        // Whether this key still has a reader. A row left behind by a removed
+        // feature is worth showing as such rather than silently hiding.
+        known: definition !== undefined,
+        updatedBy: f.updated_by_admin_id
+          ? { id: f.updated_by_admin_id, displayName: f.updated_by_name }
+          : null,
+        updatedAt: toIso(f.updated_at)!,
+      };
+    });
+  }
+
+  /**
+   * Every configurable key with its declared type and default.
+   *
+   * Without it the console can only show keys that already have a row, so
+   * "not configured" and "does not exist" look identical — and a number or a
+   * version needs its default visible to be edited safely.
+   */
+  flagCatalog() {
+    return FEATURE_FLAG_KEYS.map((key) => ({
+      key,
+      valueType: FEATURE_FLAGS[key].valueType,
+      defaultValue: FEATURE_FLAGS[key].defaultValue,
+      description: FEATURE_FLAGS[key].description,
+      platformScoped: FEATURE_FLAGS[key].platformScoped,
     }));
   }
 
@@ -342,21 +395,87 @@ export class CmsOpsService {
     return { rolledBack: rows.length > 0 };
   }
 
-  async setFeatureFlag(adminId: string, key: string, enabled: boolean, payload?: unknown) {
+  /**
+   * BE-CMS-G3 (#221) — a write that has to survive being read by code.
+   *
+   * The key must be one something reads, the value must match the type that
+   * reader expects, and a platform override only means anything where the key
+   * is platform-scoped. All three are refused here rather than stored and
+   * discovered later by whichever client parses least carefully.
+   */
+  async setFeatureFlag(
+    adminId: string,
+    key: string,
+    input: {
+      enabled: boolean;
+      value?: unknown;
+      environment?: FlagEnvironment | undefined;
+      platform?: FlagPlatform | undefined;
+    },
+  ) {
+    const definition = flagDefinition(key);
+    const environment = input.environment ?? 'all';
+    const platform = input.platform ?? 'all';
+
+    if (platform !== 'all' && !definition.platformScoped) {
+      throw AppError.badRequest('FLAG_NOT_PLATFORM_SCOPED', 'This flag has no per-platform form', [
+        { field: 'platform', code: 'unsupported', message: `${key} applies to every platform` },
+      ]);
+    }
+    const value = validateFlagValue(key, input.value);
+
+    const [before] = await this.db
+      .select()
+      .from(schema.featureFlags)
+      .where(
+        and(
+          eq(schema.featureFlags.key, key),
+          eq(schema.featureFlags.environment, environment),
+          eq(schema.featureFlags.platform, platform),
+        ),
+      )
+      .limit(1);
+
     await this.db
       .insert(schema.featureFlags)
-      .values({ key, enabled, payload: payload ?? null, updatedByAdminId: adminId })
+      .values({
+        key,
+        environment,
+        platform,
+        enabled: input.enabled,
+        payload: value ?? null,
+        updatedByAdminId: adminId,
+      })
       .onConflictDoUpdate({
-        target: schema.featureFlags.key,
+        target: [
+          schema.featureFlags.key,
+          schema.featureFlags.environment,
+          schema.featureFlags.platform,
+        ],
         set: {
-          enabled,
-          payload: payload ?? null,
+          enabled: input.enabled,
+          payload: value ?? null,
           updatedByAdminId: adminId,
           updatedAt: sql`now()`,
         },
       });
-    await this.audit(adminId, 'feature_flag.set', 'feature_flag', key, { enabled });
-    return { key, enabled };
+
+    // Before/after, because "who turned the kill switch on" is only half the
+    // question during an incident review.
+    await this.audit(adminId, 'feature_flag.set', 'feature_flag', key, {
+      environment,
+      platform,
+      before: before ? { enabled: before.enabled, value: before.payload } : null,
+      after: { enabled: input.enabled, value },
+    });
+    return {
+      key,
+      valueType: definition.valueType,
+      environment,
+      platform,
+      enabled: input.enabled,
+      value: definition.valueType === 'boolean' ? input.enabled : value,
+    };
   }
 
   // --- ops KPIs (CMS-010, FR-CMS-010) --------------------------------------

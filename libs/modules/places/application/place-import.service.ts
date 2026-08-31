@@ -7,6 +7,8 @@ import {
   type ResolvedProviderPlace,
 } from '@gogo/providers';
 import { AppError } from '../../shared/app-error';
+import { APP_CONFIG, type PlatformConfig } from '../../shared/config';
+import { flagEnvironmentOf, resolveFlag } from '../../shared/feature-flags';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
@@ -42,30 +44,25 @@ export class PlaceImportService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(PLACE_PROVIDER) private readonly provider: PlaceProviderPort,
+    @Inject(APP_CONFIG) private readonly config: PlatformConfig,
   ) {}
 
+  /**
+   * #221 — flags are now scoped by environment, so a key can have more than
+   * one row and "the row for this key" is no longer a single lookup. The
+   * resolver picks the most specific match for the running deployment and
+   * falls back to the default the code ships with.
+   */
   private async rules(): Promise<ImportRules> {
-    const [flag] = await this.db
-      .select()
-      .from(schema.featureFlags)
-      .where(eq(schema.featureFlags.key, 'place_import.rules'))
-      .limit(1);
-    const payload = (flag?.payload ?? {}) as Partial<ImportRules>;
+    const environment = flagEnvironmentOf(this.config.APP_ENV);
+    const configured = await resolveFlag(this.db, 'place_import.rules', { environment });
+    const payload = (configured.value ?? {}) as Partial<ImportRules>;
+    const autoPublish = await resolveFlag(this.db, 'place_import.autopublish', { environment });
     return {
       ...DEFAULT_RULES,
       ...payload,
-      autoPublish:
-        (await this.flagEnabled('place_import.autopublish')) || payload.autoPublish === true,
+      autoPublish: autoPublish.enabled || payload.autoPublish === true,
     };
-  }
-
-  private async flagEnabled(key: string): Promise<boolean> {
-    const [flag] = await this.db
-      .select()
-      .from(schema.featureFlags)
-      .where(eq(schema.featureFlags.key, key))
-      .limit(1);
-    return flag?.enabled === true;
   }
 
   async submit(actor: Actor, input: { url: string; roomId?: string | undefined }) {

@@ -2067,10 +2067,34 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Ops: every flag with its current value and last writer
+         * Ops: every stored flag override with its value and last writer
          * @description A kill switch nobody can read is not a kill switch. The AI fallback and the travel-time provider are both flag-gated, so their state has to be visible before an incident, not during one.
+         *
+         *     One entry per stored override. A key can have several — `(all, all)` is the unscoped row, and a more specific `(production, ios)` row wins over it for that environment and platform. Keys with no row at all are not listed here; `cmsFeatureFlagCatalog` is what says which keys exist and what they fall back to.
          */
         get: operations["cmsListFeatureFlags"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/feature-flags/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: every configurable key, its type and its default
+         * @description The registry of keys something in the backend actually reads. A key is added by shipping the code that reads it, so the console can never write a value nothing consumes.
+         *
+         *     Needed to edit safely: without the default, "not configured" and "configured to zero" look identical, and a `version` field has no way to show what it falls back to.
+         */
+        get: operations["cmsFeatureFlagCatalog"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2087,7 +2111,14 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Ops: toggle a feature flag / kill switch */
+        /**
+         * Ops: set a flag for an environment and platform (audited)
+         * @description Validated against the key's declared type: a `version` that is not `1.2.3` is refused here rather than tolerated by one client and crashed on by another, and an unknown key is a 404 rather than a row nothing reads.
+         *
+         *     A boolean flag's value is `enabled` — that is the column the kill switches read, and an incident is the wrong moment to discover it moved. For every other type the value goes in `value`; `payload` is the old name for the same field and still accepted.
+         *
+         *     Omitting `environment` / `platform` writes the unscoped `(all, all)` row, which is what every resolution falls back to.
+         */
         put: operations["cmsSetFeatureFlag"];
         post?: never;
         delete?: never;
@@ -2974,15 +3005,53 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
+        /** @enum {string} */
+        FlagValueType: "boolean" | "string" | "number" | "json" | "version";
+        /**
+         * @description `all` is the unscoped row every resolution falls back to; a named environment overrides it for that deployment only.
+         * @enum {string}
+         */
+        FlagEnvironment: "all" | "dev" | "staging" | "production";
+        /** @enum {string} */
+        FlagPlatform: "all" | "ios" | "android" | "web";
         CmsFeatureFlag: {
             key: string;
+            valueType: components["schemas"]["FlagValueType"];
+            environment: components["schemas"]["FlagEnvironment"];
+            platform: components["schemas"]["FlagPlatform"];
+            /** @description The value itself for a boolean flag; for any other type, whether this override applies at all. */
             enabled: boolean;
-            /** @description Free-form flag configuration. */
+            /** @description Typed per `valueType`. For a boolean flag this equals `enabled`. */
+            value?: unknown;
+            /**
+             * @deprecated
+             * @description Old name for `value`, same content.
+             */
             payload?: unknown;
             description?: string | null;
+            /** @description False when the row's key is no longer in the registry — a value left behind by a removed feature, which nothing reads any more. */
+            known: boolean;
             updatedBy?: components["schemas"]["CmsAdminRef"] | null;
             /** Format: date-time */
             updatedAt: string;
+        };
+        CmsFeatureFlagDefinition: {
+            key: string;
+            valueType: components["schemas"]["FlagValueType"];
+            /** @description What the backend uses when no override matches. Never null. */
+            defaultValue: unknown;
+            description: string;
+            /** @description False means a per-platform override is refused for this key rather than stored and ignored. */
+            platformScoped: boolean;
+        };
+        CmsFeatureFlagWriteResult: {
+            key: string;
+            valueType: components["schemas"]["FlagValueType"];
+            environment: components["schemas"]["FlagEnvironment"];
+            platform: components["schemas"]["FlagPlatform"];
+            enabled: boolean;
+            /** @description The stored value */
+            value?: unknown;
         };
         CmsAuditEntry: {
             /** Format: uuid */
@@ -6998,6 +7067,29 @@ export interface operations {
     };
     cmsListFeatureFlags: {
         parameters: {
+            query?: {
+                environment?: components["schemas"]["FlagEnvironment"];
+                platform?: components["schemas"]["FlagPlatform"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Overrides in key, environment, platform order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsFeatureFlag"][];
+                };
+            };
+        };
+    };
+    cmsFeatureFlagCatalog: {
+        parameters: {
             query?: never;
             header?: never;
             path?: never;
@@ -7005,13 +7097,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Flags in key order */
+            /** @description Flag definitions in registry order */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CmsFeatureFlag"][];
+                    "application/json": components["schemas"]["CmsFeatureFlagDefinition"][];
                 };
             };
         };
@@ -7028,14 +7120,39 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description For a boolean flag this is the value. For any other type it is whether the override applies at all — switching it off returns the key to its registry default. */
                     enabled: boolean;
+                    /** @description Typed per the key's `valueType`. Absent for boolean flags. */
+                    value?: unknown;
+                    /**
+                     * @deprecated
+                     * @description Old name for `value`. Sending both with different values is a 400.
+                     */
                     payload?: unknown;
+                    environment?: components["schemas"]["FlagEnvironment"];
+                    platform?: components["schemas"]["FlagPlatform"];
                 };
             };
         };
         responses: {
-            /** @description Flag updated (audited) */
+            /** @description Flag updated (audited with before/after) */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsFeatureFlagWriteResult"];
+                };
+            };
+            /** @description Value does not match the declared type (`INVALID_FLAG_VALUE`), or a platform override was asked for on a key that has no per-platform form (`FLAG_NOT_PLATFORM_SCOPED`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such key in the registry (`FLAG_UNKNOWN`) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
