@@ -4,7 +4,11 @@ import type { FastifyRequest } from 'fastify';
 import { AppError } from '../../shared/app-error';
 import type { Actor } from '../domain/actor';
 import { RATE_LIMIT_KEY, type RateLimitSpec } from './decorators';
-import { RATE_LIMIT_STORE, type RateLimitStore } from './rate-limit.service';
+import {
+  BASELINE_RATE_LIMIT_STORE,
+  RATE_LIMIT_STORE,
+  type RateLimitStore,
+} from './rate-limit.service';
 
 /**
  * BE-IMP-005 — per-actor baseline, applied on top of the per-action specs.
@@ -18,6 +22,10 @@ import { RATE_LIMIT_STORE, type RateLimitStore } from './rate-limit.service';
  * (login, invite lookup, provider-quota endpoints) are per-action `@RateLimit`
  * specs and are deliberately untouched by this: a higher baseline for admins
  * buys them faster reading, not a faster way to burn Google quota.
+ *
+ * The ceiling is counted per process, the specs across instances. A normal
+ * authenticated request therefore reaches its controller without touching
+ * Redis; only the routes that name an exact limit pay for one.
  */
 const BASELINE_WINDOW_SECONDS = 60;
 const BASELINE_PER_MINUTE: Record<string, number> = {
@@ -39,6 +47,7 @@ export class RateLimitGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     @Inject(RATE_LIMIT_STORE) private readonly store: RateLimitStore,
+    @Inject(BASELINE_RATE_LIMIT_STORE) private readonly baselineStore: RateLimitStore,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -78,7 +87,7 @@ export class RateLimitGuard implements CanActivate {
       : `baseline|ip:${req.ip ?? 'noip'}`;
     const limit = BASELINE_PER_MINUTE[req.actor?.type ?? 'anonymous'] ?? 120;
 
-    const count = await this.store.hit(key, BASELINE_WINDOW_SECONDS);
+    const count = await this.baselineStore.hit(key, BASELINE_WINDOW_SECONDS);
     if (count > limit) throw AppError.tooManyRequests();
   }
 }
