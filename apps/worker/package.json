@@ -13,8 +13,6 @@
     "@gogo/modules": "workspace:*",
     "@gogo/observability": "workspace:*",
     "@gogo/providers": "workspace:*",
-    "bullmq": "^5.0.0",
-    "ioredis": "^5.4.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
