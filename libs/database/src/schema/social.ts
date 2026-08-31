@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   boolean,
+  integer,
   check,
   index,
   jsonb,
@@ -107,6 +108,8 @@ export const notificationKind = pgEnum('notification_kind', [
   'plan_changed',
   'date_reminder',
   'moderation_update',
+  /** BE-CMS-G4e (#226) — a CMS campaign, dispatched through the outbox. */
+  'campaign',
 ]);
 
 export const notifications = pgTable(
@@ -127,7 +130,14 @@ export const notifications = pgTable(
     readAt: timestamp('read_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('notifications_user_idx').on(t.userId, t.createdAt)],
+  (t) => [
+    index('notifications_user_idx').on(t.userId, t.createdAt),
+    // Delivery is at-least-once, so a retry has to be a no-op rather than a
+    // second push. The column existed and was never unique.
+    uniqueIndex('notifications_dedupe_unique')
+      .on(t.dedupeKey)
+      .where(sql`${t.dedupeKey} is not null`),
+  ],
 );
 
 export const notificationChannel = pgEnum('notification_channel', ['push', 'email']);
@@ -160,4 +170,89 @@ export const deviceTokens = pgTable(
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('device_tokens_token_unique').on(t.token)],
+);
+
+// ------------------------------------------------------- campaigns (#226)
+
+export const campaignStatus = pgEnum('campaign_status', [
+  'draft',
+  'scheduled',
+  'sending',
+  'sent',
+  'cancelled',
+  'failed',
+]);
+
+/**
+ * Only the audiences the backend can resolve from data it holds. `city`,
+ * `app_version` and `custom_segment` from the mockup are deliberately absent:
+ * nothing stores a user's city or their app version, and a campaign aimed at a
+ * segment the server cannot compute reaches the wrong people — which is not
+ * recoverable once sent.
+ */
+export const campaignAudience = pgEnum('campaign_audience', ['all', 'couple', 'group', 'platform']);
+
+export const campaignDestination = pgEnum('campaign_destination', [
+  'home',
+  'place',
+  'recommendation',
+  'plan_template',
+  'saved',
+  'external_url',
+]);
+
+/**
+ * BE-CMS-G4e (#226) — a campaign the CMS composes and a worker sends.
+ *
+ * Nothing here is dispatched from the request path. The API validates and
+ * stores; the worker claims what is due, resolves the audience at send time
+ * and hands each message to the provider adapter. A campaign sent by mistake
+ * cannot be recalled, so the only thing that can start one is a row transition
+ * something else picks up.
+ */
+export const notificationCampaigns = pgTable(
+  'notification_campaigns',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** The editorial name; `title` is what lands on a lock screen. */
+    name: text('name').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    /** Key from POST /cms/uploads, purpose `campaign_image`. */
+    imageKey: text('image_key'),
+    ctaLabel: text('cta_label'),
+    audienceType: campaignAudience('audience_type').notNull(),
+    audienceFilter: jsonb('audience_filter').notNull().default({}),
+    destinationType: campaignDestination('destination_type').notNull().default('home'),
+    destinationValue: text('destination_value'),
+    status: campaignStatus('status').notNull().default('draft'),
+    scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    /**
+     * Stamped when a send is scheduled and used to build each message's dedupe
+     * key, so a worker retry cannot deliver twice while a genuine re-send after
+     * a cancel still can.
+     */
+    dispatchKey: uuid('dispatch_key'),
+    recipientCount: integer('recipient_count'),
+    sentCount: integer('sent_count').notNull().default(0),
+    failedCount: integer('failed_count').notNull().default(0),
+    lastError: text('last_error'),
+    /** A request the worker picks up; it never touches `status`. */
+    testSendRequestedAt: timestamp('test_send_requested_at', { withTimezone: true }),
+    testSendUserId: uuid('test_send_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    testSendCompletedAt: timestamp('test_send_completed_at', { withTimezone: true }),
+    createdByAdminId: uuid('created_by_admin_id').notNull(),
+    cancelledByAdminId: uuid('cancelled_by_admin_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('notification_campaigns_name_unique').on(t.name),
+    index('notification_campaigns_due_idx').on(t.scheduledAt),
+    index('notification_campaigns_list_idx').on(t.createdAt, t.id),
+  ],
 );

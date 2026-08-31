@@ -3435,6 +3435,230 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /cms/campaigns:
+    get:
+      operationId: cmsListCampaigns
+      tags: [cms]
+      summary: 'Ops: notification campaigns, filtered and cursor-paged'
+      description: >
+        A campaign is composed here and **sent by the worker**, never from a
+        request. The API only ever writes a row; a scheduled row is what a
+        worker tick picks up, resolves an audience for, and hands to the push
+        provider adapter. A campaign that has gone out cannot be recalled, so
+        there is deliberately no API path that reaches a provider.
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/CampaignStatus' } }
+        - {
+            name: audienceType,
+            in: query,
+            schema: { $ref: '#/components/schemas/CampaignAudience' },
+          }
+        - { name: q, in: query, schema: { type: string, maxLength: 120 } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Campaigns, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsCampaignPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      operationId: cmsCreateCampaign
+      tags: [cms]
+      summary: 'Ops: compose a campaign (draft)'
+      description: >
+        Created as a `draft`; nothing is sent until it is scheduled.
+
+
+        The destination is validated against real data: a `place`,
+        `recommendation` or `plan_template` id must resolve, and an
+        `external_url` must be https, carry no credentials and not point inside
+        the network. A deep link into content that does not exist is a dead
+        notification on every phone that receives it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsCampaignCreate' }
+      responses:
+        '201':
+          description: Draft created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsCampaign' }
+        '400':
+          description: >
+            Audience filter does not fit the audience type (`INVALID_AUDIENCE`),
+            destination is malformed or unsafe (`INVALID_DESTINATION`), or it
+            points at something that does not exist (`DESTINATION_NOT_FOUND`).
+        '409': { description: 'A campaign with that name exists (`CAMPAIGN_NAME_TAKEN`)' }
+
+  /cms/campaigns/{id}:
+    get:
+      operationId: cmsGetCampaign
+      tags: [cms]
+      summary: 'Ops: one campaign with its delivery counters'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Campaign
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsCampaign' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: cmsUpdateCampaign
+      tags: [cms]
+      summary: 'Ops: edit a campaign that has not been sent'
+      description: >
+        Editable only in `draft`, `cancelled` or `failed`. Editing a scheduled
+        campaign would silently change what is about to go out — unschedule it
+        first, which is a deliberate, audited act.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsCampaignPatch' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsCampaign' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 'Not in an editable state (`CAMPAIGN_NOT_EDITABLE`)' }
+
+  /cms/campaigns/{id}/audience-estimate:
+    get:
+      operationId: cmsEstimateCampaignAudience
+      tags: [cms]
+      summary: 'Ops: how many people this would reach, right now'
+      description: >
+        A read with no side effect — nothing is written and nothing is sent. The
+        number is a snapshot: the audience is resolved again at send time by the
+        same predicate, so it can move between the estimate and the send.
+
+
+        Counts only accounts with a registered device: a "recipient" with
+        nothing to receive on inflates the number and makes the delivery
+        counters unreadable.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Estimate
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsCampaignAudienceEstimate' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/campaigns/{id}/schedule:
+    post:
+      operationId: cmsScheduleCampaign
+      tags: [cms]
+      summary: 'Ops: make a campaign due (send now, or at a time)'
+      description: >
+        Marks the campaign `scheduled` and returns. **No message exists yet**:
+        the worker picks up what is due on its next tick, resolves the audience
+        then, and dispatches through the provider adapter.
+
+
+        Omitting `sendAt` means now. Scheduling revalidates the destination,
+        because the place or recommendation it points at may have been removed
+        since the draft was written.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sendAt:
+                  type: string
+                  format: date-time
+                  description: Omit for "send now". A past time is also due immediately.
+      responses:
+        '201':
+          description: Scheduled (audited)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsCampaign' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Not schedulable from its current state (`INVALID_STATUS_TRANSITION`)
+
+  /cms/campaigns/{id}/cancel:
+    post:
+      operationId: cmsCancelCampaign
+      tags: [cms]
+      summary: 'Ops: cancel a campaign that has not started'
+      description: >
+        Works while `scheduled`. Once the worker is `sending`, some messages are
+        already on phones and there is nothing to recall — the request is
+        refused with how far the send got, rather than reporting a cancellation
+        the backend cannot perform.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: Cancelled (audited)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsCampaign' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            Sending has started (`CAMPAIGN_ALREADY_SENDING`) — the message says
+            how many were delivered — or the state is not cancellable
+            (`INVALID_STATUS_TRANSITION`).
+
+  /cms/campaigns/{id}/test-send:
+    post:
+      operationId: cmsTestSendCampaign
+      tags: [cms]
+      summary: 'Ops: send one copy to your own account'
+      description: >
+        Separate from a real send in every way that matters: it never changes
+        `status`, it reaches exactly one account, and that account is the
+        caller's own — matched on a **verified** email between the staff account
+        and a consumer account, so this cannot push a message at somebody else.
+
+
+        Queued like everything else; the worker delivers it. Rate-limited,
+        because it is the one send path a person can trigger repeatedly.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: Test send queued for the worker
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [campaignId, status, testSendQueued]
+                properties:
+                  campaignId: { type: string, format: uuid }
+                  status: { $ref: '#/components/schemas/CampaignStatus' }
+                  testSendQueued: { type: boolean }
+        '400':
+          description: >
+            The caller has no verified consumer account on the same address
+            (`NO_TEST_RECIPIENT`).
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { description: Too many test sends }
+
   /cms/uploads:
     post:
       operationId: cmsCreateUpload
@@ -5681,6 +5905,139 @@ components:
         severity: { $ref: '#/components/schemas/SafetyRuleSeverity' }
         priority: { type: integer, minimum: 0, maximum: 1000 }
         reasonCode: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+
+    CampaignStatus:
+      type: string
+      enum: [draft, scheduled, sending, sent, cancelled, failed]
+      description: >
+        `sending` has no way back — once the worker has started handing messages
+        to the provider, some are already delivered.
+
+    CampaignAudience:
+      type: string
+      enum: [all, couple, group, platform]
+      description: >
+        Only what the backend can resolve from data it holds. `city`,
+        `app_version` and `custom_segment` from the mockup are absent on
+        purpose: nothing stores a user's city or their app version, and a
+        campaign aimed at a segment the server has to guess at reaches the wrong
+        people — the one failure with no undo.
+
+    CampaignDestination:
+      type: string
+      enum: [home, place, recommendation, plan_template, saved, external_url]
+      description: >
+        `plan_template` rather than `plan`: a campaign points every recipient at
+        the same thing, and a plan belongs to one room.
+
+    CmsCampaign:
+      type: object
+      required:
+        [
+          id,
+          name,
+          title,
+          body,
+          audienceType,
+          audienceFilter,
+          destinationType,
+          status,
+          sentCount,
+          failedCount,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          description: The editorial name. `title` is what lands on a screen.
+        title: { type: string }
+        body: { type: string }
+        imageKey:
+          type: string
+          description: Key from `POST /cms/uploads`, purpose `campaign_image`.
+        ctaLabel: { type: string }
+        audienceType: { $ref: '#/components/schemas/CampaignAudience' }
+        audienceFilter:
+          type: object
+          description: 'Closed per audience type. `platform` takes `{ platform }`; the rest take `{}`.'
+          additionalProperties: true
+        destinationType: { $ref: '#/components/schemas/CampaignDestination' }
+        destinationValue: { type: string }
+        status: { $ref: '#/components/schemas/CampaignStatus' }
+        scheduledAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        recipientCount:
+          type: integer
+          description: Resolved at send time, not at schedule time.
+        sentCount:
+          type: integer
+          description: >
+            How many the provider accepted. Not "seen", and not a guarantee of
+            delivery to a device.
+        failedCount: { type: integer }
+        lastError: { type: string }
+        testSendRequestedAt: { type: string, format: date-time }
+        testSendCompletedAt: { type: string, format: date-time }
+        createdByAdminId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CmsCampaignPage:
+      type: object
+      required: [items, nextCursor, totalCount]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsCampaign' }
+        nextCursor: { type: [string, 'null'] }
+        totalCount: { type: integer }
+
+    CmsCampaignAudienceEstimate:
+      type: object
+      required: [campaignId, audienceType, estimatedRecipients, estimatedAt]
+      properties:
+        campaignId: { type: string, format: uuid }
+        audienceType: { $ref: '#/components/schemas/CampaignAudience' }
+        estimatedRecipients:
+          type: integer
+          description: Accounts with a registered device that match right now.
+        estimatedAt: { type: string, format: date-time }
+
+    CmsCampaignCreate:
+      type: object
+      required: [name, title, body, audienceType]
+      properties:
+        name: { type: string, minLength: 3, maxLength: 120 }
+        title: { type: string, maxLength: 80 }
+        body: { type: string, maxLength: 300 }
+        imageKey: { type: string, maxLength: 300 }
+        ctaLabel: { type: string, maxLength: 40 }
+        audienceType: { $ref: '#/components/schemas/CampaignAudience' }
+        audienceFilter: { type: object, additionalProperties: true }
+        destinationType: { $ref: '#/components/schemas/CampaignDestination' }
+        destinationValue:
+          type: string
+          maxLength: 2000
+          description: >
+            Required for `place`, `recommendation`, `plan_template` and
+            `external_url`; forbidden for `home` and `saved`.
+
+    CmsCampaignPatch:
+      type: object
+      description: Editable only while nothing has been sent.
+      properties:
+        name: { type: string, minLength: 3, maxLength: 120 }
+        title: { type: string, maxLength: 80 }
+        body: { type: string, maxLength: 300 }
+        imageKey: { type: string, maxLength: 300 }
+        ctaLabel: { type: string, maxLength: 40 }
+        audienceType: { $ref: '#/components/schemas/CampaignAudience' }
+        audienceFilter: { type: object, additionalProperties: true }
+        destinationType: { $ref: '#/components/schemas/CampaignDestination' }
+        destinationValue: { type: string, maxLength: 2000 }
 
     CmsUpload:
       type: object

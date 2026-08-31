@@ -7,6 +7,7 @@ import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsCatalogService } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsUploadsService } from '../application/cms-uploads.service';
+import { CampaignsService } from '../../notifications/application/campaigns.service';
 import { SafetyRulesService } from '../application/safety-rules.service';
 import { RecommendationsService } from '../application/recommendations.service';
 import { PlanTemplatesService } from '../application/plan-templates.service';
@@ -21,6 +22,7 @@ import { EmergencyController } from './emergency.controller';
 import {
   CmsAuditController,
   CmsAuthController,
+  CmsCampaignsController,
   CmsCatalogController,
   CmsContentController,
   CmsModerationController,
@@ -36,6 +38,7 @@ import {
   controllers: [
     CmsAuditController,
     CmsAuthController,
+    CmsCampaignsController,
     CmsCatalogController,
     CmsContentController,
     CmsModerationController,
@@ -52,6 +55,7 @@ import {
     CmsCatalogService,
     CmsContentService,
     CmsUploadsService,
+    CampaignsService,
     SafetyRulesService,
     RecommendationsService,
     PlanTemplatesService,

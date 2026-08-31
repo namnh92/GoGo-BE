@@ -12,6 +12,12 @@ import {
 } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsUploadsService } from '../application/cms-uploads.service';
+import { CampaignsService } from '../../notifications/application/campaigns.service';
+import {
+  CAMPAIGN_AUDIENCES,
+  CAMPAIGN_DESTINATIONS,
+  CAMPAIGN_STATUSES,
+} from '../../notifications/domain/campaign';
 import { SafetyRulesService } from '../application/safety-rules.service';
 import {
   SAFETY_RULE_ACTIONS,
@@ -750,6 +756,113 @@ export class CmsSafetyRulesController {
     body: z.infer<typeof safetyRuleStatusSchema>,
   ) {
     return this.rules.setStatus(actor.id, id, body.status);
+  }
+}
+
+// ---------------------------------------------------------------- campaigns
+
+/**
+ * BE-CMS-G4e (#226) — composing a campaign. Nothing here sends one.
+ *
+ * Every write is a row transition; the worker is what turns a scheduled row
+ * into messages. A campaign that has gone out cannot be recalled, so the API
+ * deliberately has no path that reaches a provider.
+ */
+const campaignBody = {
+  name: z.string().trim().min(3).max(120),
+  title: z.string().trim().min(1).max(80),
+  body: z.string().trim().min(1).max(300),
+  /** Key from POST /cms/uploads with purpose `campaign_image`. */
+  imageKey: z.string().max(300).optional(),
+  ctaLabel: z.string().trim().max(40).optional(),
+  audienceType: z.enum(CAMPAIGN_AUDIENCES),
+  audienceFilter: z.unknown().optional(),
+  destinationType: z.enum(CAMPAIGN_DESTINATIONS).optional(),
+  destinationValue: z.string().max(2000).optional(),
+};
+const campaignCreateSchema = z.object(campaignBody);
+const campaignPatchSchema = z.object(campaignBody).partial();
+const campaignScheduleSchema = z
+  .object({
+    /** Omitted means now: the next worker tick picks it up. */
+    sendAt: z.coerce.date().optional(),
+  })
+  .default({});
+const campaignListQuery = z.object({
+  status: z.enum(CAMPAIGN_STATUSES).optional(),
+  audienceType: z.enum(CAMPAIGN_AUDIENCES).optional(),
+  q: z.string().trim().min(1).max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(512).optional(),
+});
+
+@RequireRole('ops_admin')
+@Controller('cms/campaigns')
+export class CmsCampaignsController {
+  constructor(private readonly campaigns: CampaignsService) {}
+
+  @Get()
+  list(@Query(new ZodValidationPipe(campaignListQuery)) query: z.infer<typeof campaignListQuery>) {
+    return this.campaigns.list(query);
+  }
+
+  @Post()
+  create(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(campaignCreateSchema)) body: z.infer<typeof campaignCreateSchema>,
+  ) {
+    return this.campaigns.create(actor.id, body);
+  }
+
+  @Get(':id')
+  detail(@Param('id', Uuid) id: string) {
+    return this.campaigns.get(id);
+  }
+
+  /** Read-only, no side effect: the size of a send before committing to it. */
+  @Get(':id/audience-estimate')
+  estimate(@Param('id', Uuid) id: string) {
+    return this.campaigns.estimateAudience(id);
+  }
+
+  @Patch(':id')
+  update(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(campaignPatchSchema)) body: z.infer<typeof campaignPatchSchema>,
+  ) {
+    return this.campaigns.update(actor.id, id, body);
+  }
+
+  /**
+   * Marks the campaign due. The request returns before a single message
+   * exists — delivery happens on the worker's tick, through the provider
+   * adapter, and never here.
+   */
+  @Post(':id/schedule')
+  schedule(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(campaignScheduleSchema))
+    body: z.infer<typeof campaignScheduleSchema>,
+  ) {
+    return this.campaigns.schedule(actor.id, id, body.sendAt);
+  }
+
+  @Post(':id/cancel')
+  cancel(@CurrentActor() actor: Actor, @Param('id', Uuid) id: string) {
+    return this.campaigns.cancel(actor.id, id);
+  }
+
+  /**
+   * One copy to the composer's own account, queued for the worker like
+   * everything else. Rate-limited because it is the one send path a person can
+   * trigger repeatedly.
+   */
+  @RateLimit({ action: 'cms.campaign_test', limit: 10, windowSeconds: 300, keyBy: 'actor' })
+  @Post(':id/test-send')
+  testSend(@CurrentActor() actor: Actor, @Param('id', Uuid) id: string) {
+    return this.campaigns.requestTestSend(actor.id, id);
   }
 }
 
