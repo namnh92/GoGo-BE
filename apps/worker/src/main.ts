@@ -1,5 +1,3 @@
-import { Queue, Worker } from 'bullmq';
-import IORedis from 'ioredis';
 import { createDb } from '@gogo/database';
 import {
   CampaignDispatcher,
@@ -17,22 +15,20 @@ import {
   GooglePlacesAdapter,
   GoogleSheetsAdapter,
 } from '@gogo/providers';
+import { AdvisoryLock, startPeriodic } from './periodic';
 
 /**
  * Poll intervals, in milliseconds.
  *
- * These are the dominant Redis cost of an idle worker, not the job handlers:
- * a scheduler firing every 5s creates and completes a job every 5s whether or
- * not there is work, and each cycle is several Redis commands.
+ * Each tick is a Postgres query to find work, so the interval is the ceiling
+ * on dispatch latency and the floor on idle database load — nothing else. It
+ * used to also be the dominant Redis cost of the worker, back when a BullMQ
+ * scheduler created and completed a job every tick; the worker no longer holds
+ * a Redis connection at all (see periodic.ts).
  *
- * That matters because DEV runs on Upstash, which bills per command rather than
- * by memory (GOGO_SRS.md §6.1). Its free tier is ~16,700 commands a day; two
- * schedulers at 5s spend that many times over. Production uses Redis with an
- * SLA and is not metered this way, so the interval is configuration rather than
- * a constant — the same runtime contract, tuned per environment.
- *
- * The trade is dispatch latency: at 30s a notification waits up to 30 seconds
- * before the outbox relay picks it up. Acceptable on DEV, not on production.
+ * The trade is dispatch latency: at 60s a notification waits up to a minute
+ * before the outbox relay picks it up. Acceptable on DEV, tuned down for
+ * production through the same variables.
  */
 const pollIntervalMs = (name: string, fallback: number): number => {
   const raw = process.env[name];
@@ -46,10 +42,6 @@ const pollIntervalMs = (name: string, fallback: number): number => {
 
 const OUTBOX_POLL_MS = pollIntervalMs('OUTBOX_POLL_MS', 5000);
 const INGEST_POLL_MS = pollIntervalMs('INGEST_POLL_MS', 5000);
-
-const OUTBOX_QUEUE = 'gogo-outbox';
-const PRIVACY_QUEUE = 'gogo-privacy';
-const INGEST_QUEUE = 'gogo-ingest';
 
 /**
  * Dead-man-switch heartbeats (healthchecks.io style): ping ONLY after a
@@ -70,9 +62,11 @@ async function heartbeat(url: string | undefined, throttleMs = 60_000): Promise<
 }
 
 /**
- * Worker process (BE-BFF-010 + DB-010): BullMQ consumers for outbox fan-out
- * and privacy/retention. Jobs are at-least-once; consumers are idempotent
- * (outbox marks published per event; privacy jobs are pure re-runnable SQL).
+ * Worker process (BE-BFF-010 + DB-010): periodic processors for outbox
+ * fan-out, place import and privacy/retention. Each tick is at-least-once and
+ * idempotent (outbox marks published per event; import advances chunks it
+ * finds pending; privacy jobs are pure re-runnable SQL), and a Postgres
+ * advisory lock keeps two replicas from running the same tick together.
  */
 async function bootstrap(): Promise<void> {
   const logger = createLogger({
@@ -81,20 +75,17 @@ async function bootstrap(): Promise<void> {
     pretty: process.env.NODE_ENV === 'development',
   });
   const databaseUrl = process.env.DATABASE_URL;
-  const redisUrl = process.env.REDIS_URL;
-  if (!databaseUrl || !redisUrl) {
-    throw new Error('DATABASE_URL and REDIS_URL are required');
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL is required');
   }
 
-  const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
   const { db, pool } = createDb(databaseUrl);
   const metrics = new LogMetrics(logger);
   // Real push provider lands with credentials (GoGo-BE#60); fake logs sends.
   const push = new FakePush();
   const dispatcher = new OutboxDispatcher(db, push, metrics);
   // BE-CMS-G4e (#226): campaigns are sent here, never from a request. Same
-  // tick as the outbox rather than its own scheduler — an idle poll costs
-  // Redis commands, and DEV is billed per command.
+  // tick as the outbox rather than a schedule of their own.
   const campaigns = new CampaignDispatcher(db, push, metrics);
   const privacy = new PrivacyJobs(db);
 
@@ -114,60 +105,51 @@ async function bootstrap(): Promise<void> {
     metrics,
   );
 
-  const outboxQueue = new Queue(OUTBOX_QUEUE, { connection });
-  const privacyQueue = new Queue(PRIVACY_QUEUE, { connection });
-  const ingestQueue = new Queue(INGEST_QUEUE, { connection });
-  await outboxQueue.upsertJobScheduler('outbox-poll', { every: OUTBOX_POLL_MS });
-  await ingestQueue.upsertJobScheduler('ingest-poll', { every: INGEST_POLL_MS });
-  await privacyQueue.upsertJobScheduler('privacy-daily', {
-    pattern: '0 3 * * *',
-    tz: 'Asia/Ho_Chi_Minh',
-  });
-
-  const outboxWorker = new Worker(
-    OUTBOX_QUEUE,
-    async () => {
-      const handled = await dispatcher.dispatchBatch(100);
-      if (handled > 0) logger.info({ handled }, 'outbox batch dispatched');
-      const sent = await campaigns.tick();
-      if (sent.campaigns > 0 || sent.testSends > 0) logger.info(sent, 'campaigns dispatched');
-      await heartbeat(process.env.HEARTBEAT_URL_OUTBOX);
-    },
-    { connection, concurrency: 1 },
-  );
-  const privacyWorker = new Worker(
-    PRIVACY_QUEUE,
-    async () => {
-      const report = await privacy.run(false);
-      logger.info({ report }, 'privacy retention run complete');
-      // #255 — a lapsed review date is a person's job, not the job's. It is
-      // never auto-released or auto-deleted; it is made loud.
-      if (report.privacyHoldReviewsOverdue > 0) {
-        logger.warn(
-          { count: report.privacyHoldReviewsOverdue },
-          'privacy retention holds past review date — HOLD_REVIEW_OVERDUE',
-        );
-      }
-      await heartbeat(process.env.HEARTBEAT_URL_PRIVACY, 0);
-    },
-    { connection, concurrency: 1 },
-  );
-
-  const ingestWorker = new Worker(
-    INGEST_QUEUE,
-    async () => {
-      const advanced = await imports.processPendingJobs(5);
-      if (advanced.length > 0) logger.info({ advanced }, 'place import chunks processed');
-      await heartbeat(process.env.HEARTBEAT_URL_INGEST);
-    },
-    // Serial by design: chunks already batch 50 rows and each row may cost a
-    // provider call, so parallel ticks would only race the quota.
-    { connection, concurrency: 1 },
+  const periodic = startPeriodic(
+    [
+      {
+        name: 'gogo:worker:outbox',
+        schedule: { everyMs: OUTBOX_POLL_MS },
+        run: async () => {
+          const handled = await dispatcher.dispatchBatch(100);
+          if (handled > 0) logger.info({ handled }, 'outbox batch dispatched');
+          const sent = await campaigns.tick();
+          if (sent.campaigns > 0 || sent.testSends > 0) logger.info(sent, 'campaigns dispatched');
+          await heartbeat(process.env.HEARTBEAT_URL_OUTBOX);
+        },
+      },
+      {
+        name: 'gogo:worker:ingest',
+        schedule: { everyMs: INGEST_POLL_MS },
+        // Serial by design: chunks already batch 50 rows and each row may cost
+        // a provider call, so parallel ticks would only race the quota.
+        run: async () => {
+          const advanced = await imports.processPendingJobs(5);
+          if (advanced.length > 0) logger.info({ advanced }, 'place import chunks processed');
+          await heartbeat(process.env.HEARTBEAT_URL_INGEST);
+        },
+      },
+      {
+        name: 'gogo:worker:privacy',
+        schedule: { dailyAt: { hour: 3, timeZone: 'Asia/Ho_Chi_Minh' } },
+        run: async () => {
+          const report = await privacy.run(false);
+          logger.info({ report }, 'privacy retention run complete');
+          // #255 — a lapsed review date is a person's job, not the job's. It is
+          // never auto-released or auto-deleted; it is made loud.
+          if (report.privacyHoldReviewsOverdue > 0) {
+            logger.warn(
+              { count: report.privacyHoldReviewsOverdue },
+              'privacy retention holds past review date — HOLD_REVIEW_OVERDUE',
+            );
+          }
+          await heartbeat(process.env.HEARTBEAT_URL_PRIVACY, 0);
+        },
+      },
+    ],
+    { lock: new AdvisoryLock(pool), logger },
   );
 
-  outboxWorker.on('failed', (_job, err) => logger.error({ err }, 'outbox job failed'));
-  ingestWorker.on('failed', (_job, err) => logger.error({ err }, 'ingest job failed'));
-  privacyWorker.on('failed', (_job, err) => logger.error({ err }, 'privacy job failed'));
   logger.info(
     { outboxPollMs: OUTBOX_POLL_MS, ingestPollMs: INGEST_POLL_MS },
     'worker booted: privacy daily 03:00 ICT',
@@ -175,16 +157,8 @@ async function bootstrap(): Promise<void> {
 
   const shutdown = async () => {
     logger.info('worker shutting down');
-    await Promise.allSettled([
-      outboxWorker.close(),
-      privacyWorker.close(),
-      ingestWorker.close(),
-      outboxQueue.close(),
-      privacyQueue.close(),
-      ingestQueue.close(),
-    ]);
+    await periodic.stop();
     await pool.end();
-    connection.disconnect();
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown());

@@ -153,12 +153,6 @@ importers:
       '@gogo/providers':
         specifier: workspace:*
         version: link:../../libs/providers
-      bullmq:
-        specifier: ^5.0.0
-        version: 5.81.3(supports-color@10.2.2)
-      ioredis:
-        specifier: ^5.4.0
-        version: 5.11.1(supports-color@10.2.2)
       zod:
         specifier: ^3.24.0
         version: 3.25.76
