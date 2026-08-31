@@ -36,6 +36,53 @@ Resolution order per header: explicit wizard mapping → canonical template name
 → legacy GOGO sheet header (`Tên địa điểm`, `Khoảng giá/người`, `Đi cùng ai?`,
 …). Unmapped headers are reported in `unmappedHeaders`, never guessed.
 
+The canonical vocabulary is `CANONICAL_FIELDS` in `domain/column-mapping.ts` —
+one list, published to clients as the OpenAPI enum `ImportCanonicalField`. The
+YAML is handwritten, so `import-parsing.spec.ts` fails the build if the two
+drift; a published vocabulary the parser does not implement is how the CMS came
+to offer `address`, `phone` and `website`, which nothing could ever accept.
+
+**An explicit mapping is honoured or the request is refused.** `resolveMapping`
+used to skip any value it did not recognise and quietly fall through to
+auto-detection, so a client sending its own vocabulary (`googleMapsUrl` for
+`google_maps_url`) got a clean 201 in which its mapping screen had done nothing
+at all. `parseColumnMapping` validates at the edge instead. Auto-detection is
+for headers the caller said nothing about; mapping a header to `""` means
+ignore it. Malformed JSON on the multipart route stays a separate
+`MAPPING_INVALID` — a typo and a wrong vocabulary are different mistakes.
+
+The request property stays `additionalProperties: { type: string }`. Narrowing
+an existing `/v1` request to an enum is a breaking change under ADR-0005, and
+the `contract-compat` gate is right to refuse it; the vocabulary is published
+as `ImportCanonicalField` for clients to generate from, and enforced at
+runtime.
+
+### `/v1` mapping compatibility
+
+Rejecting an unknown mapping is itself a behavioural change that oasdiff cannot
+see: `/v1` answered 200 and ignored the value. So the shipped vocabulary was
+audited rather than guessed — `MAPPABLE_FIELDS` and `HEADER_HINTS` in GoGo-CMS
+are byte-identical across every commit that has ever held them (`3efb5bd`,
+`fa951e6`, `e33cfc6`, `origin/develop`), and between them emit exactly eleven
+values. No other client sends `mapping`.
+
+| Shipped value                                  | Treatment                                                                                                                           |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `name`, `city`, `district`, `category`, `note` | already canonical                                                                                                                   |
+| `googleMapsUrl`, `priceMin`, `priceMax`        | normalised via `LEGACY_FIELD_ALIASES`; behave exactly like the canonical field, counted as `place_import_legacy_mapping_total`      |
+| `address`, `phone`, `website`                  | `RETIRED_FIELDS`: still accepted, column skipped, header reported in `unmappedHeaders` so the outcome is visible rather than silent |
+| anything else                                  | 400 `MAPPING_FIELD_UNKNOWN`, naming every offending column in `field_errors`                                                        |
+
+The last row is the only behavioural delta, and it is unreachable by any
+shipped client: GoGo-CMS `master` carries no application code, and the repo has
+no tags or releases, so nothing has ever emitted a value outside those eleven.
+What it catches is a typo or a future client's invented vocabulary — precisely
+the case where silence hides the mistake.
+
+Legacy aliases are compatibility only: never offered as a choice, never added
+to. Whether GoGo should hold address/phone/website at all is a catalog
+question, tracked separately.
+
 Free text becomes structured facts: `45 - 75k` → `{min: 45000, max: 75000,
 unit: per_person}`, `Cặp đôi|Bạn bè` → `['couple','group']`. A tab named
 `HCM`/`HN` supplies the city via `tabCityMapping`.

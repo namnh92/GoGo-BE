@@ -1,6 +1,17 @@
 import { deflateRawSync } from 'node:zlib';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { parse as parseYaml } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import { applyMapping, resolveMapping } from './column-mapping';
+import {
+  CANONICAL_FIELDS,
+  InvalidColumnMappingError,
+  LEGACY_FIELD_ALIASES,
+  RETIRED_FIELDS,
+  applyMapping,
+  parseColumnMapping,
+  resolveMapping,
+} from './column-mapping';
 import { buildErrorReportCsv, escapeCsvCell } from './error-report';
 import { validateRow } from './template';
 import {
@@ -431,6 +442,167 @@ describe('source_row_id fallback', () => {
     expect(validateRow(row, { fallbackRowId: '   ' }).errors.map((e) => e.code)).toContain(
       'ROW_ID_MISSING',
     );
+  });
+});
+
+// --- #276 canonical mapping vocabulary --------------------------------------
+
+describe('parseColumnMapping', () => {
+  it('accepts every field the parser actually understands', () => {
+    const mapping = Object.fromEntries(CANONICAL_FIELDS.map((f) => [`col ${f}`, f]));
+    expect(parseColumnMapping(mapping).mapping).toEqual(mapping);
+  });
+
+  it('rejects a vocabulary no shipped client ever sent', () => {
+    let caught: InvalidColumnMappingError | undefined;
+    try {
+      parseColumnMapping({ Link: 'gmapsLink', 'Giá từ': 'costFrom' });
+    } catch (err) {
+      caught = err as InvalidColumnMappingError;
+    }
+
+    expect(caught).toBeInstanceOf(InvalidColumnMappingError);
+    // Both offenders are named, not just the first — one round trip per bad
+    // column would be a miserable way to fix a mapping screen.
+    expect(caught!.entries).toEqual([
+      { header: 'Link', value: 'gmapsLink' },
+      { header: 'Giá từ', value: 'costFrom' },
+    ]);
+  });
+
+  it('treats an empty value as “ignore this column”, not as an error', () => {
+    expect(parseColumnMapping({ Thừa: '', Tên: 'name' }).mapping).toEqual({ Tên: 'name' });
+  });
+
+  it('returns an empty mapping for a missing one', () => {
+    expect(parseColumnMapping(undefined).mapping).toEqual({});
+    expect(parseColumnMapping(null).mapping).toEqual({});
+  });
+
+  it('rejects a non-object mapping', () => {
+    expect(() => parseColumnMapping('name')).toThrow(InvalidColumnMappingError);
+    expect(() => parseColumnMapping([['a', 'name']])).toThrow(InvalidColumnMappingError);
+  });
+});
+
+// #276 — `/v1` compatibility. The shipped CMS emitted exactly eleven mapping
+// values across every commit that ever contained them; these are the six that
+// are not already canonical.
+describe('/v1 legacy mapping compatibility', () => {
+  it('normalises the three legacy spellings the CMS shipped', () => {
+    const result = parseColumnMapping({
+      Link: 'googleMapsUrl',
+      'Giá từ': 'priceMin',
+      'Giá đến': 'priceMax',
+    });
+
+    expect(result.mapping).toEqual({
+      Link: 'google_maps_url',
+      'Giá từ': 'price_min',
+      'Giá đến': 'price_max',
+    });
+    expect(result.normalizedLegacy).toEqual([
+      { header: 'Link', from: 'googleMapsUrl', to: 'google_maps_url' },
+      { header: 'Giá từ', from: 'priceMin', to: 'price_min' },
+      { header: 'Giá đến', from: 'priceMax', to: 'price_max' },
+    ]);
+  });
+
+  it('covers every legacy alias declared, so the table cannot rot', () => {
+    for (const [legacy, canonical] of Object.entries(LEGACY_FIELD_ALIASES)) {
+      expect(parseColumnMapping({ Cột: legacy }).mapping).toEqual({ Cột: canonical });
+    }
+  });
+
+  it('makes a normalised alias behave exactly like the canonical field', () => {
+    const viaLegacy = resolveMapping(
+      ['Link'],
+      parseColumnMapping({ Link: 'googleMapsUrl' }).mapping,
+    );
+    const viaCanonical = resolveMapping(
+      ['Link'],
+      parseColumnMapping({ Link: 'google_maps_url' }).mapping,
+    );
+    expect(viaLegacy).toEqual(viaCanonical);
+  });
+
+  it('keeps accepting the three retired fields, mapping them nowhere', () => {
+    // `/v1` answered 200 and ignored them. Turning that into a 400 would be a
+    // behavioural break for the sake of tidiness.
+    const result = parseColumnMapping({ 'Địa chỉ': 'address', SĐT: 'phone', Web: 'website' });
+
+    expect(result.mapping).toEqual({});
+    expect(result.retired).toEqual([
+      { header: 'Địa chỉ', value: 'address' },
+      { header: 'SĐT', value: 'phone' },
+      { header: 'Web', value: 'website' },
+    ]);
+  });
+
+  it('covers every retired field declared', () => {
+    for (const field of RETIRED_FIELDS) {
+      const result = parseColumnMapping({ Cột: field });
+      expect(result.mapping).toEqual({});
+      expect(result.retired).toEqual([{ header: 'Cột', value: field }]);
+    }
+  });
+
+  it('accepts the full vocabulary the shipped CMS could emit', () => {
+    // Every value `MAPPABLE_FIELDS` + `HEADER_HINTS` ever produced, together.
+    expect(() =>
+      parseColumnMapping({
+        a: 'name',
+        b: 'address',
+        c: 'city',
+        d: 'district',
+        e: 'googleMapsUrl',
+        f: 'category',
+        g: 'priceMin',
+        h: 'priceMax',
+        i: 'phone',
+        j: 'website',
+        k: 'note',
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe('explicit mapping vs auto-detection', () => {
+  it('lets an explicit choice beat what auto-detection would have picked', () => {
+    // `Tên địa điểm` auto-detects to `name`; the operator says `highlight`.
+    const { mapping } = resolveMapping(
+      ['Tên địa điểm'],
+      parseColumnMapping({ 'Tên địa điểm': 'highlight' }).mapping,
+    );
+    expect(mapping['Tên địa điểm']).toBe('highlight');
+  });
+
+  it('auto-detects only the columns the caller said nothing about', () => {
+    const { mapping } = resolveMapping(
+      ['Tên địa điểm', 'city'],
+      parseColumnMapping({ 'Tên địa điểm': 'highlight' }).mapping,
+    );
+    expect(mapping['Tên địa điểm']).toBe('highlight');
+    expect(mapping['city']).toBe('city');
+  });
+
+  it('auto-detects everything when no mapping is supplied', () => {
+    const { mapping } = resolveMapping(['Tên địa điểm', 'city']);
+    expect(mapping['Tên địa điểm']).toBe('name');
+    expect(mapping['city']).toBe('city');
+  });
+});
+
+describe('OpenAPI ImportCanonicalField', () => {
+  it('carries exactly the runtime canonical fields, in order', () => {
+    // The YAML is handwritten, so this is what stops it drifting from the
+    // parser. Publishing a vocabulary the parser does not implement is how the
+    // CMS ended up with three fields nothing could accept.
+    const spec = parseYaml(
+      readFileSync(path.resolve(__dirname, '../../../../openapi/gogo.v1.yaml'), 'utf8'),
+    ) as { components: { schemas: Record<string, { enum?: string[] }> } };
+
+    expect(spec.components.schemas.ImportCanonicalField?.enum).toEqual([...CANONICAL_FIELDS]);
   });
 });
 
