@@ -1348,6 +1348,21 @@ export class CmsModerationController {
     return this.queues.communityPlaces(query);
   }
 
+  /**
+   * BE-CMS-G6 (#232) — read one review.
+   *
+   * The list defaults to `pending`, which is right for a queue and wrong for
+   * a link: a shared URL pointing at a review someone already decided has to
+   * open, rather than the console saying "not in the current filter" about a
+   * row that plainly exists. So this is not status-filtered.
+   *
+   * Same role gate as the list it belongs to.
+   */
+  @Get('reviews/:id')
+  review(@Param('id', Uuid) id: string) {
+    return this.queues.reviewById(id);
+  }
+
   @Post('reviews/:id')
   decideReview(
     @CurrentActor() actor: Actor,
