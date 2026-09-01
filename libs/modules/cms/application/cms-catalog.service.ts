@@ -1,10 +1,13 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { AppError } from '../../shared/app-error';
+import { APP_CONFIG, type ProvenanceConfig } from '../../shared/config';
+import { GOOGLE_PROVIDER, googleProvenanceRows } from '../../shared/google-provenance';
 import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
+import { writeOutbox } from '../../shared/outbox';
 
 type PlaceStatus = (typeof schema.places.$inferSelect)['status'];
 
@@ -136,8 +139,7 @@ type PlaceSourceRow = {
   external_id: string;
   url: string | null;
   attribution: string | null;
-  raw_updated_at: Date | string | null;
-  imported_at: Date | string;
+  fetched_at: Date | string | null;
 };
 
 type PlaceMediaRow = {
@@ -176,7 +178,10 @@ function toIso(value: Date | string | null | undefined): string | undefined {
  */
 function sourcePredicate(source: PlaceSource): SQL {
   const linkedToProvider = sql`(
-    exists (select 1 from place_provider_sources ps where ps.place_id = p.id)
+    exists (
+      select 1 from place_provider_sources ps
+      where ps.place_id = p.id and ps.provider = ${GOOGLE_PROVIDER}
+    )
     or exists (select 1 from place_sources s where s.place_id = p.id and s.provider = 'google')
   )`;
   const fromCommunity = sql`exists (
@@ -205,7 +210,15 @@ export function decodePlaceCursor(cursor: string): { value: string; id: string }
 /** CMS-002/003/004 — canonical place editing, sources/hours/prices, dedup. */
 @Injectable()
 export class CmsCatalogService {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Optional() @Inject(APP_CONFIG) private readonly config?: ProvenanceConfig,
+  ) {}
+
+  /** Default on: off is the state that serves ingestion places unattributed. */
+  private get unifiedProvenance(): boolean {
+    return this.config?.PROVENANCE_UNIFIED_READS ?? true;
+  }
 
   private async audit(adminId: string, action: string, resourceId: string, diff?: unknown) {
     await writeAudit(this.db, {
@@ -353,10 +366,10 @@ export class CmsCatalogService {
         from place_prices where place_id = ${placeId}::uuid
         order by created_at desc
       `),
+      // #334: both provenance tables, deduped — see `googleProvenanceRows`.
       this.db.execute(sql`
-        select id, provider, external_id, url, attribution, raw_updated_at, imported_at
-        from place_sources where place_id = ${placeId}::uuid
-        order by imported_at desc
+        select * from (${googleProvenanceRows(sql`${placeId}::uuid`, this.unifiedProvenance)}) src
+        order by src.fetched_at desc nulls last
       `),
       this.db.execute(sql`
         select id, storage_key, width, height, sort_order, moderation
@@ -436,7 +449,7 @@ export class CmsCatalogService {
           url: r.url,
           // Provider facts carry attribution and a fetch time (FR-INGEST-014).
           attribution: r.attribution,
-          fetchedAt: toIso(r.raw_updated_at) ?? toIso(r.imported_at),
+          fetchedAt: toIso(r.fetched_at),
         };
       }),
       media: media.rows.map((m) => {
@@ -611,7 +624,33 @@ export class CmsCatalogService {
     return rows.rows;
   }
 
-  /** CMS-004 — merge: duplicate's references move to canonical; history kept. */
+  /**
+   * CMS-004 — merge: the duplicate's references move to canonical, and the
+   * duplicate is archived rather than deleted so the history survives.
+   *
+   * #334: the list used to stop at five tables, so a merge left the duplicate
+   * holding its `place_provider_sources` row — the row dedup resolves a Google
+   * Place ID through. The next import of that ID resolved to an archived
+   * place, which no reader serves. Hours, taxonomies, plan stops, saved items
+   * and travel legs were stranded the same way.
+   *
+   * Not every table moves the same way, and the differences are deliberate:
+   *
+   * - `place_provider_sources` moves outright. Its unique index is global on
+   *   `(provider, external_id)`, so two places cannot hold the same identity
+   *   and this update cannot collide.
+   * - `place_taxonomies` and `saved_items` move where the canonical place does
+   *   not already have the row, and the leftovers are dropped — a place cannot
+   *   carry a category twice, and a user cannot save it twice.
+   * - `place_hours` moves only into a canonical place that has none. Two
+   *   opening-hour sets for one place is not more information, it is a
+   *   contradiction, and the canonical place's own hours are the ones an
+   *   editor has been looking at.
+   * - `travel_legs` are deleted, not moved. A leg is a cached duration between
+   *   two coordinates; carrying the duplicate's over would attribute a travel
+   *   time measured from one point to a place that sits at another. They
+   *   recompute on demand.
+   */
   async mergePlaces(adminId: string, canonicalId: string, duplicateId: string) {
     if (canonicalId === duplicateId) {
       throw AppError.badRequest('INVALID_MERGE', 'Cannot merge a place into itself');
@@ -619,16 +658,65 @@ export class CmsCatalogService {
     await this.db.transaction(async (tx) => {
       for (const table of [
         schema.placeSources,
+        schema.placeProviderSources,
         schema.placeMedia,
         schema.placePrices,
         schema.reviews,
         schema.roomSeedPlaces,
+        schema.planStops,
       ] as const) {
         await tx
           .update(table)
           .set({ placeId: canonicalId } as never)
           .where(eq((table as typeof schema.placeSources).placeId, duplicateId));
       }
+
+      await tx.execute(sql`
+        update place_taxonomies pt set place_id = ${canonicalId}::uuid
+        where pt.place_id = ${duplicateId}::uuid
+          and not exists (
+            select 1 from place_taxonomies keep
+            where keep.place_id = ${canonicalId}::uuid and keep.taxonomy_id = pt.taxonomy_id
+          )
+      `);
+      await tx.execute(sql`
+        delete from place_taxonomies where place_id = ${duplicateId}::uuid
+      `);
+
+      await tx.execute(sql`
+        update saved_items si set target_id = ${canonicalId}::uuid
+        where si.target_type = 'place' and si.target_id = ${duplicateId}::uuid
+          and not exists (
+            select 1 from saved_items keep
+            where keep.user_id = si.user_id and keep.target_type = 'place'
+              and keep.target_id = ${canonicalId}::uuid
+          )
+      `);
+      await tx.execute(sql`
+        delete from saved_items where target_type = 'place' and target_id = ${duplicateId}::uuid
+      `);
+
+      await tx.execute(sql`
+        update place_hours set place_id = ${canonicalId}::uuid
+        where place_id = ${duplicateId}::uuid
+          and not exists (select 1 from place_hours keep where keep.place_id = ${canonicalId}::uuid)
+      `);
+      await tx.execute(sql`delete from place_hours where place_id = ${duplicateId}::uuid`);
+
+      await tx.execute(sql`
+        delete from travel_legs
+        where from_place_id = ${duplicateId}::uuid or to_place_id = ${duplicateId}::uuid
+      `);
+
+      // A merge is the editorial answer the backfill could not give itself.
+      await tx.execute(sql`
+        update place_identity_conflicts
+        set resolved_at = now(), resolution = 'merged'
+        where resolved_at is null
+          and ((canonical_place_id = ${canonicalId}::uuid and legacy_place_id = ${duplicateId}::uuid)
+            or (canonical_place_id = ${duplicateId}::uuid and legacy_place_id = ${canonicalId}::uuid))
+      `);
+
       await tx
         .update(schema.places)
         .set({ status: 'archived', updatedAt: sql`now()` })
@@ -641,6 +729,16 @@ export class CmsCatalogService {
         resourceId: canonicalId,
         diff: { duplicateId },
       });
+      // Both sides changed: one gained the references, the other left the
+      // catalogue. Consumers are idempotent (PI-BE-010).
+      for (const placeId of [canonicalId, duplicateId]) {
+        await writeOutbox(tx, {
+          eventType: 'place.updated',
+          resourceType: 'place',
+          resourceId: placeId,
+          payload: { reason: 'merged' },
+        });
+      }
     });
     return { merged: true, canonicalId };
   }

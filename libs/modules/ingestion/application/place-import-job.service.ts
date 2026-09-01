@@ -783,6 +783,7 @@ export class PlaceImportJobService {
     if (settled === 'BLOCKED') return;
     if (context) context.normalized = settled;
 
+    this.dedup.reportIdMismatch(details, 'ingest');
     const verdict = await this.dedup.check(details);
     const base = {
       resolvedGooglePlaceId: details.providerPlaceId,

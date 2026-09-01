@@ -1,6 +1,8 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql, type SQL } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
+import { APP_CONFIG, type ProvenanceConfig } from '../../shared/config';
+import { googleProvenanceRows } from '../../shared/google-provenance';
 import { DB } from '../../shared/tokens';
 import { toSearchQuery } from '../domain/normalize';
 
@@ -109,7 +111,15 @@ export function vnDayMinute(at: Date): { dow: number; minute: number } {
  */
 @Injectable()
 export class SearchRepository {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Optional() @Inject(APP_CONFIG) private readonly config?: ProvenanceConfig,
+  ) {}
+
+  /** Default on: off is the state that serves ingestion places unattributed. */
+  private get unifiedProvenance(): boolean {
+    return this.config?.PROVENANCE_UNIFIED_READS ?? true;
+  }
 
   async search(f: SearchFilters, w: SearchWeights): Promise<SearchRow[]> {
     const conditions: SQL[] = [sql`p.status = 'published'`];
@@ -306,9 +316,13 @@ export class SearchRepository {
             'confidence', pp.confidence, 'verifiedAt', pp.verified_at)
             order by pp.verified_at desc nulls last)
           from place_prices pp where pp.place_id = p.id) as prices,
-        (select json_agg(json_build_object('provider', s.provider, 'url', s.url,
-            'attribution', s.attribution))
-          from place_sources s where s.place_id = p.id) as sources,
+        -- #334: both provenance tables, deduped. Before PR1 this read
+        -- place_sources alone, so a place that arrived through bulk import
+        -- or a mobile submission was served with no attribution -- which is
+        -- the obligation, not a nicety.
+        (select json_agg(json_build_object('provider', src.provider, 'url', src.url,
+            'attribution', src.attribution))
+          from (${googleProvenanceRows(sql`p.id`, this.unifiedProvenance)}) src) as sources,
         -- #151: photos travel with their attribution and moderation state.
         -- Community imagery that has not been approved never leaves the CMS.
         (select json_agg(json_build_object(

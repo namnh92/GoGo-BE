@@ -104,6 +104,8 @@ export class PlaceSubmissionService {
     }
 
     const details = outcome.details;
+    // #334 — Google can answer about the successor of a place that moved.
+    this.dedup.reportIdMismatch(details, 'submission');
     const verdict = await this.dedup.check(details);
     const score = await this.resolver.scoreFor(details, input.cityHint ?? null, null);
     const candidate = this.toCandidate(details, score);
@@ -174,6 +176,7 @@ export class PlaceSubmissionService {
       throw AppError.conflict('PLACE_CLOSED', 'Place is closed and cannot be added');
     }
 
+    this.dedup.reportIdMismatch(details.details, 'submission');
     const verdict = await this.dedup.check(details.details);
     if (verdict.kind === 'LINKED_EXISTING') {
       return { status: 'ALREADY_EXISTS' as const, placeId: verdict.placeId };

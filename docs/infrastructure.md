@@ -147,6 +147,7 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `place_import_category_derived_total`     | `source`, `category`         | suy ra category cho một dòng                                          |
 | `place_import_category_underivable_total` | `google_type`                | Google type chưa có category tương ứng                                |
 | `place_identity_change_total`             | `reason`                     | re-import trỏ place sang provider id khác                             |
+| `place_provider_id_mismatch_total`        | `provider`, `path`           | Google trả place id khác id đã hỏi (#334) — place đã moved/merged     |
 | `places_provider_requests_total`          | `method`, `status`           | mọi call Google Places / Routes / Sheets                              |
 | `place_provider_request_duration_seconds` | `method`, `status`           | histogram, mọi call Places / Routes / Sheets                          |
 | `places_provider_failures_total`          | `method`, `status`, `reason` | call Google thất bại (#273), `reason` bounded (#321)                  |

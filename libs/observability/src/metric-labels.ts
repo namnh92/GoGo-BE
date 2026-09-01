@@ -55,6 +55,10 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // but finite, and it is the metric that says which type needs a mapping.
   place_import_category_underivable_total: ['google_type'],
   place_identity_change_total: ['reason'],
+  // #334 — Google answered about a different place id than the one requested,
+  // which is how a moved or merged place surfaces. `provider` is a constant
+  // and `path` is the three doors identity can arrive through; no ids.
+  place_provider_id_mismatch_total: ['provider', 'path'],
 
   // --- submissions ---------------------------------------------------------
   mobile_place_submissions_total: ['status'],

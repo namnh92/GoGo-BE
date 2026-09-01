@@ -14,6 +14,7 @@ import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
 import { haversineMeters } from '../../suggestions/domain/hard-filter';
+import { PlaceDedupService } from '../../ingestion/application/place-dedup.service';
 import { writeAudit } from '../../shared/audit';
 
 const ALLOWED_HOSTS =
@@ -46,6 +47,7 @@ export class PlaceImportService {
     @Inject(DB) private readonly db: Db,
     @Inject(PLACE_PROVIDER) private readonly provider: PlaceProviderPort,
     @Inject(APP_CONFIG) private readonly config: PlatformConfig,
+    private readonly dedup: PlaceDedupService,
   ) {}
 
   /**
@@ -180,18 +182,18 @@ export class PlaceImportService {
     );
     if (!inArea) return reject('OUT_OF_AREA');
 
-    // Dedup by provider id (FR-PLACE-005) — link to the existing place.
-    const [existingSource] = await this.db
-      .select()
-      .from(schema.placeSources)
-      .where(
-        sql`${schema.placeSources.provider} = 'google' and ${schema.placeSources.externalId} = ${details.providerPlaceId}`,
-      )
-      .limit(1);
+    // #334 — Google may answer about the successor of a place that moved. PR1
+    // reports it and links what came back; it does not repoint anything.
+    this.dedup.reportIdMismatch(details, 'import');
 
-    const placeId = existingSource
-      ? existingSource.placeId
-      : await this.createPlace(details, rules.autoPublish);
+    // Dedup by provider id (FR-PLACE-005) — link to the existing place.
+    //
+    // This used to read `place_sources` alone, which is what let the same
+    // Google Place ID become a second GoGo place when it had first arrived
+    // through bulk import or a mobile submission. The resolver reads the
+    // canonical table and the legacy one, so every door now sees every other.
+    const linkedPlaceId = await this.dedup.resolvePlaceIdByGoogleId(details.providerPlaceId);
+    const placeId = linkedPlaceId ?? (await this.createLinkedPlace(details, rules.autoPublish));
 
     const [updated] = await this.db
       .update(schema.placeImports)
@@ -218,15 +220,40 @@ export class PlaceImportService {
       action: 'place.import_verified',
       resourceType: 'place',
       resourceId: placeId,
-      diff: { providerPlaceId: details.providerPlaceId, dedup: !!existingSource },
+      diff: { providerPlaceId: details.providerPlaceId, dedup: linkedPlaceId !== null },
     });
     await writeOutbox(this.db, {
       eventType: 'place.import_verified',
       resourceType: 'place_import',
       resourceId: importId,
-      payload: { placeId, dedup: !!existingSource },
+      payload: { placeId, dedup: linkedPlaceId !== null },
     });
     return this.toDto(updated!);
+  }
+
+  /**
+   * Creates the place and claims its Google identity in one transaction.
+   *
+   * The claim can lose a race: another import, a bulk row or a submission may
+   * link the same Google Place ID between the dedup read and this write. The
+   * unique index on `(provider, external_id)` is what decides, and losing
+   * rolls the whole transaction back — no orphan place, and no identity taken
+   * away from whoever got there first. The loser then links to their place,
+   * which is the answer the dedup read would have given a moment later.
+   */
+  private async createLinkedPlace(
+    details: ResolvedProviderPlace,
+    autoPublish: boolean,
+  ): Promise<string> {
+    try {
+      return await this.createPlace(details, autoPublish);
+    } catch (err) {
+      const pg = err as { code?: string };
+      if (pg.code !== '23505') throw err;
+      const raced = await this.dedup.resolvePlaceIdByGoogleId(details.providerPlaceId);
+      if (!raced) throw err;
+      return raced;
+    }
   }
 
   private async createPlace(details: ResolvedProviderPlace, autoPublish: boolean): Promise<string> {
@@ -246,15 +273,22 @@ export class PlaceImportService {
           freshnessCheckedAt: new Date(),
         })
         .returning();
-      await tx.insert(schema.placeSources).values({
-        placeId: place!.id,
-        provider: 'google',
-        externalId: details.providerPlaceId,
-        attribution: details.attribution,
-        // Provider payload retention bounded by license (FR-PLACE-006).
-        raw: details.raw,
-        rawUpdatedAt: new Date(),
-      });
+      // #334 — Google provenance is written to `place_provider_sources`, the
+      // table dedup and attribution both read. The old `place_sources` write
+      // is gone with it, and so is `raw`: it carried a whole Details payload
+      // that nothing ever read (ADR-0006 §9.4 R1).
+      await this.dedup.linkProviderIdentity(
+        {
+          placeId: place!.id,
+          googlePlaceId: details.providerPlaceId,
+          attribution: details.attribution,
+          providerUri: details.googleMapsUri,
+          // `details()` above took the default tier, and a row must say which
+          // fields it could legitimately have.
+          fetchTier: 'quality',
+        },
+        tx,
+      );
       for (const h of details.hours) {
         await tx.insert(schema.placeHours).values({
           placeId: place!.id,

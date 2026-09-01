@@ -214,6 +214,8 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
 
     return {
       providerPlaceId: data.id,
+      // Only when they disagree — see `requestedProviderPlaceId` on the port.
+      ...(data.id !== providerPlaceId ? { requestedProviderPlaceId: providerPlaceId } : {}),
       name: data.displayName?.text ?? 'Unknown',
       addressText: data.formattedAddress ?? '',
       lat: data.location.latitude,

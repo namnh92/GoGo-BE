@@ -1,8 +1,10 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import type { ResolvedProviderPlace } from '@gogo/providers';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { normalizeVietnamese } from '../../search/domain/normalize';
+import { GOOGLE_PROVIDER } from '../../shared/google-provenance';
 import { DB } from '../../shared/tokens';
 import { writeOutbox } from '../../shared/outbox';
 
@@ -18,25 +20,102 @@ export type DedupVerdict =
  */
 @Injectable()
 export class PlaceDedupService {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+  ) {}
+
+  /**
+   * The GoGo place a Google Place ID already belongs to, or null.
+   *
+   * Canonical table first, legacy `place_sources` second. The fallback is what
+   * makes the transition safe in both directions: migration 0033 copies every
+   * legacy row forward, but a deployment mid-rollout — or a row whose external
+   * ID was already claimed by a different place and is therefore parked in
+   * `place_identity_conflicts` — must still resolve to the place it has always
+   * resolved to. Every identity read in the codebase calls this, so no path can
+   * be blind to a door the others can see.
+   */
+  async resolvePlaceIdByGoogleId(
+    googlePlaceId: string,
+    runner: Pick<Db, 'execute'> = this.db,
+  ): Promise<string | null> {
+    const canonical = await runner.execute(sql`
+      select place_id from place_provider_sources
+      where provider = ${GOOGLE_PROVIDER} and external_id = ${googlePlaceId}
+      limit 1
+    `);
+    const linked = canonical.rows[0] as { place_id: string } | undefined;
+    if (linked) return linked.place_id;
+
+    const legacy = await runner.execute(sql`
+      select place_id from place_sources
+      where provider = 'google' and external_id = ${googlePlaceId}
+      limit 1
+    `);
+    return (legacy.rows[0] as { place_id: string } | undefined)?.place_id ?? null;
+  }
+
+  /**
+   * Links a place to its Google identity and nothing else.
+   *
+   * The path that calls this — `/v1/places/imports` — used to write
+   * `place_sources`, which is what made the same Google Place ID able to
+   * become two GoGo places. It writes here instead, but only the columns
+   * ADR-0006 §9.3 classes "allowed": the ID, the provider's own link, the
+   * attribution it obliges us to display, and our own fetch metadata. Rating,
+   * price level and primary type stay out — §9.5 forbids moving provider
+   * content into another table, and unifying an identity is not a reason to.
+   *
+   * Throws on a unique violation rather than re-pointing the row: an external
+   * ID already held by another place is a merge decision, not an update.
+   */
+  async linkProviderIdentity(
+    input: {
+      placeId: string;
+      googlePlaceId: string;
+      attribution: string | null;
+      providerUri: string | null;
+      fetchTier: 'core' | 'quality' | 'detail';
+      refreshAfterDays?: number;
+    },
+    runner: Pick<Db, 'insert'> = this.db,
+  ): Promise<void> {
+    const refreshAfter = new Date(Date.now() + (input.refreshAfterDays ?? 30) * 24 * 3600 * 1000);
+    await runner.insert(schema.placeProviderSources).values({
+      placeId: input.placeId,
+      provider: GOOGLE_PROVIDER,
+      externalId: input.googlePlaceId,
+      providerUri: input.providerUri,
+      refreshAfter,
+      attribution: input.attribution === null ? {} : { text: input.attribution },
+      sourceStatus: 'active',
+      fetchTier: input.fetchTier,
+    });
+  }
+
+  /**
+   * #334 — Google answered about a different place than the one we asked for.
+   *
+   * Details follows a moved/merged place to its successor, so the returned id
+   * can differ from the requested one. That is an identity change, and PR1
+   * only reports it: recording `moved_to_external_id` and routing to review
+   * arrives with PR7. Auto-relinking here would let Google's redirect silently
+   * repoint a GoGo place.
+   */
+  reportIdMismatch(details: ResolvedProviderPlace, path: 'import' | 'ingest' | 'submission'): void {
+    const requested = details.requestedProviderPlaceId;
+    if (!requested || requested === details.providerPlaceId) return;
+    // Labels stay bounded: the fact and the door it came through, never an id.
+    this.metrics.increment('place_provider_id_mismatch_total', {
+      provider: GOOGLE_PROVIDER,
+      path,
+    });
+  }
 
   async check(details: ResolvedProviderPlace): Promise<DedupVerdict> {
-    const byProvider = await this.db.execute(sql`
-      select place_id from place_provider_sources
-      where provider = 'google_places' and external_id = ${details.providerPlaceId}
-      limit 1
-    `);
-    const linked = byProvider.rows[0] as { place_id: string } | undefined;
-    if (linked) return { kind: 'LINKED_EXISTING', placeId: linked.place_id };
-
-    // Legacy place_sources rows count as the same signal.
-    const legacy = await this.db.execute(sql`
-      select place_id from place_sources
-      where provider = 'google' and external_id = ${details.providerPlaceId}
-      limit 1
-    `);
-    const legacyHit = legacy.rows[0] as { place_id: string } | undefined;
-    if (legacyHit) return { kind: 'LINKED_EXISTING', placeId: legacyHit.place_id };
+    const linkedPlaceId = await this.resolvePlaceIdByGoogleId(details.providerPlaceId);
+    if (linkedPlaceId) return { kind: 'LINKED_EXISTING', placeId: linkedPlaceId };
 
     const normalized = normalizeVietnamese(details.name);
     const near = await this.db.execute(sql`
@@ -86,7 +165,7 @@ export class PlaceDedupService {
       .insert(schema.placeProviderSources)
       .values({
         placeId: input.placeId,
-        provider: 'google_places',
+        provider: GOOGLE_PROVIDER,
         externalId: input.details.providerPlaceId,
         rating: input.details.rating !== null ? input.details.rating.toFixed(2) : null,
         ratingCount: input.details.ratingCount,

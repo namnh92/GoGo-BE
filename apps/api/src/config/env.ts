@@ -158,6 +158,19 @@ const envSchema = z
       .default('false')
       .transform((v) => v === 'true'),
     /**
+     * #334 — read Google provenance from `place_provider_sources` as well as
+     * the legacy `place_sources`.
+     *
+     * On by default, because off is the behaviour that serves a place imported
+     * through ingestion with no attribution at all. It exists so the reader
+     * half of PR1 can be reverted for one release without reverting the
+     * migration, which is forward-only.
+     */
+    PROVENANCE_UNIFIED_READS: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
+    /**
      * ADR-0007. Off means every leg is the straight-line estimate — the same
      * behaviour as before the Routes adapter existed, and the permanent
      * fallback for quota exhaustion and outages.

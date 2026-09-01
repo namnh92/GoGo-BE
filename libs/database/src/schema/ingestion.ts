@@ -201,6 +201,45 @@ export const placeProviderSources = pgTable(
   ],
 );
 
+/**
+ * PR1 (#334) — the same Google Place ID pointing at two different GoGo places.
+ *
+ * The provenance unification copies `place_sources(provider='google')` into
+ * this module's canonical table. Where an external ID is already taken by a
+ * different place, neither row is a safe one to overwrite: one of them is a
+ * duplicate place, and which one is canonical is an editorial decision about
+ * catalogue content, not something a backfill can infer. Both are kept and
+ * the pair is queued here, the same way `PlaceDedupService` returns
+ * `MERGE_CANDIDATE` rather than merging on its own.
+ *
+ * This is a review queue, not a third identity table: nothing resolves a
+ * Google Place ID through it, and it holds no provider content beyond the ID
+ * itself (ADR-0006 §9.3, "allowed, indefinite").
+ */
+export const placeIdentityConflicts = pgTable(
+  'place_identity_conflicts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    provider: text('provider').notNull(),
+    externalId: text('external_id').notNull(),
+    /** The place the canonical table already links this external ID to. */
+    canonicalPlaceId: uuid('canonical_place_id')
+      .notNull()
+      .references(() => places.id, { onDelete: 'cascade' }),
+    /** The place the legacy row links it to. Never silently discarded. */
+    legacyPlaceId: uuid('legacy_place_id')
+      .notNull()
+      .references(() => places.id, { onDelete: 'cascade' }),
+    detectedAt: timestamp('detected_at', { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    resolution: text('resolution'),
+  },
+  (t) => [
+    uniqueIndex('place_identity_conflicts_unique').on(t.provider, t.externalId, t.legacyPlaceId),
+    index('place_identity_conflicts_open_idx').on(t.detectedAt),
+  ],
+);
+
 export const submissionStatus = pgEnum('place_submission_status', [
   'pending',
   'approved',

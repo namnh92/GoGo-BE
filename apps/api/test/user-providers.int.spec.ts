@@ -109,11 +109,18 @@ describe('place import (BE-BFF-013, FR-PLACE-001..006)', () => {
     expect(place!.status).toBe('community_submitted');
     expect(place!.name).toBe('Quán Mới Nổi');
     expect(place!.nameNormalized).toBe('quan moi noi');
+    // #334 — provenance lives in `place_provider_sources`, the table dedup and
+    // attribution both read. `place_sources` no longer has a Google writer.
     const sources = await db
+      .select()
+      .from(schema.placeProviderSources)
+      .where(eq(schema.placeProviderSources.placeId, body.placeId));
+    expect(sources[0]).toMatchObject({ provider: 'google_places', externalId: 'good-place' });
+    const legacy = await db
       .select()
       .from(schema.placeSources)
       .where(eq(schema.placeSources.placeId, body.placeId));
-    expect(sources[0]).toMatchObject({ provider: 'google', externalId: 'good-place' });
+    expect(legacy).toHaveLength(0);
 
     // Polling endpoint returns the same status for the owner.
     const poll = await api().inject({
@@ -136,8 +143,8 @@ describe('place import (BE-BFF-013, FR-PLACE-001..006)', () => {
     expect(res.json().status).toBe('verified');
     const sources = await db
       .select()
-      .from(schema.placeSources)
-      .where(eq(schema.placeSources.externalId, 'good-place'));
+      .from(schema.placeProviderSources)
+      .where(eq(schema.placeProviderSources.externalId, 'good-place'));
     expect(sources).toHaveLength(1);
   });
 
