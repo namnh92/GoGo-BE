@@ -178,7 +178,7 @@ async function bootstrap(): Promise<void> {
         : new FakePlaceProvider();
   const imports = new PlaceImportJobService(
     db,
-    new PlaceResolverService(placeProvider, db),
+    new PlaceResolverService(placeProvider, db, metrics),
     new PlaceDedupService(db),
     sheetsKey ? new GoogleSheetsAdapter(sheetsKey, metrics) : new FakeSheets(),
     metrics,

@@ -185,9 +185,36 @@ or disconnect.
   exactly its behaviour before this change.
 - Rolling back is dropping the two tables; no other table references them.
 
+## Amendment (#336, PR3) — `flush()` is not a drain
+
+The BEFORE baseline (#336) found a real loss window that this ADR's "SIGTERM
+loses nothing" claim did not survive.
+
+`flush()` returns the flush **already in flight** when there is one, and
+`flushOnce` clears the buffer _before_ it awaits the write. So a count that
+arrives while a write is in flight lands in a fresh buffer that the joined
+promise knows nothing about — and `stop()` awaited exactly that promise. On
+SIGTERM those counts were dropped silently.
+
+It surfaced as a measurement artefact before it surfaced as a bug: a
+scenario's provider calls kept landing in the _next_ scenario's ledger window
+while the in-process metric registry showed them in the right one. That
+disagreement is only visible because the baseline reports the ledger and the
+scrape side by side instead of reconciling them into one number.
+
+`DbUsageLedger.drain(maxPasses = 5)` flushes until the buffer is empty;
+`stop()` calls it. Bounded rather than `while`, because a database refusing
+every write must not turn a shutdown into a spin — the last error propagates,
+exactly as `flush()` already did. Tested in `usage-ledger.spec.ts`
+("writes counts that arrive while a flush is already in flight").
+
+The SIGKILL window is unchanged: at most one `COST_LEDGER_FLUSH_MS` interval.
+
 ## POST-MERGE VALIDATION REQUIRED — DEV flush measurement
 
-**Status: not passed.** Plan §2.3 requires the accounting boundary to be
+**Status: still not passed** (unchanged by #336 — that PR measured call shape
+with a pinned transport and no Google credentials, which is precisely what
+this section says is _not_ a substitute for a DEV measurement). Plan §2.3 requires the accounting boundary to be
 settled _by measurement on DEV_, and that measurement has not been taken —
 no Google credentials are bound in the environment this was built in. The
 decision above is therefore **provisional**, and this section stays open until

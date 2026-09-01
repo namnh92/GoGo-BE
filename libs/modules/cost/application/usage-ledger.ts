@@ -143,7 +143,32 @@ export class DbUsageLedger implements MetricsPort {
       clearInterval(this.timer);
       this.timer = null;
     }
-    await this.flush();
+    await this.drain();
+  }
+
+  /**
+   * Flush until nothing is buffered.
+   *
+   * #336: one `flush()` is not a drain, and the shutdown path assumed it was.
+   * `flush()` joins a flush already in flight and resolves when *that* one
+   * resolves — but `flushOnce` clears the buffer before it awaits the write,
+   * so anything counted during the write lands in a fresh buffer that the
+   * joined promise knows nothing about. On SIGTERM that is a silent loss, and
+   * ADR-0012 §"loss window" says in as many words that SIGTERM loses nothing.
+   * It now does.
+   *
+   * Bounded rather than `while`: a database that fails every write would spin
+   * here forever, and a shutdown that never completes is worse than a count
+   * that is one flush short. The last error propagates, as `flush()` already
+   * did, so a failing drain is still visible in the flush counter and in the
+   * exit path.
+   */
+  async drain(maxPasses = 5): Promise<void> {
+    if (!this.enabled) return;
+    for (let pass = 0; pass < maxPasses; pass += 1) {
+      await this.flush();
+      if (this.buffer.size === 0) return;
+    }
   }
 
   /**

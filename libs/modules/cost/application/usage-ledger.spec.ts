@@ -174,3 +174,91 @@ describe('DbUsageLedger', () => {
     expect(overlapped).toBe(false);
   });
 });
+
+/**
+ * #336 — a single `flush()` is not a drain, and the shutdown path assumed it
+ * was.
+ *
+ * `flush()` joins a flush already in flight, and `flushOnce` clears the buffer
+ * *before* it awaits the write. So anything counted while that write is in
+ * flight goes into a fresh buffer that the joined promise knows nothing about,
+ * and `stop()` returned before it was written — a silent loss on SIGTERM,
+ * which ADR-0012 says explicitly does not happen.
+ *
+ * Found by the #336 baseline: a scenario's provider calls kept appearing in
+ * the *next* scenario's ledger window while the in-process metric registry
+ * showed them in the right one.
+ */
+describe('DbUsageLedger.drain (#336)', () => {
+  it('writes counts that arrive while a flush is already in flight', async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let writes = 0;
+    const executed: { params: unknown[] }[] = [];
+    const db = {
+      execute: vi.fn(async (query: SQL) => {
+        writes += 1;
+        const rendered = dialect.sqlToQuery(query);
+        executed.push({ params: rendered.params });
+        // Hold the first write open so a second count lands mid-flight.
+        if (writes === 1) await gate;
+        return { rows: [] };
+      }),
+    } as unknown as Db;
+
+    const ledger = new DbUsageLedger(db, { environment: 'dev' });
+    ledger.increment('places_provider_requests_total', {
+      method: 'google.details.quality',
+      status: 200,
+    });
+
+    const inFlight = ledger.flush();
+    // Counted after the buffer was drained but before the write resolved.
+    ledger.increment('places_provider_requests_total', {
+      method: 'google.searchText',
+      status: 200,
+    });
+
+    const drained = ledger.drain();
+    release!();
+    await Promise.all([inFlight, drained]);
+
+    expect(ledger.pending()).toBe(0);
+    const operations = executed.flatMap((e) => e.params.filter((p) => typeof p === 'string'));
+    expect(operations).toContain('google.details.quality');
+    expect(operations, 'the mid-flight count must not be lost on shutdown').toContain(
+      'google.searchText',
+    );
+  });
+
+  it('stops after its pass budget rather than spinning on a database that refuses', async () => {
+    const db = {
+      execute: vi.fn(async () => {
+        throw new Error('write refused');
+      }),
+    } as unknown as Db;
+    const ledger = new DbUsageLedger(db, { environment: 'dev', metrics: recorder() });
+    ledger.increment('places_provider_requests_total', {
+      method: 'google.details.quality',
+      status: 200,
+    });
+
+    // The error propagates exactly as `flush()` already did; what must not
+    // happen is an unbounded retry loop inside a shutdown path.
+    await expect(ledger.drain(3)).rejects.toThrow('write refused');
+    expect(ledger.pending()).toBe(1);
+  });
+
+  it('is a no-op when the ledger is disabled', async () => {
+    const { db, executed } = fakeDb();
+    const ledger = new DbUsageLedger(db, { environment: 'dev', enabled: false });
+    ledger.increment('places_provider_requests_total', {
+      method: 'google.details.quality',
+      status: 200,
+    });
+    await ledger.drain();
+    expect(executed).toEqual([]);
+  });
+});

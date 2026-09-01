@@ -2,7 +2,7 @@
   "name": "gogo-be",
   "version": "0.1.0",
   "private": true,
-  "description": "GoGo backend — API BFF, database, search, suggestion, workers, CMS APIs",
+  "description": "GoGo backend \u2014 API BFF, database, search, suggestion, workers, CMS APIs",
   "engines": {
     "node": ">=22"
   },
@@ -14,6 +14,7 @@
     "artifacts": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/build-artifacts.ts",
     "build": "turbo run build",
     "check:boundaries": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/check-package-boundaries.ts",
+    "cost:baseline": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/cost-baseline/index.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx libs/database/src/migrate.ts",
     "db:seed": "tsx libs/database/src/seed.ts",
@@ -25,12 +26,14 @@
     "secrets:pull": "./scripts/secrets-pull.sh",
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "typecheck": "turbo run typecheck"
+    "typecheck": "turbo run typecheck",
+    "typecheck:scripts": "tsc --noEmit --project scripts/cost-baseline/tsconfig.json"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@swc-node/register": "^1.12.1",
     "@swc/core": "^1.16.1",
+    "@types/node": "^26.3.0",
     "drizzle-kit": "^0.31.10",
     "eslint": "^10.9.1",
     "openapi-typescript": "^7.13.0",
