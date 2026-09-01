@@ -253,3 +253,197 @@ export type QueueStats = {
   /** Consumers currently connected. Zero on a queue with work is the alarm. */
   workers: number | null;
 };
+
+// ─── GEO-001 — multi-provider geo ────────────────────────────────────────────
+//
+// Everything below exists because `PlaceProviderPort` above was shaped around
+// one provider that answers two questions (resolve a URL, fetch details), and
+// the alternative-maps POC needs providers that also search, autocomplete and
+// reverse-geocode. See `gogo-alternative-maps-integration-poc-spec.md` §7–§8,
+// §18.
+//
+// Deliberately *not* a separate `geo` module: adapters live beside the ones
+// they replace, so the day a provider is swapped there is one place to look.
+
+/**
+ * Who answered. Stored on candidates and on `place_provider_sources.provider`,
+ * so the value is a wire/DB identifier — renaming one is a migration.
+ *
+ * `google_places` is here for the rows that already exist. Spec §7.3 forbids
+ * *adding* Google as a place-metadata provider in this POC; it does not
+ * un-write the catalog GoGo already imported through it.
+ */
+export type PlaceProviderId = 'google_places' | 'vietmap' | 'foursquare';
+
+/**
+ * Spec §7.3 lists only `vietmap`, which is true of what the POC *adds*. The
+ * other two are what production answers with today — `haversine` included,
+ * because a straight-line estimate is a real answer this system gives and
+ * metrics that pretend otherwise would under-count the fallback path.
+ */
+export type RouteProviderId = 'vietmap' | 'google_routes' | 'haversine';
+
+/**
+ * One provider's opinion about a place, normalized. Not a GoGo place: nothing
+ * here is canonical until the resolver has scored it (`match-score.ts`).
+ *
+ * Every field past `providerPlaceId` is optional because providers disagree
+ * about what a search result contains — VIETMAP Search v4 routinely omits
+ * coordinates, which is why `getDetails` exists as a second, separately billed
+ * step (spec §10.1, §27).
+ */
+export type ProviderPlaceCandidate = {
+  provider: PlaceProviderId;
+  providerPlaceId: string;
+  name: string;
+  formattedAddress?: string | undefined;
+  location?: LatLng | undefined;
+  categories?: { id?: string | undefined; name: string }[] | undefined;
+  /** Provider's own distance from the search focus, when it computed one. */
+  distanceMeters?: number | undefined;
+  /** Provider's own relevance number. Not comparable across providers. */
+  providerScore?: number | undefined;
+  /**
+   * Dev/debug only (spec §8). Never serialized into a `/v1` response, never
+   * persisted by default, and never contains a credential — the adapter strips
+   * the request before it gets here.
+   */
+  raw?: unknown;
+};
+
+/** Details are the same shape; the difference is what the provider was paid for. */
+export type ProviderPlaceDetails = ProviderPlaceCandidate;
+
+export type PlaceSearchInput = {
+  text: string;
+  /** Biases ranking toward a point; not a hard filter. */
+  focus?: LatLng | undefined;
+  radiusMeters?: number | undefined;
+  limit?: number | undefined;
+};
+
+export type PlaceAutocompleteInput = {
+  text: string;
+  focus?: LatLng | undefined;
+  limit?: number | undefined;
+};
+
+export type ReverseGeocodeInput = LatLng & { limit?: number | undefined };
+
+/**
+ * Search-capable place provider.
+ *
+ * The three methods are optional rather than required, and that is the whole
+ * design: `GooglePlacesAdapter` implements none of them and must stay a valid
+ * `PlaceProviderPort`, because the POC is not allowed to change what production
+ * does while `FLAG_ALT_MAPS_POC` is off. A caller asks `supportsSearch()` and
+ * gets a truthful answer instead of a method that throws.
+ */
+export interface GeoPlaceProviderPort extends PlaceProviderPort {
+  readonly providerId: PlaceProviderId;
+  search?(input: PlaceSearchInput, signal?: AbortSignal): Promise<ProviderPlaceCandidate[]>;
+  autocomplete?(
+    input: PlaceAutocompleteInput,
+    signal?: AbortSignal,
+  ): Promise<ProviderPlaceCandidate[]>;
+  reverse?(input: ReverseGeocodeInput, signal?: AbortSignal): Promise<ProviderPlaceCandidate[]>;
+}
+
+export type SearchCapableProvider = GeoPlaceProviderPort &
+  Required<Pick<GeoPlaceProviderPort, 'search'>>;
+
+export function supportsSearch(p: GeoPlaceProviderPort): p is SearchCapableProvider {
+  return typeof p.search === 'function';
+}
+
+export const GEO_PLACE_PROVIDERS = Symbol('GEO_PLACE_PROVIDERS');
+
+/** Spec §18 — every provider failure becomes one of these, or it is a bug. */
+export type GeoProviderErrorCode =
+  | 'INVALID_REQUEST'
+  | 'AUTH_FAILED'
+  | 'FORBIDDEN'
+  | 'RATE_LIMITED'
+  | 'NOT_FOUND'
+  | 'TIMEOUT'
+  | 'UPSTREAM_UNAVAILABLE'
+  | 'BAD_UPSTREAM_RESPONSE';
+
+/**
+ * Which failures are worth asking about again (spec §17).
+ *
+ * `BAD_UPSTREAM_RESPONSE` is not retryable on purpose: a body that did not
+ * parse will not parse on the second attempt either, and retrying it turns one
+ * provider bug into two billed calls.
+ */
+const RETRYABLE: ReadonlySet<GeoProviderErrorCode> = new Set([
+  'RATE_LIMITED',
+  'TIMEOUT',
+  'UPSTREAM_UNAVAILABLE',
+]);
+
+export function isRetryableGeoCode(code: GeoProviderErrorCode): boolean {
+  return RETRYABLE.has(code);
+}
+
+/**
+ * HTTP status → error code, per spec §17's retry table.
+ *
+ * 408/429/5xx retry; 400/401/403/404 never do. Anything else in the 4xx range
+ * is the caller's fault by elimination, so it is `INVALID_REQUEST` and stays
+ * un-retried — the alternative is hammering a provider over a request it has
+ * already told us it will not accept.
+ */
+export function geoErrorCodeForStatus(status: number): GeoProviderErrorCode {
+  if (status === 400) return 'INVALID_REQUEST';
+  if (status === 401) return 'AUTH_FAILED';
+  if (status === 403) return 'FORBIDDEN';
+  if (status === 404) return 'NOT_FOUND';
+  if (status === 408) return 'TIMEOUT';
+  if (status === 429) return 'RATE_LIMITED';
+  if (status >= 500) return 'UPSTREAM_UNAVAILABLE';
+  if (status >= 400) return 'INVALID_REQUEST';
+  return 'BAD_UPSTREAM_RESPONSE';
+}
+
+/**
+ * A provider failure, already classified.
+ *
+ * `message` is deliberately built from the code and the provider name only. The
+ * upstream body never reaches it: spec §18 forbids leaking provider responses
+ * to public clients, and an error message is the easiest place for one to
+ * escape. Whatever the upstream said travels as `cause`, for logs.
+ */
+export class GeoProviderError extends Error {
+  readonly provider: PlaceProviderId | RouteProviderId;
+  readonly code: GeoProviderErrorCode;
+  readonly upstreamStatus: number | undefined;
+  readonly retryable: boolean;
+  /** From `Retry-After`, when the provider said how long to wait. */
+  readonly retryAfterMs: number | undefined;
+
+  constructor(
+    provider: PlaceProviderId | RouteProviderId,
+    code: GeoProviderErrorCode,
+    options: { upstreamStatus?: number; retryAfterMs?: number; cause?: unknown } = {},
+  ) {
+    super(`geo provider ${provider} failed: ${code}`, { cause: options.cause });
+    this.name = 'GeoProviderError';
+    this.provider = provider;
+    this.code = code;
+    this.upstreamStatus = options.upstreamStatus;
+    this.retryAfterMs = options.retryAfterMs;
+    this.retryable = isRetryableGeoCode(code);
+  }
+
+  static fromStatus(
+    provider: PlaceProviderId | RouteProviderId,
+    status: number,
+    options: { retryAfterMs?: number; cause?: unknown } = {},
+  ): GeoProviderError {
+    return new GeoProviderError(provider, geoErrorCodeForStatus(status), {
+      upstreamStatus: status,
+      ...options,
+    });
+  }
+}
