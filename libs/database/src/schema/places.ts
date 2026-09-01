@@ -307,6 +307,19 @@ export const placeImports = pgTable(
     // NOT_FOUND | INSUFFICIENT_REVIEWS | LOW_RATING | OUT_OF_AREA | CLOSED |
     // INVALID_URL | PROVIDER_ERROR
     reasonCode: text('reason_code'),
+    /**
+     * @deprecated #348 — no longer written, and never read.
+     *
+     * Held a Google Details extract (name, address, lat/lng, rating, rating
+     * count, attribution) with no reader, no TTL and no purge job, which SST
+     * §14.3 does not allow for the coordinates in it. Migration 0036 nulls
+     * every row; the writer is gone from `place-import.service.ts`.
+     *
+     * The column survives one release so a rollback to the previous
+     * deployment still finds it, then is dropped (ADR-0006 §9.4 R5). Do not
+     * write to it, and do not read it — a value here can only be a row that
+     * predates the purge.
+     */
     providerSnapshot: jsonb('provider_snapshot'),
     resultPlaceId: uuid('result_place_id').references(() => places.id, {
       onDelete: 'set null',

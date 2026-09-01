@@ -1,0 +1,44 @@
+-- PR #348 (COST-BE-013) — Google content out of `place_imports.provider_snapshot`.
+--
+-- `provider_snapshot` is a `jsonb` column holding a Google Details extract:
+-- name, formatted address, latitude, longitude, rating, rating count and
+-- attribution, written on every successful `/v1/places/imports` verification.
+--
+-- The audit behind issue #348 found the same three facts that decided R1:
+--
+-- 1. **One writer, no readers.** `rg 'providerSnapshot|provider_snapshot'`
+--    over the repository returns the schema definition
+--    (`libs/database/src/schema/places.ts`), the writer
+--    (`libs/modules/places/application/place-import.service.ts`) and the
+--    original CREATE TABLE. No endpoint returns it, no job reads it, the CMS
+--    does not know it exists, and it has never been part of the `/v1`
+--    contract — so it has never left the backend.
+-- 2. **It holds coordinates.** Google Maps Platform Service Specific Terms
+--    §14.3 caps Places latitude and longitude at 30 consecutive calendar days.
+--    This column has no TTL, no purge job and nothing that expires it — the
+--    same exposure #347 fixed for `place_ingest_rows.candidates`.
+-- 3. **ADR-0006 §9.2 never listed it.** The inventory was written around the
+--    ingestion path; `place_imports` belongs to the older community-import
+--    path (BE-BFF-013), so the store was missed. The ADR is amended in the
+--    same change that removes the data.
+--
+-- Nothing reads it, so nothing justifies keeping it. That reasoning is
+-- independent of the counsel answer owed in ADR-0006 §9.6: this is not a
+-- `needs decision` field being decided early, it is a store with no product
+-- purpose at all. See ADR-0006 §9.4 R5.
+--
+-- Idempotent and forward-only: the guard means a second run updates zero rows,
+-- and the column itself stays for one release so a rollback to the previous
+-- deployment still finds it. It is dropped once no deployed code names it:
+--
+--   ALTER TABLE place_imports DROP COLUMN provider_snapshot;
+--
+-- Down:
+--   None. §14.3 requires the coordinates be deleted, and restoring the rest
+--   would undo the compliance fix. Every field in the snapshot is re-fetchable
+--   from Google on demand, and `place_imports.provider_place_id` — the Place
+--   ID, which SST §3 permits storing indefinitely — is untouched, so the row
+--   still says exactly which place it resolved to.
+UPDATE place_imports
+SET provider_snapshot = NULL
+WHERE provider_snapshot IS NOT NULL;
