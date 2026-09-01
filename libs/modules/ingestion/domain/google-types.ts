@@ -127,13 +127,23 @@ const TYPES: Readonly<Record<string, TypeEntry>> = {
 const RESTAURANT_SUFFIX = '_restaurant';
 
 /**
- * Which category wins when a place carries several.
+ * **GoGo Category Selection Policy v1** — which category wins when a place
+ * carries several.
  *
- * Google hangs generic parents off almost every commercial place: a specialty
- * coffee bar comes back as `cafe, coffee_shop, food, restaurant, store,
- * point_of_interest`. Array order is the provider's business and is not
- * promised to be stable, so position cannot decide — otherwise the same place
- * could import as `cafe` today and `restaurant` after a provider-side reshuffle.
+ * This is a GoGo policy, not a Google guarantee. Google publishes no ranking,
+ * no precedence and no ordering promise over `types[]`; it does not say which
+ * of a place's types is the most descriptive, and the array order is the
+ * provider's business. The order below is GoGo's own editorial judgement,
+ * chosen so that the same provider response always produces the same category
+ * — otherwise a place could import as `cafe` today and `restaurant` after a
+ * provider-side reshuffle.
+ *
+ * Changing this list changes what published places are filed under. It is a
+ * product decision with a version number, not a lookup table to tune.
+ *
+ * The problem it solves: Google hangs generic parents off almost every
+ * commercial place — a specialty coffee bar comes back as `cafe, coffee_shop,
+ * food, restaurant, store, point_of_interest`.
  *
  * Lower wins. The order is "how often is this type attached to a place that is
  * really something else":

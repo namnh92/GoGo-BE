@@ -140,11 +140,19 @@ Precedence, in order:
    GoGo-owned (ADR-0006 §3), and an editor who files a place under `bar` that
    Google calls `restaurant` is usually right about why members go there.
 2. `primaryType`, when it maps. Google's own answer to "mainly what".
-3. The lowest-ranked category among `types[]`. **Rank, not array order** —
-   Google does not promise an order, so position would make the same place
-   import as `cafe` today and `restaurant` after a provider-side reshuffle. The
-   rank is documented in `google-types.ts`: specific types beat the generic
-   parents (`food`, `restaurant`, `store`) that hang off almost everything.
+3. The lowest-ranked category among `types[]`, under the **GoGo Category
+   Selection Policy v1**. **Rank, not array order** — Google publishes no
+   ranking, precedence or ordering promise over `types[]`, so position would
+   make the same place import as `cafe` today and `restaurant` after a
+   provider-side reshuffle.
+
+   The rank is `lodging > museum > cinema > bar > cafe > park > shopping >
+restaurant`, defined as `CATEGORY_RANK` in `google-types.ts`. It is GoGo's
+   own editorial judgement — specific types beat the generic parents (`food`,
+   `restaurant`, `store`) Google hangs off almost everything — **not** anything
+   Google asserts. Changing it changes what published places are filed under,
+   so it carries a version and is a product decision, not a tuning knob.
+
 4. Nothing. The row fails with `CATEGORY_REQUIRED`, naming the Google type it
    saw, and an editor supplies one.
 
