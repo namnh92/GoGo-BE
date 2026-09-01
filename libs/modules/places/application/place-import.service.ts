@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import {
@@ -7,6 +7,7 @@ import {
   type PlaceProviderPort,
   type ResolvedProviderPlace,
 } from '@gogo/providers';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
 import { APP_CONFIG, type PlatformConfig } from '../../shared/config';
 import { flagEnvironmentOf, resolveFlag } from '../../shared/feature-flags';
@@ -48,6 +49,7 @@ export class PlaceImportService {
     @Inject(PLACE_PROVIDER) private readonly provider: PlaceProviderPort,
     @Inject(APP_CONFIG) private readonly config: PlatformConfig,
     private readonly dedup: PlaceDedupService,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
   /**
@@ -192,8 +194,24 @@ export class PlaceImportService {
     // Google Place ID become a second GoGo place when it had first arrived
     // through bulk import or a mobile submission. The resolver reads the
     // canonical table and the legacy one, so every door now sees every other.
-    const linkedPlaceId = await this.dedup.resolvePlaceIdByGoogleId(details.providerPlaceId);
-    const placeId = linkedPlaceId ?? (await this.createLinkedPlace(details, rules.autoPublish));
+    const identity = await this.dedup.resolveGoogleIdentity(details.providerPlaceId);
+    if (identity.kind === 'CONFLICT') {
+      // Two places already claim this Google ID. Linking to either would be
+      // this endpoint picking a winner in a decision an editor owns, and
+      // creating a third place would make it worse (#334).
+      this.metrics.increment('place_identity_conflict_blocked_total', { path: 'import' });
+      return reject('IDENTITY_CONFLICT');
+    }
+    const created =
+      identity.kind === 'RESOLVED'
+        ? identity.placeId
+        : await this.createLinkedPlace(details, rules.autoPublish);
+    if (created === 'CONFLICT') {
+      this.metrics.increment('place_identity_conflict_blocked_total', { path: 'import' });
+      return reject('IDENTITY_CONFLICT');
+    }
+    const placeId = created;
+    const linkedPlaceId = identity.kind === 'RESOLVED' ? identity.placeId : null;
 
     const [updated] = await this.db
       .update(schema.placeImports)
@@ -244,15 +262,16 @@ export class PlaceImportService {
   private async createLinkedPlace(
     details: ResolvedProviderPlace,
     autoPublish: boolean,
-  ): Promise<string> {
+  ): Promise<string | 'CONFLICT'> {
     try {
       return await this.createPlace(details, autoPublish);
     } catch (err) {
       const pg = err as { code?: string };
       if (pg.code !== '23505') throw err;
-      const raced = await this.dedup.resolvePlaceIdByGoogleId(details.providerPlaceId);
-      if (!raced) throw err;
-      return raced;
+      const raced = await this.dedup.resolveGoogleIdentity(details.providerPlaceId);
+      if (raced.kind === 'CONFLICT') return 'CONFLICT';
+      if (raced.kind === 'NONE') throw err;
+      return raced.placeId;
     }
   }
 

@@ -233,9 +233,27 @@ Three consequences worth knowing:
 
 Where the same external ID already pointed at a _different_ place, the backfill
 does not choose. Both rows survive and the pair lands in
-`place_identity_conflicts` for an editor to merge — the same rule
-`PlaceDedupService.check` follows when it returns `MERGE_CANDIDATE` instead of
-merging. A CMS merge closes the conflict row as part of the same transaction.
+`place_identity_conflicts` — the same rule `PlaceDedupService.check` follows
+when it returns `MERGE_CANDIDATE` instead of merging.
+
+**That queue is not decorative: it gates runtime resolution.** An open conflict
+row outranks both provenance tables in `resolveGoogleIdentity`, which returns
+`CONFLICT` rather than the canonical winner. Resolving canonical-first would
+mean the migration recorded a disagreement that every subsequent import,
+submission and bulk row then ignored — the identity would still be silently
+picked, just by a different query. Each door refuses in its own vocabulary:
+
+| Path                                       | Behaviour while the conflict is open                                                                               |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `POST /v1/places/imports`                  | `rejected`, `reasonCode: IDENTITY_CONFLICT`; no place created                                                      |
+| `POST /v1/places/resolve-google-maps-link` | `UNRESOLVED` + `PLACE_IDENTITY_CONFLICT` (not `ALREADY_EXISTS`)                                                    |
+| `POST /v1/place-submissions`               | 409 `PLACE_IDENTITY_CONFLICT`; no submission row                                                                   |
+| CMS bulk import row                        | `needs_confirmation` + `PLACE_IDENTITY_CONFLICT` — never `duplicate`, which would assert which place it duplicates |
+
+Each refusal counts `place_identity_conflict_blocked_total{path}`, so a queue
+that is not being worked shows up as a rate rather than as silence. A CMS merge
+closes the conflict row in the same transaction, and the refused door works
+again immediately — this is a queue, not a dead end.
 
 Google can also answer `details(id)` with a _different_ id, because a place
 moved or was merged. The adapter reports both (`requestedProviderPlaceId`) and

@@ -9,20 +9,30 @@ import { PlaceDedupService } from './place-dedup.service';
  * Place ID?". Before PR1 each path had its own, and they disagreed.
  */
 
-type Row = { place_id: string };
+type Resolution = {
+  canonical_place_id?: string | null;
+  legacy_place_id?: string | null;
+  conflict_id?: string | null;
+};
 
-/** Records which tables were asked, in order, and answers from a fixture. */
-function fakeDb(rows: { canonical?: Row[]; legacy?: Row[] }) {
-  const asked: ('canonical' | 'legacy')[] = [];
+/** One query now, so the fake answers it once and records that it was one. */
+function fakeDb(row: Resolution) {
+  const queries: string[] = [];
   const db = {
     execute: async (query: unknown) => {
-      const text = JSON.stringify(query);
-      const table = text.includes('place_provider_sources') ? 'canonical' : 'legacy';
-      asked.push(table);
-      return { rows: (table === 'canonical' ? rows.canonical : rows.legacy) ?? [] };
+      queries.push(JSON.stringify(query));
+      return {
+        rows: [
+          {
+            canonical_place_id: row.canonical_place_id ?? null,
+            legacy_place_id: row.legacy_place_id ?? null,
+            conflict_id: row.conflict_id ?? null,
+          },
+        ],
+      };
     },
   } as unknown as Db;
-  return { db, asked };
+  return { db, queries };
 }
 
 function fakeMetrics() {
@@ -58,42 +68,94 @@ const details = (over: Partial<ResolvedProviderPlace> = {}): ResolvedProviderPla
     ...over,
   }) as ResolvedProviderPlace;
 
-describe('resolvePlaceIdByGoogleId', () => {
-  it('answers from the canonical table without touching the legacy one', async () => {
-    const { db, asked } = fakeDb({ canonical: [{ place_id: 'p-canonical' }] });
+describe('resolveGoogleIdentity', () => {
+  it('answers from the canonical table, in one round trip', async () => {
+    const { db, queries } = fakeDb({ canonical_place_id: 'p-canonical' });
     const service = new PlaceDedupService(db);
 
-    expect(await service.resolvePlaceIdByGoogleId('ChIJx')).toBe('p-canonical');
-    // Reading `place_sources` after an answer is already in hand is a second
-    // round trip on every ingestion row, for nothing.
-    expect(asked).toEqual(['canonical']);
+    expect(await service.resolveGoogleIdentity('ChIJx')).toEqual({
+      kind: 'RESOLVED',
+      placeId: 'p-canonical',
+    });
+    // Three tables, one query: this runs on every bulk import row.
+    expect(queries).toHaveLength(1);
   });
 
   it('falls back to the legacy table, which is what makes migration safe', async () => {
-    const { db, asked } = fakeDb({ canonical: [], legacy: [{ place_id: 'p-legacy' }] });
+    const { db } = fakeDb({ legacy_place_id: 'p-legacy' });
     const service = new PlaceDedupService(db);
 
-    // A row the backfill has not reached — or one parked as a conflict — must
-    // still resolve to the place it has always resolved to.
-    expect(await service.resolvePlaceIdByGoogleId('ChIJx')).toBe('p-legacy');
-    expect(asked).toEqual(['canonical', 'legacy']);
+    // A row the backfill has not reached must still resolve to the place it
+    // has always resolved to.
+    expect(await service.resolveGoogleIdentity('ChIJx')).toEqual({
+      kind: 'RESOLVED',
+      placeId: 'p-legacy',
+    });
   });
 
-  it('returns null when neither table knows the id', async () => {
+  it('returns NONE when neither table knows the id', async () => {
     const { db } = fakeDb({});
-    expect(await new PlaceDedupService(db).resolvePlaceIdByGoogleId('ChIJx')).toBeNull();
+    expect(await new PlaceDedupService(db).resolveGoogleIdentity('ChIJx')).toEqual({
+      kind: 'NONE',
+    });
+  });
+
+  it('refuses to pick a winner while a conflict is open', async () => {
+    const { db } = fakeDb({
+      canonical_place_id: 'p-ingestion',
+      legacy_place_id: 'p-legacy',
+      conflict_id: 'c-1',
+    });
+    const service = new PlaceDedupService(db);
+
+    // The regression this guards: returning `p-ingestion` because the
+    // canonical table is read first would make the conflict queue decorative.
+    expect(await service.resolveGoogleIdentity('ChIJx')).toEqual({
+      kind: 'CONFLICT',
+      placeIds: ['p-ingestion', 'p-legacy'],
+      conflictId: 'c-1',
+    });
+  });
+
+  it('resolves again once the conflict is closed', async () => {
+    const { db } = fakeDb({ canonical_place_id: 'p-ingestion', legacy_place_id: 'p-legacy' });
+    // A resolved conflict is not returned by the query at all, so the row
+    // reads exactly like an ordinary one.
+    expect(await new PlaceDedupService(db).resolveGoogleIdentity('ChIJx')).toEqual({
+      kind: 'RESOLVED',
+      placeId: 'p-ingestion',
+    });
   });
 });
 
 describe('check', () => {
   it('links to the legacy place instead of proposing a new one', async () => {
-    const { db } = fakeDb({ canonical: [], legacy: [{ place_id: 'p-legacy' }] });
+    const { db } = fakeDb({ legacy_place_id: 'p-legacy' });
     const service = new PlaceDedupService(db);
 
     expect(await service.check(details())).toEqual({
       kind: 'LINKED_EXISTING',
       placeId: 'p-legacy',
     });
+  });
+
+  it('surfaces an open conflict as its own verdict, never as a link', async () => {
+    const { db } = fakeDb({
+      canonical_place_id: 'p-ingestion',
+      legacy_place_id: 'p-legacy',
+      conflict_id: 'c-1',
+    });
+    const { metrics, counters } = fakeMetrics();
+    const service = new PlaceDedupService(db, metrics);
+
+    expect(await service.check(details())).toEqual({
+      kind: 'IDENTITY_CONFLICT',
+      placeIds: ['p-ingestion', 'p-legacy'],
+      conflictId: 'c-1',
+    });
+    expect(counters).toEqual([
+      { name: 'place_identity_conflict_blocked_total', labels: { path: 'dedup' } },
+    ]);
   });
 });
 

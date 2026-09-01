@@ -59,6 +59,10 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // which is how a moved or merged place surfaces. `provider` is a constant
   // and `path` is the three doors identity can arrive through; no ids.
   place_provider_id_mismatch_total: ['provider', 'path'],
+  // #334 — an import/submission/bulk row refused because the Google Place ID
+  // is recorded against two places and the conflict is still open. `path` is
+  // the finite set of doors; a non-zero rate means the merge queue is behind.
+  place_identity_conflict_blocked_total: ['path'],
 
   // --- submissions ---------------------------------------------------------
   mobile_place_submissions_total: ['status'],

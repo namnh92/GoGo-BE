@@ -467,6 +467,164 @@ describe('migration 0033 backfill', () => {
   });
 });
 
+describe('an open identity conflict blocks every runtime path (#334)', () => {
+  let winnerId = '';
+  let rivalId = '';
+
+  beforeAll(async () => {
+    // Built the way production gets one: two provenance rows disagreeing, and
+    // the migration — not the test — recording the conflict.
+    winnerId = await newPlace('Quán Tranh Chấp A', 106.703, 10.776);
+    rivalId = await newPlace('Quán Tranh Chấp B', 106.704, 10.7765);
+    await db.insert(schema.placeProviderSources).values({
+      placeId: winnerId,
+      provider: 'google_places',
+      externalId: 'ChIJblocked',
+      attribution: { text: 'Data © Fake Provider' },
+    });
+    await db.insert(schema.placeSources).values({
+      placeId: rivalId,
+      provider: 'google',
+      externalId: 'ChIJblocked',
+      attribution: 'Data © Fake Provider',
+    });
+    await runMigration0033();
+    places.seed({
+      providerPlaceId: 'ChIJblocked',
+      name: 'Quán Tranh Chấp',
+      lat: 10.776,
+      lng: 106.7005,
+    });
+  });
+
+  it('the resolver reports a conflict instead of the canonical winner', async () => {
+    const identity = await dedup.resolveGoogleIdentity('ChIJblocked');
+    // The precise regression: canonical-first would silently answer `winnerId`.
+    expect(identity.kind).toBe('CONFLICT');
+    expect(identity.kind === 'CONFLICT' && identity.placeIds.sort()).toEqual(
+      [winnerId, rivalId].sort(),
+    );
+  });
+
+  it('the legacy import rejects with IDENTITY_CONFLICT and creates nothing', async () => {
+    const before = await db.execute(sql`select count(*)::int as n from places`);
+    const token = await register('conflict-import@gogo.id.vn');
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/places/imports',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { url: 'https://maps.google.com/maps?place_id=ChIJblocked' },
+    });
+    expect(res.json().status).toBe('rejected');
+    expect(res.json().reasonCode).toBe('IDENTITY_CONFLICT');
+    expect(res.json().placeId ?? null).toBeNull();
+    const after = await db.execute(sql`select count(*)::int as n from places`);
+    expect((after.rows[0] as { n: number }).n).toBe((before.rows[0] as { n: number }).n);
+  });
+
+  it('the link preview says UNRESOLVED, not ALREADY_EXISTS', async () => {
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/places/resolve-google-maps-link',
+      remoteAddress: ip(),
+      payload: { url: 'https://maps.google.com/maps?place_id=ChIJblocked' },
+    });
+    // ALREADY_EXISTS would send the user to whichever row the query returned
+    // first; RESOLVED would invite them to submit a third place.
+    expect(res.json().status).toBe('UNRESOLVED');
+    expect(res.json().reasonCodes).toContain('PLACE_IDENTITY_CONFLICT');
+    expect(res.json().existingPlaceId).toBeUndefined();
+  });
+
+  it('the mobile submission is refused 409, and no submission row is written', async () => {
+    const token = await register('conflict-sub@gogo.id.vn');
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/place-submissions',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { googlePlaceId: 'ChIJblocked' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('PLACE_IDENTITY_CONFLICT');
+    const rows = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.googlePlaceId, 'ChIJblocked'));
+    expect(rows).toHaveLength(0);
+  });
+
+  it('the bulk import row waits for a human, and is not called a duplicate', async () => {
+    const editor = await createAdmin('conflict-editor@gogo.local', 'editor');
+    const file = multipart(
+      { mode: 'create_drafts', defaultCity: 'Hồ Chí Minh' },
+      {
+        name: 'conflict.csv',
+        content: Buffer.from(
+          [
+            CSV_HEADER,
+            'C-1,Quán Tranh Chấp,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=ChIJblocked,cafe,100000,200000,per_person',
+          ].join('\n'),
+          'utf8',
+        ),
+      },
+    );
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(editor.token), ...file.headers },
+      payload: file.payload,
+    });
+    const jobId = created.json().id as string;
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${jobId}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(jobId);
+
+    const [row] = await db
+      .select()
+      .from(schema.placeIngestRows)
+      .where(eq(schema.placeIngestRows.jobId, jobId));
+    // `duplicate` asserts which place the row duplicates, and that is exactly
+    // what nobody has decided yet.
+    expect(row!.status).toBe('needs_confirmation');
+    expect(row!.errors.map((e) => e.code)).toContain('PLACE_IDENTITY_CONFLICT');
+  });
+
+  it('resolving the conflict by merging unblocks the same import', async () => {
+    const admin = await createAdmin('conflict-merge@gogo.local', 'editor');
+    const merged = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/places/${winnerId}/merge`,
+      remoteAddress: ip(),
+      headers: auth(admin.token),
+      payload: { duplicateId: rivalId },
+    });
+    expect(merged.statusCode).toBe(201);
+
+    expect(await dedup.resolveGoogleIdentity('ChIJblocked')).toEqual({
+      kind: 'RESOLVED',
+      placeId: winnerId,
+    });
+    // A block is a queue, not a dead end: the door that was refused now works.
+    const token = await register('conflict-after@gogo.id.vn');
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/places/imports',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { url: 'https://maps.google.com/maps?place_id=ChIJblocked' },
+    });
+    expect(res.json().status).toBe('verified');
+    expect(res.json().placeId).toBe(winnerId);
+  });
+});
+
 describe('merge moves the identity with the place (#334)', () => {
   it('leaves no provider row on the archived duplicate and dedup follows', async () => {
     const canonicalId = await newPlace('Quán Gộp Đích', 106.73, 10.81);
@@ -546,7 +704,10 @@ describe('merge moves the identity with the place (#334)', () => {
 
     // The whole reason the row had to move: the next import of that ID must
     // land on the place that is still in the catalogue.
-    expect(await dedup.resolvePlaceIdByGoogleId('ChIJmerge')).toBe(canonicalId);
+    expect(await dedup.resolveGoogleIdentity('ChIJmerge')).toEqual({
+      kind: 'RESOLVED',
+      placeId: canonicalId,
+    });
   });
 
   it('closes the identity conflict a merge resolves', async () => {

@@ -10,8 +10,23 @@ import { writeOutbox } from '../../shared/outbox';
 
 export type DedupVerdict =
   | { kind: 'LINKED_EXISTING'; placeId: string }
+  | { kind: 'IDENTITY_CONFLICT'; placeIds: string[]; conflictId: string }
   | { kind: 'MERGE_CANDIDATE'; placeId: string; similarity: number; distanceM: number }
   | { kind: 'NEW' };
+
+/**
+ * What a Google Place ID resolves to — including "we do not know yet".
+ *
+ * `CONFLICT` is not a degenerate `RESOLVED`. An external ID recorded against
+ * two different GoGo places has no single right answer, and picking the
+ * canonical row because it happens to be first is precisely the silent choice
+ * `place_identity_conflicts` exists to prevent (#334). Every caller has to
+ * decide what to do with it; none may treat it as a link.
+ */
+export type GoogleIdentity =
+  | { kind: 'NONE' }
+  | { kind: 'RESOLVED'; placeId: string }
+  | { kind: 'CONFLICT'; placeIds: string[]; conflictId: string };
 
 /**
  * PI-BE-006 / FR-INGEST-009 — duplicate rules, strongest signal first:
@@ -26,34 +41,54 @@ export class PlaceDedupService {
   ) {}
 
   /**
-   * The GoGo place a Google Place ID already belongs to, or null.
+   * What GoGo place a Google Place ID belongs to — the one identity read.
    *
-   * Canonical table first, legacy `place_sources` second. The fallback is what
-   * makes the transition safe in both directions: migration 0033 copies every
-   * legacy row forward, but a deployment mid-rollout — or a row whose external
-   * ID was already claimed by a different place and is therefore parked in
-   * `place_identity_conflicts` — must still resolve to the place it has always
-   * resolved to. Every identity read in the codebase calls this, so no path can
-   * be blind to a door the others can see.
+   * Three tables in one round trip, and the order matters. An **open** row in
+   * `place_identity_conflicts` outranks both provenance tables: it says the
+   * two disagree and no backfill was willing to choose, so runtime does not
+   * get to choose either. Returning the canonical row here would make the
+   * conflict queue decorative — the migration would have recorded a
+   * disagreement that every import, submission and bulk row then ignored.
+   *
+   * Absent a conflict, canonical first and legacy `place_sources` second. That
+   * fallback is what makes the transition safe in both directions: migration
+   * 0033 copies every legacy row forward, but a database mid-rollout must
+   * still resolve to the place it has always resolved to.
    */
-  async resolvePlaceIdByGoogleId(
+  async resolveGoogleIdentity(
     googlePlaceId: string,
     runner: Pick<Db, 'execute'> = this.db,
-  ): Promise<string | null> {
-    const canonical = await runner.execute(sql`
-      select place_id from place_provider_sources
-      where provider = ${GOOGLE_PROVIDER} and external_id = ${googlePlaceId}
-      limit 1
+  ): Promise<GoogleIdentity> {
+    const found = await runner.execute(sql`
+      select
+        (select place_id from place_provider_sources
+          where provider = ${GOOGLE_PROVIDER} and external_id = ${googlePlaceId}
+          limit 1) as canonical_place_id,
+        (select place_id from place_sources
+          where provider = 'google' and external_id = ${googlePlaceId}
+          limit 1) as legacy_place_id,
+        (select id from place_identity_conflicts
+          where provider = ${GOOGLE_PROVIDER} and external_id = ${googlePlaceId}
+            and resolved_at is null
+          limit 1) as conflict_id
     `);
-    const linked = canonical.rows[0] as { place_id: string } | undefined;
-    if (linked) return linked.place_id;
+    const row = found.rows[0] as {
+      canonical_place_id: string | null;
+      legacy_place_id: string | null;
+      conflict_id: string | null;
+    };
 
-    const legacy = await runner.execute(sql`
-      select place_id from place_sources
-      where provider = 'google' and external_id = ${googlePlaceId}
-      limit 1
-    `);
-    return (legacy.rows[0] as { place_id: string } | undefined)?.place_id ?? null;
+    if (row.conflict_id) {
+      // Both sides are named, so a moderator sees what has to be merged rather
+      // than being told only that something is wrong.
+      const placeIds = [row.canonical_place_id, row.legacy_place_id].filter(
+        (id): id is string => id !== null,
+      );
+      return { kind: 'CONFLICT', placeIds, conflictId: row.conflict_id };
+    }
+    if (row.canonical_place_id) return { kind: 'RESOLVED', placeId: row.canonical_place_id };
+    if (row.legacy_place_id) return { kind: 'RESOLVED', placeId: row.legacy_place_id };
+    return { kind: 'NONE' };
   }
 
   /**
@@ -114,8 +149,18 @@ export class PlaceDedupService {
   }
 
   async check(details: ResolvedProviderPlace): Promise<DedupVerdict> {
-    const linkedPlaceId = await this.resolvePlaceIdByGoogleId(details.providerPlaceId);
-    if (linkedPlaceId) return { kind: 'LINKED_EXISTING', placeId: linkedPlaceId };
+    const identity = await this.resolveGoogleIdentity(details.providerPlaceId);
+    if (identity.kind === 'CONFLICT') {
+      this.metrics.increment('place_identity_conflict_blocked_total', { path: 'dedup' });
+      return {
+        kind: 'IDENTITY_CONFLICT',
+        placeIds: identity.placeIds,
+        conflictId: identity.conflictId,
+      };
+    }
+    if (identity.kind === 'RESOLVED') {
+      return { kind: 'LINKED_EXISTING', placeId: identity.placeId };
+    }
 
     const normalized = normalizeVietnamese(details.name);
     const near = await this.db.execute(sql`
