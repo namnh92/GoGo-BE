@@ -25,9 +25,14 @@ export { GoogleSheetsAdapter } from './google-sheets.adapter';
 export { INGEST_SHEET_HOSTS, parseSpreadsheetId } from './sheets-url';
 export {
   fakedProviders,
+  placeProviderStatus,
+  resolvePlaceProviderMode,
   warnFakedProviders,
   type FakedProvider,
+  type PlaceProviderMode,
+  type PlaceProviderStatus,
   type ProviderKeys,
 } from './provider-selection';
+export { UnconfiguredPlaceProvider } from './unconfigured-place.provider';
 export { R2StorageAdapter, type R2Config } from './r2-storage.adapter';
 export { KeywordFeedbackParser, foldVietnamese } from './keyword-feedback.adapter';

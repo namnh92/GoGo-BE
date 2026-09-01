@@ -31,7 +31,64 @@ export type ProviderKeys = {
   GOOGLE_ROUTES_API_KEY: string;
   /** Routes is opt-in; without the flag its absence is not a fault. */
   FLAG_ROUTES_API: boolean;
+  /** #279 — resolved place-provider mode, when the caller knows it. */
+  PLACE_PROVIDER_MODE?: PlaceProviderMode;
 };
+
+/**
+ * #279 — what this process is *meant* to be running, decided before anyone
+ * looks at whether a credential is present.
+ *
+ * That order is the whole point. Deciding from the credential means a missing
+ * secret and a deliberate fake are the same state, and the system cannot tell
+ * an operator which one it is in.
+ */
+export type PlaceProviderMode = 'google' | 'fake';
+
+/**
+ * Explicit setting wins. Otherwise the build decides: every deployed
+ * environment runs `NODE_ENV=production` (written by GoGo-Infra's
+ * `render-env.sh`), a developer's machine and the test suite do not.
+ *
+ * Keyed on NODE_ENV rather than APP_ENV because APP_ENV defaults to `dev`,
+ * which is both a developer's laptop and a deployed environment — the
+ * ambiguity that #215/#216 already had to unpick once.
+ */
+export function resolvePlaceProviderMode(input: {
+  PLACE_PROVIDER_MODE?: PlaceProviderMode | undefined;
+  NODE_ENV: string;
+}): PlaceProviderMode {
+  if (input.PLACE_PROVIDER_MODE) return input.PLACE_PROVIDER_MODE;
+  return input.NODE_ENV === 'production' ? 'google' : 'fake';
+}
+
+/**
+ * The non-secret operational signal: what got bound, whether it can work, and
+ * why not.
+ *
+ * `ready: false` is deliberately not fatal at boot. Catalog search, rooms and
+ * plans over existing places do not touch this port, and refusing to start
+ * would turn one broken feature into an outage. It is a degraded state that
+ * has to be *visible* — which is what was missing.
+ */
+export type PlaceProviderStatus = {
+  mode: PlaceProviderMode;
+  /** What was actually constructed. */
+  provider: 'google' | 'fake' | 'unconfigured';
+  ready: boolean;
+  reason?: 'MISSING_CREDENTIAL';
+};
+
+export function placeProviderStatus(input: {
+  PLACE_PROVIDER_MODE?: PlaceProviderMode | undefined;
+  NODE_ENV: string;
+  GOOGLE_PLACES_API_KEY: string;
+}): PlaceProviderStatus {
+  const mode = resolvePlaceProviderMode(input);
+  if (mode === 'fake') return { mode, provider: 'fake', ready: true };
+  if (input.GOOGLE_PLACES_API_KEY) return { mode, provider: 'google', ready: true };
+  return { mode, provider: 'unconfigured', ready: false, reason: 'MISSING_CREDENTIAL' };
+}
 
 export function fakedProviders(keys: ProviderKeys): FakedProvider[] {
   const faked: FakedProvider[] = [];
@@ -39,7 +96,12 @@ export function fakedProviders(keys: ProviderKeys): FakedProvider[] {
   // One variable per port, because one key per Google API. There used to be a
   // fallback chain here, and a chain means a warning has to explain which of
   // several names it wanted — the operator's next question after reading it.
-  if (!keys.GOOGLE_PLACES_API_KEY) {
+  //
+  // #279: in `google` mode a missing key no longer binds the fake at all, so
+  // the effect sentence would be a lie. That case is reported by
+  // `placeProviderStatus` instead, as not-ready rather than as pretending.
+  const placeMode = keys.PLACE_PROVIDER_MODE ?? 'fake';
+  if (!keys.GOOGLE_PLACES_API_KEY && placeMode === 'fake') {
     faked.push({
       port: 'PLACE_PROVIDER',
       envVar: 'GOOGLE_PLACES_API_KEY',

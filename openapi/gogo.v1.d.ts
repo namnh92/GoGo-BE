@@ -6801,7 +6801,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Resolution outcome with candidate + attribution facts */
+            /** @description Resolution outcome with candidate + attribution facts. UNRESOLVED here always means the provider answered and there was no match — never that GoGo could not reach it. A provider GoGo cannot use answers 503, so a client may present `UNRESOLVED / NOT_FOUND` to the user as a fact about the link they pasted. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -6812,6 +6812,15 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             429: components["responses"]["RateLimited"];
+            /** @description PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now: no working provider credential, an API not enabled, quota exhausted, or the provider is down. A statement about this deployment, not about the link, so the client must not present it as "địa điểm không tồn tại" (GoGo-BE#279). `retryable` is true; the envelope deliberately names neither the provider nor the fault. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     submitPlace: {

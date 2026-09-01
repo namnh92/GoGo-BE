@@ -16,6 +16,8 @@ import {
   R2StorageAdapter,
   STORAGE_PROVIDER,
   TRAVEL_TIME_PROVIDER,
+  UnconfiguredPlaceProvider,
+  placeProviderStatus,
   warnFakedProviders,
 } from '@gogo/providers';
 import {
@@ -39,19 +41,26 @@ import { APP_CONFIG, type AppConfig } from './config/env';
 @Module({
   providers: [
     {
+      // #279: the mode decides, not the presence of a secret. `google` with no
+      // key binds a provider that refuses — never the fake, which would answer
+      // a real Google Maps link with "no such place".
       provide: PLACE_PROVIDER,
-      useFactory: (config: AppConfig, metrics: MetricsPort) =>
-        config.GOOGLE_PLACES_API_KEY
-          ? new GooglePlacesAdapter(config.GOOGLE_PLACES_API_KEY, metrics)
-          : new FakePlaceProvider(),
+      useFactory: (config: AppConfig, metrics: MetricsPort) => {
+        const status = placeProviderStatus(config);
+        if (status.provider === 'fake') return new FakePlaceProvider();
+        if (status.provider === 'unconfigured') return new UnconfiguredPlaceProvider();
+        return new GooglePlacesAdapter(config.GOOGLE_PLACES_API_KEY, metrics);
+      },
       inject: [APP_CONFIG, METRICS],
     },
     {
       provide: AREA_AUTOCOMPLETE,
-      useFactory: (config: AppConfig) =>
-        config.GOOGLE_PLACES_API_KEY
-          ? new GooglePlacesAdapter(config.GOOGLE_PLACES_API_KEY)
-          : new FakeAreaAutocomplete(),
+      useFactory: (config: AppConfig) => {
+        const status = placeProviderStatus(config);
+        if (status.provider === 'fake') return new FakeAreaAutocomplete();
+        if (status.provider === 'unconfigured') return new UnconfiguredPlaceProvider();
+        return new GooglePlacesAdapter(config.GOOGLE_PLACES_API_KEY);
+      },
       inject: [APP_CONFIG],
     },
     {
@@ -133,6 +142,22 @@ export class ProvidersModule implements OnModuleInit {
    */
   onModuleInit(): void {
     const logger = createLogger({ level: this.config.LOG_LEVEL, name: 'gogo-api' });
-    warnFakedProviders(this.config, (meta, message) => logger.warn(meta, message));
+    const status = placeProviderStatus(this.config);
+    warnFakedProviders({ ...this.config, PLACE_PROVIDER_MODE: status.mode }, (meta, message) =>
+      logger.warn(meta, message),
+    );
+    // #279 — the ops signal. Always emitted, ready or not: "which provider is
+    // this process on" is the first question every one of these incidents has
+    // started with, and it was never written down anywhere. Carries the mode
+    // and a reason code, never a key.
+    const line = {
+      port: 'PLACE_PROVIDER',
+      mode: status.mode,
+      provider: status.provider,
+      ready: status.ready,
+      ...(status.reason ? { reason: status.reason } : {}),
+    };
+    if (status.ready) logger.info(line, 'place provider ready');
+    else logger.error(line, 'place provider NOT ready — place resolution will answer 503');
   }
 }

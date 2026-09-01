@@ -3,7 +3,9 @@ import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
 import {
   PLACE_PROVIDER,
+  ProviderConfigurationError,
   ProviderQuotaExceededError,
+  ProviderUnavailableError,
   type PlaceProviderPort,
   type ResolvedProviderPlace,
 } from '@gogo/providers';
@@ -85,15 +87,29 @@ export class PlaceResolverService {
   }
 
   /**
-   * Provider failures are outcomes, never 500s (FR-INGEST-002) — except quota
-   * exhaustion, which is a budget signal the caller must act on: a bulk job
-   * pauses instead of marking thousands of good rows unresolvable.
+   * A provider that *answered* is an outcome (FR-INGEST-002): "Google looked
+   * and found nothing" is a fact about the world, and `null` is the right way
+   * to say it.
+   *
+   * A provider that could not answer is not an outcome, and #279 is what
+   * happens when the two are collapsed. Quota already propagated for this
+   * reason — a bulk job pauses instead of marking thousands of good rows
+   * unresolvable — and exactly the same argument covers a disabled API, an
+   * invalid key and an upstream outage. Reporting any of them as `null` tells
+   * a user their real place does not exist, and tells monitoring nothing at
+   * all, because a 201 is a success.
    */
+  private static rethrowIfOperational(err: unknown): void {
+    if (err instanceof ProviderQuotaExceededError) throw err;
+    if (err instanceof ProviderConfigurationError) throw err;
+    if (err instanceof ProviderUnavailableError) throw err;
+  }
+
   private async safeResolve(url: string): Promise<string | null> {
     try {
       return await this.provider.resolveUrl(url);
     } catch (err) {
-      if (err instanceof ProviderQuotaExceededError) throw err;
+      PlaceResolverService.rethrowIfOperational(err);
       return null;
     }
   }
@@ -102,7 +118,7 @@ export class PlaceResolverService {
     try {
       return await this.provider.details(id);
     } catch (err) {
-      if (err instanceof ProviderQuotaExceededError) throw err;
+      PlaceResolverService.rethrowIfOperational(err);
       return null;
     }
   }

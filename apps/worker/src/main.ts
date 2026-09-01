@@ -13,6 +13,8 @@ import {
   FakePush,
   FakeSheets,
   FakePlaceProvider,
+  UnconfiguredPlaceProvider,
+  placeProviderStatus,
   GooglePlacesAdapter,
   GoogleSheetsAdapter,
   warnFakedProviders,
@@ -111,6 +113,16 @@ async function bootstrap(): Promise<void> {
   // PI-BE-021: the worker runs the import chunks, so a missing Sheets key
   // strands jobs here as surely as it rejects them in the API. Same warning,
   // because this process makes the same choice from its own copy of the env.
+  // #279: the worker resolves rows through the same port, so it must make the
+  // same choice from its own copy of the env — a worker quietly on the fake
+  // while the API is on Google marks good rows unresolvable in bulk.
+  const placeStatus = placeProviderStatus({
+    ...(process.env.PLACE_PROVIDER_MODE === 'google' || process.env.PLACE_PROVIDER_MODE === 'fake'
+      ? { PLACE_PROVIDER_MODE: process.env.PLACE_PROVIDER_MODE }
+      : {}),
+    NODE_ENV: process.env.NODE_ENV ?? 'development',
+    GOOGLE_PLACES_API_KEY: placesKey,
+  });
   warnFakedProviders(
     {
       GOOGLE_PLACES_API_KEY: placesKey,
@@ -119,12 +131,22 @@ async function bootstrap(): Promise<void> {
       // The worker binds no travel-time provider, but it reads the same env and
       // a warn here is what an operator sees when only the worker is restarted.
       FLAG_ROUTES_API: process.env.FLAG_ROUTES_API === 'true',
+      PLACE_PROVIDER_MODE: placeStatus.mode,
     },
     (meta, message) => logger.warn(meta, message),
   );
-  const placeProvider = placesKey
-    ? new GooglePlacesAdapter(placesKey, metrics)
-    : new FakePlaceProvider();
+  if (!placeStatus.ready) {
+    logger.error(
+      { port: 'PLACE_PROVIDER', mode: placeStatus.mode, reason: placeStatus.reason },
+      'place provider NOT ready — import rows will pause instead of resolving',
+    );
+  }
+  const placeProvider =
+    placeStatus.provider === 'google'
+      ? new GooglePlacesAdapter(placesKey, metrics)
+      : placeStatus.provider === 'unconfigured'
+        ? new UnconfiguredPlaceProvider()
+        : new FakePlaceProvider();
   const imports = new PlaceImportJobService(
     db,
     new PlaceResolverService(placeProvider, db),
