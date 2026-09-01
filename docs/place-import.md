@@ -261,6 +261,25 @@ callers count `place_provider_id_mismatch_total`. PR1 only observes it:
 recording `moved_to_external_id` and routing to review is PR7's work, and
 relinking on Google's say-so is not something a background path should do.
 
+## Candidates carry no coordinates
+
+`place_ingest_rows.candidates` holds the branches the resolver surfaced for a
+moderator to choose between: `{ googlePlaceId, name, address, confidence }`.
+Until #347 it also held `lat`/`lng`, and nothing ever read them —
+`confirmCandidate` uses `googlePlaceId` as an allow-list and re-resolves the
+place live, distance scoring runs against the provider response still in memory
+(`MatchTarget`, which does carry coordinates), the CMS drawer renders none, and
+they were never in the OpenAPI candidate shape.
+
+Google Maps Platform SST §14.3 caps Places coordinates at 30 consecutive days.
+A value nobody reads does not need an expiry job — it needs to not exist, which
+is why migration `0034` strips the two keys and the writer stopped setting
+them. There is no scheduler here on purpose: a job that must run for compliance
+is a job whose failure is a compliance incident.
+
+Every other candidate field is untouched. `name` and `address` are ADR-0006
+§9.3 "needs decision" and wait on the §9.6 signatures — that is #346, not this.
+
 ## Row identity: `source_row_id` and its fallback
 
 Rows are keyed `(job_id, source_row_id)`. A sheet with no such column used to

@@ -112,13 +112,22 @@ export const ingestRowStatus = pgEnum('ingest_row_status', [
 
 export type IngestMessage = { code: string; field?: string; message: string };
 
+/**
+ * A branch the resolver surfaced, for a moderator to choose between.
+ *
+ * No coordinates. They were stored here until #347 and never read back:
+ * `confirmCandidate` uses `googlePlaceId` as an allowlist and then re-resolves
+ * live, distance scoring runs on the provider response still in memory
+ * (`MatchTarget`, which does carry them), and the CMS drawer renders none of
+ * it. Google Maps Platform SST §14.3 caps Places coordinates at 30 consecutive
+ * days, and the cheapest way to honour a retention limit on data nobody uses
+ * is not to hold it — no expiry job can fail if the value never exists.
+ */
 export type MatchCandidate = {
   googlePlaceId: string;
   name: string;
   address: string;
   confidence: number;
-  lat?: number;
-  lng?: number;
 };
 
 export const placeIngestRows = pgTable(

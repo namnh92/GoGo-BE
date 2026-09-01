@@ -1428,13 +1428,13 @@ function toCandidate(c: {
   target: { googlePlaceId: string; name: string; address: string; lat: number; lng: number };
   confidence: number;
 }): MatchCandidate {
+  // #347 — `c.target` carries lat/lng for scoring; the persisted candidate
+  // deliberately does not. See the note on `MatchCandidate`.
   return {
     googlePlaceId: c.target.googlePlaceId,
     name: c.target.name,
     address: c.target.address,
     confidence: c.confidence,
-    lat: c.target.lat,
-    lng: c.target.lng,
   };
 }
 
