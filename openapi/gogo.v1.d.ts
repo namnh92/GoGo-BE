@@ -3250,6 +3250,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/ops/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: one-screen provider health from the time-series store
+         * @description BE-CMS-P2 (#315). The console never reads `/v1/metrics` and never reaches Grafana: that endpoint is a machine surface guarded by one shared token granting read of every internal series, with no per-user authorization and no audit of who looked at what. GoGo-BE queries the store server-to-server with a `metrics:read` credential from SSM and returns facts; the admin session decides who may ask.
+         *
+         *     `window` is an enum, never a duration or a range, and no PromQL crosses this boundary in either direction. Every query is a constant in `libs/modules/cms/domain/ops-metrics.ts`, parameterised only by that enum and by this deployment's own `env` label.
+         *
+         *     `ops_admin` and above.
+         */
+        get: operations["cmsOpsSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/ops/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: per-provider reliability, latency and billable units
+         * @description One row per external service. `instrumented: false` means no metric for it exists at all, which the console must render as "chưa đo" and never as zero calls.
+         */
+        get: operations["cmsOpsProviders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/ops/providers/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: one provider, broken down by adapter operation
+         * @description Adds the per-operation rows the list view omits — for Places that is `google.searchText`, `google.details.core|quality|detail`, `google.autocomplete` and `google.expand`, each a distinct SKU.
+         */
+        get: operations["cmsOpsProvider"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3422,6 +3486,146 @@ export interface components {
             /** @description Connected consumers. Null when the backend does not report it — null and 0 are different facts, and zero on a queue with work is the alarm. */
             workers?: number | null;
         };
+        CmsOpsEnvelope: {
+            /**
+             * @description What was asked for.
+             * @enum {string}
+             */
+            window: "1h" | "24h" | "7d" | "30d";
+            /**
+             * @description What the store could actually answer, as a Prometheus duration. Differs from `window` when retention is shorter — Grafana Cloud Free keeps 14 days, so `30d` is answered with `14d`. The missing days are **not** extrapolated: a chart running flat across data that never existed is a lie in the shape of data.
+             * @example 14d
+             */
+            effectiveWindow: string;
+            /**
+             * @description How much history this deployment's store holds.
+             * @example 14
+             */
+            retentionDays: number;
+            /** @description True when `effectiveWindow` is shorter than `window`. The console must state the real span rather than labelling the chart 30 days. */
+            truncated: boolean;
+            /** Format: date-time */
+            generatedAt: string;
+            /** @description Present and true when the refresh failed and this is the last good answer. During an incident the numbers from four minutes ago are usually the ones someone wants — but they must not be presented as live. */
+            stale?: boolean;
+            /**
+             * Format: date-time
+             * @description When the stale payload was actually collected.
+             */
+            asOf?: string;
+            backend: {
+                /**
+                 * @description `degraded` means stale data is being served after a failed refresh; `unavailable` means there was nothing to fall back to.
+                 * @enum {string}
+                 */
+                status: "ok" | "degraded" | "unavailable";
+                /**
+                 * @description A bounded sentence, never the store's own error text — its messages quote the query back, and the query names internal series.
+                 * @example Monitoring backend refused our credential
+                 */
+                detail?: string;
+            };
+        };
+        CmsOpsPercentiles: {
+            /** @description Seconds. */
+            p50: number | null;
+            /** @description Seconds. */
+            p95: number | null;
+            /** @description Null below `latencySemantics.p99MinSamples` observations. A p99 from a handful of samples is the top populated bucket edge wearing a decimal point, so the console says "chưa đủ dữ liệu" instead. */
+            p99: number | null;
+        };
+        CmsOpsLatencySemantics: {
+            /** @enum {string} */
+            unit: "seconds";
+            source: string;
+            /**
+             * @description Statuses left out of the primary percentiles.
+             * @example [
+             *       "400",
+             *       "404"
+             *     ]
+             */
+            excludesHttpStatuses: string[];
+            /** @description Deterministic input rejections (#314). Google refuses a malformed place id in tens of milliseconds, so counting those would make the provider look *faster* the more broken links users paste — the p95 meant to answer "is Google slow" would improve during an incident of an entirely different kind. Operational failures stay in, because a 403 or a 429 is a real call that really took that long. The excluded mass is reported separately as `rejectedLatency`. */
+            excludesReason: string;
+            p99MinSamples: number;
+        };
+        /** @description What the cost number is, in the payload rather than in a comment nobody reading the JSON will see. */
+        CmsOpsCostModel: {
+            /** @enum {string} */
+            kind: "units_only";
+            /** @description Always null today. `places_provider_cost_units` counts **billable SKU units** — a real, reconcilable quantity, and what an invoice is computed from — but not money: no unit price exists in this system and Google's varies by tier and contract. A currency figure here would be a guess wearing a currency symbol. No field is named `actualSpend`, `billedAmount` or `invoiceCost`, because none would be true until a billing API is connected. */
+            estimatedCost: number | null;
+            currency: string | null;
+            /** @example sku_request_counter */
+            basis: string;
+            note: string;
+        };
+        CmsOpsTotals: {
+            providerRequests: number;
+            providerSuccesses: number;
+            /** @description Google did not serve us — auth, quota, upstream (#273). */
+            providerFailures: number;
+            /** @description Our request was wrong — a malformed place id, a sheet that does not exist (#314). Counted apart so an alert on provider failures keeps meaning "Google is not serving us". */
+            providerRejected: number;
+            providerSuccessRate: number | null;
+            providerFailureRate: number | null;
+            providerRejectedRate: number | null;
+            latency: components["schemas"]["CmsOpsPercentiles"];
+            /** @description The mass excluded from `latency`, reported rather than discarded, so "rejections are fast" is visible as a fact and not as an absence. */
+            rejectedLatency: {
+                p50?: number | null;
+                p95?: number | null;
+            };
+            billableUnits: number;
+        };
+        CmsOpsProvider: {
+            /** @enum {string} */
+            provider: "places" | "routes" | "sheets";
+            /** @description False when no metric exists for this provider at all. Must render as "chưa đo", never as zero calls — a measured zero and an unmeasured one are different claims. */
+            instrumented: boolean;
+            calls: number;
+            successes: number;
+            failures: number;
+            rejected: number;
+            successRate: number | null;
+            latency: components["schemas"]["CmsOpsPercentiles"];
+            /** @description Null where the provider has no SKU counter. Sheets is quota-limited rather than billed per call, so it is null and must never render as 0, which reads as "free". */
+            billableUnits: number | null;
+        };
+        CmsOpsProviderDetail: components["schemas"]["CmsOpsProvider"] & {
+            operations: components["schemas"]["CmsOpsOperation"][];
+        };
+        CmsOpsOperation: {
+            /**
+             * @description The adapter operation, which is also the billed SKU.
+             * @example google.details.quality
+             */
+            method: string;
+            calls: number;
+            successes: number;
+            failures: number;
+            rejected: number;
+            successRate: number | null;
+            latency: components["schemas"]["CmsOpsPercentiles"];
+            billableUnits: number | null;
+        };
+        CmsOpsTrends: {
+            /** @description Fixed per window (1h→60, 24h→300, 7d→1800, 30d→7200) so every chart is 60–360 points. The client does not choose it: a step is a resolution decision and an arbitrary one is arbitrary load. */
+            stepSeconds: number;
+            series: {
+                requests?: components["schemas"]["CmsOpsSeries"];
+                failures?: components["schemas"]["CmsOpsSeries"];
+                latencyP95?: components["schemas"]["CmsOpsSeries"];
+                costUnits?: components["schemas"]["CmsOpsSeries"];
+            };
+        };
+        /** @description Gaps are omitted, not zero-filled. Prometheus renders a gap as NaN, and charting it as zero invents a dip that never happened. */
+        CmsOpsSeries: {
+            /** Format: date-time */
+            t: string;
+            v: number;
+        }[];
         CmsCostLine: {
             key: string;
             /** @description Minor units. */
@@ -5133,6 +5337,8 @@ export interface components {
     parameters: {
         /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
         IdempotencyKey: string;
+        /** @description Fixed window, never a duration or a range. Four values only: a free-form range is arbitrary load on the store and an arbitrary number of points at the browser, and the enum is also what makes "no client-supplied PromQL" true by construction rather than by escaping. */
+        OpsWindow: "1h" | "24h" | "7d" | "30d";
         /** @description Opaque cursor from a previous page. */
         Cursor: string;
         Limit: number;
@@ -11133,6 +11339,120 @@ export interface operations {
         responses: {
             /** @description Aggregated KPIs without exposing PII */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsOpsSummary: {
+        parameters: {
+            query?: {
+                /** @description Fixed window, never a duration or a range. Four values only: a free-form range is arbitrary load on the store and an arbitrary number of points at the browser, and the enum is also what makes "no client-supplied PromQL" true by construction rather than by escaping. */
+                window?: components["parameters"]["OpsWindow"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Always 200, including when the monitoring backend is down — `backend.status` carries that. A 5xx here would render in the console as "the CMS is broken", which is the wrong sentence for "monitoring is unavailable and everything else is fine". */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsOpsEnvelope"] & {
+                        /** @description Null when the backend could not be read. Never a zero — no traffic and no measurement are different facts, and the console must render them differently. */
+                        totals: components["schemas"]["CmsOpsTotals"] | null;
+                        trends: components["schemas"]["CmsOpsTrends"] | null;
+                        costModel: components["schemas"]["CmsOpsCostModel"];
+                        latencySemantics: components["schemas"]["CmsOpsLatencySemantics"];
+                    };
+                };
+            };
+            /** @description Role may not read operational data */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsOpsProviders: {
+        parameters: {
+            query?: {
+                /** @description Fixed window, never a duration or a range. Four values only: a free-form range is arbitrary load on the store and an arbitrary number of points at the browser, and the enum is also what makes "no client-supplied PromQL" true by construction rather than by escaping. */
+                window?: components["parameters"]["OpsWindow"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider rows, possibly all uninstrumented */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsOpsEnvelope"] & {
+                        providers: components["schemas"]["CmsOpsProvider"][];
+                        costModel: components["schemas"]["CmsOpsCostModel"];
+                        latencySemantics: components["schemas"]["CmsOpsLatencySemantics"];
+                    };
+                };
+            };
+            /** @description Role may not read operational data */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsOpsProvider: {
+        parameters: {
+            query?: {
+                /** @description Fixed window, never a duration or a range. Four values only: a free-form range is arbitrary load on the store and an arbitrary number of points at the browser, and the enum is also what makes "no client-supplied PromQL" true by construction rather than by escaping. */
+                window?: components["parameters"]["OpsWindow"];
+            };
+            header?: never;
+            path: {
+                provider: "places" | "routes" | "sheets";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One provider with its operations and trend series */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsOpsEnvelope"] & {
+                        provider: components["schemas"]["CmsOpsProviderDetail"] | null;
+                        trends?: components["schemas"]["CmsOpsTrends"] | null;
+                        costModel: components["schemas"]["CmsOpsCostModel"];
+                        latencySemantics: components["schemas"]["CmsOpsLatencySemantics"];
+                    };
+                };
+            };
+            /** @description Role may not read operational data */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown provider */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
