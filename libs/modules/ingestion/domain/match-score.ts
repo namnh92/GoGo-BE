@@ -1,3 +1,4 @@
+import { categoryForGoogleType } from './google-types';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { haversineMeters } from '../../suggestions/domain/hard-filter';
 
@@ -61,17 +62,6 @@ function containsNormalized(haystack: string, needle?: string): boolean {
   return normalizeVietnamese(haystack).includes(normalizeVietnamese(needle));
 }
 
-/** Rough Google type → GoGo category agreement check. */
-const TYPE_TO_CATEGORY: Record<string, string[]> = {
-  cafe: ['cafe', 'coffee_shop'],
-  restaurant: ['restaurant', 'food'],
-  bar: ['bar', 'night_club'],
-  park: ['park', 'tourist_attraction'],
-  cinema: ['movie_theater'],
-  museum: ['museum'],
-  lodging: ['lodging', 'hotel'],
-};
-
 export type ScoredMatch = {
   target: MatchTarget;
   confidence: number;
@@ -91,12 +81,17 @@ export function scoreMatch(input: MatchInput, target: MatchTarget): ScoredMatch 
   const cityScore = input.city ? (cityHit ? 1 : 0) : 0.5;
   if (input.city && !cityHit) reasons.push('CITY_MISMATCH');
 
+  // Neutral unless both sides actually say something. A Google type GoGo has
+  // no category for means "cannot tell" — scoring that as a mismatch would
+  // penalise every place outside the eight categories for existing.
   let categoryScore = 0.5;
   if (input.categoryKey && target.primaryType) {
-    const expected = TYPE_TO_CATEGORY[input.categoryKey] ?? [];
-    const hit = expected.includes(target.primaryType);
-    categoryScore = hit ? 1 : 0;
-    if (!hit) reasons.push('TYPE_MISMATCH');
+    const implied = categoryForGoogleType(target.primaryType);
+    if (implied) {
+      const hit = implied === input.categoryKey;
+      categoryScore = hit ? 1 : 0;
+      if (!hit) reasons.push('TYPE_MISMATCH');
+    }
   }
 
   let coordinateScore = 0.5;

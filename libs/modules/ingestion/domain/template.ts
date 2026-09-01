@@ -135,14 +135,38 @@ export function validateRow(
       googleMapsQuery = rawUrl;
     }
   }
-  if (!googleMapsUrl && !name && !googleMapsQuery) {
+  // Anything the resolver can turn into a provider lookup: a link, an explicit
+  // query, or a name it can search for.
+  const resolvable = Boolean(googleMapsUrl || googleMapsQuery || name);
+  if (!resolvable) {
     errors.push(msg('NAME_REQUIRED', 'name', 'Cần name hoặc google_maps_url để resolve'));
   }
 
   const categoryRaw = raw.category_raw?.trim() || null;
   let categoryKey = raw.category?.trim() || null;
   if (!categoryKey && !categoryRaw) {
-    errors.push(msg('CATEGORY_REQUIRED', 'category', 'category là bắt buộc'));
+    // PI-BE-023 — a row that names a place Google can find does not need an
+    // operator to guess a category for it: `types[]` says what the place is,
+    // and resolution happens a few steps later in this same job. Blocking here
+    // was what made every sheet carry a category column, which is what made
+    // editors write `rooftop` and `attraction` — values from GoGo's `setting`
+    // taxonomy and from no taxonomy at all — into a `category` field.
+    //
+    // Still an error for a row nothing can be resolved from, and still an
+    // error later if Google turns out to describe the place in terms GoGo has
+    // no category for. The requirement did not go away; it moved to the point
+    // where it can be answered.
+    if (resolvable) {
+      warnings.push(
+        msg(
+          'CATEGORY_PENDING_PROVIDER',
+          'category',
+          'category để trống — sẽ suy ra từ dữ liệu Google khi resolve',
+        ),
+      );
+    } else {
+      errors.push(msg('CATEGORY_REQUIRED', 'category', 'category là bắt buộc'));
+    }
   }
   if (categoryKey && ctx.knownCategoryKeys && !ctx.knownCategoryKeys.has(categoryKey)) {
     errors.push(msg('CATEGORY_UNKNOWN', 'category', `Taxonomy key không tồn tại: ${categoryKey}`));

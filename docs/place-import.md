@@ -106,6 +106,97 @@ the wizard is meant to stop on this list, so padding it teaches editors to skim
 past the one list that matters. The cost of a derived `source_row_id` is
 reported per row instead, as `ROW_ID_DERIVED`.
 
+## What Google supplies, and what the sheet must
+
+ADR-0006 §2 defines three field-mask tiers. Until #286 the adapter sent one flat
+mask that matched none of them: it carried the `quality` aggregates while
+omitting `types`, `googleMapsUri` and `photos`, all three of which the ADR puts
+in `core`. `place_provider_sources.fetch_tier` recorded `'quality'` for every
+row regardless, and `provider_uri` — a column present since the first ingestion
+migration — was never written, because nothing ever asked Google for the URI.
+
+The masks now live in `PLACE_FIELD_MASKS` (`libs/providers/src/google-places.adapter.ts`),
+one tier built from the one below it, with a test asserting each exact string.
+The field mask is the cost decision, so a containment check is not enough —
+that is precisely what let the drift survive.
+
+`details(id, tier)` defaults to `quality`. Every current caller resolves a place
+in order to keep it, so asking for `core` first would mean two billed calls for
+one row. No caller requests `core` alone today; the tier exists, is tested, and
+is what `fetch_tier` now records.
+
+### Category comes from `types[]`
+
+A row that names a place Google can find no longer has to carry a category.
+`domain/google-types.ts` holds **one** table mapping Google place types to two
+views: a GoGo category key (only where the mapping is honest) and a coarse
+family (always, for identity-change). It replaces two tables that pointed in
+opposite directions and did not agree — `TYPE_FAMILY` in `identity-change.ts`
+and `TYPE_TO_CATEGORY` in `match-score.ts`.
+
+Precedence, in order:
+
+1. An explicit valid `category` from the sheet. Never overwritten — taxonomy is
+   GoGo-owned (ADR-0006 §3), and an editor who files a place under `bar` that
+   Google calls `restaurant` is usually right about why members go there.
+2. `primaryType`, when it maps. Google's own answer to "mainly what".
+3. The lowest-ranked category among `types[]`, under the **GoGo Category
+   Selection Policy v1**. **Rank, not array order** — Google publishes no
+   ranking, precedence or ordering promise over `types[]`, so position would
+   make the same place import as `cafe` today and `restaurant` after a
+   provider-side reshuffle.
+
+   The rank is `lodging > museum > cinema > bar > cafe > park > shopping >
+restaurant`, defined as `CATEGORY_RANK` in `google-types.ts`. It is GoGo's
+   own editorial judgement — specific types beat the generic parents (`food`,
+   `restaurant`, `store`) Google hangs off almost everything — **not** anything
+   Google asserts. Changing it changes what published places are filed under,
+   so it carries a version and is a product decision, not a tuning knob.
+
+4. Nothing. The row fails with `CATEGORY_REQUIRED`, naming the Google type it
+   saw, and an editor supplies one.
+
+A type GoGo has no honest category for stays unmapped. `tourist_attraction` is
+the case that matters: Bến Thành market, the War Remnants Museum and a rooftop
+bar are all tourist attractions, and mapping it to `park` would put a wrong
+category on a published place to save an operator one column.
+
+Row messages: `CATEGORY_PENDING_PROVIDER` (warning, at parse — deferred),
+`CATEGORY_DERIVED` (warning, after resolve — names the source type),
+`CATEGORY_REQUIRED` (error — either nothing to resolve from, or Google could
+not classify it).
+
+### The sheet a human should be filling in
+
+Everything Google owns comes from the link. The columns worth an operator's time
+are the ones GoGo owns:
+
+| Column                                   | Who owns it                                       |
+| ---------------------------------------- | ------------------------------------------------- |
+| `google_maps_url`                        | the anchor — ADR-0006 §8 requires one per place   |
+| `category`                               | optional override; leave blank and Google decides |
+| `highlight`                              | GoGo                                              |
+| `price_min` / `price_max` / `price_unit` | GoGo (verified price, not `priceLevel`)           |
+| `audiences`                              | GoGo                                              |
+| `vibes`                                  | GoGo                                              |
+| `note`                                   | GoGo                                              |
+
+`category` stays in the canonical vocabulary: a row with no resolvable link
+still needs it, and an override is still legitimate. `name`, `city` and
+`district` remain accepted — they are match hints for a row whose link has to be
+resolved by text search, not data GoGo keeps.
+
+### Photos are references, not images
+
+`core` now includes `photos`, and they arrive as `ProviderPhotoRef` — an opaque
+provider handle, the original dimensions, and the author attributions the
+licence requires to be rendered with the image. **Nothing stores them.** Turning
+a reference into bytes is a second, separately billed Google call, and GoGo has
+no provider-image storage: `place_photos` does not exist, and `ImportCandidate`
+has no `photoUrl` in the OpenAPI spec (the GoGo-CMS zod mirror declares one that
+the server has never populated). Materialization needs its own decision about
+storage, cost and cache lifetime. It is not smuggled in here.
+
 ## Row identity: `source_row_id` and its fallback
 
 Rows are keyed `(job_id, source_row_id)`. A sheet with no such column used to
@@ -233,3 +324,10 @@ is a recorded decision, not an oversight — see `docs/threat-model.md`.
 - PI-CMS-001..006 — the CMS wizard UI on top of these APIs.
 - PI-SRE-001 — metrics are emitted (spec §13 names, as structured log lines);
   a scrape endpoint and dashboard still need a destination decided (#36/#120).
+- Provider photo materialization — references are carried, nothing stores them.
+- `phone`, `website`, `editorialSummary` — outside ADR-0006's masks. Whether
+  GoGo holds this data at all is #280, and it changes provider spend.
+- `scoreMatch`'s category agreement never runs: `toTarget` builds a `MatchTarget`
+  without `primaryType`, so the 0.1 category weight has been inert since it
+  shipped. Consolidating the type table did not activate it — that changes row
+  outcomes and belongs in its own change (#288).

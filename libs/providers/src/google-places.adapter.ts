@@ -3,7 +3,9 @@ import {
   ProviderUnavailableError,
   type AreaAutocompletePort,
   type AreaPrediction,
+  type PlaceFetchTier,
   type PlaceProviderPort,
+  type ProviderPhotoRef,
   type ResolvedProviderPlace,
 } from './ports';
 import { withResilience } from './resilience';
@@ -13,6 +15,45 @@ const RESILIENCE = {
   retries: 2,
   breakerThreshold: 5,
   breakerCooldownMs: 30_000,
+};
+
+/**
+ * ADR-0006 §2, verbatim. Each tier is the one before it plus its own fields, so
+ * the relationship is expressed once instead of three drifting strings — which
+ * is how the adapter came to send a mask that was neither `core` nor `quality`:
+ * it carried the quality aggregates while missing `types`, `googleMapsUri` and
+ * `photos`, all three of which the ADR puts in `core`.
+ *
+ * Exported because the field mask *is* the cost decision. A test that asserts
+ * the exact string is the only thing standing between a one-word edit and a
+ * silently larger invoice.
+ */
+const CORE_FIELDS = [
+  'id',
+  'displayName',
+  'formattedAddress',
+  'location',
+  'businessStatus',
+  'primaryType',
+  'types',
+  'googleMapsUri',
+  'photos',
+] as const;
+
+const QUALITY_FIELDS = [
+  'rating',
+  'userRatingCount',
+  'regularOpeningHours',
+  'priceLevel',
+  'priceRange',
+] as const;
+
+const DETAIL_FIELDS = ['reviews'] as const;
+
+export const PLACE_FIELD_MASKS: Readonly<Record<PlaceFetchTier, string>> = {
+  core: CORE_FIELDS.join(','),
+  quality: [...CORE_FIELDS, ...QUALITY_FIELDS].join(','),
+  detail: [...CORE_FIELDS, ...QUALITY_FIELDS, ...DETAIL_FIELDS].join(','),
 };
 
 /**
@@ -63,7 +104,10 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
     return data.places?.[0]?.id ?? null;
   }
 
-  async details(providerPlaceId: string): Promise<ResolvedProviderPlace | null> {
+  async details(
+    providerPlaceId: string,
+    tier: PlaceFetchTier = 'quality',
+  ): Promise<ResolvedProviderPlace | null> {
     type GooglePlace = {
       id: string;
       displayName?: { text: string };
@@ -74,6 +118,14 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       businessStatus?: string;
       priceLevel?: string;
       primaryType?: string;
+      types?: string[];
+      googleMapsUri?: string;
+      photos?: {
+        name?: string;
+        widthPx?: number;
+        heightPx?: number;
+        authorAttributions?: { displayName?: string }[];
+      }[];
       regularOpeningHours?: {
         periods?: {
           open?: { day: number; hour: number; minute: number };
@@ -84,13 +136,12 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
     let data: GooglePlace;
     try {
       data = await this.call<GooglePlace>(
-        'google.details',
+        // The SKU differs per tier, so the cost counter must too — a single
+        // `google.details` label cannot be reconciled against an invoice that
+        // bills Essentials, Pro and Enterprise separately.
+        `google.details.${tier}`,
         `https://places.googleapis.com/v1/places/${encodeURIComponent(providerPlaceId)}`,
-        {
-          method: 'GET',
-          fieldMask:
-            'id,displayName,formattedAddress,location,rating,userRatingCount,businessStatus,priceLevel,primaryType,regularOpeningHours',
-        },
+        { method: 'GET', fieldMask: PLACE_FIELD_MASKS[tier] },
       );
     } catch (err) {
       if (err instanceof ProviderUnavailableError) throw err;
@@ -120,6 +171,26 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       PRICE_LEVEL_VERY_EXPENSIVE: 4,
     };
 
+    // `photos[].name` is the whole reference — width/height describe the
+    // original, and the author attributions travel with it because a photo
+    // rendered without them breaches the licence.
+    const photos: ProviderPhotoRef[] = (data.photos ?? [])
+      .filter((p): p is { name: string } & typeof p => typeof p.name === 'string' && p.name !== '')
+      .map((p) => ({
+        reference: p.name,
+        widthPx: p.widthPx ?? null,
+        heightPx: p.heightPx ?? null,
+        attributions: (p.authorAttributions ?? [])
+          .map((a) => a.displayName)
+          .filter((n): n is string => typeof n === 'string' && n !== ''),
+      }));
+
+    // `primaryType` is not guaranteed to appear in `types`, and a caller
+    // reading `types` alone must not lose it.
+    const types = [
+      ...new Set([...(data.primaryType ? [data.primaryType] : []), ...(data.types ?? [])]),
+    ];
+
     return {
       providerPlaceId: data.id,
       name: data.displayName?.text ?? 'Unknown',
@@ -137,6 +208,10 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       hours,
       priceLevel: data.priceLevel ? (priceLevelMap[data.priceLevel] ?? null) : null,
       primaryType: data.primaryType ?? null,
+      types,
+      googleMapsUri: data.googleMapsUri ?? null,
+      photos,
+      fetchTier: tier,
       attribution: 'Data © Google',
       raw: data,
     };

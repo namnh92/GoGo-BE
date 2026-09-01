@@ -326,8 +326,8 @@ describe('PI-BE-012 — Google Sheets source', () => {
 
   it('lists only the required columns the operator must actually add', async () => {
     const editor = await createAdmin('sheet-editor-defaultcity@gogo.local', 'editor');
-    // No `source_row_id` (derivable), no `city` (defaulted below), and no
-    // `category` — which nothing can supply, so it is the one that blocks.
+    // No `source_row_id` (derivable) and no `city` (defaulted below), so
+    // neither is listed. `category` is: the mapping genuinely does not cover it.
     sheets.seed('5DefaultCityDefaultCityDefau1234567', 'HCM', [['name'], ['Quán B']]);
 
     const res = await api().inject({
@@ -346,8 +346,15 @@ describe('PI-BE-012 — Google Sheets source', () => {
     expect(res.statusCode).toBe(201);
     const missing = res.json().missingRequiredColumns;
     expect(missing).toEqual(['HCM:category']);
-    // And it blocks for real: the row fails on the column the list names.
-    expect(res.json().totals.failed).toBe(1);
+    // #286: the column is still missing and still worth naming — a sheet
+    // without it depends entirely on Google being able to classify every row.
+    // But it no longer fails the row at parse time, because the row names a
+    // place the resolver can look up a few steps later.
+    expect(res.json().totals.failed).toBe(0);
+    const rows = await imports.listRows(res.json().id, { limit: 5, offset: 0 });
+    expect(rows.items[0]!.warnings.map((w: { code: string }) => w.code)).toContain(
+      'CATEGORY_PENDING_PROVIDER',
+    );
   });
 
   it('surfaces a permission error as 403, not a 500', async () => {
@@ -1056,8 +1063,11 @@ describe('PI-QA-002 — bulk import at 0 / 1 / 100 / 5.000 rows', () => {
         lng: 106.5 + i / 100,
       });
     }
-    // 90 resolvable rows + 10 that fail validation up front.
-    const bad = Array.from({ length: 10 }, (_, i) => `,Quán Bad ${i},,,,,,,`);
+    // 90 resolvable rows + 10 that fail validation up front. A district and
+    // nothing else: since #286 a row with a name is no longer failed for a
+    // missing category (the resolver may supply one), so a row that must fail
+    // at parse time has to be one nothing can be resolved from at all.
+    const bad = Array.from({ length: 10 }, (_, i) => `,,,Quận Bad ${i},,,,,`);
     const job = (
       await upload(editor.token, csv([...rows(90, 'C'), ...bad]), 'create_drafts', 'hundred.csv')
     ).json();
@@ -1279,5 +1289,202 @@ describe('BE-IMP-004 — update_existing re-syncs an edited sheet', () => {
       .from(schema.places)
       .where(eq(schema.places.id, place!.id));
     expect(unchanged!.name).toBe('Cà Phê Cũ');
+  });
+});
+
+// --- #286 — category derived from Google `types[]` --------------------------
+
+describe('PI-BE-023 — the sheet stops guessing the category', () => {
+  /** The HCM sheet as it stands today, minus the column this issue removes. */
+  const HCM_HEADERS = ['name', 'district', 'google_maps_url', 'tags', 'source', 'notes', 'city'];
+
+  async function runSheet(token: string, spreadsheetId: string, rows: string[][]) {
+    sheets.seed(spreadsheetId, 'HCM', [HCM_HEADERS, ...rows]);
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { spreadsheetUrl: spreadsheetId, sheets: ['HCM'], mode: 'create_drafts' },
+    });
+    expect(created.statusCode).toBe(201);
+    const job = created.json();
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    await imports.processJob(job.id);
+    return job.id as string;
+  }
+
+  const sheetRow = (name: string, placeId: string) => [
+    name,
+    'District 1',
+    `https://www.google.com/maps?place_id=${placeId}`,
+    'coffee,date,indoor',
+    'Google Maps',
+    'Specialty coffee',
+    'Ho Chi Minh City',
+  ];
+
+  it('imports the HCM sheet with no category column at all', async () => {
+    const editor = await createAdmin('cat-derive@gogo.local', 'editor');
+    places.seed({
+      providerPlaceId: 'fake-lacaph',
+      name: 'Lacàph Coffee Experiences Space',
+      lat: 10.7845,
+      lng: 106.6912,
+      primaryType: 'coffee_shop',
+      types: ['coffee_shop', 'cafe', 'food', 'point_of_interest'],
+      googleMapsUri: 'https://maps.google.com/?cid=99',
+    });
+
+    const jobId = await runSheet(editor.token, 'C1DeriveCategoryDeriveCateg01234567', [
+      sheetRow('Lacàph Coffee Experiences Space', 'fake-lacaph'),
+    ]);
+
+    const rows = await imports.listRows(jobId, { limit: 10, offset: 0 });
+    const row = rows.items[0]!;
+
+    // Before this issue the row never reached the provider: CATEGORY_REQUIRED
+    // failed it at parse time, which is what made an operator type a category
+    // by hand — and `rooftop`/`attraction` is what they typed.
+    expect(row.status).toBe('ready');
+    expect(row.errors).toEqual([]);
+    expect(row.warnings.map((w: { code: string }) => w.code)).toContain('CATEGORY_DERIVED');
+    expect((row.normalized as { categoryKey: string }).categoryKey).toBe('cafe');
+  });
+
+  it('names where the category came from, so a row can be argued with', async () => {
+    const editor = await createAdmin('cat-derive-msg@gogo.local', 'editor');
+    places.seed({
+      providerPlaceId: 'fake-derive-msg',
+      name: 'Quán Nguồn',
+      lat: 10.79,
+      lng: 106.69,
+      primaryType: 'coffee_shop',
+      types: ['coffee_shop', 'cafe'],
+    });
+
+    const jobId = await runSheet(editor.token, 'C2DeriveMessageDeriveMessa01234567', [
+      sheetRow('Quán Nguồn', 'fake-derive-msg'),
+    ]);
+    const rows = await imports.listRows(jobId, { limit: 10, offset: 0 });
+    const derived = rows.items[0]!.warnings.find(
+      (w: { code: string }) => w.code === 'CATEGORY_DERIVED',
+    );
+
+    expect(derived?.message).toContain('cafe');
+    expect(derived?.message).toContain('google_primary_type');
+    expect(derived?.message).toContain('coffee_shop');
+  });
+
+  it('never overwrites a category the operator supplied', async () => {
+    const editor = await createAdmin('cat-explicit@gogo.local', 'editor');
+    places.seed({
+      providerPlaceId: 'fake-explicit',
+      name: 'Quán Chọn Tay',
+      lat: 10.77,
+      lng: 106.71,
+      primaryType: 'coffee_shop',
+      types: ['coffee_shop', 'cafe'],
+    });
+
+    // Sheet says `restaurant`; Google would have said `cafe`. Taxonomy is
+    // GoGo-owned (ADR-0006 §3) and the editor keeps it.
+    sheets.seed('C3ExplicitCategoryExplicitC01234567', 'HCM', [
+      [...HCM_HEADERS, 'category'],
+      [...sheetRow('Quán Chọn Tay', 'fake-explicit'), 'restaurant'],
+    ]);
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: 'C3ExplicitCategoryExplicitC01234567',
+        sheets: ['HCM'],
+        mode: 'create_drafts',
+      },
+    });
+    const jobId = created.json().id as string;
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${jobId}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(jobId);
+
+    const rows = await imports.listRows(jobId, { limit: 10, offset: 0 });
+    const row = rows.items[0]!;
+    expect((row.normalized as { categoryKey: string }).categoryKey).toBe('restaurant');
+    expect(row.warnings.map((w: { code: string }) => w.code)).not.toContain('CATEGORY_DERIVED');
+  });
+
+  it('asks for a category only when Google could not supply one', async () => {
+    const editor = await createAdmin('cat-underivable@gogo.local', 'editor');
+    places.seed({
+      providerPlaceId: 'fake-attraction',
+      name: 'Bưu điện Trung tâm Sài Gòn',
+      lat: 10.78,
+      lng: 106.699,
+      primaryType: 'tourist_attraction',
+      types: ['tourist_attraction', 'point_of_interest', 'establishment'],
+    });
+
+    const jobId = await runSheet(editor.token, 'C4UnderivableUnderivableUn01234567', [
+      sheetRow('Bưu điện Trung tâm Sài Gòn', 'fake-attraction'),
+    ]);
+
+    const rows = await imports.listRows(jobId, { limit: 10, offset: 0 });
+    const row = rows.items[0]!;
+    const error = row.errors.find((e: { code: string }) => e.code === 'CATEGORY_REQUIRED');
+
+    expect(row.status).toBe('validation_failed');
+    // `tourist_attraction` is not silently turned into `park`: the row says
+    // what Google called the place and asks a human for the category.
+    expect(error?.message).toContain('tourist_attraction');
+    expect((row.normalized as { categoryKey: string | null }).categoryKey).toBeNull();
+  });
+
+  it('records the tier it paid for and the provider URI it was given', async () => {
+    const editor = await createAdmin('cat-provenance@gogo.local', 'editor');
+    const ops = await createAdmin('cat-provenance-ops@gogo.local', 'ops_admin');
+    places.seed({
+      providerPlaceId: 'fake-provenance',
+      name: 'Quán Nguồn Gốc',
+      lat: 10.762,
+      lng: 106.682,
+      primaryType: 'cafe',
+      types: ['cafe', 'food'],
+      googleMapsUri: 'https://maps.google.com/?cid=555',
+    });
+
+    const jobId = await runSheet(editor.token, 'C5ProvenanceProvenancePro01234567', [
+      sheetRow('Quán Nguồn Gốc', 'fake-provenance'),
+    ]);
+    const published = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${jobId}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(published.statusCode).toBe(201);
+
+    const [source] = await db
+      .select()
+      .from(schema.placeProviderSources)
+      .where(eq(schema.placeProviderSources.externalId, 'fake-provenance'));
+
+    // `fetch_tier` used to be the string 'quality' regardless of what was
+    // fetched, and `provider_uri` was never written at all — the adapter did
+    // not ask Google for `googleMapsUri`.
+    expect(source!.fetchTier).toBe('quality');
+    expect(source!.providerUri).toBe('https://maps.google.com/?cid=555');
+    expect(source!.primaryType).toBe('cafe');
   });
 });

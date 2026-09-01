@@ -28,6 +28,7 @@ import {
   type SheetGrid,
 } from '../domain/tabular';
 import { detectIdentityChange } from '../domain/identity-change';
+import { deriveCategory } from '../domain/google-types';
 import { validateRow, type NormalizedImportRow } from '../domain/template';
 import { PlaceDedupService } from './place-dedup.service';
 import { PlaceResolverService } from './place-resolver.service';
@@ -598,9 +599,19 @@ export class PlaceImportJobService {
       return { processed: 0, hasMore: false };
     }
 
+    // One taxonomy read per chunk, not per row: category derivation needs the
+    // live key set and a 5.000-row job would otherwise issue 5.000 identical
+    // queries to learn the same eight keys.
+    const knownCategories = (await this.taxonomyKeys()).category;
+
     for (const row of rows) {
       try {
-        await this.resolveRow(row.id, row.normalized_input, job.mode as ImportMode);
+        await this.resolveRow(
+          row.id,
+          row.normalized_input,
+          job.mode as ImportMode,
+          knownCategories,
+        );
       } catch (err) {
         if (err instanceof ProviderQuotaExceededError) {
           // Park the job: the remaining rows go back to pending untouched so a
@@ -640,6 +651,7 @@ export class PlaceImportJobService {
     rowId: string,
     normalized: NormalizedImportRow,
     mode: ImportMode,
+    knownCategories?: ReadonlySet<string>,
   ): Promise<void> {
     const hints = {
       name: normalized.name ?? normalized.googleMapsQuery ?? undefined,
@@ -715,7 +727,7 @@ export class PlaceImportJobService {
       outcome.details,
       outcome.decision.reasons,
       outcome.decision.best?.confidence,
-      { mode, normalized },
+      { mode, normalized, knownCategories },
     );
   }
 
@@ -724,8 +736,19 @@ export class PlaceImportJobService {
     details: ResolvedProviderPlace,
     reasons: string[],
     confidence: number | undefined,
-    context?: { mode: ImportMode; normalized: NormalizedImportRow },
+    context?: {
+      mode: ImportMode;
+      normalized: NormalizedImportRow;
+      knownCategories?: ReadonlySet<string> | undefined;
+    },
   ): Promise<void> {
+    // Google has answered by the time we get here, so a row that deferred its
+    // category can be settled now — before dedup, because `update_existing`
+    // and the publish step both read `normalized.categoryKey`.
+    const settled = await this.settleCategory(rowId, details, context);
+    if (settled === 'BLOCKED') return;
+    if (context) context.normalized = settled;
+
     const verdict = await this.dedup.check(details);
     const base = {
       resolvedGooglePlaceId: details.providerPlaceId,
@@ -775,6 +798,96 @@ export class PlaceImportJobService {
       .set({ ...base, status: 'ready' })
       .where(eq(schema.placeIngestRows.id, rowId));
     this.countRow('ready');
+  }
+
+  /**
+   * PI-BE-023 — settle the category once the provider has described the place.
+   *
+   * A row reaches here having either carried a category from the sheet, or
+   * having deferred it (`CATEGORY_PENDING_PROVIDER`). An operator's explicit,
+   * valid category is never overwritten: ADR-0006 §3 puts taxonomy on GoGo's
+   * side of the ownership line, and an editor who typed `bar` for a place
+   * Google files under `restaurant` is usually right about what GoGo members
+   * will go there for.
+   *
+   * Returns `'BLOCKED'` when the category could not be settled at all — Google
+   * described the place in terms GoGo has no category for, and the sheet said
+   * nothing. That is the same `CATEGORY_REQUIRED` the operator would have seen
+   * at parse time, raised at the first moment it is actually true.
+   */
+  private async settleCategory(
+    rowId: string,
+    details: ResolvedProviderPlace,
+    context?: {
+      normalized: NormalizedImportRow;
+      knownCategories?: ReadonlySet<string> | undefined;
+    },
+  ): Promise<NormalizedImportRow | 'BLOCKED'> {
+    let normalized = context?.normalized;
+    if (!normalized) {
+      const [row] = await this.db
+        .select({ normalizedInput: schema.placeIngestRows.normalizedInput })
+        .from(schema.placeIngestRows)
+        .where(eq(schema.placeIngestRows.id, rowId))
+        .limit(1);
+      normalized = (row?.normalizedInput ?? {}) as NormalizedImportRow;
+    }
+    if (normalized.categoryKey) return normalized;
+
+    const derived = deriveCategory(details);
+    const known = context?.knownCategories ?? (await this.taxonomyKeys()).category;
+    // The table proposes; the catalog disposes. A key the taxonomy does not
+    // hold is not usable, however confident the mapping was.
+    const usable = derived && known.has(derived.key) ? derived : null;
+
+    if (usable) {
+      const settledRow: NormalizedImportRow = { ...normalized, categoryKey: usable.key };
+      await this.db
+        .update(schema.placeIngestRows)
+        .set({
+          normalizedInput: settledRow,
+          warnings: sql`${schema.placeIngestRows.warnings} || ${JSON.stringify([
+            {
+              code: 'CATEGORY_DERIVED',
+              field: 'category',
+              message: `category suy ra từ Google: ${usable.key} (${usable.source} = ${usable.fromType})`,
+            },
+          ])}::jsonb`,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.placeIngestRows.id, rowId));
+      this.metrics.increment('place_import_category_derived_total', {
+        source: usable.source,
+        category: usable.key,
+      });
+      return settledRow;
+    }
+
+    // A free-text category is already flagged `CATEGORY_UNMAPPED` for an editor
+    // to resolve, and has been publishable without a taxonomy link since the
+    // first import shipped. Not this change's argument to have.
+    if (normalized.categoryRaw) return normalized;
+
+    // Name what Google actually said. "category là bắt buộc" on a row the
+    // operator deliberately left blank reads as a bug in the importer.
+    const saw = details.primaryType ?? details.types[0] ?? 'không rõ';
+    await this.db
+      .update(schema.placeIngestRows)
+      .set({
+        status: 'validation_failed',
+        errors: [
+          {
+            code: 'CATEGORY_REQUIRED',
+            field: 'category',
+            message: `Không suy ra được category từ Google (${saw}). Điền cột category cho dòng này.`,
+          },
+        ],
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.placeIngestRows.id, rowId));
+    this.countRow('validation_failed', 'CATEGORY_REQUIRED');
+    this.metrics.increment('place_import_category_underivable_total', { google_type: saw });
+    return 'BLOCKED';
   }
 
   private countRow(status: string, errorCode?: string): void {
@@ -894,7 +1007,7 @@ export class PlaceImportJobService {
       placeId,
       details,
       derivedScore: score,
-      fetchTier: 'quality',
+      fetchTier: details.fetchTier,
     });
     await this.dedup.emitReindex(placeId, 'updated');
 
@@ -960,7 +1073,7 @@ export class PlaceImportJobService {
         placeId,
         details: outcome.details,
         derivedScore: score,
-        fetchTier: 'quality',
+        fetchTier: outcome.details.fetchTier,
       });
     }
     await this.db
@@ -1123,7 +1236,7 @@ export class PlaceImportJobService {
       placeId,
       details,
       derivedScore: score,
-      fetchTier: 'quality',
+      fetchTier: details.fetchTier,
     });
     await this.db
       .update(schema.placeIngestRows)

@@ -96,6 +96,10 @@ export class PlaceDedupService {
         attribution: { text: input.details.attribution },
         sourceStatus,
         primaryType: input.details.primaryType,
+        // `provider_uri` has existed since the first ingestion migration and
+        // nothing ever wrote it, because the adapter never asked Google for
+        // `googleMapsUri` — one of the three `core` fields ADR-0006 §2 requires.
+        providerUri: input.details.googleMapsUri,
         fetchTier: input.fetchTier,
       })
       .onConflictDoUpdate({
@@ -109,6 +113,7 @@ export class PlaceDedupService {
           fetchedAt: sql`now()`,
           refreshAfter,
           sourceStatus,
+          providerUri: input.details.googleMapsUri,
           fetchTier: input.fetchTier,
         },
       });

@@ -444,7 +444,7 @@ export class PlaceSubmissionService {
           placeId,
           details: d,
           derivedScore: score,
-          fetchTier: 'quality',
+          fetchTier: d.fetchTier,
         });
         await this.dedup.emitReindex(placeId, 'published');
         return placeId;

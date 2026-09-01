@@ -1,3 +1,4 @@
+import { familyForGoogleType } from './google-types';
 import { nameSimilarity } from './match-score';
 
 /**
@@ -34,29 +35,6 @@ export const NAME_CHANGE_THRESHOLD = 0.3;
  */
 export const RATING_COUNT_FLOOR = 20;
 export const RATING_COUNT_DROP_RATIO = 0.5;
-
-/** Provider primary type → the GoGo category it implies, when it implies one. */
-const TYPE_FAMILY: Record<string, string> = {
-  restaurant: 'food',
-  food: 'food',
-  meal_takeaway: 'food',
-  cafe: 'cafe',
-  coffee_shop: 'cafe',
-  bakery: 'cafe',
-  bar: 'nightlife',
-  night_club: 'nightlife',
-  karaoke: 'nightlife',
-  movie_theater: 'entertainment',
-  amusement_center: 'entertainment',
-  park: 'outdoor',
-  tourist_attraction: 'outdoor',
-  museum: 'culture',
-  art_gallery: 'culture',
-  shopping_mall: 'shopping',
-  store: 'shopping',
-  lodging: 'lodging',
-  hotel: 'lodging',
-};
 
 export type IdentitySnapshot = {
   name: string;
@@ -99,8 +77,8 @@ export function detectIdentityChange(
 
   // Only compare types we can actually interpret. An unmapped type means "we
   // cannot tell", which must not be reported as "it changed".
-  const beforeFamily = before.primaryType ? TYPE_FAMILY[before.primaryType] : undefined;
-  const afterFamily = after.primaryType ? TYPE_FAMILY[after.primaryType] : undefined;
+  const beforeFamily = familyForGoogleType(before.primaryType);
+  const afterFamily = familyForGoogleType(after.primaryType);
   if (beforeFamily && afterFamily && beforeFamily !== afterFamily) {
     reasons.push('PRIMARY_TYPE_CHANGED');
   }

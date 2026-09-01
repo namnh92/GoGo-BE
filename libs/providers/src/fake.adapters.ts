@@ -2,6 +2,7 @@ import { ProviderQuotaExceededError, ProviderUnavailableError, SheetAccessError 
 import type {
   AreaAutocompletePort,
   AreaPrediction,
+  PlaceFetchTier,
   PlaceProviderPort,
   PushPort,
   ResolvedProviderPlace,
@@ -25,6 +26,8 @@ const defaultHours = Array.from({ length: 7 }, (_, day) => ({
 
 export class FakePlaceProvider implements PlaceProviderPort {
   readonly registry = new Map<string, ResolvedProviderPlace>();
+  /** Tiers requested, in order — lets a test assert what a flow would be billed. */
+  readonly tiersRequested: PlaceFetchTier[] = [];
   /** Set to simulate provider outage. */
   failing = false;
   /** PI-QA-001: the two failure modes callers must handle differently — */
@@ -44,6 +47,12 @@ export class FakePlaceProvider implements PlaceProviderPort {
       hours: defaultHours,
       priceLevel: 2,
       primaryType: 'cafe',
+      // Shaped like Google's: the primary type, its narrower siblings, and the
+      // generic parents that hang off almost every commercial place.
+      types: ['cafe', 'coffee_shop', 'food', 'point_of_interest', 'establishment'],
+      googleMapsUri: `https://maps.google.com/?cid=${place.providerPlaceId}`,
+      photos: [],
+      fetchTier: 'quality',
       attribution: 'Data © Fake Provider',
       raw: {},
       ...place,
@@ -61,10 +70,28 @@ export class FakePlaceProvider implements PlaceProviderPort {
     return null;
   }
 
-  async details(providerPlaceId: string): Promise<ResolvedProviderPlace | null> {
+  async details(
+    providerPlaceId: string,
+    tier: PlaceFetchTier = 'quality',
+  ): Promise<ResolvedProviderPlace | null> {
     this.guard();
+    this.tiersRequested.push(tier);
     if (this.failing) throw new Error('fake provider down');
-    return this.registry.get(providerPlaceId) ?? null;
+    const place = this.registry.get(providerPlaceId);
+    if (!place) return null;
+    // A `core` fetch cannot return quality fields, and a fake that hands them
+    // over anyway teaches a test that the cheap tier is as good as the dear one.
+    if (tier === 'core') {
+      return {
+        ...place,
+        rating: null,
+        ratingCount: 0,
+        hours: [],
+        priceLevel: null,
+        fetchTier: tier,
+      };
+    }
+    return { ...place, fetchTier: tier };
   }
 
   /** Mirrors what the real adapter throws after `withResilience` gives up. */

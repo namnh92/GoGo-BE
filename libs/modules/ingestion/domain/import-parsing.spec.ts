@@ -446,6 +446,68 @@ describe('source_row_id fallback', () => {
   });
 });
 
+// --- #286 category deferred to the provider ---------------------------------
+
+describe('category when the sheet leaves it blank', () => {
+  const row = { source_row_id: '1', name: 'Lacàph', city: 'Ho Chi Minh City' };
+
+  it('defers instead of failing, when the row names something Google can find', () => {
+    const { errors, warnings } = validateRow(row);
+
+    expect(errors.map((e) => e.code)).not.toContain('CATEGORY_REQUIRED');
+    expect(warnings.map((w) => w.code)).toContain('CATEGORY_PENDING_PROVIDER');
+  });
+
+  it('defers on a maps link with no name at all', () => {
+    const { errors, warnings } = validateRow({
+      source_row_id: '1',
+      city: 'Ho Chi Minh City',
+      google_maps_url: 'https://www.google.com/maps/search/?api=1&query=Lacaph',
+    });
+
+    expect(errors).toEqual([]);
+    expect(warnings.map((w) => w.code)).toContain('CATEGORY_PENDING_PROVIDER');
+  });
+
+  it('still requires a category on a row nothing can be resolved from', () => {
+    // No link, no query, no name — there is no provider answer coming, so the
+    // requirement is real now rather than later.
+    const { errors } = validateRow({ source_row_id: '1', city: 'Ho Chi Minh City' });
+    const codes = errors.map((e) => e.code);
+
+    expect(codes).toContain('CATEGORY_REQUIRED');
+    expect(codes).toContain('NAME_REQUIRED');
+  });
+
+  it('does not defer when the sheet supplied a category', () => {
+    const { warnings } = validateRow({ ...row, category: 'cafe' });
+    expect(warnings.map((w) => w.code)).not.toContain('CATEGORY_PENDING_PROVIDER');
+  });
+
+  it('does not defer when the sheet supplied free-text category_raw', () => {
+    const { warnings } = validateRow({ ...row, category_raw: 'quán cà phê rang xay' });
+    const codes = warnings.map((w) => w.code);
+
+    expect(codes).not.toContain('CATEGORY_PENDING_PROVIDER');
+    expect(codes).toContain('CATEGORY_UNMAPPED');
+  });
+
+  it('an explicit category outside the taxonomy is still an error, not a deferral', () => {
+    // `rooftop` is a `setting` key and `attraction` is not a taxonomy key at
+    // all. Both were typed into a `category` column; neither becomes valid
+    // because Google could have answered instead.
+    for (const category of ['rooftop', 'attraction']) {
+      const { errors, warnings } = validateRow(
+        { ...row, category },
+        { knownCategoryKeys: new Set(['cafe', 'restaurant', 'bar', 'park']) },
+      );
+
+      expect(errors.map((e) => e.code)).toContain('CATEGORY_UNKNOWN');
+      expect(warnings.map((w) => w.code)).not.toContain('CATEGORY_PENDING_PROVIDER');
+    }
+  });
+});
+
 // --- #276 canonical mapping vocabulary --------------------------------------
 
 describe('parseColumnMapping', () => {
