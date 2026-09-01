@@ -136,3 +136,138 @@ describe('PI-BE-022 — GoogleSheetsAdapter failure mapping', () => {
     await expect(adapter.listTabs('book-1')).rejects.toBeInstanceOf(ProviderQuotaExceededError);
   });
 });
+
+/**
+ * #321 — the Sheets adapter was the only Google adapter emitting nothing, so a
+ * CMS row for it could show no calls, no failure rate and no latency. A
+ * dashboard rendering that as zero reads as "nobody used it" rather than
+ * "nobody measured it".
+ */
+describe('#321 — Sheets metrics', () => {
+  function recorder() {
+    const counters: { name: string; labels: Record<string, unknown> }[] = [];
+    const observations: { name: string; value: number; labels: Record<string, unknown> }[] = [];
+    return {
+      counters,
+      observations,
+      named: (name: string) => counters.filter((c) => c.name === name),
+      metrics: {
+        increment: (name: string, labels?: Record<string, string | number | undefined>) =>
+          void counters.push({ name, labels: labels ?? {} }),
+        observe: (
+          name: string,
+          value: number,
+          labels?: Record<string, string | number | undefined>,
+        ) => void observations.push({ name, value, labels: labels ?? {} }),
+      },
+    };
+  }
+
+  beforeEach(() => {
+    resetBreakers();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('counts a successful read and times it in seconds', async () => {
+    respond(200, { sheets: [{ properties: { title: 'Tab A', index: 0 } }] });
+    const rec = recorder();
+
+    await new GoogleSheetsAdapter(API_KEY, rec.metrics).listTabs('book-1');
+
+    expect(rec.named('places_provider_requests_total')[0]?.labels).toEqual({
+      method: 'google.sheets.meta',
+      status: 200,
+    });
+    const timing = rec.observations.find(
+      (o) => o.name === 'place_provider_request_duration_seconds',
+    );
+    expect(timing?.labels).toEqual({ method: 'google.sheets.meta', status: 200 });
+    // Seconds (#320): a stubbed fetch answers well inside one.
+    expect(timing?.value).toBeGreaterThanOrEqual(0);
+    expect(timing?.value).toBeLessThan(1);
+  });
+
+  it('labels the values read with its own method, not the metadata one', async () => {
+    respond(200, { values: [['a']] });
+    const rec = recorder();
+
+    await new GoogleSheetsAdapter(API_KEY, rec.metrics).readTab('book-1', 'Tab A', 10);
+
+    expect(rec.named('places_provider_requests_total')[0]?.labels).toMatchObject({
+      method: 'google.sheets.values',
+    });
+  });
+
+  it('counts our own misconfiguration as a provider failure', async () => {
+    respond(403, SERVICE_DISABLED_BODY);
+    const rec = recorder();
+
+    await new GoogleSheetsAdapter(API_KEY, rec.metrics).listTabs('book-1').catch(() => undefined);
+
+    expect(rec.named('places_provider_failures_total')[0]?.labels).toEqual({
+      method: 'google.sheets.meta',
+      status: 403,
+      reason: 'SERVICE_DISABLED',
+    });
+    // PERMISSION_DENIED is not a client reject, and a disabled API is ours.
+    expect(rec.named('places_provider_rejected_total')).toHaveLength(0);
+  });
+
+  it('counts a sheet that does not exist as rejected, not as Google failing', async () => {
+    respond(404, { error: { status: 'NOT_FOUND', message: 'Requested entity was not found.' } });
+    const rec = recorder();
+
+    await new GoogleSheetsAdapter(API_KEY, rec.metrics).listTabs('book-1').catch(() => undefined);
+
+    // #314's distinction: the operator's link is wrong. An alert on
+    // `places_provider_failures_total` says Google is not serving us, and a
+    // pasted bad link must not make that statement false.
+    expect(rec.named('places_provider_rejected_total')[0]?.labels).toEqual({
+      method: 'google.sheets.meta',
+      canonical_status: 'NOT_FOUND',
+    });
+    expect(rec.named('places_provider_failures_total')).toHaveLength(0);
+  });
+
+  it('bounds the reason label to a known vocabulary', async () => {
+    respond(500, {
+      error: {
+        status: 'INTERNAL',
+        details: [
+          {
+            '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+            reason: 'SOMETHING_GOOGLE_INVENTED_LAST_TUESDAY',
+          },
+        ],
+      },
+    });
+    const rec = recorder();
+
+    await new GoogleSheetsAdapter(API_KEY, rec.metrics).listTabs('book-1').catch(() => undefined);
+
+    // Google owns that vocabulary and can add to it; a label whose domain
+    // another company controls is not bounded (#319). The raw reason still
+    // rides the error and the log.
+    const failures = rec.named('places_provider_failures_total');
+    expect(failures.length).toBeGreaterThan(0);
+    for (const f of failures) expect(f.labels.reason).toBe('other');
+  });
+
+  it('never bills Sheets — it is quota-limited, not charged per call', async () => {
+    respond(200, { sheets: [] });
+    const rec = recorder();
+
+    await new GoogleSheetsAdapter(API_KEY, rec.metrics).listTabs('book-1');
+
+    // A SKU line with no invoice behind it is a number that cannot be checked.
+    expect(rec.named('places_provider_cost_units')).toHaveLength(0);
+  });
+
+  it('still works with no metrics sink at all', async () => {
+    respond(200, { sheets: [{ properties: { title: 'T', index: 0 } }] });
+    await expect(new GoogleSheetsAdapter(API_KEY).listTabs('book-1')).resolves.toHaveLength(1);
+  });
+});

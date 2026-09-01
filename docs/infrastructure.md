@@ -135,33 +135,33 @@ sau chỉ phải sửa một file, không phải sửa mọi call site.
 Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LABELS`
 (`@gogo/observability`) bằng test (#319):
 
-| Metric                                    | Label                        | Phát ở                                            |
-| ----------------------------------------- | ---------------------------- | ------------------------------------------------- |
-| `place_import_jobs_total`                 | `status`, `source_type`      | tạo job, pause quota, kết thúc job                |
-| `place_import_rows_total`                 | `status`, `error_code`       | mỗi dòng khi resolve xong                         |
-| `place_resolve_duration_seconds`          | `source`, `outcome`          | mỗi lần resolve                                   |
-| `place_resolve_confidence_bucket`         | `source`, `bucket`           | mỗi lần resolve                                   |
-| `place_duplicate_candidates_total`        | `kind`                       | provider id trùng / trùng theo tên + khoảng cách  |
-| `place_import_legacy_mapping_total`       | `from`, `to`                 | client còn gửi cách viết cũ                       |
-| `place_import_unknown_mapping_total`      | `code`                       | operator map một cột `/v1` không biết             |
-| `place_import_category_derived_total`     | `source`, `category`         | suy ra category cho một dòng                      |
-| `place_import_category_underivable_total` | `google_type`                | Google type chưa có category tương ứng            |
-| `place_identity_change_total`             | `reason`                     | re-import trỏ place sang provider id khác         |
-| `places_provider_requests_total`          | `method`, `status`           | mọi call Google Places / Routes                   |
-| `place_provider_request_duration_seconds` | `method`, `status`           | histogram, mọi call Google Places / Routes        |
-| `places_provider_failures_total`          | `method`, `status`, `reason` | call Google thất bại (#273)                       |
-| `places_provider_rejected_total`          | `method`, `canonical_status` | Google từ chối request của ta (#314)              |
-| `places_provider_cost_units`              | `sku`                        | mọi call Google thành công (Routes cộng elements) |
-| `mobile_place_submissions_total`          | `status`                     | submit / dedupe / decide                          |
-| `place_submission_publish_latency_hours`  | `decision`                   | khi editor quyết định                             |
-| `cms_emergency_takedown_total`            | `resource_type`, `role`      | break-glass gỡ nội dung                           |
-| `cms_super_admin_bypass_total`            | `action`, `resource_type`    | ghi mà chỉ super_admin mới qua được (SEC-002)     |
-| `experiment_assignment_total`             | `experiment`, `variant`      | gán subject vào variant                           |
-| `ai_feedback_runs_total`                  | `outcome`                    | mỗi lần chạy refinement                           |
-| `suggestion_run_latency_seconds`          | `variant`, `weights_version` | mỗi suggestion run (SG-010)                       |
-| `suggestion_run_over_budget_total`        | `variant`                    | run vượt ngân sách latency                        |
-| `campaign_dispatched_total`               | `result`                     | gửi campaign push                                 |
-| `push_delivery_failed_total`              | `kind`                       | một device token bị từ chối                       |
+| Metric                                    | Label                        | Phát ở                                                                |
+| ----------------------------------------- | ---------------------------- | --------------------------------------------------------------------- |
+| `place_import_jobs_total`                 | `status`, `source_type`      | tạo job, pause quota, kết thúc job                                    |
+| `place_import_rows_total`                 | `status`, `error_code`       | mỗi dòng khi resolve xong                                             |
+| `place_resolve_duration_seconds`          | `source`, `outcome`          | mỗi lần resolve                                                       |
+| `place_resolve_confidence_bucket`         | `source`, `bucket`           | mỗi lần resolve                                                       |
+| `place_duplicate_candidates_total`        | `kind`                       | provider id trùng / trùng theo tên + khoảng cách                      |
+| `place_import_legacy_mapping_total`       | `from`, `to`                 | client còn gửi cách viết cũ                                           |
+| `place_import_unknown_mapping_total`      | `code`                       | operator map một cột `/v1` không biết                                 |
+| `place_import_category_derived_total`     | `source`, `category`         | suy ra category cho một dòng                                          |
+| `place_import_category_underivable_total` | `google_type`                | Google type chưa có category tương ứng                                |
+| `place_identity_change_total`             | `reason`                     | re-import trỏ place sang provider id khác                             |
+| `places_provider_requests_total`          | `method`, `status`           | mọi call Google Places / Routes / Sheets                              |
+| `place_provider_request_duration_seconds` | `method`, `status`           | histogram, mọi call Places / Routes / Sheets                          |
+| `places_provider_failures_total`          | `method`, `status`, `reason` | call Google thất bại (#273), `reason` bounded (#321)                  |
+| `places_provider_rejected_total`          | `method`, `canonical_status` | Google từ chối request của ta (#314); sheet/tab sai vào đây           |
+| `places_provider_cost_units`              | `sku`                        | call Places/Routes thành công (Routes cộng elements). Không có Sheets |
+| `mobile_place_submissions_total`          | `status`                     | submit / dedupe / decide                                              |
+| `place_submission_publish_latency_hours`  | `decision`                   | khi editor quyết định                                                 |
+| `cms_emergency_takedown_total`            | `resource_type`, `role`      | break-glass gỡ nội dung                                               |
+| `cms_super_admin_bypass_total`            | `action`, `resource_type`    | ghi mà chỉ super_admin mới qua được (SEC-002)                         |
+| `experiment_assignment_total`             | `experiment`, `variant`      | gán subject vào variant                                               |
+| `ai_feedback_runs_total`                  | `outcome`                    | mỗi lần chạy refinement                                               |
+| `suggestion_run_latency_seconds`          | `variant`, `weights_version` | mỗi suggestion run (SG-010)                                           |
+| `suggestion_run_over_budget_total`        | `variant`                    | run vượt ngân sách latency                                            |
+| `campaign_dispatched_total`               | `result`                     | gửi campaign push                                                     |
+| `push_delivery_failed_total`              | `kind`                       | một device token bị từ chối                                           |
 
 Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 
@@ -208,6 +208,16 @@ một giá trị nội suy, và con số đổi khi bộ bucket đổi chứ kh�
 
 Bộ mặc định (0,001s → 30s) dành cho histogram nào không khai báo riêng.
 
+**Sheets không có dòng chi phí (#321).** Adapter Google Sheets giờ phát
+`places_provider_requests_total`, `places_provider_failures_total`,
+`places_provider_rejected_total` và histogram thời lượng như hai adapter kia —
+trước đó nó không phát gì, nên hàng "Sheets" trên dashboard CMS chỉ có thể là
+số 0, đọc thành "không ai dùng" thay vì "không ai đo".
+
+Nhưng **không** có `places_provider_cost_units`. Sheets API giới hạn bằng quota
+chứ không tính tiền theo lượt gọi, nên một dòng SKU cho nó là một con số không
+đối chiếu được với hoá đơn nào.
+
 Không bao giờ đưa vào nhãn: thời lượng thô, URL, place id, chuỗi truy vấn,
 message lỗi, job id, request id, timestamp, spreadsheet id, hay bất cứ thứ gì
 người dùng/operator gõ vào.
@@ -220,14 +230,14 @@ cột không map được vẫn báo cho operator qua `unmappedHeaders` trên ch
 
 Kết quả rà toàn bộ registry:
 
-| Nhãn                                                   | Nguồn giá trị                 | Đánh giá                                    |
-| ------------------------------------------------------ | ----------------------------- | ------------------------------------------- |
-| `place_import_unknown_mapping_total{field}`            | text operator gõ              | **Không trần** — đã bỏ (#319)               |
-| `places_provider_failures_total{reason}`               | `ErrorInfo.reason` của Google | Từ vựng mở của Google, không allowlist      |
-| `suggestion_run_latency_ms{weights_version}`           | ranking config đã activate    | Tăng đơn điệu theo deploy, không giảm lại   |
-| `place_import_category_underivable_total{google_type}` | từ vựng place type của Google | Hữu hạn lớn (~200), Google kiểm soát — nhận |
-| `cms_super_admin_bypass_total{action,resource_type}`   | route _template_ của Fastify  | Hữu hạn theo bảng route — đúng thiết kế     |
-| Mọi nhãn còn lại                                       | enum trong source             | Hữu hạn                                     |
+| Nhãn                                                   | Nguồn giá trị                 | Đánh giá                                                             |
+| ------------------------------------------------------ | ----------------------------- | -------------------------------------------------------------------- |
+| `place_import_unknown_mapping_total{field}`            | text operator gõ              | **Không trần** — đã bỏ (#319)                                        |
+| `places_provider_failures_total{reason}`               | `ErrorInfo.reason` của Google | **Đã đóng (#321)** — `boundedReason()`, ngoài tập đã biết là `other` |
+| `suggestion_run_latency_ms{weights_version}`           | ranking config đã activate    | Tăng đơn điệu theo deploy, không giảm lại                            |
+| `place_import_category_underivable_total{google_type}` | từ vựng place type của Google | Hữu hạn lớn (~200), Google kiểm soát — nhận                          |
+| `cms_super_admin_bypass_total{action,resource_type}`   | route _template_ của Fastify  | Hữu hạn theo bảng route — đúng thiết kế                              |
+| Mọi nhãn còn lại                                       | enum trong source             | Hữu hạn                                                              |
 
 `METRIC_LABELS` (`@gogo/observability`) là hợp đồng: nó liệt kê **key nhãn nào
 mỗi metric được phép mang**, và `metric-labels.spec.ts` quét source, đối chiếu,

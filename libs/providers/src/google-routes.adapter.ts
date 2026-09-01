@@ -1,13 +1,15 @@
 import {
+  NO_PROVIDER_METRICS,
   ProviderConfigurationError,
   ProviderInvalidRequestError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   type LatLng,
+  type ProviderMetrics,
   type TravelLeg,
   type TravelTimePort,
 } from './ports';
-import { googleFailure, readGoogleError } from './google-error';
+import { boundedReason, googleFailure, readGoogleError } from './google-error';
 import { withResilience } from './resilience';
 
 const RESILIENCE = {
@@ -41,18 +43,7 @@ type MatrixElement = {
 export class GoogleRoutesAdapter implements TravelTimePort {
   constructor(
     private readonly apiKey: string,
-    private readonly metrics: {
-      increment(
-        name: string,
-        labels?: Record<string, string | number | undefined>,
-        by?: number,
-      ): void;
-      observe(
-        name: string,
-        value: number,
-        labels?: Record<string, string | number | undefined>,
-      ): void;
-    } = { increment: () => undefined, observe: () => undefined },
+    private readonly metrics: ProviderMetrics = NO_PROVIDER_METRICS,
   ) {}
 
   async matrix(origin: LatLng, destinations: LatLng[]): Promise<(TravelLeg | null)[]> {
@@ -125,7 +116,7 @@ export class GoogleRoutesAdapter implements TravelTimePort {
         this.metrics.increment('places_provider_failures_total', {
           method: 'google.routeMatrix',
           status: res.status,
-          reason: info.reason ?? 'unknown',
+          reason: boundedReason(info.reason),
         });
         if (fault) throw fault;
         throw new Error(`routes ${res.status}`);

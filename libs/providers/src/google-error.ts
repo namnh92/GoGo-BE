@@ -59,6 +59,31 @@ export const PROVIDER_MISCONFIGURED_REASONS = new Set([
   'API_KEY_IP_ADDRESS_BLOCKED',
 ]);
 
+/**
+ * Reasons allowed to appear as a metric label (#319/#321).
+ *
+ * `error.details[].reason` is Google's vocabulary, not ours: they can add a
+ * string tomorrow and GoGo silently gains a series for it. A label whose
+ * domain another company controls is not a bounded label, however small it
+ * happens to be today.
+ *
+ * The raw reason is not lost — it rides the thrown
+ * `ProviderConfigurationError` and the structured log line, which is where an
+ * operator reads it. What is bounded is only what a time-series database has
+ * to index forever.
+ */
+export const KNOWN_FAILURE_REASONS: ReadonlySet<string> = new Set([
+  ...PROVIDER_MISCONFIGURED_REASONS,
+  // Google's documented reason for 429 on both Places and Sheets.
+  'RATE_LIMIT_EXCEEDED',
+]);
+
+/** A reason safe to use as a label: known, `other`, or `unknown` if absent. */
+export function boundedReason(reason: string | undefined): string {
+  if (!reason) return 'unknown';
+  return KNOWN_FAILURE_REASONS.has(reason) ? reason : 'other';
+}
+
 export function isMisconfiguredReason(reason: string | undefined): boolean {
   return reason !== undefined && PROVIDER_MISCONFIGURED_REASONS.has(reason);
 }

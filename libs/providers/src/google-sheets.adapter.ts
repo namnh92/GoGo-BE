@@ -1,8 +1,15 @@
 import { INGEST_SHEET_HOSTS, parseSpreadsheetId } from './sheets-url';
-import { isMisconfiguredReason, readGoogleError } from './google-error';
 import {
+  CLIENT_REJECT_STATUSES,
+  boundedReason,
+  isMisconfiguredReason,
+  readGoogleError,
+} from './google-error';
+import {
+  NO_PROVIDER_METRICS,
   ProviderQuotaExceededError,
   SheetAccessError,
+  type ProviderMetrics,
   type SheetTab,
   type SheetsPort,
 } from './ports';
@@ -23,9 +30,22 @@ const RESILIENCE = {
  * wizard shows verbatim — by reason code where Google gives one, by status only
  * where it does not (PI-BE-022). The API key stays in this adapter and is never
  * echoed into an error, a log line, or a job record.
+ *
+ * #321 — instrumented like the other two. It was the only Google adapter
+ * emitting nothing, so the CMS row for Sheets could show no calls, no failure
+ * rate and no latency, and a dashboard rendering that as zero would read as
+ * "nobody used it" rather than "nobody measured it".
+ *
+ * No cost counter, deliberately. `places_provider_cost_units` exists to be
+ * reconciled against an invoice; the Sheets API is quota-limited and not
+ * billed per call, so a SKU line for it would be a number with nothing behind
+ * it.
  */
 export class GoogleSheetsAdapter implements SheetsPort {
-  constructor(private readonly apiKey: string) {}
+  constructor(
+    private readonly apiKey: string,
+    private readonly metrics: ProviderMetrics = NO_PROVIDER_METRICS,
+  ) {}
 
   async listTabs(spreadsheetId: string): Promise<SheetTab[]> {
     const data = await this.call<{
@@ -59,13 +79,49 @@ export class GoogleSheetsAdapter implements SheetsPort {
   private async call<T>(name: string, url: string): Promise<T> {
     try {
       return await withResilience({ name, ...RESILIENCE }, async (signal) => {
+        const started = Date.now();
         const res = await fetch(url, {
           signal,
           headers: { 'X-Goog-Api-Key': this.apiKey, Accept: 'application/json' },
         });
+        this.metrics.increment('places_provider_requests_total', {
+          method: name,
+          status: res.status,
+        });
+        this.metrics.observe(
+          'place_provider_request_duration_seconds',
+          (Date.now() - started) / 1000,
+          { method: name, status: res.status },
+        );
         if (res.ok) return (await res.json()) as T;
 
-        const { reason } = await readGoogleError(res);
+        const { reason, canonicalStatus } = await readGoogleError(res);
+
+        // #314's distinction, applied here: a sheet nobody shared with us or a
+        // tab that does not exist is the operator's link being wrong, not
+        // Google failing to serve us. Counted apart so an alert on
+        // `places_provider_failures_total` keeps meaning what it says.
+        //
+        // Misconfiguration wins, exactly as in `googleFailure`: a 404 whose
+        // body says the API was never enabled is our console, not their link.
+        // This classifies the metric only — every error thrown below is
+        // unchanged, because the CMS wizard renders those codes verbatim.
+        if (
+          canonicalStatus &&
+          CLIENT_REJECT_STATUSES.has(canonicalStatus) &&
+          !isMisconfiguredReason(reason)
+        ) {
+          this.metrics.increment('places_provider_rejected_total', {
+            method: name,
+            canonical_status: canonicalStatus,
+          });
+        } else {
+          this.metrics.increment('places_provider_failures_total', {
+            method: name,
+            status: res.status,
+            reason: boundedReason(reason),
+          });
+        }
 
         // PI-BE-022: the status alone does not say whose fault it is. Google
         // answers 403 PERMISSION_DENIED both for a sheet nobody shared with us
