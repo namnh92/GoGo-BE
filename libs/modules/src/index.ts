@@ -166,3 +166,45 @@ export {
 } from '../suggestions/application/experiments.service';
 export { assign, bucket, CONTROL } from '../suggestions/domain/assignment';
 export { SUGGESTION_LATENCY_BUDGET_MS } from '../suggestions/application/suggestion.service';
+
+// Cost observability (COST-BE-002, #335)
+export {
+  COST_USAGE_LEDGER,
+  DbUsageLedger,
+  DEFAULT_LEDGER_FLUSH_MS,
+  type UsageLedgerOptions,
+} from '../cost/application/usage-ledger';
+export {
+  ProviderBudgetService,
+  budgetLimitsFrom,
+  operationEnvSuffix,
+  unitsEnvKey,
+  type BudgetLimits,
+  type BudgetScope,
+  type ReserveRefusal,
+  type ReserveRequest,
+  type ReserveResult,
+} from '../cost/application/provider-budget.service';
+export {
+  ProviderUsageReportService,
+  type ProviderCostLine,
+  type ProviderCostReport,
+} from '../cost/application/usage-report.service';
+export {
+  OPS_PROVIDERS,
+  PRICING_CURRENCY,
+  PRICING_VERSION,
+  PROVIDER_PRICING,
+  freeCapAdjustedCostMicros,
+  knownOperations,
+  listCostMicros,
+  microsToMinorUnits,
+  operationForSku,
+  pricingFor,
+  providerOf,
+  staticCostGaps,
+  utcDay,
+  type CostGap,
+  type OpsProvider,
+  type PricingRow,
+} from '../cost/domain/provider-pricing';

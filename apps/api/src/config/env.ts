@@ -244,6 +244,52 @@ const envSchema = z
      * extrapolating the missing sixteen would be inventing data.
      */
     GRAFANA_RETENTION_DAYS: z.coerce.number().int().positive().default(14),
+    /**
+     * #335 — the durable provider usage ledger.
+     *
+     * On, every Google call lands in `provider_usage_daily` through a buffered
+     * sink teed off the metrics port. Off, nothing is written and
+     * `/cms/ops/costs` reports `sourcesConfigured: false` exactly as it did
+     * before this PR — which is the rollback.
+     */
+    COST_LEDGER_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
+    /**
+     * How long counts may sit in memory before they are written.
+     *
+     * This is the SIGKILL loss window, and nothing else: a graceful stop
+     * flushes, and a failed flush retries with the counts still buffered. Five
+     * seconds keeps the loss smaller than the noise `increase()` already
+     * introduces, at one upsert per interval per process.
+     */
+    COST_LEDGER_FLUSH_MS: z.coerce.number().int().min(250).max(60_000).default(5_000),
+    /**
+     * #335 — the hard budget for the place-refresh scope (first consumer is
+     * PR7's refresh job, #340).
+     *
+     * **Unset means refuse.** Not "unlimited": an absent environment variable
+     * is the most likely way this guard ever goes missing in production, and a
+     * guard that defaults open is not a guard. Three ceilings, all per day,
+     * all enforced together in one Postgres transaction — an absolute call
+     * count, a per-operation unit count, and a worst-case cost at **list
+     * price with no free-tier deduction**.
+     *
+     * Google's own per-day quota on Places API (New) is the external safety
+     * net behind this (INF-015) and should sit slightly above it; a Cloud
+     * Billing alert is an alert, not a limit.
+     */
+    PLACE_REFRESH_DAILY_MAX_CALLS: z.coerce.number().int().min(0).optional(),
+    /** USD, converted to micros internally. Worst case, at list price. */
+    PLACE_REFRESH_DAILY_MAX_LIST_COST_USD: z.coerce.number().min(0).optional(),
+    PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_LIVENESS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional(),
+    PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_CORE: z.coerce.number().int().min(0).optional(),
+    PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY: z.coerce.number().int().min(0).optional(),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
   })

@@ -1,5 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
+import {
+  ProviderUsageReportService,
+  type ProviderCostReport,
+} from '../../cost/application/usage-report.service';
 import IORedis from 'ioredis';
 import { breakerSnapshots, type QueueStats } from '@gogo/providers';
 import { type Db } from '@gogo/database';
@@ -23,15 +27,6 @@ export type ServiceHealth = {
   checkedAt: string;
   /** Why it is `unknown` or `degraded`, in words the console can show. */
   detail?: string;
-};
-
-export type CostLine = {
-  key: string;
-  today: number;
-  monthToDate: number;
-  currency: string;
-  basis: 'billed' | 'estimated';
-  quotaUsedRatio?: number;
 };
 
 /** How long a health snapshot is reused. This is a screen, not an alerting path. */
@@ -81,7 +76,14 @@ export function workerHealthFrom(
   };
 }
 
-type ObservabilityConfig = { REDIS_URL?: string; NODE_ENV?: string };
+type ObservabilityConfig = {
+  REDIS_URL?: string;
+  NODE_ENV?: string;
+  /** #335 — which deployment's ledger rows are ours. */
+  APP_ENV?: string;
+  /** #335 — off means no durable cost source, and the endpoint says so. */
+  COST_LEDGER_ENABLED?: boolean;
+};
 
 /**
  * BE-CMS-G8 (#247) — the operations view.
@@ -249,24 +251,34 @@ export class CmsObservabilityService {
   /**
    * Cost and quota.
    *
-   * **Returns only providers with a real source, and today there are none.**
-   * That is the honest answer, not a gap in the implementation:
+   * Until #335 this returned an empty list unconditionally, and the comment
+   * here explained why that was the honest answer: no billing API, and an
+   * in-process SKU counter that resets on deploy cannot answer "today" or
+   * "month to date". Both halves of that are now fixed —
+   * `provider_usage_daily` survives deploys, and
+   * `libs/modules/cost/domain/provider-pricing.ts` holds a list price — so the
+   * endpoint reports money.
    *
-   * - No provider billing API is wired up, so nothing is `billed`.
-   * - `places_provider_cost_units` counts SKU *units*, not money, and lives in
-   *   an in-process registry that resets on deploy. It cannot answer "today"
-   *   or "month to date" — a number derived from it would be an arbitrary
-   *   fraction of the truth, wearing a currency symbol.
+   * What has *not* changed is the rule the empty list was protecting:
    *
-   * An empty list must render as "no cost source connected", never as a zero.
-   * `0 ₫` spent is a very different claim from "we do not know", and the one
-   * this endpoint can support is the second.
+   * - Nothing here is called `billed`. `basis: 'estimated'` on every line, and
+   *   the free-cap arithmetic is an approximation of a per-billing-account cap
+   *   that GoGo cannot see, labelled `confidence: 'MEDIUM'`.
+   * - A provider whose price is unverified (Routes, per matrix element) is
+   *   **absent from the money list** and present in `gaps` — a floor with a
+   *   currency symbol is still a claim, and that one would be false.
+   * - A provider nothing measures (the Maps SDK, which renders on the handset)
+   *   is in `gaps` as `not_instrumented`. Never a zero.
+   * - With the ledger off, `sourcesConfigured` is false and the list is empty,
+   *   exactly as before.
    *
-   * Turning this into real numbers needs persisted per-day provider usage —
-   * tracked separately, not faked here.
+   * A zero that comes back *with* the ledger on is now a real measured zero:
+   * the operations are instrumented and made no calls this month.
    */
-  async costs(): Promise<{ providers: CostLine[]; sourcesConfigured: boolean }> {
-    const providers: CostLine[] = [];
-    return { providers, sourcesConfigured: providers.length > 0 };
+  costs(): Promise<ProviderCostReport> {
+    return new ProviderUsageReportService(this.db, {
+      environment: this.config.APP_ENV ?? 'dev',
+      ledgerEnabled: this.config.COST_LEDGER_ENABLED ?? false,
+    }).report();
   }
 }

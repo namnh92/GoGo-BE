@@ -59,6 +59,13 @@ erDiagram
   GoGo place, from every import door (#334). `place_sources_provider_external_unique`
   still guards the legacy table, whose `google` rows migration 0033 copies over
   and whose writer is gone.
+- `provider_usage_daily_pkey` / `provider_budget_daily_pkey` (#335) — usage
+  accounting and the hard budget are **two tables, not one**. Usage says what
+  happened and is written after the fact by a buffered ledger; the budget says
+  what is allowed and is written before the provider call inside one
+  transaction. `provider_usage_daily_succeeded_le_attempted` fails loudly if
+  the ledger ever double-counts, because a wrong number here looks exactly like
+  a right one. See ADR-0012.
 - `users_email_unique` partial — delete + re-register with same email works.
 - Constraint edits bump `rooms.constraint_version`; anything referencing an
   older version is stale (enforced in application layer + `is_stale` flags).

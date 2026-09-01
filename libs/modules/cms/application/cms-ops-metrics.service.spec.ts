@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MetricsQueryError, type MetricsQueryPort, type PromSample } from '@gogo/providers';
 import { CmsOpsMetricsService } from './cms-ops-metrics.service';
+import { PRICING_VERSION } from '../../cost/domain/provider-pricing';
 
 /**
  * #315 — the envelope, the cache and the failure behaviour.
@@ -212,15 +213,51 @@ describe('self-describing semantics', () => {
     expect(res.latencySemantics.excludesReason).toContain('#314');
   });
 
-  it('never calls billable units money', async () => {
+  /**
+   * #335 replaced `units_only` with a real estimate. The rule the old
+   * assertion protected is unchanged and is what this still checks: an
+   * estimate may never present itself as a bill.
+   */
+  it('states an estimate as an estimate, and never as a bill', async () => {
     const { port } = stubPort();
     const res = await new CmsOpsMetricsService(config, port).summary('24h');
-    expect(res.costModel.kind).toBe('units_only');
-    expect(res.costModel.estimatedCost).toBeNull();
-    expect(res.costModel.currency).toBeNull();
+    expect(res.costModel.kind).toBe('estimated');
+    expect(res.costModel.basis).toBe('ESTIMATED');
+    expect(res.costModel.currency).toBe('USD');
+    expect(res.costModel.pricingVersion).toBe(PRICING_VERSION);
+    // The free cap is monthly and this window is not. Said in the payload
+    // rather than left for a reader to assume.
+    expect(res.costModel.freeCapApplied).toBe(false);
     const keys = JSON.stringify(res);
-    for (const forbidden of ['actualSpend', 'billedAmount', 'invoiceCost']) {
+    for (const forbidden of ['actualSpend', 'billedAmount', 'invoiceCost', 'billed']) {
       expect(keys).not.toContain(forbidden);
     }
+  });
+
+  /**
+   * The Maps SDK renders on the handset and this process sees no map load.
+   * Absent from the payload it would read as zero cost, which is the one
+   * claim the plan's rejected list names outright.
+   */
+  it('names the Maps SDK as a measurement gap rather than omitting it', async () => {
+    const { port } = stubPort();
+    const res = await new CmsOpsMetricsService(config, port).summary('24h');
+    const gaps = res.costModel.measurementGaps.map((g) => g.key);
+    expect(gaps).toContain('google.maps_sdk_ios');
+    expect(gaps).toContain('google.maps_sdk_android');
+    for (const gap of res.costModel.measurementGaps) {
+      if (gap.key.startsWith('google.maps_sdk_')) expect(gap.kind).toBe('not_instrumented');
+    }
+  });
+
+  /**
+   * Routes bills per matrix element and no per-element list price has been
+   * verified. Its units are exact; its money is unknown, and unknown is not 0.
+   */
+  it('reports an unverified price as unknown, not as free', async () => {
+    const { port } = stubPort();
+    const res = await new CmsOpsMetricsService(config, port).providers('24h');
+    const gap = res.costModel.measurementGaps.find((g) => g.key === 'google.routeMatrix');
+    expect(gap?.kind).toBe('price_unknown');
   });
 });
