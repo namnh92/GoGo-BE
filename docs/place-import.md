@@ -330,4 +330,4 @@ is a recorded decision, not an oversight — see `docs/threat-model.md`.
 - `scoreMatch`'s category agreement never runs: `toTarget` builds a `MatchTarget`
   without `primaryType`, so the 0.1 category weight has been inert since it
   shipped. Consolidating the type table did not activate it — that changes row
-  outcomes and belongs in its own change.
+  outcomes and belongs in its own change (#288).
