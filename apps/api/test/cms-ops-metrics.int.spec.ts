@@ -207,6 +207,10 @@ describe('#315 — no monitoring backend is not an error', () => {
     const week = (await get('/v1/cms/ops/summary?window=7d', 'ops_admin')).json();
     expect(week.truncated).toBe(false);
     expect(week.effectiveWindow).toBe('7d');
+
+    const day = (await get('/v1/cms/ops/summary?window=24h', 'ops_admin')).json();
+    // The word the operator pressed, not a synonym for it.
+    expect(day.effectiveWindow).toBe('24h');
   });
 });
 

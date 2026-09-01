@@ -74,6 +74,14 @@ describe('windows', () => {
     }
   });
 
+  it('echoes the requested window verbatim when nothing was cut', () => {
+    // Deriving it answered a 24h request with "1d" — the same duration, a
+    // different word from the one on the button the operator pressed.
+    expect(resolveWindow('24h', 14).effectiveWindow).toBe('24h');
+    expect(resolveWindow('1h', 14).effectiveWindow).toBe('1h');
+    expect(resolveWindow('7d', 14).effectiveWindow).toBe('7d');
+  });
+
   it('renders durations in the largest whole unit', () => {
     expect(promDuration(3600)).toBe('1h');
     expect(promDuration(86_400)).toBe('1d');
@@ -288,6 +296,30 @@ describe('aggregation', () => {
     // Six calls happened. "5.9998 calls" makes a dashboard look broken in a
     // way that has nothing to do with the system.
     expect(noisy.totals.providerRequests).toBe(6);
+  });
+
+  it('never rounds a real call down to no calls', () => {
+    // A series scraped once inside the window comes back below 0.5, and plain
+    // rounding made the row read "instrumented, zero calls" — the
+    // 0-versus-unknown ambiguity this screen exists to avoid, arriving through
+    // a side door. Seen live on DEV the first time Sheets was called.
+    const barely = aggregate({
+      ...NONE,
+      requests: [s({ method: 'google.sheets.meta', status: '200' }, 0.4)],
+      costUnits: [s({ sku: 'google.sheets.meta' }, 0.4)],
+    });
+    expect(barely.totals.providerRequests).toBe(1);
+    const sheets = barely.providers.find((p) => p.provider === 'sheets')!;
+    expect(sheets.instrumented).toBe(true);
+    expect(sheets.calls).toBe(1);
+  });
+
+  it('still reports a genuine zero as zero', () => {
+    const none = aggregate({
+      ...NONE,
+      requests: [s({ method: 'google.searchText', status: '200' }, 0)],
+    });
+    expect(none.totals.providerRequests).toBe(0);
   });
 
   it('reports nulls, not zeros, when there is nothing to divide by', () => {
