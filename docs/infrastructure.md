@@ -154,6 +154,7 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `places_provider_failures_total`          | `method`, `status`, `reason` | call Google thất bại (#273), `reason` bounded (#321)                   |
 | `places_provider_rejected_total`          | `method`, `canonical_status` | Google từ chối request của ta (#314); sheet/tab sai vào đây            |
 | `places_provider_cost_units`              | `sku`                        | call Places/Routes thành công (Routes cộng elements). Không có Sheets  |
+| `provider_usage_ledger_flush_total`       | `outcome`                    | mỗi lần ghi `provider_usage_daily` (#335); `outcome=error` = sổ chi phí đang tụt lại |
 | `mobile_place_submissions_total`          | `status`                     | submit / dedupe / decide                                               |
 | `place_submission_publish_latency_hours`  | `decision`                   | khi editor quyết định                                                  |
 | `cms_emergency_takedown_total`            | `resource_type`, `role`      | break-glass gỡ nội dung                                                |

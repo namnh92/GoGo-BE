@@ -1,4 +1,10 @@
-import { Global, Inject, Module, type OnModuleInit } from '@nestjs/common';
+import {
+  Global,
+  Inject,
+  Module,
+  type OnApplicationShutdown,
+  type OnModuleInit,
+} from '@nestjs/common';
 import {
   AREA_AUTOCOMPLETE,
   FakeAreaAutocomplete,
@@ -30,7 +36,9 @@ import {
   createLogger,
   type MetricsPort,
 } from '@gogo/observability';
-import { METRICS_REGISTRY } from './metrics.tokens';
+import { COST_USAGE_LEDGER, DB, DbUsageLedger } from '@gogo/modules';
+import type { Db } from '@gogo/database';
+import { METRICS_BASE, METRICS_REGISTRY } from './metrics.tokens';
 import { APP_CONFIG, type AppConfig } from './config/env';
 
 /**
@@ -91,13 +99,48 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     {
       // Both: the log line stays the record any aggregator can read, and the
       // registry is what a scraper reads. Losing one must not lose the other.
-      provide: METRICS,
+      //
+      // Split out from `METRICS` in #335 so the usage ledger can report its own
+      // flush outcomes into these two sinks without being a sink of its own
+      // metrics — a ledger teed into the thing it writes to is a cycle, and the
+      // cycle only shows up under load.
+      provide: METRICS_BASE,
       useFactory: (config: AppConfig, registry: MetricsRegistry) =>
         new TeeMetrics([
           new LogMetrics(createLogger({ level: config.LOG_LEVEL, name: 'gogo-metrics' })),
           registry,
         ]),
       inject: [APP_CONFIG, METRICS_REGISTRY],
+    },
+    {
+      /**
+       * #335 — durable provider usage accounting.
+       *
+       * A third metrics sink rather than a change to any adapter: every
+       * provider call already emits `places_provider_requests_total` and, where
+       * it is billed, `places_provider_cost_units`. Teeing the ledger off that
+       * stream is what makes the accounting complete by construction — a future
+       * adapter is counted the day it emits its first metric, with nothing to
+       * remember.
+       *
+       * Buffered, never awaited from the provider call. See
+       * `docs/adr/0012-durable-provider-usage-accounting.md` for why that is
+       * the boundary, and for what "buffered" is allowed to lose.
+       */
+      provide: COST_USAGE_LEDGER,
+      useFactory: (config: AppConfig, db: Db, base: MetricsPort) =>
+        new DbUsageLedger(db, {
+          environment: config.APP_ENV,
+          flushMs: config.COST_LEDGER_FLUSH_MS,
+          enabled: config.COST_LEDGER_ENABLED,
+          metrics: base,
+        }),
+      inject: [APP_CONFIG, DB, METRICS_BASE],
+    },
+    {
+      provide: METRICS,
+      useFactory: (base: MetricsPort, ledger: DbUsageLedger) => new TeeMetrics([base, ledger]),
+      inject: [METRICS_BASE, COST_USAGE_LEDGER],
     },
     {
       // ADR-0007: the real adapter is only bound when the flag *and* the Routes
@@ -151,6 +194,7 @@ import { APP_CONFIG, type AppConfig } from './config/env';
   ],
   exports: [
     METRICS_REGISTRY,
+    COST_USAGE_LEDGER,
     METRICS_QUERY,
     PLACE_PROVIDER,
     AREA_AUTOCOMPLETE,
@@ -161,8 +205,28 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     METRICS,
   ],
 })
-export class ProvidersModule implements OnModuleInit {
-  constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
+export class ProvidersModule implements OnModuleInit, OnApplicationShutdown {
+  constructor(
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(COST_USAGE_LEDGER) private readonly usageLedger: DbUsageLedger,
+  ) {}
+
+  /**
+   * #335 — the graceful half of the ledger's durability guarantee.
+   *
+   * A SIGTERM loses nothing: the interval stops and the buffer is written
+   * before the pool closes. `DatabaseModule` is registered ahead of this one,
+   * and Nest runs shutdown hooks in reverse registration order, so the
+   * connection is still open when this runs. A SIGKILL still loses at most one
+   * flush interval, which is the bound the ADR names and the reconciliation
+   * procedure covers.
+   */
+  async onApplicationShutdown(): Promise<void> {
+    await this.usageLedger.stop().catch(() => {
+      // A flush that cannot land at shutdown is a few counts, and the process
+      // is leaving. Throwing here would turn a clean stop into a crash loop.
+    });
+  }
 
   /**
    * PI-BE-021 — a fake bound in a deployed environment is a defect, and it used
@@ -171,6 +235,9 @@ export class ProvidersModule implements OnModuleInit {
    * spreadsheet.
    */
   onModuleInit(): void {
+    // Nothing is written until this runs, and it is a no-op when the ledger is
+    // disabled — `COST_LEDGER_ENABLED=false` is the rollback for this PR.
+    this.usageLedger.start();
     const logger = createLogger({ level: this.config.LOG_LEVEL, name: 'gogo-api' });
     const status = placeProviderStatus(this.config);
     warnFakedProviders({ ...this.config, PLACE_PROVIDER_MODE: status.mode }, (meta, message) =>

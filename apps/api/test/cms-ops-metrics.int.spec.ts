@@ -231,14 +231,26 @@ describe('#315 — nothing about the store reaches the caller', () => {
     }
   });
 
-  it('never names the units money', async () => {
+  /**
+   * #335 gave this surface a price list, so it now states an amount. The rule
+   * the old `units_only` assertion protected is unchanged and is what this
+   * still checks: an estimate must not present itself as a bill, and the
+   * things nobody measured must be named rather than folded into a zero.
+   */
+  it('states an estimate as an estimate, and names what it could not price', async () => {
     const body = JSON.stringify((await get(ROUTES[0]!, 'ops_admin')).json());
     for (const forbidden of ['actualSpend', 'billedAmount', 'invoiceCost']) {
       expect(body).not.toContain(forbidden);
     }
     const summary = (await get(ROUTES[0]!, 'ops_admin')).json();
-    expect(summary.costModel.kind).toBe('units_only');
-    expect(summary.costModel.estimatedCost).toBeNull();
+    expect(summary.costModel.kind).toBe('estimated');
+    expect(summary.costModel.basis).toBe('ESTIMATED');
+    expect(summary.costModel.currency).toBe('USD');
+    // A free cap is monthly; these windows are not. Said in the payload.
+    expect(summary.costModel.freeCapApplied).toBe(false);
+    const gaps: { key: string; kind: string }[] = summary.costModel.measurementGaps;
+    expect(gaps.find((g) => g.key === 'google.maps_sdk_ios')?.kind).toBe('not_instrumented');
+    expect(gaps.find((g) => g.key === 'google.routeMatrix')?.kind).toBe('price_unknown');
   });
 });
 

@@ -2,13 +2,14 @@ import os from 'node:os';
 import { createDb } from '@gogo/database';
 import {
   CampaignDispatcher,
+  DbUsageLedger,
   OutboxDispatcher,
   PlaceDedupService,
   PlaceImportJobService,
   PlaceResolverService,
   PrivacyJobs,
 } from '@gogo/modules';
-import { createLogger } from '@gogo/observability';
+import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
   FakePush,
   FakeSheets,
@@ -99,7 +100,26 @@ async function bootstrap(): Promise<void> {
   // #318: both sinks, like the API. Bulk import runs in this process, so the
   // registry below is the only place its provider, cost and row counters can
   // be scraped from.
-  const { metrics, registry } = createWorkerMetrics(logger);
+  const { metrics: baseMetrics, registry } = createWorkerMetrics(logger);
+  /**
+   * #335 — the worker's half of durable usage accounting.
+   *
+   * Bulk import runs in this process, not in the API, so this is where the
+   * largest share of Google spend is actually incurred. A ledger wired only
+   * into `apps/api` would under-report by its biggest component and still look
+   * like a complete answer, which is the failure #318 already had to fix for
+   * the scrape endpoint.
+   */
+  const usageLedger = new DbUsageLedger(db, {
+    environment: process.env.APP_ENV ?? 'dev',
+    enabled: process.env.COST_LEDGER_ENABLED !== 'false',
+    ...(process.env.COST_LEDGER_FLUSH_MS
+      ? { flushMs: Number(process.env.COST_LEDGER_FLUSH_MS) }
+      : {}),
+    metrics: baseMetrics,
+  });
+  usageLedger.start();
+  const metrics = new TeeMetrics([baseMetrics, usageLedger]);
   const metricsEndpoint = await startMetricsEndpoint({
     registry,
     token: process.env.METRICS_TOKEN,
@@ -236,6 +256,12 @@ async function bootstrap(): Promise<void> {
     // Before the pool: a scrape in flight reads memory, not the database, but
     // an open socket would still hold the process past the ticks stopping.
     await metricsEndpoint?.close();
+    // #335: after the ticks stop and before the pool closes — the flush is a
+    // database write, and it is the difference between a graceful stop losing
+    // nothing and losing a flush window.
+    await usageLedger.stop().catch((err) => {
+      logger.error({ err }, 'usage ledger flush failed on shutdown');
+    });
     await pool.end();
     process.exit(0);
   };

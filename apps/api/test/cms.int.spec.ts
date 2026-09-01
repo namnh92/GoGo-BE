@@ -503,15 +503,37 @@ describe('CMS ops observability (BE-CMS-G8 #247)', () => {
   });
 
   /*
-   * `providers: []` with `sourcesConfigured: false` says "we do not know".
-   * Rendering that as `0 đ` would be a different and false claim — the same
-   * class of bug as a price with no unit (`core.md` #13).
+   * Before #335 this returned `providers: []` with `sourcesConfigured: false`
+   * — "we do not know" — because no durable source existed. There is one now
+   * (`provider_usage_daily`), so a zero here is a *measured* zero: the
+   * instrumented operations made no calls this month.
+   *
+   * The rule that empty list protected is unchanged, and moved rather than
+   * disappeared: what nobody measured, and what nobody priced, are named in
+   * `gaps` instead of being folded into an amount. Rendering either as `0 đ`
+   * would be a different and false claim — the same class of bug as a price
+   * with no unit (`core.md` #13).
    */
-  it('reports no cost source rather than a zero it cannot support', async () => {
+  it('separates a measured zero from what it cannot price or measure', async () => {
     const ops = await createAdmin('g8-costs@gogo.id.vn', 'ops_admin');
     const res = await get(ops.token, '/v1/cms/ops/costs');
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ providers: [], sourcesConfigured: false });
+    const body = res.json();
+    expect(body.sourcesConfigured).toBe(true);
+    expect(body.basis).toBe('ESTIMATED');
+    expect(body.currency).toBe('USD');
+    // No traffic and no charges: a real zero, from a source that survives a
+    // deploy.
+    expect(body.providers.find((p: { key: string }) => p.key === 'places')).toMatchObject({
+      today: 0,
+      monthToDate: 0,
+      basis: 'estimated',
+    });
+    // The handset renders the map; this process never sees a map load.
+    expect(body.providers.map((p: { key: string }) => p.key)).not.toContain('maps_sdk');
+    const gaps: { key: string; kind: string }[] = body.gaps;
+    expect(gaps.find((g) => g.key === 'google.maps_sdk_android')?.kind).toBe('not_instrumented');
+    expect(gaps.find((g) => g.key === 'google.routeMatrix')?.kind).toBe('price_unknown');
   });
 
   it('is closed to editors and moderators', async () => {

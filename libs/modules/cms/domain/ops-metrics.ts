@@ -1,4 +1,14 @@
 import type { PromSample } from '@gogo/providers';
+import {
+  OPS_PROVIDERS,
+  listCostMicros,
+  microsToMinorUnits,
+  operationForSku,
+  pricingFor,
+  providerOf,
+  utcDay,
+  type OpsProvider,
+} from '../../cost/domain/provider-pricing';
 
 /**
  * BE-CMS-P2 (#315) — the product-level shape of the ops metrics view, and
@@ -90,51 +100,17 @@ export function promDuration(seconds: number): string {
 
 // ── providers ──────────────────────────────────────────────────────────────
 
-export const OPS_PROVIDERS = ['places', 'routes', 'sheets'] as const;
-export type OpsProvider = (typeof OPS_PROVIDERS)[number];
-
 /**
- * Which service an adapter operation belongs to.
+ * The provider taxonomy and the operation → SKU fold moved to
+ * `libs/modules/cost/domain/provider-pricing.ts` in PR2 (#335).
  *
- * Derived from the `method` label rather than a new label, because the label
- * set is already bounded and adding one would be a producer change for a
- * grouping the reader can do (#315 is not allowed to touch producer
- * semantics). Sheets and Routes are matched first: `google.` alone would
- * swallow both.
+ * They belong beside the price list: "which service is this operation" and
+ * "which SKU bills it" are the same question the pricing registry has to
+ * answer, and two copies of that answer is how a Routes row ends up split into
+ * one line with the calls and one with the bill (#332). Re-exported here so
+ * every existing import keeps resolving.
  */
-export function providerOf(method: string): OpsProvider | null {
-  if (method.startsWith('google.sheets.')) return 'sheets';
-  if (method === 'google.routeMatrix') return 'routes';
-  // Backstop. `operationForSku` folds `routes.computeRouteMatrix` onto
-  // `google.routeMatrix` before this is reached, so nothing should arrive here
-  // under a SKU name — but a SKU nobody remembered to map must land on the
-  // right provider rather than vanish, because vanishing means a billed
-  // provider reports `null` spend and `null` renders as "chưa đo".
-  if (method.startsWith('routes.')) return 'routes';
-  if (method.startsWith('google.')) return 'places';
-  return null;
-}
-
-/**
- * The adapter operation a billed SKU belongs to.
- *
- * For Places the two are the same string — `places_provider_cost_units` is
- * labelled with the operation name. Routes is not: it bills as
- * `routes.computeRouteMatrix` while its request and latency series arrive as
- * `google.routeMatrix`.
- *
- * Left unmapped, that renders as two rows for one operation: one carrying six
- * calls and no cost, one carrying the cost and no calls. A reader has no way
- * to tell those are the same thing, and the obvious reading — that the
- * expensive operation is idle — is exactly backwards.
- */
-const SKU_OPERATION: Readonly<Record<string, string>> = {
-  'routes.computeRouteMatrix': 'google.routeMatrix',
-};
-
-export function operationForSku(sku: string): string {
-  return SKU_OPERATION[sku] ?? sku;
-}
+export { OPS_PROVIDERS, operationForSku, providerOf, type OpsProvider };
 
 // ── latency semantics ──────────────────────────────────────────────────────
 
@@ -230,6 +206,21 @@ export type ProviderOperation = {
    * response.
    */
   billableUnits: number | null;
+  /** #335 — the Google SKU these units bill as, or `null` where none does. */
+  googleSku: string | null;
+  /**
+   * List-price estimate for this window, USD micros, or `null` when the
+   * registry has no verified price.
+   *
+   * **List price, no free-tier deduction.** A free cap is monthly and this
+   * window is one of 1h/24h/7d/30d; subtracting a monthly allowance from an
+   * hour of traffic would understate by an arbitrary amount. Month-to-date
+   * spend with the cap applied comes from the durable ledger, on
+   * `/cms/ops/costs`.
+   */
+  estimatedCostMicros: number | null;
+  /** The same figure in integer USD minor units, for display. */
+  estimatedCost: number | null;
 };
 
 export type ProviderBreakdown = {
@@ -242,6 +233,15 @@ export type ProviderBreakdown = {
   successRate: number | null;
   latency: Percentiles;
   billableUnits: number | null;
+  estimatedCostMicros: number | null;
+  estimatedCost: number | null;
+  /**
+   * False when at least one operation under this provider has no verified
+   * price. The sum that survives is a floor, not a total, and a reader has to
+   * be told which — `unpricedOperations` names them.
+   */
+  costComplete: boolean;
+  unpricedOperations: string[];
   operations: ProviderOperation[];
 };
 
@@ -256,6 +256,10 @@ export type OpsTotals = {
   latency: Percentiles;
   rejectedLatency: Pick<Percentiles, 'p50' | 'p95'>;
   billableUnits: number;
+  estimatedCostMicros: number | null;
+  estimatedCost: number | null;
+  costComplete: boolean;
+  unpricedOperations: string[];
 };
 
 /** Raw instant-query results, one array per template. */
@@ -313,7 +317,17 @@ const rate = (part: number, whole: number): number | null =>
  * edges, so it returns 5.9998 for six requests; presenting that verbatim makes
  * a dashboard look broken in a way that has nothing to do with the system.
  */
-export function aggregate(samples: OpsSamples): {
+export function aggregate(
+  samples: OpsSamples,
+  /**
+   * The day whose price list applies. A window is not a day, so one has to be
+   * chosen: the window's *end* is the honest pick — it is the rule in force
+   * for the traffic a reader is looking at right now, and a 30-day window that
+   * straddles a price change is an estimate either way. `pricingVersion` on
+   * the response says which list was used.
+   */
+  pricingDay: string = utcDay(),
+): {
   totals: OpsTotals;
   providers: ProviderBreakdown[];
 } {
@@ -361,6 +375,9 @@ export function aggregate(samples: OpsSamples): {
     const fail = roundCount(failures.get(method) ?? 0);
     const rej = roundCount(rejected.get(method) ?? 0);
     const samplesForP99 = latencyCount.get(method) ?? 0;
+    const units = cost.has(method) ? roundCount(cost.get(method)!) : null;
+    const pricing = pricingFor(method, pricingDay);
+    const costMicros = units === null ? null : listCostMicros(method, pricingDay, units);
     operations.push({
       method,
       calls,
@@ -375,7 +392,14 @@ export function aggregate(samples: OpsSamples): {
         // edge, not a percentile.
         p99: samplesForP99 >= P99_MIN_SAMPLES ? roundOrNull(p99.get(method)) : null,
       },
-      billableUnits: cost.has(method) ? roundCount(cost.get(method)!) : null,
+      billableUnits: units,
+      googleSku: pricing?.googleSku ?? null,
+      // `null` where the units are unknown *or* the price is. Both are
+      // absences and neither is a zero: an operation with no SKU counter has
+      // no cost to state, and one whose list price is unverified (Routes per
+      // element, Dynamic Maps) must not be reported as free.
+      estimatedCostMicros: costMicros,
+      estimatedCost: costMicros === null ? null : microsToMinorUnits(costMicros),
     });
   }
 
@@ -398,6 +422,7 @@ export function aggregate(samples: OpsSamples): {
       // Sheets is quota-limited rather than billed per call, so it has no SKU
       // counter and must report `null` — never 0, which reads as "free".
       billableUnits: units.length > 0 ? sum(units) : null,
+      ...costOf(ops),
       operations: ops,
     };
   });
@@ -427,6 +452,7 @@ export function aggregate(samples: OpsSamples): {
         p95: aggregateQuantile(samples.rejectedP95),
       },
       billableUnits: sum([...cost.values()].map(roundCount)),
+      ...costOf(operations),
     },
     providers,
   };
@@ -459,4 +485,45 @@ function roundOrNull(n: number | undefined): number | null {
 
 function sum(values: number[]): number {
   return values.reduce((a, b) => a + b, 0);
+}
+
+/**
+ * Fold operation-level estimates into one, keeping the absences visible.
+ *
+ * A sum over a set containing an unpriced member is a *floor*, and presenting
+ * a floor as a total is the same lie as presenting an unmeasured thing as a
+ * zero — just harder to spot, because the number looks plausible. So the sum
+ * is still reported (a floor is useful) and `costComplete: false` plus the
+ * names of the unpriced operations travel with it.
+ *
+ * When nothing under the group is priced at all, the estimate is `null`
+ * rather than 0. Sheets is the everyday case: quota-limited, no SKU counter,
+ * genuinely no money to report.
+ */
+function costOf(ops: readonly ProviderOperation[]): {
+  estimatedCostMicros: number | null;
+  estimatedCost: number | null;
+  costComplete: boolean;
+  unpricedOperations: string[];
+} {
+  const priced = ops.filter((o) => o.estimatedCostMicros !== null);
+  const unpriced = ops
+    .filter((o) => o.estimatedCostMicros === null && o.billableUnits !== null)
+    .map((o) => o.method)
+    .sort();
+  if (priced.length === 0) {
+    return {
+      estimatedCostMicros: null,
+      estimatedCost: null,
+      costComplete: unpriced.length === 0,
+      unpricedOperations: unpriced,
+    };
+  }
+  const micros = sum(priced.map((o) => o.estimatedCostMicros!));
+  return {
+    estimatedCostMicros: micros,
+    estimatedCost: microsToMinorUnits(micros),
+    costComplete: unpriced.length === 0,
+    unpricedOperations: unpriced,
+  };
 }

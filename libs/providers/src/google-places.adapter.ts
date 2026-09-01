@@ -83,8 +83,29 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
 
     // Short links redirect to a canonical URL carrying the place reference.
     if (/(maps\.app\.goo\.gl|goo\.gl\/maps)/.test(url)) {
-      const expanded = await withResilience({ name: 'google.expand', ...RESILIENCE }, (signal) =>
-        fetch(url, { method: 'HEAD', redirect: 'follow', signal }).then((r) => r.url),
+      const expanded = await withResilience(
+        { name: 'google.expand', ...RESILIENCE },
+        async (signal) => {
+          // #335: this was the one provider call in the codebase emitting no
+          // counter at all, so it appeared in no dashboard and in no cost
+          // ledger. It costs nothing — an unauthenticated HEAD to a URL
+          // shortener, not a billed SKU — but "free" and "unmeasured" are
+          // different facts, and the second one is what the baseline
+          // (scenario C2) has to count. Latency is worth having for its own
+          // sake: a short link that hangs stalls a user-facing resolve.
+          const started = Date.now();
+          const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal });
+          this.metrics.increment('places_provider_requests_total', {
+            method: 'google.expand',
+            status: res.status,
+          });
+          this.metrics.observe(
+            'place_provider_request_duration_seconds',
+            (Date.now() - started) / 1000,
+            { method: 'google.expand', status: res.status },
+          );
+          return res.url;
+        },
       );
       const fromExpanded = /[?&]place_id=([\w-]+)/.exec(expanded) ?? /!1s([\w:]+)!/.exec(expanded);
       if (fromExpanded) return fromExpanded[1]!;
