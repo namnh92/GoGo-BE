@@ -40,7 +40,12 @@ describe('alerted metrics', () => {
 
   it('every alert in infrastructure.md names a metric on this list', () => {
     const doc = readFileSync(path.join(repoRoot, 'docs/infrastructure.md'), 'utf8');
-    const section = doc.slice(doc.indexOf('## 3b.'), doc.indexOf('## 3c.'));
+    // The *alert* table only. §3b also carries the inventory table of every
+    // metric GoGo emits, and those are two different claims: "this series
+    // exists" and "an alert fires on this series". Scanning the whole section
+    // conflated them, so completing the inventory (#319) turned every
+    // uninstrumented-but-real metric into a failure here.
+    const section = doc.slice(doc.indexOf('Alert đề xuất'), doc.indexOf('## 3c.'));
     // The first backticked token of each table row. Scanning the whole
     // section picked up `duration_ms`, which is a *label* of
     // places_provider_requests_total sitting in the label column — a real

@@ -194,14 +194,27 @@ export class PlaceImportJobService {
       });
     }
     // `/v1` accepted an unusable mapping value and carried on, so it still
-    // does. The counter is a structured log line (`LogMetrics`), which is the
-    // warning: the field is operator-authored config, never sheet content, and
-    // it is truncated so a real exporter does not get one series per typo.
-    for (const unknown of input.mapping?.unknown ?? []) {
-      this.metrics.increment('place_import_unknown_mapping_total', {
-        code: 'IMPORT_MAPPING_UNKNOWN',
-        field: unknown.value.slice(0, 64),
-      });
+    // does. This counts how often that happens.
+    //
+    // #319: the value itself used to ride along as a `field` label, truncated
+    // to 64 characters on the theory that truncation made it safe. It does
+    // not: truncation caps a label's *length*, never the number of distinct
+    // values it can take, and the value is free text an operator typed. One
+    // series per typo, kept forever — the same defect #313 fixed for
+    // `duration_ms`, in a different costume.
+    //
+    // Nothing operational is lost. The column that went unmapped is already
+    // reported to the operator on the job itself (`unmappedHeaders`, persisted
+    // and returned by the API), which is where they act on it. The counter's
+    // job is only to answer "is this still happening", and a rate over one
+    // series answers it.
+    const unknownMappings = input.mapping?.unknown.length ?? 0;
+    if (unknownMappings > 0) {
+      this.metrics.increment(
+        'place_import_unknown_mapping_total',
+        { code: 'IMPORT_MAPPING_UNKNOWN' },
+        unknownMappings,
+      );
     }
 
     const unusable = input.mapping ? unusableHeaders(input.mapping) : undefined;
