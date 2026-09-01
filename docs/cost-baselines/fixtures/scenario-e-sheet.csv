@@ -1,0 +1,21 @@
+source_row_id,name,city,district,google_maps_url,category,price_min,price_max,price_unit
+E01,Quán Baseline E1,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_ENEW_01,cafe,50000,120000,per_person
+E02,Quán Baseline E2,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_ENEW_02,cafe,50000,120000,per_person
+E03,Quán Baseline E3,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_ENEW_03,cafe,50000,120000,per_person
+E04,Quán Baseline E4,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_ENEW_04,cafe,50000,120000,per_person
+E05,Quán Baseline E5,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_ENEW_05,cafe,50000,120000,per_person
+E06,Quán Baseline E6,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_ENEW_06,cafe,50000,120000,per_person
+E07,Quán Baseline E7,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_ENEW_07,cafe,50000,120000,per_person
+E08,Quán Baseline E8,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_ENEW_08,cafe,50000,120000,per_person
+E09,Quán Baseline E9,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_ENEW_09,cafe,50000,120000,per_person
+E10,Quán Baseline E10,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_ENEW_10,cafe,50000,120000,per_person
+E11,Quán Baseline T1,Hồ Chí Minh,Quận 1,,cafe,50000,120000,per_person
+E12,Quán Baseline T2,Hồ Chí Minh,Quận 1,,cafe,50000,120000,per_person
+E13,Quán Baseline T3,Hồ Chí Minh,Quận 1,,cafe,50000,120000,per_person
+E14,Quán Baseline T4,Hồ Chí Minh,Quận 1,,cafe,50000,120000,per_person
+E15,Quán Baseline T5,Hồ Chí Minh,Quận 1,,cafe,50000,120000,per_person
+E16,Quán Baseline C1,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_CAT_01,cafe,50000,120000,per_person
+E17,Quán Baseline C2,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_CAT_02,cafe,50000,120000,per_person
+E18,Quán Baseline C3,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=GOGOBASE_CAT_03,cafe,50000,120000,per_person
+E19,Quán Baseline invalid 1,Hồ Chí Minh,Quận 1,https://example.com/not-a-map-1,cafe,50000,120000,per_person
+E20,Quán Baseline invalid 2,Hồ Chí Minh,Quận 1,https://example.com/not-a-map-2,cafe,50000,120000,per_person

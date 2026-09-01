@@ -1,6 +1,7 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import {
   PLACE_PROVIDER,
   ProviderConfigurationError,
@@ -41,11 +42,59 @@ export class PlaceResolverService {
   constructor(
     @Inject(PLACE_PROVIDER) private readonly provider: PlaceProviderPort,
     @Inject(DB) private readonly db: Db,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
-  /** Injected in tests; real runs use global fetch with manual redirects. */
-  private readonly fetcher: Fetcher = (url, init) =>
-    fetch(url, { method: init.method, redirect: init.redirect, signal: init.signal });
+  /**
+   * Injected in tests; real runs use global fetch with manual redirects.
+   *
+   * #336: counted, as `google.expand`. There are two short-link expanders in
+   * this codebase — the adapter's (`GooglePlacesAdapter.resolveUrl`, counted
+   * since #335) and this one, the SSRF-guarded walker every API resolve
+   * actually goes through. Only the first was instrumented, so the hop that
+   * baseline scenario C2 exists to count emitted nothing at all, and a
+   * dashboard reading zero `google.expand` while users pasted short links
+   * every day looked correct.
+   *
+   * Deliberately the same `method` label as the adapter's. They are the same
+   * operation against the same host at the same price (free — a redirect
+   * chase, not a billed SKU), and splitting the label would make the baseline
+   * report one operation as two. PR6 collapses the two implementations into
+   * one; until then the counter already tells the truth about the total.
+   *
+   * Counting only. Not one byte more or less is requested than before — the
+   * method, the redirect mode and the timeout are untouched, which is what
+   * `do not change Google request behaviour while measuring BEFORE` requires.
+   */
+  private readonly fetcher: Fetcher = async (url, init) => {
+    const started = Date.now();
+    try {
+      const res = await fetch(url, {
+        method: init.method,
+        redirect: init.redirect,
+        signal: init.signal,
+      });
+      this.countExpansion(res.status, started);
+      return res;
+    } catch (err) {
+      // A hop that threw still happened and still took time. Recording it as
+      // `error` rather than dropping it is what keeps the count equal to the
+      // number of requests that left this process.
+      this.countExpansion('error', started);
+      throw err;
+    }
+  };
+
+  private countExpansion(status: number | 'error', started: number): void {
+    this.metrics.increment('places_provider_requests_total', {
+      method: 'google.expand',
+      status,
+    });
+    this.metrics.observe('place_provider_request_duration_seconds', (Date.now() - started) / 1000, {
+      method: 'google.expand',
+      status,
+    });
+  }
 
   async resolveFromUrl(url: string, hints: MatchInput = {}): Promise<ResolveOutcome> {
     let parsed = parseMapsUrl(url);

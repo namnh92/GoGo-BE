@@ -1,0 +1,122 @@
+{
+  "_source": "Cost-Spec/GOGO_COST_AND_PLACES_EXECUTION_PLAN_v2_DECIDED.md §4 — pinned inputs. Synthetic throughout: every id, name and address here is invented, so committing this file stores no Google-derived content (plan §7).",
+  "seededCatalog": [
+    {
+      "providerPlaceId": "GOGOBASE_CAT_01",
+      "name": "Quán Baseline C1",
+      "addressText": "1 Đường Cố Định, Quận 1, TP.HCM",
+      "lat": 10.7769,
+      "lng": 106.7009,
+      "rating": 4.5,
+      "ratingCount": 220,
+      "category": "cafe"
+    },
+    {
+      "providerPlaceId": "GOGOBASE_CAT_02",
+      "name": "Quán Baseline C2",
+      "addressText": "2 Đường Cố Định, Quận 1, TP.HCM",
+      "lat": 10.7779,
+      "lng": 106.7019,
+      "rating": 4.5,
+      "ratingCount": 221,
+      "category": "cafe"
+    },
+    {
+      "providerPlaceId": "GOGOBASE_CAT_03",
+      "name": "Quán Baseline C3",
+      "addressText": "3 Đường Cố Định, Quận 1, TP.HCM",
+      "lat": 10.7789,
+      "lng": 106.7029,
+      "rating": 4.5,
+      "ratingCount": 222,
+      "category": "cafe"
+    },
+    {
+      "providerPlaceId": "GOGOBASE_CAT_04",
+      "name": "Quán Baseline C4",
+      "addressText": "4 Đường Cố Định, Quận 1, TP.HCM",
+      "lat": 10.7799,
+      "lng": 106.7039,
+      "rating": 4.5,
+      "ratingCount": 223,
+      "category": "cafe"
+    },
+    {
+      "providerPlaceId": "GOGOBASE_CAT_05",
+      "name": "Quán Baseline C5",
+      "addressText": "5 Đường Cố Định, Quận 1, TP.HCM",
+      "lat": 10.7809,
+      "lng": 106.7049,
+      "rating": 4.5,
+      "ratingCount": 224,
+      "category": "cafe"
+    }
+  ],
+  "A": {
+    "title": "known GoGo search hit",
+    "repeat": 10,
+    "query": "Quán Baseline C1",
+    "lat": 10.7769,
+    "lng": 106.7009,
+    "expect": "all Places operations 0; same top result id and reasonCodes on every repeat"
+  },
+  "B": {
+    "title": "unknown GoGo text search",
+    "queries": [
+      "xkqvz plwrrt 01",
+      "xkqvz plwrrt 02",
+      "xkqvz plwrrt 03",
+      "xkqvz plwrrt 04",
+      "xkqvz plwrrt 05",
+      "xkqvz plwrrt 06",
+      "xkqvz plwrrt 07",
+      "xkqvz plwrrt 08",
+      "xkqvz plwrrt 09",
+      "xkqvz plwrrt 10"
+    ],
+    "lat": 10.7769,
+    "lng": 106.7009,
+    "expect": "all Places operations 0; zero results ×10; no rows created. The tokens share no stem with any seeded name — a \"nonsense\" query that happened to contain a catalogued word would measure a hit, not a miss."
+  },
+  "C1": {
+    "title": "import Google place already known — direct place_id URL",
+    "urls": [
+      "https://www.google.com/maps?place_id=GOGOBASE_CAT_01",
+      "https://www.google.com/maps?place_id=GOGOBASE_CAT_02",
+      "https://www.google.com/maps?place_id=GOGOBASE_CAT_03"
+    ],
+    "expect": "google.expand 0; details.quality 1 (resolve) + 1 (submit) per URL"
+  },
+  "C2": {
+    "title": "import Google place already known — maps.app.goo.gl short link",
+    "urls": ["https://maps.app.goo.gl/GOGOBASE_CAT_04", "https://maps.app.goo.gl/GOGOBASE_CAT_05"],
+    "expandsTo": {
+      "https://maps.app.goo.gl/GOGOBASE_CAT_04": "https://www.google.com/maps?place_id=GOGOBASE_CAT_04",
+      "https://maps.app.goo.gl/GOGOBASE_CAT_05": "https://www.google.com/maps?place_id=GOGOBASE_CAT_05"
+    },
+    "expect": "google.expand 1 + details.quality 1 + 1 per URL"
+  },
+  "D": {
+    "title": "import new Google place",
+    "urls": [
+      "https://www.google.com/maps?place_id=GOGOBASE_DNEW_01",
+      "https://www.google.com/maps?place_id=GOGOBASE_DNEW_02",
+      "https://www.google.com/maps?place_id=GOGOBASE_DNEW_03",
+      "https://www.google.com/maps?place_id=GOGOBASE_DNEW_04",
+      "https://www.google.com/maps?place_id=GOGOBASE_DNEW_05"
+    ],
+    "expect": "up to 3 × details.quality per place (preview, submit, approve); searchText 0; expand 0"
+  },
+  "E": {
+    "title": "deterministic bulk import — pinned 20-row sheet",
+    "sheet": "scenario-e-sheet.csv",
+    "composition": {
+      "directIdNew": 10,
+      "nameOnly": 5,
+      "directIdCatalogued": 3,
+      "invalid": 2
+    },
+    "publish": "all ready rows",
+    "expect": "resolve: details.quality ×1 per direct-id row (13); name-only rows searchText ×1 + details.quality ×1 each (the pinned catalog answers one candidate, so the plan's ≤3 lands at its floor); invalid rows 0. Publish: details.quality ×1 per ready row"
+  }
+}

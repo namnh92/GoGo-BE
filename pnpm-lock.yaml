@@ -17,6 +17,9 @@ importers:
       '@swc/core':
         specifier: ^1.16.1
         version: 1.16.1
+      '@types/node':
+        specifier: ^26.3.0
+        version: 26.3.0
       drizzle-kit:
         specifier: ^0.31.10
         version: 0.31.10

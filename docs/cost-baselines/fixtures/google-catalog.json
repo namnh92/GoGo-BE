@@ -1,0 +1,2666 @@
+{
+  "_note": "Pinned responses for the `stub` transport: what a Google that never changes would answer. Entirely invented — no field here was copied from a Google response, so this file stores no provider content (plan §7). The stub answers only these ids and only these queries; anything else is a 404, which is how a fixture drift surfaces as a failed run rather than as a quietly different number.",
+  "places": {
+    "GOGOBASE_CAT_01": {
+      "id": "GOGOBASE_CAT_01",
+      "displayName": {
+        "text": "Quán Baseline C1"
+      },
+      "formattedAddress": "1 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7769,
+        "longitude": 106.7009
+      },
+      "rating": 4.5,
+      "userRatingCount": 221,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_CAT_01",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_CAT_02": {
+      "id": "GOGOBASE_CAT_02",
+      "displayName": {
+        "text": "Quán Baseline C2"
+      },
+      "formattedAddress": "2 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7779,
+        "longitude": 106.7019
+      },
+      "rating": 4.5,
+      "userRatingCount": 222,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_CAT_02",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_CAT_03": {
+      "id": "GOGOBASE_CAT_03",
+      "displayName": {
+        "text": "Quán Baseline C3"
+      },
+      "formattedAddress": "3 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7789,
+        "longitude": 106.7029
+      },
+      "rating": 4.5,
+      "userRatingCount": 223,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_CAT_03",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_CAT_04": {
+      "id": "GOGOBASE_CAT_04",
+      "displayName": {
+        "text": "Quán Baseline C4"
+      },
+      "formattedAddress": "4 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7799,
+        "longitude": 106.7039
+      },
+      "rating": 4.5,
+      "userRatingCount": 224,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_CAT_04",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_CAT_05": {
+      "id": "GOGOBASE_CAT_05",
+      "displayName": {
+        "text": "Quán Baseline C5"
+      },
+      "formattedAddress": "5 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7809,
+        "longitude": 106.7049
+      },
+      "rating": 4.5,
+      "userRatingCount": 225,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_CAT_05",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_DNEW_01": {
+      "id": "GOGOBASE_DNEW_01",
+      "displayName": {
+        "text": "Quán Baseline D1"
+      },
+      "formattedAddress": "1 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7869,
+        "longitude": 106.7109
+      },
+      "rating": 4.5,
+      "userRatingCount": 221,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_DNEW_01",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_DNEW_02": {
+      "id": "GOGOBASE_DNEW_02",
+      "displayName": {
+        "text": "Quán Baseline D2"
+      },
+      "formattedAddress": "2 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7879,
+        "longitude": 106.7119
+      },
+      "rating": 4.5,
+      "userRatingCount": 222,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_DNEW_02",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_DNEW_03": {
+      "id": "GOGOBASE_DNEW_03",
+      "displayName": {
+        "text": "Quán Baseline D3"
+      },
+      "formattedAddress": "3 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7889,
+        "longitude": 106.7129
+      },
+      "rating": 4.5,
+      "userRatingCount": 223,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_DNEW_03",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_DNEW_04": {
+      "id": "GOGOBASE_DNEW_04",
+      "displayName": {
+        "text": "Quán Baseline D4"
+      },
+      "formattedAddress": "4 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7899,
+        "longitude": 106.7139
+      },
+      "rating": 4.5,
+      "userRatingCount": 224,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_DNEW_04",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_DNEW_05": {
+      "id": "GOGOBASE_DNEW_05",
+      "displayName": {
+        "text": "Quán Baseline D5"
+      },
+      "formattedAddress": "5 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7909,
+        "longitude": 106.7149
+      },
+      "rating": 4.5,
+      "userRatingCount": 225,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_DNEW_05",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ENEW_01": {
+      "id": "GOGOBASE_ENEW_01",
+      "displayName": {
+        "text": "Quán Baseline E1"
+      },
+      "formattedAddress": "1 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7969,
+        "longitude": 106.7209
+      },
+      "rating": 4.5,
+      "userRatingCount": 221,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ENEW_01",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ENEW_02": {
+      "id": "GOGOBASE_ENEW_02",
+      "displayName": {
+        "text": "Quán Baseline E2"
+      },
+      "formattedAddress": "2 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7979,
+        "longitude": 106.7219
+      },
+      "rating": 4.5,
+      "userRatingCount": 222,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ENEW_02",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ENEW_03": {
+      "id": "GOGOBASE_ENEW_03",
+      "displayName": {
+        "text": "Quán Baseline E3"
+      },
+      "formattedAddress": "3 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7989,
+        "longitude": 106.7229
+      },
+      "rating": 4.5,
+      "userRatingCount": 223,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ENEW_03",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ENEW_04": {
+      "id": "GOGOBASE_ENEW_04",
+      "displayName": {
+        "text": "Quán Baseline E4"
+      },
+      "formattedAddress": "4 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.7999,
+        "longitude": 106.7239
+      },
+      "rating": 4.5,
+      "userRatingCount": 224,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ENEW_04",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ENEW_05": {
+      "id": "GOGOBASE_ENEW_05",
+      "displayName": {
+        "text": "Quán Baseline E5"
+      },
+      "formattedAddress": "5 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.8009,
+        "longitude": 106.7249
+      },
+      "rating": 4.5,
+      "userRatingCount": 225,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ENEW_05",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ENEW_06": {
+      "id": "GOGOBASE_ENEW_06",
+      "displayName": {
+        "text": "Quán Baseline E6"
+      },
+      "formattedAddress": "6 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.8019,
+        "longitude": 106.7259
+      },
+      "rating": 4.5,
+      "userRatingCount": 226,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ENEW_06",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ENEW_07": {
+      "id": "GOGOBASE_ENEW_07",
+      "displayName": {
+        "text": "Quán Baseline E7"
+      },
+      "formattedAddress": "7 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.8029,
+        "longitude": 106.7269
+      },
+      "rating": 4.5,
+      "userRatingCount": 227,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ENEW_07",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ENEW_08": {
+      "id": "GOGOBASE_ENEW_08",
+      "displayName": {
+        "text": "Quán Baseline E8"
+      },
+      "formattedAddress": "8 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.8039,
+        "longitude": 106.7279
+      },
+      "rating": 4.5,
+      "userRatingCount": 228,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ENEW_08",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ENEW_09": {
+      "id": "GOGOBASE_ENEW_09",
+      "displayName": {
+        "text": "Quán Baseline E9"
+      },
+      "formattedAddress": "9 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.8049,
+        "longitude": 106.7289
+      },
+      "rating": 4.5,
+      "userRatingCount": 229,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ENEW_09",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ENEW_10": {
+      "id": "GOGOBASE_ENEW_10",
+      "displayName": {
+        "text": "Quán Baseline E10"
+      },
+      "formattedAddress": "10 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.8059,
+        "longitude": 106.7299
+      },
+      "rating": 4.5,
+      "userRatingCount": 230,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ENEW_10",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ETXT_01": {
+      "id": "GOGOBASE_ETXT_01",
+      "displayName": {
+        "text": "Quán Baseline T1"
+      },
+      "formattedAddress": "1 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.8069,
+        "longitude": 106.7309
+      },
+      "rating": 4.5,
+      "userRatingCount": 221,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ETXT_01",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ETXT_02": {
+      "id": "GOGOBASE_ETXT_02",
+      "displayName": {
+        "text": "Quán Baseline T2"
+      },
+      "formattedAddress": "2 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.8079,
+        "longitude": 106.7319
+      },
+      "rating": 4.5,
+      "userRatingCount": 222,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ETXT_02",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ETXT_03": {
+      "id": "GOGOBASE_ETXT_03",
+      "displayName": {
+        "text": "Quán Baseline T3"
+      },
+      "formattedAddress": "3 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.8089,
+        "longitude": 106.7329
+      },
+      "rating": 4.5,
+      "userRatingCount": 223,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ETXT_03",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ETXT_04": {
+      "id": "GOGOBASE_ETXT_04",
+      "displayName": {
+        "text": "Quán Baseline T4"
+      },
+      "formattedAddress": "4 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.8099,
+        "longitude": 106.7339
+      },
+      "rating": 4.5,
+      "userRatingCount": 224,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ETXT_04",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    },
+    "GOGOBASE_ETXT_05": {
+      "id": "GOGOBASE_ETXT_05",
+      "displayName": {
+        "text": "Quán Baseline T5"
+      },
+      "formattedAddress": "5 Đường Cố Định, Quận 1, TP.HCM",
+      "location": {
+        "latitude": 10.8109,
+        "longitude": 106.7349
+      },
+      "rating": 4.5,
+      "userRatingCount": 225,
+      "businessStatus": "OPERATIONAL",
+      "priceLevel": "PRICE_LEVEL_MODERATE",
+      "primaryType": "cafe",
+      "types": ["cafe", "coffee_shop", "food", "point_of_interest", "establishment"],
+      "googleMapsUri": "https://maps.google.com/?cid=GOGOBASE_ETXT_05",
+      "regularOpeningHours": {
+        "periods": [
+          {
+            "open": {
+              "day": 0,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 0,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 1,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 1,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 2,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 2,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 3,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 3,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 4,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 4,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 5,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 5,
+              "hour": 22,
+              "minute": 0
+            }
+          },
+          {
+            "open": {
+              "day": 6,
+              "hour": 8,
+              "minute": 0
+            },
+            "close": {
+              "day": 6,
+              "hour": 22,
+              "minute": 0
+            }
+          }
+        ]
+      }
+    }
+  },
+  "searchText": {
+    "Quán Baseline T1 Quận 1 Hồ Chí Minh": ["GOGOBASE_ETXT_01"],
+    "Quán Baseline T2 Quận 1 Hồ Chí Minh": ["GOGOBASE_ETXT_02"],
+    "Quán Baseline T3 Quận 1 Hồ Chí Minh": ["GOGOBASE_ETXT_03"],
+    "Quán Baseline T4 Quận 1 Hồ Chí Minh": ["GOGOBASE_ETXT_04"],
+    "Quán Baseline T5 Quận 1 Hồ Chí Minh": ["GOGOBASE_ETXT_05"]
+  },
+  "expand": {
+    "https://maps.app.goo.gl/GOGOBASE_CAT_04": "https://www.google.com/maps?place_id=GOGOBASE_CAT_04",
+    "https://maps.app.goo.gl/GOGOBASE_CAT_05": "https://www.google.com/maps?place_id=GOGOBASE_CAT_05"
+  }
+}
