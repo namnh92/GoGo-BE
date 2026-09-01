@@ -105,6 +105,14 @@ export type OpsProvider = (typeof OPS_PROVIDERS)[number];
 export function providerOf(method: string): OpsProvider | null {
   if (method.startsWith('google.sheets.')) return 'sheets';
   if (method === 'google.routeMatrix') return 'routes';
+  // The Routes *cost* counter is labelled by billed SKU, not by adapter
+  // operation, so it arrives as `routes.computeRouteMatrix` while every other
+  // Routes series arrives as `google.routeMatrix`. Matching only the latter
+  // dropped the routes spend on the floor: `billableUnits` came back null for
+  // a provider that was being billed, and null renders as "chưa đo" — the
+  // dashboard would have reported the one number it exists to report as
+  // unmeasured.
+  if (method.startsWith('routes.')) return 'routes';
   if (method.startsWith('google.')) return 'places';
   return null;
 }

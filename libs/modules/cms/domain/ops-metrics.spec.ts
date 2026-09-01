@@ -99,6 +99,8 @@ describe('provider grouping', () => {
     ['google.autocomplete', 'places'],
     ['google.expand', 'places'],
     ['google.routeMatrix', 'routes'],
+    // The cost counter labels by billed SKU, not by adapter operation.
+    ['routes.computeRouteMatrix', 'routes'],
     ['google.sheets.meta', 'sheets'],
     ['google.sheets.values', 'sheets'],
   ])('%s belongs to %s', (method, provider) => {
@@ -278,6 +280,14 @@ describe('aggregation', () => {
     expect(sheets.calls).toBe(4);
     // Quota-limited, not billed per call. Null, never 0 — 0 reads as "free".
     expect(sheets.billableUnits).toBeNull();
+  });
+
+  it('does not drop the routes spend because its SKU is named differently', () => {
+    const routes = providers.find((p) => p.provider === 'routes')!;
+    // `places_provider_cost_units{sku="routes.computeRouteMatrix"}` is the
+    // only signal for what Routes costs. Losing it returned null, and null
+    // renders as "chưa đo" — reporting a billed provider as unmeasured.
+    expect(routes.billableUnits).toBe(10);
   });
 
   it('attributes billable units to the operation that spent them', () => {
