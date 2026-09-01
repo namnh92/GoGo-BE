@@ -321,6 +321,14 @@ is a recorded decision, not an oversight — see `docs/threat-model.md`.
 
 ## Still open
 
+- **Google content persistence is not settled.** ADR-0006 §9 classifies every
+  stored provider field; the rows marked *needs decision* wait on counsel. Until
+  that amendment is signed, no change may add persistent Google content — no new
+  provider snapshot, no widened provider-derived column, no cache of names,
+  addresses, ratings, hours or coordinates (§9.5). `place_sources.raw` is on the
+  stop-writing list: it holds the whole Details payload, nothing reads it, and it
+  is purged with the provenance migration (§9.4 R1, GoGo-BE#334).
+
 - PI-CMS-001..006 — the CMS wizard UI on top of these APIs.
 - PI-SRE-001 — metrics are emitted (spec §13 names, as structured log lines);
   a scrape endpoint and dashboard still need a destination decided (#36/#120).
