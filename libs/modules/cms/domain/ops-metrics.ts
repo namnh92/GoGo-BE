@@ -105,16 +105,35 @@ export type OpsProvider = (typeof OPS_PROVIDERS)[number];
 export function providerOf(method: string): OpsProvider | null {
   if (method.startsWith('google.sheets.')) return 'sheets';
   if (method === 'google.routeMatrix') return 'routes';
-  // The Routes *cost* counter is labelled by billed SKU, not by adapter
-  // operation, so it arrives as `routes.computeRouteMatrix` while every other
-  // Routes series arrives as `google.routeMatrix`. Matching only the latter
-  // dropped the routes spend on the floor: `billableUnits` came back null for
-  // a provider that was being billed, and null renders as "chưa đo" — the
-  // dashboard would have reported the one number it exists to report as
-  // unmeasured.
+  // Backstop. `operationForSku` folds `routes.computeRouteMatrix` onto
+  // `google.routeMatrix` before this is reached, so nothing should arrive here
+  // under a SKU name — but a SKU nobody remembered to map must land on the
+  // right provider rather than vanish, because vanishing means a billed
+  // provider reports `null` spend and `null` renders as "chưa đo".
   if (method.startsWith('routes.')) return 'routes';
   if (method.startsWith('google.')) return 'places';
   return null;
+}
+
+/**
+ * The adapter operation a billed SKU belongs to.
+ *
+ * For Places the two are the same string — `places_provider_cost_units` is
+ * labelled with the operation name. Routes is not: it bills as
+ * `routes.computeRouteMatrix` while its request and latency series arrive as
+ * `google.routeMatrix`.
+ *
+ * Left unmapped, that renders as two rows for one operation: one carrying six
+ * calls and no cost, one carrying the cost and no calls. A reader has no way
+ * to tell those are the same thing, and the obvious reading — that the
+ * expensive operation is idle — is exactly backwards.
+ */
+const SKU_OPERATION: Readonly<Record<string, string>> = {
+  'routes.computeRouteMatrix': 'google.routeMatrix',
+};
+
+export function operationForSku(sku: string): string {
+  return SKU_OPERATION[sku] ?? sku;
 }
 
 // ── latency semantics ──────────────────────────────────────────────────────
@@ -310,7 +329,12 @@ export function aggregate(samples: OpsSamples): {
 
   const failures = byLabel(samples.failures, 'method');
   const rejected = byLabel(samples.rejected, 'method');
-  const cost = byLabel(samples.costUnits, 'sku');
+  // Folded onto the operation that spent them, so one operation is one row.
+  const cost = new Map<string, number>();
+  for (const [sku, value] of byLabel(samples.costUnits, 'sku')) {
+    const method = operationForSku(sku);
+    cost.set(method, (cost.get(method) ?? 0) + value);
+  }
   const latencyCount = byLabel(samples.latencySamples, 'method');
   const p50 = byLabel(samples.p50, 'method');
   const p95 = byLabel(samples.p95, 'method');
