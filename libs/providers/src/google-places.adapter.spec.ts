@@ -276,7 +276,8 @@ describe('#313 — adapter emits bounded labels and a latency observation', () =
   });
 
   function recorder() {
-    const counters: { name: string; labels: Record<string, unknown>; by?: number | undefined }[] = [];
+    const counters: { name: string; labels: Record<string, unknown>; by?: number | undefined }[] =
+      [];
     const observations: { name: string; value: number; labels: Record<string, unknown> }[] = [];
     return {
       counters,
