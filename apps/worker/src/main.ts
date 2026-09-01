@@ -2,13 +2,14 @@ import os from 'node:os';
 import { createDb } from '@gogo/database';
 import {
   CampaignDispatcher,
+  DbUsageLedger,
   OutboxDispatcher,
   PlaceDedupService,
   PlaceImportJobService,
   PlaceResolverService,
   PrivacyJobs,
 } from '@gogo/modules';
-import { createLogger } from '@gogo/observability';
+import { createLogger, type MetricsPort } from '@gogo/observability';
 import {
   FakePush,
   FakeSheets,
@@ -99,7 +100,17 @@ async function bootstrap(): Promise<void> {
   // #318: both sinks, like the API. Bulk import runs in this process, so the
   // registry below is the only place its provider, cost and row counters can
   // be scraped from.
-  const { metrics, registry } = createWorkerMetrics(logger);
+  const { metrics: sinks, registry } = createWorkerMetrics(logger);
+  // #335 — bulk import makes its Google calls in *this* process, so a ledger
+  // wired only into the API would miss the largest component of the bill. Same
+  // decorator, same flush loop, flushed on shutdown below.
+  const ledger = new DbUsageLedger(sinks, db, {
+    environment: process.env.APP_ENV ?? 'dev',
+    enabled: process.env.COST_LEDGER_ENABLED === 'true',
+    flushMs: Number(process.env.COST_LEDGER_FLUSH_MS ?? 5_000),
+  });
+  ledger.start();
+  const metrics: MetricsPort = ledger;
   const metricsEndpoint = await startMetricsEndpoint({
     registry,
     token: process.env.METRICS_TOKEN,
@@ -233,6 +244,10 @@ async function bootstrap(): Promise<void> {
   const shutdown = async () => {
     logger.info('worker shutting down');
     await periodic.stop();
+    // After the ticks, before the pool: the last window of usage still has to
+    // be written, and writing it needs the pool open. A graceful stop is the
+    // difference between a complete ledger and a reconcilable gap (#335).
+    await ledger.stop();
     // Before the pool: a scrape in flight reads memory, not the database, but
     // an open socket would still hold the process past the ticks stopping.
     await metricsEndpoint?.close();

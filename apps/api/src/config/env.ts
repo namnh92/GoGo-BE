@@ -179,6 +179,24 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
+    /**
+     * #335 — write provider usage to `provider_usage_daily`.
+     *
+     * Off by default so the table fills only where someone has decided it
+     * should. Off means the ops API reports units without an amount, which is
+     * exactly the behaviour that shipped before this flag existed — the
+     * rollback path is flipping this, not reverting a migration.
+     */
+    COST_LEDGER_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    /**
+     * How long usage may sit in memory before being written. The whole window
+     * is what a `SIGKILL` can lose, and it is reconciled from Grafana rather
+     * than silently back-filled.
+     */
+    COST_LEDGER_FLUSH_MS: z.coerce.number().int().min(1_000).max(60_000).default(5_000),
     // One key per Google API, and no key covers for another. Each is restricted
     // to its own API in the console, so a fallback cannot work anyway: a
     // Places-scoped key sent to Sheets comes back 403 API_KEY_SERVICE_BLOCKED,

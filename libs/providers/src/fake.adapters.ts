@@ -1,9 +1,15 @@
-import { ProviderQuotaExceededError, ProviderUnavailableError, SheetAccessError } from './ports';
+import {
+  NO_PROVIDER_METRICS,
+  ProviderQuotaExceededError,
+  ProviderUnavailableError,
+  SheetAccessError,
+} from './ports';
 import type {
   AreaAutocompletePort,
   AreaPrediction,
   PlaceFetchTier,
   PlaceProviderPort,
+  ProviderMetrics,
   PushPort,
   ResolvedProviderPlace,
   SheetTab,
@@ -25,6 +31,17 @@ const defaultHours = Array.from({ length: 7 }, (_, day) => ({
 }));
 
 export class FakePlaceProvider implements PlaceProviderPort {
+  /**
+   * #335 — the fake emits the same request and cost counters the Google
+   * adapter does.
+   *
+   * Without this a test can prove the ledger's arithmetic but not that it is
+   * wired to anything, because no fake call would ever reach it. A fake that
+   * is free where the real thing is billed teaches a cost test the one lesson
+   * it must not learn.
+   */
+  constructor(private readonly metrics: ProviderMetrics = NO_PROVIDER_METRICS) {}
+
   readonly registry = new Map<string, ResolvedProviderPlace>();
   /** Tiers requested, in order — lets a test assert what a flow would be billed. */
   readonly tiersRequested: PlaceFetchTier[] = [];
@@ -96,7 +113,17 @@ export class FakePlaceProvider implements PlaceProviderPort {
     if (this.failing) throw new Error('fake provider down');
     const resolvedId = this.movedTo.get(providerPlaceId) ?? providerPlaceId;
     const stored = this.registry.get(resolvedId);
+    // Same label vocabulary as `GooglePlacesAdapter`: the SKU is per tier,
+    // because that is what the invoice separates.
+    const method = `google.details.${tier}`;
+    this.metrics.increment('places_provider_requests_total', {
+      method,
+      status: stored ? 200 : 404,
+    });
     if (!stored) return null;
+    // Only a successful call is billed, which is what keeps a day of failures
+    // from reading as a day of spend.
+    this.metrics.increment('places_provider_cost_units', { sku: method });
     const place: ResolvedProviderPlace =
       resolvedId === providerPlaceId
         ? stored

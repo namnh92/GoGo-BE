@@ -237,8 +237,15 @@ describe('#315 — nothing about the store reaches the caller', () => {
       expect(body).not.toContain(forbidden);
     }
     const summary = (await get(ROUTES[0]!, 'ops_admin')).json();
-    expect(summary.costModel.kind).toBe('units_only');
+    // #335 priced the units. The amount is an estimate and every qualifier
+    // needed to read it as one ships with it — the store is unreachable in
+    // this test, so there is nothing measured and the amount is absent rather
+    // than zero.
+    expect(summary.costModel.kind).toBe('estimated');
     expect(summary.costModel.estimatedCost).toBeNull();
+    expect(summary.costModel.currency).toBe('USD');
+    expect(summary.costModel.basis).toBe('ESTIMATED');
+    expect(summary.costModel.pricingVersion).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });
 

@@ -16,6 +16,15 @@ import {
   type ProviderBreakdown,
   type ResolvedWindow,
 } from '../domain/ops-metrics';
+import { UsageReportService } from '../../cost/application/usage-report.service';
+import {
+  PRICING_CURRENCY,
+  PRICING_VERSION,
+  billingOperationOf,
+  estimateCostMicros,
+  microsToMinorUnits,
+  utcDay,
+} from '../../cost/domain/provider-pricing';
 
 /**
  * BE-CMS-P2 (#315) — the permissioned monitoring API behind the CMS ops
@@ -92,7 +101,25 @@ export class CmsOpsMetricsService {
   constructor(
     @Inject(APP_CONFIG) private readonly config: OpsMetricsConfig,
     @Optional() @Inject(METRICS_QUERY) private readonly metrics: MetricsQueryPort | null = null,
+    /**
+     * #335 — month-to-date usage, for the free-tier half of the estimate.
+     * Optional: without it the amount is still reported, just without any free
+     * allowance deducted, which errs high rather than low.
+     */
+    @Optional() private readonly usage: UsageReportService | null = null,
   ) {}
+
+  /** Month-to-date units per operation, or empty when the ledger is unavailable. */
+  private async monthToDate(): Promise<Map<string, number>> {
+    if (!this.usage) return new Map();
+    try {
+      return await this.usage.monthToDateUnits(this.env);
+    } catch {
+      // A reporting nicety must never take down the ops dashboard: without it
+      // the estimate simply deducts no free allowance.
+      return new Map();
+    }
+  }
 
   private get env(): string {
     return this.config.APP_ENV ?? 'dev';
@@ -105,11 +132,15 @@ export class CmsOpsMetricsService {
   async summary(window: OpsWindow) {
     const w = resolveWindow(window, this.retentionDays);
     return this.serve(`summary|${window}`, w, async () => {
-      const { totals } = aggregate(await this.instantSamples(w));
+      const { totals, providers } = aggregate(await this.instantSamples(w));
       const trends = await this.trends(w);
       return {
         totals,
-        costModel: COST_MODEL,
+        costModel: costModelFor({
+          providers,
+          day: utcDay(),
+          monthToDate: await this.monthToDate(),
+        }),
         latencySemantics: LATENCY_SEMANTICS,
         trends,
       };
@@ -122,7 +153,11 @@ export class CmsOpsMetricsService {
       const { providers } = aggregate(await this.instantSamples(w));
       return {
         providers: providers.map(stripOperations),
-        costModel: COST_MODEL,
+        costModel: costModelFor({
+          providers,
+          day: utcDay(),
+          monthToDate: await this.monthToDate(),
+        }),
         latencySemantics: LATENCY_SEMANTICS,
       };
     });
@@ -135,7 +170,13 @@ export class CmsOpsMetricsService {
       const found = providers.find((p) => p.provider === provider) ?? emptyBreakdown(provider);
       return {
         provider: found,
-        costModel: COST_MODEL,
+        // Scoped to the one provider asked about, so the amount matches the
+        // breakdown beside it rather than the whole account.
+        costModel: costModelFor({
+          providers: [found],
+          day: utcDay(),
+          monthToDate: await this.monthToDate(),
+        }),
         latencySemantics: LATENCY_SEMANTICS,
         trends: await this.trends(w),
       };
@@ -277,13 +318,88 @@ export class CmsOpsMetricsService {
  * Cloud Billing API. Until then a currency figure here would be a guess
  * wearing a currency symbol, which is worse than the honest absence.
  */
-const COST_MODEL = {
-  kind: 'units_only' as const,
+/**
+ * The cost model when nothing could be measured.
+ *
+ * Same shape as a priced response — one shape for the CMS to parse — with
+ * `estimatedCost: null` meaning "not measured". It is emphatically not `0`:
+ * `backend.status` already says the store could not be read, and a zero beside
+ * that is the ambiguity the console is required to avoid. No traffic and no
+ * measurement are different facts.
+ */
+const UNMEASURED_COST_MODEL = {
+  kind: 'estimated' as const,
   estimatedCost: null,
-  currency: null,
-  basis: 'sku_request_counter',
-  note: 'Billable SKU units counted per request. Not money: no unit price is configured, and no provider billing API is connected.',
+  currency: PRICING_CURRENCY,
+  basis: 'ESTIMATED' as const,
+  confidence: 'MEDIUM' as const,
+  pricingVersion: PRICING_VERSION,
+  unpricedOperations: [] as string[],
+  note: 'No measurement available for this window; the metrics store could not be read.',
 };
+
+/**
+ * #335 — the same units, now priced.
+ *
+ * `units_only` above is what this returned before a pricing table existed, and
+ * it stays as the answer when nothing could be measured: no samples means no
+ * estimate, and a `0` there would be indistinguishable from a genuinely free
+ * day.
+ *
+ * What makes this honest rather than "a guess wearing a currency symbol" is
+ * that every qualifier travels in the payload. `basis: ESTIMATED` because the
+ * free-tier allowance is GoGo's own month-to-date, not Google's — the real cap
+ * pools per billing account across every linked project. `pricingVersion` so a
+ * figure in a screenshot can be traced to the table that produced it.
+ * `unpricedOperations` names any SKU that accrued units we cannot price, so an
+ * incomplete total says so instead of quietly under-reporting.
+ */
+function costModelFor(input: {
+  providers: ProviderBreakdown[];
+  day: string;
+  monthToDate: Map<string, number>;
+}) {
+  const unpriced: string[] = [];
+  let micros = 0;
+  let priced = 0;
+
+  for (const provider of input.providers) {
+    for (const operation of provider.operations) {
+      const units = operation.billableUnits;
+      if (units === null || units === 0) continue;
+      const billingOperation = billingOperationOf(operation.method);
+      // Units already counted this month *before* this window, so the free
+      // allowance is not spent twice when two windows are read in a row.
+      const before = Math.max(0, (input.monthToDate.get(billingOperation) ?? 0) - units);
+      const estimate = estimateCostMicros({
+        operation: billingOperation,
+        day: input.day,
+        units,
+        freeUnitsAlreadyUsed: before,
+      });
+      if (estimate === null) {
+        unpriced.push(billingOperation);
+        continue;
+      }
+      micros += estimate;
+      priced += 1;
+    }
+  }
+
+  return {
+    kind: 'estimated' as const,
+    // Nothing priceable measured at all: `null`, not `0`. A zero would claim
+    // the window was free, which is a different statement from "no data".
+    estimatedCost: priced === 0 && unpriced.length === 0 ? null : microsToMinorUnits(micros),
+    currency: PRICING_CURRENCY,
+    basis: 'ESTIMATED' as const,
+    confidence: 'MEDIUM' as const,
+    pricingVersion: PRICING_VERSION,
+    /** Non-empty means the amount above is a floor, not a total. */
+    unpricedOperations: [...new Set(unpriced)].sort(),
+    note: 'List price × measured billable units, minus this environment’s month-to-date free allowance. Google pools free caps and volume discounts per billing account across all linked projects, so this is an estimate, never an invoice.',
+  };
+}
 
 /** Self-describing latency semantics, so a reader need not guess. */
 const LATENCY_SEMANTICS = {
@@ -329,7 +445,7 @@ function emptyPayload<T>(): T {
     providers: OPS_PROVIDERS.map(emptyBreakdown).map(stripOperations),
     provider: null,
     trends: null,
-    costModel: COST_MODEL,
+    costModel: UNMEASURED_COST_MODEL,
     latencySemantics: LATENCY_SEMANTICS,
   } as unknown as T;
 }

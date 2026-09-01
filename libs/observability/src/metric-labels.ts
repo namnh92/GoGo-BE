@@ -38,6 +38,11 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   places_provider_rejected_total: ['method', 'canonical_status'],
   // One per billable SKU, which is one per adapter operation.
   places_provider_cost_units: ['sku'],
+  // #335 — the durable usage ledger writing its buffer out. `result` is ok or
+  // error; a rising error rate means the cost figures are drifting behind the
+  // counters, which is the only way to notice before a month-end report is
+  // wrong.
+  provider_usage_ledger_flush_total: ['result'],
 
   // --- ingestion -----------------------------------------------------------
   place_resolve_duration_seconds: ['source', 'outcome'],

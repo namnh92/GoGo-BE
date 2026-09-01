@@ -3550,15 +3550,31 @@ export interface components {
             excludesReason: string;
             p99MinSamples: number;
         };
-        /** @description What the cost number is, in the payload rather than in a comment nobody reading the JSON will see. */
+        /** @description What the cost number is, in the payload rather than in a comment nobody reading the JSON will see. Since #335 the units are priced from an effective-dated list-price table in code, so `kind` is `estimated` and an amount is present — but it is an estimate and every qualifier needed to read it as one travels alongside. */
         CmsOpsCostModel: {
             /** @enum {string} */
-            kind: "units_only";
-            /** @description Always null today. `places_provider_cost_units` counts **billable SKU units** — a real, reconcilable quantity, and what an invoice is computed from — but not money: no unit price exists in this system and Google's varies by tier and contract. A currency figure here would be a guess wearing a currency symbol. No field is named `actualSpend`, `billedAmount` or `invoiceCost`, because none would be true until a billing API is connected. */
+            kind: "units_only" | "estimated";
+            /** @description Integer minor units of `currency`, or `null` when nothing priceable was measured. **`null` is not zero**: no measurement and a genuinely free window are different facts and the console renders them differently. Computed as list price × measured billable units, minus this environment's month-to-date free allowance. No field is named `actualSpend`, `billedAmount` or `invoiceCost`, because none would be true until a billing API is connected. */
             estimatedCost: number | null;
+            /** @example USD */
             currency: string | null;
-            /** @example sku_request_counter */
-            basis: string;
+            /**
+             * @description `ESTIMATED` since #335. Google pools free caps and volume discounts per billing account per SKU across every linked project; GoGo can only see its own environment, so the free-allowance half of the arithmetic is an approximation and is labelled as one.
+             * @enum {string}
+             */
+            basis: "sku_request_counter" | "ESTIMATED";
+            /**
+             * @description `MEDIUM` while the free-cap input is per-environment rather than per-billing-account.
+             * @enum {string}
+             */
+            confidence?: "LOW" | "MEDIUM" | "HIGH";
+            /**
+             * @description The pricing table that produced the amount, so a figure in a screenshot can be traced back to it.
+             * @example 2026-09-01
+             */
+            pricingVersion?: string;
+            /** @description Operations that accrued billable units the table cannot price — the Maps SDK SKUs, for instance, which are billed but not yet instrumented. Non-empty means `estimatedCost` is a floor, not a total. They are listed rather than silently excluded, and never counted as zero. */
+            unpricedOperations?: string[];
             note: string;
         };
         CmsOpsTotals: {

@@ -212,15 +212,32 @@ describe('self-describing semantics', () => {
     expect(res.latencySemantics.excludesReason).toContain('#314');
   });
 
-  it('never calls billable units money', async () => {
+  it('never calls an estimate an invoice', async () => {
     const { port } = stubPort();
     const res = await new CmsOpsMetricsService(config, port).summary('24h');
-    expect(res.costModel.kind).toBe('units_only');
-    expect(res.costModel.estimatedCost).toBeNull();
-    expect(res.costModel.currency).toBeNull();
+
+    // #335 gave the units a price. What must not change is the honesty of the
+    // label: an estimate says so, carries the table that produced it, and is
+    // never named as though someone had seen a bill.
+    expect(res.costModel.kind).toBe('estimated');
+    expect(res.costModel.currency).toBe('USD');
+    expect(res.costModel.basis).toBe('ESTIMATED');
+    expect(res.costModel.confidence).toBe('MEDIUM');
+    expect(res.costModel.pricingVersion).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
     const keys = JSON.stringify(res);
     for (const forbidden of ['actualSpend', 'billedAmount', 'invoiceCost']) {
       expect(keys).not.toContain(forbidden);
     }
+  });
+
+  it('reports no amount rather than zero when nothing priceable was measured', async () => {
+    const { port } = stubPort();
+    const res = await new CmsOpsMetricsService(config, port).summary('24h');
+    // A `0` here would claim the window was free. Absence of measurement and
+    // absence of spend are different facts, and the CMS renders them
+    // differently ("chưa đo" versus "$0.00").
+    expect(res.costModel.estimatedCost).toBeNull();
+    expect(res.costModel.unpricedOperations).toEqual([]);
   });
 });

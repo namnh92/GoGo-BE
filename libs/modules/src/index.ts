@@ -4,6 +4,31 @@ export { APP_CONFIG, type IdentityConfig } from '../shared/config';
 export { DB } from '../shared/tokens';
 export { ZodValidationPipe } from '../shared/zod-validation.pipe';
 
+// Cost (COST-BE-002 #335)
+export { CostModule } from '../cost/presentation/cost.module';
+export { DbUsageLedger, type UsageLedgerOptions } from '../cost/application/usage-ledger';
+export { UsageReportService } from '../cost/application/usage-report.service';
+export {
+  ProviderBudgetService,
+  type BudgetLimits,
+  type BudgetScope,
+  type ReservationResult,
+} from '../cost/application/provider-budget.service';
+export {
+  PRICING_CURRENCY,
+  PRICING_VERSION,
+  PROVIDER_PRICING,
+  billingOperationOf,
+  estimateCostMicros,
+  knownOperations,
+  listCostMicros,
+  microsToMinorUnits,
+  pricingFor,
+  utcDay,
+  utcMonth,
+  type PricingRow,
+} from '../cost/domain/provider-pricing';
+
 // Identity (BE-BFF-002)
 export { IdentityModule } from '../identity/presentation/identity.module';
 export { AuthService } from '../identity/application/auth.service';

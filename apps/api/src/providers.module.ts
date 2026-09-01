@@ -30,6 +30,8 @@ import {
   createLogger,
   type MetricsPort,
 } from '@gogo/observability';
+import { type Db } from '@gogo/database';
+import { DB, DbUsageLedger } from '@gogo/modules';
 import { METRICS_REGISTRY } from './metrics.tokens';
 import { APP_CONFIG, type AppConfig } from './config/env';
 
@@ -92,12 +94,24 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       // Both: the log line stays the record any aggregator can read, and the
       // registry is what a scraper reads. Losing one must not lose the other.
       provide: METRICS,
-      useFactory: (config: AppConfig, registry: MetricsRegistry) =>
-        new TeeMetrics([
+      useFactory: (config: AppConfig, registry: MetricsRegistry, db: Db) => {
+        const tee = new TeeMetrics([
           new LogMetrics(createLogger({ level: config.LOG_LEVEL, name: 'gogo-metrics' })),
           registry,
-        ]),
-      inject: [APP_CONFIG, METRICS_REGISTRY],
+        ]);
+        // #335 — the durable ledger wraps the metrics port rather than sitting
+        // beside it, so every adapter is accounted for without any adapter
+        // knowing, and a future adapter is covered by construction. It writes
+        // on an interval, never on the request path (plan §2.3, option A).
+        const ledger = new DbUsageLedger(tee, db, {
+          environment: config.APP_ENV,
+          enabled: config.COST_LEDGER_ENABLED,
+          flushMs: config.COST_LEDGER_FLUSH_MS,
+        });
+        ledger.start();
+        return ledger;
+      },
+      inject: [APP_CONFIG, METRICS_REGISTRY, DB],
     },
     {
       // ADR-0007: the real adapter is only bound when the flag *and* the Routes

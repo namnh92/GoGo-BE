@@ -19,6 +19,7 @@ import { PlanTemplatesService } from '../application/plan-templates.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { CmsObservabilityService } from '../application/cms-observability.service';
 import { CmsOpsMetricsService } from '../application/cms-ops-metrics.service';
+import { CostModule } from '../../cost/presentation/cost.module';
 import { CmsUsersService } from '../application/cms-users.service';
 import { PrivacyRequestsService } from '../application/privacy-requests.service';
 import { ModerationQueueService } from '../application/moderation-queue.service';
@@ -46,7 +47,9 @@ import {
 } from './cms.controllers';
 
 @Module({
-  imports: [IdentityModule, SuggestionsModule, ReviewsModule],
+  // #335 — the ops metrics service prices measured units, which needs the
+  // month-to-date ledger read.
+  imports: [IdentityModule, SuggestionsModule, ReviewsModule, CostModule],
   controllers: [
     CmsAuditController,
     CmsAuthController,
