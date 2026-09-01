@@ -16,6 +16,11 @@ Backend BFF for GoGo (couple/group date planning). Modular monolith: `apps/api` 
 - Constraint change → dependent scores/plans stale. Locked stops survive regenerate. Votes idempotent.
 - AI never overrides hard constraints; only allowlisted candidate IDs; schema + budget/time validation; ≤15s timeout → deterministic fallback; kill switch.
 - Place facts (price/hours/availability) only from verified data, never AI output.
+- **No new persistent Google content** until ADR-0006 §9 is signed. Place IDs may
+  be stored indefinitely; a provider object reused inside one execution persists
+  nothing. Adding a provider-response snapshot, a new provider-derived column, or
+  a cache of names/addresses/ratings/hours/coordinates is a blocking review
+  finding outside the PR that lifts the freeze (GoGo-BE#341).
 - Outbox + idempotent consumers; no distributed transactions; no DB transaction held across provider calls; providers behind adapters.
 - Error envelope `{ code, message, field_errors, request_id, retryable }`; `Idempotency-Key` on retryable mutations; cursor pagination; ISO-8601 UTC.
 - Migrations: forward-tested on snapshot, rollback path, no long locks. Append-only audit log for sensitive writes.
