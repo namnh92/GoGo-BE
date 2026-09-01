@@ -59,13 +59,18 @@ export function resolveWindow(window: OpsWindow, retentionDays: number): Resolve
   const requested = WINDOW_SECONDS[window];
   const retained = Math.max(1, Math.floor(retentionDays)) * 86_400;
   const effectiveSeconds = Math.min(requested, retained);
+  const truncated = effectiveSeconds < requested;
   return {
     window,
-    effectiveWindow: promDuration(effectiveSeconds),
+    // Echo the requested window verbatim when nothing was cut. Deriving it
+    // instead answered a 24h request with "1d" — the same duration, a
+    // different word from the one on the button the operator pressed, which
+    // reads as though something was changed.
+    effectiveWindow: truncated ? promDuration(effectiveSeconds) : window,
     effectiveSeconds,
     stepSeconds: WINDOW_STEP_SECONDS[window],
     retentionDays,
-    truncated: effectiveSeconds < requested,
+    truncated,
   };
 }
 
@@ -255,6 +260,20 @@ const byLabel = (samples: PromSample[], label: string): Map<string, number> => {
 const finite = (n: number | undefined): number | null =>
   n === undefined || !Number.isFinite(n) ? null : n;
 
+/**
+ * Whole calls, but never rounding a real event down to none.
+ *
+ * `increase()` extrapolates at the window edges, so six requests come back as
+ * 5.9998 and a single request scraped once can come back as 0.4. Plain
+ * rounding turns that into `0`, and a provider row then reads
+ * "instrumented, zero calls" — which is the 0-versus-unknown ambiguity this
+ * whole screen exists to avoid, arriving through a side door. Seen live on
+ * DEV the first time Sheets was called.
+ *
+ * A positive `increase()` means at least one thing happened. Say one.
+ */
+const roundCount = (n: number): number => (n > 0 ? Math.max(1, Math.round(n)) : Math.round(n));
+
 const round = (n: number): number => Math.round(n * 1000) / 1000;
 
 const rate = (part: number, whole: number): number | null =>
@@ -305,10 +324,10 @@ export function aggregate(samples: OpsSamples): {
       calls += value;
       if (status.startsWith('2')) successes += value;
     }
-    calls = Math.round(calls);
-    successes = Math.round(successes);
-    const fail = Math.round(failures.get(method) ?? 0);
-    const rej = Math.round(rejected.get(method) ?? 0);
+    calls = roundCount(calls);
+    successes = roundCount(successes);
+    const fail = roundCount(failures.get(method) ?? 0);
+    const rej = roundCount(rejected.get(method) ?? 0);
     const samplesForP99 = latencyCount.get(method) ?? 0;
     operations.push({
       method,
@@ -324,7 +343,7 @@ export function aggregate(samples: OpsSamples): {
         // edge, not a percentile.
         p99: samplesForP99 >= P99_MIN_SAMPLES ? roundOrNull(p99.get(method)) : null,
       },
-      billableUnits: cost.has(method) ? Math.round(cost.get(method)!) : null,
+      billableUnits: cost.has(method) ? roundCount(cost.get(method)!) : null,
     });
   }
 
@@ -375,7 +394,7 @@ export function aggregate(samples: OpsSamples): {
         p50: aggregateQuantile(samples.rejectedP50),
         p95: aggregateQuantile(samples.rejectedP95),
       },
-      billableUnits: sum([...cost.values()].map(Math.round)),
+      billableUnits: sum([...cost.values()].map(roundCount)),
     },
     providers,
   };
