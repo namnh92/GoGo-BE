@@ -52,7 +52,11 @@ export class PlaceResolverService {
 
     const merged: MatchInput = {
       ...hints,
-      name: hints.name ?? parsed.value.query,
+      // Spec §6.2 step 5 keeps the display query and the name apart. Folding
+      // the query into `name` made the scorer treat "Lacaph Coffee … Ho Chi
+      // Minh City" as the place's name and penalise every locality token in
+      // it, so a correct link could not clear the threshold (#311).
+      query: parsed.value.query,
       lat: hints.lat ?? parsed.value.lat,
       lng: hints.lng ?? parsed.value.lng,
     };
@@ -64,21 +68,23 @@ export class PlaceResolverService {
       return { status: 'RESOLVED', decision: exactProviderMatch(toTarget(details)), details };
     }
 
-    const query = merged.name;
+    const query = merged.name ?? merged.query;
     if (!query) return { status: 'UNRESOLVED', reasonCode: 'NO_QUERY' };
 
-    const searchUrl = `https://www.google.com/maps/place/${encodeURIComponent(
-      [query, merged.district, merged.city].filter(Boolean).join(' '),
-    )}`;
-    const candidateId = await this.safeResolve(searchUrl);
-    if (!candidateId) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
+    const searchText = [query, merged.district, merged.city].filter(Boolean).join(' ');
+    const ids = await this.safeCandidates(searchText);
+    if (ids.length === 0) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
 
-    const details = await this.safeDetails(candidateId);
-    if (!details) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
+    const detailed = (await Promise.all(ids.map((id) => this.safeDetails(id)))).filter(
+      (d): d is ResolvedProviderPlace => d !== null,
+    );
+    if (detailed.length === 0) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
 
-    const decision = decideMatch(merged, [toTarget(details)]);
-    if (decision.outcome === 'RESOLVED_AUTOMATICALLY') {
-      return { status: 'RESOLVED', decision, details };
+    const decision = decideMatch(merged, detailed.map(toTarget));
+    if (decision.outcome === 'RESOLVED_AUTOMATICALLY' && decision.best) {
+      const bestId = decision.best.target.googlePlaceId;
+      const details = detailed.find((d) => d.providerPlaceId === bestId);
+      if (details) return { status: 'RESOLVED', decision, details };
     }
     if (decision.outcome === 'NEEDS_CONFIRMATION') {
       return { status: 'NEEDS_CONFIRMATION', decision };
@@ -87,17 +93,24 @@ export class PlaceResolverService {
   }
 
   /**
+   * How many provider hits get scored. Small on purpose: each one costs a
+   * `details` call (spec §6.2 keeps the search itself IDs-only), and past the
+   * first few Google's own ranking is better evidence than our re-scoring.
+   */
+  private static readonly CANDIDATE_LIMIT = 3;
+
+  /**
    * A provider that *answered* is an outcome (FR-INGEST-002): "Google looked
-   * and found nothing" is a fact about the world, and `null` is the right way
-   * to say it.
+   * and found nothing" is a fact about the world, and an empty result is the
+   * right way to say it.
    *
    * A provider that could not answer is not an outcome, and #279 is what
    * happens when the two are collapsed. Quota already propagated for this
    * reason — a bulk job pauses instead of marking thousands of good rows
    * unresolvable — and exactly the same argument covers a disabled API, an
-   * invalid key and an upstream outage. Reporting any of them as `null` tells
-   * a user their real place does not exist, and tells monitoring nothing at
-   * all, because a 201 is a success.
+   * invalid key and an upstream outage. Reporting any of them as "nothing
+   * found" tells a user their real place does not exist, and tells monitoring
+   * nothing at all, because a 201 is a success.
    */
   private static rethrowIfOperational(err: unknown): void {
     if (err instanceof ProviderQuotaExceededError) throw err;
@@ -105,12 +118,12 @@ export class PlaceResolverService {
     if (err instanceof ProviderUnavailableError) throw err;
   }
 
-  private async safeResolve(url: string): Promise<string | null> {
+  private async safeCandidates(query: string): Promise<string[]> {
     try {
-      return await this.provider.resolveUrl(url);
+      return await this.provider.searchCandidates(query, PlaceResolverService.CANDIDATE_LIMIT);
     } catch (err) {
       PlaceResolverService.rethrowIfOperational(err);
-      return null;
+      return [];
     }
   }
 

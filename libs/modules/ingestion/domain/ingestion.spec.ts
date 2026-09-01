@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { expandShortLink, isAllowedMapsHost, parseMapsUrl } from './maps-url';
-import { decideMatch, exactProviderMatch, nameSimilarity, scoreMatch } from './match-score';
+import {
+  decideMatch,
+  exactProviderMatch,
+  nameCoverage,
+  nameSimilarity,
+  scoreMatch,
+} from './match-score';
 import { adjustedRating, compositeQualityScore, providerScore } from './quality-score';
 import { mapLegacyHeader, parseAudiences, parsePrice, parseVibes } from './normalize-row';
 
@@ -9,6 +15,15 @@ describe('maps URL parsing + SSRF guard (PI-BE-003, FR-INGEST-002)', () => {
     const r = parseMapsUrl('https://www.google.com/maps?place_id=ChIJabc123def');
     expect(r.ok && r.value.providerPlaceId).toBe('ChIJabc123def');
     expect(r.ok && r.value.needsExpansion).toBe(false);
+  });
+
+  it('reads query_place_id — the id Google puts on an ?api=1 share link (#311)', () => {
+    const r = parseMapsUrl(
+      'https://www.google.com/maps/search/?api=1&query=Lacaph+Coffee&query_place_id=ChIJPan4tK8vdTER1C8IggjmDGI',
+    );
+    // Authoritative: the resolver skips text search entirely on this branch.
+    expect(r.ok && r.value.providerPlaceId).toBe('ChIJPan4tK8vdTER1C8IggjmDGI');
+    expect(r.ok && r.value.query).toBe('Lacaph Coffee');
   });
 
   it('extracts name + coordinates from a canonical place URL', () => {
@@ -147,6 +162,93 @@ describe('match scoring (PI-BE-005, FR-INGEST-003/004)', () => {
     const a = decideMatch(input, [target]);
     const b = decideMatch(input, [target]);
     expect(a.best?.confidence).toBe(b.best?.confidence);
+  });
+});
+
+/**
+ * #311 — a shared `?api=1&query=…` link carries a free-text search string, not
+ * a name. Scoring it as a name penalised every locality token the user left in
+ * it, so the better specified the link the lower it scored, and real places
+ * came back UNRESOLVED while Google was answering correctly. Targets and
+ * queries below are the live Google responses from that report.
+ */
+describe('free-text link queries (PI-BE-025, spec §6.2 step 5)', () => {
+  const lacaph = {
+    googlePlaceId: 'ChIJPan4tK8vdTER1C8IggjmDGI',
+    name: 'Lacàph Coffee Experiences Space 🇻🇳☕️',
+    address: 'Tầng 1, 220 Nguyễn Công Trứ, Bến Thành, Hồ Chí Minh, Vietnam',
+    lat: 10.7679,
+    lng: 106.7004,
+  };
+  const lacaphBar = {
+    googlePlaceId: 'ChIJm-gZAiUvdTERF1P6ptacTwc',
+    name: 'Lacàph Coffee Bar 🇻🇳☕️',
+    address: 'Lầu 1, 151 Đồng Khởi, Sài Gòn, Hồ Chí Minh, Vietnam',
+    lat: 10.7776,
+    lng: 106.703,
+  };
+  const landmark = {
+    googlePlaceId: 'ChIJEQnz-MIndTERzRrJ-HNQrDY',
+    name: 'Landmark 81',
+    address: '720A Điện Biên Phủ, Phường, Thạnh Mỹ Tây, Hồ Chí Minh 72300, Vietnam',
+    lat: 10.7943,
+    lng: 106.722,
+  };
+
+  it('does not count decoration in a display name as a token', () => {
+    expect(nameCoverage('lacaph coffee experiences space', lacaph.name)).toBe(1);
+    // The emoji cluster used to sit in the denominator on both sides.
+    expect(nameSimilarity('Lacàph Coffee Experiences Space', lacaph.name)).toBe(1);
+  });
+
+  it('locality tokens the user left in the link do not sink the match', () => {
+    const d = decideMatch({ query: 'Landmark 81 Ho Chi Minh City' }, [landmark]);
+    expect(d.outcome).toBe('NEEDS_CONFIRMATION');
+    expect(d.best?.confidence).toBeGreaterThanOrEqual(0.7);
+    expect(d.reasons).not.toContain('LOW_CONFIDENCE');
+  });
+
+  it('offers every branch Google returned instead of silently taking the first', () => {
+    const d = decideMatch({ query: 'Lacaph Coffee Experiences Space Ho Chi Minh City' }, [
+      lacaph,
+      lacaphBar,
+    ]);
+    expect(d.outcome).toBe('NEEDS_CONFIRMATION');
+    expect(d.candidates).toHaveLength(2);
+    // The branch the user actually named ranks first.
+    expect(d.candidates[0]?.target.googlePlaceId).toBe(lacaph.googlePlaceId);
+    expect(d.candidates[1]?.confidence).toBeLessThan(d.candidates[0]!.confidence);
+  });
+
+  it('still rejects a candidate the query does not name', () => {
+    const d = decideMatch({ query: 'Trung Nguyen Legend Ho Chi Minh City' }, [lacaph]);
+    expect(d.outcome).toBe('UNRESOLVED');
+    expect(d.reasons).toContain('LOW_CONFIDENCE');
+  });
+
+  it('a partly-covered name scores below a fully covered one', () => {
+    const full = scoreMatch({ query: 'Lacaph Coffee Experiences Space' }, lacaph);
+    const partial = scoreMatch({ query: 'Lacaph Coffee Experiences Space' }, lacaphBar);
+    expect(partial.confidence).toBeLessThan(full.confidence);
+  });
+
+  it('leaves the curated-name path alone — CMS import is unchanged', () => {
+    const d = decideMatch({ name: 'Landmark 81', city: 'Hồ Chí Minh', district: 'Thạnh Mỹ Tây' }, [
+      landmark,
+    ]);
+    expect(d.outcome).toBe('RESOLVED_AUTOMATICALLY');
+    expect(d.reasons).toContain('EXACT_NAME_CITY');
+  });
+
+  it('a name hint wins over the query when both are present', () => {
+    const d = decideMatch({ name: 'Landmark 81', query: 'something else entirely' }, [landmark]);
+    expect(d.best?.confidence).toBe(
+      decideMatch({ name: 'Landmark 81' }, [landmark]).best?.confidence,
+    );
+  });
+
+  it('neither name nor query stays neutral rather than scoring zero', () => {
+    expect(scoreMatch({}, landmark).confidence).toBe(0.5);
   });
 });
 

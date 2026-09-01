@@ -101,7 +101,14 @@ export function parseMapsUrl(input: string): UrlParseResult {
 function extractHints(url: URL): Omit<MapsUrlHints, 'needsExpansion' | 'normalizedUrl'> {
   const out: Omit<MapsUrlHints, 'needsExpansion' | 'normalizedUrl'> = {};
 
-  const placeId = url.searchParams.get('place_id') ?? url.searchParams.get('placeid');
+  // `query_place_id` is what Google's own Maps URL format puts on the
+  // `?api=1&query=…` share link — the shape the Share button produces for a
+  // search result. Reading only `place_id` threw that id away and sent an
+  // authoritative match down the fuzzy text-search path (#311).
+  const placeId =
+    url.searchParams.get('place_id') ??
+    url.searchParams.get('placeid') ??
+    url.searchParams.get('query_place_id');
   if (placeId && /^[\w-]{6,255}$/.test(placeId)) out.providerPlaceId = placeId;
 
   // /maps/place/<Name>/@lat,lng,z or ?q=<name>

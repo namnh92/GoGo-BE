@@ -69,6 +69,16 @@ export interface PlaceProviderPort {
   /** Resolve a shared maps URL to a provider place id, or null when invalid. */
   resolveUrl(url: string): Promise<string | null>;
   /**
+   * Top provider ids for a free-text query, best first.
+   *
+   * Distinct from `resolveUrl` because the two callers want different things:
+   * a bulk import row wants one answer, a shared link wants the alternatives to
+   * offer when the match is ambiguous. Collapsing them to `places[0]` made
+   * `MULTIPLE_BRANCHES` unreachable from a link and handed the user whichever
+   * branch Google ranked first, silently (spec §6.2 steps 7/9, #311).
+   */
+  searchCandidates(query: string, limit: number): Promise<string[]>;
+  /**
    * Fetch canonical details; null when the place does not exist.
    *
    * `tier` decides how much is asked for, and therefore what it costs

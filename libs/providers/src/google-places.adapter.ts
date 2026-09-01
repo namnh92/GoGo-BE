@@ -94,16 +94,25 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
     const nameMatch = /\/maps\/place\/([^/@]+)/.exec(url);
     const query = nameMatch ? decodeURIComponent(nameMatch[1]!).replace(/\+/g, ' ') : null;
     if (!query) return null;
-    const data = await this.call<{ places?: { id: string }[] }>(
+    return (await this.searchCandidates(query, 1))[0] ?? null;
+  }
+
+  /**
+   * Text Search (New), IDs-Only field mask — spec §6.2 step 6 keeps the search
+   * itself cheap and pays for details only on the candidates it goes on to
+   * score.
+   */
+  async searchCandidates(query: string, limit: number): Promise<string[]> {
+    const data = await this.call<{ places?: { id?: string }[] }>(
       'google.searchText',
       'https://places.googleapis.com/v1/places:searchText',
       {
         method: 'POST',
-        body: JSON.stringify({ textQuery: query }),
+        body: JSON.stringify({ textQuery: query, maxResultCount: limit }),
         fieldMask: 'places.id',
       },
     );
-    return data.places?.[0]?.id ?? null;
+    return (data.places ?? []).map((p) => p.id).filter((id): id is string => Boolean(id));
   }
 
   async details(
