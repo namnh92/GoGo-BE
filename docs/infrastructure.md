@@ -271,6 +271,28 @@ Endpoint của worker không bao giờ làm dừng job: không bind được c�
 log rồi chạy tiếp không có metric. Một worker chết vì không mở được cổng metric
 là sự cố gây ra bởi chính thứ lẽ ra để quan sát sự cố.
 
+**Collector: Grafana Alloy (#326 / GoGo-Infra#95).**
+
+```
+api    /v1/metrics      ─┐
+                          ├─▶ Alloy ──remote_write──▶ Grafana Cloud
+worker :9101/metrics     ─┘   (compose overlay, stateless)
+```
+
+`docker/docker-compose.observability.yml` + `docker/alloy/config.alloy`. Là
+**overlay**, không nằm trong `docker-compose.prod.yml`: sự có mặt của nó là một
+quyết định chứ không phải thuộc tính của host. Chưa có credential Grafana thì
+không có chỗ để ghi, và một container restart-loop vào endpoint rỗng là tiếng
+ồn đọc như sự cố. GoGo-Infra chỉ thêm `-f` khi `GRAFANA_PROM_URL` có trong env
+đã render — container và credential đến cùng nhau hoặc không cái nào đến.
+
+- Không credential nào trong file cấu hình; tất cả qua biến môi trường.
+- Alloy không publish cổng nào; UI nội bộ bind loopback trong container.
+- WAL của `remote_write` là **buffer gửi**, không phải kho lưu. Grafana Cloud
+  giữ dữ liệu; mất container mất vài phút mẫu chưa gửi, không có gì để backup.
+- Nhãn ngoài `env` là bắt buộc: một stack chứa mọi môi trường, thiếu nhãn này
+  là traffic dev cộng âm thầm vào biểu đồ production.
+
 Điều này gỡ nút thắt "chưa chốt nơi nhận metric": scraper nào đọc được format
 chuẩn cũng dùng được, nên chọn đích đến không còn là điều kiện tiên quyết để
 **có** alert. Metric vẫn đồng thời đi ra theo log, nên mất một đường không mất

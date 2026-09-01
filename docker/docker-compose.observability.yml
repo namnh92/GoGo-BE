@@ -1,0 +1,45 @@
+# The metrics collector (INF-054 / #326).
+#
+# An overlay, not part of docker-compose.prod.yml, because its presence is a
+# decision rather than a property of the host: before the Grafana Cloud
+# credentials are in SSM there is nowhere to write, and a collector
+# restart-looping against an empty endpoint is noise that reads as a fault.
+# Observability must never be able to look like an outage.
+#
+# GoGo-Infra adds `-f docker/docker-compose.observability.yml` only when
+# `GRAFANA_PROM_URL` is present in the env file it rendered, so the container
+# and the credential arrive together or neither does.
+#
+# Deploy is the same command with one more file:
+#   ENV_FILE=.env.dev docker compose -f docker/docker-compose.prod.yml \
+#     -f docker/docker-compose.edge-tunnel.yml \
+#     -f docker/docker-compose.observability.yml --env-file .env.dev up -d
+
+services:
+  alloy:
+    # Pinned. A collector that silently changes behaviour on `docker compose
+    # pull` is a change to what every dashboard and alert is reading.
+    image: grafana/alloy:v1.19.2
+    restart: unless-stopped
+    command:
+      - run
+      - --server.http.listen-addr=127.0.0.1:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy:/etc/alloy:ro
+      # The remote_write WAL. A send buffer, not a store — Grafana Cloud holds
+      # the data. Named so a `docker compose down -v` is understood to cost a
+      # few minutes of unshipped samples and nothing else.
+      - alloy_wal:/var/lib/alloy/data
+    env_file:
+      - ../${ENV_FILE:-.env.prod}
+    # No `ports:`. Alloy's own UI binds to loopback inside the container and
+    # reaches no further; the two things it scrapes are on this network, and
+    # the one thing it writes to is outbound.
+    depends_on:
+      - api
+      - worker
+
+volumes:
+  alloy_wal:
