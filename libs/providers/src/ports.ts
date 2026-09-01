@@ -4,6 +4,32 @@
  * the app based on configuration. No SDK types leak past this file.
  */
 
+/**
+ * ADR-0006 §2 — how much of a place to pay for.
+ *
+ * `core` identifies a place, `quality` adds the facts a preview or a catalog
+ * row needs, `detail` adds reviews and is never requested by a bulk job. The
+ * tier a snapshot was taken at is recorded on `place_provider_sources`, so a
+ * row always says which fields it could legitimately have.
+ */
+export type PlaceFetchTier = 'core' | 'quality' | 'detail';
+
+/**
+ * A photo the provider holds, **not** an image.
+ *
+ * `reference` is an opaque provider handle; turning it into bytes is a second,
+ * separately billed call (Google: `places/*\/photos/*\/media`). Nothing in GoGo
+ * stores provider images yet, so these are carried through the boundary and
+ * left for whoever builds that stage — see `docs/place-import.md`.
+ */
+export type ProviderPhotoRef = {
+  reference: string;
+  widthPx: number | null;
+  heightPx: number | null;
+  /** Licence obligation: rendering a photo means rendering these with it. */
+  attributions: string[];
+};
+
 export type ResolvedProviderPlace = {
   providerPlaceId: string;
   name: string;
@@ -22,6 +48,19 @@ export type ResolvedProviderPlace = {
    * rewritten by the same owner, a restaurant turning into a karaoke bar cannot.
    */
   primaryType: string | null;
+  /**
+   * Every type the provider assigns, `primaryType` included. Google mixes
+   * specific types with generic parents (`cafe`, `coffee_shop`, `food`,
+   * `point_of_interest`) and does not promise an order, so a reader must pick
+   * deterministically rather than trust position — see
+   * `ingestion/domain/google-types.ts`.
+   */
+  types: string[];
+  /** Provider's own canonical link to the place, when it published one. */
+  googleMapsUri: string | null;
+  photos: ProviderPhotoRef[];
+  /** The tier this snapshot was fetched at; fields outside it are absent. */
+  fetchTier: PlaceFetchTier;
   attribution: string;
   raw: unknown;
 };
@@ -29,8 +68,16 @@ export type ResolvedProviderPlace = {
 export interface PlaceProviderPort {
   /** Resolve a shared maps URL to a provider place id, or null when invalid. */
   resolveUrl(url: string): Promise<string | null>;
-  /** Fetch canonical details; null when the place does not exist. */
-  details(providerPlaceId: string): Promise<ResolvedProviderPlace | null>;
+  /**
+   * Fetch canonical details; null when the place does not exist.
+   *
+   * `tier` decides how much is asked for, and therefore what it costs
+   * (ADR-0006 §2). It defaults to `quality` because every current caller
+   * resolves a place in order to keep it: asking for `core` first would mean
+   * two billed calls for one row, which is the opposite of what the tiers are
+   * for.
+   */
+  details(providerPlaceId: string, tier?: PlaceFetchTier): Promise<ResolvedProviderPlace | null>;
 }
 
 export type AreaPrediction = {
