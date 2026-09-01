@@ -228,6 +228,49 @@ describe('hard budget reservation', () => {
     expect(Number(row!.reserved_calls)).toBe(3);
   });
 
+  it('grants exactly the ceiling when twenty callers arrive at once', async () => {
+    // The two-caller race above can pass by luck: two promises often serialise
+    // on their own, so it proves the lock exists rather than that it holds.
+    // Twenty against a ceiling of ten is real contention — an off-by-N, a lost
+    // update, or a lock taken per operation instead of per scope all show up
+    // here as eleven winners rather than ten.
+    const wide = budgetLimitsFrom('google.places.refresh', {
+      PLACE_REFRESH_DAILY_MAX_CALLS: '10',
+      PLACE_REFRESH_DAILY_MAX_LIST_COST_USD: '100',
+      PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_LIVENESS: '1000',
+    });
+    const service = new ProviderBudgetService(db as never);
+
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        service.reserve(
+          {
+            scope: 'google.places.refresh',
+            operation: 'google.details.liveness',
+            calls: 1,
+            units: 1,
+          },
+          wide,
+        ),
+      ),
+    );
+
+    expect(results.filter((r) => r.ok)).toHaveLength(10);
+    expect(results.filter((r) => !r.ok)).toHaveLength(10);
+    for (const refused of results.filter((r) => !r.ok)) {
+      expect(refused).toEqual({ ok: false, reason: 'call_ceiling' });
+    }
+
+    // And the table agrees: the ledger of what was authorised must equal what
+    // the callers were told, or the ceiling is only advisory.
+    const [row] = await db
+      .execute(
+        sql`select reserved_calls from provider_budget_daily where scope = 'google.places.refresh'`,
+      )
+      .then((r) => r.rows as unknown as { reserved_calls: number }[]);
+    expect(Number(row!.reserved_calls)).toBe(10);
+  });
+
   it('holds the per-operation unit ceiling separately from the call ceiling', async () => {
     const service = new ProviderBudgetService(db as never);
     await reserve(service, 'google.details.quality', 1, 2);

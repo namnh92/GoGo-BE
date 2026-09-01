@@ -184,3 +184,72 @@ or disconnect.
   `/cms/ops/costs` to `sourcesConfigured: false` with an empty list, which is
   exactly its behaviour before this change.
 - Rolling back is dropping the two tables; no other table references them.
+
+## POST-MERGE VALIDATION REQUIRED — DEV flush measurement
+
+**Status: not passed.** Plan §2.3 requires the accounting boundary to be
+settled _by measurement on DEV_, and that measurement has not been taken —
+no Google credentials are bound in the environment this was built in. The
+decision above is therefore **provisional**, and this section stays open until
+the numbers exist. It is recorded as a required validation rather than a
+follow-up wish so that "we never measured it" cannot quietly become "we
+decided it was fine".
+
+Option A puts no awaited work on any request path, so there is no per-call
+latency to measure. What is unmeasured is the ledger's own behaviour:
+
+1. **Flush duration** with a realistic spread of operations in the buffer.
+2. **Freshness lag** — how far behind the counters the table runs.
+3. **Whether `COST_LEDGER_FLUSH_MS=5000` is right.** Longer widens the
+   `SIGKILL` loss window; shorter multiplies writes for no accuracy gain,
+   since the table is keyed per day.
+
+Run on DEV with `COST_LEDGER_ENABLED=true` and real traffic flowing:
+
+```sql
+-- Freshness: how stale is the ledger right now?
+select operation, updated_at, now() - updated_at as lag
+  from provider_usage_daily
+ where environment = 'dev' and day = (now() at time zone 'utc')::date
+ order by updated_at desc;
+```
+
+```sql
+-- Today's ledger totals, for the agreement check below.
+select operation, calls_attempted, calls_succeeded, billable_units
+  from provider_usage_daily
+ where environment = 'dev' and day = (now() at time zone 'utc')::date
+ order by operation;
+```
+
+Compare `calls_attempted` against Grafana
+`increase(places_provider_requests_total{env="dev"}[24h])` over the same
+window. #335's DEV verification asks these to agree within ±1; a wider gap
+means either a lost flush window or a counted-but-unwritten path, and both are
+findable from `provider_usage_ledger_flush_total{outcome="error"}`.
+
+Record the three numbers and the agreement result here, then mark this section
+passed. Until then, treat the `estimatedCost` figures as measured units priced
+by an unvalidated write path.
+
+## Migration numbering — re-check immediately before merge
+
+The invariant is **uniqueness, not contiguity**. Drizzle applies journal
+entries in array order and does not require consecutive `idx` values, and the
+integration suite migrates a container from scratch through this journal on
+every run — so a gap is proven harmless rather than assumed.
+
+Parallel work on this program has already produced a duplicate journal `idx`
+once, and nothing catches it automatically. Re-run this immediately before
+merging, because another migration can land in between:
+
+```bash
+git fetch origin
+git ls-tree -r --name-only origin/develop -- migrations | grep '\.sql$' | tail -3
+python3 -c "import json;j=json.load(open('migrations/meta/_journal.json'));i=[e['idx'] for e in j['entries']];print('dupes',[x for x in set(i) if i.count(x)>1]);print('ordered',i==sorted(i))"
+```
+
+On a collision: rename the file, update its `_journal.json` tag, and re-run
+`pnpm test:integration` — the migration is exercised for real there, so a bad
+rename fails loudly instead of at deploy. A CI guard for this belongs in its
+own change.
