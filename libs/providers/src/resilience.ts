@@ -1,4 +1,5 @@
 import {
+  MetricsQueryError,
   ProviderConfigurationError,
   ProviderQuotaExceededError,
   ProviderInvalidRequestError,
@@ -118,6 +119,19 @@ export async function withResilience<T>(
       // It must not touch the breaker either: enough pasted junk would
       // otherwise trip it and break resolution for everyone.
       if (err instanceof ProviderInvalidRequestError) throw err;
+      // #315: same shape again, for reading the metrics store. A credential it
+      // refuses and a query it will not parse are both permanent answers, so
+      // retrying spends time to be told the same thing and counting them would
+      // cycle the breaker — which flips the operator-facing detail between
+      // "refused our credential" and "not answering" while nothing changes.
+      // `upstream` and `malformed` are not in this list: those are worth
+      // backing off from, so they fall through to the breaker below.
+      if (
+        err instanceof MetricsQueryError &&
+        (err.reason === 'unauthorized' || err.reason === 'bad_request')
+      ) {
+        throw err;
+      }
       lastError = err;
       state.consecutiveFailures += 1;
       state.lastFailureAt = Date.now();

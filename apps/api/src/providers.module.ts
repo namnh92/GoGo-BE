@@ -10,7 +10,9 @@ import {
   GoogleRoutesAdapter,
   GoogleSheetsAdapter,
   HaversineTravelTime,
+  METRICS_QUERY,
   PLACE_PROVIDER,
+  PrometheusQueryAdapter,
   PUSH_PROVIDER,
   SHEETS_PROVIDER,
   R2StorageAdapter,
@@ -108,6 +110,28 @@ import { APP_CONFIG, type AppConfig } from './config/env';
           : new HaversineTravelTime(),
       inject: [APP_CONFIG, METRICS],
     },
+    {
+      /**
+       * #315 — reading the store back, for the CMS ops dashboard only.
+       *
+       * Bound to `null` when unconfigured rather than to a fake: a fake would
+       * answer a dashboard with invented traffic, and the one thing this
+       * screen must never do is show a number nobody measured. The service
+       * reports `backend.status: "unavailable"` instead.
+       *
+       * `metrics:read`, never the collector's `metrics:write` token.
+       */
+      provide: METRICS_QUERY,
+      useFactory: (config: AppConfig) =>
+        config.GRAFANA_PROM_URL && config.GRAFANA_PROM_USER && config.GRAFANA_READ_TOKEN
+          ? new PrometheusQueryAdapter({
+              url: config.GRAFANA_PROM_URL,
+              username: config.GRAFANA_PROM_USER,
+              token: config.GRAFANA_READ_TOKEN,
+            })
+          : null,
+      inject: [APP_CONFIG],
+    },
     { provide: PUSH_PROVIDER, useClass: FakePush },
     {
       // Real R2 the moment credentials exist; the fake keeps every other
@@ -127,6 +151,7 @@ import { APP_CONFIG, type AppConfig } from './config/env';
   ],
   exports: [
     METRICS_REGISTRY,
+    METRICS_QUERY,
     PLACE_PROVIDER,
     AREA_AUTOCOMPLETE,
     SHEETS_PROVIDER,

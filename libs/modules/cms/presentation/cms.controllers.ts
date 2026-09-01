@@ -51,6 +51,8 @@ import { CMS_UPLOAD_PURPOSES, MAX_UPLOAD_BYTES } from '../../uploads/application
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { CmsObservabilityService } from '../application/cms-observability.service';
+import { CmsOpsMetricsService } from '../application/cms-ops-metrics.service';
+import { OPS_PROVIDERS, OPS_WINDOWS } from '../domain/ops-metrics';
 import { CmsUsersService } from '../application/cms-users.service';
 import { PrivacyRequestsService } from '../application/privacy-requests.service';
 import { FLAG_ENVIRONMENTS, FLAG_PLATFORMS } from '../../shared/feature-flags';
@@ -1595,6 +1597,23 @@ const experimentSchema = z.object({
    */
   variants: z.record(z.string().max(64), z.number().min(0).max(1)),
 });
+/**
+ * #315 — the entire client-controlled surface of the ops metrics endpoints.
+ *
+ * An enum, deliberately, not a duration string and not a start/end pair. A
+ * free-form range is an arbitrary load on the store and an arbitrary number of
+ * points at the browser; four fixed windows are the product decision, and they
+ * are also what makes "no client-supplied PromQL" true by construction rather
+ * than by escaping.
+ */
+const opsWindowQuery = z.object({
+  window: z.enum(OPS_WINDOWS).default('24h'),
+});
+
+const opsProviderParam = z.object({
+  provider: z.enum(OPS_PROVIDERS),
+});
+
 const searchAnalyticsQuery = z.object({
   days: z.coerce.number().int().min(1).max(90).default(7),
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -1689,6 +1708,7 @@ export class CmsOpsController {
     private readonly evaluation: RankingEvaluationService,
     private readonly experimentsAdmin: ExperimentsAdminService,
     private readonly observability: CmsObservabilityService,
+    private readonly opsMetrics: CmsOpsMetricsService,
   ) {}
 
   @Post('ranking-configs')
@@ -1811,6 +1831,47 @@ export class CmsOpsController {
   @Get('ops/costs')
   opsCosts() {
     return this.observability.costs();
+  }
+
+  /**
+   * BE-CMS-P2 (#315) — the monitoring view, from the time-series store.
+   *
+   * `/v1/metrics` is a machine surface: one shared token granting read of
+   * every internal series, no per-user authorization, no audit of who looked
+   * at what, and a text format with no version. The console reads these
+   * instead, and GoGo-BE is the only thing that ever holds a Grafana
+   * credential.
+   *
+   * `window` is an enum, not a duration and not a range. There is no
+   * client-supplied PromQL anywhere in this path — every query is a constant
+   * in `domain/ops-metrics.ts` parameterised by that enum and this
+   * deployment's own `env` label — so the answer to "can a caller inject a
+   * query" is that there is no hole to inject into.
+   *
+   * `ops_admin` and above, like the three endpoints above it. Provider spend
+   * and infrastructure health are not editorial data.
+   */
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/summary')
+  opsSummary(@Query(new ZodValidationPipe(opsWindowQuery)) query: z.infer<typeof opsWindowQuery>) {
+    return this.opsMetrics.summary(query.window);
+  }
+
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/providers')
+  opsProviders(
+    @Query(new ZodValidationPipe(opsWindowQuery)) query: z.infer<typeof opsWindowQuery>,
+  ) {
+    return this.opsMetrics.providers(query.window);
+  }
+
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/providers/:provider')
+  opsProvider(
+    @Param(new ZodValidationPipe(opsProviderParam)) params: z.infer<typeof opsProviderParam>,
+    @Query(new ZodValidationPipe(opsWindowQuery)) query: z.infer<typeof opsWindowQuery>,
+  ) {
+    return this.opsMetrics.provider(params.provider, query.window);
   }
 
   /**
