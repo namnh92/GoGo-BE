@@ -218,15 +218,19 @@ export class PlaceImportService {
       .set({
         status: 'verified',
         providerPlaceId: details.providerPlaceId,
-        providerSnapshot: {
-          name: details.name,
-          addressText: details.addressText,
-          lat: details.lat,
-          lng: details.lng,
-          rating: details.rating,
-          ratingCount: details.ratingCount,
-          attribution: details.attribution,
-        },
+        // #348: `providerSnapshot` is no longer written. It held a Google
+        // Details extract — name, address, lat/lng, rating, rating count —
+        // that one writer produced and nothing anywhere read. That makes it
+        // ADR-0006 §9.4 R5 "stop writing" on the same reasoning as R1, and
+        // independent of the §9.6 counsel answer: a store with no reader has
+        // no product purpose to weigh against the retention rule. The
+        // coordinates it carried were also uncapped, which SST §14.3 does not
+        // allow (the exposure #347 fixed for candidate rows).
+        //
+        // `providerPlaceId` stays. The Place ID is the one field SST §3
+        // permits storing indefinitely, and it is what lets this row still say
+        // which place it resolved to; every other field is re-fetchable from
+        // Google on demand.
         resultPlaceId: placeId,
         decidedAt: sql`now()`,
       })

@@ -192,6 +192,20 @@ describe('one Google Place ID resolves to one place from every door (#334)', () 
       .where(eq(schema.placeSources.externalId, 'ChIJunify'));
     expect(legacyRows).toHaveLength(0);
 
+    // #348 (ADR-0006 §9.4 R5) — a verified import records the Place ID and
+    // nothing else about the place. `provider_snapshot` used to take a Google
+    // Details extract here (name, address, lat/lng, rating, rating count) that
+    // no endpoint returned and no job read, with no TTL over its coordinates.
+    const importRows = await db
+      .select()
+      .from(schema.placeImports)
+      .where(eq(schema.placeImports.id, legacy.json().id as string));
+    expect(importRows).toHaveLength(1);
+    expect(importRows[0]!.providerSnapshot).toBeNull();
+    // The Place ID is the field SST §3 lets us keep, and the row would be
+    // useless without it — so its presence is asserted, not just tolerated.
+    expect(importRows[0]!.providerPlaceId).toBe('ChIJunify');
+
     const providerRows = await db
       .select()
       .from(schema.placeProviderSources)

@@ -253,6 +253,13 @@
       "when": 1788185958653,
       "tag": "0035_provider-cost-accounting",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788185958654,
+      "tag": "0036_import-provider-snapshot",
+      "breakpoints": true
     }
   ]
 }

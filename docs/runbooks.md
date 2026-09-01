@@ -71,6 +71,28 @@ acceptance for this doc.
 - Retention: worker runs `PrivacyJobs` daily 03:00 ICT; manual dry-run: `PrivacyJobs.run(true)` prints report without writing.
 - Account deletion/export are self-serve (`DELETE /v1/me`, `GET /v1/me/export`); support-initiated equivalents go through the same code path.
 
+### Google-content purges (ADR-0006 §9.4)
+
+Each remediation ships as a forward-only, idempotent migration. **Record the
+row count before and after in the deploy notes** — the count is the evidence
+the purge ran, and an idempotent migration produces no other trace on a second
+apply.
+
+| ID  | Store                                    | Migration                           | Count query                                                                                                                            |
+| --- | ---------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| R1  | `place_sources.raw`, `raw_updated_at`    | `0033_unify-google-provenance.sql`  | `select count(*) from place_sources where raw is not null or raw_updated_at is not null;`                                              |
+| R3a | `place_ingest_rows.candidates[].lat/lng` | `0034_candidate-coordinates.sql`    | `select count(*) from place_ingest_rows where jsonb_path_exists(candidates, '$[*].lat') or jsonb_path_exists(candidates, '$[*].lng');` |
+| R5  | `place_imports.provider_snapshot`        | `0036_import-provider-snapshot.sql` | `select count(*) from place_imports where provider_snapshot is not null;`                                                              |
+
+After each: the count must be **0**, and re-running the migration must leave it
+at 0 while reporting `UPDATE 0`. None of the three has a down path — restoring
+the values would undo the compliance fix, and every field is re-fetchable from
+Google on demand.
+
+The column in each case is dropped a release later, once no deployed code
+names it. Do not fold that drop into the purge migration: a rollback to the
+previous deployment must still find the column.
+
 ## 6. Migration execution
 
 1. PR includes: forward test on snapshot (CI does fresh-container apply), documented rollback path, lock analysis (no long exclusive locks; use `CREATE INDEX CONCURRENTLY` for new prod indexes **[infra]** — drizzle migration files hand-edited when needed per ADR-0002).
