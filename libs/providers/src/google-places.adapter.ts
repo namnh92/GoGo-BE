@@ -72,8 +72,17 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
   constructor(
     private readonly apiKey: string,
     private readonly metrics: {
-      increment(name: string, labels?: Record<string, string | number | undefined>): void;
-    } = { increment: () => undefined },
+      increment(
+        name: string,
+        labels?: Record<string, string | number | undefined>,
+        by?: number,
+      ): void;
+      observe(
+        name: string,
+        value: number,
+        labels?: Record<string, string | number | undefined>,
+      ): void;
+    } = { increment: () => undefined, observe: () => undefined },
   ) {}
 
   async resolveUrl(url: string): Promise<string | null> {
@@ -276,10 +285,18 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
           'X-Goog-FieldMask': init.fieldMask,
         },
       });
+      // #313: `status` and `method` are finite; a duration is not. Emitted as
+      // a label it gave every request a series of its own — 10 requests, 10
+      // series, each stuck at 1 — which is a log line wearing a counter's
+      // clothes and answers no question `rate()` can ask. The duration belongs
+      // in a histogram, and now has one.
       this.metrics.increment('places_provider_requests_total', {
         method: name,
         status: res.status,
-        duration_ms: Date.now() - started,
+      });
+      this.metrics.observe('place_provider_request_duration_ms', Date.now() - started, {
+        method: name,
+        status: res.status,
       });
       if (res.ok) {
         this.metrics.increment('places_provider_cost_units', { sku: name });

@@ -42,8 +42,17 @@ export class GoogleRoutesAdapter implements TravelTimePort {
   constructor(
     private readonly apiKey: string,
     private readonly metrics: {
-      increment(name: string, labels?: Record<string, string | number | undefined>): void;
-    } = { increment: () => undefined },
+      increment(
+        name: string,
+        labels?: Record<string, string | number | undefined>,
+        by?: number,
+      ): void;
+      observe(
+        name: string,
+        value: number,
+        labels?: Record<string, string | number | undefined>,
+      ): void;
+    } = { increment: () => undefined, observe: () => undefined },
   ) {}
 
   async matrix(origin: LatLng, destinations: LatLng[]): Promise<(TravelLeg | null)[]> {
@@ -58,6 +67,7 @@ export class GoogleRoutesAdapter implements TravelTimePort {
     const elements = await withResilience(
       { name: 'google.routeMatrix', ...RESILIENCE },
       async (signal) => {
+        const started = Date.now();
         const res = await fetch(
           'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix',
           {
@@ -75,13 +85,23 @@ export class GoogleRoutesAdapter implements TravelTimePort {
           method: 'google.routeMatrix',
           status: res.status,
         });
+        this.metrics.observe('place_provider_request_duration_ms', Date.now() - started, {
+          method: 'google.routeMatrix',
+          status: res.status,
+        });
         // Elements, not requests, are the billed unit — count what we are
         // actually charged for, or the cost metric lies as batches grow.
+        //
+        // #313: the element count is the amount to add, not a label. As a label
+        // it did neither job — the counter still moved by one per call, so it
+        // counted requests and not elements exactly as the comment warns
+        // against, and it split into a separate series per batch size.
         if (res.ok) {
-          this.metrics.increment('places_provider_cost_units', {
-            sku: 'routes.computeRouteMatrix',
-            elements: destinations.length,
-          });
+          this.metrics.increment(
+            'places_provider_cost_units',
+            { sku: 'routes.computeRouteMatrix' },
+            destinations.length,
+          );
         }
         if (res.ok) return (await res.json()) as MatrixElement[];
 

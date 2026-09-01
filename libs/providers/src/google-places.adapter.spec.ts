@@ -156,6 +156,7 @@ describe('#314 — a rejected request is not an outage', () => {
     const seen: { name: string; labels: Record<string, unknown> }[] = [];
     const adapter = new GooglePlacesAdapter(API_KEY, {
       increment: (name, labels) => seen.push({ name, labels: labels ?? {} }),
+      observe: () => undefined,
     });
 
     await expect(adapter.details('ChIJbad')).rejects.toBeInstanceOf(ProviderInvalidRequestError);
@@ -258,5 +259,112 @@ describe('#273 — GooglePlacesAdapter failure classification', () => {
     const serialized = JSON.stringify({ ...err, message: err.message });
     expect(serialized).not.toContain(API_KEY);
     expect(err.stack ?? '').not.toContain(API_KEY);
+  });
+});
+
+/**
+ * #313 — the counter must stay bounded and the duration must land in the
+ * histogram, measured through the adapter rather than the registry alone.
+ */
+describe('#313 — adapter emits bounded labels and a latency observation', () => {
+  beforeEach(() => {
+    resetBreakers();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function recorder() {
+    const counters: { name: string; labels: Record<string, unknown>; by?: number | undefined }[] = [];
+    const observations: { name: string; value: number; labels: Record<string, unknown> }[] = [];
+    return {
+      counters,
+      observations,
+      metrics: {
+        increment: (
+          name: string,
+          labels?: Record<string, string | number | undefined>,
+          by?: number,
+        ) => void counters.push({ name, labels: labels ?? {}, by }),
+        observe: (
+          name: string,
+          value: number,
+          labels?: Record<string, string | number | undefined>,
+        ) => void observations.push({ name, value, labels: labels ?? {} }),
+      },
+    };
+  }
+
+  it('never puts a duration in a label', async () => {
+    respond(200, {
+      id: 'ChIJ1',
+      displayName: { text: 'X' },
+      location: { latitude: 1, longitude: 2 },
+    });
+    const rec = recorder();
+    const adapter = new GooglePlacesAdapter(API_KEY, rec.metrics);
+
+    await adapter.details('ChIJ1');
+
+    const requests = rec.counters.find((c) => c.name === 'places_provider_requests_total');
+    expect(requests?.labels).toEqual({ method: 'google.details.quality', status: 200 });
+    expect(Object.keys(requests?.labels ?? {})).not.toContain('duration_ms');
+  });
+
+  it('observes the duration on the provider histogram instead', async () => {
+    respond(200, {
+      id: 'ChIJ1',
+      displayName: { text: 'X' },
+      location: { latitude: 1, longitude: 2 },
+    });
+    const rec = recorder();
+    const adapter = new GooglePlacesAdapter(API_KEY, rec.metrics);
+
+    await adapter.details('ChIJ1');
+
+    const timing = rec.observations.find((o) => o.name === 'place_provider_request_duration_ms');
+    expect(timing).toBeDefined();
+    expect(timing?.value).toBeGreaterThanOrEqual(0);
+    expect(timing?.labels).toEqual({ method: 'google.details.quality', status: 200 });
+  });
+
+  it('repeated calls reuse one label set, whatever they cost in time', async () => {
+    respond(200, {
+      id: 'ChIJ1',
+      displayName: { text: 'X' },
+      location: { latitude: 1, longitude: 2 },
+    });
+    const rec = recorder();
+    const adapter = new GooglePlacesAdapter(API_KEY, rec.metrics);
+
+    for (let i = 0; i < 5; i += 1) await adapter.details('ChIJ1');
+
+    const shapes = new Set(
+      rec.counters
+        .filter((c) => c.name === 'places_provider_requests_total')
+        .map((c) => JSON.stringify(c.labels)),
+    );
+    expect(shapes.size).toBe(1);
+  });
+
+  it('every label value emitted is a finite enum, never free text', async () => {
+    respond(200, {
+      id: 'ChIJ1',
+      displayName: { text: 'X' },
+      location: { latitude: 1, longitude: 2 },
+    });
+    const rec = recorder();
+    const adapter = new GooglePlacesAdapter(API_KEY, rec.metrics);
+
+    await adapter.details('ChIJ1');
+
+    const allowed = new Set(['method', 'status', 'sku', 'reason', 'canonical_status']);
+    for (const c of [...rec.counters, ...rec.observations]) {
+      for (const key of Object.keys(c.labels)) expect(allowed).toContain(key);
+    }
+    // The place id is the obvious unbounded value within reach here.
+    expect(JSON.stringify([...rec.counters, ...rec.observations])).not.toContain('ChIJ1');
+    expect(JSON.stringify([...rec.counters, ...rec.observations])).not.toContain(API_KEY);
   });
 });

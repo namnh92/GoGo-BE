@@ -129,6 +129,7 @@ describe('GooglePlacesAdapter.details', () => {
     const increments: Record<string, unknown>[] = [];
     const adapter = new GooglePlacesAdapter('key', {
       increment: (name, labels) => void increments.push({ name, ...labels }),
+      observe: () => undefined,
     });
     await adapter.details('ChIJ-lacaph', 'detail');
     expect(increments).toContainEqual(
