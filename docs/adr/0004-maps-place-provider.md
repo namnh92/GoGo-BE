@@ -44,18 +44,18 @@ client had Apple Maps on iOS by default.
 
 ### 2. Provider set
 
-| Concern | API | Adapter |
-|---|---|---|
-| Place resolve / details / search / autocomplete | Places API (New) | `GooglePlacesAdapter` |
-| Travel time | Routes API (`computeRouteMatrix`) | `GoogleRoutesAdapter` (ADR-0007) |
-| Bulk import source | Google Sheets API | `GoogleSheetsAdapter` |
-| Map rendering (client) | Google Maps SDK iOS/Android | mobile `MapCanvas` |
+| Concern                                         | API                               | Adapter                          |
+| ----------------------------------------------- | --------------------------------- | -------------------------------- |
+| Place resolve / details / search / autocomplete | Places API (New)                  | `GooglePlacesAdapter`            |
+| Travel time                                     | Routes API (`computeRouteMatrix`) | `GoogleRoutesAdapter` (ADR-0007) |
+| Bulk import source                              | Google Sheets API                 | `GoogleSheetsAdapter`            |
+| Map rendering (client)                          | Google Maps SDK iOS/Android       | mobile `MapCanvas`               |
 
 ### 3. Decision §3 corrected: there is no provider response cache
 
 Decision §3 above describes "Redis caching within Google's allowed caching
 window". No such cache was ever built — `libs/providers/src` contains no cache
-and no Redis client. What the system actually does is *persist* provider-derived
+and no Redis client. What the system actually does is _persist_ provider-derived
 fields in Postgres (`places`, `place_provider_sources`, `place_hours`,
 `place_sources.raw`, `place_ingest_rows.candidates`).
 
@@ -70,19 +70,19 @@ The operation label is the adapter's `method` label on
 `places_provider_requests_total`. A billed SKU folds onto its operation
 (`operationForSku`, `libs/modules/cms/domain/ops-metrics.ts`).
 
-| Operation | Google SKU | Billable unit | Instrumented today |
-|---|---|---|---|
-| `google.searchText` | Text Search (mask-dependent) | request | yes |
-| `google.details.liveness` | Details Essentials IDs-Only ($0) | request | tier lands in PR5 |
-| `google.details.core` | Details Pro | request | yes |
-| `google.details.quality` | Details Enterprise | request | yes |
-| `google.details.detail` | Details Enterprise + Atmosphere | request | yes |
-| `google.autocomplete` | Autocomplete Requests | request | yes |
-| `google.routeMatrix` | `routes.computeRouteMatrix` (Routes Essentials) | matrix **elements** | yes |
-| `google.sheets.meta` / `google.sheets.values` | Sheets API — free | — | yes |
-| `google.expand` | none — HTTP short-link expansion, not a Places request | — | **no** — counter added in PR3 |
-| `google.maps_sdk_ios` | Dynamic Maps | map load | **no — MEASUREMENT GAP** |
-| `google.maps_sdk_android` | Dynamic Maps | map load | **no — MEASUREMENT GAP** |
+| Operation                                     | Google SKU                                             | Billable unit       | Instrumented today            |
+| --------------------------------------------- | ------------------------------------------------------ | ------------------- | ----------------------------- |
+| `google.searchText`                           | Text Search (mask-dependent)                           | request             | yes                           |
+| `google.details.liveness`                     | Details Essentials IDs-Only ($0)                       | request             | tier lands in PR5             |
+| `google.details.core`                         | Details Pro                                            | request             | yes                           |
+| `google.details.quality`                      | Details Enterprise                                     | request             | yes                           |
+| `google.details.detail`                       | Details Enterprise + Atmosphere                        | request             | yes                           |
+| `google.autocomplete`                         | Autocomplete Requests                                  | request             | yes                           |
+| `google.routeMatrix`                          | `routes.computeRouteMatrix` (Routes Essentials)        | matrix **elements** | yes                           |
+| `google.sheets.meta` / `google.sheets.values` | Sheets API — free                                      | —                   | yes                           |
+| `google.expand`                               | none — HTTP short-link expansion, not a Places request | —                   | **no** — counter added in PR3 |
+| `google.maps_sdk_ios`                         | Dynamic Maps                                           | map load            | **no — MEASUREMENT GAP**      |
+| `google.maps_sdk_android`                     | Dynamic Maps                                           | map load            | **no — MEASUREMENT GAP**      |
 
 **The two Maps SDK rows are reported as `instrumented = false` / MEASUREMENT
 GAP, never as zero.** Zero is a measurement; absence of a collector is not. A

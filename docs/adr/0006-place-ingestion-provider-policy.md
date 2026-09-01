@@ -4,7 +4,7 @@
 - **Date:** 2026-08-27
 - **Related:** PI-BE-001, FR-INGEST-001..015, `GOGO_PLACE_INGESTION_SPEC.md` §3/§7
 - **Supersedes nothing; extends** ADR-0004 (maps/place provider)
-- **Amended 2026-09-01** — §9 Google content persistence policy (status *Proposed*, sign-off pending; the freeze in §9.5 applies from today)
+- **Amended 2026-09-01** — §9 Google content persistence policy (status _Proposed_, sign-off pending; the freeze in §9.5 applies from today)
 
 ## Context
 
@@ -96,7 +96,7 @@ survive the change is an editorial decision, not one the importer should make.
 
 **Status: Proposed — the restrictive half is in force now; the permissive half
 does not take effect until counsel and product sign §9.6.** No PR may rely on a
-row of §9.3 marked *needs decision* being permitted.
+row of §9.3 marked _needs decision_ being permitted.
 
 Source: `Cost-Spec/GOGO_COST_AND_PLACES_EXECUTION_PLAN_v2_DECIDED.md` §0.2 C3/C4,
 §3 PR0, §7. Supersedes ADR-0004 §3's caching sentence for everything except the
@@ -126,13 +126,13 @@ Two conflations to avoid, because both are already latent in this repo:
 
 ### 9.2 What is persisted today (source of the inventory)
 
-| Store | Fields | Evidence |
-|---|---|---|
-| `places` | `name`, `address_text`, `geom`, `rating`, `rating_count`, `price_level` | `libs/database/src/schema/places.ts:97-109` |
-| `place_provider_sources` | `external_id`, `provider_uri`, `rating`, `rating_count`, `derived_score`, `price_level`, `primary_type`, `source_status`, `attribution`, `fetched_at` | `libs/database/src/schema/ingestion.ts:174-195` |
-| `place_sources` | `external_id`, `url`, `attribution`, **`raw`** (full Details payload), `raw_updated_at` | `libs/database/src/schema/places.ts:152-171`; written at `libs/modules/places/application/place-import.service.ts:249-257` |
-| `place_hours` | provider rows (`source='provider'`) | `libs/database/src/schema/places.ts:175-189` |
-| `place_ingest_rows` | `candidates[] { googlePlaceId, name, address, lat, lng }` | `libs/database/src/schema/ingestion.ts:115-141` |
+| Store                    | Fields                                                                                                                                                | Evidence                                                                                                                   |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `places`                 | `name`, `address_text`, `geom`, `rating`, `rating_count`, `price_level`                                                                               | `libs/database/src/schema/places.ts:97-109`                                                                                |
+| `place_provider_sources` | `external_id`, `provider_uri`, `rating`, `rating_count`, `derived_score`, `price_level`, `primary_type`, `source_status`, `attribution`, `fetched_at` | `libs/database/src/schema/ingestion.ts:174-195`                                                                            |
+| `place_sources`          | `external_id`, `url`, `attribution`, **`raw`** (full Details payload), `raw_updated_at`                                                               | `libs/database/src/schema/places.ts:152-171`; written at `libs/modules/places/application/place-import.service.ts:249-257` |
+| `place_hours`            | provider rows (`source='provider'`)                                                                                                                   | `libs/database/src/schema/places.ts:175-189`                                                                               |
+| `place_ingest_rows`      | `candidates[] { googlePlaceId, name, address, lat, lng }`                                                                                             | `libs/database/src/schema/ingestion.ts:115-141`                                                                            |
 
 No purge job touches any of them: `libs/modules/shared/privacy-jobs.ts` covers
 guest sessions and origin locations only. `place_sources.raw` is written and
@@ -147,25 +147,25 @@ written by GoGo users. Keep it that way.
 
 Classes: **allowed** · **temporary** (permitted but must expire) · **stop
 writing** (no product need, remove) · **needs decision** (counsel must classify;
-until then treated as *stop writing new*, existing rows frozen pending §9.4).
+until then treated as _stop writing new_, existing rows frozen pending §9.4).
 
-| Field | Store | Class | Basis / note |
-|---|---|---|---|
-| Google Place ID | `place_provider_sources.external_id`, `place_sources.external_id` | **allowed**, indefinite | SST §3. This is the identity the whole system is keyed on (§8, PR1). |
-| Provider URI (`googleMapsUri`) | `place_provider_sources.provider_uri` | **allowed** | A link to Google, not Google content; required to send users back to the source. |
-| Attribution string | `place_provider_sources.attribution`, `place_sources.attribution` | **allowed** — required | §3.2.3 attribution obligation; ADR-0006 §3. |
-| Fetch metadata (`fetched_at`, `refresh_after`, `fetch_tier`, `source_status` timestamps) | `place_provider_sources` | **allowed** | GoGo-generated metadata about our own calls. |
-| Latitude / longitude | `places.geom`, `place_ingest_rows.candidates.lat/lng` | **temporary — ≤30 consecutive days** | SST §14.3. Today nothing expires them; the 30-day rule needs a mechanism (§9.4 R2), not just a note. |
-| Display name | `places.name`, `place_ingest_rows.candidates.name` | **needs decision** | §3.2.3(a)/(b). Editors also edit `places.name`, so a blanket purge would delete GoGo-authored content — remediation must distinguish provenance (no source marker exists today). |
-| Formatted address | `places.address_text`, `place_ingest_rows.candidates.address` | **needs decision** | Same as name; `#280` already tracks the missing editor-override path. |
-| Rating / rating count | `places.rating`, `places.rating_count`, `place_provider_sources.rating`, `.rating_count` | **needs decision** | Aggregates of Google content. Rule 14 of the workspace core rules requires provider ratings to stay separate and carry their sample size — if they may not be stored, the product shows them live-fetched or not at all. |
-| Derived quality score | `place_provider_sources.derived_score` | **needs decision** | Bayesian shrinkage of Google aggregates (§5). Derived, but not independent of the source data. |
-| Price level | `places.price_level`, `place_provider_sources.price_level` | **needs decision** | Google-supplied; GoGo verified prices in `place_prices(source='editor'|'bill_checkin')` are unaffected. |
-| Opening hours | `place_hours` rows with `source='provider'` | **needs decision** | `source='editor'` rows are GoGo content and out of scope. |
-| Business status / primary type | `place_provider_sources.source_status`, `.primary_type` | **needs decision** | Identity/closure signals; PR6 and PR7 depend on holding them. If refused, closure detection becomes fetch-time only. |
-| Raw Details payload | `place_sources.raw`, `raw_updated_at` | **stop writing** | Full provider payload, unbounded, no reader, no purge. Independent of the counsel outcome: nothing reads it, so nothing justifies keeping it. |
-| Photos (bytes or URLs) | not stored | **never store** | Photo references are fetched per view; unchanged by this amendment. |
-| Google reviews | not stored | **never store** | Tier `detail` may fetch them for immediate display only. |
+| Field                                                                                    | Store                                                                                    | Class                                | Basis / note                                                                                                                                                                                                             |
+| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Google Place ID                                                                          | `place_provider_sources.external_id`, `place_sources.external_id`                        | **allowed**, indefinite              | SST §3. This is the identity the whole system is keyed on (§8, PR1).                                                                                                                                                     |
+| Provider URI (`googleMapsUri`)                                                           | `place_provider_sources.provider_uri`                                                    | **allowed**                          | A link to Google, not Google content; required to send users back to the source.                                                                                                                                         |
+| Attribution string                                                                       | `place_provider_sources.attribution`, `place_sources.attribution`                        | **allowed** — required               | §3.2.3 attribution obligation; ADR-0006 §3.                                                                                                                                                                              |
+| Fetch metadata (`fetched_at`, `refresh_after`, `fetch_tier`, `source_status` timestamps) | `place_provider_sources`                                                                 | **allowed**                          | GoGo-generated metadata about our own calls.                                                                                                                                                                             |
+| Latitude / longitude                                                                     | `places.geom`, `place_ingest_rows.candidates.lat/lng`                                    | **temporary — ≤30 consecutive days** | SST §14.3. Today nothing expires them; the 30-day rule needs a mechanism (§9.4 R2), not just a note.                                                                                                                     |
+| Display name                                                                             | `places.name`, `place_ingest_rows.candidates.name`                                       | **needs decision**                   | §3.2.3(a)/(b). Editors also edit `places.name`, so a blanket purge would delete GoGo-authored content — remediation must distinguish provenance (no source marker exists today).                                         |
+| Formatted address                                                                        | `places.address_text`, `place_ingest_rows.candidates.address`                            | **needs decision**                   | Same as name; `#280` already tracks the missing editor-override path.                                                                                                                                                    |
+| Rating / rating count                                                                    | `places.rating`, `places.rating_count`, `place_provider_sources.rating`, `.rating_count` | **needs decision**                   | Aggregates of Google content. Rule 14 of the workspace core rules requires provider ratings to stay separate and carry their sample size — if they may not be stored, the product shows them live-fetched or not at all. |
+| Derived quality score                                                                    | `place_provider_sources.derived_score`                                                   | **needs decision**                   | Bayesian shrinkage of Google aggregates (§5). Derived, but not independent of the source data.                                                                                                                           |
+| Price level                                                                              | `places.price_level`, `place_provider_sources.price_level`                               | **needs decision**                   | Google-supplied; GoGo verified prices in `place_prices(source='editor'                                                                                                                                                   | 'bill_checkin')` are unaffected. |
+| Opening hours                                                                            | `place_hours` rows with `source='provider'`                                              | **needs decision**                   | `source='editor'` rows are GoGo content and out of scope.                                                                                                                                                                |
+| Business status / primary type                                                           | `place_provider_sources.source_status`, `.primary_type`                                  | **needs decision**                   | Identity/closure signals; PR6 and PR7 depend on holding them. If refused, closure detection becomes fetch-time only.                                                                                                     |
+| Raw Details payload                                                                      | `place_sources.raw`, `raw_updated_at`                                                    | **stop writing**                     | Full provider payload, unbounded, no reader, no purge. Independent of the counsel outcome: nothing reads it, so nothing justifies keeping it.                                                                            |
+| Photos (bytes or URLs)                                                                   | not stored                                                                               | **never store**                      | Photo references are fetched per view; unchanged by this amendment.                                                                                                                                                      |
+| Google reviews                                                                           | not stored                                                                               | **never store**                      | Tier `detail` may fetch them for immediate display only.                                                                                                                                                                 |
 
 ### 9.4 Remediation of existing rows
 
@@ -214,17 +214,16 @@ with the IDs-only mask.
 
 ### 9.6 Sign-off (required before PR8)
 
-| Role | Name | Date | Outcome recorded |
-|---|---|---|---|
-| Counsel / legal review | _pending_ | _pending_ | classifies every **needs decision** row of §9.3 |
-| Product owner | _pending_ | _pending_ | accepts the product consequences of each refusal |
+| Role                   | Name      | Date      | Outcome recorded                                 |
+| ---------------------- | --------- | --------- | ------------------------------------------------ |
+| Counsel / legal review | _pending_ | _pending_ | classifies every **needs decision** row of §9.3  |
+| Product owner          | _pending_ | _pending_ | accepts the product consequences of each refusal |
 
-Until both rows are filled, this amendment's status stays *Proposed*, PR8
+Until both rows are filled, this amendment's status stays _Proposed_, PR8
 (GoGo-BE#341) stays blocked, and production Google Places keys stay gated
 (ADR-0004 §5 amendment; ex-BE#80).
 
 ## Consequences
-
 
 - Predictable provider spend; a bulk job of 5.000 rows costs `core`(+`quality`
   on accepted rows) rather than full details per row.

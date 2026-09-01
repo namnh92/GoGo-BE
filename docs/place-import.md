@@ -322,7 +322,7 @@ is a recorded decision, not an oversight — see `docs/threat-model.md`.
 ## Still open
 
 - **Google content persistence is not settled.** ADR-0006 §9 classifies every
-  stored provider field; the rows marked *needs decision* wait on counsel. Until
+  stored provider field; the rows marked _needs decision_ wait on counsel. Until
   that amendment is signed, no change may add persistent Google content — no new
   provider snapshot, no widened provider-derived column, no cache of names,
   addresses, ratings, hours or coordinates (§9.5). `place_sources.raw` is on the
