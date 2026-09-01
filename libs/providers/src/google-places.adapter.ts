@@ -1,4 +1,5 @@
 import {
+  NO_PROVIDER_METRICS,
   ProviderConfigurationError,
   ProviderInvalidRequestError,
   ProviderQuotaExceededError,
@@ -7,10 +8,11 @@ import {
   type AreaPrediction,
   type PlaceFetchTier,
   type PlaceProviderPort,
+  type ProviderMetrics,
   type ProviderPhotoRef,
   type ResolvedProviderPlace,
 } from './ports';
-import { googleFailure, readGoogleError } from './google-error';
+import { boundedReason, googleFailure, readGoogleError } from './google-error';
 import { withResilience } from './resilience';
 
 const RESILIENCE = {
@@ -71,18 +73,7 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
    */
   constructor(
     private readonly apiKey: string,
-    private readonly metrics: {
-      increment(
-        name: string,
-        labels?: Record<string, string | number | undefined>,
-        by?: number,
-      ): void;
-      observe(
-        name: string,
-        value: number,
-        labels?: Record<string, string | number | undefined>,
-      ): void;
-    } = { increment: () => undefined, observe: () => undefined },
+    private readonly metrics: ProviderMetrics = NO_PROVIDER_METRICS,
   ) {}
 
   async resolveUrl(url: string): Promise<string | null> {
@@ -334,7 +325,7 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       this.metrics.increment('places_provider_failures_total', {
         method: name,
         status: res.status,
-        reason: info.reason ?? 'unknown',
+        reason: boundedReason(info.reason),
       });
       if (fault) throw fault;
       throw new Error(`google ${res.status}`);

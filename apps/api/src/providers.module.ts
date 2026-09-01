@@ -55,13 +55,18 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     },
     {
       provide: AREA_AUTOCOMPLETE,
-      useFactory: (config: AppConfig) => {
+      // #321: `metrics` was missing here while the PLACE_PROVIDER binding above
+      // had it, so every `google.autocomplete` call — a billed SKU — went
+      // uncounted, unlatched from the failure counter and absent from the cost
+      // total. Two adapters, one of them instrumented, is worse than neither:
+      // the number that exists looks complete.
+      useFactory: (config: AppConfig, metrics: MetricsPort) => {
         const status = placeProviderStatus(config);
         if (status.provider === 'fake') return new FakeAreaAutocomplete();
         if (status.provider === 'unconfigured') return new UnconfiguredPlaceProvider();
-        return new GooglePlacesAdapter(config.GOOGLE_PLACES_API_KEY);
+        return new GooglePlacesAdapter(config.GOOGLE_PLACES_API_KEY, metrics);
       },
-      inject: [APP_CONFIG],
+      inject: [APP_CONFIG, METRICS],
     },
     {
       // PI-BE-012: the Sheets read takes its own key and no other. PI-BE-021:
@@ -69,11 +74,11 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       // to end is what it does in a test, not what it does in a deployed
       // environment. onModuleInit says so out loud.
       provide: SHEETS_PROVIDER,
-      useFactory: (config: AppConfig) =>
+      useFactory: (config: AppConfig, metrics: MetricsPort) =>
         config.GOOGLE_SHEETS_API_KEY
-          ? new GoogleSheetsAdapter(config.GOOGLE_SHEETS_API_KEY)
+          ? new GoogleSheetsAdapter(config.GOOGLE_SHEETS_API_KEY, metrics)
           : new FakeSheets(),
-      inject: [APP_CONFIG],
+      inject: [APP_CONFIG, METRICS],
     },
     {
       // PI-SRE-001: metrics ride the log stream in the MVP stack — no collector

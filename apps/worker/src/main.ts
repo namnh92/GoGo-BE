@@ -160,7 +160,7 @@ async function bootstrap(): Promise<void> {
     db,
     new PlaceResolverService(placeProvider, db),
     new PlaceDedupService(db),
-    sheetsKey ? new GoogleSheetsAdapter(sheetsKey) : new FakeSheets(),
+    sheetsKey ? new GoogleSheetsAdapter(sheetsKey, metrics) : new FakeSheets(),
     metrics,
   );
 

@@ -230,6 +230,25 @@ export interface SheetsPort {
  * Deliberately not a subclass of the operational errors: the whole point is
  * that this one is *not* an outage. Callers turn it into a business result.
  */
+/**
+ * The slice of `MetricsPort` an adapter needs.
+ *
+ * Structural, not imported: `libs/providers` deliberately depends on no
+ * `@gogo/*` package, so an adapter states the shape it wants and any
+ * conforming object satisfies it. Declared once here because the same literal
+ * had already been written out twice, and a third copy was about to appear.
+ */
+export type ProviderMetrics = {
+  increment(name: string, labels?: Record<string, string | number | undefined>, by?: number): void;
+  observe(name: string, value: number, labels?: Record<string, string | number | undefined>): void;
+};
+
+/** Default for every adapter: measure nothing rather than require a sink. */
+export const NO_PROVIDER_METRICS: ProviderMetrics = {
+  increment: () => undefined,
+  observe: () => undefined,
+};
+
 export class ProviderInvalidRequestError extends Error {
   constructor(
     readonly provider: string,
