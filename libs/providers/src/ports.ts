@@ -231,6 +231,50 @@ export interface SheetsPort {
  * that this one is *not* an outage. Callers turn it into a business result.
  */
 /**
+ * Reading metrics back out of the time-series store (#315).
+ *
+ * The mirror of `ProviderMetrics`: that writes samples, this asks questions
+ * about samples already written. Separate ports because they are separate
+ * credentials with separate scopes — the collector holds `metrics:write` and
+ * cannot read, GoGo-BE holds `metrics:read` and cannot write.
+ *
+ * A port rather than a Grafana client passed around directly, so the CMS
+ * service can be tested against fixtures and so swapping Mimir for anything
+ * else that speaks the Prometheus HTTP API is a binding change.
+ */
+export type PromSample = { labels: Record<string, string>; value: number };
+export type PromPoint = { t: number; v: number };
+export type PromSeries = { labels: Record<string, string>; points: PromPoint[] };
+
+export interface MetricsQueryPort {
+  /** Instant query. One value per matching series. */
+  query(promql: string): Promise<PromSample[]>;
+  /** Range query over `[start, end]` at `stepSeconds`. */
+  queryRange(promql: string, start: Date, end: Date, stepSeconds: number): Promise<PromSeries[]>;
+}
+
+/**
+ * The store answered, but not with something usable — bad status, unparseable
+ * body, a Prometheus-level `status: "error"`.
+ *
+ * Distinct from `ProviderUnavailableError` so the CMS layer can tell "the
+ * monitoring backend is down" from "the monitoring backend rejected our
+ * query", and so neither ever reaches a browser as raw text.
+ */
+export const METRICS_QUERY = Symbol('METRICS_QUERY');
+
+export class MetricsQueryError extends Error {
+  constructor(
+    /** Bounded: a short classification, never the store's own message. */
+    readonly reason: 'unauthorized' | 'bad_request' | 'upstream' | 'malformed',
+    cause?: unknown,
+  ) {
+    super(`metrics query failed (${reason})`, { cause });
+    this.name = 'MetricsQueryError';
+  }
+}
+
+/**
  * The slice of `MetricsPort` an adapter needs.
  *
  * Structural, not imported: `libs/providers` deliberately depends on no

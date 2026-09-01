@@ -5586,6 +5586,133 @@ paths:
       responses:
         '200': { description: Aggregated KPIs without exposing PII }
 
+  /cms/ops/summary:
+    get:
+      operationId: cmsOpsSummary
+      tags: [cms]
+      summary: 'Ops: one-screen provider health from the time-series store'
+      description: >
+        BE-CMS-P2 (#315). The console never reads `/v1/metrics` and never
+        reaches Grafana: that endpoint is a machine surface guarded by one
+        shared token granting read of every internal series, with no per-user
+        authorization and no audit of who looked at what. GoGo-BE queries the
+        store server-to-server with a `metrics:read` credential from SSM and
+        returns facts; the admin session decides who may ask.
+
+
+        `window` is an enum, never a duration or a range, and no PromQL crosses
+        this boundary in either direction. Every query is a constant in
+        `libs/modules/cms/domain/ops-metrics.ts`, parameterised only by that
+        enum and by this deployment's own `env` label.
+
+
+        `ops_admin` and above.
+      parameters:
+        - $ref: '#/components/parameters/OpsWindow'
+      responses:
+        '200':
+          description: >
+            Always 200, including when the monitoring backend is down —
+            `backend.status` carries that. A 5xx here would render in the
+            console as "the CMS is broken", which is the wrong sentence for
+            "monitoring is unavailable and everything else is fine".
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CmsOpsEnvelope'
+                  - type: object
+                    required: [totals, trends, costModel, latencySemantics]
+                    properties:
+                      totals:
+                        oneOf:
+                          - $ref: '#/components/schemas/CmsOpsTotals'
+                          - type: 'null'
+                        description: >
+                          Null when the backend could not be read. Never a zero
+                          — no traffic and no measurement are different facts,
+                          and the console must render them differently.
+                      trends:
+                        oneOf:
+                          - $ref: '#/components/schemas/CmsOpsTrends'
+                          - type: 'null'
+                      costModel: { $ref: '#/components/schemas/CmsOpsCostModel' }
+                      latencySemantics:
+                        $ref: '#/components/schemas/CmsOpsLatencySemantics'
+        '403': { description: Role may not read operational data }
+
+  /cms/ops/providers:
+    get:
+      operationId: cmsOpsProviders
+      tags: [cms]
+      summary: 'Ops: per-provider reliability, latency and billable units'
+      description: >
+        One row per external service. `instrumented: false` means no metric for
+        it exists at all, which the console must render as "chưa đo" and never
+        as zero calls.
+      parameters:
+        - $ref: '#/components/parameters/OpsWindow'
+      responses:
+        '200':
+          description: Provider rows, possibly all uninstrumented
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CmsOpsEnvelope'
+                  - type: object
+                    required: [providers, costModel, latencySemantics]
+                    properties:
+                      providers:
+                        type: array
+                        items: { $ref: '#/components/schemas/CmsOpsProvider' }
+                      costModel: { $ref: '#/components/schemas/CmsOpsCostModel' }
+                      latencySemantics:
+                        $ref: '#/components/schemas/CmsOpsLatencySemantics'
+        '403': { description: Role may not read operational data }
+
+  /cms/ops/providers/{provider}:
+    get:
+      operationId: cmsOpsProvider
+      tags: [cms]
+      summary: 'Ops: one provider, broken down by adapter operation'
+      description: >
+        Adds the per-operation rows the list view omits — for Places that is
+        `google.searchText`, `google.details.core|quality|detail`,
+        `google.autocomplete` and `google.expand`, each a distinct SKU.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [places, routes, sheets]
+        - $ref: '#/components/parameters/OpsWindow'
+      responses:
+        '200':
+          description: One provider with its operations and trend series
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CmsOpsEnvelope'
+                  - type: object
+                    required: [provider, costModel, latencySemantics]
+                    properties:
+                      provider:
+                        oneOf:
+                          - $ref: '#/components/schemas/CmsOpsProviderDetail'
+                          - type: 'null'
+                      trends:
+                        oneOf:
+                          - $ref: '#/components/schemas/CmsOpsTrends'
+                          - type: 'null'
+                      costModel: { $ref: '#/components/schemas/CmsOpsCostModel' }
+                      latencySemantics:
+                        $ref: '#/components/schemas/CmsOpsLatencySemantics'
+        '403': { description: Role may not read operational data }
+        '422': { description: Unknown provider }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -5608,6 +5735,19 @@ components:
         type: string
         minLength: 8
         maxLength: 128
+    OpsWindow:
+      name: window
+      in: query
+      required: false
+      description: >
+        Fixed window, never a duration or a range. Four values only: a
+        free-form range is arbitrary load on the store and an arbitrary number
+        of points at the browser, and the enum is also what makes "no
+        client-supplied PromQL" true by construction rather than by escaping.
+      schema:
+        type: string
+        enum: ['1h', '24h', '7d', '30d']
+        default: '24h'
     Cursor:
       name: cursor
       in: query
@@ -5844,6 +5984,252 @@ components:
             Connected consumers. Null when the backend does not report it —
             null and 0 are different facts, and zero on a queue with work is
             the alarm.
+
+    CmsOpsEnvelope:
+      type: object
+      required: [window, effectiveWindow, retentionDays, truncated, generatedAt, backend]
+      properties:
+        window:
+          type: string
+          enum: ['1h', '24h', '7d', '30d']
+          description: What was asked for.
+        effectiveWindow:
+          type: string
+          description: >
+            What the store could actually answer, as a Prometheus duration.
+            Differs from `window` when retention is shorter — Grafana Cloud
+            Free keeps 14 days, so `30d` is answered with `14d`. The missing
+            days are **not** extrapolated: a chart running flat across data
+            that never existed is a lie in the shape of data.
+          example: 14d
+        retentionDays:
+          type: integer
+          description: How much history this deployment's store holds.
+          example: 14
+        truncated:
+          type: boolean
+          description: >
+            True when `effectiveWindow` is shorter than `window`. The console
+            must state the real span rather than labelling the chart 30 days.
+        generatedAt: { type: string, format: date-time }
+        stale:
+          type: boolean
+          description: >
+            Present and true when the refresh failed and this is the last good
+            answer. During an incident the numbers from four minutes ago are
+            usually the ones someone wants — but they must not be presented as
+            live.
+        asOf:
+          type: string
+          format: date-time
+          description: When the stale payload was actually collected.
+        backend:
+          type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [ok, degraded, unavailable]
+              description: >
+                `degraded` means stale data is being served after a failed
+                refresh; `unavailable` means there was nothing to fall back to.
+            detail:
+              type: string
+              description: >
+                A bounded sentence, never the store's own error text — its
+                messages quote the query back, and the query names internal
+                series.
+              example: Monitoring backend refused our credential
+
+    CmsOpsPercentiles:
+      type: object
+      required: [p50, p95, p99]
+      properties:
+        p50: { type: [number, 'null'], description: Seconds. }
+        p95: { type: [number, 'null'], description: Seconds. }
+        p99:
+          type: [number, 'null']
+          description: >
+            Null below `latencySemantics.p99MinSamples` observations. A p99
+            from a handful of samples is the top populated bucket edge wearing
+            a decimal point, so the console says "chưa đủ dữ liệu" instead.
+
+    CmsOpsLatencySemantics:
+      type: object
+      required: [unit, source, excludesHttpStatuses, excludesReason, p99MinSamples]
+      properties:
+        unit: { type: string, enum: [seconds] }
+        source: { type: string }
+        excludesHttpStatuses:
+          type: array
+          items: { type: string }
+          description: Statuses left out of the primary percentiles.
+          example: ['400', '404']
+        excludesReason:
+          type: string
+          description: >
+            Deterministic input rejections (#314). Google refuses a malformed
+            place id in tens of milliseconds, so counting those would make the
+            provider look *faster* the more broken links users paste — the p95
+            meant to answer "is Google slow" would improve during an incident
+            of an entirely different kind. Operational failures stay in,
+            because a 403 or a 429 is a real call that really took that long.
+            The excluded mass is reported separately as `rejectedLatency`.
+        p99MinSamples: { type: integer }
+
+    CmsOpsCostModel:
+      type: object
+      required: [kind, estimatedCost, currency, basis, note]
+      description: >
+        What the cost number is, in the payload rather than in a comment
+        nobody reading the JSON will see.
+      properties:
+        kind: { type: string, enum: [units_only] }
+        estimatedCost:
+          type: [number, 'null']
+          description: >
+            Always null today. `places_provider_cost_units` counts **billable
+            SKU units** — a real, reconcilable quantity, and what an invoice is
+            computed from — but not money: no unit price exists in this system
+            and Google's varies by tier and contract. A currency figure here
+            would be a guess wearing a currency symbol. No field is named
+            `actualSpend`, `billedAmount` or `invoiceCost`, because none would
+            be true until a billing API is connected.
+        currency: { type: [string, 'null'] }
+        basis: { type: string, example: sku_request_counter }
+        note: { type: string }
+
+    CmsOpsTotals:
+      type: object
+      required:
+        [
+          providerRequests,
+          providerSuccesses,
+          providerFailures,
+          providerRejected,
+          providerSuccessRate,
+          providerFailureRate,
+          providerRejectedRate,
+          latency,
+          rejectedLatency,
+          billableUnits,
+        ]
+      properties:
+        providerRequests: { type: integer }
+        providerSuccesses: { type: integer }
+        providerFailures:
+          type: integer
+          description: Google did not serve us — auth, quota, upstream (#273).
+        providerRejected:
+          type: integer
+          description: >
+            Our request was wrong — a malformed place id, a sheet that does not
+            exist (#314). Counted apart so an alert on provider failures keeps
+            meaning "Google is not serving us".
+        providerSuccessRate: { type: [number, 'null'] }
+        providerFailureRate: { type: [number, 'null'] }
+        providerRejectedRate: { type: [number, 'null'] }
+        latency: { $ref: '#/components/schemas/CmsOpsPercentiles' }
+        rejectedLatency:
+          type: object
+          description: >
+            The mass excluded from `latency`, reported rather than discarded,
+            so "rejections are fast" is visible as a fact and not as an absence.
+          properties:
+            p50: { type: [number, 'null'] }
+            p95: { type: [number, 'null'] }
+        billableUnits: { type: integer }
+
+    CmsOpsProvider:
+      type: object
+      required:
+        [
+          provider,
+          instrumented,
+          calls,
+          successes,
+          failures,
+          rejected,
+          successRate,
+          latency,
+          billableUnits,
+        ]
+      properties:
+        provider: { type: string, enum: [places, routes, sheets] }
+        instrumented:
+          type: boolean
+          description: >
+            False when no metric exists for this provider at all. Must render
+            as "chưa đo", never as zero calls — a measured zero and an
+            unmeasured one are different claims.
+        calls: { type: integer }
+        successes: { type: integer }
+        failures: { type: integer }
+        rejected: { type: integer }
+        successRate: { type: [number, 'null'] }
+        latency: { $ref: '#/components/schemas/CmsOpsPercentiles' }
+        billableUnits:
+          type: [integer, 'null']
+          description: >
+            Null where the provider has no SKU counter. Sheets is quota-limited
+            rather than billed per call, so it is null and must never render as
+            0, which reads as "free".
+
+    CmsOpsProviderDetail:
+      allOf:
+        - $ref: '#/components/schemas/CmsOpsProvider'
+        - type: object
+          required: [operations]
+          properties:
+            operations:
+              type: array
+              items: { $ref: '#/components/schemas/CmsOpsOperation' }
+
+    CmsOpsOperation:
+      type: object
+      required: [method, calls, successes, failures, rejected, successRate, latency, billableUnits]
+      properties:
+        method:
+          type: string
+          description: The adapter operation, which is also the billed SKU.
+          example: google.details.quality
+        calls: { type: integer }
+        successes: { type: integer }
+        failures: { type: integer }
+        rejected: { type: integer }
+        successRate: { type: [number, 'null'] }
+        latency: { $ref: '#/components/schemas/CmsOpsPercentiles' }
+        billableUnits: { type: [integer, 'null'] }
+
+    CmsOpsTrends:
+      type: object
+      required: [stepSeconds, series]
+      properties:
+        stepSeconds:
+          type: integer
+          description: >
+            Fixed per window (1h→60, 24h→300, 7d→1800, 30d→7200) so every chart
+            is 60–360 points. The client does not choose it: a step is a
+            resolution decision and an arbitrary one is arbitrary load.
+        series:
+          type: object
+          properties:
+            requests: { $ref: '#/components/schemas/CmsOpsSeries' }
+            failures: { $ref: '#/components/schemas/CmsOpsSeries' }
+            latencyP95: { $ref: '#/components/schemas/CmsOpsSeries' }
+            costUnits: { $ref: '#/components/schemas/CmsOpsSeries' }
+
+    CmsOpsSeries:
+      type: array
+      description: >
+        Gaps are omitted, not zero-filled. Prometheus renders a gap as NaN, and
+        charting it as zero invents a dip that never happened.
+      items:
+        type: object
+        required: [t, v]
+        properties:
+          t: { type: string, format: date-time }
+          v: { type: number }
 
     CmsCostLine:
       type: object

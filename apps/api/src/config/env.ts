@@ -209,6 +209,28 @@ const envSchema = z
      * and an unconfigured deployment must not quietly publish it.
      */
     METRICS_TOKEN: z.string().default(''),
+    /**
+     * #315 — reading the time-series store back, for the CMS ops dashboard.
+     *
+     * The URL stored in SSM is the collector's *write* endpoint; the query API
+     * is derived from it, so one parameter cannot disagree with another.
+     *
+     * `GRAFANA_READ_TOKEN` is scoped `metrics:read` and is a different
+     * credential from the collector's `metrics:write` — verified against the
+     * live stack in both directions. It is server-to-server only: it must
+     * never reach a browser, a CMS bundle or any `VITE_`/`EXPO_PUBLIC_`
+     * variable. Empty binds no query port, and the ops endpoints answer
+     * `backend.status: "unavailable"` rather than failing.
+     */
+    GRAFANA_PROM_URL: z.string().default(''),
+    GRAFANA_PROM_USER: z.string().default(''),
+    GRAFANA_READ_TOKEN: z.string().default(''),
+    /**
+     * How much history the store actually holds. Grafana Cloud Free keeps 14
+     * days, so a 30-day request is answered with 14 and says it was cut —
+     * extrapolating the missing sixteen would be inventing data.
+     */
+    GRAFANA_RETENTION_DAYS: z.coerce.number().int().positive().default(14),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
   })

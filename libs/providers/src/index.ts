@@ -38,3 +38,8 @@ export {
 export { UnconfiguredPlaceProvider } from './unconfigured-place.provider';
 export { R2StorageAdapter, type R2Config } from './r2-storage.adapter';
 export { KeywordFeedbackParser, foldVietnamese } from './keyword-feedback.adapter';
+export {
+  PrometheusQueryAdapter,
+  promApiBase,
+  type PrometheusQueryConfig,
+} from './prometheus-query.adapter';
