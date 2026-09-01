@@ -70,6 +70,17 @@ export class FakePlaceProvider implements PlaceProviderPort {
     return null;
   }
 
+  /** Seeded places whose name shares a token with the query, best first. */
+  async searchCandidates(query: string, limit: number): Promise<string[]> {
+    this.guard();
+    if (this.failing) throw new Error('fake provider down');
+    const wanted = query.toLowerCase().split(/\s+/).filter(Boolean);
+    return [...this.registry.entries()]
+      .filter(([, place]) => wanted.some((w) => place.name.toLowerCase().includes(w)))
+      .slice(0, limit)
+      .map(([id]) => id);
+  }
+
   async details(
     providerPlaceId: string,
     tier: PlaceFetchTier = 'quality',

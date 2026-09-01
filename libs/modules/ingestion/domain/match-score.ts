@@ -30,7 +30,13 @@ export type MatchReason =
   | 'LOW_CONFIDENCE';
 
 export type MatchInput = {
+  /** Curated name — a CMS import column. Scored symmetrically. */
   name?: string | undefined;
+  /**
+   * Free-text search string lifted from a shared link. Spec §6.2 step 5 keeps
+   * this separate from `name` on purpose; scored by coverage, never as a name.
+   */
+  query?: string | undefined;
   city?: string | undefined;
   district?: string | undefined;
   categoryKey?: string | undefined;
@@ -47,14 +53,53 @@ export type MatchTarget = {
   primaryType?: string | undefined;
 };
 
+/**
+ * Matching tokens: unaccented words carrying at least one letter or digit.
+ *
+ * Google display names routinely end in decoration — `Lacàph Coffee Experiences
+ * Space 🇻🇳☕️` tokenises the emoji cluster as a word of its own — and counting
+ * that as a token inflates the denominator of every comparison below (#311).
+ */
+function tokens(value: string): Set<string> {
+  return new Set(
+    normalizeVietnamese(value)
+      .split(' ')
+      .filter((t) => /[\p{L}\p{N}]/u.test(t)),
+  );
+}
+
 /** Token-set similarity over unaccented text — order-insensitive, 0..1. */
 export function nameSimilarity(a: string, b: string): number {
-  const ta = new Set(normalizeVietnamese(a).split(' ').filter(Boolean));
-  const tb = new Set(normalizeVietnamese(b).split(' ').filter(Boolean));
+  const ta = tokens(a);
+  const tb = tokens(b);
   if (ta.size === 0 || tb.size === 0) return 0;
   let shared = 0;
   for (const t of ta) if (tb.has(t)) shared += 1;
   return shared / Math.max(ta.size, tb.size);
+}
+
+/**
+ * How much of the candidate's own name the search text accounts for.
+ *
+ * The symmetric measure above is the right question when both sides are names,
+ * which is the CMS import case. It is the wrong question for a free-text query:
+ * every locality token the user left in their link ("… Ho Chi Minh City")
+ * enlarges the denominator, so the *better specified* the link, the lower it
+ * scored — `Landmark 81 Ho Chi Minh City` against `Landmark 81` came to 0.333
+ * and the whole match fell to 0.417, under the 0.70 floor (#311).
+ *
+ * Here only the candidate's side is the denominator: does its name appear in
+ * what the user asked for? Extra query tokens are the address the user typed,
+ * not evidence against the match. A candidate whose name is only partly present
+ * still scores down, which is what keeps a loose provider hit out.
+ */
+export function nameCoverage(query: string, name: string): number {
+  const tq = tokens(query);
+  const tn = tokens(name);
+  if (tq.size === 0 || tn.size === 0) return 0;
+  let shared = 0;
+  for (const t of tn) if (tq.has(t)) shared += 1;
+  return shared / tn.size;
 }
 
 function containsNormalized(haystack: string, needle?: string): boolean {
@@ -71,7 +116,11 @@ export type ScoredMatch = {
 export function scoreMatch(input: MatchInput, target: MatchTarget): ScoredMatch {
   const reasons: MatchReason[] = [];
 
-  const nameScore = input.name ? nameSimilarity(input.name, target.name) : 0.5;
+  const nameScore = input.name
+    ? nameSimilarity(input.name, target.name)
+    : input.query
+      ? nameCoverage(input.query, target.name)
+      : 0.5;
 
   const districtHit = containsNormalized(target.address, input.district);
   const districtScore = input.district ? (districtHit ? 1 : 0) : 0.5;

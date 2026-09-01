@@ -33,6 +33,12 @@ export class UnconfiguredPlaceProvider implements PlaceProviderPort, AreaAutocom
     this.refuse();
   }
 
+  async searchCandidates(_query: string, _limit: number): Promise<string[]> {
+    // An empty candidate list is indistinguishable from "Google found nothing",
+    // which is the exact confusion #279 exists to end. Refuse instead.
+    this.refuse();
+  }
+
   async details(_providerPlaceId: string): Promise<ResolvedProviderPlace | null> {
     this.refuse();
   }

@@ -331,3 +331,10 @@ is a recorded decision, not an oversight — see `docs/threat-model.md`.
   without `primaryType`, so the 0.1 category weight has been inert since it
   shipped. Consolidating the type table did not activate it — that changes row
   outcomes and belongs in its own change (#288).
+- A shared link that carries no place id tops out at **0.75** confidence: with
+  no district, city, category or coordinate hint those four legs all sit at
+  their neutral 0.5, so the formula cannot reach the 0.90 auto threshold no
+  matter how exact the name is. `CANDIDATE_SELECTION` is therefore the correct
+  ceiling for a text-search link, and `RESOLVED` is reserved for links carrying
+  `place_id` / `query_place_id`. This is spec behaviour, written down here so it
+  is not re-reported as a bug (#311).
