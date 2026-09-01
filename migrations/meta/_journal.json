@@ -239,6 +239,13 @@
       "when": 1788185958651,
       "tag": "0033_unify-google-provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788185958652,
+      "tag": "0034_candidate-coordinates",
+      "breakpoints": true
     }
   ]
 }
