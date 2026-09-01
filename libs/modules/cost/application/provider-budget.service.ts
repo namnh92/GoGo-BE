@@ -144,7 +144,11 @@ export class ProviderBudgetService {
           from provider_budget_daily
           where day = ${day}::date and scope = ${scope}
         `)
-      ).rows as unknown as { calls: string | number; cost: string | number; units: string | number }[];
+      ).rows as unknown as {
+        calls: string | number;
+        cost: string | number;
+        units: string | number;
+      }[];
 
       const usedCalls = Number(current?.calls ?? 0);
       const usedCost = Number(current?.cost ?? 0);

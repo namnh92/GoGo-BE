@@ -19,7 +19,7 @@ Grafana Cloud Free, which keeps 14 days. Two questions had no answer:
   invoice cannot be answered from a 14-day window or from a counter that
   restarts.
 - **"May this job make another paid call?"** — nothing could refuse. Quota
-  handling reacted to a 429 *after* Google had already served (and billed)
+  handling reacted to a 429 _after_ Google had already served (and billed)
   everything up to it.
 
 The constraint that shapes the first answer is the metrics port itself:
@@ -37,11 +37,11 @@ and what it is allowed to lose.
 
 ## Options considered
 
-| | Shape | Accounting safety | Latency coupling |
-|---|---|---|---|
-| **A. Buffered ledger behind the metrics port** | `DbUsageLedger implements MetricsPort`; accumulate per `(day, operation)`, flush on an interval and on shutdown | Loses ≤ one flush window to SIGKILL; nothing to SIGTERM; a failed flush retries | None |
-| **B. Awaited `UsageLedger.record()` at each orchestrator** | Explicit call after the provider call in `PlaceResolverService`, `PlaceImportJobService`, `TravelTimeService`, `AreasController` | Exact | One DB upsert per Google call |
-| **C. Async sink port on the adapter** | New optional `UsageSink` with a bounded queue and retry | Near-exact | None |
+|                                                            | Shape                                                                                                                            | Accounting safety                                                               | Latency coupling              |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------- |
+| **A. Buffered ledger behind the metrics port**             | `DbUsageLedger implements MetricsPort`; accumulate per `(day, operation)`, flush on an interval and on shutdown                  | Loses ≤ one flush window to SIGKILL; nothing to SIGTERM; a failed flush retries | None                          |
+| **B. Awaited `UsageLedger.record()` at each orchestrator** | Explicit call after the provider call in `PlaceResolverService`, `PlaceImportJobService`, `TravelTimeService`, `AreasController` | Exact                                                                           | One DB upsert per Google call |
+| **C. Async sink port on the adapter**                      | New optional `UsageSink` with a bounded queue and retry                                                                          | Near-exact                                                                      | None                          |
 
 ## Decision
 
@@ -78,7 +78,7 @@ first counter. Option C adds a port and a queue to buy a fraction of a flush
 window.
 
 **Rejected outright, and never to be reintroduced:** any design that awaits a
-database write *before* the provider call on a consumer path.
+database write _before_ the provider call on a consumer path.
 
 #### Why "buffered" is acceptable here, in one sentence
 
@@ -138,7 +138,7 @@ production, and a guard that defaults open is not a guard.
 The plan's §2.2 sketch used `SELECT … FOR UPDATE` inside the aggregate CTE.
 That cannot work, for two independent reasons: Postgres refuses `FOR UPDATE`
 in a query containing aggregates, and — more importantly — row locks are blind
-to the row a concurrent reserver is about to *insert*, which is exactly the
+to the row a concurrent reserver is about to _insert_, which is exactly the
 phantom the ceiling has to exclude. `pg_advisory_xact_lock` on `(day, scope)`
 serialises reservations for that scope and releases on commit, rollback, crash
 or disconnect.
@@ -154,7 +154,7 @@ or disconnect.
 ## Consequences
 
 - `/cms/ops/summary|providers|providers/:provider` report `costModel.kind =
-  'estimated'` with `basis: ESTIMATED`, `confidence: MEDIUM`, a
+'estimated'` with `basis: ESTIMATED`, `confidence: MEDIUM`, a
   `pricingVersion`, and `freeCapApplied: false` — the window is 1h–30d and a
   free cap is monthly.
 - `/cms/ops/costs` reports today and month-to-date from the ledger, with the

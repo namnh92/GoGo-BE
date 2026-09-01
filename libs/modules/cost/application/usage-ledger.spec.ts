@@ -97,7 +97,10 @@ describe('DbUsageLedger', () => {
     const metrics = recorder();
     const ledger = new DbUsageLedger(db, { environment: 'dev', metrics });
 
-    ledger.increment('places_provider_requests_total', { method: 'google.searchText', status: 200 });
+    ledger.increment('places_provider_requests_total', {
+      method: 'google.searchText',
+      status: 200,
+    });
     await expect(ledger.flush()).rejects.toThrow('connection terminated');
     // Dropping counts on a transient blip and staying quiet is worse than no
     // ledger: the number printed later still looks authoritative.
@@ -116,7 +119,10 @@ describe('DbUsageLedger', () => {
   it('does nothing at all when disabled', async () => {
     const { db, executed } = fakeDb();
     const ledger = new DbUsageLedger(db, { environment: 'dev', enabled: false });
-    ledger.increment('places_provider_requests_total', { method: 'google.searchText', status: 200 });
+    ledger.increment('places_provider_requests_total', {
+      method: 'google.searchText',
+      status: 200,
+    });
     ledger.start();
     await ledger.stop();
     // `COST_LEDGER_ENABLED=false` is the rollback for this PR.
@@ -158,7 +164,10 @@ describe('DbUsageLedger', () => {
       if (inFlight > 1) overlapped = true;
     });
     const ledger = new DbUsageLedger(db, { environment: 'dev' });
-    ledger.increment('places_provider_requests_total', { method: 'google.searchText', status: 200 });
+    ledger.increment('places_provider_requests_total', {
+      method: 'google.searchText',
+      status: 200,
+    });
     // Two partial drains would each put back their own half on failure, and
     // the same counts would land twice.
     await Promise.all([ledger.flush(), ledger.flush(), ledger.flush()]);

@@ -82,7 +82,9 @@ describe('pricing registry', () => {
   it('bumps the pricing version whenever a row is added or changed', () => {
     // A dashboard number is traceable to a price list only if the label moves
     // with the list. Adding a row and forgetting the version relabels history.
-    const newest = PROVIDER_PRICING.map((r) => r.effectiveFrom).sort().at(-1);
+    const newest = PROVIDER_PRICING.map((r) => r.effectiveFrom)
+      .sort()
+      .at(-1);
     expect(PRICING_VERSION).toBe(newest);
   });
 });

@@ -3703,10 +3703,10 @@ export interface components {
         }[];
         CmsCostLine: {
             /**
-             * @description The provider the line reports. Only providers with a priceable total appear.
-             * @enum {string}
+             * @description The provider the line reports (`places`, `routes`, `sheets`, …). Deliberately not an enum: only providers with a priceable total appear here, and constraining a response property that was open would break a client that already handles an unknown key.
+             * @example places
              */
-            key: "places" | "routes" | "sheets" | "maps_sdk";
+            key: string;
             /** @description Minor units (USD cents). */
             today: number;
             /** @description Minor units (USD cents). */

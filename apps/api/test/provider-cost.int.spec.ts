@@ -143,14 +143,11 @@ describe('usage ledger against the real adapters', () => {
     const routes = new GoogleRoutesAdapter('test-key', metrics);
 
     queued = [{ status: 200, body: [] }];
-    await routes.matrix(
-      { lat: 10.77, lng: 106.7 },
-      [
-        { lat: 10.78, lng: 106.7 },
-        { lat: 10.79, lng: 106.7 },
-        { lat: 10.8, lng: 106.7 },
-      ],
-    );
+    await routes.matrix({ lat: 10.77, lng: 106.7 }, [
+      { lat: 10.78, lng: 106.7 },
+      { lat: 10.79, lng: 106.7 },
+      { lat: 10.8, lng: 106.7 },
+    ]);
     await ledger.stop();
 
     // One row, not two. Unfolded, `routes.computeRouteMatrix` and
@@ -223,9 +220,11 @@ describe('hard budget reservation', () => {
     const refused = a.ok ? b : a;
     expect(refused).toEqual({ ok: false, reason: 'call_ceiling' });
 
-    const [row] = await db.execute(
-      sql`select reserved_calls from provider_budget_daily where scope = 'google.places.refresh'`,
-    ).then((r) => r.rows as unknown as { reserved_calls: number }[]);
+    const [row] = await db
+      .execute(
+        sql`select reserved_calls from provider_budget_daily where scope = 'google.places.refresh'`,
+      )
+      .then((r) => r.rows as unknown as { reserved_calls: number }[]);
     expect(Number(row!.reserved_calls)).toBe(3);
   });
 
@@ -251,7 +250,12 @@ describe('hard budget reservation', () => {
     expect(
       (
         await service.reserve(
-          { scope: 'google.places.refresh', operation: 'google.details.quality', calls: 1, units: 1 },
+          {
+            scope: 'google.places.refresh',
+            operation: 'google.details.quality',
+            calls: 1,
+            units: 1,
+          },
           costLimits,
         )
       ).ok,
@@ -283,7 +287,12 @@ describe('hard budget reservation', () => {
     // missing in production. It must not read as "no limit".
     expect(
       await service.reserve(
-        { scope: 'google.places.refresh', operation: 'google.details.liveness', calls: 1, units: 1 },
+        {
+          scope: 'google.places.refresh',
+          operation: 'google.details.liveness',
+          calls: 1,
+          units: 1,
+        },
         budgetLimitsFrom('google.places.refresh', {}),
       ),
     ).toEqual({ ok: false, reason: 'not_configured' });
@@ -328,7 +337,12 @@ describe('hard budget reservation', () => {
     expect(
       (
         await service.reserve(
-          { scope: 'google.places.import', operation: 'google.details.liveness', calls: 1, units: 1 },
+          {
+            scope: 'google.places.import',
+            operation: 'google.details.liveness',
+            calls: 1,
+            units: 1,
+          },
           importLimits,
         )
       ).ok,
