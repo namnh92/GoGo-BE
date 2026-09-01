@@ -17,7 +17,7 @@ import {
  *
  * That is not a small subset. The worker is where the heavy work runs — bulk
  * import chunks process here, not in the API process — so the invisible half
- * included every `place_import_*` counter, `place_resolve_duration_ms`, the
+ * included every `place_import_*` counter, `place_resolve_duration_seconds`, the
  * outbox and campaign counters, and, worst of all,
  * `places_provider_cost_units` for the Google calls bulk import makes. A cost
  * dashboard built on the API scrape alone would have under-reported Google

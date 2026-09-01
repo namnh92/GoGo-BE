@@ -30,7 +30,7 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // --- providers -----------------------------------------------------------
   // `method` is the adapter's own operation name, `status` an HTTP code.
   places_provider_requests_total: ['method', 'status'],
-  place_provider_request_duration_ms: ['method', 'status'],
+  place_provider_request_duration_seconds: ['method', 'status'],
   // `reason` is Google's `ErrorInfo.reason`. Finite in practice but it is
   // Google's vocabulary, not ours — see the note in the spec.
   places_provider_failures_total: ['method', 'status', 'reason'],
@@ -40,7 +40,7 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   places_provider_cost_units: ['sku'],
 
   // --- ingestion -----------------------------------------------------------
-  place_resolve_duration_ms: ['source', 'outcome'],
+  place_resolve_duration_seconds: ['source', 'outcome'],
   place_resolve_confidence_bucket: ['source', 'bucket'],
   place_import_jobs_total: ['status', 'source_type'],
   place_import_rows_total: ['status', 'error_code'],
@@ -73,7 +73,7 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   ai_feedback_runs_total: ['outcome'],
   // `weights_version` grows by one set of series per activated ranking config.
   // Bounded by deploys rather than by traffic, and it never comes back down.
-  suggestion_run_latency_ms: ['variant', 'weights_version'],
+  suggestion_run_latency_seconds: ['variant', 'weights_version'],
   suggestion_run_over_budget_total: ['variant'],
 
   // --- notifications -------------------------------------------------------

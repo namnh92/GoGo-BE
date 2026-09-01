@@ -15,9 +15,29 @@ export type MetricLabels = Record<string, string | number | boolean | undefined>
 
 export interface MetricsPort {
   increment(name: string, labels?: MetricLabels, by?: number): void;
+  /**
+   * A duration observed here is **in seconds** (#320) — the Prometheus base
+   * unit, and what the default bucket set is calibrated for. The one metric
+   * that opts out says so in its own name.
+   */
   observe(name: string, value: number, labels?: MetricLabels): void;
-  /** Times `fn`, records the duration, and labels the outcome ok/error. */
+  /**
+   * Times `fn`, records the duration **in seconds**, and labels the outcome
+   * ok/error. Which is why every metric it can be called with ends
+   * `_seconds`.
+   */
   time<T>(name: string, labels: MetricLabels, fn: () => Promise<T>): Promise<T>;
+}
+
+/**
+ * Milliseconds off the clock, seconds into the metric.
+ *
+ * `Date.now()` is the only timer available in every one of these processes,
+ * and it counts milliseconds. Every conversion goes through here so the unit
+ * is decided once rather than at four call sites that can drift apart.
+ */
+export function secondsSince(startedAtMs: number): number {
+  return (Date.now() - startedAtMs) / 1000;
 }
 
 export class LogMetrics implements MetricsPort {
@@ -35,10 +55,10 @@ export class LogMetrics implements MetricsPort {
     const started = Date.now();
     try {
       const result = await fn();
-      this.observe(name, Date.now() - started, { ...labels, outcome: 'ok' });
+      this.observe(name, secondsSince(started), { ...labels, outcome: 'ok' });
       return result;
     } catch (err) {
-      this.observe(name, Date.now() - started, { ...labels, outcome: 'error' });
+      this.observe(name, secondsSince(started), { ...labels, outcome: 'error' });
       throw err;
     }
   }

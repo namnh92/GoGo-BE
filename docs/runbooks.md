@@ -160,21 +160,22 @@ says which call.
    keep working on catalog data, and travel time falls back to straight-line
    estimates marked as estimates.
 
-### Provider slow (p95 `place_provider_request_duration_ms` > 1s)
+### Provider slow (p95 `place_provider_request_duration_seconds` > 1s)
 
-Google itself is slow. `place_provider_request_duration_ms{method,status}` times
+Google itself is slow. `place_provider_request_duration_seconds{method,status}` times
 the HTTP call and nothing else, so it separates "Google is slow" from "we are
-slow around Google" — `place_resolve_duration_ms` covers both and cannot tell
+slow around Google" — `place_resolve_duration_seconds` covers both and cannot tell
 you which. Its buckets are tuned to the 25–300ms band every observed call lands
 in (#313), so a shift of 50ms is visible rather than rounded into the next
-bucket.
+bucket, and 1s — where this alert fires — is a bucket edge rather than a point
+interpolated between two (#320).
 
 Nothing to do but confirm it is Google: check the status page, check whether one
 `method` is slow or all of them. A single slow `method` with the others healthy
 is more likely our request shape — an oversized field mask, a batch that grew —
 than an upstream problem.
 
-### Resolve slow (p95 `place_resolve_duration_ms` > 3s)
+### Resolve slow (p95 `place_resolve_duration_seconds` > 3s)
 
 A 5,000-row job will not finish inside its window. Either accept the longer
 run or pause the import; do not raise the timeout, which only moves the

@@ -10,11 +10,11 @@
 export const ALERTED_METRICS = [
   'place_import_jobs_total',
   'place_import_rows_total',
-  'place_resolve_duration_ms',
+  'place_resolve_duration_seconds',
   'place_resolve_confidence_bucket',
   'place_duplicate_candidates_total',
   'places_provider_requests_total',
-  'place_provider_request_duration_ms',
+  'place_provider_request_duration_seconds',
   'places_provider_failures_total',
   'places_provider_rejected_total',
   'places_provider_cost_units',

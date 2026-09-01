@@ -119,6 +119,6 @@ any number produced from them would describe a config the engine would have
 rejected anyway.
 
 **Latency is a result too.** Every run records `latency_ms` and emits
-`suggestion_run_latency_ms` labelled by variant, with
+`suggestion_run_latency_seconds` labelled by variant, with
 `suggestion_run_over_budget_total` past 3s. A variant that wins on ranking and
 loses on speed is two results, and only one of them shows up in ranking.

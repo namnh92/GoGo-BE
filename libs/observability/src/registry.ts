@@ -1,3 +1,4 @@
+import { secondsSince } from './metrics';
 import type { MetricLabels, MetricsPort } from './metrics';
 
 /**
@@ -18,36 +19,59 @@ import type { MetricLabels, MetricsPort } from './metrics';
 export type Sample = { value: number; labels: MetricLabels };
 
 /**
- * Default buckets, in the units the metrics actually use (ms, hours, units).
+ * Default buckets, in **seconds** — the Prometheus base unit (#320).
+ *
  * Wide on purpose: it has to be defensible for every histogram that does not
- * ask for something better.
+ * ask for something better. One millisecond to thirty seconds covers a
+ * provider call and an abort with the same set.
+ *
+ * A histogram measuring something that is not a duration, or a duration on a
+ * wildly different scale, must declare its own buckets below. The one metric
+ * in that position today is `place_submission_publish_latency_hours`, which
+ * measures days of moderation queue and would land every observation in
+ * `+Inf` against this set.
  */
-const DEFAULT_BUCKETS = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000];
+const DEFAULT_BUCKETS = [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30];
 
 /**
  * Per-metric buckets, for the histograms where the default resolves nothing.
  *
- * #313 — measured against the live Places API from the dev host, every call
- * landed between 64ms and 306ms. The default set spans that range in three
- * buckets (100 / 250 / 500), so a p95 computed from it is an artefact of the
- * bucket edges rather than a fact about Google. These are chosen for that
- * distribution:
- *
- * - 25–300ms in seven steps: where the entire observed mass sits, so a shift
- *   of 50ms is visible instead of being rounded away.
- * - 500 / 750 / 1000: degradation worth noticing before anything times out.
- * - 2000 / 5000: approaching `RESILIENCE.timeoutMs`, which is 5000.
- * - 10000: the abort path itself, so a timed-out call is still counted
- *   somewhere finite rather than only in `+Inf`.
- *
- * Milliseconds, not seconds, because that is this repo's convention —
- * `place_resolve_duration_ms` already exists and `docs/runbooks.md` alerts on
- * it. One consistent unit beats matching an external house style halfway.
+ * The lesson from #313 is that a p95 is a statement about bucket edges before
+ * it is a statement about the system. So each set below puts an edge exactly
+ * on the number its alert fires at — otherwise the alert compares a threshold
+ * against a figure interpolated between two edges that straddle it, and the
+ * answer moves when the bucket set does, not when the service does.
  */
 const BUCKETS_BY_METRIC: Record<string, number[]> = {
-  place_provider_request_duration_ms: [
-    25, 50, 75, 100, 150, 200, 300, 500, 750, 1000, 2000, 5000, 10_000,
+  /**
+   * #313 — measured against the live Places API from the dev host, every call
+   * landed between 64ms and 306ms. The default set spans that range in three
+   * buckets, so a p95 from it is an artefact of the edges. Chosen for that
+   * distribution:
+   *
+   * - 25–300ms in seven steps: where the entire observed mass sits, so a
+   *   shift of 50ms is visible instead of being rounded away.
+   * - 500 / 750 / 1000: degradation worth noticing before anything times out,
+   *   and 1s is where "Google chậm" fires.
+   * - 2 / 5: approaching `RESILIENCE.timeoutMs`, which is 5 seconds.
+   * - 10: the abort path itself, so a timed-out call is counted somewhere
+   *   finite rather than only in `+Inf`.
+   */
+  place_provider_request_duration_seconds: [
+    0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1, 2, 5, 10,
   ],
+  /** Our whole resolve, Google's share included. "Resolve chậm" fires at 3s. */
+  place_resolve_duration_seconds: [0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30],
+  /** SG-010's budget is `SUGGESTION_LATENCY_BUDGET_MS`, which is 3 seconds. */
+  suggestion_run_latency_seconds: [0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30],
+  /**
+   * Hours, deliberately (#320). This measures how long a proposal waited for
+   * an editor, and the SLA people actually discuss is "72 hours" — read in
+   * seconds that is 259 200, which nobody parses. The convention this repo
+   * keeps is naming the unit in the suffix; base units win where they help,
+   * and here they do not. The edge at 72 is the alert.
+   */
+  place_submission_publish_latency_hours: [1, 4, 8, 12, 24, 48, 72, 120, 168, 336],
 };
 
 function bucketsFor(name: string): number[] {
@@ -95,10 +119,10 @@ export class MetricsRegistry implements MetricsPort {
     const started = Date.now();
     try {
       const result = await fn();
-      this.observe(name, Date.now() - started, { ...labels, outcome: 'ok' });
+      this.observe(name, secondsSince(started), { ...labels, outcome: 'ok' });
       return result;
     } catch (err) {
-      this.observe(name, Date.now() - started, { ...labels, outcome: 'error' });
+      this.observe(name, secondsSince(started), { ...labels, outcome: 'error' });
       throw err;
     }
   }
@@ -158,10 +182,10 @@ export class TeeMetrics implements MetricsPort {
     const started = Date.now();
     try {
       const result = await fn();
-      this.observe(name, Date.now() - started, { ...labels, outcome: 'ok' });
+      this.observe(name, secondsSince(started), { ...labels, outcome: 'ok' });
       return result;
     } catch (err) {
-      this.observe(name, Date.now() - started, { ...labels, outcome: 'error' });
+      this.observe(name, secondsSince(started), { ...labels, outcome: 'error' });
       throw err;
     }
   }
