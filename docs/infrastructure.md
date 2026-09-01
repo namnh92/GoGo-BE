@@ -219,9 +219,31 @@ mỗi metric được phép mang**, và `metric-labels.spec.ts` quét source, đ
 người đọc file đó trả lời được. Việc nó làm là bắt mọi lần thêm nhãn phải mở
 file đó ra, tức là phải trả lời câu hỏi.
 
-Scrape: `GET /v1/metrics` trả **Prometheus text format**, chắn bằng
-`METRICS_TOKEN`. Không cấu hình token thì route trả **404** chứ không phải 401
-— endpoint chưa cấu hình không nên quảng cáo rằng nó tồn tại và chỉ đang khoá.
+**Hai scrape target, không phải một (#318).** API và worker là hai tiến trình,
+mỗi tiến trình một registry trong bộ nhớ. Collector phải đọc cả hai.
+
+| Target | Đường dẫn                                       | Phát ra                                                                                              |
+| ------ | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| api    | `GET /v1/metrics` (public, sau Caddy)           | provider từ đường mobile resolve, submission, CMS, suggestion                                        |
+| worker | `GET :9101/metrics` (chỉ trong compose network) | toàn bộ `place_import_*`, `place_resolve_*`, outbox/campaign, **và provider + cost của bulk import** |
+
+Trước #318 worker chỉ có `LogMetrics`. Bulk import chạy ở worker, nên phần
+`places_provider_cost_units` lớn nhất — chi tiêu Google của import hàng loạt —
+không tới được scraper nào. Một dashboard chi phí dựng trên scrape của API sẽ
+báo thiếu đúng cấu phần lớn nhất, và đó tệ hơn không hiển thị gì vì nó trông
+giống một câu trả lời.
+
+Cổng của worker **không bao giờ** nằm trong `ports:` của compose, chỉ `expose:`.
+Publish nó là đưa mọi series nội bộ ra cách một lệnh `curl`; bearer token là
+lớp khoá thứ hai, không phải thứ nhất.
+
+Cả hai chắn bằng `METRICS_TOKEN`. Không cấu hình token thì trả **404** chứ
+không phải 401 — endpoint chưa cấu hình không nên quảng cáo rằng nó tồn tại và
+chỉ đang khoá.
+
+Endpoint của worker không bao giờ làm dừng job: không bind được cổng thì ghi
+log rồi chạy tiếp không có metric. Một worker chết vì không mở được cổng metric
+là sự cố gây ra bởi chính thứ lẽ ra để quan sát sự cố.
 
 Điều này gỡ nút thắt "chưa chốt nơi nhận metric": scraper nào đọc được format
 chuẩn cũng dùng được, nên chọn đích đến không còn là điều kiện tiên quyết để

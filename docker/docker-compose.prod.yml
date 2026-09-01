@@ -63,8 +63,15 @@ services:
     environment:
       PROCESS: worker
       NODE_ENV: production
+      WORKER_METRICS_PORT: '9101'
     env_file:
       - ../${ENV_FILE:-.env.prod}
+    # #318 — the worker's scrape target. `expose`, never `ports`: a collector
+    # on this compose network reaches it, the host and the Internet do not.
+    # Publishing this port would put every internal series one curl away, and
+    # the bearer token is the second lock, not the first.
+    expose:
+      - '9101'
 
   migrate:
     build:

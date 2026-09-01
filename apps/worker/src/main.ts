@@ -8,7 +8,7 @@ import {
   PlaceResolverService,
   PrivacyJobs,
 } from '@gogo/modules';
-import { LogMetrics, createLogger } from '@gogo/observability';
+import { createLogger } from '@gogo/observability';
 import {
   FakePush,
   FakeSheets,
@@ -20,6 +20,7 @@ import {
   warnFakedProviders,
 } from '@gogo/providers';
 import { AdvisoryLock, startPeriodic } from './periodic';
+import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
 
 /**
  * Poll intervals, in milliseconds.
@@ -95,7 +96,15 @@ async function bootstrap(): Promise<void> {
   // life of the process, which is what makes one row per process work.
   const WORKER_ID = process.env.HOSTNAME || os.hostname();
   const STARTED_AT = new Date();
-  const metrics = new LogMetrics(logger);
+  // #318: both sinks, like the API. Bulk import runs in this process, so the
+  // registry below is the only place its provider, cost and row counters can
+  // be scraped from.
+  const { metrics, registry } = createWorkerMetrics(logger);
+  const metricsEndpoint = await startMetricsEndpoint({
+    registry,
+    token: process.env.METRICS_TOKEN,
+    logger,
+  });
   // Real push provider lands with credentials (GoGo-BE#60); fake logs sends.
   const push = new FakePush();
   const dispatcher = new OutboxDispatcher(db, push, metrics);
@@ -224,6 +233,9 @@ async function bootstrap(): Promise<void> {
   const shutdown = async () => {
     logger.info('worker shutting down');
     await periodic.stop();
+    // Before the pool: a scrape in flight reads memory, not the database, but
+    // an open socket would still hold the process past the ticks stopping.
+    await metricsEndpoint?.close();
     await pool.end();
     process.exit(0);
   };
