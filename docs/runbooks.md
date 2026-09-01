@@ -115,6 +115,25 @@ Not a data error. Rows are intact and the job is waiting.
 
 ### Provider errors > 10% (`places_provider_requests_total{status!~"2.."}`)
 
+**Read the reason before concluding "outage" (#273).** Every failure is
+counted again on `places_provider_failures_total{method,status,reason}`, where
+`reason` is Google's own `error.details[].reason`. It is the only field that
+separates a dependency having a bad day from a setting in our console:
+
+| `reason`                                                       | What it actually is                                                                          | Who fixes it                                                           |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `SERVICE_DISABLED`                                             | The API was never enabled on our GCP project                                                 | Operator, in the console. Waiting never clears it                      |
+| `API_KEY_SERVICE_BLOCKED`                                      | Key restricted to a different API — the failure `#271`'s one-key-per-API split made possible | Operator: fix the restriction, or the key is in the wrong variable     |
+| `API_KEY_INVALID`                                              | Key deleted or mistyped                                                                      | Operator: re-put the secret                                            |
+| `API_KEY_HTTP_REFERRER_BLOCKED` / `API_KEY_IP_ADDRESS_BLOCKED` | Application restriction does not match a server-side caller                                  | Operator: server keys take an IP restriction or none, never a referrer |
+| absent, 5xx                                                    | Genuine upstream fault                                                                       | Nobody. Wait                                                           |
+
+These raise `ProviderConfigurationError`, which is deliberately **not**
+retried and does **not** count toward the circuit breaker — a disabled API
+answers the third attempt exactly as it answered the first, and letting it
+open the breaker is what made a permanent console setting look like a
+dependency flapping on a cycle.
+
 1. Distinguish key problems from outages: a wrong or expired key fails every
    call, an outage fails some.
 2. Key problems — rotate the key for the failing API from the secret manager

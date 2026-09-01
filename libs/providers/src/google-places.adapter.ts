@@ -1,4 +1,5 @@
 import {
+  ProviderConfigurationError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   type AreaAutocompletePort,
@@ -8,6 +9,7 @@ import {
   type ProviderPhotoRef,
   type ResolvedProviderPlace,
 } from './ports';
+import { errorReason, googleFailure } from './google-error';
 import { withResilience } from './resilience';
 
 const RESILIENCE = {
@@ -146,6 +148,11 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
     } catch (err) {
       if (err instanceof ProviderUnavailableError) throw err;
       if (err instanceof ProviderQuotaExceededError) throw err;
+      // #273: a place we cannot look up because our own API is disabled is not
+      // a place that does not exist. Returning null here is what turned a GCP
+      // console setting into "Không tìm thấy địa điểm trên Google Maps" on a
+      // real user's screen.
+      if (err instanceof ProviderConfigurationError) throw err;
       return null;
     }
     if (!data?.id || !data.location) return null;
@@ -260,12 +267,25 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
         status: res.status,
         duration_ms: Date.now() - started,
       });
-      if (res.ok) this.metrics.increment('places_provider_cost_units', { sku: name });
-      // 429 / RESOURCE_EXHAUSTED pauses the import instead of retrying into
-      // an exhausted budget (spec §9.4).
-      if (res.status === 429) throw new ProviderQuotaExceededError('google.places');
-      if (!res.ok) throw new Error(`google ${res.status}`);
-      return (await res.json()) as T;
+      if (res.ok) {
+        this.metrics.increment('places_provider_cost_units', { sku: name });
+        return (await res.json()) as T;
+      }
+
+      // #273: the reason is read before the status, because the status alone
+      // does not separate a disabled API from a refused request. 429 /
+      // RESOURCE_EXHAUSTED still pauses the import rather than retrying into
+      // an exhausted budget (spec §9.4); a configuration fault is not retried
+      // either, because the answer will not change.
+      const reason = await errorReason(res);
+      this.metrics.increment('places_provider_failures_total', {
+        method: name,
+        status: res.status,
+        reason: reason ?? 'unknown',
+      });
+      const fault = googleFailure('google.places', res.status, reason);
+      if (fault) throw fault;
+      throw new Error(`google ${res.status}`);
     });
   }
 }
