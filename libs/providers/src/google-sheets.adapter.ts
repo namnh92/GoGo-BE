@@ -1,5 +1,5 @@
 import { INGEST_SHEET_HOSTS, parseSpreadsheetId } from './sheets-url';
-import { errorReason, isMisconfiguredReason } from './google-error';
+import { isMisconfiguredReason, readGoogleError } from './google-error';
 import {
   ProviderQuotaExceededError,
   SheetAccessError,
@@ -65,7 +65,7 @@ export class GoogleSheetsAdapter implements SheetsPort {
         });
         if (res.ok) return (await res.json()) as T;
 
-        const reason = await errorReason(res);
+        const { reason } = await readGoogleError(res);
 
         // PI-BE-022: the status alone does not say whose fault it is. Google
         // answers 403 PERMISSION_DENIED both for a sheet nobody shared with us

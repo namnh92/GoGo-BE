@@ -1,6 +1,7 @@
 import {
   ProviderConfigurationError,
   ProviderQuotaExceededError,
+  ProviderInvalidRequestError,
   ProviderUnavailableError,
 } from './ports';
 
@@ -110,6 +111,13 @@ export async function withResilience<T>(
       // breaker — which is why a disabled API presented as a breaker cycling
       // open and closed rather than as the one-line console fix it is.
       if (err instanceof ProviderConfigurationError) throw err;
+      // #314: nor is a request the provider rejected on its merits. A place id
+      // Google calls INVALID_ARGUMENT is invalid on every attempt, so retrying
+      // it triples the cost of one bad link and, worse, ends in
+      // ProviderUnavailableError — reporting the user's typo as our outage.
+      // It must not touch the breaker either: enough pasted junk would
+      // otherwise trip it and break resolution for everyone.
+      if (err instanceof ProviderInvalidRequestError) throw err;
       lastError = err;
       state.consecutiveFailures += 1;
       state.lastFailureAt = Date.now();

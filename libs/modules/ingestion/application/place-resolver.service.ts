@@ -4,6 +4,7 @@ import { type Db } from '@gogo/database';
 import {
   PLACE_PROVIDER,
   ProviderConfigurationError,
+  ProviderInvalidRequestError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   type PlaceProviderPort,
@@ -19,6 +20,11 @@ import {
 } from '../domain/match-score';
 import { expandShortLink, parseMapsUrl, type Fetcher } from '../domain/maps-url';
 import { providerScore, type RatingPriors } from '../domain/quality-score';
+
+/** What a details lookup produced, and why, when it produced nothing. */
+type DetailsOutcome =
+  | { ok: true; details: ResolvedProviderPlace }
+  | { ok: false; reasonCode: 'NOT_FOUND' | 'INVALID_URL' };
 
 export type ResolveOutcome =
   | { status: 'RESOLVED'; decision: MatchDecision; details: ResolvedProviderPlace }
@@ -63,8 +69,9 @@ export class PlaceResolverService {
 
     // Provider id in the URL is authoritative — no search, no ambiguity.
     if (parsed.value.providerPlaceId) {
-      const details = await this.safeDetails(parsed.value.providerPlaceId);
-      if (!details) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
+      const looked = await this.safeDetails(parsed.value.providerPlaceId);
+      if (!looked.ok) return { status: 'UNRESOLVED', reasonCode: looked.reasonCode };
+      const { details } = looked;
       return { status: 'RESOLVED', decision: exactProviderMatch(toTarget(details)), details };
     }
 
@@ -75,9 +82,11 @@ export class PlaceResolverService {
     const ids = await this.safeCandidates(searchText);
     if (ids.length === 0) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
 
-    const detailed = (await Promise.all(ids.map((id) => this.safeDetails(id)))).filter(
-      (d): d is ResolvedProviderPlace => d !== null,
-    );
+    // One unusable candidate does not sink the others: it drops out and the
+    // rest are still scored.
+    const detailed = (await Promise.all(ids.map((id) => this.safeDetails(id))))
+      .filter((d): d is { ok: true; details: ResolvedProviderPlace } => d.ok)
+      .map((d) => d.details);
     if (detailed.length === 0) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
 
     const decision = decideMatch(merged, detailed.map(toTarget));
@@ -127,12 +136,25 @@ export class PlaceResolverService {
     }
   }
 
-  private async safeDetails(id: string): Promise<ResolvedProviderPlace | null> {
+  /**
+   * Three outcomes, not two. "Google looked and found nothing" and "Google
+   * refused to look because that is not a usable id" are different facts and
+   * lead the user to different actions — retry later versus fix the link —
+   * so they do not share a reason code (#314).
+   */
+  private async safeDetails(id: string): Promise<DetailsOutcome> {
     try {
-      return await this.provider.details(id);
+      const details = await this.provider.details(id);
+      return details ? { ok: true, details } : { ok: false, reasonCode: 'NOT_FOUND' };
     } catch (err) {
       PlaceResolverService.rethrowIfOperational(err);
-      return null;
+      if (err instanceof ProviderInvalidRequestError) {
+        return {
+          ok: false,
+          reasonCode: err.canonicalStatus === 'NOT_FOUND' ? 'NOT_FOUND' : 'INVALID_URL',
+        };
+      }
+      return { ok: false, reasonCode: 'NOT_FOUND' };
     }
   }
 

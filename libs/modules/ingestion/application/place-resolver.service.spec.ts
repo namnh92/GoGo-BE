@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ProviderConfigurationError,
+  ProviderInvalidRequestError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   UnconfiguredPlaceProvider,
@@ -182,5 +183,94 @@ describe('#279 — the HTTP answer for an operational failure', () => {
     const original = AppError.badRequest('SOMETHING_ELSE', 'not a provider problem');
 
     expect(placeProviderUnavailable(original)).toBe(original);
+  });
+});
+
+/**
+ * #314 — the mirror of the case above. #279 stopped GoGo's own outage being
+ * reported as a fact about the user's place; this stops the user's broken link
+ * being reported as GoGo's outage. Both are the same boundary, and a fix to
+ * either that loosens the other is a regression.
+ */
+describe('#314 — a link the provider rejects is a broken link, not an outage', () => {
+  const withId = `${LACAPH}&place_id=ChIJ0000000000000000000`;
+
+  it('answers INVALID_URL, not PLACE_PROVIDER_UNAVAILABLE', async () => {
+    const resolver = new PlaceResolverService(
+      providerThat({
+        details: async () => {
+          throw new ProviderInvalidRequestError('google.places', 'INVALID_ARGUMENT');
+        },
+      }),
+      db,
+    );
+
+    const out = await resolver.resolveFromUrl(withId);
+
+    expect(out.status).toBe('UNRESOLVED');
+    if (out.status !== 'UNRESOLVED') return;
+    expect(out.reasonCode).toBe('INVALID_URL');
+  });
+
+  it('keeps a valid-but-retired id as a genuine NOT_FOUND', async () => {
+    const resolver = new PlaceResolverService(
+      providerThat({
+        details: async () => {
+          throw new ProviderInvalidRequestError('google.places', 'NOT_FOUND');
+        },
+      }),
+      db,
+    );
+
+    const out = await resolver.resolveFromUrl(withId);
+
+    expect(out.status).toBe('UNRESOLVED');
+    if (out.status !== 'UNRESOLVED') return;
+    expect(out.reasonCode).toBe('NOT_FOUND');
+  });
+
+  it('a provider that answers "nothing here" is still NOT_FOUND', async () => {
+    const resolver = new PlaceResolverService(providerThat({ details: async () => null }), db);
+
+    const out = await resolver.resolveFromUrl(withId);
+
+    expect(out.status).toBe('UNRESOLVED');
+    if (out.status !== 'UNRESOLVED') return;
+    expect(out.reasonCode).toBe('NOT_FOUND');
+  });
+
+  it('does not regress #279 — auth failure is still operational', async () => {
+    const resolver = new PlaceResolverService(
+      providerThat({
+        details: async () => {
+          throw new ProviderConfigurationError('google.places', 'AUTH_FAILED', 'SERVICE_DISABLED');
+        },
+      }),
+      db,
+    );
+
+    await expect(resolver.resolveFromUrl(withId)).rejects.toBeInstanceOf(
+      ProviderConfigurationError,
+    );
+  });
+
+  it('does not regress #312 — one rejected candidate does not sink the rest', async () => {
+    const good: ResolvedProviderPlace = { ...A_REAL_PLACE, providerPlaceId: 'ChIJgood' };
+    const resolver = new PlaceResolverService(
+      providerThat({
+        searchCandidates: async () => ['ChIJbad', 'ChIJgood'],
+        details: async (id: string) => {
+          if (id === 'ChIJbad') {
+            throw new ProviderInvalidRequestError('google.places', 'INVALID_ARGUMENT');
+          }
+          return good;
+        },
+      }),
+      db,
+    );
+
+    const out = await resolver.resolveFromUrl(LACAPH, { name: good.name });
+
+    expect(out.status).not.toBe('UNRESOLVED');
   });
 });

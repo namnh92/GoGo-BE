@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GooglePlacesAdapter } from './google-places.adapter';
 import {
   ProviderConfigurationError,
+  ProviderInvalidRequestError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
 } from './ports';
@@ -49,11 +50,126 @@ const KEY_SERVICE_BLOCKED_BODY = {
   },
 };
 
+/**
+ * #314 — captured verbatim from the live Places API for
+ * `GET /v1/places/ChIJ0000000000000000000`. Note what is *not* here: no
+ * `details[]`, no `ErrorInfo`, no `reason`. Reading only the reason left this
+ * as `unknown`, which meant retryable, which meant an outage.
+ */
+const INVALID_PLACE_ID_BODY = {
+  error: {
+    code: 400,
+    message: 'The provided Place ID: ChIJ0000000000000000000 is not valid.\n',
+    status: 'INVALID_ARGUMENT',
+  },
+};
+
 function respond(status: number, body: unknown): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), { status }));
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
 }
+
+describe('#314 — a rejected request is not an outage', () => {
+  beforeEach(() => {
+    resetBreakers();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('classifies a place id Google calls invalid as a rejected request', async () => {
+    respond(400, INVALID_PLACE_ID_BODY);
+    const adapter = new GooglePlacesAdapter(API_KEY);
+
+    await expect(adapter.details('ChIJ0000000000000000000')).rejects.toBeInstanceOf(
+      ProviderInvalidRequestError,
+    );
+    await expect(adapter.details('ChIJ0000000000000000000')).rejects.toMatchObject({
+      canonicalStatus: 'INVALID_ARGUMENT',
+    });
+  });
+
+  it('does not retry it — one call, not three', async () => {
+    const fetchMock = respond(400, INVALID_PLACE_ID_BODY);
+    const adapter = new GooglePlacesAdapter(API_KEY);
+
+    await expect(adapter.details('ChIJbad')).rejects.toBeInstanceOf(ProviderInvalidRequestError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never becomes ProviderUnavailableError, however many bad ids arrive', async () => {
+    respond(400, INVALID_PLACE_ID_BODY);
+    const adapter = new GooglePlacesAdapter(API_KEY);
+
+    // Enough to trip the breaker if these counted as failures — which is the
+    // second half of the bug: pasted junk would break resolution for everyone.
+    for (let i = 0; i < 8; i += 1) {
+      await expect(adapter.details(`ChIJbad${i}`)).rejects.toBeInstanceOf(
+        ProviderInvalidRequestError,
+      );
+    }
+    await expect(adapter.details('ChIJbad')).rejects.not.toBeInstanceOf(ProviderUnavailableError);
+  });
+
+  it('reads 404 NOT_FOUND as a rejected request too, and says which', async () => {
+    respond(404, {
+      error: { code: 404, status: 'NOT_FOUND', message: 'Requested entity was not found.' },
+    });
+    const adapter = new GooglePlacesAdapter(API_KEY);
+
+    await expect(adapter.details('ChIJretired')).rejects.toMatchObject({
+      canonicalStatus: 'NOT_FOUND',
+    });
+  });
+
+  it('does not infer from HTTP 400 alone when Google gives no canonical status', async () => {
+    const fetchMock = respond(400, { error: { code: 400, message: 'something else' } });
+    const adapter = new GooglePlacesAdapter(API_KEY);
+
+    // No status, no verdict: it stays a transient failure and is retried, which
+    // is the conservative reading. Silently swallowing every 400 as "bad input"
+    // is the over-correction this issue must not make.
+    await expect(adapter.details('ChIJexample')).rejects.toBeInstanceOf(ProviderUnavailableError);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('an auth failure still outranks a canonical status in the same body', async () => {
+    respond(403, {
+      error: {
+        code: 403,
+        status: 'PERMISSION_DENIED',
+        details: [
+          { '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'SERVICE_DISABLED' },
+        ],
+      },
+    });
+    const adapter = new GooglePlacesAdapter(API_KEY);
+
+    // Our console is what needs fixing, not the caller's argument.
+    await expect(adapter.details('ChIJexample')).rejects.toBeInstanceOf(ProviderConfigurationError);
+  });
+
+  it('counts a rejection on its own series, never as a provider failure', async () => {
+    respond(400, INVALID_PLACE_ID_BODY);
+    const seen: { name: string; labels: Record<string, unknown> }[] = [];
+    const adapter = new GooglePlacesAdapter(API_KEY, {
+      increment: (name, labels) => seen.push({ name, labels: labels ?? {} }),
+    });
+
+    await expect(adapter.details('ChIJbad')).rejects.toBeInstanceOf(ProviderInvalidRequestError);
+
+    const names = seen.map((m) => m.name);
+    expect(names).toContain('places_provider_rejected_total');
+    // The assertion that matters: an alert on this series means Google is not
+    // serving us, and a user's typo must not make that statement.
+    expect(names).not.toContain('places_provider_failures_total');
+    const rejected = seen.find((m) => m.name === 'places_provider_rejected_total');
+    expect(rejected?.labels).toMatchObject({ canonical_status: 'INVALID_ARGUMENT' });
+    expect(JSON.stringify(seen)).not.toContain(API_KEY);
+  });
+});
 
 describe('#273 — GooglePlacesAdapter failure classification', () => {
   beforeEach(() => {

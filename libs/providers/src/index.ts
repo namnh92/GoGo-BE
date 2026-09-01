@@ -13,10 +13,12 @@ export {
   FakeStorage,
 } from './fake.adapters';
 export {
-  errorReason,
+  CLIENT_REJECT_STATUSES,
   googleFailure,
   isMisconfiguredReason,
   PROVIDER_MISCONFIGURED_REASONS,
+  readGoogleError,
+  type GoogleErrorInfo,
 } from './google-error';
 export { GooglePlacesAdapter } from './google-places.adapter';
 export { GoogleRoutesAdapter } from './google-routes.adapter';

@@ -3,6 +3,7 @@ import { eq, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import {
   PLACE_PROVIDER,
+  ProviderInvalidRequestError,
   type PlaceProviderPort,
   type ResolvedProviderPlace,
 } from '@gogo/providers';
@@ -150,9 +151,13 @@ export class PlaceImportService {
       providerPlaceId = await this.provider.resolveUrl(row.url);
       if (!providerPlaceId) return reject('INVALID_URL');
       details = await this.provider.details(providerPlaceId);
-    } catch {
-      // Any provider failure — breaker open, timeout, transport — is a clean
-      // rejection the client can retry, never a 500 (FR-PLACE-002).
+    } catch (err) {
+      // #314: a link Google rejects on its merits is the submitter's to fix,
+      // and PROVIDER_ERROR ("thử lại sau") tells them to wait for a retry that
+      // will fail identically. The row already has the right code for it.
+      if (err instanceof ProviderInvalidRequestError) return reject('INVALID_URL');
+      // Any other provider failure — breaker open, timeout, transport — is a
+      // clean rejection the client can retry, never a 500 (FR-PLACE-002).
       return reject('PROVIDER_ERROR');
     }
     if (!details) return reject('NOT_FOUND');
