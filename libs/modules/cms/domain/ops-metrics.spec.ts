@@ -9,6 +9,7 @@ import {
   opsTrendQueries,
   promDuration,
   providerOf,
+  operationForSku,
   resolveWindow,
   type OpsSamples,
 } from './ops-metrics';
@@ -288,6 +289,25 @@ describe('aggregation', () => {
     // only signal for what Routes costs. Losing it returned null, and null
     // renders as "chưa đo" — reporting a billed provider as unmeasured.
     expect(routes.billableUnits).toBe(10);
+  });
+
+  it('shows one Routes operation, not one with the calls and one with the bill', () => {
+    const routes = providers.find((p) => p.provider === 'routes')!;
+    // Seen on DEV: `google.routeMatrix` carried six calls and no cost while
+    // `routes.computeRouteMatrix` carried the cost and no calls. The obvious
+    // reading — that the expensive operation is idle — is backwards.
+    expect(routes.operations.map((o) => o.method)).toEqual(['google.routeMatrix']);
+    const op = routes.operations[0]!;
+    expect(op.calls).toBe(1);
+    expect(op.billableUnits).toBe(10);
+  });
+
+  it('folds a billed SKU onto the operation that spent it', () => {
+    expect(operationForSku('routes.computeRouteMatrix')).toBe('google.routeMatrix');
+    // Places already labels its cost counter with the operation name.
+    expect(operationForSku('google.details.quality')).toBe('google.details.quality');
+    // An unmapped SKU passes through rather than disappearing.
+    expect(operationForSku('something.new')).toBe('something.new');
   });
 
   it('attributes billable units to the operation that spent them', () => {
