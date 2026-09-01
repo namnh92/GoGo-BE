@@ -104,10 +104,20 @@ export class PlaceSubmissionService {
     }
 
     const details = outcome.details;
+    // #334 — Google can answer about the successor of a place that moved.
+    this.dedup.reportIdMismatch(details, 'submission');
     const verdict = await this.dedup.check(details);
     const score = await this.resolver.scoreFor(details, input.cityHint ?? null, null);
     const candidate = this.toCandidate(details, score);
 
+    if (verdict.kind === 'IDENTITY_CONFLICT') {
+      // #334 — two places claim this Google ID and the conflict is still open.
+      // `ALREADY_EXISTS` would send the user to whichever place the query
+      // happened to return first, and `RESOLVED` would invite them to submit a
+      // third. Neither is true, so the honest preview answer is that we cannot
+      // resolve it yet. The `/v1` enum is unchanged; the reason code says why.
+      return { status: 'UNRESOLVED', reasonCodes: ['PLACE_IDENTITY_CONFLICT'] };
+    }
     if (verdict.kind === 'LINKED_EXISTING') {
       // Existing place opens Place Detail instead of creating a duplicate.
       return {
@@ -174,7 +184,18 @@ export class PlaceSubmissionService {
       throw AppError.conflict('PLACE_CLOSED', 'Place is closed and cannot be added');
     }
 
+    this.dedup.reportIdMismatch(details.details, 'submission');
     const verdict = await this.dedup.check(details.details);
+    if (verdict.kind === 'IDENTITY_CONFLICT') {
+      // Accepting the submission would attach it to an ambiguous identity, and
+      // the moderator approving it later would inherit the same choice we are
+      // refusing to make here (#334).
+      this.metrics.increment('place_identity_conflict_blocked_total', { path: 'submission' });
+      throw AppError.conflict(
+        'PLACE_IDENTITY_CONFLICT',
+        'Địa điểm Google này đang trỏ tới hai place GoGo; cần gộp trước khi thêm',
+      );
+    }
     if (verdict.kind === 'LINKED_EXISTING') {
       return { status: 'ALREADY_EXISTS' as const, placeId: verdict.placeId };
     }

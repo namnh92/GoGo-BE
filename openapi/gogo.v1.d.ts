@@ -889,7 +889,7 @@ export interface paths {
         put?: never;
         /**
          * Resolve a Google Maps link to a provider place (preview only)
-         * @description PI-BE-018 / FR-INGEST-002/010. Hostname allowlist, ≤5 redirects with SSRF guard, no HTML scraping. Returns RESOLVED, ALREADY_EXISTS (opens the canonical place), CANDIDATE_SELECTION (user picks the branch) or UNRESOLVED with reason codes. Provider data carries source, fetchedAt and attributions; Google rating and derived score stay separate.
+         * @description PI-BE-018 / FR-INGEST-002/010. Hostname allowlist, ≤5 redirects with SSRF guard, no HTML scraping. Returns RESOLVED, ALREADY_EXISTS (opens the canonical place), CANDIDATE_SELECTION (user picks the branch) or UNRESOLVED with reason codes — including PLACE_IDENTITY_CONFLICT, where the Google Place ID points at two GoGo places and neither may be offered until an editor merges them. Provider data carries source, fetchedAt and attributions; Google rating and derived score stay separate.
          */
         post: operations["resolveGoogleMapsLink"];
         delete?: never;
@@ -909,7 +909,7 @@ export interface paths {
         put?: never;
         /**
          * Propose a place from a resolved provider id (FR-INGEST-011/012)
-         * @description Creates at most one pending proposal per provider place; repeat submissions increment submissionCount. Never publishes to the catalog. Guests must submit within their room-scoped session.
+         * @description Creates at most one pending proposal per provider place; repeat submissions increment submissionCount. Never publishes to the catalog. Guests must submit within their room-scoped session. 409 `PLACE_IDENTITY_CONFLICT` means the Google Place ID is recorded against two GoGo places: accepting would attach the proposal to an ambiguous identity, so an editor merges them first (#334).
          */
         post: operations["submitPlace"];
         delete?: never;
@@ -6767,7 +6767,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Import result: pending → verified | rejected. Rejections carry a stable reasonCode (NOT_FOUND, INSUFFICIENT_REVIEWS, LOW_RATING, OUT_OF_AREA, CLOSED, INVALID_URL, PROVIDER_ERROR). */
+            /** @description Import result: pending → verified | rejected. Rejections carry a stable reasonCode (NOT_FOUND, INSUFFICIENT_REVIEWS, LOW_RATING, OUT_OF_AREA, CLOSED, INVALID_URL, PROVIDER_ERROR, IDENTITY_CONFLICT). IDENTITY_CONFLICT means the Google Place ID is recorded against two GoGo places and an editor must merge them first — linking to either would be the API picking a winner. */
             201: {
                 headers: {
                     [name: string]: unknown;

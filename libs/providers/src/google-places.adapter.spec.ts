@@ -375,3 +375,43 @@ describe('#313 — adapter emits bounded labels and a latency observation', () =
     expect(JSON.stringify([...rec.counters, ...rec.observations])).not.toContain(API_KEY);
   });
 });
+
+describe('#334 — the id that came back is not always the id we asked for', () => {
+  beforeEach(() => {
+    resetBreakers();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reports the requested id when Google answers about a successor', async () => {
+    respond(200, {
+      id: 'ChIJnew',
+      displayName: { text: 'Quán Đã Chuyển' },
+      location: { latitude: 10.78, longitude: 106.7 },
+    });
+    const adapter = new GooglePlacesAdapter(API_KEY);
+
+    const details = await adapter.details('ChIJold');
+
+    // Both ids, so the caller can see the change rather than infer it. What it
+    // must not do is relink on its own — that is PR7's review path.
+    expect(details?.providerPlaceId).toBe('ChIJnew');
+    expect(details?.requestedProviderPlaceId).toBe('ChIJold');
+  });
+
+  it('says nothing when the two agree, which is the ordinary case', async () => {
+    respond(200, {
+      id: 'ChIJsame',
+      displayName: { text: 'Quán Bình Thường' },
+      location: { latitude: 10.78, longitude: 106.7 },
+    });
+    const adapter = new GooglePlacesAdapter(API_KEY);
+
+    const details = await adapter.details('ChIJsame');
+
+    expect(details?.providerPlaceId).toBe('ChIJsame');
+    expect(details?.requestedProviderPlaceId).toBeUndefined();
+  });
+});

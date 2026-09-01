@@ -28,6 +28,12 @@ export class FakePlaceProvider implements PlaceProviderPort {
   readonly registry = new Map<string, ResolvedProviderPlace>();
   /** Tiers requested, in order — lets a test assert what a flow would be billed. */
   readonly tiersRequested: PlaceFetchTier[] = [];
+  /**
+   * Old id → the id Google answers with, for a place that moved or merged.
+   * `details(old)` then returns the successor's row and says which id was
+   * asked for, which is what #334's mismatch reporting keys on.
+   */
+  readonly movedTo = new Map<string, string>();
   /** Set to simulate provider outage. */
   failing = false;
   /** PI-QA-001: the two failure modes callers must handle differently — */
@@ -88,8 +94,13 @@ export class FakePlaceProvider implements PlaceProviderPort {
     this.guard();
     this.tiersRequested.push(tier);
     if (this.failing) throw new Error('fake provider down');
-    const place = this.registry.get(providerPlaceId);
-    if (!place) return null;
+    const resolvedId = this.movedTo.get(providerPlaceId) ?? providerPlaceId;
+    const stored = this.registry.get(resolvedId);
+    if (!stored) return null;
+    const place: ResolvedProviderPlace =
+      resolvedId === providerPlaceId
+        ? stored
+        : { ...stored, requestedProviderPlaceId: providerPlaceId };
     // A `core` fetch cannot return quality fields, and a fake that hands them
     // over anyway teaches a test that the cheap tier is as good as the dear one.
     if (tier === 'core') {

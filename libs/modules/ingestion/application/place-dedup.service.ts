@@ -1,15 +1,32 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import type { ResolvedProviderPlace } from '@gogo/providers';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { normalizeVietnamese } from '../../search/domain/normalize';
+import { GOOGLE_PROVIDER } from '../../shared/google-provenance';
 import { DB } from '../../shared/tokens';
 import { writeOutbox } from '../../shared/outbox';
 
 export type DedupVerdict =
   | { kind: 'LINKED_EXISTING'; placeId: string }
+  | { kind: 'IDENTITY_CONFLICT'; placeIds: string[]; conflictId: string }
   | { kind: 'MERGE_CANDIDATE'; placeId: string; similarity: number; distanceM: number }
   | { kind: 'NEW' };
+
+/**
+ * What a Google Place ID resolves to — including "we do not know yet".
+ *
+ * `CONFLICT` is not a degenerate `RESOLVED`. An external ID recorded against
+ * two different GoGo places has no single right answer, and picking the
+ * canonical row because it happens to be first is precisely the silent choice
+ * `place_identity_conflicts` exists to prevent (#334). Every caller has to
+ * decide what to do with it; none may treat it as a link.
+ */
+export type GoogleIdentity =
+  | { kind: 'NONE' }
+  | { kind: 'RESOLVED'; placeId: string }
+  | { kind: 'CONFLICT'; placeIds: string[]; conflictId: string };
 
 /**
  * PI-BE-006 / FR-INGEST-009 — duplicate rules, strongest signal first:
@@ -18,25 +35,132 @@ export type DedupVerdict =
  */
 @Injectable()
 export class PlaceDedupService {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+  ) {}
+
+  /**
+   * What GoGo place a Google Place ID belongs to — the one identity read.
+   *
+   * Three tables in one round trip, and the order matters. An **open** row in
+   * `place_identity_conflicts` outranks both provenance tables: it says the
+   * two disagree and no backfill was willing to choose, so runtime does not
+   * get to choose either. Returning the canonical row here would make the
+   * conflict queue decorative — the migration would have recorded a
+   * disagreement that every import, submission and bulk row then ignored.
+   *
+   * Absent a conflict, canonical first and legacy `place_sources` second. That
+   * fallback is what makes the transition safe in both directions: migration
+   * 0033 copies every legacy row forward, but a database mid-rollout must
+   * still resolve to the place it has always resolved to.
+   */
+  async resolveGoogleIdentity(
+    googlePlaceId: string,
+    runner: Pick<Db, 'execute'> = this.db,
+  ): Promise<GoogleIdentity> {
+    const found = await runner.execute(sql`
+      select
+        (select place_id from place_provider_sources
+          where provider = ${GOOGLE_PROVIDER} and external_id = ${googlePlaceId}
+          limit 1) as canonical_place_id,
+        (select place_id from place_sources
+          where provider = 'google' and external_id = ${googlePlaceId}
+          limit 1) as legacy_place_id,
+        (select id from place_identity_conflicts
+          where provider = ${GOOGLE_PROVIDER} and external_id = ${googlePlaceId}
+            and resolved_at is null
+          limit 1) as conflict_id
+    `);
+    const row = found.rows[0] as {
+      canonical_place_id: string | null;
+      legacy_place_id: string | null;
+      conflict_id: string | null;
+    };
+
+    if (row.conflict_id) {
+      // Both sides are named, so a moderator sees what has to be merged rather
+      // than being told only that something is wrong.
+      const placeIds = [row.canonical_place_id, row.legacy_place_id].filter(
+        (id): id is string => id !== null,
+      );
+      return { kind: 'CONFLICT', placeIds, conflictId: row.conflict_id };
+    }
+    if (row.canonical_place_id) return { kind: 'RESOLVED', placeId: row.canonical_place_id };
+    if (row.legacy_place_id) return { kind: 'RESOLVED', placeId: row.legacy_place_id };
+    return { kind: 'NONE' };
+  }
+
+  /**
+   * Links a place to its Google identity and nothing else.
+   *
+   * The path that calls this — `/v1/places/imports` — used to write
+   * `place_sources`, which is what made the same Google Place ID able to
+   * become two GoGo places. It writes here instead, but only the columns
+   * ADR-0006 §9.3 classes "allowed": the ID, the provider's own link, the
+   * attribution it obliges us to display, and our own fetch metadata. Rating,
+   * price level and primary type stay out — §9.5 forbids moving provider
+   * content into another table, and unifying an identity is not a reason to.
+   *
+   * Throws on a unique violation rather than re-pointing the row: an external
+   * ID already held by another place is a merge decision, not an update.
+   */
+  async linkProviderIdentity(
+    input: {
+      placeId: string;
+      googlePlaceId: string;
+      attribution: string | null;
+      providerUri: string | null;
+      fetchTier: 'core' | 'quality' | 'detail';
+      refreshAfterDays?: number;
+    },
+    runner: Pick<Db, 'insert'> = this.db,
+  ): Promise<void> {
+    const refreshAfter = new Date(Date.now() + (input.refreshAfterDays ?? 30) * 24 * 3600 * 1000);
+    await runner.insert(schema.placeProviderSources).values({
+      placeId: input.placeId,
+      provider: GOOGLE_PROVIDER,
+      externalId: input.googlePlaceId,
+      providerUri: input.providerUri,
+      refreshAfter,
+      attribution: input.attribution === null ? {} : { text: input.attribution },
+      sourceStatus: 'active',
+      fetchTier: input.fetchTier,
+    });
+  }
+
+  /**
+   * #334 — Google answered about a different place than the one we asked for.
+   *
+   * Details follows a moved/merged place to its successor, so the returned id
+   * can differ from the requested one. That is an identity change, and PR1
+   * only reports it: recording `moved_to_external_id` and routing to review
+   * arrives with PR7. Auto-relinking here would let Google's redirect silently
+   * repoint a GoGo place.
+   */
+  reportIdMismatch(details: ResolvedProviderPlace, path: 'import' | 'ingest' | 'submission'): void {
+    const requested = details.requestedProviderPlaceId;
+    if (!requested || requested === details.providerPlaceId) return;
+    // Labels stay bounded: the fact and the door it came through, never an id.
+    this.metrics.increment('place_provider_id_mismatch_total', {
+      provider: GOOGLE_PROVIDER,
+      path,
+    });
+  }
 
   async check(details: ResolvedProviderPlace): Promise<DedupVerdict> {
-    const byProvider = await this.db.execute(sql`
-      select place_id from place_provider_sources
-      where provider = 'google_places' and external_id = ${details.providerPlaceId}
-      limit 1
-    `);
-    const linked = byProvider.rows[0] as { place_id: string } | undefined;
-    if (linked) return { kind: 'LINKED_EXISTING', placeId: linked.place_id };
-
-    // Legacy place_sources rows count as the same signal.
-    const legacy = await this.db.execute(sql`
-      select place_id from place_sources
-      where provider = 'google' and external_id = ${details.providerPlaceId}
-      limit 1
-    `);
-    const legacyHit = legacy.rows[0] as { place_id: string } | undefined;
-    if (legacyHit) return { kind: 'LINKED_EXISTING', placeId: legacyHit.place_id };
+    const identity = await this.resolveGoogleIdentity(details.providerPlaceId);
+    if (identity.kind === 'CONFLICT') {
+      this.metrics.increment('place_identity_conflict_blocked_total', { path: 'dedup' });
+      return {
+        kind: 'IDENTITY_CONFLICT',
+        placeIds: identity.placeIds,
+        conflictId: identity.conflictId,
+      };
+    }
+    if (identity.kind === 'RESOLVED') {
+      return { kind: 'LINKED_EXISTING', placeId: identity.placeId };
+    }
 
     const normalized = normalizeVietnamese(details.name);
     const near = await this.db.execute(sql`
@@ -86,7 +210,7 @@ export class PlaceDedupService {
       .insert(schema.placeProviderSources)
       .values({
         placeId: input.placeId,
-        provider: 'google_places',
+        provider: GOOGLE_PROVIDER,
         externalId: input.details.providerPlaceId,
         rating: input.details.rating !== null ? input.details.rating.toFixed(2) : null,
         ratingCount: input.details.ratingCount,

@@ -143,6 +143,11 @@ export const placeTaxonomies = pgTable(
   ],
 );
 
+/**
+ * `google` is retired from writers by PR1 (#334): Google provenance lives in
+ * `place_provider_sources`. The value stays in the enum because historical
+ * rows still carry it and this migration copies rather than drops.
+ */
 export const placeSourceProvider = pgEnum('place_source_provider', [
   'google',
   'manual',
@@ -160,7 +165,12 @@ export const placeSources = pgTable(
     externalId: text('external_id').notNull(),
     url: text('url'),
     attribution: text('attribution'),
-    // Provider payload snapshot — retention bounded by provider license.
+    /**
+     * Retired (ADR-0006 §9.4 R1, migration 0033). This held the whole Google
+     * Details payload; nothing ever read it and no purge existed. Writers are
+     * gone and existing values are nulled — the columns are dropped a release
+     * later, once no deployed code names them.
+     */
     raw: jsonb('raw'),
     rawUpdatedAt: timestamp('raw_updated_at', { withTimezone: true }),
     importedAt: timestamp('imported_at', { withTimezone: true }).notNull().defaultNow(),

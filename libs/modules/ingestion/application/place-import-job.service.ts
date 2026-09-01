@@ -783,6 +783,7 @@ export class PlaceImportJobService {
     if (settled === 'BLOCKED') return;
     if (context) context.normalized = settled;
 
+    this.dedup.reportIdMismatch(details, 'ingest');
     const verdict = await this.dedup.check(details);
     const base = {
       resolvedGooglePlaceId: details.providerPlaceId,
@@ -793,6 +794,27 @@ export class PlaceImportJobService {
       updatedAt: new Date(),
     };
 
+    if (verdict.kind === 'IDENTITY_CONFLICT') {
+      // #334 — not `duplicate`: that status asserts which place this row is a
+      // duplicate *of*, and that is the one thing nobody has decided yet.
+      await this.db
+        .update(schema.placeIngestRows)
+        .set({
+          ...base,
+          status: 'needs_confirmation',
+          errors: [
+            {
+              code: 'PLACE_IDENTITY_CONFLICT',
+              field: 'google_maps_url',
+              message: `Google Place ID này đang trỏ tới ${verdict.placeIds.length} place GoGo; cần gộp trước`,
+            },
+          ],
+        })
+        .where(eq(schema.placeIngestRows.id, rowId));
+      this.countRow('needs_confirmation', 'PLACE_IDENTITY_CONFLICT');
+      this.metrics.increment('place_identity_conflict_blocked_total', { path: 'ingest' });
+      return;
+    }
     if (verdict.kind === 'LINKED_EXISTING') {
       if (context?.mode === 'update_existing') {
         await this.updateExisting(rowId, verdict.placeId, details, context.normalized, base);

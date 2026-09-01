@@ -32,6 +32,17 @@ export type ProviderPhotoRef = {
 
 export type ResolvedProviderPlace = {
   providerPlaceId: string;
+  /**
+   * The id that was asked for, when it differs from the one that came back.
+   *
+   * Details follows a place that moved or was merged to its successor, so the
+   * provider can legitimately answer about a different id than the request
+   * named. Callers must be able to see that: silently storing the new id
+   * repoints a GoGo place on Google's say-so, and silently keeping the old one
+   * stores an identity the provider no longer serves. Absent when the two
+   * agree, which is the ordinary case (#334).
+   */
+  requestedProviderPlaceId?: string;
   name: string;
   addressText: string;
   lat: number;

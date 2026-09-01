@@ -36,7 +36,8 @@ erDiagram
     rooms ||--o{ plans : "versioned, 1 current"
     plans ||--o{ plan_stops : ordered
     plan_stops ||--o{ stop_checkins : "member check-ins"
-    places ||--o{ place_sources : "provider dedup"
+    places ||--o{ place_provider_sources : "Google identity + freshness"
+    places ||--o{ place_sources : "manual/community provenance"
     places ||--o{ place_hours : weekly
     places ||--o{ place_prices : verified
     places ||--o{ place_media : moderated
@@ -54,7 +55,10 @@ erDiagram
 - `votes_room_member_target_unique` — idempotent votes (FR-SUG-004).
 - `room_members_one_identity` — a membership is a user XOR a guest.
 - `stop_checkins_bill_photo_required` — bill amount requires bill photo (FR-PLAN-009).
-- `place_sources_provider_external_unique` — provider-level dedup (FR-CMS-004).
+- `place_provider_sources_provider_external_unique` — one Google Place ID, one
+  GoGo place, from every import door (#334). `place_sources_provider_external_unique`
+  still guards the legacy table, whose `google` rows migration 0033 copies over
+  and whose writer is gone.
 - `users_email_unique` partial — delete + re-register with same email works.
 - Constraint edits bump `rooms.constraint_version`; anything referencing an
   older version is stale (enforced in application layer + `is_stale` flags).

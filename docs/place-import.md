@@ -197,6 +197,70 @@ has no `photoUrl` in the OpenAPI spec (the GoGo-CMS zod mirror declares one that
 the server has never populated). Materialization needs its own decision about
 storage, cost and cache lifetime. It is not smuggled in here.
 
+## Google identity: one table, one place
+
+A Google Place ID resolves to exactly one GoGo place, from every door — the
+legacy community import (`POST /v1/places/imports`), the CMS bulk import, and
+the mobile submission. That is `place_provider_sources (provider =
+'google_places', external_id)`, whose unique index is what actually enforces it.
+
+It was not always one table. `/v1/places/imports` wrote
+`place_sources (provider = 'google')` and read only that; ingestion wrote and
+read the other; and `/v1/places/:id` attribution read only `place_sources`. The
+blindness was asymmetric, so which door a place came through decided whether it
+was recognised — and a place created by ingestion was served with no attribution
+at all, which is a licence obligation, not a nicety.
+
+Migration `0033_unify-google-provenance.sql` copies the legacy `google` rows
+forward and retires the writer. It is forward-only and idempotent, and it copies
+identity, attribution and fetch metadata only — never `raw`, and never rating,
+price level or primary type. Moving provider content into a second table is what
+ADR-0006 §9.5 forbids; unifying an identity is not a reason to.
+
+Three consequences worth knowing:
+
+- **`place_sources.raw` is gone** (ADR-0006 §9.4 R1). It held a whole Details
+  payload that nothing ever read and no job ever purged. The migration nulls it;
+  the columns drop a release later.
+- **Readers consult both tables** through `googleProvenanceRows`
+  (`libs/modules/shared/google-provenance.ts`), suppressing a legacy row only
+  once the canonical table holds the same identity _for the same place_. So a
+  database mid-rollout, and a row parked as a conflict, both keep serving what
+  they served before. `PROVENANCE_UNIFIED_READS=false` restores the pre-PR1
+  reader for one release; the migration does not revert with it.
+- **The public label is unchanged.** `/v1` and the CMS still see
+  `provider: 'google'` on a source row. `google_places` is a storage detail.
+
+Where the same external ID already pointed at a _different_ place, the backfill
+does not choose. Both rows survive and the pair lands in
+`place_identity_conflicts` — the same rule `PlaceDedupService.check` follows
+when it returns `MERGE_CANDIDATE` instead of merging.
+
+**That queue is not decorative: it gates runtime resolution.** An open conflict
+row outranks both provenance tables in `resolveGoogleIdentity`, which returns
+`CONFLICT` rather than the canonical winner. Resolving canonical-first would
+mean the migration recorded a disagreement that every subsequent import,
+submission and bulk row then ignored — the identity would still be silently
+picked, just by a different query. Each door refuses in its own vocabulary:
+
+| Path                                       | Behaviour while the conflict is open                                                                               |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `POST /v1/places/imports`                  | `rejected`, `reasonCode: IDENTITY_CONFLICT`; no place created                                                      |
+| `POST /v1/places/resolve-google-maps-link` | `UNRESOLVED` + `PLACE_IDENTITY_CONFLICT` (not `ALREADY_EXISTS`)                                                    |
+| `POST /v1/place-submissions`               | 409 `PLACE_IDENTITY_CONFLICT`; no submission row                                                                   |
+| CMS bulk import row                        | `needs_confirmation` + `PLACE_IDENTITY_CONFLICT` — never `duplicate`, which would assert which place it duplicates |
+
+Each refusal counts `place_identity_conflict_blocked_total{path}`, so a queue
+that is not being worked shows up as a rate rather than as silence. A CMS merge
+closes the conflict row in the same transaction, and the refused door works
+again immediately — this is a queue, not a dead end.
+
+Google can also answer `details(id)` with a _different_ id, because a place
+moved or was merged. The adapter reports both (`requestedProviderPlaceId`) and
+callers count `place_provider_id_mismatch_total`. PR1 only observes it:
+recording `moved_to_external_id` and routing to review is PR7's work, and
+relinking on Google's say-so is not something a background path should do.
+
 ## Row identity: `source_row_id` and its fallback
 
 Rows are keyed `(job_id, source_row_id)`. A sheet with no such column used to

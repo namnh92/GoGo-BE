@@ -6,6 +6,9 @@ export const APP_CONFIG = Symbol('APP_CONFIG');
 
 export type MediaConfig = { MEDIA_PUBLIC_BASE_URL: string };
 
+/** #334 — the reader half of the Google provenance unification. */
+export type ProvenanceConfig = { PROVENANCE_UNIFIED_READS: boolean };
+
 /** The deployment a flag row is scoped to (#221). */
 export type PlatformConfig = { APP_ENV: 'dev' | 'staging' | 'prod' | 'production' };
 
