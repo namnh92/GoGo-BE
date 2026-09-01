@@ -85,10 +85,12 @@ export class GoogleRoutesAdapter implements TravelTimePort {
           method: 'google.routeMatrix',
           status: res.status,
         });
-        this.metrics.observe('place_provider_request_duration_ms', Date.now() - started, {
-          method: 'google.routeMatrix',
-          status: res.status,
-        });
+        // #320: seconds, the Prometheus base unit.
+        this.metrics.observe(
+          'place_provider_request_duration_seconds',
+          (Date.now() - started) / 1000,
+          { method: 'google.routeMatrix', status: res.status },
+        );
         // Elements, not requests, are the billed unit — count what we are
         // actually charged for, or the cost metric lies as batches grow.
         //

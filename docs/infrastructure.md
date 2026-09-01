@@ -126,7 +126,7 @@ một shape cố định (`LogMetrics` trong `@gogo/observability`):
 
 ```json
 {"metric":"place_import_rows_total","type":"counter","value":1,"status":"ready"}
-{"metric":"place_resolve_duration_ms","type":"histogram","value":128,"source":"cms_import","outcome":"ok"}
+{"metric":"place_resolve_duration_seconds","type":"histogram","value":0.128,"source":"cms_import","outcome":"ok"}
 ```
 
 Aggregator nào cũng đếm và alert được trên shape này; đổi sang exporter thật
@@ -139,7 +139,7 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | ----------------------------------------- | ---------------------------- | ------------------------------------------------- |
 | `place_import_jobs_total`                 | `status`, `source_type`      | tạo job, pause quota, kết thúc job                |
 | `place_import_rows_total`                 | `status`, `error_code`       | mỗi dòng khi resolve xong                         |
-| `place_resolve_duration_ms`               | `source`, `outcome`          | mỗi lần resolve                                   |
+| `place_resolve_duration_seconds`          | `source`, `outcome`          | mỗi lần resolve                                   |
 | `place_resolve_confidence_bucket`         | `source`, `bucket`           | mỗi lần resolve                                   |
 | `place_duplicate_candidates_total`        | `kind`                       | provider id trùng / trùng theo tên + khoảng cách  |
 | `place_import_legacy_mapping_total`       | `from`, `to`                 | client còn gửi cách viết cũ                       |
@@ -148,7 +148,7 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `place_import_category_underivable_total` | `google_type`                | Google type chưa có category tương ứng            |
 | `place_identity_change_total`             | `reason`                     | re-import trỏ place sang provider id khác         |
 | `places_provider_requests_total`          | `method`, `status`           | mọi call Google Places / Routes                   |
-| `place_provider_request_duration_ms`      | `method`, `status`           | histogram, mọi call Google Places / Routes        |
+| `place_provider_request_duration_seconds` | `method`, `status`           | histogram, mọi call Google Places / Routes        |
 | `places_provider_failures_total`          | `method`, `status`, `reason` | call Google thất bại (#273)                       |
 | `places_provider_rejected_total`          | `method`, `canonical_status` | Google từ chối request của ta (#314)              |
 | `places_provider_cost_units`              | `sku`                        | mọi call Google thành công (Routes cộng elements) |
@@ -158,7 +158,7 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `cms_super_admin_bypass_total`            | `action`, `resource_type`    | ghi mà chỉ super_admin mới qua được (SEC-002)     |
 | `experiment_assignment_total`             | `experiment`, `variant`      | gán subject vào variant                           |
 | `ai_feedback_runs_total`                  | `outcome`                    | mỗi lần chạy refinement                           |
-| `suggestion_run_latency_ms`               | `variant`, `weights_version` | mỗi suggestion run (SG-010)                       |
+| `suggestion_run_latency_seconds`          | `variant`, `weights_version` | mỗi suggestion run (SG-010)                       |
 | `suggestion_run_over_budget_total`        | `variant`                    | run vượt ngân sách latency                        |
 | `campaign_dispatched_total`               | `result`                     | gửi campaign push                                 |
 | `push_delivery_failed_total`              | `kind`                       | một device token bị từ chối                       |
@@ -169,8 +169,8 @@ Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 | ---------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | Ingestion quota  | có `place_import_jobs_total{status="paused_provider_quota"}`              | job đang đứng, cần người vào resume                                                                                                |
 | Provider lỗi     | tỉ lệ `places_provider_requests_total{status!~"2.."}` > 10% trong 15 phút | key sai, hết hạn, hoặc Google có sự cố                                                                                             |
-| Provider chậm    | p95 `place_resolve_duration_ms` > 3.000ms trong 15 phút                   | job 5.000 dòng sẽ không kịp                                                                                                        |
-| Google chậm      | p95 `place_provider_request_duration_ms` > 1.000ms trong 15 phút          | tách phần chậm của Google khỏi phần chậm của ta — `place_resolve_duration_ms` đo cả hai                                            |
+| Resolve chậm     | p95 `place_resolve_duration_seconds` > 3s trong 15 phút                   | job 5.000 dòng sẽ không kịp                                                                                                        |
+| Google chậm      | p95 `place_provider_request_duration_seconds` > 1s trong 15 phút          | tách phần chậm của Google khỏi phần chậm của ta — `place_resolve_duration_seconds` đo cả hai                                       |
 | Chi phí          | `places_provider_cost_units` vượt ngân sách ngày                          | chặn hoá đơn bất ngờ — **đặt cả budget alert bên Google Cloud Billing**, đừng chỉ dựa vào cái này                                  |
 | Chất lượng match | tỉ lệ bucket `0-0.5` > 30% trong một job                                  | dữ liệu nguồn kém hoặc mapping sai, không phải lỗi resolver                                                                        |
 | Submission tồn   | p95 `place_submission_publish_latency_hours` > 72h                        | hàng chờ moderation bị bỏ quên                                                                                                     |
@@ -180,17 +180,33 @@ Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 `places_provider_requests_total`: mỗi mili-giây khác nhau sinh một series mới,
 nên 10 request cho 10 series mỗi cái đứng ở `1` — không `rate()` được, và không
 có percentile. Thời lượng giờ nằm ở histogram
-`place_provider_request_duration_ms`.
+`place_provider_request_duration_seconds`.
 
-Bucket của histogram đó được chọn riêng (`BUCKETS_BY_METRIC` trong
-`libs/observability/src/registry.ts`), không dùng bộ mặc định: mọi call đo được
-trên DEV rơi vào khoảng 64–306ms, mà bộ mặc định chỉ phủ khoảng đó bằng ba
-bucket (100/250/500) nên p95 tính ra là sản phẩm của mép bucket chứ không phải
-sự thật về Google. Bộ riêng dày ở 25–300ms, thưa dần tới 5.000ms
-(`RESILIENCE.timeoutMs`) và 10.000ms cho đường abort.
+**Đơn vị là giây (#320).** Đơn vị cơ bản của Prometheus. Trước đây là mili-giây,
+với lý do ghi trong repo là "cho khớp `place_resolve_duration_ms` đã có" — một
+lý do tự tham chiếu: metric kia cũng của ta, cũng đổi được trong cùng commit.
+Đổi trước khi Grafana Cloud ingest để không tạo hai chuỗi lịch sử song song.
+`MetricsPort.observe()` và `time()` nhận giây; `secondsSince()` là chỗ duy nhất
+quy đổi.
 
-Đơn vị là **mili-giây**, không phải giây, cho khớp `place_resolve_duration_ms`
-đã có và alert đang trỏ vào nó.
+Ngoại lệ có chủ ý: `place_submission_publish_latency_hours` ở lại đơn vị giờ.
+SLA người ta thật sự bàn là "72 giờ"; đọc thành 259.200 giây thì không ai hiểu.
+Quy ước repo giữ là **ghi đơn vị vào hậu tố** — base unit thắng ở chỗ nó giúp
+ích, và ở đây thì không.
+
+**Mép bucket phải trùng ngưỡng alert.** p95 là phát biểu về mép bucket trước
+khi là phát biểu về hệ thống: nếu ngưỡng rơi giữa hai mép thì alert đang so với
+một giá trị nội suy, và con số đổi khi bộ bucket đổi chứ không phải khi dịch vụ
+đổi. Bốn bộ trong `BUCKETS_BY_METRIC` (`libs/observability/src/registry.ts`):
+
+| Histogram                                 | Mép đáng chú ý       | Vì sao                                                              |
+| ----------------------------------------- | -------------------- | ------------------------------------------------------------------- |
+| `place_provider_request_duration_seconds` | 0,025–0,3 dày, rồi 1 | mọi call DEV rơi vào 64–306ms (#313); mép 1s là alert "Google chậm" |
+| `place_resolve_duration_seconds`          | 3                    | alert "Resolve chậm"                                                |
+| `suggestion_run_latency_seconds`          | 3                    | `SUGGESTION_LATENCY_BUDGET_MS`                                      |
+| `place_submission_publish_latency_hours`  | 72                   | SLA moderation                                                      |
+
+Bộ mặc định (0,001s → 30s) dành cho histogram nào không khai báo riêng.
 
 Không bao giờ đưa vào nhãn: thời lượng thô, URL, place id, chuỗi truy vấn,
 message lỗi, job id, request id, timestamp, spreadsheet id, hay bất cứ thứ gì

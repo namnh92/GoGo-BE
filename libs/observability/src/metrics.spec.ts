@@ -16,7 +16,7 @@ describe('LogMetrics', () => {
     const metrics = new LogMetrics(logger);
 
     metrics.increment('place_import_rows_total', { status: 'ready', error_code: undefined });
-    metrics.observe('place_resolve_duration_ms', 42, { source: 'cms_import' });
+    metrics.observe('place_resolve_duration_seconds', 42, { source: 'cms_import' });
 
     expect(lines[0]).toEqual({
       metric: 'place_import_rows_total',
@@ -27,7 +27,7 @@ describe('LogMetrics', () => {
     // Undefined labels are dropped, not emitted as the string "undefined".
     expect(lines[0]).not.toHaveProperty('error_code');
     expect(lines[1]).toMatchObject({
-      metric: 'place_resolve_duration_ms',
+      metric: 'place_resolve_duration_seconds',
       type: 'histogram',
       value: 42,
     });

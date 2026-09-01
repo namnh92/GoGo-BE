@@ -159,9 +159,11 @@ describe('a metric emitted by worker-side bulk import reaches the scrape surface
     // The histogram, with its buckets and both aggregates — a rendered
     // `_count` is what proves `observe()` reached the registry and not only
     // the log.
-    expect(body).toContain('# TYPE place_resolve_duration_ms histogram');
-    expect(body).toMatch(/place_resolve_duration_ms_count\{[^}]*source="cms_import"[^}]*\} [1-9]/);
-    expect(body).toMatch(/place_resolve_duration_ms_bucket\{[^}]*le="\+Inf"[^}]*\} [1-9]/);
+    expect(body).toContain('# TYPE place_resolve_duration_seconds histogram');
+    expect(body).toMatch(
+      /place_resolve_duration_seconds_count\{[^}]*source="cms_import"[^}]*\} [1-9]/,
+    );
+    expect(body).toMatch(/place_resolve_duration_seconds_bucket\{[^}]*le="\+Inf"[^}]*\} [1-9]/);
     // `time()` labels the outcome itself; losing that would lose the ability
     // to separate a slow success from a slow failure.
     expect(body).toContain('outcome="ok"');

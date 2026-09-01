@@ -324,9 +324,15 @@ describe('#313 — adapter emits bounded labels and a latency observation', () =
 
     await adapter.details('ChIJ1');
 
-    const timing = rec.observations.find((o) => o.name === 'place_provider_request_duration_ms');
+    const timing = rec.observations.find(
+      (o) => o.name === 'place_provider_request_duration_seconds',
+    );
     expect(timing).toBeDefined();
+    // #320: seconds. A fake fetch answers in well under a second, so an
+    // observation at or above 1 means the adapter is still handing over
+    // milliseconds.
     expect(timing?.value).toBeGreaterThanOrEqual(0);
+    expect(timing?.value).toBeLessThan(1);
     expect(timing?.labels).toEqual({ method: 'google.details.quality', status: 200 });
   });
 

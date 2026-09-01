@@ -294,10 +294,17 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
         method: name,
         status: res.status,
       });
-      this.metrics.observe('place_provider_request_duration_ms', Date.now() - started, {
-        method: name,
-        status: res.status,
-      });
+      // #320: seconds, the Prometheus base unit. `libs/providers` deliberately
+      // depends on no `@gogo/*` package, so the conversion is spelled out here
+      // rather than imported from `@gogo/observability`.
+      this.metrics.observe(
+        'place_provider_request_duration_seconds',
+        (Date.now() - started) / 1000,
+        {
+          method: name,
+          status: res.status,
+        },
+      );
       if (res.ok) {
         this.metrics.increment('places_provider_cost_units', { sku: name });
         return (await res.json()) as T;

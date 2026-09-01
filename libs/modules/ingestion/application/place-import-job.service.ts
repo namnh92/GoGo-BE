@@ -700,7 +700,7 @@ export class PlaceImportJobService {
       )}`;
 
     const outcome = await this.metrics.time(
-      'place_resolve_duration_ms',
+      'place_resolve_duration_seconds',
       { source: 'cms_import' },
       () => this.resolver.resolveFromUrl(url, hints),
     );

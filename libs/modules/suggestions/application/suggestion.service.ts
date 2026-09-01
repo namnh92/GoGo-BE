@@ -166,7 +166,9 @@ export class SuggestionService {
       // SG-010 cost/latency budget. Recorded per run and emitted with the
       // variant, because "the new weights are better" and "the new weights are
       // slower" are both results and only one of them shows up in ranking.
-      this.metrics?.observe('suggestion_run_latency_ms', latencyMs, {
+      // #320: the run is recorded in ms (the column is `latency_ms`) and the
+      // budget is compared in ms; only the metric is in base units.
+      this.metrics?.observe('suggestion_run_latency_seconds', latencyMs / 1000, {
         variant: assignment.variant,
         weights_version: version,
       });
