@@ -331,17 +331,33 @@ export type PlaceAutocompleteInput = {
 export type ReverseGeocodeInput = LatLng & { limit?: number | undefined };
 
 /**
- * Search-capable place provider.
+ * A provider GoGo can search for places with.
  *
- * The three methods are optional rather than required, and that is the whole
- * design: `GooglePlacesAdapter` implements none of them and must stay a valid
- * `PlaceProviderPort`, because the POC is not allowed to change what production
- * does while `FLAG_ALT_MAPS_POC` is off. A caller asks `supportsSearch()` and
- * gets a truthful answer instead of a method that throws.
+ * Deliberately **not** an extension of `PlaceProviderPort`. That port's
+ * `details()` returns `ResolvedProviderPlace` — rating, review count, business
+ * status, weekly hours, photos, attribution — which is a description of what
+ * Google Places returns. VIETMAP Place v4 returns an address and a coordinate
+ * and nothing else, so implementing that port would mean inventing the rest:
+ * `rating: null`, `businessStatus: 'OPERATIONAL'`, `hours: []`. Core rule #8
+ * says place facts come from verified data, and a hard-coded
+ * `'OPERATIONAL'` is not one.
+ *
+ * `GooglePlacesAdapter` therefore stays a `PlaceProviderPort` and is not a geo
+ * provider — which is also what spec §7.3 asks for: Google is not added as a
+ * place-metadata provider in this POC.
+ *
+ * `autocomplete` and `reverse` are optional because not every provider has
+ * them (Foursquare has neither). A caller asks rather than calling a method
+ * that throws.
  */
-export interface GeoPlaceProviderPort extends PlaceProviderPort {
+export interface GeoPlaceProviderPort {
   readonly providerId: PlaceProviderId;
-  search?(input: PlaceSearchInput, signal?: AbortSignal): Promise<ProviderPlaceCandidate[]>;
+  search(input: PlaceSearchInput, signal?: AbortSignal): Promise<ProviderPlaceCandidate[]>;
+  /**
+   * The second, separately billed call (spec §27). `null` when the provider
+   * does not recognize the id — not an error, and not an empty place.
+   */
+  getDetails(providerPlaceId: string, signal?: AbortSignal): Promise<ProviderPlaceDetails | null>;
   autocomplete?(
     input: PlaceAutocompleteInput,
     signal?: AbortSignal,
@@ -349,11 +365,18 @@ export interface GeoPlaceProviderPort extends PlaceProviderPort {
   reverse?(input: ReverseGeocodeInput, signal?: AbortSignal): Promise<ProviderPlaceCandidate[]>;
 }
 
-export type SearchCapableProvider = GeoPlaceProviderPort &
-  Required<Pick<GeoPlaceProviderPort, 'search'>>;
+export type AutocompleteCapableProvider = GeoPlaceProviderPort &
+  Required<Pick<GeoPlaceProviderPort, 'autocomplete'>>;
 
-export function supportsSearch(p: GeoPlaceProviderPort): p is SearchCapableProvider {
-  return typeof p.search === 'function';
+export type ReverseCapableProvider = GeoPlaceProviderPort &
+  Required<Pick<GeoPlaceProviderPort, 'reverse'>>;
+
+export function supportsAutocomplete(p: GeoPlaceProviderPort): p is AutocompleteCapableProvider {
+  return typeof p.autocomplete === 'function';
+}
+
+export function supportsReverse(p: GeoPlaceProviderPort): p is ReverseCapableProvider {
+  return typeof p.reverse === 'function';
 }
 
 export const GEO_PLACE_PROVIDERS = Symbol('GEO_PLACE_PROVIDERS');

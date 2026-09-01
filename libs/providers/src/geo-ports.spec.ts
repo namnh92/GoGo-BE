@@ -3,12 +3,11 @@ import {
   GeoProviderError,
   geoErrorCodeForStatus,
   isRetryableGeoCode,
-  supportsSearch,
+  supportsAutocomplete,
+  supportsReverse,
   type GeoPlaceProviderPort,
   type GeoProviderErrorCode,
 } from './ports';
-import { GooglePlacesAdapter } from './google-places.adapter';
-import type { PlaceProviderPort } from './ports';
 
 describe('GEO-001 — status classification (spec §17, §18)', () => {
   // The retry table is the expensive half of this contract: a code on the wrong
@@ -57,24 +56,27 @@ describe('GEO-001 — provider bodies never reach the message (spec §18)', () =
   });
 });
 
-describe('GEO-001 — search capability is answered, not thrown', () => {
-  it('reports a provider that cannot search', () => {
-    // Google Places stays a valid PlaceProviderPort and gains nothing: the POC
-    // is not allowed to change what production does with the flag off.
-    const google: PlaceProviderPort = new GooglePlacesAdapter('test-key');
-    const asGeo = { ...google, providerId: 'google_places' } as GeoPlaceProviderPort;
+describe('GEO-001 — optional capabilities are answered, not thrown', () => {
+  const base: GeoPlaceProviderPort = {
+    providerId: 'vietmap',
+    search: vi.fn().mockResolvedValue([]),
+    getDetails: vi.fn().mockResolvedValue(null),
+  };
 
-    expect(supportsSearch(asGeo)).toBe(false);
+  it('reports a provider with neither autocomplete nor reverse', () => {
+    // Foursquare has neither. Asking beats calling a method that throws.
+    expect(supportsAutocomplete(base)).toBe(false);
+    expect(supportsReverse(base)).toBe(false);
   });
 
-  it('reports a provider that can', () => {
-    const searching: GeoPlaceProviderPort = {
-      providerId: 'vietmap',
-      resolveUrl: vi.fn(),
-      details: vi.fn(),
-      search: vi.fn().mockResolvedValue([]),
+  it('reports a provider that has both', () => {
+    const full: GeoPlaceProviderPort = {
+      ...base,
+      autocomplete: vi.fn().mockResolvedValue([]),
+      reverse: vi.fn().mockResolvedValue([]),
     };
 
-    expect(supportsSearch(searching)).toBe(true);
+    expect(supportsAutocomplete(full)).toBe(true);
+    expect(supportsReverse(full)).toBe(true);
   });
 });
