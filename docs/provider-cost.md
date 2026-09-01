@@ -56,11 +56,9 @@ future adapter accounted for by construction rather than by someone remembering.
 the provider call on a consumer path. A user waiting on a place lookup must not
 also wait on our bookkeeping.
 
-**Outstanding:** the plan asks for DEV latency measurements alongside this
-choice. Option A adds no awaited work to any request path, so there is no
-per-call latency to measure; what still needs measuring on DEV is flush
-duration and whether 5 s is the right window under real traffic. Recorded as a
-gap rather than filled with invented numbers.
+**The choice is provisional until measured.** §2.3 requires it to be settled by
+measurement on DEV, and that has not happened — see the open merge gate at the
+end of this document. Nothing here is filled with invented numbers.
 
 ### Reconciliation
 
@@ -147,3 +145,76 @@ that each replica keeps its own copy of, is not a ceiling.
 with no amount, which is exactly the pre-#335 behaviour. Both tables are
 additive and every new API field is optional, so nothing needs reverting to go
 back — the flag is the rollback, not the migration.
+
+## Merge gates
+
+### 1. OPEN — DEV flush latency and freshness, not yet measured
+
+The plan (§2.3) requires the accounting boundary to be chosen _by measurement on
+DEV_, and that measurement has not been taken. It is **not waived and not
+deferred silently**: #351 must not merge until the numbers below exist and are
+recorded here.
+
+What option A still has to prove, given it adds no awaited work to any request
+path (so there is no per-call latency to measure):
+
+1. **Flush duration under real traffic** — how long one `flush()` takes when the
+   buffer holds a realistic spread of operations. Read from
+   `provider_usage_ledger_flush_total{result="ok"}` rate against wall time, or
+   time the call directly in a one-off script.
+2. **Freshness lag** — how far behind the counters the table runs.
+   `max(updated_at)` on `provider_usage_daily` versus `now()`, sampled while
+   traffic is flowing. Should sit inside `COST_LEDGER_FLUSH_MS` plus write time.
+3. **Whether 5 s is the right window.** Too long widens the `SIGKILL` gap; too
+   short multiplies writes for no accuracy gain, since the table is per-day.
+
+Procedure on DEV, with `COST_LEDGER_ENABLED=true`:
+
+```sql
+-- Freshness: how stale is the ledger right now?
+select operation, updated_at, now() - updated_at as lag
+  from provider_usage_daily
+ where environment = 'dev' and day = (now() at time zone 'utc')::date
+ order by updated_at desc;
+```
+
+```text
+-- Agreement: the ledger against the counter it decorates, same window.
+--   ledger:  sum(calls_attempted) for the day, from the query above
+--   grafana: increase(places_provider_requests_total[24h])
+-- #335's DEV verification asks these to agree within ±1.
+```
+
+Record the three numbers in this section and tick the gate. If DEV cannot be
+reached before this PR is otherwise ready, the gate stays open and the PR stays
+open with it — an unmeasured boundary is not a measured one.
+
+### 2. Migration number, re-checked immediately before merge
+
+The invariant is **uniqueness, not contiguity**. This branch carries `0035`
+while `develop`'s highest is `0033`, because #349 holds `0034` in an open PR.
+The gap is deliberate and harmless: drizzle applies journal entries in array
+order and does not require them to be consecutive, and the integration suite
+migrates a container from scratch through exactly this journal on every run —
+so the gap is proven, not assumed.
+
+Neither PR depends on the other's merge order. Whichever lands **second**
+renumbers; if this one lands first, #349 is renumbered on its rebase rather than
+this one being held back.
+
+Re-run this immediately before merging, because another migration may have
+landed in between:
+
+```bash
+git fetch origin
+git ls-tree -r --name-only origin/develop -- migrations | grep '\.sql$' | tail -3
+python3 -c "import json;j=json.load(open('migrations/meta/_journal.json'));i=[e['idx'] for e in j['entries']];print('dupes',[x for x in set(i) if i.count(x)>1]);print('ordered',i==sorted(i))"
+```
+
+If the number collides: rename the file, update its `_journal.json` tag, and
+re-run `pnpm test:integration` — the migration is exercised for real there, so a
+rename that breaks it fails loudly rather than at deploy.
+
+> A duplicate journal `idx` has already happened once in this repo during
+> parallel work on this program, and nothing catches it automatically. A CI
+> guard belongs in its own change, not smuggled into this one.
