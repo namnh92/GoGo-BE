@@ -134,6 +134,21 @@ answers the third attempt exactly as it answered the first, and letting it
 open the breaker is what made a permanent console setting look like a
 dependency flapping on a cycle.
 
+**A rejection is not a failure (#314).** When Google's `error.status` is
+`INVALID_ARGUMENT` or `NOT_FOUND`, it understood the request and refused it —
+almost always a place id from a link a user pasted wrong. Those are counted on
+`places_provider_rejected_total{method,canonical_status}` and are deliberately
+**absent** from `places_provider_failures_total`, because an alert on that
+series asserts Google is not serving us and a user's typo must not make that
+assertion. They raise `ProviderInvalidRequestError`: not retried, not counted
+toward the breaker, and turned into a business result (`INVALID_URL`) rather
+than a 503.
+
+If `places_provider_rejected_total` climbs on its own while failures stay flat,
+nothing is broken here — look at where the links are coming from. If it climbs
+because _we_ built a malformed request, that is our bug, and the `method` label
+says which call.
+
 1. Distinguish key problems from outages: a wrong or expired key fails every
    call, an outage fails some.
 2. Key problems — rotate the key for the failing API from the secret manager

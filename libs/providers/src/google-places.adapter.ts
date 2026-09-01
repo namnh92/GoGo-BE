@@ -1,5 +1,6 @@
 import {
   ProviderConfigurationError,
+  ProviderInvalidRequestError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   type AreaAutocompletePort,
@@ -9,7 +10,7 @@ import {
   type ProviderPhotoRef,
   type ResolvedProviderPlace,
 } from './ports';
-import { errorReason, googleFailure } from './google-error';
+import { googleFailure, readGoogleError } from './google-error';
 import { withResilience } from './resilience';
 
 const RESILIENCE = {
@@ -162,6 +163,10 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       // console setting into "Không tìm thấy địa điểm trên Google Maps" on a
       // real user's screen.
       if (err instanceof ProviderConfigurationError) throw err;
+      // #314: nor is a place id Google calls invalid a place that does not
+      // exist. The caller turns this into "your link is broken", which is both
+      // true and actionable, instead of "we looked and found nothing".
+      if (err instanceof ProviderInvalidRequestError) throw err;
       return null;
     }
     if (!data?.id || !data.location) return null;
@@ -286,13 +291,27 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       // RESOURCE_EXHAUSTED still pauses the import rather than retrying into
       // an exhausted budget (spec §9.4); a configuration fault is not retried
       // either, because the answer will not change.
-      const reason = await errorReason(res);
+      const info = await readGoogleError(res);
+      const fault = googleFailure('google.places', res.status, info);
+
+      // #314: a request Google rejected is not a provider failure and must not
+      // be counted as one — an alert on `places_provider_failures_total` is a
+      // statement that Google is not serving us, and pasted junk would make
+      // that statement false. It is still counted, on its own bounded series,
+      // because a spike in rejected links is worth seeing.
+      if (fault instanceof ProviderInvalidRequestError) {
+        this.metrics.increment('places_provider_rejected_total', {
+          method: name,
+          canonical_status: fault.canonicalStatus,
+        });
+        throw fault;
+      }
+
       this.metrics.increment('places_provider_failures_total', {
         method: name,
         status: res.status,
-        reason: reason ?? 'unknown',
+        reason: info.reason ?? 'unknown',
       });
-      const fault = googleFailure('google.places', res.status, reason);
       if (fault) throw fault;
       throw new Error(`google ${res.status}`);
     });

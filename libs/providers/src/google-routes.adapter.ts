@@ -1,12 +1,13 @@
 import {
   ProviderConfigurationError,
+  ProviderInvalidRequestError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   type LatLng,
   type TravelLeg,
   type TravelTimePort,
 } from './ports';
-import { errorReason, googleFailure } from './google-error';
+import { googleFailure, readGoogleError } from './google-error';
 import { withResilience } from './resilience';
 
 const RESILIENCE = {
@@ -87,22 +88,34 @@ export class GoogleRoutesAdapter implements TravelTimePort {
         // #273: Routes not being enabled on the project is a permanent answer.
         // Presented as an outage it produced a breaker that opened and closed
         // on a cycle while the itinerary silently used straight-line estimates.
-        const reason = await errorReason(res);
+        const info = await readGoogleError(res);
+        const fault = googleFailure('google.routes', res.status, info);
+
+        // #314: a rejected request is not Google failing to serve us.
+        if (fault instanceof ProviderInvalidRequestError) {
+          this.metrics.increment('places_provider_rejected_total', {
+            method: 'google.routeMatrix',
+            canonical_status: fault.canonicalStatus,
+          });
+          throw fault;
+        }
+
         this.metrics.increment('places_provider_failures_total', {
           method: 'google.routeMatrix',
           status: res.status,
-          reason: reason ?? 'unknown',
+          reason: info.reason ?? 'unknown',
         });
-        const fault = googleFailure('google.routes', res.status, reason);
         if (fault) throw fault;
         throw new Error(`routes ${res.status}`);
       },
     ).catch((err: unknown) => {
       if (err instanceof ProviderQuotaExceededError) throw err;
       if (err instanceof ProviderConfigurationError) throw err;
+      if (err instanceof ProviderInvalidRequestError) throw err;
       const cause = (err as { cause?: unknown }).cause;
       if (cause instanceof ProviderQuotaExceededError) throw cause;
       if (cause instanceof ProviderConfigurationError) throw cause;
+      if (cause instanceof ProviderInvalidRequestError) throw cause;
       throw err instanceof ProviderUnavailableError
         ? err
         : new ProviderUnavailableError('google.routes', err);

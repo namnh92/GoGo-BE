@@ -1,4 +1,8 @@
-import { ProviderConfigurationError, ProviderQuotaExceededError } from './ports';
+import {
+  ProviderConfigurationError,
+  ProviderInvalidRequestError,
+  ProviderQuotaExceededError,
+} from './ports';
 
 /**
  * #273 — one reading of a Google error body, shared by all three adapters.
@@ -10,8 +14,32 @@ import { ProviderConfigurationError, ProviderQuotaExceededError } from './ports'
  */
 
 type GoogleErrorBody = {
-  error?: { details?: { '@type'?: string; reason?: string }[] };
+  error?: { status?: string; details?: { '@type'?: string; reason?: string }[] };
 };
+
+/** What `readGoogleError` could recover from the body. Both may be absent. */
+export type GoogleErrorInfo = {
+  /** `error.details[].reason` from a `google.rpc.ErrorInfo`, e.g. SERVICE_DISABLED. */
+  reason?: string | undefined;
+  /** `error.status`, the canonical code, e.g. PERMISSION_DENIED, INVALID_ARGUMENT. */
+  canonicalStatus?: string | undefined;
+};
+
+/**
+ * Canonical statuses that mean "your request was wrong", as opposed to "we
+ * could not serve it".
+ *
+ * Only these two, and only read from `error.status` — never inferred from HTTP
+ * 400 alone. Google returns 400 for more than bad input, and a 403 carrying
+ * `PERMISSION_DENIED` must stay an operational fault no matter what else the
+ * body says (#314).
+ *
+ * Verified against the live API: an unusable place id answers
+ * `400 {"error":{"status":"INVALID_ARGUMENT","message":"The provided Place ID …
+ * is not valid."}}` — with no `ErrorInfo` block at all, which is why reading
+ * only `details[].reason` left it classified as `unknown` and retryable.
+ */
+export const CLIENT_REJECT_STATUSES = new Set(['INVALID_ARGUMENT', 'NOT_FOUND']);
 
 /**
  * Reasons that describe GoGo's own Google setup rather than the caller's
@@ -36,23 +64,31 @@ export function isMisconfiguredReason(reason: string | undefined): boolean {
 }
 
 /**
- * The machine-readable reason from a Google error body, or undefined.
+ * Read a Google error body once, and lift out both machine-readable fields.
+ *
+ * One read, because a `Response` body can only be consumed once and the two
+ * fields answer different questions: `reason` says *what is misconfigured*,
+ * `status` says *whose fault the request is*. Reading only the first is how a
+ * bad place id looked identical to an outage (#314).
  *
  * Never throws: an error path that can fail to parse its own error is an error
  * path that loses the original failure. A body that is empty, truncated, or not
- * JSON simply yields no reason, and the caller falls back to the status.
+ * JSON simply yields nothing, and the caller falls back to the HTTP status.
  *
- * Only the reason is lifted out. The rest of the body carries the project
- * number and an activation URL, which belong in an operator's console and not
- * in anything a caller can read.
+ * Only these two fields are lifted out. The rest of the body carries the
+ * project number, an activation URL and the offending input echoed back, which
+ * belong in an operator's console and not in anything a caller can read.
  */
-export async function errorReason(res: Response): Promise<string | undefined> {
+export async function readGoogleError(res: Response): Promise<GoogleErrorInfo> {
   try {
     const body = (await res.json()) as GoogleErrorBody;
     const info = body.error?.details?.find((d) => d['@type']?.endsWith('google.rpc.ErrorInfo'));
-    return typeof info?.reason === 'string' ? info.reason : undefined;
+    return {
+      reason: typeof info?.reason === 'string' ? info.reason : undefined,
+      canonicalStatus: typeof body.error?.status === 'string' ? body.error.status : undefined,
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -71,14 +107,24 @@ export async function errorReason(res: Response): Promise<string | undefined> {
 export function googleFailure(
   provider: string,
   status: number,
-  reason: string | undefined,
-): ProviderConfigurationError | ProviderQuotaExceededError | undefined {
-  if (isMisconfiguredReason(reason)) {
-    return new ProviderConfigurationError(provider, 'AUTH_FAILED', reason);
+  info: GoogleErrorInfo,
+):
+  | ProviderConfigurationError
+  | ProviderQuotaExceededError
+  | ProviderInvalidRequestError
+  | undefined {
+  if (isMisconfiguredReason(info.reason)) {
+    return new ProviderConfigurationError(provider, 'AUTH_FAILED', info.reason);
   }
   if (status === 429) return new ProviderQuotaExceededError(provider);
   if (status === 401 || status === 403) {
-    return new ProviderConfigurationError(provider, 'AUTH_FAILED', reason);
+    return new ProviderConfigurationError(provider, 'AUTH_FAILED', info.reason);
+  }
+  // Last, deliberately: every operational verdict above wins. A body may carry
+  // both a canonical status and a reason, and "our key is refused" outranks
+  // "this argument is wrong" — the argument is not what needs fixing (#314).
+  if (info.canonicalStatus && CLIENT_REJECT_STATUSES.has(info.canonicalStatus)) {
+    return new ProviderInvalidRequestError(provider, info.canonicalStatus);
   }
   return undefined;
 }

@@ -217,6 +217,31 @@ export interface SheetsPort {
  * console, safe to log, and the only thing that tells an operator which
  * console page to open.
  */
+/**
+ * The provider understood the request and rejected it: the input is wrong, and
+ * it will be just as wrong on the next attempt.
+ *
+ * #314 — a place id Google answers `INVALID_ARGUMENT` to used to become a bare
+ * `Error`, which `withResilience` retried twice and then wrapped as an outage.
+ * A link a user pasted wrong was reported to them as GoGo being down, burned
+ * three Google calls doing it, and raised an operational alert about a fault
+ * on our side that did not exist.
+ *
+ * Deliberately not a subclass of the operational errors: the whole point is
+ * that this one is *not* an outage. Callers turn it into a business result.
+ */
+export class ProviderInvalidRequestError extends Error {
+  constructor(
+    readonly provider: string,
+    /** Google's canonical status — `INVALID_ARGUMENT` or `NOT_FOUND`. */
+    readonly canonicalStatus: string,
+    cause?: unknown,
+  ) {
+    super(`provider ${provider} rejected the request (${canonicalStatus})`, { cause });
+    this.name = 'ProviderInvalidRequestError';
+  }
+}
+
 export class ProviderConfigurationError extends Error {
   constructor(
     readonly provider: string,
