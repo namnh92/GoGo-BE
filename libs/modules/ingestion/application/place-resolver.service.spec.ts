@@ -22,6 +22,7 @@ const LACAPH =
 function providerThat(behaviour: Partial<PlaceProviderPort>): PlaceProviderPort {
   return {
     resolveUrl: async () => null,
+    searchCandidates: async () => [],
     details: async () => null,
     ...behaviour,
   } as PlaceProviderPort;
@@ -50,7 +51,10 @@ const A_REAL_PLACE: ResolvedProviderPlace = {
 describe('#279 — a provider that cannot answer is not a place that does not exist', () => {
   it('still reports a genuine miss as UNRESOLVED / NOT_FOUND', async () => {
     // Google answered, and the answer was "nothing here". Unchanged contract.
-    const resolver = new PlaceResolverService(providerThat({ resolveUrl: async () => null }), db);
+    const resolver = new PlaceResolverService(
+      providerThat({ searchCandidates: async () => [] }),
+      db,
+    );
 
     await expect(resolver.resolveFromUrl(LACAPH)).resolves.toMatchObject({
       status: 'UNRESOLVED',
@@ -61,7 +65,7 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
   it('resolves normally when the provider works', async () => {
     const resolver = new PlaceResolverService(
       providerThat({
-        resolveUrl: async () => 'ChIJlacaph',
+        searchCandidates: async () => ['ChIJlacaph'],
         details: async () => A_REAL_PLACE,
       }),
       db,
@@ -74,7 +78,7 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
   it('does not turn a disabled API into NOT_FOUND', async () => {
     const resolver = new PlaceResolverService(
       providerThat({
-        resolveUrl: async () => {
+        searchCandidates: async () => {
           throw new ProviderConfigurationError('google.places', 'AUTH_FAILED', 'SERVICE_DISABLED');
         },
       }),
@@ -100,7 +104,7 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
   it('does not turn an upstream outage into NOT_FOUND', async () => {
     const resolver = new PlaceResolverService(
       providerThat({
-        resolveUrl: async () => {
+        searchCandidates: async () => {
           throw new ProviderUnavailableError('google.places');
         },
       }),
@@ -113,7 +117,7 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
   it('still propagates quota, as it always did', async () => {
     const resolver = new PlaceResolverService(
       providerThat({
-        resolveUrl: async () => {
+        searchCandidates: async () => {
           throw new ProviderQuotaExceededError('google.places');
         },
       }),
@@ -128,7 +132,7 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
   it('a provider that resolves but cannot fetch details is still not a miss', async () => {
     const resolver = new PlaceResolverService(
       providerThat({
-        resolveUrl: async () => 'ChIJlacaph',
+        searchCandidates: async () => ['ChIJlacaph'],
         details: async () => {
           throw new ProviderConfigurationError('google.places', 'AUTH_FAILED', 'SERVICE_DISABLED');
         },
