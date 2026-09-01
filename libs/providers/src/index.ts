@@ -15,6 +15,17 @@ export {
 export { GooglePlacesAdapter } from './google-places.adapter';
 export { GoogleRoutesAdapter } from './google-routes.adapter';
 export { HaversineTravelTime } from './haversine-travel.adapter';
+export {
+  VietmapClient,
+  redactVietmapUrl,
+  parseRetryAfterMs,
+  VIETMAP_BASE_URL,
+  VIETMAP_MAX_ATTEMPTS,
+  VIETMAP_DEFAULT_TIMEOUT_MS,
+  VIETMAP_MAX_RETRY_AFTER_MS,
+  type VietmapClientConfig,
+  type VietmapQuery,
+} from './vietmap.client';
 export { GoogleSheetsAdapter } from './google-sheets.adapter';
 export { INGEST_SHEET_HOSTS, parseSpreadsheetId } from './sheets-url';
 export {
