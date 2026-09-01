@@ -1,0 +1,78 @@
+// GoGo metrics collector (INF-054 / #326).
+//
+// Two scrape targets, one destination. `apps/api` and `apps/worker` are
+// separate processes with separate in-memory registries, so a collector that
+// reads one of them reads half the system — and the half it would miss is the
+// one running bulk import, which is where most Google spend happens (#318).
+//
+// Stateless by design. The WAL below is a send buffer, not a store: Grafana
+// Cloud holds the data, and losing this container loses at most the few
+// minutes it had not yet shipped. Nothing here is a database to back up.
+//
+// No credential appears in this file. Everything sensitive arrives as an
+// environment variable from the env file GoGo-Infra renders out of SSM.
+
+logging {
+	level  = "warn"
+	format = "logfmt"
+}
+
+// One job, two instances. `instance` is what separates a slow import from a
+// slow request once both are in the same series name.
+prometheus.scrape "gogo" {
+	targets = [
+		{
+			__address__      = "api:3000",
+			__metrics_path__ = "/v1/metrics",
+			instance         = "api",
+		},
+		{
+			__address__      = "worker:9101",
+			__metrics_path__ = "/metrics",
+			instance         = "worker",
+		},
+	]
+
+	job_name = "gogo-be"
+
+	// Both endpoints answer 404 without this and 401 with a wrong one, so a
+	// misconfigured token fails loudly at the collector rather than quietly
+	// producing an empty scrape.
+	bearer_token = sys.env("METRICS_TOKEN")
+
+	// 60s. The registries are counters and histograms read from memory, so the
+	// cost of scraping is negligible; the cost of *storing* is per active series
+	// and does not change with interval. This is the resolution a 1h dashboard
+	// window is drawn at.
+	scrape_interval = "60s"
+	scrape_timeout  = "10s"
+
+	forward_to = [prometheus.remote_write.grafana.receiver]
+}
+
+prometheus.remote_write "grafana" {
+	// One stack holds every environment, separated by this label — which is why
+	// it must never be omitted. Two environments writing the same series with no
+	// `env` would silently add dev traffic to a production graph.
+	external_labels = {
+		env = sys.env("APP_ENV"),
+	}
+
+	endpoint {
+		url = sys.env("GRAFANA_PROM_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_PROM_USER")
+			password = sys.env("GRAFANA_WRITE_TOKEN")
+		}
+
+		// The token is scoped `metrics:write` and cannot read a series back, so
+		// the worst a leak does is spend quota (GoGo-Infra docs/secrets.md).
+		queue_config {
+			// A Grafana Cloud blip must not lose the window it happened in — that
+			// is the window someone will want to look at.
+			retry_on_http_429 = true
+			max_backoff       = "5m"
+		}
+	}
+}
