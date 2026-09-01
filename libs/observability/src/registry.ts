@@ -17,8 +17,42 @@ import type { MetricLabels, MetricsPort } from './metrics';
  */
 export type Sample = { value: number; labels: MetricLabels };
 
-/** Fixed buckets, in the units the metrics actually use (ms, hours, units). */
-const BUCKETS = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000];
+/**
+ * Default buckets, in the units the metrics actually use (ms, hours, units).
+ * Wide on purpose: it has to be defensible for every histogram that does not
+ * ask for something better.
+ */
+const DEFAULT_BUCKETS = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000];
+
+/**
+ * Per-metric buckets, for the histograms where the default resolves nothing.
+ *
+ * #313 — measured against the live Places API from the dev host, every call
+ * landed between 64ms and 306ms. The default set spans that range in three
+ * buckets (100 / 250 / 500), so a p95 computed from it is an artefact of the
+ * bucket edges rather than a fact about Google. These are chosen for that
+ * distribution:
+ *
+ * - 25–300ms in seven steps: where the entire observed mass sits, so a shift
+ *   of 50ms is visible instead of being rounded away.
+ * - 500 / 750 / 1000: degradation worth noticing before anything times out.
+ * - 2000 / 5000: approaching `RESILIENCE.timeoutMs`, which is 5000.
+ * - 10000: the abort path itself, so a timed-out call is still counted
+ *   somewhere finite rather than only in `+Inf`.
+ *
+ * Milliseconds, not seconds, because that is this repo's convention —
+ * `place_resolve_duration_ms` already exists and `docs/runbooks.md` alerts on
+ * it. One consistent unit beats matching an external house style halfway.
+ */
+const BUCKETS_BY_METRIC: Record<string, number[]> = {
+  place_provider_request_duration_ms: [
+    25, 50, 75, 100, 150, 200, 300, 500, 750, 1000, 2000, 5000, 10_000,
+  ],
+};
+
+function bucketsFor(name: string): number[] {
+  return BUCKETS_BY_METRIC[name] ?? DEFAULT_BUCKETS;
+}
 
 type HistogramState = { counts: number[]; sum: number; count: number };
 
@@ -38,17 +72,18 @@ export class MetricsRegistry implements MetricsPort {
   }
 
   observe(name: string, value: number, labels: MetricLabels = {}): void {
+    const buckets = bucketsFor(name);
     const series =
       this.histograms.get(name) ?? new Map<string, HistogramState & { labels: MetricLabels }>();
     const key = seriesKey(labels);
     const state = series.get(key) ?? {
-      counts: new Array<number>(BUCKETS.length).fill(0),
+      counts: new Array<number>(buckets.length).fill(0),
       sum: 0,
       count: 0,
       labels: clean(labels),
     };
-    for (let i = 0; i < BUCKETS.length; i += 1) {
-      if (value <= BUCKETS[i]!) state.counts[i] = (state.counts[i] ?? 0) + 1;
+    for (let i = 0; i < buckets.length; i += 1) {
+      if (value <= buckets[i]!) state.counts[i] = (state.counts[i] ?? 0) + 1;
     }
     state.sum += value;
     state.count += 1;
@@ -80,11 +115,12 @@ export class MetricsRegistry implements MetricsPort {
     }
 
     for (const [name, series] of [...this.histograms].sort(byName)) {
+      const buckets = bucketsFor(name);
       lines.push(`# TYPE ${name} histogram`);
       for (const state of series.values()) {
-        for (let i = 0; i < BUCKETS.length; i += 1) {
+        for (let i = 0; i < buckets.length; i += 1) {
           lines.push(
-            `${name}_bucket${renderLabels({ ...state.labels, le: String(BUCKETS[i]) })} ${state.counts[i]}`,
+            `${name}_bucket${renderLabels({ ...state.labels, le: String(buckets[i]) })} ${state.counts[i]}`,
           );
         }
         lines.push(`${name}_bucket${renderLabels({ ...state.labels, le: '+Inf' })} ${state.count}`);

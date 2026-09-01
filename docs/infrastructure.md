@@ -134,17 +134,20 @@ sau chỉ phải sửa một file, không phải sửa mọi call site.
 
 Metric đang phát (spec §13):
 
-| Metric                                   | Label                             | Phát ở                                           |
-| ---------------------------------------- | --------------------------------- | ------------------------------------------------ |
-| `place_import_jobs_total`                | `status`, `source_type`           | tạo job, pause quota, kết thúc job               |
-| `place_import_rows_total`                | `status`, `error_code`            | mỗi dòng khi resolve xong                        |
-| `place_resolve_duration_ms`              | `source`, `outcome`               | mỗi lần resolve                                  |
-| `place_resolve_confidence_bucket`        | `bucket`                          | mỗi lần resolve                                  |
-| `place_duplicate_candidates_total`       | `kind`                            | provider id trùng / trùng theo tên + khoảng cách |
-| `places_provider_requests_total`         | `method`, `status`, `duration_ms` | mọi call Google Places                           |
-| `places_provider_cost_units`             | `sku`                             | mọi call Google Places thành công                |
-| `mobile_place_submissions_total`         | `status`                          | submit / dedupe / decide                         |
-| `place_submission_publish_latency_hours` | `decision`                        | khi editor quyết định                            |
+| Metric                                   | Label                        | Phát ở                                           |
+| ---------------------------------------- | ---------------------------- | ------------------------------------------------ |
+| `place_import_jobs_total`                | `status`, `source_type`      | tạo job, pause quota, kết thúc job               |
+| `place_import_rows_total`                | `status`, `error_code`       | mỗi dòng khi resolve xong                        |
+| `place_resolve_duration_ms`              | `source`, `outcome`          | mỗi lần resolve                                  |
+| `place_resolve_confidence_bucket`        | `bucket`                     | mỗi lần resolve                                  |
+| `place_duplicate_candidates_total`       | `kind`                       | provider id trùng / trùng theo tên + khoảng cách |
+| `places_provider_requests_total`         | `method`, `status`           | mọi call Google Places                           |
+| `place_provider_request_duration_ms`     | `method`, `status`           | histogram, mọi call Google Places                |
+| `places_provider_failures_total`         | `method`, `status`, `reason` | call Google thất bại (#273)                      |
+| `places_provider_rejected_total`         | `method`, `canonical_status` | Google từ chối request của ta (#314)             |
+| `places_provider_cost_units`             | `sku`                        | mọi call Google Places thành công                |
+| `mobile_place_submissions_total`         | `status`                     | submit / dedupe / decide                         |
+| `place_submission_publish_latency_hours` | `decision`                   | khi editor quyết định                            |
 
 Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 
@@ -153,10 +156,30 @@ Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 | Ingestion quota  | có `place_import_jobs_total{status="paused_provider_quota"}`              | job đang đứng, cần người vào resume                                                                                                |
 | Provider lỗi     | tỉ lệ `places_provider_requests_total{status!~"2.."}` > 10% trong 15 phút | key sai, hết hạn, hoặc Google có sự cố                                                                                             |
 | Provider chậm    | p95 `place_resolve_duration_ms` > 3.000ms trong 15 phút                   | job 5.000 dòng sẽ không kịp                                                                                                        |
+| Google chậm      | p95 `place_provider_request_duration_ms` > 1.000ms trong 15 phút          | tách phần chậm của Google khỏi phần chậm của ta — `place_resolve_duration_ms` đo cả hai                                            |
 | Chi phí          | `places_provider_cost_units` vượt ngân sách ngày                          | chặn hoá đơn bất ngờ — **đặt cả budget alert bên Google Cloud Billing**, đừng chỉ dựa vào cái này                                  |
 | Chất lượng match | tỉ lệ bucket `0-0.5` > 30% trong một job                                  | dữ liệu nguồn kém hoặc mapping sai, không phải lỗi resolver                                                                        |
 | Submission tồn   | p95 `place_submission_publish_latency_hours` > 72h                        | hàng chờ moderation bị bỏ quên                                                                                                     |
 | Break-glass      | **bất kỳ** `cms_emergency_takedown_total`                                 | gỡ nội dung khẩn cấp phải **page ngay**, không để tới kỳ audit sau. Nhiều lần liên tiếp từ một actor = dấu hiệu tài khoản bị chiếm |
+
+**Nhãn phải hữu hạn (#313).** `duration_ms` từng là _nhãn_ của
+`places_provider_requests_total`: mỗi mili-giây khác nhau sinh một series mới,
+nên 10 request cho 10 series mỗi cái đứng ở `1` — không `rate()` được, và không
+có percentile. Thời lượng giờ nằm ở histogram
+`place_provider_request_duration_ms`.
+
+Bucket của histogram đó được chọn riêng (`BUCKETS_BY_METRIC` trong
+`libs/observability/src/registry.ts`), không dùng bộ mặc định: mọi call đo được
+trên DEV rơi vào khoảng 64–306ms, mà bộ mặc định chỉ phủ khoảng đó bằng ba
+bucket (100/250/500) nên p95 tính ra là sản phẩm của mép bucket chứ không phải
+sự thật về Google. Bộ riêng dày ở 25–300ms, thưa dần tới 5.000ms
+(`RESILIENCE.timeoutMs`) và 10.000ms cho đường abort.
+
+Đơn vị là **mili-giây**, không phải giây, cho khớp `place_resolve_duration_ms`
+đã có và alert đang trỏ vào nó.
+
+Không bao giờ đưa vào nhãn: thời lượng thô, URL, place id, chuỗi truy vấn,
+message lỗi, job id, request id, timestamp.
 
 Scrape: `GET /v1/metrics` trả **Prometheus text format**, chắn bằng
 `METRICS_TOKEN`. Không cấu hình token thì route trả **404** chứ không phải 401
