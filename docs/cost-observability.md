@@ -1,7 +1,7 @@
 # Cost observability
 
 Requirement: `Cost-Spec/GoGo-Cost-Observability-Epic-FINAL.md` (COST-OBS-EPIC-001,
-workspace). Tracker: GoGo-BE#370. This page says what exists in `libs/modules/cost`
+workspace). Tracker: GoGo-BE#370. Provider inventory (Phase 0 audit): `docs/cost-inventory.md`. This page says what exists in `libs/modules/cost`
 and how to add a provider without touching generic code.
 
 ## Pieces
