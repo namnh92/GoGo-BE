@@ -18,17 +18,12 @@ import type { PlaceFetchTier } from './ports';
  */
 
 /**
- * `liveness` is `id` and nothing else — Google's Place Details **IDs-Only**
- * SKU, free and unlimited.
- *
- * Plan §2.4 writes this mask as `id,movedPlaceId`. `movedPlaceId` is not a
- * field of the Places API (New) `Place` resource, so that mask would make
- * Google reject every liveness request with `INVALID_ARGUMENT` — invisibly,
- * because the stub transport does not validate field paths. Moved places are
- * detected by comparing the id Google answered with against the one we asked
- * for (#334), which needs no extra field and works at every tier.
+ * `liveness` is plan §2.4 verbatim — Google's Place Details **IDs-Only** SKU,
+ * free and unlimited. `movedPlaceId` is an IDs-Only field, so it rides along
+ * without moving the request to a billed tier, and it is what PR7's refresh
+ * keys on.
  */
-const ADR_LIVENESS = ['id'];
+const ADR_LIVENESS = ['id', 'movedPlaceId'];
 const ADR_CORE = [
   'id',
   'displayName',
@@ -50,7 +45,8 @@ const ADR_QUALITY = [
 const ADR_DETAIL = ['reviews'];
 
 describe('ADR-0006 §2 field-mask tiers', () => {
-  it('liveness is IDs-only — one field, the free SKU', () => {
+  it('liveness is IDs-only — identity and the move pointer, the free SKU', () => {
+    expect(PLACE_FIELD_MASKS.liveness).toBe('id,movedPlaceId');
     expect(PLACE_FIELD_MASKS.liveness).toBe(ADR_LIVENESS.join(','));
   });
 
@@ -58,6 +54,8 @@ describe('ADR-0006 §2 field-mask tiers', () => {
     // Every field that would lift the request off IDs-Only. `businessStatus`
     // is on this list on purpose: it is a Pro field, which is why there is no
     // cheaper "is it still open?" tier to be had (#338 scope note).
+    // `movedPlaceId` is not on it — that one is IDs-Only, which is exactly why
+    // the refresh can afford to ask for it.
     const billed = [...ADR_CORE.filter((f) => f !== 'id'), ...ADR_QUALITY, ...ADR_DETAIL];
     for (const field of billed) {
       expect(PLACE_FIELD_MASKS.liveness.split(',')).not.toContain(field);
@@ -76,14 +74,25 @@ describe('ADR-0006 §2 field-mask tiers', () => {
     expect(PLACE_FIELD_MASKS.detail).toBe([...ADR_CORE, ...ADR_QUALITY, ...ADR_DETAIL].join(','));
   });
 
-  it('each tier is a strict superset of the one below it', () => {
+  it('the three describing tiers are strict supersets of one another', () => {
     const fields = (tier: PlaceFetchTier) => PLACE_FIELD_MASKS[tier].split(',');
-    expect(fields('core')).toEqual(expect.arrayContaining(fields('liveness')));
     expect(fields('quality')).toEqual(expect.arrayContaining(fields('core')));
     expect(fields('detail')).toEqual(expect.arrayContaining(fields('quality')));
-    expect(fields('liveness').length).toBeLessThan(fields('core').length);
     expect(fields('core').length).toBeLessThan(fields('quality').length);
     expect(fields('quality').length).toBeLessThan(fields('detail').length);
+  });
+
+  it('liveness is not on that ladder — it asks a different question', () => {
+    const fields = (tier: PlaceFetchTier) => PLACE_FIELD_MASKS[tier].split(',');
+    // `movedPlaceId` is deliberately absent from `core` and above. Those tiers
+    // describe a place; a caller that has one already knows which id answered,
+    // and #334's id comparison is what tells it the answer moved. Adding the
+    // field there would widen three masks to serve a question none of them
+    // asks.
+    for (const tier of ['core', 'quality', 'detail'] as const) {
+      expect(fields(tier)).not.toContain('movedPlaceId');
+    }
+    expect(fields('liveness').length).toBeLessThan(fields('core').length);
   });
 
   it('core carries the three fields the shipped adapter was missing', () => {
@@ -177,7 +186,25 @@ describe('GooglePlacesAdapter.details', () => {
     expect(identity).toEqual({ providerPlaceId: 'ChIJ-lacaph', fetchTier: 'liveness' });
   });
 
-  it('liveness still reports a place that moved', async () => {
+  it('liveness carries the successor Google names outright', async () => {
+    // The case the id comparison cannot see: Google answers under the id it was
+    // given and names the move separately. Without `movedPlaceId` in the mask
+    // this row would look perfectly alive, and PR7 would reset its freshness
+    // clock on a place that had moved.
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'ChIJ-old', movedPlaceId: 'ChIJ-new' }),
+    }));
+    const identity = await new GooglePlacesAdapter('key').details('ChIJ-old', 'liveness');
+    expect(identity).toEqual({
+      providerPlaceId: 'ChIJ-old',
+      movedPlaceId: 'ChIJ-new',
+      fetchTier: 'liveness',
+    });
+  });
+
+  it('liveness still reports a move Google makes without naming it', async () => {
     fetchMock.mockImplementation(async () => ({
       ok: true,
       status: 200,

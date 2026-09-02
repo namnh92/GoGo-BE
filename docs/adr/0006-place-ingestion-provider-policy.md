@@ -25,7 +25,7 @@ parsing, resolution, scoring, dedup and enrichment; the provider sits behind
 
 | Tier       | When                                      | SKU                         | $/1k | Fields                                                                                           |
 | ---------- | ----------------------------------------- | --------------------------- | ---- | ------------------------------------------------------------------------------------------------ |
-| `liveness` | refresh; id/moved-place verification only | Details Essentials IDs-Only | 0    | `id`                                                                                             |
+| `liveness` | refresh; id/moved-place verification only | Details Essentials IDs-Only | 0    | `id,movedPlaceId`                                                                                |
 | `core`     | every resolve                             | Details Pro                 | 17   | `id,displayName,formattedAddress,location,businessStatus,primaryType,types,googleMapsUri,photos` |
 | `quality`  | row accepted / preview shown / publish    | Details Enterprise          | 20   | `+ rating,userRatingCount,regularOpeningHours,priceLevel,priceRange`                             |
 | `detail`   | explicit open by admin/user               | Details E + Atmosphere      | 25   | `+ reviews`                                                                                      |
@@ -48,13 +48,16 @@ test updated in the same PR.
   that is "unknown" written as "zero", and it is the failure the tiers exist to
   prevent. `place_provider_sources.fetch_tier` therefore accepts only the three
   describing tiers.
-- The mask is `id`, not the plan's `id,movedPlaceId`. `movedPlaceId` is not a
-  field of the Places API (New) `Place` resource; sending it would have Google
-  reject every liveness request with `INVALID_ARGUMENT`, invisibly, because the
-  stub transport used by the baseline does not validate field paths. Moved
-  places are detected as §8 already detects them — Google answers under the
-  successor's id, and the adapter reports the difference — which needs no extra
-  field and works at every tier.
+- The mask is plan §2.4 verbatim, `id,movedPlaceId`. Both are Place Details
+  Essentials IDs-Only fields, so the move pointer rides along without lifting
+  the request to a billed tier. It carries **two independent move signals**, and
+  PR7 needs both: `movedPlaceId` is Google naming a successor outright, and
+  `requestedProviderPlaceId` is Google answering under a different id without
+  saying so — the case §8 detects by comparison. Neither substitutes for the
+  other, and a refresh watching only the id comparison would reset the freshness
+  clock on every place Google moved politely. `movedPlaceId` stays out of
+  `core`/`quality`/`detail`: those tiers describe a place to a caller that
+  already knows which id answered.
 
 There is no cheaper tier between `liveness` and `core`: `businessStatus` is a
 Pro field, so a "is it still open?" tier would be billed exactly as `core` is.

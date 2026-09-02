@@ -105,13 +105,19 @@ export class FakePlaceProvider implements PlaceProviderPort {
     const stored = this.registry.get(resolvedId);
     if (!stored) return null;
     const moved = resolvedId !== providerPlaceId;
-    // Liveness answers the id question and refuses the rest, exactly as the
-    // IDs-Only mask does. A fake that returned a whole place here would let a
-    // caller read a rating it never paid for and never noticed it had lost.
+    // Liveness answers the identity question and refuses the rest, exactly as
+    // the IDs-Only mask does. A fake that returned a whole place here would let
+    // a caller read a rating it never paid for and never noticed it had lost.
+    //
+    // `movedTo` models a place whose id Google now redirects, so the fake
+    // reports both signals the real mask can carry: the successor named
+    // outright, and the answer arriving under a different id than was asked
+    // for. Google can send either alone; a caller that handles both handles
+    // every move it will meet.
     if (tier === 'liveness') {
       return {
         providerPlaceId: resolvedId,
-        ...(moved ? { requestedProviderPlaceId: providerPlaceId } : {}),
+        ...(moved ? { requestedProviderPlaceId: providerPlaceId, movedPlaceId: resolvedId } : {}),
         fetchTier: 'liveness',
       };
     }

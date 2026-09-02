@@ -33,18 +33,33 @@ export type PlaceFetchTier = 'liveness' | 'core' | 'quality' | 'detail';
 export type PlaceDescriptionTier = Exclude<PlaceFetchTier, 'liveness'>;
 
 /**
- * All a `liveness` fetch can tell you: this id still resolves, and whether the
- * provider now answers under a different one.
+ * All a `liveness` fetch can tell you: this id still resolves, and where the
+ * provider has moved it to.
  *
  * A separate type rather than a mostly-empty `ResolvedProviderPlace`, because
  * the alternative is a `ratingCount: 0` on a place whose rating was never
  * requested — "unknown" written as "zero", which is the exact failure the tier
  * system exists to make impossible.
+ *
+ * Two independent signals for a move, and PR7 wants both. `movedPlaceId` is
+ * Google saying so outright; `requestedProviderPlaceId` is Google answering
+ * about a successor without saying so, which is what #334 detects by comparing
+ * ids. A place can present either, and treating one as a substitute for the
+ * other would miss half the moves.
  */
 export type ProviderPlaceIdentity = {
   providerPlaceId: string;
   /** Set only when the provider answered about a different id — see below. */
   requestedProviderPlaceId?: string;
+  /**
+   * The successor the provider names for this id, when it names one.
+   *
+   * `movedPlaceId` is a Place Details Essentials IDs-Only field, so asking for
+   * it costs nothing — it does not lift the request off the free SKU. Nothing
+   * repoints a GoGo place on it: PR7 records it as `moved_to_external_id`,
+   * marks the source `moved` and routes the place to review (plan §2.5).
+   */
+  movedPlaceId?: string;
   fetchTier: 'liveness';
 };
 

@@ -56,6 +56,7 @@ describe('PlaceProviderPort contract', () => {
     expect(await provider.details('fake-old', 'liveness')).toEqual({
       providerPlaceId: 'fake-1',
       requestedProviderPlaceId: 'fake-old',
+      movedPlaceId: 'fake-1',
       fetchTier: 'liveness',
     });
 

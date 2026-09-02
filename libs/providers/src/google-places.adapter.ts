@@ -36,23 +36,19 @@ const RESILIENCE = {
  * silently larger invoice.
  */
 /**
- * Google's Place Details **IDs-Only** SKU: free, unlimited, and able to answer
- * exactly one question — does this id still resolve, and under which id.
+ * Google's Place Details **IDs-Only** SKU, verbatim from plan §2.4: free,
+ * unlimited, and able to answer exactly one question — does this id still
+ * resolve, and where has it moved to.
  *
- * Deviation from plan §2.4, recorded deliberately. The plan writes this mask as
- * `id,movedPlaceId`, but `movedPlaceId` is not a field of the Places API (New)
- * `Place` resource; sending it would make Google reject **every** liveness
- * request with `INVALID_ARGUMENT` ("Cannot find matching fields for path"),
- * which the stub transport cannot catch because the stub does not validate
- * paths. A refresh job built on that mask would look green in CI and fail
- * against production on its first tick.
- *
- * Nothing is lost. A place that moved is detected the way #334 already detects
- * it: Google answers about the successor, so `data.id` differs from the id we
- * asked for, and `requestedProviderPlaceId` carries the difference to the
- * caller. That comparison works at every tier, this one included.
+ * `movedPlaceId` is an IDs-Only field, so it is on the free side of the SKU
+ * boundary: asking for it changes neither the tier nor the bill. It is the
+ * signal PR7's refresh keys on, and it is the only one that arrives when
+ * Google answers under the id it was given and names the successor separately
+ * — the id comparison behind `requestedProviderPlaceId` (#334) does not see
+ * that case at all, which is why the refresh needs this mask rather than `id`
+ * alone.
  */
-const LIVENESS_FIELDS = ['id'] as const;
+const LIVENESS_FIELDS = ['id', 'movedPlaceId'] as const;
 
 const CORE_FIELDS = [
   'id',
@@ -180,6 +176,8 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       primaryType?: string;
       types?: string[];
       googleMapsUri?: string;
+      /** IDs-Only: the successor Google names for a place id that moved. */
+      movedPlaceId?: string;
       photos?: {
         name?: string;
         widthPx?: number;
@@ -218,15 +216,20 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       return null;
     }
 
-    // A liveness answer is an id and nothing else — including no `location`,
-    // which is why it returns here rather than falling into the guard below
-    // that (correctly) treats a described place with no coordinates as no
-    // answer at all.
+    // A liveness answer is identity and nothing else — including no
+    // `location`, which is why it returns here rather than falling into the
+    // guard below that (correctly) treats a *described* place with no
+    // coordinates as no answer at all.
+    //
+    // Both move signals are passed through as Google sent them, and neither is
+    // derived from the other: `movedPlaceId` is Google naming a successor,
+    // `requestedProviderPlaceId` is Google quietly answering as one.
     if (tier === 'liveness') {
       if (!data?.id) return null;
       return {
         providerPlaceId: data.id,
         ...(data.id !== providerPlaceId ? { requestedProviderPlaceId: providerPlaceId } : {}),
+        ...(data.movedPlaceId ? { movedPlaceId: data.movedPlaceId } : {}),
         fetchTier: 'liveness',
       };
     }

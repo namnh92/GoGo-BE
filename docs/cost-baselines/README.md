@@ -122,8 +122,9 @@ one to a tier each path has to state and justify (ADR-0006 §2, amended).
   `ingestion.int.spec.ts` pins.
 - **Unmoved on purpose** — A, B and C (still zero Places operations), the
   `searchText` IDs-Only mask, and anything that would require storing more
-  Google content (ADR-0006 §9.5). `liveness` is added and pinned but has no
-  production caller yet; PR7's refresh is what will call it.
+  Google content (ADR-0006 §9.5). `liveness` (`id,movedPlaceId`, IDs-Only, free)
+  is added and pinned but has no production caller yet, so it contributes a
+  measured zero to every scenario; PR7's refresh is what will call it.
 
 The same spec also runs the scenarios twice from the same starting state and
 asserts they agree within ±1 per operation, which is the plan's acceptance

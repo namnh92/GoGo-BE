@@ -136,10 +136,13 @@ Enterprise. The one mode that resolves at `quality` is `update_existing`: it
 exists to pull fresh provider facts onto a place GoGo already has, so a `core`
 fetch would overwrite a live rating with `null`.
 
-`liveness` (`id`, IDs-Only, free) is pinned and tested but has no caller in the
-import pipeline; it is what PR7's refresh job will use to ask "does this id
-still resolve, and under which one?" without paying for a description. See
-ADR-0006 §2 for why its mask is `id` and not the plan's `id,movedPlaceId`.
+`liveness` (`id,movedPlaceId`, IDs-Only, free) is pinned and tested but has no
+caller in the import pipeline; it is what PR7's refresh job will use to ask
+"does this id still resolve, and where has it moved to?" without paying for a
+description. Both fields are on the free side of the SKU boundary, and both
+move signals matter: Google may name a successor in `movedPlaceId`, or simply
+answer under a different id, which the adapter reports separately as
+`requestedProviderPlaceId` (#334).
 
 ### Category comes from `types[]`
 
