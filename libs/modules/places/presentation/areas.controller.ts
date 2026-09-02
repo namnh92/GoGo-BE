@@ -2,7 +2,7 @@ import { Controller, Get, Inject, Query } from '@nestjs/common';
 import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { schema, type Db } from '@gogo/database';
-import { AREA_AUTOCOMPLETE, type AreaAutocompletePort } from '@gogo/providers';
+import { AREA_AUTOCOMPLETE, GOOGLE_ATTRIBUTION, type AreaAutocompletePort } from '@gogo/providers';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { DB } from '../../shared/tokens';
 import { Public, RateLimit } from '../../identity/presentation/decorators';
@@ -35,7 +35,7 @@ export class AreasController {
       return {
         predictions: predictions.slice(0, 8),
         source: 'provider',
-        attribution: 'Powered by Google',
+        attribution: GOOGLE_ATTRIBUTION,
       };
     } catch {
       // Deterministic fallback (FR-PLACE-007): cached static service areas.

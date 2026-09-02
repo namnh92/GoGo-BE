@@ -42,7 +42,7 @@ const ENV = 'dev';
 const TODAY = utcDay();
 
 /** Responses the stubbed `fetch` hands back, in order. */
-type Stub = { status: number; body?: unknown; url?: string };
+type Stub = { status: number; body?: unknown; url?: string; location?: string };
 let queued: Stub[] = [];
 let requested = 0;
 
@@ -56,6 +56,11 @@ function stubFetch() {
         ok: next.status >= 200 && next.status < 300,
         status: next.status,
         url: next.url ?? String(input),
+        // #339 — the adapter's short-link expansion walks redirects manually
+        // now (SSRF guard), so it reads `Location` rather than letting the
+        // platform follow. A stub with no headers modelled a request shape the
+        // adapter no longer makes.
+        headers: { get: (name: string) => (name === 'location' ? (next.location ?? null) : null) },
         json: async () => next.body ?? {},
         text: async () => JSON.stringify(next.body ?? {}),
       };
@@ -164,14 +169,26 @@ describe('usage ledger against the real adapters', () => {
     const metrics = new TeeMetrics([new MetricsRegistry(), ledger]);
     const places = new GooglePlacesAdapter('test-key', metrics);
 
-    queued = [{ status: 200, url: 'https://maps.google.com/maps?place_id=ChIJ-short' }];
-    await places.resolveUrl('https://maps.app.goo.gl/abc123');
+    // One hop: the shortener answers 301 with the canonical URL, which already
+    // carries the place id, so the walk stops there and no second request is
+    // made. Same single count as before — what changed is that the hop is
+    // re-validated against the allowlist instead of being followed blindly.
+    queued = [{ status: 301, location: 'https://maps.google.com/maps?place_id=ChIJ-short' }];
+    const resolved = await places.resolveUrl('https://maps.app.goo.gl/abc123');
+    expect(resolved).toBe('ChIJ-short');
     await ledger.stop();
 
     // Free, but not unmeasured — baseline scenario C2 counts it, and an
     // absence would have read as zero.
+    //
+    // `succeeded: 0` because a 301 is not a 2xx, which is the same reading the
+    // resolver's walker has always produced and what the committed baseline
+    // records (`google.expand` attempted 2, succeeded 0). The two expanders
+    // agreeing is the point of #339 collapsing them: before, this one followed
+    // redirects blindly and reported the *final* 200 as a success, so the same
+    // hop was counted as succeeded here and not-succeeded there.
     expect(await usageRows()).toEqual([
-      { operation: 'google.expand', attempted: 1, succeeded: 1, units: 0 },
+      { operation: 'google.expand', attempted: 1, succeeded: 0, units: 0 },
     ]);
   });
 

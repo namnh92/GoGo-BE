@@ -48,6 +48,7 @@ export type KnownProviderPlace = {
   ratingCount: number;
   derivedScore: number | null;
   businessStatus: 'OPERATIONAL' | 'CLOSED_TEMPORARILY' | 'CLOSED_PERMANENTLY';
+
   attribution: string | null;
   /** When GoGo last heard this from Google — the stored value, never `now()`. */
   fetchedAt: string;
@@ -366,12 +367,21 @@ export class PlaceDedupService {
     const refreshAfter = new Date(Date.now() + (input.refreshAfterDays ?? 30) * 24 * 3600 * 1000);
     // `CLOSED_TEMPORARILY` used to land on 'unknown', which conflated "shut for
     // now" with "we have no idea" — and the two lead to different decisions.
+    // #339 — `FUTURE_OPENING` lands on `unknown`, not `active`. There is no
+    // `future_opening` in `provider_source_status`, and picking the nearest
+    // wrong neighbour would be worse than saying so: `active` would put an
+    // unopened place back into search the moment a DB-first read served it,
+    // and `temporarily_closed` would assert it had already traded. `unknown`
+    // is what `PROVIDER_STATUS_TO_BUSINESS_STATUS` deliberately declines to
+    // map, so a DB-first lookup on such a row misses and asks Google.
     const sourceStatus =
       input.details.businessStatus === 'CLOSED_PERMANENTLY'
         ? 'closed'
         : input.details.businessStatus === 'CLOSED_TEMPORARILY'
           ? 'temporarily_closed'
-          : 'active';
+          : input.details.businessStatus === 'FUTURE_OPENING'
+            ? 'unknown'
+            : 'active';
     await this.db
       .insert(schema.placeProviderSources)
       .values({

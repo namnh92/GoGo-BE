@@ -127,6 +127,28 @@ forbids. The fallback path is the current behaviour, so it is already exercised.
 - Cache invalidation is mild: a place moving changes its coordinates, which
   changes the key; stale rows age out by time bucket.
 
+**Correction 2026-09-02 (#339).** The sentence above was wrong, and the code
+matched the ADR rather than the intent. `travel_legs` is keyed by
+`(from_place_id, to_place_id, mode, time_bucket)` — place **ids**, not
+coordinates — so a place moving changed nothing about the key and evicted
+nothing. Nor do rows "age out": `time_bucket` is a partition, not a TTL, and
+`fetched_at` was written but never read. The only delete in the codebase was
+`mergePlaces`, and that fires because a place is disappearing, not because it
+moved.
+
+The consequence was a cached duration measured to a coordinate the place no
+longer occupies, served indefinitely under its id, with the plans built on it
+showing arrival times nobody could reproduce.
+
+Invalidation is now explicit: a `geom` write that moves a place more than
+`MATERIAL_MOVE_METERS` (50 m) deletes every leg in both directions and marks
+live plans containing that place stale
+(`libs/modules/shared/place-relocation.ts`). Fifty metres because editors nudge
+pins by tens of metres routinely and recomputing a Routes matrix for a marker
+moved into a courtyard is spend with no change in the answer. Time-based
+expiry remains unimplemented and remains a real gap — this correction addresses
+relocation only.
+
 ## Migration & rollback
 
 1. Land the port + fake + Postgres cache table with the flag **off**. No

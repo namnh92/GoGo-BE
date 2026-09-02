@@ -218,6 +218,9 @@ export class PlaceImportService {
     if (!details) return reject('NOT_FOUND');
 
     const rules = await this.rules();
+    // #339 — an unopened place is refused with its own reason. `CLOSED` would
+    // tell the submitter the place had shut, which is the opposite of true.
+    if (details.businessStatus === 'FUTURE_OPENING') return reject('NOT_YET_OPEN');
     if (details.businessStatus !== 'OPERATIONAL') return reject('CLOSED');
     if (details.ratingCount < rules.minReviews) return reject('INSUFFICIENT_REVIEWS');
     if ((details.rating ?? 0) < rules.minRating) return reject('LOW_RATING');

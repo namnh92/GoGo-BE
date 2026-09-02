@@ -123,6 +123,8 @@ export {
   type RequestContext,
 } from '../shared/request-context';
 export { writeAudit, type AuditInput } from '../shared/audit';
+export { normalizeGoogleAttribution } from '../shared/attribution';
+export { MATERIAL_MOVE_METERS, invalidateTravelOnMove } from '../shared/place-relocation';
 export { EmergencyTakedownService } from '../cms/application/emergency-takedown.service';
 export {
   TravelTimeService,

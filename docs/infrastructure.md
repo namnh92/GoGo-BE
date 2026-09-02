@@ -135,39 +135,41 @@ sau chỉ phải sửa một file, không phải sửa mọi call site.
 Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LABELS`
 (`@gogo/observability`) bằng test (#319):
 
-| Metric                                    | Label                        | Phát ở                                                                                        |
-| ----------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------- |
-| `place_import_jobs_total`                 | `status`, `source_type`      | tạo job, pause quota, kết thúc job                                                            |
-| `place_import_rows_total`                 | `status`, `error_code`       | mỗi dòng khi resolve xong                                                                     |
-| `place_resolve_duration_seconds`          | `source`, `outcome`          | mỗi lần resolve                                                                               |
-| `place_resolve_confidence_bucket`         | `source`, `bucket`           | mỗi lần resolve                                                                               |
-| `place_duplicate_candidates_total`        | `kind`                       | provider id trùng / trùng theo tên + khoảng cách                                              |
-| `place_import_legacy_mapping_total`       | `from`, `to`                 | client còn gửi cách viết cũ                                                                   |
-| `place_import_unknown_mapping_total`      | `code`                       | operator map một cột `/v1` không biết                                                         |
-| `place_import_category_derived_total`     | `source`, `category`         | suy ra category cho một dòng                                                                  |
-| `place_import_category_underivable_total` | `google_type`                | Google type chưa có category tương ứng                                                        |
-| `place_identity_change_total`             | `reason`                     | re-import trỏ place sang provider id khác                                                     |
-| `place_provider_id_mismatch_total`        | `provider`, `path`           | Google trả place id khác id đã hỏi (#334) — place đã moved/merged                             |
-| `place_identity_conflict_blocked_total`   | `path`                       | từ chối vì một Google Place ID đang trỏ hai place, conflict chưa xử lý                        |
-| `place_dbfirst_hit_total`                 | `path`                       | trả lời từ catalogue, không gọi Google (#337); `path` = cửa vào DB-first                      |
-| `place_dbfirst_miss_total`                | `reason`                     | vì sao phải hỏi Google: `absent`/`stale`/`legacy`/`indeterminate`/`closure_unverified` (#337) |
-| `place_resolution_attestation_total`      | `result`                     | vòng đời proof resolve ngắn hạn (#337); `unconfigured` tăng = mất secret, trả tiền lại        |
-| `places_provider_requests_total`          | `method`, `status`           | mọi call Google Places / Routes / Sheets                                                      |
-| `place_provider_request_duration_seconds` | `method`, `status`           | histogram, mọi call Places / Routes / Sheets                                                  |
-| `places_provider_failures_total`          | `method`, `status`, `reason` | call Google thất bại (#273), `reason` bounded (#321)                                          |
-| `places_provider_rejected_total`          | `method`, `canonical_status` | Google từ chối request của ta (#314); sheet/tab sai vào đây                                   |
-| `places_provider_cost_units`              | `sku`                        | call Places/Routes thành công (Routes cộng elements). Không có Sheets                         |
-| `provider_usage_ledger_flush_total`       | `outcome`                    | mỗi lần ghi `provider_usage_daily` (#335); `outcome=error` = sổ chi phí đang tụt lại          |
-| `mobile_place_submissions_total`          | `status`                     | submit / dedupe / decide                                                                      |
-| `place_submission_publish_latency_hours`  | `decision`                   | khi editor quyết định                                                                         |
-| `cms_emergency_takedown_total`            | `resource_type`, `role`      | break-glass gỡ nội dung                                                                       |
-| `cms_super_admin_bypass_total`            | `action`, `resource_type`    | ghi mà chỉ super_admin mới qua được (SEC-002)                                                 |
-| `experiment_assignment_total`             | `experiment`, `variant`      | gán subject vào variant                                                                       |
-| `ai_feedback_runs_total`                  | `outcome`                    | mỗi lần chạy refinement                                                                       |
-| `suggestion_run_latency_seconds`          | `variant`, `weights_version` | mỗi suggestion run (SG-010)                                                                   |
-| `suggestion_run_over_budget_total`        | `variant`                    | run vượt ngân sách latency                                                                    |
-| `campaign_dispatched_total`               | `result`                     | gửi campaign push                                                                             |
-| `push_delivery_failed_total`              | `kind`                       | một device token bị từ chối                                                                   |
+| Metric                                           | Label                        | Phát ở                                                                                        |
+| ------------------------------------------------ | ---------------------------- | --------------------------------------------------------------------------------------------- |
+| `place_import_jobs_total`                        | `status`, `source_type`      | tạo job, pause quota, kết thúc job                                                            |
+| `place_import_rows_total`                        | `status`, `error_code`       | mỗi dòng khi resolve xong                                                                     |
+| `place_resolve_duration_seconds`                 | `source`, `outcome`          | mỗi lần resolve                                                                               |
+| `place_resolve_confidence_bucket`                | `source`, `bucket`           | mỗi lần resolve                                                                               |
+| `place_duplicate_candidates_total`               | `kind`                       | provider id trùng / trùng theo tên + khoảng cách                                              |
+| `place_import_legacy_mapping_total`              | `from`, `to`                 | client còn gửi cách viết cũ                                                                   |
+| `place_import_unknown_mapping_total`             | `code`                       | operator map một cột `/v1` không biết                                                         |
+| `place_import_category_derived_total`            | `source`, `category`         | suy ra category cho một dòng                                                                  |
+| `place_import_category_underivable_total`        | `google_type`                | Google type chưa có category tương ứng                                                        |
+| `place_identity_change_total`                    | `reason`                     | re-import trỏ place sang provider id khác                                                     |
+| `place_provider_id_mismatch_total`               | `provider`, `path`           | Google trả place id khác id đã hỏi (#334) — place đã moved/merged                             |
+| `place_identity_conflict_blocked_total`          | `path`                       | từ chối vì một Google Place ID đang trỏ hai place, conflict chưa xử lý                        |
+| `place_dbfirst_hit_total`                        | `path`                       | trả lời từ catalogue, không gọi Google (#337); `path` = cửa vào DB-first                      |
+| `place_dbfirst_miss_total`                       | `reason`                     | vì sao phải hỏi Google: `absent`/`stale`/`legacy`/`indeterminate`/`closure_unverified` (#337) |
+| `place_resolution_attestation_total`             | `result`                     | vòng đời proof resolve ngắn hạn (#337); `unconfigured` tăng = mất secret, trả tiền lại        |
+| `places_provider_requests_total`                 | `method`, `status`           | mọi call Google Places / Routes / Sheets                                                      |
+| `place_provider_request_duration_seconds`        | `method`, `status`           | histogram, mọi call Places / Routes / Sheets                                                  |
+| `places_provider_failures_total`                 | `method`, `status`, `reason` | call Google thất bại (#273), `reason` bounded (#321)                                          |
+| `places_provider_rejected_total`                 | `method`, `canonical_status` | Google từ chối request của ta (#314); sheet/tab sai vào đây                                   |
+| `places_provider_business_status_unmapped_total` | `method`                     | Google trả `businessStatus` adapter chưa map (#339); giá trị **không** vào label              |
+| `place_relocation_invalidated_total`             | `source`                     | place dời > 50 m → xoá `travel_legs` hai chiều, plan đang sống thành stale (#339)             |
+| `places_provider_cost_units`                     | `sku`                        | call Places/Routes thành công (Routes cộng elements). Không có Sheets                         |
+| `provider_usage_ledger_flush_total`              | `outcome`                    | mỗi lần ghi `provider_usage_daily` (#335); `outcome=error` = sổ chi phí đang tụt lại          |
+| `mobile_place_submissions_total`                 | `status`                     | submit / dedupe / decide                                                                      |
+| `place_submission_publish_latency_hours`         | `decision`                   | khi editor quyết định                                                                         |
+| `cms_emergency_takedown_total`                   | `resource_type`, `role`      | break-glass gỡ nội dung                                                                       |
+| `cms_super_admin_bypass_total`                   | `action`, `resource_type`    | ghi mà chỉ super_admin mới qua được (SEC-002)                                                 |
+| `experiment_assignment_total`                    | `experiment`, `variant`      | gán subject vào variant                                                                       |
+| `ai_feedback_runs_total`                         | `outcome`                    | mỗi lần chạy refinement                                                                       |
+| `suggestion_run_latency_seconds`                 | `variant`, `weights_version` | mỗi suggestion run (SG-010)                                                                   |
+| `suggestion_run_over_budget_total`               | `variant`                    | run vượt ngân sách latency                                                                    |
+| `campaign_dispatched_total`                      | `result`                     | gửi campaign push                                                                             |
+| `push_delivery_failed_total`                     | `kind`                       | một device token bị từ chối                                                                   |
 
 Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 

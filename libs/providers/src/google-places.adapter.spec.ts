@@ -269,6 +269,101 @@ describe('#273 — GooglePlacesAdapter failure classification', () => {
     ).resolves.toBeNull();
   });
 
+  /**
+   * COST-BE-006 (#339) — `resolveUrl` had a second, unguarded short-link
+   * expander: `fetch(url, { redirect: 'follow' })`, which lets the platform
+   * chase every hop with no hostname allowlist and no private-address block.
+   * `POST /v1/places/imports` feeds it a URL typed by a user.
+   */
+  describe('resolveUrl is SSRF-guarded (#339)', () => {
+    it('refuses a host that is not Google, without a request', async () => {
+      const fetchMock = respond(200, { places: [{ id: 'ChIJevil' }] });
+      const adapter = new GooglePlacesAdapter(API_KEY);
+
+      // The old hand-rolled regex matched `/maps/place/<name>` on any host, so
+      // an attacker's string became a billed Text Search.
+      await expect(adapter.resolveUrl('https://evil.test/maps/place/Anything')).resolves.toBeNull();
+      expect(fetchMock, 'a link GoGo will not follow costs nothing').not.toHaveBeenCalled();
+    });
+
+    it('refuses a private address outright', async () => {
+      const fetchMock = respond(200, {});
+      const adapter = new GooglePlacesAdapter(API_KEY);
+
+      for (const url of [
+        'http://127.0.0.1/maps/place/X',
+        'http://169.254.169.254/maps/place/X',
+        'http://[::1]/maps/place/X',
+        'http://metadata.internal/maps/place/X',
+      ]) {
+        await expect(adapter.resolveUrl(url)).resolves.toBeNull();
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('walks a short link one hop at a time and re-checks every hop', async () => {
+      const seen: { url: string; redirect: string | undefined }[] = [];
+      const fetchMock = vi.fn(async (url: string, init?: Record<string, unknown>) => {
+        seen.push({ url, redirect: init?.['redirect'] as string | undefined });
+        // Hop 1 redirects off Google entirely — the pivot an open redirect
+        // gives an attacker, and the reason each hop is re-validated.
+        return {
+          ok: true,
+          status: 301,
+          url,
+          headers: { get: (h: string) => (h === 'location' ? 'https://evil.test/x' : null) },
+          json: async () => ({}),
+        };
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const adapter = new GooglePlacesAdapter(API_KEY);
+
+      await expect(adapter.resolveUrl('https://maps.app.goo.gl/abc123')).resolves.toBeNull();
+      // `manual`, not `follow`: the platform never gets to make the second
+      // request on its own.
+      expect(seen[0]?.redirect).toBe('manual');
+      // And the off-Google hop is never requested.
+      expect(seen.some((h) => h.url.includes('evil.test'))).toBe(false);
+    });
+
+    it('still counts the expansion hop, under the same label as the resolver', async () => {
+      const increments: Record<string, unknown>[] = [];
+      const fetchMock = vi.fn(async (url: string) => ({
+        ok: true,
+        status: 301,
+        url,
+        headers: {
+          get: (h: string) =>
+            h === 'location' ? 'https://www.google.com/maps?place_id=ChIJshort' : null,
+        },
+        json: async () => ({}),
+      }));
+      vi.stubGlobal('fetch', fetchMock);
+      const adapter = new GooglePlacesAdapter(API_KEY, {
+        increment: (name, labels) => void increments.push({ name, ...labels }),
+        observe: () => undefined,
+      });
+
+      await expect(adapter.resolveUrl('https://maps.app.goo.gl/abc123')).resolves.toBe('ChIJshort');
+      expect(increments).toContainEqual(
+        expect.objectContaining({
+          name: 'places_provider_requests_total',
+          method: 'google.expand',
+        }),
+      );
+    });
+
+    it('takes a place_id from the URL without any request at all', async () => {
+      const fetchMock = respond(200, {});
+      const adapter = new GooglePlacesAdapter(API_KEY);
+
+      await expect(
+        adapter.resolveUrl('https://www.google.com/maps?place_id=ChIJdirect'),
+      ).resolves.toBe('ChIJdirect');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('never puts the API key in the error it throws', async () => {
     respond(403, SERVICE_DISABLED_BODY);
     const adapter = new GooglePlacesAdapter(API_KEY);

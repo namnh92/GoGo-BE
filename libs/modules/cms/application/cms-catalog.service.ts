@@ -3,6 +3,7 @@ import { eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { AppError } from '../../shared/app-error';
+import { invalidateTravelOnMove } from '../../shared/place-relocation';
 import { APP_CONFIG, type ProvenanceConfig } from '../../shared/config';
 import { GOOGLE_PROVIDER, googleProvenanceRows } from '../../shared/google-provenance';
 import { DB } from '../../shared/tokens';
@@ -476,6 +477,14 @@ export class CmsCatalogService {
       .where(eq(schema.places.id, placeId))
       .limit(1);
     if (!before) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
+
+    // #339 — an editor dragging a pin across town invalidates every cached
+    // travel time to and from this place, and every live plan built on them.
+    // Measured before the write, because afterwards there is nothing to
+    // measure against.
+    if (input.lat !== undefined && input.lng !== undefined) {
+      await invalidateTravelOnMove(this.db, placeId, { lat: input.lat, lng: input.lng });
+    }
 
     const [after] = await this.db
       .update(schema.places)

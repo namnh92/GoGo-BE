@@ -79,6 +79,20 @@ export type ProviderPhotoRef = {
   attributions: string[];
 };
 
+/**
+ * The attribution Google's terms require beside anything sourced from Maps.
+ *
+ * One constant because the wording is a legal obligation, not copy: it was
+ * written out by hand in two places as `Data © Google` and `Powered by
+ * Google`, so the same product showed a user two different claims about where
+ * its data came from, and neither matched the wording policy asks for (#339).
+ *
+ * Rows written before this constant existed still hold the old strings.
+ * `normalizeGoogleAttribution` in `@gogo/modules` is what every reader passes
+ * them through — see there for why they are not rewritten in place.
+ */
+export const GOOGLE_ATTRIBUTION = 'Google Maps';
+
 export type ResolvedProviderPlace = {
   providerPlaceId: string;
   /**
@@ -98,7 +112,17 @@ export type ResolvedProviderPlace = {
   lng: number;
   rating: number | null;
   ratingCount: number;
-  businessStatus: 'OPERATIONAL' | 'CLOSED_TEMPORARILY' | 'CLOSED_PERMANENTLY';
+  /**
+   * What the provider says about the business, mapped to a closed set.
+   *
+   * `FUTURE_OPENING` is a status Google really returns and the adapter used to
+   * swallow: anything it did not recognise fell through to `OPERATIONAL`, so a
+   * place announced but not yet trading was imported as open, published, and
+   * put in front of someone looking for dinner tonight (#339). It is not
+   * `CLOSED_TEMPORARILY` either — a place that has never opened has not shut —
+   * so it carries its own value and its own refusal.
+   */
+  businessStatus: 'OPERATIONAL' | 'CLOSED_TEMPORARILY' | 'CLOSED_PERMANENTLY' | 'FUTURE_OPENING';
   /** Weekly hours, minutes-of-day, local place time. */
   hours: { dayOfWeek: number; openMinute: number; closeMinute: number; isOvernight: boolean }[];
   priceLevel: number | null;
