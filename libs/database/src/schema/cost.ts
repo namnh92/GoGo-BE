@@ -1,4 +1,17 @@
-import { bigint, date, integer, pgTable, primaryKey, text, timestamp } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import {
+  bigint,
+  date,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
 
 /**
  * PR2 / COST-BE-002 (#335) — provider usage accounting and the hard budget.
@@ -78,4 +91,108 @@ export const providerBudgetDaily = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.day, t.scope, t.operation] })],
+);
+
+/**
+ * COST-BE-016 (#368) — epic §9, the canonical usage model.
+ *
+ * One row per (day, environment, provider, service, operation, meter, SKU,
+ * source). Where `provider_usage_daily` above knows three fixed quantities
+ * per Google operation, this knows *what is being counted*: `usage_metric_id`
+ * is the meter's short metric (`calls`, `billable_elements`, `commands`) and
+ * `unit` says what one of it is. Several meters for one runtime operation is
+ * the point — Routes writes `calls` and `billable_elements` for one call.
+ *
+ * `source` is which collector wrote the row (`ledger` for the in-process
+ * metrics ledger). Two sources never share a row and never sum.
+ */
+export const providerUsageMeterDaily = pgTable(
+  'provider_usage_meter_daily',
+  {
+    day: date('day').notNull(),
+    environment: text('environment').notNull(),
+    providerId: text('provider_id').notNull(),
+    serviceId: text('service_id').notNull(),
+    operationId: text('operation_id'),
+    usageMetricId: text('usage_metric_id').notNull(),
+    billingSkuId: text('billing_sku_id'),
+    quantity: bigint('quantity', { mode: 'number' }).notNull().default(0),
+    unit: text('unit').notNull(),
+    source: text('source').notNull(),
+    /** HIGH | MEDIUM | LOW — a check constraint in the migration. */
+    confidence: text('confidence').notNull(),
+    sourceAsOf: timestamp('source_as_of', { withTimezone: true }),
+    collectedAt: timestamp('collected_at', { withTimezone: true }).notNull().defaultNow(),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('provider_usage_meter_daily_key').on(
+      t.day,
+      t.environment,
+      t.providerId,
+      t.serviceId,
+      sql`coalesce(${t.operationId}, '')`,
+      t.usageMetricId,
+      sql`coalesce(${t.billingSkuId}, '')`,
+      t.source,
+    ),
+    index('provider_usage_meter_daily_env_day_idx').on(t.environment, t.day),
+  ],
+);
+
+/**
+ * COST-BE-016 (#368) — epic §11, the canonical cost model. Money, apart from
+ * usage (epic §8).
+ *
+ * A row is an amount in its original currency with a `basis` — ACTUAL from a
+ * provider invoice, ESTIMATED from usage × a pricing rule, FIXED, MANUAL —
+ * a `confidence`, a `source`, and for estimates the `pricing_version` they
+ * were computed under. **Unknown cost is the absence of a row**, never an
+ * amount of 0. Two bases for the same spend are two rows; readers apply
+ * ACTUAL > ESTIMATED > UNKNOWN (epic §12) and never add them.
+ */
+export const providerCostDaily = pgTable(
+  'provider_cost_daily',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    day: date('day').notNull(),
+    environment: text('environment').notNull(),
+    providerId: text('provider_id').notNull(),
+    serviceId: text('service_id').notNull(),
+    operationId: text('operation_id'),
+    usageMetricId: text('usage_metric_id'),
+    billingSkuId: text('billing_sku_id'),
+    billableQuantity: bigint('billable_quantity', { mode: 'number' }),
+    billableUnit: text('billable_unit'),
+    /** Original billing currency micros; never FX-converted in place. */
+    amountMicros: bigint('amount_micros', { mode: 'number' }).notNull(),
+    currency: text('currency').notNull(),
+    /** ACTUAL | ESTIMATED | FIXED | MANUAL — check constraint in the migration. */
+    basis: text('basis').notNull(),
+    confidence: text('confidence').notNull(),
+    source: text('source').notNull(),
+    pricingVersion: text('pricing_version'),
+    sourceAsOf: timestamp('source_as_of', { withTimezone: true }),
+    collectedAt: timestamp('collected_at', { withTimezone: true }).notNull().defaultNow(),
+    reconciledAt: timestamp('reconciled_at', { withTimezone: true }),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('provider_cost_daily_key').on(
+      t.day,
+      t.environment,
+      t.providerId,
+      t.serviceId,
+      sql`coalesce(${t.operationId}, '')`,
+      sql`coalesce(${t.usageMetricId}, '')`,
+      sql`coalesce(${t.billingSkuId}, '')`,
+      t.source,
+      t.basis,
+    ),
+    index('provider_cost_daily_env_day_idx').on(t.environment, t.day),
+  ],
 );

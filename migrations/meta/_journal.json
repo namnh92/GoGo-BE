@@ -267,6 +267,13 @@
       "when": 1788185958655,
       "tag": "0037_place-refresh-liveness",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1788355432928,
+      "tag": "0038_cost-canonical-usage-cost",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import type { MetricLabels, MetricsPort } from '@gogo/observability';
 import { operationForSku, utcDay } from '../domain/provider-pricing';
+import { COST_REGISTRY } from '../domain/registry';
 
 /**
  * PR2 / COST-BE-002 (#335) — the durable accounting boundary, chosen per
@@ -200,17 +201,57 @@ export class DbUsageLedger implements MetricsPort {
       return sql`(${day}::date, ${this.environment}, ${operation}, ${counts.attempted}, ${counts.succeeded}, ${counts.units}, now())`;
     });
 
+    // COST-BE-016 (#368): the same counts, dual-written as canonical meter
+    // rows (epic §9). `calls` is the attempted count under the operation's
+    // non-billable meter; the billable meter — `requests` for Places,
+    // `billable_elements` for Routes — carries the billed quantity under its
+    // SKU. An operation the registry does not know gets `calls` only, under
+    // the service its prefix attributes it to, so an unregistered label is
+    // still visible rather than silently uncounted.
+    const meterValues = drained.flatMap(([key, counts]) => {
+      const [day, operation] = splitKey(key);
+      return meterRowsFor(day, this.environment, operation, counts).map(
+        (r) =>
+          sql`(${r.day}::date, ${r.environment}, ${r.providerId}, ${r.serviceId}, ${r.operationId}, ${r.metric}, ${r.billingSkuId}, ${r.quantity}, ${r.unit}, 'ledger', 'HIGH', now(), now())`,
+      );
+    });
+
     try {
-      await this.db.execute(sql`
-        insert into provider_usage_daily
-          (day, environment, operation, calls_attempted, calls_succeeded, billable_units, updated_at)
-        values ${sql.join(values, sql`, `)}
-        on conflict (day, environment, operation) do update set
-          calls_attempted = provider_usage_daily.calls_attempted + excluded.calls_attempted,
-          calls_succeeded = provider_usage_daily.calls_succeeded + excluded.calls_succeeded,
-          billable_units  = provider_usage_daily.billable_units  + excluded.billable_units,
-          updated_at      = now()
-      `);
+      // One transaction in production, so the two tables never disagree by a
+      // flush window. The unit spec's fake `db` has no `transaction`; there
+      // the two statements run in sequence against the same fake, which is
+      // enough to pin the ledger's own arithmetic and failure handling.
+      const write = async (exec: Pick<Db, 'execute'>) => {
+        await exec.execute(sql`
+          insert into provider_usage_daily
+            (day, environment, operation, calls_attempted, calls_succeeded, billable_units, updated_at)
+          values ${sql.join(values, sql`, `)}
+          on conflict (day, environment, operation) do update set
+            calls_attempted = provider_usage_daily.calls_attempted + excluded.calls_attempted,
+            calls_succeeded = provider_usage_daily.calls_succeeded + excluded.calls_succeeded,
+            billable_units  = provider_usage_daily.billable_units  + excluded.billable_units,
+            updated_at      = now()
+        `);
+        if (meterValues.length > 0) {
+          await exec.execute(sql`
+            insert into provider_usage_meter_daily
+              (day, environment, provider_id, service_id, operation_id, usage_metric_id,
+               billing_sku_id, quantity, unit, source, confidence, collected_at, updated_at)
+            values ${sql.join(meterValues, sql`, `)}
+            on conflict (day, environment, provider_id, service_id, coalesce(operation_id, ''),
+                         usage_metric_id, coalesce(billing_sku_id, ''), source)
+            do update set
+              quantity     = provider_usage_meter_daily.quantity + excluded.quantity,
+              collected_at = now(),
+              updated_at   = now()
+          `);
+        }
+      };
+      if (typeof (this.db as { transaction?: unknown }).transaction === 'function') {
+        await this.db.transaction(async (tx) => write(tx));
+      } else {
+        await write(this.db);
+      }
       this.metrics?.increment('provider_usage_ledger_flush_total', {
         outcome: 'ok',
       });
@@ -245,6 +286,64 @@ export class DbUsageLedger implements MetricsPort {
     this.buffer.set(key, fresh);
     return fresh;
   }
+}
+
+type MeterRow = {
+  day: string;
+  environment: string;
+  providerId: string;
+  serviceId: string;
+  operationId: string;
+  metric: string;
+  billingSkuId: string | null;
+  quantity: number;
+  unit: string;
+};
+
+/**
+ * The canonical rows one ledger slot becomes. Exported for the spec: the
+ * mapping is the whole of what #368 adds to the write path, and it must be
+ * pinned without a database.
+ */
+export function meterRowsFor(
+  day: string,
+  environment: string,
+  operation: string,
+  counts: { attempted: number; succeeded: number; units: number },
+): MeterRow[] {
+  const service = COST_REGISTRY.serviceForOperation(operation);
+  if (service === null) return [];
+  const provider = service.providerId;
+  const rows: MeterRow[] = [];
+  const calls = COST_REGISTRY.callsMeterFor(operation);
+  if (counts.attempted > 0) {
+    rows.push({
+      day,
+      environment,
+      providerId: provider,
+      serviceId: service.id,
+      operationId: operation,
+      metric: calls?.metric ?? 'calls',
+      billingSkuId: null,
+      quantity: counts.attempted,
+      unit: calls?.unit ?? 'request',
+    });
+  }
+  const billable = COST_REGISTRY.billableMeterFor(operation);
+  if (billable !== null && counts.units > 0) {
+    rows.push({
+      day,
+      environment,
+      providerId: provider,
+      serviceId: service.id,
+      operationId: operation,
+      metric: billable.metric,
+      billingSkuId: billable.billingSkuId,
+      quantity: counts.units,
+      unit: billable.unit,
+    });
+  }
+  return rows;
 }
 
 function stringLabel(value: MetricLabels[string]): string | null {

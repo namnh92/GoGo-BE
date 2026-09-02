@@ -304,6 +304,18 @@ export class CostRegistry {
     return service ? (this.providersById.get(service.providerId) ?? null) : null;
   }
 
+  /** The meter that is billed for an operation, or `null` when nothing is. */
+  billableMeterFor(operationId: string): UsageMeterDefinition | null {
+    const op = this.operationsById.get(operationId);
+    return op?.usageMeters.find((m) => m.billable) ?? null;
+  }
+
+  /** The `calls` meter of an operation — every call-shaped operation has one. */
+  callsMeterFor(operationId: string): UsageMeterDefinition | null {
+    const op = this.operationsById.get(operationId);
+    return op?.usageMeters.find((m) => m.metric === 'calls') ?? null;
+  }
+
   hasCapability(providerId: string, capability: Capability): boolean {
     return this.providersById.get(providerId)?.capabilities.includes(capability) ?? false;
   }
@@ -318,16 +330,39 @@ export class CostRegistry {
 
 const google = (service: string) => `google.${service}`;
 
-function requestMeter(operationId: string, serviceId: string, billingSkuId: string | null) {
-  return {
-    id: `${operationId}/requests`,
-    metric: 'requests',
+/**
+ * Every call-shaped operation counts `calls` (attempted requests, never
+ * billed) and, when a SKU bills it, `requests` (served requests, billed). The
+ * two are the epic §4 distinction in miniature: a 429 is a call that happened
+ * and cost nothing.
+ */
+function callMeters(
+  operationId: string,
+  serviceId: string,
+  billingSkuId: string | null,
+): readonly UsageMeterDefinition[] {
+  const calls: UsageMeterDefinition = {
+    id: `${operationId}/calls`,
+    metric: 'calls',
     serviceId,
     operationId,
-    billingSkuId,
+    billingSkuId: null,
     unit: 'request',
-    billable: billingSkuId !== null,
-  } as const satisfies UsageMeterDefinition;
+    billable: false,
+  };
+  if (billingSkuId === null) return [calls];
+  return [
+    calls,
+    {
+      id: `${operationId}/requests`,
+      metric: 'requests',
+      serviceId,
+      operationId,
+      billingSkuId,
+      unit: 'request',
+      billable: true,
+    },
+  ];
 }
 
 const PLACES = google('places');
@@ -411,48 +446,46 @@ const GOOGLE: ProviderDefinition = {
           serviceId: PLACES,
           displayName: 'Text Search (IDs only)',
           instrumented: true,
-          usageMeters: [requestMeter('google.searchText', PLACES, 'places.textSearch.idsOnly')],
+          usageMeters: callMeters('google.searchText', PLACES, 'places.textSearch.idsOnly'),
         },
         {
           id: 'google.autocomplete',
           serviceId: PLACES,
           displayName: 'Autocomplete',
           instrumented: true,
-          usageMeters: [
-            requestMeter('google.autocomplete', PLACES, 'places.autocomplete.requests'),
-          ],
+          usageMeters: callMeters('google.autocomplete', PLACES, 'places.autocomplete.requests'),
         },
         {
           id: 'google.details.liveness',
           serviceId: PLACES,
           displayName: 'Place Details (liveness, IDs only)',
           instrumented: true,
-          usageMeters: [requestMeter('google.details.liveness', PLACES, 'places.details.idsOnly')],
+          usageMeters: callMeters('google.details.liveness', PLACES, 'places.details.idsOnly'),
         },
         {
           id: 'google.details.core',
           serviceId: PLACES,
           displayName: 'Place Details (core)',
           instrumented: true,
-          usageMeters: [requestMeter('google.details.core', PLACES, 'places.details.pro')],
+          usageMeters: callMeters('google.details.core', PLACES, 'places.details.pro'),
         },
         {
           id: 'google.details.quality',
           serviceId: PLACES,
           displayName: 'Place Details (quality)',
           instrumented: true,
-          usageMeters: [
-            requestMeter('google.details.quality', PLACES, 'places.details.enterprise'),
-          ],
+          usageMeters: callMeters('google.details.quality', PLACES, 'places.details.enterprise'),
         },
         {
           id: 'google.details.detail',
           serviceId: PLACES,
           displayName: 'Place Details (detail)',
           instrumented: true,
-          usageMeters: [
-            requestMeter('google.details.detail', PLACES, 'places.details.enterpriseAtmosphere'),
-          ],
+          usageMeters: callMeters(
+            'google.details.detail',
+            PLACES,
+            'places.details.enterpriseAtmosphere',
+          ),
         },
         {
           id: 'google.expand',
@@ -460,7 +493,7 @@ const GOOGLE: ProviderDefinition = {
           displayName: 'Short-link expansion',
           instrumented: true,
           // An unauthenticated HEAD to maps.app.goo.gl. Not a Google Cloud SKU.
-          usageMeters: [requestMeter('google.expand', PLACES, null)],
+          usageMeters: callMeters('google.expand', PLACES, null),
         },
       ],
     },
@@ -570,14 +603,14 @@ const GOOGLE: ProviderDefinition = {
           serviceId: SHEETS,
           displayName: 'Spreadsheet metadata',
           instrumented: true,
-          usageMeters: [requestMeter('google.sheets.meta', SHEETS, null)],
+          usageMeters: callMeters('google.sheets.meta', SHEETS, null),
         },
         {
           id: 'google.sheets.values',
           serviceId: SHEETS,
           displayName: 'Spreadsheet values',
           instrumented: true,
-          usageMeters: [requestMeter('google.sheets.values', SHEETS, null)],
+          usageMeters: callMeters('google.sheets.values', SHEETS, null),
         },
       ],
     },
