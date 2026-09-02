@@ -3491,6 +3491,96 @@ paths:
       responses:
         '201': { description: Freshness timestamp and confidence bumped }
 
+  /cms/places/{id}/provider-preview:
+    post:
+      operationId: cmsPreviewProviderContent
+      tags: [cms]
+      summary: "Editor: Google's current answer for this place, rendered and discarded (GoGo-BE#341)"
+      description: >-
+        One live Place Details request at the tier the caller names, for a moderator
+        to compare against what GoGo holds, verify a report, or see whether the id
+        still answers. **Nothing in the answer is stored** (ADR-0006 §9.7): not the
+        name, not the rating, not the status — the response carries `ephemeral: true`
+        to say so, and the only durable trace is an audit row naming the ids and the
+        outcome. Rate-limited per actor; each call is reserved against the
+        `google.places.cms_preview` daily ceiling, which refuses when unset.
+
+        `not_found` / `invalid_id` are answers from Google about the id, not errors —
+        and they change nothing in the catalogue. A moderator who wants GoGo's record
+        to change uses the editor form, or asks the scheduled liveness refresh to look
+        sooner (`POST /cms/places/{id}/refresh`).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier]
+              properties:
+                tier:
+                  type: string
+                  enum: [core, quality]
+                  description: >-
+                    What is read decides what is paid for (PR5). `core` = identity,
+                    address, location, status, type (Pro); `quality` adds rating, review
+                    count, hours, price level (Enterprise). `detail` is not offered here.
+      responses:
+        '201':
+          description: Google's answer, or that Google had none
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsProviderPreview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: PLACE_NO_PROVIDER_SOURCE — no Google identity on this place; PLACE_IDENTITY_CONFLICT — more than one.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: >-
+            PLACE_PROVIDER_UNAVAILABLE (`retryable: true`) — the provider could not be
+            asked; PROVIDER_PREVIEW_DISABLED, PROVIDER_BUDGET_NOT_CONFIGURED,
+            PROVIDER_BUDGET_EXHAUSTED (`retryable: false`) — GoGo declined to ask. None
+            of them says anything about the place, and none changes it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/places/{id}/refresh:
+    post:
+      operationId: cmsRequestPlaceRefresh
+      tags: [cms]
+      summary: 'Editor: ask the scheduled liveness refresh to look at this place sooner (GoGo-BE#341)'
+      description: >-
+        Sets `refresh_after = now()` and `refresh_priority = 1` on the place's Google
+        identity row. No provider call is made here; the worker's next tick verifies
+        the Place ID (IDs-Only, $0) inside its own ceiling and records the outcome the
+        way it always does (GoGo-BE#340). This is the only lever by which a moderator
+        moves the *persisted* provider state on Google's say-so.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: Queued for the next refresh tick
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requested, refreshAfter]
+                properties:
+                  requested: { type: boolean, enum: [true] }
+                  refreshAfter: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: PLACE_NO_PROVIDER_SOURCE — no Google identity on this place.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /cms/places/{id}/merge:
     post:
       operationId: cmsMergePlaces
@@ -7549,6 +7639,24 @@ components:
                 type: [string, 'null']
                 description: Provider facts must be displayed with their attribution (FR-INGEST-014).
               fetchedAt: { type: [string, 'null'], format: date-time }
+              sourceStatus:
+                type: [string, 'null']
+                description: >-
+                  GoGo's recorded liveness state for this identity (`active`, `moved`,
+                  `temporarily_closed`, `closed`, `unknown`); null on a legacy row. Written
+                  by ingestion and by the scheduled liveness refresh (GoGo-BE#340), never
+                  by a preview.
+              refreshAfter:
+                type: [string, 'null']
+                format: date-time
+                description: When the scheduled liveness refresh next looks; null = dormant or legacy.
+              lastRefreshErrorCode:
+                type: [string, 'null']
+                description: The last lookup failure the refresh recorded (a status code, never a message).
+              movedToExternalId:
+                type: [string, 'null']
+                description: Successor Google Place ID the refresh recorded; the place is in review until an editor decides.
+              fetchTier: { type: [string, 'null'] }
         media:
           type: array
           items:
@@ -7564,6 +7672,77 @@ components:
         freshnessCheckedAt: { type: [string, 'null'], format: date-time }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+
+    CmsProviderPreview:
+      type: object
+      description: >-
+        One live provider answer (GoGo-BE#341, ADR-0006 §9.7). `ephemeral` is always
+        true: the console renders it beside the stored place and the server keeps
+        nothing. `provider` is null when `outcome` is not `found`.
+      required: [outcome, tier, requestedGooglePlaceId, fetchedAt, attribution, ephemeral, provider]
+      properties:
+        outcome:
+          type: string
+          enum: [found, not_found, invalid_id]
+        tier: { type: string, enum: [core, quality, detail] }
+        requestedGooglePlaceId: { type: string }
+        fetchedAt: { type: string, format: date-time }
+        attribution: { type: string, description: Always displayed with the facts. }
+        ephemeral: { type: boolean, enum: [true] }
+        provider:
+          type: [object, 'null']
+          required:
+            [
+              googlePlaceId,
+              moved,
+              name,
+              addressText,
+              location,
+              businessStatus,
+              primaryType,
+              types,
+              googleMapsUri,
+              quality,
+            ]
+          properties:
+            googlePlaceId: { type: string, description: The id Google answered with. }
+            moved:
+              type: boolean
+              description: Google answered under an id other than the one asked for.
+            name: { type: string }
+            addressText: { type: string }
+            location:
+              type: object
+              required: [lat, lng]
+              properties:
+                lat: { type: number }
+                lng: { type: number }
+            businessStatus:
+              type: string
+              enum: [OPERATIONAL, CLOSED_TEMPORARILY, CLOSED_PERMANENTLY, FUTURE_OPENING]
+            primaryType: { type: [string, 'null'] }
+            types:
+              type: array
+              items: { type: string }
+            googleMapsUri: { type: [string, 'null'] }
+            quality:
+              type: [object, 'null']
+              description: Present only when the tier bought it; null under `core` — never a zero standing in for "not fetched".
+              required: [rating, ratingCount, hours, priceLevel]
+              properties:
+                rating: { type: [number, 'null'] }
+                ratingCount: { type: integer }
+                hours:
+                  type: array
+                  items:
+                    type: object
+                    required: [dayOfWeek, openMinute, closeMinute, isOvernight]
+                    properties:
+                      dayOfWeek: { type: integer }
+                      openMinute: { type: integer }
+                      closeMinute: { type: integer }
+                      isOvernight: { type: boolean }
+                priceLevel: { type: [integer, 'null'] }
 
     CmsTaxonomy:
       type: object

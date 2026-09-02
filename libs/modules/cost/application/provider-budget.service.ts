@@ -48,7 +48,16 @@ import { listCostMicros, pricingFor, utcDay } from '../domain/provider-pricing';
  */
 
 /** Who is spending. Ceilings are per scope so one job cannot eat another's. */
-export type BudgetScope = 'google.places.refresh' | 'google.places.import';
+export type BudgetScope =
+  | 'google.places.refresh'
+  | 'google.places.import'
+  /**
+   * #341 (PR8) — on-demand, operator-triggered Details fetches whose answer is
+   * rendered and discarded (ADR-0006 §9.7). Its own scope on purpose: a
+   * moderator clicking "preview" must never be able to spend the refresh
+   * job's ceiling, and the refresh job must never be able to spend this one.
+   */
+  | 'google.places.cms_preview';
 
 export type BudgetLimits = {
   /** Absolute calls per day for the scope. `null` = not configured. */
@@ -223,6 +232,7 @@ export class ProviderBudgetService {
 const SCOPE_ENV_PREFIX: Readonly<Record<BudgetScope, string>> = {
   'google.places.refresh': 'PLACE_REFRESH',
   'google.places.import': 'PLACE_IMPORT',
+  'google.places.cms_preview': 'PLACE_CMS_PREVIEW',
 };
 
 /** `google.details.liveness` → `GOOGLE_DETAILS_LIVENESS`. */

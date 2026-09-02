@@ -2004,6 +2004,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/places/{id}/provider-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Editor: Google's current answer for this place, rendered and discarded (GoGo-BE#341)
+         * @description One live Place Details request at the tier the caller names, for a moderator to compare against what GoGo holds, verify a report, or see whether the id still answers. **Nothing in the answer is stored** (ADR-0006 §9.7): not the name, not the rating, not the status — the response carries `ephemeral: true` to say so, and the only durable trace is an audit row naming the ids and the outcome. Rate-limited per actor; each call is reserved against the `google.places.cms_preview` daily ceiling, which refuses when unset.
+         *     `not_found` / `invalid_id` are answers from Google about the id, not errors — and they change nothing in the catalogue. A moderator who wants GoGo's record to change uses the editor form, or asks the scheduled liveness refresh to look sooner (`POST /cms/places/{id}/refresh`).
+         */
+        post: operations["cmsPreviewProviderContent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/places/{id}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Editor: ask the scheduled liveness refresh to look at this place sooner (GoGo-BE#341)
+         * @description Sets `refresh_after = now()` and `refresh_priority = 1` on the place's Google identity row. No provider call is made here; the worker's next tick verifies the Place ID (IDs-Only, $0) inside its own ceiling and records the outcome the way it always does (GoGo-BE#340). This is the only lever by which a moderator moves the *persisted* provider state on Google's say-so.
+         */
+        post: operations["cmsRequestPlaceRefresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/places/{id}/merge": {
         parameters: {
             query?: never;
@@ -4527,6 +4568,18 @@ export interface components {
                 attribution?: string | null;
                 /** Format: date-time */
                 fetchedAt?: string | null;
+                /** @description GoGo's recorded liveness state for this identity (`active`, `moved`, `temporarily_closed`, `closed`, `unknown`); null on a legacy row. Written by ingestion and by the scheduled liveness refresh (GoGo-BE#340), never by a preview. */
+                sourceStatus?: string | null;
+                /**
+                 * Format: date-time
+                 * @description When the scheduled liveness refresh next looks; null = dormant or legacy.
+                 */
+                refreshAfter?: string | null;
+                /** @description The last lookup failure the refresh recorded (a status code, never a message). */
+                lastRefreshErrorCode?: string | null;
+                /** @description Successor Google Place ID the refresh recorded; the place is in review until an editor decides. */
+                movedToExternalId?: string | null;
+                fetchTier?: string | null;
             }[];
             media: {
                 /** Format: uuid */
@@ -4543,6 +4596,49 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        /** @description One live provider answer (GoGo-BE#341, ADR-0006 §9.7). `ephemeral` is always true: the console renders it beside the stored place and the server keeps nothing. `provider` is null when `outcome` is not `found`. */
+        CmsProviderPreview: {
+            /** @enum {string} */
+            outcome: "found" | "not_found" | "invalid_id";
+            /** @enum {string} */
+            tier: "core" | "quality" | "detail";
+            requestedGooglePlaceId: string;
+            /** Format: date-time */
+            fetchedAt: string;
+            /** @description Always displayed with the facts. */
+            attribution: string;
+            /** @enum {boolean} */
+            ephemeral: true;
+            provider: {
+                /** @description The id Google answered with. */
+                googlePlaceId: string;
+                /** @description Google answered under an id other than the one asked for. */
+                moved: boolean;
+                name: string;
+                addressText: string;
+                location: {
+                    lat: number;
+                    lng: number;
+                };
+                /** @enum {string} */
+                businessStatus: "OPERATIONAL" | "CLOSED_TEMPORARILY" | "CLOSED_PERMANENTLY" | "FUTURE_OPENING";
+                primaryType: string | null;
+                types: string[];
+                googleMapsUri: string | null;
+                /** @description Present only when the tier bought it; null under `core` — never a zero standing in for "not fetched". */
+                quality: {
+                    rating: number | null;
+                    ratingCount: number;
+                    hours: {
+                        dayOfWeek: number;
+                        openMinute: number;
+                        closeMinute: number;
+                        isOvernight: boolean;
+                    }[];
+                    priceLevel: number | null;
+                } | null;
+            } | null;
         };
         CmsTaxonomy: {
             /** Format: uuid */
@@ -9135,6 +9231,96 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    cmsPreviewProviderContent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description What is read decides what is paid for (PR5). `core` = identity, address, location, status, type (Pro); `quality` adds rating, review count, hours, price level (Enterprise). `detail` is not offered here.
+                     * @enum {string}
+                     */
+                    tier: "core" | "quality";
+                };
+            };
+        };
+        responses: {
+            /** @description Google's answer, or that Google had none */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsProviderPreview"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description PLACE_NO_PROVIDER_SOURCE — no Google identity on this place; PLACE_IDENTITY_CONFLICT — more than one. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description PLACE_PROVIDER_UNAVAILABLE (`retryable: true`) — the provider could not be asked; PROVIDER_PREVIEW_DISABLED, PROVIDER_BUDGET_NOT_CONFIGURED, PROVIDER_BUDGET_EXHAUSTED (`retryable: false`) — GoGo declined to ask. None of them says anything about the place, and none changes it. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsRequestPlaceRefresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Queued for the next refresh tick */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        requested: true;
+                        /** Format: date-time */
+                        refreshAfter: string;
+                    };
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description PLACE_NO_PROVIDER_SOURCE — no Google identity on this place. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };

@@ -36,7 +36,11 @@ export const GOOGLE_PROVIDER_PUBLIC = 'google';
  * `place_identity_conflicts` for a human. Hiding the legacy one would strip
  * attribution from a place that is still serving it.
  *
- * Columns: `id, provider, external_id, url, attribution, fetched_at`. Callers
+ * Columns: `id, provider, external_id, url, attribution, fetched_at`, plus the
+ * refresh bookkeeping only the canonical table holds — `source_status`,
+ * `refresh_after`, `last_refresh_error_code`, `moved_to_external_id`,
+ * `fetch_tier` (all `null` on a legacy row). Every one of those is GoGo's own
+ * record of GoGo's own calls (ADR-0006 §9.7.1), not provider content. Callers
  * select the subset their DTO exposes.
  *
  * @param placeId the place to read, as a SQL fragment (parameter or column).
@@ -47,7 +51,12 @@ export function googleProvenanceRows(placeId: SQL, unified: boolean): SQL {
   const legacy = sql`
     select s.id, s.provider::text as provider, s.external_id, s.url,
            s.attribution,
-           coalesce(s.raw_updated_at, s.imported_at) as fetched_at
+           coalesce(s.raw_updated_at, s.imported_at) as fetched_at,
+           null::text as source_status,
+           null::timestamptz as refresh_after,
+           null::text as last_refresh_error_code,
+           null::text as moved_to_external_id,
+           null::text as fetch_tier
     from place_sources s
     where s.place_id = ${placeId}`;
   if (!unified) return legacy;
@@ -55,7 +64,12 @@ export function googleProvenanceRows(placeId: SQL, unified: boolean): SQL {
     select ps.id, ${GOOGLE_PROVIDER_PUBLIC}::text as provider, ps.external_id,
            ps.provider_uri as url,
            nullif(ps.attribution ->> 'text', '') as attribution,
-           ps.fetched_at
+           ps.fetched_at,
+           ps.source_status::text as source_status,
+           ps.refresh_after,
+           ps.last_refresh_error_code,
+           ps.moved_to_external_id,
+           ps.fetch_tier::text as fetch_tier
     from place_provider_sources ps
     where ps.place_id = ${placeId} and ps.provider = ${GOOGLE_PROVIDER}
     union all

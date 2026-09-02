@@ -1,5 +1,5 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { eq, sql, type SQL } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { AppError } from '../../shared/app-error';
@@ -141,6 +141,12 @@ type PlaceSourceRow = {
   url: string | null;
   attribution: string | null;
   fetched_at: Date | string | null;
+  // #341 — refresh bookkeeping, canonical rows only (null on a legacy row).
+  source_status: string | null;
+  refresh_after: Date | string | null;
+  last_refresh_error_code: string | null;
+  moved_to_external_id: string | null;
+  fetch_tier: string | null;
 };
 
 type PlaceMediaRow = {
@@ -451,6 +457,14 @@ export class CmsCatalogService {
           // Provider facts carry attribution and a fetch time (FR-INGEST-014).
           attribution: r.attribution,
           fetchedAt: toIso(r.fetched_at),
+          // #341 (PR8) — what GoGo's own refresh recorded about this identity
+          // (ADR-0006 §9.7.1): liveness state, the next scheduled check, the
+          // last lookup failure, a successor id. GoGo metadata, not content.
+          sourceStatus: r.source_status,
+          refreshAfter: toIso(r.refresh_after),
+          lastRefreshErrorCode: r.last_refresh_error_code,
+          movedToExternalId: r.moved_to_external_id,
+          fetchTier: r.fetch_tier,
         };
       }),
       media: media.rows.map((m) => {
@@ -592,6 +606,45 @@ export class CmsCatalogService {
     });
     await this.audit(adminId, 'place.price_added', placeId, input);
     return { added: true };
+  }
+
+  /**
+   * #341 (PR8) / CMS#98 — ask PR7's liveness refresh to look at this place
+   * sooner.
+   *
+   * Two columns move: `refresh_after` to now, `refresh_priority` to 1. Both
+   * are GoGo's own scheduling metadata (ADR-0006 §9.7.1); no provider is
+   * called here and nothing about the place changes until the worker's next
+   * tick answers, inside the refresh scope's own ceiling. A moderator who has
+   * just seen, in an ephemeral preview, that Google answers under another id
+   * has exactly this lever: the *persisted* state changes only through the
+   * sanctioned path, never by copying the preview.
+   */
+  async requestRefresh(adminId: string, placeId: string) {
+    const updated = await this.db
+      .update(schema.placeProviderSources)
+      .set({ refreshAfter: sql`now()`, refreshPriority: 1 })
+      .where(
+        and(
+          eq(schema.placeProviderSources.placeId, placeId),
+          eq(schema.placeProviderSources.provider, GOOGLE_PROVIDER),
+        ),
+      )
+      .returning({ refreshAfter: schema.placeProviderSources.refreshAfter });
+    if (updated.length === 0) {
+      const [place] = await this.db
+        .select({ id: schema.places.id })
+        .from(schema.places)
+        .where(eq(schema.places.id, placeId))
+        .limit(1);
+      if (!place) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
+      throw AppError.conflict(
+        'PLACE_NO_PROVIDER_SOURCE',
+        'Place has no Google identity to refresh',
+      );
+    }
+    await this.audit(adminId, 'place.refresh_requested', placeId, { refreshPriority: 1 });
+    return { requested: true as const, refreshAfter: toIso(updated[0]!.refreshAfter)! };
   }
 
   async touchFreshness(adminId: string, placeId: string) {

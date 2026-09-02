@@ -15,6 +15,7 @@ import {
   type PlaceEditInput,
 } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
+import { CmsProviderPreviewService } from '../application/cms-provider-preview.service';
 import { CmsUploadsService } from '../application/cms-uploads.service';
 import {
   BANNER_DESTINATIONS,
@@ -656,6 +657,12 @@ const priceSchema = z.object({
   unit: z.enum(['per_person', 'per_item', 'per_hour', 'per_night']).default('per_person'),
 });
 const mergeSchema = z.object({ duplicateId: z.string().uuid() });
+/**
+ * #341 (PR8) — the tier is the caller's decision and has no default (PR5).
+ * `detail` (reviews, Enterprise + Atmosphere) is accepted by the boundary but
+ * not offered here: no moderation task reads reviews, so no click may buy them.
+ */
+const providerPreviewSchema = z.object({ tier: z.enum(['core', 'quality']) });
 
 /** BE-IMP-001 — server-side filter/sort/paginate for the CMS place table. */
 const placeListQuery = z.object({
@@ -677,7 +684,10 @@ const placeListQuery = z.object({
 @RequireRole('editor')
 @Controller('cms/places')
 export class CmsCatalogController {
-  constructor(private readonly catalog: CmsCatalogService) {}
+  constructor(
+    private readonly catalog: CmsCatalogService,
+    private readonly providerPreview: CmsProviderPreviewService,
+  ) {}
 
   @Get()
   list(@Query(new ZodValidationPipe(placeListQuery)) query: z.infer<typeof placeListQuery>) {
@@ -748,6 +758,34 @@ export class CmsCatalogController {
   @Post(':id/verify-freshness')
   verifyFreshness(@CurrentActor() actor: Actor, @Param('id', Uuid) id: string) {
     return this.catalog.touchFreshness(actor.id, id);
+  }
+
+  /**
+   * #341 (PR8) / CMS#98 — Google's current answer for this place, rendered
+   * and discarded (ADR-0006 §9.7). Rate-limited per actor because every call
+   * buys a Pro/Enterprise Details request; the daily ceiling behind it is the
+   * `google.places.cms_preview` budget scope.
+   */
+  @RateLimit({
+    action: 'cms.place_provider_preview',
+    limit: 60,
+    windowSeconds: 3600,
+    keyBy: 'actor',
+    burst: { limit: 6, windowSeconds: 60 },
+  })
+  @Post(':id/provider-preview')
+  providerPreviewOf(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(providerPreviewSchema)) body: z.infer<typeof providerPreviewSchema>,
+  ) {
+    return this.providerPreview.preview(actor.id, id, body.tier);
+  }
+
+  /** #341 (PR8) / CMS#98 — bump PR7's liveness refresh for this place. No provider call. */
+  @Post(':id/refresh')
+  requestRefresh(@CurrentActor() actor: Actor, @Param('id', Uuid) id: string) {
+    return this.catalog.requestRefresh(actor.id, id);
   }
 
   @Post(':id/merge')

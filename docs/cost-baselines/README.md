@@ -126,6 +126,17 @@ one to a tier each path has to state and justify (ADR-0006 §2, amended).
   is added and pinned but has no production caller yet, so it contributes a
   measured zero to every scenario; PR7's refresh is what will call it.
 
+### What #341 (PR8) moved, and what it did not
+
+Nothing in A–E. PR8 adds two CMS routes — an ephemeral provider preview
+(`POST /cms/places/:id/provider-preview`, one Pro/Enterprise Details per
+moderator click, rendered and discarded) and a liveness-refresh priority bump
+(`POST /cms/places/:id/refresh`, no provider call). Neither is on any
+scenario's path, so the golden is unchanged and **no re-freeze was made**: a
+drift here would be a defect, not a decision. The preview's cost sits under
+its own budget scope (`google.places.cms_preview`) and is read from
+`place_provider_content_total`, not from a baseline (ADR-0006 §9.7.4).
+
 The same spec also runs the scenarios twice from the same starting state and
 asserts they agree within ±1 per operation, which is the plan's acceptance
 criterion.

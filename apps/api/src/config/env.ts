@@ -291,6 +291,35 @@ const envSchema = z
     PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_CORE: z.coerce.number().int().min(0).optional(),
     PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY: z.coerce.number().int().min(0).optional(),
     /**
+     * #341 (PR8) — the hard budget for the CMS provider-preview scope
+     * (`google.places.cms_preview`, ADR-0006 §9.7.4): a moderator asking to
+     * *see* Google's current answer for one place, rendered and discarded.
+     *
+     * Same rule as the refresh scope: **unset means refuse**, and the three
+     * ceilings are enforced together. Deliberately not the refresh scope's
+     * numbers — the preview buys Pro/Enterprise Details ($17/$20 per 1,000)
+     * while the refresh buys IDs-Only ($0), and one ceiling cannot bound both
+     * honestly.
+     */
+    PLACE_CMS_PREVIEW_DAILY_MAX_CALLS: z.coerce.number().int().min(0).optional(),
+    /** USD, converted to micros internally. Worst case, at list price. */
+    PLACE_CMS_PREVIEW_DAILY_MAX_LIST_COST_USD: z.coerce.number().min(0).optional(),
+    PLACE_CMS_PREVIEW_DAILY_MAX_UNITS_GOOGLE_DETAILS_CORE: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional(),
+    PLACE_CMS_PREVIEW_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional(),
+    PLACE_CMS_PREVIEW_DAILY_MAX_UNITS_GOOGLE_DETAILS_DETAIL: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional(),
+    /**
      * #337 — the key that signs the short-lived resolution attestation
      * `POST /v1/place-submissions` accepts in place of a second Google Details
      * fetch (plan §2.8). Ours to generate; never collected from a provider,

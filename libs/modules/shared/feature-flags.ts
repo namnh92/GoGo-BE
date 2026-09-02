@@ -137,6 +137,18 @@ export const FEATURE_FLAGS = {
     description: 'Run the periodic Google Place ID liveness refresh (IDs-Only, billed at $0).',
     platformScoped: false,
   },
+  // #341 (PR8). Default **off** for the same reason as the refresh flag: it
+  // switches on a spender (Pro/Enterprise Details, on a moderator's click).
+  // It gates the whole ephemeral boundary, not one screen — every caller of
+  // `ProviderContentService` is refused while it is off, so an operator has
+  // one switch to throw during an incident, without a deploy.
+  'place_provider_preview.enabled': {
+    valueType: 'boolean',
+    defaultValue: false,
+    description:
+      'Allow on-demand, ephemeral Google Details fetches (CMS provider preview). Answers are rendered and discarded, never stored (ADR-0006 §9.7).',
+    platformScoped: false,
+  },
 } as const satisfies Record<string, FlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAGS;

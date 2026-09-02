@@ -170,7 +170,10 @@ survive the change is an editorial decision, not one the importer should make.
 **Status: Proposed — the restrictive half is in force now; the permissive half
 does not take effect until counsel signs §9.6.** Product signed on 2026-09-02;
 counsel has not. No PR may rely on a row of §9.3 marked _needs decision_ being
-permitted.
+permitted. **§9.7 (2026-09-02) records the MVP operating policy adopted while
+counsel is pending — deny-by-default, rich Google content ephemeral — and the
+redesigned PR8 that ships under it. It is an engineering/product constraint,
+not legal sign-off, and it does not fill the counsel row.**
 
 Source: `Cost-Spec/GOGO_COST_AND_PLACES_EXECUTION_PLAN_v2_DECIDED.md` §0.2 C3/C4,
 §3 PR0, §7. Supersedes ADR-0004 §3's caching sentence for everything except the
@@ -348,15 +351,129 @@ Google content, no cross-request Google content snapshot, no widened retention.
 
 **Still blocked on counsel sign-off:**
 
-| Item                                                                                                                                     | Issues                    |
-| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| PR8 — provider-content refresh                                                                                                           | GoGo-BE#341 + GoGo-CMS#98 |
-| Candidate `name` / `address` persistence decision (R3b)                                                                                  | GoGo-BE#346               |
-| R2 (`places.geom` under SST §14.3) and R4, and any work needing persistence of Google-derived content classed **needs decision** in §9.3 | §9.4 R2/R4                |
+| Item                                                                                                                                                                                                                      | Issues                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| ~~PR8 — provider-content refresh~~ **Superseded by §9.7**: the persistent-content design is cancelled; the redesigned PR8 (ephemeral access) proceeds                                                                     | GoGo-BE#341 + GoGo-CMS#98 |
+| Candidate `name` / `address` persistence decision (R3b) — §9.7 fixes the direction (ephemeral fetch, no persistence); the retention/UX change stays its own PR                                                            | GoGo-BE#346               |
+| R2 (`places.geom` under SST §14.3) and R4, and any work needing persistence of Google-derived content classed **needs decision** in §9.3 — §9.7 turns both into remediation debts with a filed plan; neither ships in PR8 | §9.4 R2/R4                |
 
 A reviewer who finds a diff in the allowed column writing a provider-derived
 field has found a blocking defect, exactly as §9.5 already says. The gate moved;
 the freeze did not.
+
+### 9.7 Amendment 2026-09-02 — Option 2: deny-by-default persistence for MVP
+
+**Counsel: still PENDING.** Nothing below is, or may later be read as, legal
+sign-off. The counsel row of §9.6 stays empty. What this section records is the
+operating policy the product owner and engineering adopted so MVP development
+can continue _without_ the permissive half of this amendment: when a §9.3 row
+says _needs decision_, GoGo behaves as if the answer were **no** until counsel
+says otherwise. If counsel later permits more, that is a relaxation to plan;
+if counsel permits less, the debts listed at the end are what has to move.
+
+#### 9.7.1 Persistence policy in force
+
+| May be persisted                                                                                                                                                       | Basis                                                                       |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Google Place ID; successor Place ID (`moved_to_external_id`)                                                                                                           | SST §3, §9.3 rows 1 and 5                                                   |
+| GoGo-owned identity / provenance metadata (`provider`, `provider_uri`, `attribution`, `fetch_tier`)                                                                    | §9.3 rows 2–4                                                               |
+| Refresh / liveness bookkeeping (`fetched_at`, `refresh_after`, `refresh_priority`, `refresh_attempts`, `transient_failures`, `last_refresh_*`, `freshness_checked_at`) | GoGo facts about GoGo's own calls, §9.3 rows 4 and 6; written by PR7 (#340) |
+| GoGo-owned, user-entered or moderator-authored catalogue content (`source='editor'` hours/prices, sheet descriptions, editor edits, community reviews)                 | §3 "GoGo-owned"                                                             |
+
+| Must stay ephemeral (fetch → use in the current operation → discard) | Treatment                                                                                                                                       |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Display name, formatted address                                      | Never written by a new path. Existing writers are R4 debt (§9.7.5).                                                                             |
+| Rating, rating count, derived score                                  | Same.                                                                                                                                           |
+| Opening hours (`source='provider'`), price level                     | Same.                                                                                                                                           |
+| Photos, reviews                                                      | Already never stored; unchanged.                                                                                                                |
+| Business status                                                      | A **new** path may not persist it; `source_status` as written by PR6/PR7 (`moved`, `unknown` from lookup failures) is liveness state and stays. |
+| Latitude / longitude                                                 | Only with an explicit ≤30-day lifecycle (SST §14.3). Not GoGo canonical data by default. `places.geom` is R2 debt (§9.7.5).                     |
+
+"Ephemeral" is defined by execution scope, exactly as §9.1 already draws it:
+a provider object may travel through one request or one job step and be
+rendered, compared or decided on; it may not be written to Postgres, Redis, a
+file, an audit `diff`, a metric label or a log line, and it may not be handed
+to a later request. Attribution at every presentation boundary is the
+canonical `Google Maps` (`GOOGLE_ATTRIBUTION`); historical rows keep their
+stored wording and are normalised on read — no migration exists to rewrite
+them, by decision.
+
+#### 9.7.2 What PR8 was, and what it now is
+
+|                | Old PR8 (plan §2.5 phase 2, §3 PR8 — **cancelled**)                                                                     | New PR8 (#341 + CMS#98 — **this**)                                                                                                                         |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Refresh        | `core` on a 30-day cadence for identity + closure, `quality` where shown; guarded writes per plan §2.7 ownership matrix | **Unchanged from PR7**: scheduled refresh stays `details.liveness` (`id,movedPlaceId`), writes identity/liveness metadata only                             |
+| Google content | Persisted into `places` / `place_provider_sources` / `place_hours` under guards                                         | **Ephemeral**: an explicit boundary (`ProviderContentService`) returns a frozen, non-persistable value; no repository accepts it                           |
+| CMS            | "Làm mới từ Google" = priority bump; later a persistent content refresh                                                 | "Xem dữ liệu Google hiện tại" = on-demand preview/comparison, rendered and discarded; priority bump kept (writes only `refresh_after`, `refresh_priority`) |
+| Consumer       | Bulk publish from a stored snapshot (2→1)                                                                               | No new consumer provider call. The existing resolve-link preview (`quality`, per request, discarded) is already the compliant pattern                      |
+| Budget         | Cost-weighted reservation under the refresh scope                                                                       | New scope `google.places.cms_preview` with its own ceilings; **never** the PR7 scope. Absent ceilings refuse                                               |
+| Tier           | Chosen by cadence                                                                                                       | Chosen per caller, explicit, no default — PR5's rule carried to the boundary                                                                               |
+
+#### 9.7.3 The boundary, stated as invariants
+
+1. Every Google Details fetch outside the resolver's existing callers goes
+   through `ProviderContentService.fetch({ googlePlaceId, tier, scope })`.
+   `tier` and `scope` are required parameters.
+2. The service returns `EphemeralProviderContent`: a deeply frozen value with
+   an explicit field list (§9.7.1 "ephemeral" rows plus Place ID and
+   attribution), no `raw`, no `fetchTier`, no `providerPlaceId` at the top
+   level. It is structurally **not** a `ResolvedProviderPlace`, so the existing
+   repository methods that take one cannot be handed it — pinned by a
+   `@ts-expect-error` in `provider-content.spec.ts`.
+3. No file that names the ephemeral type may write a catalogue table. Pinned
+   structurally by `provider-content-boundary.spec.ts`, which scans `libs/**`
+   and `apps/**` for the identifier and refuses any write statement in the
+   files that carry it, and refuses the identifier anywhere in
+   `libs/database`, in any `infrastructure/` directory, or in
+   `place-refresh.service.ts`.
+4. A failed ephemeral fetch mutates nothing. Provider outage, quota and
+   configuration faults surface as `503 PLACE_PROVIDER_UNAVAILABLE`
+   (`retryable: true`); Google's `NOT_FOUND` / `INVALID_ARGUMENT` are
+   **answers** (`outcome: not_found | invalid_id`), never an HTTP error and
+   never a `source_status` write. Catalogue state changes only through PR7's
+   scheduled liveness path or a moderator's explicit edit.
+5. `FUTURE_OPENING` is returned as-is in the ephemeral answer and, because the
+   boundary never persists, needs no storage value — the PR6 flattening stays
+   where it is and the three door-level refusals stay in force.
+6. The audit row for a preview carries `{ tier, outcome, googlePlaceId,
+answeredGooglePlaceId }` and nothing else.
+
+#### 9.7.4 Cost of the new path
+
+| Path                                       | Tier                                                                                            | Operation                                        | Trigger                                 | List price          | Ceiling                                                                                                                 |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------ | --------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/cms/places/:id/provider-preview` | `core` or `quality` (caller's choice; `detail` accepted by the service, not offered by the CMS) | `google.details.core` / `google.details.quality` | Moderator click, rate-limited per actor | $17 / $20 per 1,000 | scope `google.places.cms_preview` — `PLACE_CMS_PREVIEW_DAILY_MAX_*`; unset = refuse; not covered by any PR2/PR7 ceiling |
+| `POST /v1/cms/places/:id/refresh`          | —                                                                                               | none                                             | Moderator click                         | $0                  | Consumes one PR7 `liveness` call at the next tick, inside PR7's own ceiling                                             |
+
+Expected frequency is operator-bounded (tens per day at most); the exposure
+is bounded by the daily ceiling, not by an estimate of behaviour. Scenarios
+A–E of the cost baseline do not exercise either route, so PR8 re-freezes no
+baseline: the golden must stay byte-identical, and a drift there is a defect.
+
+#### 9.7.5 Debts this policy makes explicit (not shipped in PR8)
+
+- **R4 — provider-derived catalogue columns.** `upsertProviderSource` still
+  writes `rating`, `rating_count`, `derived_score`, `price_level`,
+  `primary_type`, `source_status` from a `quality` Details answer, and the
+  approve / bulk-publish / legacy-import paths still copy `name`,
+  `address_text`, `geom`, `rating`, `rating_count`, `price_level` into
+  `places`, provider rows into `place_hours`, and a `priceLevel`-derived row
+  into `place_prices`. `audit_logs.diff` on an identity change also carries
+  Google's `name` and `businessStatus`. Under §9.7.1 every one of these is a
+  non-ephemeral Google content write. They predate this amendment, they are
+  what makes a catalogue row exist at all today, and turning them off means a
+  moderator-authored representation at approve/publish time — a product/UX
+  change with its own issue. Filed, not silently shipped.
+- **R2 — `places.geom`.** Four of the six writers are Google-derived; the
+  only non-Google writer is the CMS editor form, and nothing marks which rows
+  came from where. A provenance marker is the prerequisite for any expiry or
+  purge. Remediation plan filed as its own issue.
+- **#346 — candidate `name`/`address`.** Direction fixed by §9.7.1: the
+  moderation drawer may fetch them ephemerally by Google Place ID through the
+  same boundary; the stored copy and the contract change remain #346's own PR.
+- **Counsel still owes** the classification of every _needs decision_ row.
+  Under this policy their absence blocks nothing new; it only keeps the R2/R4
+  remediation on the conservative path.
 
 ## Consequences
 

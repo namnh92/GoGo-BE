@@ -313,6 +313,55 @@ The daily call ceiling is what decides how fast that backlog drains: at 500
 calls/day a 2,000-row backlog takes four days, and the drain is visible in
 `place_refresh_total{outcome="succeeded"}` rather than arriving as one spike.
 
+### Provider preview (`place_provider_content_total`, GoGo-BE#341)
+
+The CMS "Xem dữ liệu Google hiện tại" button. Each click is **one live Place
+Details request** at the tier the moderator chose (`core` = Pro, `quality` =
+Enterprise), rendered in the console and **never stored** (ADR-0006 §9.7). The
+`POST /v1/cms/places/:id/refresh` button next to it makes no provider call — it
+only sets `refresh_after = now(), refresh_priority = 1` so the scheduled
+liveness refresh (above) looks at that place on its next tick.
+
+Two switches, both default-deny, both must be on for a preview to succeed:
+
+| Switch                                   | Where                                                                                                                                                                  | Off means                                                                                         |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `place_provider_preview.enabled`         | `feature_flags` row (CMS → Feature flags), registry default `false`                                                                                                    | `503 PROVIDER_PREVIEW_DISABLED`; no reservation, no request                                       |
+| `PLACE_CMS_PREVIEW_DAILY_MAX_*` ceilings | SSM `budget/place-cms-preview-daily-max-{calls,list-cost-usd,units-google-details-core,units-google-details-quality}` → env (GoGo-Infra manifest; see the Infra issue) | `503 PROVIDER_BUDGET_NOT_CONFIGURED`; `PROVIDER_BUDGET_EXHAUSTED` once a ceiling is reached today |
+
+Scope `google.places.cms_preview` is its own row family in
+`provider_budget_daily`; it cannot draw on the refresh scope and the refresh
+scope cannot draw on it. Unset ceilings refuse — the same rule as the refresh
+job, for the same reason.
+
+**Kill it:** set the flag row to `false` (takes effect on the next request, no
+deploy). Ceilings alone also stop spend, at the cost of a less specific error.
+
+**What to read:**
+
+```promql
+sum by (tier, outcome) (increase(place_provider_content_total{scope="google.places.cms_preview"}[24h]))
+increase(places_provider_requests_total{method=~"google.details.(core|quality)"}[24h])
+```
+
+`outcome="disabled"` climbing means moderators are clicking a button whose
+flag is off — either turn it on or hide it. `refused_budget` at the start of a
+day means the ceilings are unset, not exhausted; check the SSM rows.
+`provider_error` follows the provider-errors runbook above. `found` /
+`not_found` / `invalid_id` are Google's answers and need nothing from an
+operator.
+
+**What must never move because of a preview:** any column of `places`,
+`place_provider_sources`, `place_hours`, `place_prices`. If a report says a
+preview changed a place, that is a P1 defect against the boundary, not a
+configuration problem — `apps/api/test/provider-preview.int.spec.ts` snapshots
+those rows before and after every call. The only durable trace of a preview is
+an `audit_logs` row (`place.provider_previewed`) holding the tier, the outcome
+and the two Place IDs.
+
+Cost: list price $17 (core) / $20 (quality) per 1,000. Expected volume is
+moderator-bounded (tens per day); the ceiling, not the estimate, is the bound.
+
 ### super_admin bypass (`cms_super_admin_bypass_total`)
 
 A rising count means the role model does not fit the work people actually do —

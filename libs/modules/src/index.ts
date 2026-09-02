@@ -81,6 +81,25 @@ export { PlaceResolverService } from '../ingestion/application/place-resolver.se
 export { PlaceDedupService } from '../ingestion/application/place-dedup.service';
 export { PlaceSubmissionService } from '../ingestion/application/place-submission.service';
 export {
+  ProviderContentService,
+  PROVIDER_CONTENT_OUTCOMES,
+  type ProviderContentRequest,
+  type ProviderContentScope,
+} from '../ingestion/application/provider-content.service';
+export {
+  PROVIDER_CONTENT_KIND,
+  PROVIDER_CONTENT_TIERS,
+  toEphemeralProviderContent,
+  type EphemeralProviderContent,
+  type ProviderContentAnswer,
+  type ProviderContentFacts,
+  type ProviderContentTier,
+} from '../ingestion/domain/provider-content';
+export {
+  CmsProviderPreviewService,
+  type CmsProviderPreviewDto,
+} from '../cms/application/cms-provider-preview.service';
+export {
   PlaceImportJobService,
   type ImportMode,
 } from '../ingestion/application/place-import-job.service';

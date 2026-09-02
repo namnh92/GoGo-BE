@@ -94,6 +94,13 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // (`deferred_not_due`, `refused_budget`, `disabled`, `provider_error`,
   // `deadline`). No place id, no external id, no Google status text.
   place_refresh_total: ['outcome'],
+  // #341 — the ephemeral provider-content boundary's own ledger. `scope` is
+  // the budget scope spent under (a closed set from `BudgetScope`), `tier`
+  // the Details tier bought (`core`/`quality`/`detail`), `outcome` one of
+  // PROVIDER_CONTENT_OUTCOMES (`found`, `not_found`, `invalid_id`,
+  // `disabled`, `refused_budget`, `provider_error`). No place id, no external
+  // id, and — by construction — nothing from the answer itself.
+  place_provider_content_total: ['scope', 'tier', 'outcome'],
   place_dbfirst_hit_total: ['path'],
   // …and why a lookup fell through, which is the more useful half: `absent` is
   // the catalogue growing, `stale` is refresh falling behind, `legacy` is a

@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { IdentityModule } from '../../identity/presentation/identity.module';
+// #341 — the ephemeral provider-content boundary lives with the resolver.
+import { IngestionModule } from '../../ingestion/presentation/ingestion.module';
 import { SuggestionsModule } from '../../suggestions/presentation/suggestions.module';
 // #246 — the console reuses the consumer erase/export rather than growing a
 // second implementation of them.
@@ -10,6 +12,7 @@ import { CloudflareAccessService } from '../application/cf-access.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsCatalogService } from '../application/cms-catalog.service';
 import { CmsContentService } from '../application/cms-content.service';
+import { CmsProviderPreviewService } from '../application/cms-provider-preview.service';
 import { CmsUploadsService } from '../application/cms-uploads.service';
 import { BannersService } from '../application/banners.service';
 import { CampaignsService } from '../../notifications/application/campaigns.service';
@@ -46,7 +49,7 @@ import {
 } from './cms.controllers';
 
 @Module({
-  imports: [IdentityModule, SuggestionsModule, ReviewsModule],
+  imports: [IdentityModule, IngestionModule, SuggestionsModule, ReviewsModule],
   controllers: [
     CmsAuditController,
     CmsAuthController,
@@ -70,6 +73,7 @@ import {
     CmsAuditService,
     CmsCatalogService,
     CmsContentService,
+    CmsProviderPreviewService,
     CmsUploadsService,
     CmsObservabilityService,
     CmsOpsMetricsService,
