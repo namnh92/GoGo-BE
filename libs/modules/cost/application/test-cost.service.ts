@@ -87,6 +87,39 @@ export type TestRunResult = {
   budgetViolations: string[];
 };
 
+export type TestRunStatus = 'running' | 'ok' | 'over_budget' | 'failed';
+
+/** One `cost_test_runs` row as the Cost API reports it (#381). */
+export type TestRunRecord = {
+  id: string;
+  name: string;
+  environment: string;
+  status: TestRunStatus;
+  startedAt: string;
+  endedAt: string | null;
+  baselineSnapshotAt: string;
+  finalSnapshotAt: string | null;
+  gitSha: string | null;
+  services: string[] | null;
+  budget: TestBudget | null;
+  notes: string | null;
+};
+
+/**
+ * A run with its deltas. While the run is `running` the deltas are the
+ * baseline snapshot (delta 0, unpriced) and the totals are `null` — nothing
+ * has been measured yet, and a floor of 0 would read as a result.
+ */
+export type TestRunDetail = TestRunRecord & {
+  deltas: TestRunDelta[];
+  /** Sum of known estimated deltas; `null` when nothing was priceable or the run is open. */
+  estimatedCostMicros: number | null;
+  /** Sum of known actual deltas; `null` until an ACTUAL source exists. */
+  actualCostMicros: number | null;
+  /** Billable meters whose price is unknown — the reason a total may be a floor. */
+  unpriced: string[];
+};
+
 const keyOf = (k: MeterKey) =>
   `${k.providerId}|${k.serviceId}|${k.operationId ?? ''}|${k.usageMetricId}|${k.billingSkuId ?? ''}`;
 
@@ -288,6 +321,58 @@ export class TestCostService {
     }));
   }
 
+  /** Newest runs first for one environment. Read-only, for the Cost API (#381). */
+  async list(opts: { environment: string; limit?: number }): Promise<TestRunRecord[]> {
+    const limit = Math.min(100, Math.max(1, opts.limit ?? 20));
+    const { rows } = await this.db.execute(sql`
+      select id, name, environment, status, started_at, ended_at, baseline_snapshot_at,
+             final_snapshot_at, git_sha, services, budget, notes
+      from cost_test_runs
+      where environment = ${opts.environment}
+      order by started_at desc, id desc
+      limit ${limit}
+    `);
+    return (rows as unknown as RawRun[]).map(toRunRecord);
+  }
+
+  /** One run with its deltas; `null` when no such run. */
+  async get(id: string): Promise<TestRunDetail | null> {
+    const { rows } = await this.db.execute(sql`
+      select id, name, environment, status, started_at, ended_at, baseline_snapshot_at,
+             final_snapshot_at, git_sha, services, budget, notes
+      from cost_test_runs where id = ${id}
+    `);
+    const raw = rows[0] as RawRun | undefined;
+    if (!raw) return null;
+    const run = toRunRecord(raw);
+    const deltaRows = await this.db.execute(sql`
+      select provider_id, service_id, operation_id, usage_metric_id, billing_sku_id, unit,
+             usage_before, usage_after, usage_delta, estimated_cost_delta, actual_cost_delta,
+             currency, basis, confidence
+      from cost_test_run_deltas where test_run_id = ${id}
+      order by provider_id, service_id, operation_id nulls first, usage_metric_id, billing_sku_id nulls first
+    `);
+    const deltas = (deltaRows.rows as unknown as RawDelta[]).map(toDelta);
+    if (run.status === 'running') {
+      return { ...run, deltas, estimatedCostMicros: null, actualCostMicros: null, unpriced: [] };
+    }
+    const estimated = deltas.filter((d) => d.estimatedCostDelta !== null);
+    const actual = deltas.filter((d) => d.actualCostDelta !== null);
+    return {
+      ...run,
+      deltas,
+      estimatedCostMicros:
+        estimated.length === 0
+          ? null
+          : estimated.reduce((n, d) => n + (d.estimatedCostDelta ?? 0), 0),
+      actualCostMicros:
+        actual.length === 0 ? null : actual.reduce((n, d) => n + (d.actualCostDelta ?? 0), 0),
+      unpriced: deltas
+        .filter((d) => d.billingSkuId !== null && d.estimatedCostDelta === null)
+        .map((d) => `${d.serviceId}/${d.usageMetricId}`),
+    };
+  }
+
   private async run(
     id: string,
   ): Promise<{ environment: string; services: string[] | null; budget: TestBudget | null } | null> {
@@ -342,4 +427,75 @@ export class TestCostService {
       values ${sql.join(values, sql`, `)}
     `);
   }
+}
+
+type RawRun = {
+  id: string;
+  name: string;
+  environment: string;
+  status: TestRunStatus;
+  started_at: Date | string;
+  ended_at: Date | string | null;
+  baseline_snapshot_at: Date | string;
+  final_snapshot_at: Date | string | null;
+  git_sha: string | null;
+  services: string[] | null;
+  budget: TestBudget | null;
+  notes: string | null;
+};
+
+type RawDelta = {
+  provider_id: string;
+  service_id: string;
+  operation_id: string | null;
+  usage_metric_id: string;
+  billing_sku_id: string | null;
+  unit: string;
+  usage_before: number | string;
+  usage_after: number | string;
+  usage_delta: number | string;
+  estimated_cost_delta: number | string | null;
+  actual_cost_delta: number | string | null;
+  currency: string;
+  basis: TestRunDelta['basis'];
+  confidence: TestRunDelta['confidence'];
+};
+
+const iso = (v: Date | string | null): string | null =>
+  v === null ? null : new Date(v).toISOString();
+
+function toRunRecord(r: RawRun): TestRunRecord {
+  return {
+    id: r.id,
+    name: r.name,
+    environment: r.environment,
+    status: r.status,
+    startedAt: new Date(r.started_at).toISOString(),
+    endedAt: iso(r.ended_at),
+    baselineSnapshotAt: new Date(r.baseline_snapshot_at).toISOString(),
+    finalSnapshotAt: iso(r.final_snapshot_at),
+    gitSha: r.git_sha,
+    services: r.services,
+    budget: r.budget,
+    notes: r.notes,
+  };
+}
+
+function toDelta(r: RawDelta): TestRunDelta {
+  return {
+    providerId: r.provider_id,
+    serviceId: r.service_id,
+    operationId: r.operation_id,
+    usageMetricId: r.usage_metric_id,
+    billingSkuId: r.billing_sku_id,
+    unit: r.unit,
+    usageBefore: Number(r.usage_before),
+    usageAfter: Number(r.usage_after),
+    usageDelta: Number(r.usage_delta),
+    estimatedCostDelta: r.estimated_cost_delta === null ? null : Number(r.estimated_cost_delta),
+    actualCostDelta: r.actual_cost_delta === null ? null : Number(r.actual_cost_delta),
+    currency: r.currency,
+    basis: r.basis,
+    confidence: r.confidence,
+  };
 }

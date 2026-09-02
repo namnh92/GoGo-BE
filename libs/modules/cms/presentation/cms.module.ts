@@ -18,6 +18,7 @@ import { RecommendationsService } from '../application/recommendations.service';
 import { PlanTemplatesService } from '../application/plan-templates.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { CmsObservabilityService } from '../application/cms-observability.service';
+import { CmsCostCenterService } from '../application/cms-cost-center.service';
 import { CmsOpsMetricsService } from '../application/cms-ops-metrics.service';
 import { CmsUsersService } from '../application/cms-users.service';
 import { PrivacyRequestsService } from '../application/privacy-requests.service';
@@ -72,6 +73,7 @@ import {
     CmsContentService,
     CmsUploadsService,
     CmsObservabilityService,
+    CmsCostCenterService,
     CmsOpsMetricsService,
     CmsUsersService,
     PrivacyRequestsService,
