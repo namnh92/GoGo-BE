@@ -27,7 +27,8 @@
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "typecheck": "turbo run typecheck",
-    "typecheck:scripts": "tsc --noEmit --project scripts/cost-baseline/tsconfig.json"
+    "typecheck:scripts": "tsc --noEmit --project scripts/cost-baseline/tsconfig.json && tsc --noEmit --project scripts/cost-backfill/tsconfig.json",
+    "cost:backfill": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/cost-backfill/index.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
