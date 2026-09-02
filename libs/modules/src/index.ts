@@ -322,3 +322,14 @@ export {
   type SchedulerLogger,
 } from '../cost/application/collector-scheduler.service';
 export { ledgerFreshnessCollector } from '../cost/application/ledger-freshness.collector';
+export {
+  TestCostService,
+  checkBudget,
+  diffSnapshots,
+  type MeterKey,
+  type MeterSnapshot,
+  type StartOptions,
+  type TestBudget,
+  type TestRunDelta,
+  type TestRunResult,
+} from '../cost/application/test-cost.service';

@@ -225,3 +225,67 @@ export const costSourceFreshness = pgTable(
   },
   (t) => [primaryKey({ columns: [t.environment, t.sourceId] })],
 );
+
+/**
+ * COST-BE-019 (#378) — epic §28, a test run's cost as a record. Two snapshots
+ * of `provider_usage_meter_daily` for the environment, and per-meter deltas
+ * priced at list on the day the run finished. `estimated_cost_delta` is null
+ * when the price is unknown; `actual_cost_delta` waits for an ACTUAL source.
+ */
+export const costTestRuns = pgTable(
+  'cost_test_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    environment: text('environment').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    baselineSnapshotAt: timestamp('baseline_snapshot_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    finalSnapshotAt: timestamp('final_snapshot_at', { withTimezone: true }),
+    gitSha: text('git_sha'),
+    /** running | ok | over_budget | failed — check constraint in the migration. */
+    status: text('status').notNull(),
+    services: jsonb('services').$type<string[]>(),
+    budget: jsonb('budget').$type<Record<string, unknown>>(),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('cost_test_runs_env_started_idx').on(t.environment, t.startedAt)],
+);
+
+export const costTestRunDeltas = pgTable(
+  'cost_test_run_deltas',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    testRunId: uuid('test_run_id')
+      .notNull()
+      .references(() => costTestRuns.id, { onDelete: 'cascade' }),
+    providerId: text('provider_id').notNull(),
+    serviceId: text('service_id').notNull(),
+    operationId: text('operation_id'),
+    usageMetricId: text('usage_metric_id').notNull(),
+    billingSkuId: text('billing_sku_id'),
+    unit: text('unit').notNull(),
+    usageBefore: bigint('usage_before', { mode: 'number' }).notNull(),
+    usageAfter: bigint('usage_after', { mode: 'number' }).notNull(),
+    usageDelta: bigint('usage_delta', { mode: 'number' }).notNull(),
+    estimatedCostDelta: bigint('estimated_cost_delta', { mode: 'number' }),
+    actualCostDelta: bigint('actual_cost_delta', { mode: 'number' }),
+    currency: text('currency').notNull(),
+    basis: text('basis').notNull(),
+    confidence: text('confidence').notNull(),
+  },
+  (t) => [
+    uniqueIndex('cost_test_run_deltas_key').on(
+      t.testRunId,
+      t.providerId,
+      t.serviceId,
+      sql`coalesce(${t.operationId}, '')`,
+      t.usageMetricId,
+      sql`coalesce(${t.billingSkuId}, '')`,
+    ),
+  ],
+);
