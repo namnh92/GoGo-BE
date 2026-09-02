@@ -353,3 +353,17 @@ export {
   type BudgetRow,
   type MonthOverview,
 } from '../cost/application/budget.service';
+export {
+  BACKFILL_MAX_DAYS,
+  BACKFILL_SOURCE,
+  PrometheusBackfillService,
+  reduceDay,
+  type BackfillDay,
+  type BackfillRange,
+  type BackfillResult,
+} from '../cost/application/prometheus-backfill.service';
+export {
+  ReconciliationService,
+  reconcile,
+  type ReconciliationLine,
+} from '../cost/application/reconciliation.service';
