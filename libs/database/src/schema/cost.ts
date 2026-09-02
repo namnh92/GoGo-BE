@@ -289,3 +289,29 @@ export const costTestRunDeltas = pgTable(
     ),
   ],
 );
+
+/**
+ * COST-BE-020 (#379) — epic §32, the monthly budget an operator sets per
+ * scope (TOTAL / PROVIDER / SERVICE). Reported against, never enforced —
+ * `provider_budget_daily` above is the guard.
+ */
+export const costBudgets = pgTable(
+  'cost_budgets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    environment: text('environment').notNull(),
+    /** TOTAL | PROVIDER | SERVICE — check constraint in the migration. */
+    scopeKind: text('scope_kind').notNull(),
+    scopeId: text('scope_id'),
+    monthMicros: bigint('month_micros', { mode: 'number' }).notNull(),
+    currency: text('currency').notNull().default('USD'),
+    note: text('note'),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: uuid('updated_by'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('cost_budgets_key').on(t.environment, t.scopeKind, sql`coalesce(${t.scopeId}, '')`),
+  ],
+);
