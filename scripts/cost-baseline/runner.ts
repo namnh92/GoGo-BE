@@ -47,6 +47,20 @@ export type GrafanaProbe = {
 };
 
 export type RunnerOptions = {
+  /**
+   * COST-BE-019 (#378): when a database is available, record the run as a
+   * `cost_test_runs` row with per-meter deltas (epic §28). The JSON artifact
+   * is unchanged — files stay the frozen evidence, the table is the queryable
+   * record. Absent in stub runs without a database.
+   */
+  testCost?: {
+    start(
+      name: string,
+      opts: { environment: string; gitSha?: string | null; notes?: string | null },
+    ): Promise<string>;
+    finish(id: string): Promise<unknown>;
+    fail(id: string, notes?: string): Promise<void>;
+  };
   name: string;
   transport: BaselineTransport;
   environment: string;
@@ -87,9 +101,23 @@ export async function runBaseline(options: RunnerOptions): Promise<BaselineArtif
   });
 
   const reports: ScenarioReport[] = [];
-  for (const scenario of scenarios) {
-    reports.push(await runScenario(scenario, options));
+  const runId = options.testCost
+    ? await options.testCost.start(options.name, {
+        environment: options.environment,
+        gitSha: git.sha,
+        notes: `transport=${options.transport} providerMode=${options.providerMode}`,
+      })
+    : null;
+  try {
+    for (const scenario of scenarios) {
+      reports.push(await runScenario(scenario, options));
+    }
+  } catch (err) {
+    if (runId !== null)
+      await options.testCost!.fail(runId, err instanceof Error ? err.message : 'failed');
+    throw err;
   }
+  if (runId !== null) await options.testCost!.finish(runId);
 
   return {
     schemaVersion: BASELINE_SCHEMA_VERSION,

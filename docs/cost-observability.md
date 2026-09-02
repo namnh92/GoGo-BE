@@ -6,25 +6,26 @@ and how to add a provider without touching generic code.
 
 ## Pieces
 
-| Piece                                                                                                                                                          | File                                                                                   | Epic §                 |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------- |
-| Definitions registry — providers, services, operations, usage meters, billing SKUs                                                                             | `domain/registry.ts`                                                                   | §5, §4                 |
-| Capability model                                                                                                                                               | `domain/capabilities.ts`                                                               | §6                     |
-| Pricing rules — versioned, per SKU/meter, pricing models, free allowances                                                                                      | `domain/pricing-rules.ts`                                                              | §13–§15                |
-| Compatibility view (`PROVIDER_PRICING`, `providerOf`, `listCostMicros`…) used by the ops API, budget guard and baseline runner                                 | `domain/provider-pricing.ts`                                                           | —                      |
-| Ports: `UsageCollector`, `ActualCostCollector`, `CostEstimator`, `QuotaCollector`, `FixedCostProvider`                                                         | `ports/collectors.port.ts`                                                             | §7                     |
-| Adapter registry — what is wired in this process, checked against declared capabilities                                                                        | `ports/adapter-registry.ts`                                                            | §7                     |
-| Usage ledger (metrics port → `provider_usage_daily` **and** `provider_usage_meter_daily`, one transaction)                                                     | `application/usage-ledger.ts`                                                          | §10, §24               |
-| Budget reservation guard (`provider_budget_daily`)                                                                                                             | `application/provider-budget.service.ts`                                               | §32 (daily guard)      |
-| Estimated-cost report for the CMS ops surface                                                                                                                  | `application/usage-report.service.ts`                                                  | §35 (partial)          |
-| Generic estimator (meter rows × pricing rules → `provider_cost_daily` ESTIMATED; idempotent, bounded, never touches ACTUAL)                                    | `application/cost-estimator.service.ts`; worker job `gogo:worker:cost-estimate`        | §7, §11, §13, §15, §25 |
-| Freshness model (`FRESH/STALE/UNAVAILABLE/UNKNOWN`, derived from facts against `now`; bounded backoff)                                                         | `domain/freshness.ts`; table `cost_source_freshness` (0039)                            | §23, §22               |
-| Collector definitions — frequency, timeout, retry, `maxCallsPerDay`, environments, **declared monitoring cost**                                                | `domain/collector.ts`                                                                  | §19, §20               |
-| Collector scheduler — due check, timeout, isolation per collector, freshness upsert, monitoring-budget pause, cost-of-cost row under `gogo.cost_observability` | `application/collector-scheduler.service.ts`; worker job `gogo:worker:cost-collectors` | §19–§22, §38           |
-| First collector: `ledger` (FREE, essential) — reports the ledger's freshness, `sourceAsOf` = newest ledger write                                               | `application/ledger-freshness.collector.ts`                                            | §23                    |
+| Piece                                                                                                                                                                                             | File                                                                                   | Epic §                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------- |
+| Definitions registry — providers, services, operations, usage meters, billing SKUs                                                                                                                | `domain/registry.ts`                                                                   | §5, §4                 |
+| Capability model                                                                                                                                                                                  | `domain/capabilities.ts`                                                               | §6                     |
+| Pricing rules — versioned, per SKU/meter, pricing models, free allowances                                                                                                                         | `domain/pricing-rules.ts`                                                              | §13–§15                |
+| Compatibility view (`PROVIDER_PRICING`, `providerOf`, `listCostMicros`…) used by the ops API, budget guard and baseline runner                                                                    | `domain/provider-pricing.ts`                                                           | —                      |
+| Ports: `UsageCollector`, `ActualCostCollector`, `CostEstimator`, `QuotaCollector`, `FixedCostProvider`                                                                                            | `ports/collectors.port.ts`                                                             | §7                     |
+| Adapter registry — what is wired in this process, checked against declared capabilities                                                                                                           | `ports/adapter-registry.ts`                                                            | §7                     |
+| Usage ledger (metrics port → `provider_usage_daily` **and** `provider_usage_meter_daily`, one transaction)                                                                                        | `application/usage-ledger.ts`                                                          | §10, §24               |
+| Budget reservation guard (`provider_budget_daily`)                                                                                                                                                | `application/provider-budget.service.ts`                                               | §32 (daily guard)      |
+| Estimated-cost report for the CMS ops surface                                                                                                                                                     | `application/usage-report.service.ts`                                                  | §35 (partial)          |
+| Generic estimator (meter rows × pricing rules → `provider_cost_daily` ESTIMATED; idempotent, bounded, never touches ACTUAL)                                                                       | `application/cost-estimator.service.ts`; worker job `gogo:worker:cost-estimate`        | §7, §11, §13, §15, §25 |
+| Freshness model (`FRESH/STALE/UNAVAILABLE/UNKNOWN`, derived from facts against `now`; bounded backoff)                                                                                            | `domain/freshness.ts`; table `cost_source_freshness` (0039)                            | §23, §22               |
+| Collector definitions — frequency, timeout, retry, `maxCallsPerDay`, environments, **declared monitoring cost**                                                                                   | `domain/collector.ts`                                                                  | §19, §20               |
+| Collector scheduler — due check, timeout, isolation per collector, freshness upsert, monitoring-budget pause, cost-of-cost row under `gogo.cost_observability`                                    | `application/collector-scheduler.service.ts`; worker job `gogo:worker:cost-collectors` | §19–§22, §38           |
+| First collector: `ledger` (FREE, essential) — reports the ledger's freshness, `sourceAsOf` = newest ledger write                                                                                  | `application/ledger-freshness.collector.ts`                                            | §23                    |
+| Test-run cost records — `cost_test_runs` + `cost_test_run_deltas` (0040), `TestCostService.start/finish/fail`, soft budgets, service scoping; baseline runner writes a row beside its frozen JSON | `application/test-cost.service.ts`; `scripts/cost-baseline/runner.ts` `testCost` hook  | §28–§30, §43, §44.17   |
 
 Not yet built (see #370): non-Google collectors (each registers a `CollectorDefinition`),
-test-run tables, monthly budget/forecast, manual costs, ACTUAL cost collectors and
+monthly budget/forecast, manual costs, ACTUAL cost collectors and
 reconciliation, the ops API reading `provider_cost_daily` and `cost_source_freshness`.
 
 ## Tables (migration 0038)
@@ -64,6 +65,19 @@ provider and it declares the collector's capability. Each tick:
 Status is derived by readers from the stored facts (`freshnessStatus`), so a row
 reads FRESH in the morning and STALE at night without a write. **Measured zero ≠
 not measured**: a stale source keeps its numbers; only the label changes.
+
+## Test-run cost (migration 0040)
+
+`TestCostService.start(name, {environment, gitSha?, services?, budget?})` sums
+`provider_usage_meter_daily` per meter key (all days, all sources — sums only grow
+while a test runs) and opens a `cost_test_runs` row; `finish(id)` snapshots again,
+writes one `cost_test_run_deltas` row per changed meter priced at **list** under the
+rule in force that day (no free-cap adjustment on a test), checks the optional
+budget (`maxProviderCalls`, `maxProviderUsage` keyed `<service>/<metric>`,
+`maxEstimatedCostMicros`) and sets `status = ok | over_budget` — soft, never a
+throw (epic §29). `services` scopes the deltas (§30). Unknown price ⇒
+`estimated_cost_delta` null, basis UNKNOWN. Manual/fixed costs are not usage and
+never enter a delta. Run id and git sha live in the row, never in a metric label.
 
 ## Ids
 
