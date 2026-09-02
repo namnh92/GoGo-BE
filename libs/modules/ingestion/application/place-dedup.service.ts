@@ -367,13 +367,35 @@ export class PlaceDedupService {
     const refreshAfter = new Date(Date.now() + (input.refreshAfterDays ?? 30) * 24 * 3600 * 1000);
     // `CLOSED_TEMPORARILY` used to land on 'unknown', which conflated "shut for
     // now" with "we have no idea" — and the two lead to different decisions.
-    // #339 — `FUTURE_OPENING` lands on `unknown`, not `active`. There is no
-    // `future_opening` in `provider_source_status`, and picking the nearest
-    // wrong neighbour would be worse than saying so: `active` would put an
-    // unopened place back into search the moment a DB-first read served it,
-    // and `temporarily_closed` would assert it had already traded. `unknown`
-    // is what `PROVIDER_STATUS_TO_BUSINESS_STATUS` deliberately declines to
-    // map, so a DB-first lookup on such a row misses and asks Google.
+    // #339 — **compliance-constrained debt, and it is lossy.**
+    //
+    // `provider_source_status` is `active | moved | temporarily_closed |
+    // closed | unknown` (migrations 0002, 0007). There is no `future_opening`,
+    // and PR6 does not add one: while ADR-0006 §9.6 is unsigned, no PR widens
+    // what provider content GoGo persists, and a new enum value stores a
+    // strictly more specific Google fact than the column holds today. So the
+    // status is owned in the domain and in the API — `businessStatus:
+    // 'FUTURE_OPENING'`, refused as `PLACE_NOT_YET_OPEN` — and **not** in
+    // storage. It is flattened here, and what is lost is the difference
+    // between "Google says this has not opened" and "we do not know".
+    //
+    // `unknown` rather than a nearer-looking neighbour: `active` would put an
+    // unopened place into search the moment a DB-first read served it, and
+    // `temporarily_closed` would assert it had already traded. `unknown` is
+    // the one value `PROVIDER_STATUS_TO_BUSINESS_STATUS` declines to map, so a
+    // DB-first lookup on such a row misses and asks Google rather than
+    // answering from it — which is the safe direction for a fact we did not
+    // keep.
+    //
+    // This mapping is reachable but not load-bearing: all three doors into the
+    // catalogue (submit, `/v1/places/imports`, bulk publish) refuse
+    // `FUTURE_OPENING` outright, so no place should be sitting on this row.
+    // It exists so that a row written before those refusals, or by a path
+    // added later, degrades to "ask Google" instead of "open for business".
+    // When §9.6 is signed, `future_opening` is a one-value enum migration and
+    // this branch becomes a one-word change — `place-relocation`-style tests
+    // in `place-import.int.spec.ts` pin the current behaviour so the change is
+    // visible when it happens.
     const sourceStatus =
       input.details.businessStatus === 'CLOSED_PERMANENTLY'
         ? 'closed'

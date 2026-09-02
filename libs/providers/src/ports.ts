@@ -120,7 +120,13 @@ export type ResolvedProviderPlace = {
    * place announced but not yet trading was imported as open, published, and
    * put in front of someone looking for dinner tonight (#339). It is not
    * `CLOSED_TEMPORARILY` either — a place that has never opened has not shut —
-   * so it carries its own value and its own refusal.
+   * so it carries its own value here and its own refusal at every door.
+   *
+   * **It does not survive being stored.** `provider_source_status` has no
+   * `future_opening`, and PR6 does not add one while ADR-0006 §9.6 is
+   * unsigned, so `upsertProviderSource` flattens it to `unknown`. The status
+   * is owned in the domain and in the API; storage is lossy, deliberately, and
+   * the reason is written where the flattening happens.
    */
   businessStatus: 'OPERATIONAL' | 'CLOSED_TEMPORARILY' | 'CLOSED_PERMANENTLY' | 'FUTURE_OPENING';
   /** Weekly hours, minutes-of-day, local place time. */

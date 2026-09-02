@@ -1505,6 +1505,17 @@ export class PlaceImportJobService {
       throw AppError.conflict('PROVIDER_UNAVAILABLE', 'Không xác minh được địa điểm lúc này');
     }
     const details = outcome.details;
+    // #339 — the third door. Submit and `/v1/places/imports` both refuse a
+    // place that has not opened; bulk publish did not, and it is the one door
+    // that could not be made safe downstream: a closed place reaches the
+    // catalogue and is then hidden by the `source_status` filter, but
+    // `FUTURE_OPENING` has no `provider_source_status` to be stored as (see
+    // `upsertProviderSource`), so it would land on `unknown` and stay
+    // searchable. Refusing it here is what makes the lossy mapping harmless
+    // rather than a hole.
+    if (details.businessStatus === 'FUTURE_OPENING') {
+      throw AppError.conflict('PLACE_NOT_YET_OPEN', 'Địa điểm chưa khai trương');
+    }
     const normalized = normalizedOf(row);
     const score = await this.resolver.scoreFor(details, null, normalized.categoryKey ?? null);
     const status = mode === 'publish_approved' ? 'published' : 'draft';
