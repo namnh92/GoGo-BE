@@ -34,7 +34,19 @@ let pool: Pool;
 let db: ReturnType<typeof drizzle<typeof schema>>;
 
 const ENV = 'dev';
-const NOW = () => new Date('2026-09-02T12:00:00.000Z');
+/**
+ * The job's clock, frozen at suite load — from the real clock, not a literal.
+ *
+ * It was `new Date('2026-09-02T12:00:00.000Z')`, and the suite was correct
+ * until 12:30Z on that day: `dueRows()` and the seed statements use Postgres's
+ * `now()`, `defer()` schedules from *this* clock, so a row pushed to
+ * `NOW + 30 min` became due by the database's reckoning the moment the wall
+ * clock passed it, and every later tick re-processed it. A frozen real-time
+ * base keeps the two clocks within the suite's own duration of each other,
+ * which is what every relative assertion below assumes.
+ */
+const NOW_BASE = new Date();
+const NOW = () => NOW_BASE;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Ceilings wide enough that only the case under test can refuse. */
