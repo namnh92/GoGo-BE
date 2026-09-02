@@ -75,6 +75,7 @@ beforeAll(async () => {
     new PlaceResolverService(places, db),
     new PlaceDedupService(db),
     new FakeSheets(),
+    { APP_ENV: 'dev', PLACE_RESOLUTION_TTL_S: 600 },
     metrics,
   );
   endpoint = await startMetricsEndpoint({

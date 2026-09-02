@@ -909,7 +909,7 @@ export interface paths {
         put?: never;
         /**
          * Propose a place from a resolved provider id (FR-INGEST-011/012)
-         * @description Creates at most one pending proposal per provider place; repeat submissions increment submissionCount. Never publishes to the catalog. Guests must submit within their room-scoped session. 409 `PLACE_IDENTITY_CONFLICT` means the Google Place ID is recorded against two GoGo places: accepting would attach the proposal to an ambiguous identity, so an editor merges them first (#334).
+         * @description Creates at most one pending proposal per provider place; repeat submissions increment submissionCount. Never publishes to the catalog. Guests must submit within their room-scoped session. 409 `PLACE_IDENTITY_CONFLICT` means the Google Place ID is recorded against two GoGo places: accepting would attach the proposal to an ambiguous identity, so an editor merges them first (#334). 400 `RESOLUTION_TOKEN_INVALID` (retryable) means the `resolutionToken` was expired, edited or minted for another place — resolve the link again and resubmit; the server never falls back to a silent provider fetch.
          */
         post: operations["submitPlace"];
         delete?: never;
@@ -4184,6 +4184,8 @@ export interface components {
             reasonCodes?: string[];
             /** Format: uuid */
             existingPlaceId?: string;
+            /** @description Opaque, short-lived proof that this request verified the Google Place ID with the provider (#337). Present only when the answer came from a live provider check and the place is operational; send it back on `POST /place-submissions` to skip the duplicate verification fetch. It carries no provider content and authorises nothing — an expired or edited token is rejected with a retryable `RESOLUTION_TOKEN_INVALID` and the client resolves again. */
+            resolutionToken?: string;
             candidate?: {
                 googlePlaceId?: string;
                 name?: string;
@@ -7135,6 +7137,8 @@ export interface operations {
                     };
                     vibes?: string[];
                     note?: string;
+                    /** @description The `resolutionToken` from the preceding `POST /places/resolve-google-maps-link` (#337). Optional — without it the server verifies the place with the provider again, which is the behaviour before this field existed. */
+                    resolutionToken?: string;
                 };
             };
         };
@@ -7146,6 +7150,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SubmissionResult"];
+                };
+            };
+            /** @description `RESOLUTION_TOKEN_INVALID` — the `resolutionToken` was expired, edited, or minted for another place. `retryable: true`: resolve the link again and resubmit. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             403: components["responses"]["Forbidden"];

@@ -290,6 +290,29 @@ const envSchema = z
       .optional(),
     PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_CORE: z.coerce.number().int().min(0).optional(),
     PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY: z.coerce.number().int().min(0).optional(),
+    /**
+     * #337 — the key that signs the short-lived resolution attestation
+     * `POST /v1/place-submissions` accepts in place of a second Google Details
+     * fetch (plan §2.8). Ours to generate; never collected from a provider,
+     * never rendered into a client bundle.
+     *
+     * **Empty means the feature is unavailable, not open.** No token is issued
+     * and no presented token verifies, so a deployment that lost its secret
+     * pays for the extra Details call it always paid for — the safe direction
+     * to fail in. `place_resolution_attestation_total{result="unconfigured"}`
+     * is how that shows up before the bill does.
+     */
+    PLACE_RESOLUTION_ATTESTATION_SECRET: z.string().default(''),
+    /**
+     * How long that proof counts, in seconds.
+     *
+     * It is a capability window, not a session: longer widens the replay window
+     * for a token that authorises nothing, shorter makes a user who hesitated
+     * re-resolve and pay for another Details call. Ten minutes is the plan's
+     * default; the bounds keep a typo from producing either a one-second
+     * feature or a day-long one.
+     */
+    PLACE_RESOLUTION_TTL_S: z.coerce.number().int().min(60).max(3_600).default(600),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
   })

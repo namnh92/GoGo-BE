@@ -9,8 +9,12 @@ import {
 } from '@gogo/providers';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
-import { APP_CONFIG, type PlatformConfig } from '../../shared/config';
-import { flagEnvironmentOf, resolveFlag } from '../../shared/feature-flags';
+import {
+  APP_CONFIG,
+  type PlatformConfig,
+  type VerificationWindowConfig,
+} from '../../shared/config';
+import { flagEnvironmentOf, resolveBooleanFlag, resolveFlag } from '../../shared/feature-flags';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
@@ -47,7 +51,7 @@ export class PlaceImportService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(PLACE_PROVIDER) private readonly provider: PlaceProviderPort,
-    @Inject(APP_CONFIG) private readonly config: PlatformConfig,
+    @Inject(APP_CONFIG) private readonly config: PlatformConfig & VerificationWindowConfig,
     private readonly dedup: PlaceDedupService,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
@@ -149,20 +153,63 @@ export class PlaceImportService {
       return this.toDto(updated!);
     };
 
+    /**
+     * #314: a link Google rejects on its merits is the submitter's to fix, and
+     * PROVIDER_ERROR ("thử lại sau") tells them to wait for a retry that will
+     * fail identically. Any other provider failure — breaker open, timeout,
+     * transport — is a clean rejection the client can retry, never a 500
+     * (FR-PLACE-002).
+     */
+    const providerFault = (err: unknown) =>
+      err instanceof ProviderInvalidRequestError ? 'INVALID_URL' : 'PROVIDER_ERROR';
+
     let providerPlaceId: string | null;
-    let details: ResolvedProviderPlace | null;
     try {
       providerPlaceId = await this.provider.resolveUrl(row.url);
-      if (!providerPlaceId) return reject('INVALID_URL');
+    } catch (err) {
+      return reject(providerFault(err));
+    }
+    if (!providerPlaceId) return reject('INVALID_URL');
+
+    // DB-first (#337). `resolveUrl` learns the id without a Places request, so
+    // by here the catalogue can be asked before Google is.
+    //
+    // A hit skips the import rules as well as the fetch, and deliberately:
+    // `minReviews`, `minRating` and `OUT_OF_AREA` gate **creating** a place,
+    // and this row creates none — it links to one the catalogue already
+    // published. Re-adjudicating a live place's rating on the way to saying
+    // "you already have this" would reject the import of a place the user can
+    // already open, which is a worse answer than the one it replaces.
+    if (await this.dbFirst()) {
+      const known = await this.dedup.knownProviderPlace(providerPlaceId, {
+        verificationWindowSeconds: this.config.PLACE_RESOLUTION_TTL_S,
+      });
+      if (known.kind === 'CONFLICT') {
+        this.metrics.increment('place_identity_conflict_blocked_total', { path: 'import' });
+        return reject('IDENTITY_CONFLICT');
+      }
+      if (known.kind === 'KNOWN') {
+        this.metrics.increment('place_dbfirst_hit_total', { path: 'import' });
+        // Identity: this row links to a place the catalogue already published
+        // and creates nothing, so the catalogue's freshness window governs.
+        if (known.place.businessStatus === 'OPERATIONAL') {
+          return this.markVerified(row, known.place.googlePlaceId, known.place.placeId, true);
+        }
+        // Verification: rejecting an import as `CLOSED` on a `source_status`
+        // that may be weeks old tells someone their reopened place is shut.
+        // Held to the short window; otherwise ask Google (#337 review).
+        if (known.place.verificationFresh) return reject('CLOSED');
+        this.metrics.increment('place_dbfirst_miss_total', { reason: 'closure_unverified' });
+      } else {
+        this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
+      }
+    }
+
+    let details: ResolvedProviderPlace | null;
+    try {
       details = await this.provider.details(providerPlaceId);
     } catch (err) {
-      // #314: a link Google rejects on its merits is the submitter's to fix,
-      // and PROVIDER_ERROR ("thử lại sau") tells them to wait for a retry that
-      // will fail identically. The row already has the right code for it.
-      if (err instanceof ProviderInvalidRequestError) return reject('INVALID_URL');
-      // Any other provider failure — breaker open, timeout, transport — is a
-      // clean rejection the client can retry, never a 500 (FR-PLACE-002).
-      return reject('PROVIDER_ERROR');
+      return reject(providerFault(err));
     }
     if (!details) return reject('NOT_FOUND');
 
@@ -213,11 +260,25 @@ export class PlaceImportService {
     const placeId = created;
     const linkedPlaceId = identity.kind === 'RESOLVED' ? identity.placeId : null;
 
+    return this.markVerified(row, details.providerPlaceId, placeId, linkedPlaceId !== null);
+  }
+
+  /**
+   * The row is verified and points at a place — whether Google was asked in
+   * this call or the catalogue already had the answer (#337).
+   */
+  private async markVerified(
+    row: typeof schema.placeImports.$inferSelect,
+    providerPlaceId: string,
+    placeId: string,
+    dedup: boolean,
+  ) {
+    const importId = row.id;
     const [updated] = await this.db
       .update(schema.placeImports)
       .set({
         status: 'verified',
-        providerPlaceId: details.providerPlaceId,
+        providerPlaceId,
         // #348: `providerSnapshot` is no longer written. It held a Google
         // Details extract — name, address, lat/lng, rating, rating count —
         // that one writer produced and nothing anywhere read. That makes it
@@ -242,15 +303,21 @@ export class PlaceImportService {
       action: 'place.import_verified',
       resourceType: 'place',
       resourceId: placeId,
-      diff: { providerPlaceId: details.providerPlaceId, dedup: linkedPlaceId !== null },
+      diff: { providerPlaceId, dedup },
     });
     await writeOutbox(this.db, {
       eventType: 'place.import_verified',
       resourceType: 'place_import',
       resourceId: importId,
-      payload: { placeId, dedup: linkedPlaceId !== null },
+      payload: { placeId, dedup },
     });
     return this.toDto(updated!);
+  }
+
+  private async dbFirst(): Promise<boolean> {
+    return resolveBooleanFlag(this.db, 'place_dbfirst.enabled', {
+      environment: flagEnvironmentOf(this.config.APP_ENV),
+    });
   }
 
   /**

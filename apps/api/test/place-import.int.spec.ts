@@ -877,6 +877,97 @@ describe('PI-BE-015/016 — processing, quota pause, publish RBAC', () => {
     expect(counted[0]?.n).toBe(1);
   });
 
+  /**
+   * #337 review item 2 — a DB-first duplicate row skips category derivation, so
+   * this proves nothing downstream of `duplicate` needed the derived category.
+   *
+   * Deriving one costs an Enterprise `details` call, and a duplicate row never
+   * creates a place to put it on. The row the sheet describes has no category
+   * and a Google type the taxonomy does not map, which before #337 made it
+   * `validation_failed` on CATEGORY_REQUIRED — a worse answer than `duplicate`,
+   * since the place it duplicates is already published and categorised.
+   */
+  it('a categoryless duplicate row still resolves as a duplicate, and stays usable', async () => {
+    const editor = await createAdmin('dup-nocat-editor@gogo.local', 'editor');
+    const ops = await createAdmin('dup-nocat-ops@gogo.local', 'ops_admin');
+    places.seed({
+      providerPlaceId: 'fake-dup-nocat',
+      name: 'Quán Không Category',
+      lat: 10.81,
+      lng: 106.73,
+      // Nothing the taxonomy can map, so a derivation attempt could not rescue
+      // the row even if one were made.
+      primaryType: 'plumber',
+      types: ['plumber', 'point_of_interest', 'establishment'],
+    });
+
+    const first = await createJob(editor.token, [
+      'DNC-1,Quán Không Category,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-dup-nocat,cafe,,,',
+    ]);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${first.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(first.id);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${first.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+
+    // Second sheet: same place, category column left blank.
+    const second = await createJob(editor.token, [
+      'DNC-2,Quán Không Category,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-dup-nocat,,,,',
+    ]);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${second.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    places.tiersRequested.length = 0;
+    await imports.processJob(second.id);
+
+    const job = await imports.getJob(second.id);
+    expect(job.rowsByStatus.duplicate, 'duplicate, not validation_failed').toBe(1);
+    expect(job.rowsByStatus.validation_failed ?? 0).toBe(0);
+    expect(places.tiersRequested, 'a known id costs no Details').toEqual([]);
+
+    // Downstream handling of that row needs no category: it reads back with the
+    // place it duplicates, carries no error, and publish leaves it alone
+    // because publish only ever touches `ready` rows.
+    const rows = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${second.id}/rows`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    const row = rows.json().items[0];
+    expect(row.status).toBe('duplicate');
+    expect(row.matchedPlaceId).toBeTruthy();
+    expect(row.errors).toEqual([]);
+
+    const published = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${second.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(published.json().created, 'a duplicate row creates nothing').toBe(0);
+    expect(published.json().failed).toEqual([]);
+
+    const counted = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Quán Không Category'));
+    expect(counted[0]?.n, 'still exactly one canonical place').toBe(1);
+  });
+
   it('cancel stops pending work and retry re-queues failed rows', async () => {
     const editor = await createAdmin('cancel-editor@gogo.local', 'editor');
     const job = await createJob(editor.token, [

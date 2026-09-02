@@ -14,6 +14,12 @@ import {
 } from '@gogo/providers';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
+import {
+  APP_CONFIG,
+  type PlatformConfig,
+  type VerificationWindowConfig,
+} from '../../shared/config';
+import { flagEnvironmentOf, resolveBooleanFlag } from '../../shared/feature-flags';
 import { DB } from '../../shared/tokens';
 import {
   applyMapping,
@@ -32,8 +38,8 @@ import {
 import { detectIdentityChange } from '../domain/identity-change';
 import { deriveCategory } from '../domain/google-types';
 import { validateRow, type NormalizedImportRow } from '../domain/template';
-import { PlaceDedupService } from './place-dedup.service';
-import { PlaceResolverService } from './place-resolver.service';
+import { PlaceDedupService, type KnownProviderPlace } from './place-dedup.service';
+import { PlaceResolverService, type ResolveOutcome } from './place-resolver.service';
 import { writeAudit } from '../../shared/audit';
 
 export type ImportMode = 'dry_run' | 'create_drafts' | 'publish_approved' | 'update_existing';
@@ -57,8 +63,27 @@ export class PlaceImportJobService {
     private readonly resolver: PlaceResolverService,
     private readonly dedup: PlaceDedupService,
     @Inject(SHEETS_PROVIDER) private readonly sheets: SheetsPort,
+    @Inject(APP_CONFIG) private readonly config: PlatformConfig & VerificationWindowConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
+
+  /**
+   * Every DB-first answer in this service is an **identity** answer — "this
+   * Google ID is already a GoGo place", which ends the row as `duplicate` and
+   * creates nothing. None of them decides whether a place is open, so none is
+   * held to the short verification window; the window is still passed so the
+   * lookup has one meaning everywhere (#337 review).
+   */
+  private verificationWindow(): { verificationWindowSeconds: number } {
+    return { verificationWindowSeconds: this.config.PLACE_RESOLUTION_TTL_S };
+  }
+
+  /** #337 — rollback switch for every DB-first shortcut in this service. */
+  private async dbFirst(): Promise<boolean> {
+    return resolveBooleanFlag(this.db, 'place_dbfirst.enabled', {
+      environment: flagEnvironmentOf(this.config.APP_ENV),
+    });
+  }
 
   // --- creation ------------------------------------------------------------
 
@@ -699,11 +724,56 @@ export class PlaceImportJobService {
         [hints.name, hints.district, hints.city].filter(Boolean).join(' '),
       )}`;
 
-    const outcome = await this.metrics.time(
+    const resolved = await this.metrics.time(
       'place_resolve_duration_seconds',
       { source: 'cms_import' },
-      () => this.resolver.resolveFromUrl(url, hints),
+      () => this.identifyThenResolve(url, hints, mode),
     );
+
+    // DB-first hit: the sheet named a Google id the catalogue already holds, so
+    // the row's outcome — `duplicate`, pointing at that place — was decided
+    // without a Details call (#337, plan §4 scenario E).
+    //
+    // The category derivation `applyResolved` would have run is skipped with
+    // it, on purpose: it exists to fill in a category for a place about to be
+    // created, and a duplicate row creates none. Buying a category from Google
+    // for a row that will never use it is the exact spend this PR removes.
+    if (resolved.kind === 'DB_FIRST') {
+      this.metrics.increment('place_dbfirst_hit_total', { path: 'ingest' });
+      this.metrics.increment('place_resolve_confidence_bucket', {
+        source: 'cms_import',
+        bucket: confidenceBucket(1),
+      });
+      await this.db
+        .update(schema.placeIngestRows)
+        .set({
+          resolvedGooglePlaceId: resolved.place.googlePlaceId,
+          matchConfidence: confidenceText(1),
+          matchReasons: ['EXACT_PROVIDER_ID', 'DB_FIRST'],
+          candidates: [],
+          errors: [],
+          updatedAt: new Date(),
+          status: 'duplicate',
+          matchedPlaceId: resolved.place.placeId,
+        })
+        .where(eq(schema.placeIngestRows.id, rowId));
+      this.countRow('duplicate', 'PLACE_ALREADY_LINKED');
+      this.metrics.increment('place_duplicate_candidates_total', { kind: 'provider_id' });
+      return;
+    }
+    if (resolved.kind === 'DB_FIRST_CONFLICT') {
+      await this.markIdentityConflict(rowId, resolved.placeIds.length, {
+        resolvedGooglePlaceId: resolved.googlePlaceId,
+        matchConfidence: confidenceText(1),
+        matchReasons: ['EXACT_PROVIDER_ID', 'DB_FIRST'],
+        candidates: [] as MatchCandidate[],
+        errors: [] as IngestMessage[],
+        updatedAt: new Date(),
+      });
+      return;
+    }
+
+    const outcome = resolved.outcome;
     this.metrics.increment('place_resolve_confidence_bucket', {
       source: 'cms_import',
       bucket: confidenceBucket(
@@ -765,6 +835,77 @@ export class PlaceImportJobService {
     );
   }
 
+  /**
+   * URL → id → catalogue → (only if still needed) Google.
+   *
+   * The order is the whole of #337 item 3: the Google Place ID is the dedup
+   * key, the sheet often carries it outright, and asking Google to describe a
+   * place we already catalogued — so that a moment later we can mark the row
+   * `duplicate` — was an Enterprise `details` spent on a decision already made.
+   */
+  private async identifyThenResolve(
+    url: string,
+    hints: Parameters<PlaceResolverService['resolveIdentified']>[1],
+    mode: ImportMode,
+  ): Promise<
+    | { kind: 'DB_FIRST'; place: KnownProviderPlace }
+    | { kind: 'DB_FIRST_CONFLICT'; googlePlaceId: string; placeIds: string[] }
+    | { kind: 'RESOLVED'; outcome: ResolveOutcome }
+  > {
+    const identified = await this.resolver.identifyUrl(url);
+    if (!identified.ok) {
+      return {
+        kind: 'RESOLVED',
+        outcome: { status: 'UNRESOLVED', reasonCode: identified.reasonCode },
+      };
+    }
+
+    const knownId = identified.value.providerPlaceId;
+    // `update_existing` is the one mode that must not take the shortcut: it
+    // exists to pull fresh provider facts onto a place we already have, so
+    // answering it from that same place would make the mode do nothing.
+    if (knownId && mode !== 'update_existing' && (await this.dbFirst())) {
+      const known = await this.dedup.knownProviderPlace(knownId, this.verificationWindow());
+      if (known.kind === 'CONFLICT') {
+        return { kind: 'DB_FIRST_CONFLICT', googlePlaceId: knownId, placeIds: known.placeIds };
+      }
+      if (known.kind === 'KNOWN') return { kind: 'DB_FIRST', place: known.place };
+      this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
+    }
+
+    return {
+      kind: 'RESOLVED',
+      outcome: await this.resolver.resolveIdentified(identified.value, hints),
+    };
+  }
+
+  /**
+   * #334 — not `duplicate`: that status asserts which place this row is a
+   * duplicate *of*, and that is the one thing nobody has decided yet.
+   */
+  private async markIdentityConflict(
+    rowId: string,
+    placeCount: number,
+    base: Record<string, unknown>,
+  ): Promise<void> {
+    await this.db
+      .update(schema.placeIngestRows)
+      .set({
+        ...base,
+        status: 'needs_confirmation',
+        errors: [
+          {
+            code: 'PLACE_IDENTITY_CONFLICT',
+            field: 'google_maps_url',
+            message: `Google Place ID này đang trỏ tới ${placeCount} place GoGo; cần gộp trước`,
+          },
+        ],
+      })
+      .where(eq(schema.placeIngestRows.id, rowId));
+    this.countRow('needs_confirmation', 'PLACE_IDENTITY_CONFLICT');
+    this.metrics.increment('place_identity_conflict_blocked_total', { path: 'ingest' });
+  }
+
   private async applyResolved(
     rowId: string,
     details: ResolvedProviderPlace,
@@ -795,24 +936,7 @@ export class PlaceImportJobService {
     };
 
     if (verdict.kind === 'IDENTITY_CONFLICT') {
-      // #334 — not `duplicate`: that status asserts which place this row is a
-      // duplicate *of*, and that is the one thing nobody has decided yet.
-      await this.db
-        .update(schema.placeIngestRows)
-        .set({
-          ...base,
-          status: 'needs_confirmation',
-          errors: [
-            {
-              code: 'PLACE_IDENTITY_CONFLICT',
-              field: 'google_maps_url',
-              message: `Google Place ID này đang trỏ tới ${verdict.placeIds.length} place GoGo; cần gộp trước`,
-            },
-          ],
-        })
-        .where(eq(schema.placeIngestRows.id, rowId));
-      this.countRow('needs_confirmation', 'PLACE_IDENTITY_CONFLICT');
-      this.metrics.increment('place_identity_conflict_blocked_total', { path: 'ingest' });
+      await this.markIdentityConflict(rowId, verdict.placeIds.length, base);
       return;
     }
     if (verdict.kind === 'LINKED_EXISTING') {
@@ -1092,9 +1216,52 @@ export class PlaceImportJobService {
       // id typed into the request.
       throw AppError.badRequest('CANDIDATE_NOT_LISTED', 'Candidate không thuộc dòng này');
     }
-    const outcome = await this.resolver.resolveFromUrl(
-      `https://www.google.com/maps?place_id=${googlePlaceId}`,
-    );
+    const job = await this.requireJob(jobId);
+    // Confirming a branch the catalogue already holds is a `duplicate` row, and
+    // that verdict comes from the id alone (#337). `update_existing` still
+    // fetches: refreshing the place from Google is the mode's entire purpose.
+    if (job.mode !== 'update_existing' && (await this.dbFirst())) {
+      const known = await this.dedup.knownProviderPlace(googlePlaceId, this.verificationWindow());
+      if (known.kind === 'CONFLICT') {
+        await this.markIdentityConflict(rowId, known.placeIds.length, {
+          resolvedGooglePlaceId: googlePlaceId,
+          matchConfidence: confidenceText(1),
+          matchReasons: ['ADMIN_CONFIRMED', 'DB_FIRST'],
+          candidates: [] as MatchCandidate[],
+          errors: [] as IngestMessage[],
+          updatedAt: new Date(),
+        });
+        await this.refreshCounters(jobId);
+        return this.rowView(rowId);
+      }
+      if (known.kind === 'KNOWN') {
+        this.metrics.increment('place_dbfirst_hit_total', { path: 'confirm' });
+        await this.db
+          .update(schema.placeIngestRows)
+          .set({
+            resolvedGooglePlaceId: known.place.googlePlaceId,
+            matchConfidence: confidenceText(1),
+            matchReasons: ['ADMIN_CONFIRMED', 'DB_FIRST'],
+            candidates: [],
+            errors: [],
+            updatedAt: new Date(),
+            status: 'duplicate',
+            matchedPlaceId: known.place.placeId,
+          })
+          .where(eq(schema.placeIngestRows.id, rowId));
+        this.countRow('duplicate', 'PLACE_ALREADY_LINKED');
+        this.metrics.increment('place_duplicate_candidates_total', { kind: 'provider_id' });
+        await this.audit(adminId, 'place_import.candidate_confirmed', jobId, {
+          rowId,
+          googlePlaceId,
+        });
+        await this.refreshCounters(jobId);
+        return this.rowView(rowId);
+      }
+      this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
+    }
+
+    const outcome = await this.resolver.resolveByProviderId(googlePlaceId);
     if (outcome.status !== 'RESOLVED') {
       throw AppError.conflict('PROVIDER_UNAVAILABLE', 'Không xác minh được địa điểm lúc này');
     }
@@ -1116,9 +1283,26 @@ export class PlaceImportJobService {
       .limit(1);
     if (!place) throw AppError.notFound('PLACE_NOT_FOUND', 'Place không tồn tại');
 
-    const outcome = await this.resolver.resolveFromUrl(
-      `https://www.google.com/maps?place_id=${row.resolvedGooglePlaceId}`,
-    );
+    // Merging a row into the place its Google id already points at, with a
+    // provider row still inside its freshness window, has nothing to fetch:
+    // `upsertProviderSource` would rewrite the same values onto the same row
+    // (#337).
+    const alreadyLinked = (await this.dbFirst())
+      ? await this.dedup.knownProviderPlace(row.resolvedGooglePlaceId, this.verificationWindow())
+      : ({ kind: 'MISS', reason: 'absent' } as const);
+    if (alreadyLinked.kind === 'KNOWN' && alreadyLinked.place.placeId === placeId) {
+      this.metrics.increment('place_dbfirst_hit_total', { path: 'merge' });
+      await this.db
+        .update(schema.placeIngestRows)
+        .set({ status: 'imported', matchedPlaceId: placeId, updatedAt: new Date() })
+        .where(eq(schema.placeIngestRows.id, rowId));
+      await this.dedup.emitReindex(placeId, 'merged');
+      await this.audit(adminId, 'place_import.row_merged', jobId, { rowId, placeId });
+      await this.refreshCounters(jobId);
+      return this.rowView(rowId);
+    }
+
+    const outcome = await this.resolver.resolveByProviderId(row.resolvedGooglePlaceId);
     if (outcome.status === 'RESOLVED') {
       const score = await this.resolver.scoreFor(
         outcome.details,
@@ -1209,9 +1393,10 @@ export class PlaceImportJobService {
     if (!row.resolvedGooglePlaceId) {
       throw AppError.conflict('ROW_NOT_RESOLVED', 'Dòng chưa resolve được provider place');
     }
-    const outcome = await this.resolver.resolveFromUrl(
-      `https://www.google.com/maps?place_id=${row.resolvedGooglePlaceId}`,
-    );
+    // Publish still re-fetches, deliberately: it writes the catalogue row, and
+    // the plan keeps that call until PR8 settles what may be stored (plan §3
+    // PR4 item 4). What changed here is only how the id is asked for.
+    const outcome = await this.resolver.resolveByProviderId(row.resolvedGooglePlaceId);
     if (outcome.status !== 'RESOLVED') {
       throw AppError.conflict('PROVIDER_UNAVAILABLE', 'Không xác minh được địa điểm lúc này');
     }

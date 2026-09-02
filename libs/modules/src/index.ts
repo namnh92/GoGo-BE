@@ -85,6 +85,13 @@ export {
   type ImportMode,
 } from '../ingestion/application/place-import-job.service';
 export {
+  RESOLUTION_ATTESTATION_VERSION,
+  RESOLUTION_PURPOSE,
+  signResolutionAttestation,
+  verifyResolutionAttestation,
+  type ResolutionAttestation,
+} from '../ingestion/domain/resolution-attestation';
+export {
   INGEST_LIMITS,
   IngestFileError,
   detectFormat,

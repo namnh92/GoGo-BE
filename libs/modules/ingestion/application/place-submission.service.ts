@@ -9,10 +9,20 @@ import {
 } from '@gogo/providers';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
+import {
+  APP_CONFIG,
+  type PlatformConfig,
+  type ResolutionAttestationConfig,
+} from '../../shared/config';
+import { flagEnvironmentOf, resolveBooleanFlag } from '../../shared/feature-flags';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
-import { PlaceDedupService } from './place-dedup.service';
+import {
+  signResolutionAttestation,
+  verifyResolutionAttestation,
+} from '../domain/resolution-attestation';
+import { PlaceDedupService, type DedupVerdict } from './place-dedup.service';
 import { PlaceResolverService } from './place-resolver.service';
 import { writeAudit } from '../../shared/audit';
 
@@ -21,6 +31,13 @@ export type ResolveLinkResponse = {
   matchConfidence?: number | undefined;
   reasonCodes: string[];
   existingPlaceId?: string | undefined;
+  /**
+   * #337 — proof that this request verified the Place ID with Google, for the
+   * submit that usually follows. Opaque, short-lived, carries no Google
+   * content, and is minted only for a place Google called `OPERATIONAL`.
+   * Absent whenever the answer did not come from a live provider check.
+   */
+  resolutionToken?: string | undefined;
   candidate?: {
     googlePlaceId: string;
     name: string;
@@ -73,15 +90,77 @@ export class PlaceSubmissionService {
     @Inject(DB) private readonly db: Db,
     private readonly resolver: PlaceResolverService,
     private readonly dedup: PlaceDedupService,
+    @Inject(APP_CONFIG)
+    private readonly config: PlatformConfig & ResolutionAttestationConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
+
+  private async dbFirstEnabled(): Promise<boolean> {
+    return resolveBooleanFlag(this.db, 'place_dbfirst.enabled', {
+      environment: flagEnvironmentOf(this.config.APP_ENV),
+    });
+  }
+
+  private async attestationEnabled(): Promise<boolean> {
+    return resolveBooleanFlag(this.db, 'place_resolution_attestation.enabled', {
+      environment: flagEnvironmentOf(this.config.APP_ENV),
+    });
+  }
 
   async resolveLink(input: {
     url: string;
     cityHint?: string | undefined;
   }): Promise<ResolveLinkResponse> {
+    // Learn which place the link names before deciding whether to pay for it.
+    // A short link still costs its one redirect hop — that hop *is* how the id
+    // is learned — but no Places request has happened yet (#337, plan §4 C).
+    const identified = await this.resolver.identifyUrl(input.url).catch((err: unknown) => {
+      throw placeProviderUnavailable(err);
+    });
+    if (!identified.ok) {
+      return { status: 'UNRESOLVED', reasonCodes: [identified.reasonCode] };
+    }
+
+    const knownId = identified.value.providerPlaceId;
+    if (knownId && (await this.dbFirstEnabled())) {
+      const known = await this.dedup.knownProviderPlace(knownId, {
+        verificationWindowSeconds: this.config.PLACE_RESOLUTION_TTL_S,
+      });
+      if (known.kind === 'CONFLICT') {
+        return { status: 'UNRESOLVED', reasonCodes: ['PLACE_IDENTITY_CONFLICT'] };
+      }
+      if (known.kind === 'KNOWN') {
+        this.metrics.increment('place_dbfirst_hit_total', { path: 'resolve_link' });
+        // No `resolutionToken`: nothing was verified with Google in this
+        // request, and a token minted from a stored row would be exactly the
+        // cross-request snapshot ADR-0006 §9.5 forbids, wearing a signature.
+        return {
+          status: 'ALREADY_EXISTS',
+          existingPlaceId: known.place.placeId,
+          reasonCodes: ['PLACE_ALREADY_LINKED', 'DB_FIRST'],
+          candidate: {
+            googlePlaceId: known.place.googlePlaceId,
+            name: known.place.name,
+            address: known.place.addressText,
+            location: { lat: known.place.lat, lng: known.place.lng },
+            googleRating: known.place.rating,
+            googleRatingCount: known.place.ratingCount,
+            googleScore: known.place.derivedScore,
+            businessStatus: known.place.businessStatus,
+            source: 'google_places' as const,
+            // The stored fetch time, not `now()`. Saying "just now" about a row
+            // last refreshed three weeks ago is the one lie this path could
+            // tell, and freshness is what the user is judging the answer on.
+            fetchedAt: known.place.fetchedAt,
+            attributions: known.place.attribution ? [known.place.attribution] : [],
+          },
+        };
+      }
+      this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
+    }
+
     const outcome = await this.resolver
-      .resolveFromUrl(input.url, { city: input.cityHint })
+      .resolveIdentified(identified.value, { city: input.cityHint })
       .catch((err: unknown) => {
         throw placeProviderUnavailable(err);
       });
@@ -134,6 +213,39 @@ export class PlaceSubmissionService {
       reasonCodes: outcome.decision.reasons,
       candidate,
       ...(verdict.kind === 'MERGE_CANDIDATE' ? { existingPlaceId: verdict.placeId } : {}),
+      ...(await this.mintAttestation(details)),
+    };
+  }
+
+  /**
+   * Mints the proof the submit that follows can present instead of a second
+   * Details call — but only for a place Google just called `OPERATIONAL`.
+   *
+   * That condition is the whole design. `businessStatus` is Google content and
+   * may not travel in the token, so the token's *existence* has to carry it: a
+   * closed place gets none, its submit takes the old route, and the 409
+   * `PLACE_CLOSED` still comes from a live provider answer. Nothing about
+   * closure is inferred from a stored row, and nothing about it is stored.
+   */
+  private async mintAttestation(
+    details: ResolvedProviderPlace,
+  ): Promise<{ resolutionToken?: string }> {
+    if (!this.config.PLACE_RESOLUTION_ATTESTATION_SECRET) {
+      this.metrics.increment('place_resolution_attestation_total', { result: 'unconfigured' });
+      return {};
+    }
+    if (!(await this.attestationEnabled())) {
+      this.metrics.increment('place_resolution_attestation_total', { result: 'disabled' });
+      return {};
+    }
+    if (details.businessStatus !== 'OPERATIONAL') return {};
+    this.metrics.increment('place_resolution_attestation_total', { result: 'issued' });
+    return {
+      resolutionToken: signResolutionAttestation({
+        googlePlaceId: details.providerPlaceId,
+        secret: this.config.PLACE_RESOLUTION_ATTESTATION_SECRET,
+        ttlSeconds: this.config.PLACE_RESOLUTION_TTL_S,
+      }),
     };
   }
 
@@ -153,6 +265,63 @@ export class PlaceSubmissionService {
     };
   }
 
+  /**
+   * Decides whether a presented attestation lets this request skip the Details
+   * fetch — and refuses loudly when it does not.
+   *
+   * An expired, forged or mismatched token never quietly becomes a Google call
+   * (plan §3 PR4): silently paying for what the client thought it had already
+   * paid for is how a cost regression hides. The client is told to resolve
+   * again, which is a real retry, not a lost cause — hence `retryable`.
+   *
+   * A token that was simply never offered, or a deployment with the feature off
+   * or unconfigured, is not an error: those take the old path, which is exactly
+   * the rollback.
+   */
+  private async acceptAttestation(
+    token: string | undefined,
+    googlePlaceId: string,
+  ): Promise<boolean> {
+    if (!token) return false;
+    if (!this.config.PLACE_RESOLUTION_ATTESTATION_SECRET) {
+      this.metrics.increment('place_resolution_attestation_total', { result: 'unconfigured' });
+      return false;
+    }
+    if (!(await this.attestationEnabled())) {
+      this.metrics.increment('place_resolution_attestation_total', { result: 'disabled' });
+      return false;
+    }
+
+    const verdict = verifyResolutionAttestation(token, {
+      secret: this.config.PLACE_RESOLUTION_ATTESTATION_SECRET,
+    });
+    if (!verdict.ok) {
+      this.metrics.increment('place_resolution_attestation_total', {
+        result: verdict.reason.toLowerCase(),
+      });
+      throw new AppError(
+        'RESOLUTION_TOKEN_INVALID',
+        'Cần mở lại liên kết để xác minh địa điểm rồi thử lại',
+        400,
+        { retryable: true },
+      );
+    }
+    // Signed for a different place: valid proof, wrong subject. Accepting it
+    // would let one verified id vouch for any other.
+    if (verdict.attestation.googlePlaceId !== googlePlaceId) {
+      this.metrics.increment('place_resolution_attestation_total', { result: 'mismatch' });
+      throw new AppError(
+        'RESOLUTION_TOKEN_INVALID',
+        'Cần mở lại liên kết để xác minh địa điểm rồi thử lại',
+        400,
+        { retryable: true },
+      );
+    }
+
+    this.metrics.increment('place_resolution_attestation_total', { result: 'accepted' });
+    return true;
+  }
+
   /** FR-INGEST-011/012 — proposal only; publishing stays with CMS. */
   async submit(
     actor: Actor,
@@ -165,6 +334,7 @@ export class PlaceSubmissionService {
       priceUnit?: string | undefined;
       vibeKeys?: string[] | undefined;
       note?: string | undefined;
+      resolutionToken?: string | undefined;
     },
   ) {
     if (actor.type === 'guest' && !input.roomId) {
@@ -174,31 +344,96 @@ export class PlaceSubmissionService {
       throw AppError.forbidden('ROOM_SCOPE_VIOLATION', 'Guest session is bound to another room');
     }
 
-    const details = await this.resolver
-      .resolveFromUrl(`https://www.google.com/maps?place_id=${input.googlePlaceId}`)
-      .catch(() => null);
-    if (!details || details.status !== 'RESOLVED') {
-      throw AppError.badRequest('PLACE_NOT_FOUND', 'Provider place could not be verified');
-    }
-    if (details.details.businessStatus !== 'OPERATIONAL') {
-      throw AppError.conflict('PLACE_CLOSED', 'Place is closed and cannot be added');
+    // DB-first (#337, plan §3 PR4 item 3). The id is the dedup key and we hold
+    // it, so asking Google what a place we already catalogued looks like — only
+    // to answer `ALREADY_EXISTS` from our own row a moment later — was one
+    // Enterprise `details` spent to learn nothing.
+    if (await this.dbFirstEnabled()) {
+      const known = await this.dedup.knownProviderPlace(input.googlePlaceId, {
+        verificationWindowSeconds: this.config.PLACE_RESOLUTION_TTL_S,
+      });
+      if (known.kind === 'CONFLICT') throw identityConflict(this.metrics);
+      if (known.kind === 'KNOWN') {
+        this.metrics.increment('place_dbfirst_hit_total', { path: 'submit' });
+        // An **identity** answer: this Google ID is already a GoGo place, so
+        // the proposal is redundant and nothing is created. Identity does not
+        // go stale, so the catalogue's own freshness window governs it.
+        if (known.place.businessStatus === 'OPERATIONAL') {
+          return { status: 'ALREADY_EXISTS' as const, placeId: known.place.placeId };
+        }
+        // A **verification** answer, and a refusal at that. Held to the short
+        // window: `source_status` from three weeks ago would tell someone their
+        // reopened café is shut, and a stored fact that old is not evidence
+        // about right now. Stale closure costs one Details call, which is the
+        // right thing to spend it on.
+        if (known.place.verificationFresh) {
+          throw AppError.conflict('PLACE_CLOSED', 'Place is closed and cannot be added');
+        }
+        this.metrics.increment('place_dbfirst_miss_total', { reason: 'closure_unverified' });
+      } else {
+        this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
+      }
     }
 
-    this.dedup.reportIdMismatch(details.details, 'submission');
-    const verdict = await this.dedup.check(details.details);
-    if (verdict.kind === 'IDENTITY_CONFLICT') {
-      // Accepting the submission would attach it to an ambiguous identity, and
-      // the moderator approving it later would inherit the same choice we are
-      // refusing to make here (#334).
-      this.metrics.increment('place_identity_conflict_blocked_total', { path: 'submission' });
-      throw AppError.conflict(
-        'PLACE_IDENTITY_CONFLICT',
-        'Địa điểm Google này đang trỏ tới hai place GoGo; cần gộp trước khi thêm',
-      );
+    // The attestation replaces the *fetch*, never a check. Everything below —
+    // guest scope above, identity, pending-uniqueness — still runs; what goes
+    // away is asking Google a second time within the TTL about a place it
+    // already answered for (plan §2.8).
+    const attested = await this.acceptAttestation(input.resolutionToken, input.googlePlaceId);
+
+    let verdict: DedupVerdict;
+    /**
+     * What we are standing on if this request ends up creating a proposal.
+     *
+     * Made explicit after review, because until now the rule held by accident:
+     * a DB-first hit always resolved to an existing place, so it could never
+     * reach the insert. That is a property of one `if`, not an invariant — the
+     * next person to add a DB-derived shortcut here would not be told they had
+     * broken it. Now they are, twice: this has no initialiser, so a branch that
+     * reaches the insert without setting it fails `tsc` with "used before being
+     * assigned", and `assertFreshlyVerified` catches a value outside the two
+     * kinds of evidence that count.
+     */
+    let verifiedBy: 'attestation' | 'provider';
+    if (attested) {
+      verifiedBy = 'attestation';
+      // No provider object, so identity is read directly. `check()`'s other
+      // verdicts need a name and coordinates, and neither changes the outcome
+      // here: `MERGE_CANDIDATE` and `NEW` both create the same pending
+      // proposal, and a moderator decides between them with a fresh fetch.
+      const identity = await this.dedup.resolveGoogleIdentity(input.googlePlaceId);
+      verdict =
+        identity.kind === 'CONFLICT'
+          ? {
+              kind: 'IDENTITY_CONFLICT',
+              placeIds: identity.placeIds,
+              conflictId: identity.conflictId,
+            }
+          : identity.kind === 'RESOLVED'
+            ? { kind: 'LINKED_EXISTING', placeId: identity.placeId }
+            : { kind: 'NEW' };
+    } else {
+      const details = await this.resolver
+        .resolveByProviderId(input.googlePlaceId)
+        .catch(() => null);
+      if (!details || details.status !== 'RESOLVED') {
+        throw AppError.badRequest('PLACE_NOT_FOUND', 'Provider place could not be verified');
+      }
+      if (details.details.businessStatus !== 'OPERATIONAL') {
+        throw AppError.conflict('PLACE_CLOSED', 'Place is closed and cannot be added');
+      }
+      this.dedup.reportIdMismatch(details.details, 'submission');
+      verdict = await this.dedup.check(details.details);
+      verifiedBy = 'provider';
     }
+    if (verdict.kind === 'IDENTITY_CONFLICT') throw identityConflict(this.metrics);
     if (verdict.kind === 'LINKED_EXISTING') {
       return { status: 'ALREADY_EXISTS' as const, placeId: verdict.placeId };
     }
+
+    // Nothing below this line may run on a stored provider fact. See
+    // `assertFreshlyVerified`.
+    assertFreshlyVerified(verifiedBy);
 
     // Same provider id from many users bumps the counter, never a new draft.
     const [existing] = await this.db
@@ -418,8 +653,11 @@ export class PlaceSubmissionService {
   private async createDraftFromSubmission(
     row: typeof schema.placeSubmissions.$inferSelect,
   ): Promise<string> {
+    // The approve step re-verifies against Google on purpose: moderation delay
+    // outlives any attestation, and this is the fetch that becomes the
+    // catalogue row (plan §2.8, §3 PR4).
     const outcome = await this.resolver
-      .resolveFromUrl(`https://www.google.com/maps?place_id=${row.googlePlaceId}`)
+      .resolveByProviderId(row.googlePlaceId)
       .catch((err: unknown) => {
         throw placeProviderUnavailable(err);
       });
@@ -482,6 +720,53 @@ export class PlaceSubmissionService {
         return placeId;
       });
   }
+}
+
+/**
+ * The gate between "GoGo already has this" and "GoGo is being asked to add it".
+ *
+ * Everything past this point creates or bumps a proposal for a place the
+ * catalogue does not hold, and the only acceptable evidence for that is minutes
+ * old: a provider answer from this request, or an attestation over one, whose
+ * lifetime is `PLACE_RESOLUTION_TTL_S`.
+ *
+ * A persisted `place_provider_sources` row is **not** that evidence, however
+ * comfortably it sits inside `refresh_after`. Identity may be read from it —
+ * knowing which place an ID belongs to is what makes the cheap
+ * `ALREADY_EXISTS` correct — but identity answers return above and never arrive
+ * here.
+ *
+ * Takes a `string` rather than the narrow union on purpose. The union is the
+ * compile-time half of the guard — `verifiedBy` has no initialiser, so a new
+ * branch that forgets it fails `tsc` outright — and this is the half that still
+ * means something once someone widens that union to add a third kind of
+ * evidence. It throws rather than returning, because there is no correct
+ * fallback: a request that reaches it has already skipped the verification it
+ * needed, and quietly fetching now would paper over the bug instead of
+ * surfacing it.
+ */
+function assertFreshlyVerified(verifiedBy: string): void {
+  if (verifiedBy === 'attestation' || verifiedBy === 'provider') return;
+  throw AppError.internal(
+    'A place submission was about to be created without a fresh provider verification',
+  );
+}
+
+/**
+ * #334 — one Google id claimed by two GoGo places, at whichever door.
+ *
+ * Accepting the submission would attach it to an ambiguous identity, and the
+ * moderator approving it later would inherit the same choice being refused
+ * here. Shared because DB-first reaches this conclusion without a provider
+ * call and the resolved path reaches it with one — the answer must not depend
+ * on which.
+ */
+function identityConflict(metrics: MetricsPort): AppError {
+  metrics.increment('place_identity_conflict_blocked_total', { path: 'submission' });
+  return AppError.conflict(
+    'PLACE_IDENTITY_CONFLICT',
+    'Địa điểm Google này đang trỏ tới hai place GoGo; cần gộp trước khi thêm',
+  );
 }
 
 /**
