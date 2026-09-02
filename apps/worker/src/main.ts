@@ -11,6 +11,8 @@ import {
   PrivacyJobs,
   ProviderBudgetService,
   budgetLimitsFrom,
+  CostEstimatorService,
+  defaultRecomputeRange,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -50,6 +52,14 @@ const pollIntervalMs = (name: string, fallback: number): number => {
 };
 
 const OUTBOX_POLL_MS = pollIntervalMs('OUTBOX_POLL_MS', 5000);
+/**
+ * COST-BE-016 (#368): how often the estimator re-prices this month's and last
+ * month's usage. Idempotent and bounded, so a short interval only costs a
+ * small query; 15 minutes keeps the cost screen within a quarter hour of the
+ * ledger without adding load. `COST_ESTIMATE_ENABLED=false` is the kill switch.
+ */
+const COST_ESTIMATE_POLL_MS = Number(process.env.COST_ESTIMATE_POLL_MS ?? 15 * 60 * 1000);
+const COST_ESTIMATE_ENABLED = process.env.COST_ESTIMATE_ENABLED !== 'false';
 const INGEST_POLL_MS = pollIntervalMs('INGEST_POLL_MS', 5000);
 /**
  * #340 — how often the liveness refresh looks for due rows. Plan §2.5 sets DEV
@@ -226,6 +236,8 @@ async function bootstrap(): Promise<void> {
     },
   );
 
+  const estimator = new CostEstimatorService(db, { environment: process.env.APP_ENV ?? 'dev' });
+
   const periodic = startPeriodic(
     [
       {
@@ -280,6 +292,26 @@ async function bootstrap(): Promise<void> {
           // worth a line; everything else is either spend or a reason there was
           // none, and both are what an operator reads this log for.
           if (report.tick !== 'nothing_due') logger.info({ report }, 'place refresh tick');
+        },
+      },
+      {
+        name: 'gogo:worker:cost-estimate',
+        schedule: { everyMs: COST_ESTIMATE_POLL_MS },
+        run: async () => {
+          if (!COST_ESTIMATE_ENABLED) return;
+          const result = await estimator.recompute(defaultRecomputeRange());
+          if (result.rowsWritten > 0 || result.unpriced.length > 0) {
+            logger.info(
+              {
+                from: result.from,
+                to: result.to,
+                rowsWritten: result.rowsWritten,
+                rowsDeleted: result.rowsDeleted,
+                unpricedSkus: [...new Set(result.unpriced.map((u) => u.billingSkuId))],
+              },
+              'cost estimate recomputed',
+            );
+          }
         },
       },
       {

@@ -18,17 +18,30 @@ type Executed = { sql: string; params: unknown[] };
  *  parameters — which is where the counts actually are — can be asserted. */
 const dialect = new PgDialect();
 
-function fakeDb(onExecute?: () => void) {
+/**
+ * A `db` with `execute` only — no `transaction`. #368 made a flush two
+ * statements (the legacy upsert and the canonical meter upsert); against this
+ * fake they run in sequence, which is enough to pin the ledger's arithmetic
+ * and its failure handling. The transaction itself is an integration concern
+ * (`cost-canonical.int.spec.ts`).
+ */
+function fakeDb(onExecute?: () => void, onDone?: () => void) {
   const executed: Executed[] = [];
   const db = {
     execute: vi.fn(async (query: SQL) => {
       onExecute?.();
       const rendered = dialect.sqlToQuery(query);
       executed.push({ sql: rendered.sql, params: rendered.params });
+      onDone?.();
       return { rows: [] };
     }),
   } as unknown as Db;
   return { db, executed };
+}
+
+/** The legacy `provider_usage_daily` upsert among what ran — never the meter one. */
+function legacyUpserts(executed: Executed[]): Executed[] {
+  return executed.filter((e) => e.sql.includes('into provider_usage_daily'));
 }
 
 function recorder() {
@@ -113,7 +126,7 @@ describe('DbUsageLedger', () => {
     fail = false;
     await ledger.flush();
     expect(ledger.pending()).toBe(0);
-    expect(executed.at(-1)!.params.slice(-3)).toEqual([1, 1, 0]);
+    expect(legacyUpserts(executed).at(-1)!.params.slice(-3)).toEqual([1, 1, 0]);
   });
 
   it('does nothing at all when disabled', async () => {
@@ -159,10 +172,15 @@ describe('DbUsageLedger', () => {
   it('serialises overlapping flushes', async () => {
     let inFlight = 0;
     let overlapped = false;
-    const { db } = fakeDb(() => {
-      inFlight += 1;
-      if (inFlight > 1) overlapped = true;
-    });
+    const { db } = fakeDb(
+      () => {
+        inFlight += 1;
+        if (inFlight > 1) overlapped = true;
+      },
+      () => {
+        inFlight -= 1;
+      },
+    );
     const ledger = new DbUsageLedger(db, { environment: 'dev' });
     ledger.increment('places_provider_requests_total', {
       method: 'google.searchText',

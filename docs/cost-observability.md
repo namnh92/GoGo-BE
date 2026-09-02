@@ -18,9 +18,25 @@ and how to add a provider without touching generic code.
 | Budget reservation guard (`provider_budget_daily`)                                                                             | `application/provider-budget.service.ts` | §32 (daily guard) |
 | Estimated-cost report for the CMS ops surface                                                                                  | `application/usage-report.service.ts`    | §35 (partial)     |
 
-Not yet built (see #370): canonical `provider_usage_meter_daily` / `provider_cost_daily`
-tables and the generic estimator (#368), freshness + collector scheduler + cost-of-cost
-(#369), non-Google collectors, test-run tables, monthly budget/forecast, manual costs.
+Not yet built (see #370): freshness + collector scheduler + cost-of-cost (#369),
+non-Google collectors, test-run tables, monthly budget/forecast, manual costs, ACTUAL
+cost collectors and reconciliation, the ops API reading `provider_cost_daily`.
+
+## Tables (migration 0038)
+
+| Table                         | One row per                                                                          | Notes                                                                                                                                                                                                                                                                           |
+| ----------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider_usage_daily` (0035) | day × environment × operation                                                        | Google-shaped legacy table; still what the ops API and budget guard read                                                                                                                                                                                                        |
+| `provider_usage_meter_daily`  | day × environment × provider × service × operation? × meter × SKU? × source          | epic §9. `usage_metric_id` is the meter's short metric (`calls`, `requests`, `billable_elements`, `commands`); `quantity` is an integer; `source` names the collector. Unique key uses `COALESCE(operation_id,'')` / `COALESCE(billing_sku_id,'')`                              |
+| `provider_cost_daily`         | day × environment × provider × service × operation? × meter? × SKU? × source × basis | epic §11. `amount_micros` in original `currency`; `basis` ∈ ACTUAL/ESTIMATED/FIXED/MANUAL; `confidence`; `pricing_version` for estimates; `reconciled_at` for ACTUAL↔ESTIMATED pairs. **Unknown cost = no row.** Readers apply ACTUAL > ESTIMATED > UNKNOWN and never sum bases |
+
+The ledger writes `calls` (attempted, not billed) and the operation's billable meter
+(`requests` for Places, `billable_elements` for Routes) as `source = 'ledger'`,
+`confidence = 'HIGH'`. The estimator job (`COST_ESTIMATE_POLL_MS`, default 15 min;
+`COST_ESTIMATE_ENABLED=false` to stop) recomputes this month and last month every
+tick: delete own rows in range, re-insert — so a pricing-rule change re-prices
+history under the new `pricing_version` on the next tick (epic §25 backfill, bounded
+to two months; a wider backfill is a manual `recompute({from,to})`).
 
 ## Ids
 

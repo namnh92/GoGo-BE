@@ -300,7 +300,7 @@ export const PRICING_RULES: readonly PricingRule[] = [
   googleRule({
     serviceId: 'google.places',
     operationId: 'google.expand',
-    usageMetricId: 'google.expand/requests',
+    usageMetricId: 'google.expand/calls',
     billingSkuId: null,
     effectiveFrom: '2026-09-01',
     pricingModel: 'FREE',
@@ -312,7 +312,7 @@ export const PRICING_RULES: readonly PricingRule[] = [
   googleRule({
     serviceId: 'google.sheets',
     operationId: 'google.sheets.meta',
-    usageMetricId: 'google.sheets.meta/requests',
+    usageMetricId: 'google.sheets.meta/calls',
     billingSkuId: null,
     effectiveFrom: '2026-09-01',
     pricingModel: 'FREE',
@@ -324,7 +324,7 @@ export const PRICING_RULES: readonly PricingRule[] = [
   googleRule({
     serviceId: 'google.sheets',
     operationId: 'google.sheets.values',
-    usageMetricId: 'google.sheets.values/requests',
+    usageMetricId: 'google.sheets.values/calls',
     billingSkuId: null,
     effectiveFrom: '2026-09-01',
     pricingModel: 'FREE',

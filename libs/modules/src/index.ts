@@ -201,6 +201,7 @@ export {
   COST_USAGE_LEDGER,
   DbUsageLedger,
   DEFAULT_LEDGER_FLUSH_MS,
+  meterRowsFor,
   type UsageLedgerOptions,
 } from '../cost/application/usage-ledger';
 export {
@@ -219,6 +220,17 @@ export {
   type ProviderCostLine,
   type ProviderCostReport,
 } from '../cost/application/usage-report.service';
+export {
+  CostEstimatorService,
+  ESTIMATOR_SOURCE,
+  allowanceWalkStart,
+  defaultRecomputeRange,
+  planEstimates,
+  type EstimatePlan,
+  type EstimatedCostRow,
+  type MeterUsageRow,
+  type RecomputeResult,
+} from '../cost/application/cost-estimator.service';
 export {
   OPS_PROVIDERS,
   PRICING_CURRENCY,

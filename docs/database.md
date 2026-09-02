@@ -59,6 +59,12 @@ erDiagram
   GoGo place, from every import door (#334). `place_sources_provider_external_unique`
   still guards the legacy table, whose `google` rows migration 0033 copies over
   and whose writer is gone.
+- `provider_usage_meter_daily_key` / `provider_cost_daily_key` (#368) — the
+  provider-agnostic usage-meter and cost tables (Cost Observability epic §9/§11).
+  Unique over `COALESCE(operation_id,'')`, `COALESCE(billing_sku_id,'')` etc., so
+  nullable ids stay nullable and `ON CONFLICT` names the same expressions. Usage
+  and cost are **separate tables**: a meter row is a quantity of a unit, a cost
+  row is an amount with a basis, and unknown cost is the absence of a row.
 - `provider_usage_daily_pkey` / `provider_budget_daily_pkey` (#335) — usage
   accounting and the hard budget are **two tables, not one**. Usage says what
   happened and is written after the fact by a buffered ledger; the budget says
