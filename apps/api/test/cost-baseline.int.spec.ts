@@ -29,7 +29,7 @@ import {
 } from '../../../scripts/cost-baseline/stub-google';
 
 /**
- * PR3 / COST-BE-003 (#336) — the frozen BEFORE baseline.
+ * PR3 / COST-BE-003 (#336) — the frozen baseline, re-frozen by #338.
  *
  * This is the deterministic half of the plan's §4 matrix, and it is a spec
  * rather than a CLI on purpose: the Postgres, the migrations and the app boot
@@ -49,11 +49,14 @@ import {
  *
  * The committed artifact is a golden file. When PR4 landed and these flows
  * stopped calling Google twice, this spec failed — deliberately — and was
- * re-frozen as a decision with a diff and a reviewer:
+ * re-frozen as a decision with a diff and a reviewer. PR5 (#338) failed it
+ * again, for the same good reason: the bulk resolver stopped buying Enterprise
+ * Details for fields it never read, so fifteen `details.quality` requests
+ * became fifteen `details.core` ones.
  *
  *   COST_BASELINE_WRITE=1 pnpm vitest run --project integration cost-baseline
  *
- * PR5 and PR7 will fail it again, for the same good reason.
+ * PR7 will fail it again.
  *
  * Two consecutive runs inside one boot are also compared, which is the plan's
  * own acceptance criterion ("agree within ±1 call per operation") — asserted
@@ -82,19 +85,31 @@ const ip = () => `10.91.${Math.floor(++ipc / 250)}.${(ipc % 250) + 1}`;
  * and the ledger rows it describes under two different dates for seven hours of
  * every day in ICT.
  *
- * PR4 moved the numbers on purpose, so the golden moves with it. What does not
- * move is `BEFORE_FREEZE`: PR9 (#342) owes a BEFORE/AFTER/DELTA table, and a
+ * PR4 and PR5 moved the numbers on purpose, so the golden moves with them.
+ * What does not move is `BEFORE_FREEZE`: PR9 (#342) owes a BEFORE/AFTER/DELTA table, and a
  * BEFORE column reconstructed from git history is not evidence anybody will
  * check. Re-freezing means *adding* a file and pointing `ARTIFACT` at it, never
  * rewriting the one that recorded what the flows used to cost.
  */
 const ARTIFACT = path.resolve(
   __dirname,
-  '../../../docs/cost-baselines/2026-09-02-after-pr4-stub.json',
+  '../../../docs/cost-baselines/2026-09-02-after-pr5-stub.json',
 );
 const BEFORE_FREEZE = path.resolve(
   __dirname,
   '../../../docs/cost-baselines/2026-09-01-before-stub.json',
+);
+/**
+ * Every freeze between the BEFORE and the current golden.
+ *
+ * PR9 (#342) owes a per-PR progression, not just two endpoints: "quality fell
+ * by fifteen" is a different claim from "PR4 took five and PR5 took fifteen",
+ * and only the second one can be checked against the PR that made it. A
+ * superseded golden is therefore evidence too, and deleting one to tidy up
+ * would erase the attribution.
+ */
+const SUPERSEDED_FREEZES = ['2026-09-02-after-pr4-stub.json'].map((name) =>
+  path.resolve(__dirname, '../../../docs/cost-baselines', name),
 );
 const ENVIRONMENT = 'dev';
 
@@ -252,7 +267,7 @@ async function resetCatalogue(actors: { user: string; moderator: string }): Prom
   await seedCatalogue(actors);
 }
 
-describe('#336 — frozen baseline, re-frozen by #337', () => {
+describe('#336 — frozen baseline, re-frozen by #338', () => {
   it('freezes the pinned A–E scenarios, per operation, and repeats within ±1', async () => {
     const user = await register('baseline-user@gogo.local');
     const moderator = await createAdmin('baseline-mod@gogo.local', 'moderator');
@@ -291,7 +306,7 @@ describe('#336 — frozen baseline, re-frozen by #337', () => {
       day: utcDay(),
     };
 
-    const first = await runBaseline({ ...options, name: 'after-pr4-stub' });
+    const first = await runBaseline({ ...options, name: 'after-pr5-stub' });
 
     // Every scenario's correctness column has to be green, or the numbers
     // beside it are the cost of a broken flow.
@@ -331,7 +346,7 @@ describe('#336 — frozen baseline, re-frozen by #337', () => {
     // from the same starting state, which is what "consecutive" has to mean
     // for scenarios that create catalog rows.
     await resetCatalogue({ user, moderator });
-    const second = await runBaseline({ ...options, name: 'after-pr4-stub-repeat' });
+    const second = await runBaseline({ ...options, name: 'after-pr5-stub-repeat' });
     const repeat = compareBaselines(first, second);
     expect(repeat.agrees, formatComparison(repeat)).toBe(true);
 
@@ -355,5 +370,11 @@ describe('#336 — frozen baseline, re-frozen by #337', () => {
       `${BEFORE_FREEZE} must survive every re-freeze — PR9 reads it as the BEFORE column`,
     ).toBe(true);
     expect(BEFORE_FREEZE, 'never point the golden at the BEFORE freeze').not.toBe(ARTIFACT);
+    for (const freeze of SUPERSEDED_FREEZES) {
+      expect(existsSync(freeze), `${freeze} must survive — PR9 reads it as a per-PR column`).toBe(
+        true,
+      );
+      expect(freeze, 'a superseded freeze is never the golden').not.toBe(ARTIFACT);
+    }
   }, 300_000);
 });

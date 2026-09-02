@@ -1,7 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
-import type { ResolvedProviderPlace } from '@gogo/providers';
+import type { PlaceDescriptionTier, ResolvedProviderPlace } from '@gogo/providers';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { GOOGLE_PROVIDER } from '../../shared/google-provenance';
@@ -277,7 +277,7 @@ export class PlaceDedupService {
       googlePlaceId: string;
       attribution: string | null;
       providerUri: string | null;
-      fetchTier: 'core' | 'quality' | 'detail';
+      fetchTier: PlaceDescriptionTier;
       refreshAfterDays?: number;
     },
     runner: Pick<Db, 'insert'> = this.db,
@@ -360,7 +360,7 @@ export class PlaceDedupService {
     placeId: string;
     details: ResolvedProviderPlace;
     derivedScore: number;
-    fetchTier: 'core' | 'quality' | 'detail';
+    fetchTier: PlaceDescriptionTier;
     refreshAfterDays?: number;
   }): Promise<void> {
     const refreshAfter = new Date(Date.now() + (input.refreshAfterDays ?? 30) * 24 * 3600 * 1000);

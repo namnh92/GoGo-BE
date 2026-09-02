@@ -33,11 +33,34 @@ describe('PlaceProviderPort contract', () => {
 
     const id = await provider.resolveUrl('https://www.google.com/maps?place_id=fake-1');
     expect(id).toBe('fake-1');
-    const details = await provider.details('fake-1');
+    const details = await provider.details('fake-1', 'quality');
     expect(details?.name).toBe('Quán A');
     expect(details?.businessStatus).toBe('OPERATIONAL');
-    expect(await provider.details('missing')).toBeNull();
+    expect(await provider.details('missing', 'quality')).toBeNull();
     expect(await provider.resolveUrl('https://www.google.com/maps/place/No+Id')).toBeNull();
+  });
+
+  it('the fake narrows a liveness answer exactly as the adapter does', async () => {
+    const provider = new FakePlaceProvider();
+    provider.seed({ providerPlaceId: 'fake-1', name: 'Quán A' });
+
+    // #338 — the point of the tier is what it *cannot* answer. A fake that
+    // handed back a whole place here would let an integration test prove a
+    // refresh job works on facts the free SKU never returns.
+    expect(await provider.details('fake-1', 'liveness')).toEqual({
+      providerPlaceId: 'fake-1',
+      fetchTier: 'liveness',
+    });
+
+    provider.movedTo.set('fake-old', 'fake-1');
+    expect(await provider.details('fake-old', 'liveness')).toEqual({
+      providerPlaceId: 'fake-1',
+      requestedProviderPlaceId: 'fake-old',
+      movedPlaceId: 'fake-1',
+      fetchTier: 'liveness',
+    });
+
+    expect(await provider.details('missing', 'liveness')).toBeNull();
   });
 
   it('signals quota separately from an outage', async () => {
@@ -45,18 +68,22 @@ describe('PlaceProviderPort contract', () => {
     provider.seed({ providerPlaceId: 'fake-1' });
 
     provider.quotaExhausted = true;
-    await expect(provider.details('fake-1')).rejects.toBeInstanceOf(ProviderQuotaExceededError);
+    await expect(provider.details('fake-1', 'quality')).rejects.toBeInstanceOf(
+      ProviderQuotaExceededError,
+    );
     await expect(
       provider.resolveUrl('https://maps.google.com/?place_id=fake-1'),
     ).rejects.toBeInstanceOf(ProviderQuotaExceededError);
 
     provider.quotaExhausted = false;
     provider.timingOut = true;
-    await expect(provider.details('fake-1')).rejects.toBeInstanceOf(ProviderUnavailableError);
+    await expect(provider.details('fake-1', 'quality')).rejects.toBeInstanceOf(
+      ProviderUnavailableError,
+    );
 
     provider.timingOut = false;
     provider.failing = true;
-    await expect(provider.details('fake-1')).rejects.toThrow('fake provider down');
+    await expect(provider.details('fake-1', 'quality')).rejects.toThrow('fake provider down');
   });
 });
 

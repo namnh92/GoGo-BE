@@ -479,7 +479,14 @@ describe('#337 — duplicate Google calls', () => {
     expect(preview.json().status).toBe('RESOLVED');
     const resolutionToken = preview.json().resolutionToken as string;
     expect(resolutionToken, 'an operational place gets a token').toBeTruthy();
-    expect(billed(), 'preview is one Details').toEqual(['quality']);
+    // #338 — the one preview that stays Enterprise, and the assertion below is
+    // why: the candidate the client renders carries Google's rating, and the
+    // mobile card drops the whole rating row when it is absent. A `core`
+    // preview would be cheaper by $3 per thousand and would quietly delete the
+    // fact a submitter decides on.
+    expect(billed(), 'preview is one Details, at the tier it renders').toEqual(['quality']);
+    expect(preview.json().candidate.googleRating).toBe(4.4);
+    expect(preview.json().candidate.googleRatingCount).toBe(250);
 
     resetBilling();
     const submitted = await submit({ googlePlaceId: 'ChIJpr4New', resolutionToken }, user);
@@ -550,7 +557,10 @@ describe('#337 — duplicate Google calls', () => {
     resetBilling();
     const submitted = await submit({ googlePlaceId: 'ChIJpr4NoToken' }, user);
     expect(submitted.statusCode).toBe(201);
-    expect(billed(), 'the old path is the rollback, and it is unchanged').toEqual(['quality']);
+    // #338 — the rollback path still costs one Details, and it is now Pro
+    // rather than Enterprise: this branch reads `businessStatus` and hands the
+    // object to dedup, and neither wants a rating.
+    expect(billed(), 'the old path is the rollback, and it still pays once').toEqual(['core']);
   });
 
   it.each([
@@ -737,8 +747,9 @@ describe('#337 review — a stored fact may prove identity, never freshness', ()
     const res = await submit({ googlePlaceId: 'ChIJrevStale' }, user);
 
     // Google still has it operational, so the reopened place is not refused on
-    // a three-week-old fact — and the answer cost exactly one Details call.
-    expect(places.tiersRequested, 'stale closure is re-verified, not trusted').toEqual(['quality']);
+    // a three-week-old fact — and the answer cost exactly one Details call,
+    // at the tier that answers it: `businessStatus` is a `core` field (#338).
+    expect(places.tiersRequested, 'stale closure is re-verified, not trusted').toEqual(['core']);
     expect(res.statusCode).toBe(201);
     expect(res.json()).toEqual({ status: 'ALREADY_EXISTS', placeId });
   });
@@ -782,7 +793,7 @@ describe('#337 review — a stored fact may prove identity, never freshness', ()
       await register('rev-new-1@gogo.id.vn'),
     );
     expect(live.json().status).toBe('PENDING');
-    expect(places.tiersRequested).toEqual(['quality']);
+    expect(places.tiersRequested).toEqual(['core']);
 
     // 2 · valid token → no Details, and the proposal still requires the token
     //     to have been minted from a live check moments ago.

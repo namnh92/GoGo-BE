@@ -42,6 +42,7 @@ describe('resolveFromUrl on a shared link (PI-BE-025)', () => {
   it('offers the branches instead of answering UNRESOLVED', async () => {
     const out = await resolver.resolveFromUrl(
       link('Lacaph Coffee Experiences Space Ho Chi Minh City'),
+      'quality',
     );
 
     expect(out.status).toBe('NEEDS_CONFIRMATION');
@@ -53,6 +54,7 @@ describe('resolveFromUrl on a shared link (PI-BE-025)', () => {
   it('takes query_place_id as authoritative and skips the search', async () => {
     const out = await resolver.resolveFromUrl(
       link('Lacaph Coffee', '&query_place_id=ChIJ-lacaph-bar'),
+      'quality',
     );
 
     expect(out.status).toBe('RESOLVED');
@@ -63,7 +65,10 @@ describe('resolveFromUrl on a shared link (PI-BE-025)', () => {
   });
 
   it('a query naming nothing in the catalogue is NOT_FOUND, not a bad match', async () => {
-    const out = await resolver.resolveFromUrl(link('Trung Nguyen Legend Ho Chi Minh City'));
+    const out = await resolver.resolveFromUrl(
+      link('Trung Nguyen Legend Ho Chi Minh City'),
+      'quality',
+    );
 
     expect(out.status).toBe('UNRESOLVED');
     if (out.status !== 'UNRESOLVED') return;
@@ -75,7 +80,7 @@ describe('resolveFromUrl on a shared link (PI-BE-025)', () => {
       provider.seed({ providerPlaceId: `ChIJ-lacaph-${i}`, name: `Lacàph Branch ${i}` });
     }
 
-    const out = await resolver.resolveFromUrl(link('Lacaph'));
+    const out = await resolver.resolveFromUrl(link('Lacaph'), 'quality');
 
     if (out.status === 'UNRESOLVED') {
       expect(out.decision?.candidates.length ?? 0).toBeLessThanOrEqual(3);
@@ -87,7 +92,7 @@ describe('resolveFromUrl on a shared link (PI-BE-025)', () => {
   });
 
   it('a URL with no query at all is NO_QUERY', async () => {
-    const out = await resolver.resolveFromUrl('https://www.google.com/maps');
+    const out = await resolver.resolveFromUrl('https://www.google.com/maps', 'quality');
 
     expect(out.status).toBe('UNRESOLVED');
     if (out.status !== 'UNRESOLVED') return;
@@ -97,7 +102,7 @@ describe('resolveFromUrl on a shared link (PI-BE-025)', () => {
   it('a provider outage is an unresolved link, not a crash', async () => {
     provider.failing = true;
 
-    const out = await resolver.resolveFromUrl(link('Lacaph Coffee Experiences Space'));
+    const out = await resolver.resolveFromUrl(link('Lacaph Coffee Experiences Space'), 'quality');
 
     expect(out.status).toBe('UNRESOLVED');
   });

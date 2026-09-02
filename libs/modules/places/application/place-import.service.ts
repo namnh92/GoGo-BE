@@ -205,9 +205,13 @@ export class PlaceImportService {
       }
     }
 
+    // `quality` (#338). This is `/v1/places/imports`: it gates on
+    // `ratingCount` and `rating` against the import rules and then writes a
+    // catalogue row with the rating, the price level and the weekly hours. All
+    // Enterprise fields, all read below.
     let details: ResolvedProviderPlace | null;
     try {
-      details = await this.provider.details(providerPlaceId);
+      details = await this.provider.details(providerPlaceId, 'quality');
     } catch (err) {
       return reject(providerFault(err));
     }
@@ -373,9 +377,10 @@ export class PlaceImportService {
           googlePlaceId: details.providerPlaceId,
           attribution: details.attribution,
           providerUri: details.googleMapsUri,
-          // `details()` above took the default tier, and a row must say which
-          // fields it could legitimately have.
-          fetchTier: 'quality',
+          // A row must say which fields it could legitimately have, so it
+          // records the tier the fetch actually used rather than repeating a
+          // literal that a later tier change would silently falsify (#338).
+          fetchTier: details.fetchTier,
         },
         tx,
       );

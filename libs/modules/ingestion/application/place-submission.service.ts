@@ -159,8 +159,17 @@ export class PlaceSubmissionService {
       this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
     }
 
+    // `quality`, and this is the one preview path that earns Enterprise (#338).
+    // The candidate this returns is rendered: `toCandidate` publishes
+    // `googleRating`, `googleRatingCount` and the score derived from them, and
+    // the mobile client drops the whole rating row when the rating is absent
+    // (`import.view.tsx`). Fetching `core` here would not degrade the preview,
+    // it would silently delete from it the single fact a submitter uses to
+    // decide whether the place is worth adding — while `googleRatingCount: 0`
+    // said "no reviews" about a place nobody asked about. ADR-0006 §2 puts
+    // "preview shown" on the `quality` row for exactly this reason.
     const outcome = await this.resolver
-      .resolveIdentified(identified.value, { city: input.cityHint })
+      .resolveIdentified(identified.value, 'quality', { city: input.cityHint })
       .catch((err: unknown) => {
         throw placeProviderUnavailable(err);
       });
@@ -413,8 +422,14 @@ export class PlaceSubmissionService {
             ? { kind: 'LINKED_EXISTING', placeId: identity.placeId }
             : { kind: 'NEW' };
     } else {
+      // `core` (#338). This branch is the un-attested submit: it reads
+      // `businessStatus` to refuse a closed place, and hands the object to
+      // `dedup.check`, which needs a name and a coordinate. Every one of those
+      // is a Pro field. Nothing here reads a rating, an opening hour or a price
+      // level — the catalogue row is written at approve, and that fetch is
+      // still Enterprise.
       const details = await this.resolver
-        .resolveByProviderId(input.googlePlaceId)
+        .resolveByProviderId(input.googlePlaceId, 'core')
         .catch(() => null);
       if (!details || details.status !== 'RESOLVED') {
         throw AppError.badRequest('PLACE_NOT_FOUND', 'Provider place could not be verified');
@@ -656,8 +671,11 @@ export class PlaceSubmissionService {
     // The approve step re-verifies against Google on purpose: moderation delay
     // outlives any attestation, and this is the fetch that becomes the
     // catalogue row (plan §2.8, §3 PR4).
+    // `quality`: this fetch becomes the catalogue row — rating, review count,
+    // price level and the whole weekly opening-hours table are all written
+    // from it a few lines below (#338).
     const outcome = await this.resolver
-      .resolveByProviderId(row.googlePlaceId)
+      .resolveByProviderId(row.googlePlaceId, 'quality')
       .catch((err: unknown) => {
         throw placeProviderUnavailable(err);
       });

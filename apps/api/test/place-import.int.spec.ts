@@ -968,6 +968,121 @@ describe('PI-BE-015/016 — processing, quota pause, publish RBAC', () => {
     expect(counted[0]?.n, 'still exactly one canonical place').toBe(1);
   });
 
+  /**
+   * COST-BE-005 (#338) — the bulk pipeline's two stages want different fields,
+   * and now pay different prices for them.
+   *
+   * Asserted on `tiersRequested` rather than on a mask string, because the
+   * question a reviewer actually has is not "what does `core` contain?" (the
+   * unit spec pins that) but "which SKU does this flow buy?". A regression
+   * here is a bill, and it is invisible in every other test: resolving at
+   * `quality` produces exactly the same row outcomes as resolving at `core`.
+   */
+  it('resolves a row at core and pays Enterprise only at publish', async () => {
+    const editor = await createAdmin('tier-editor@gogo.local', 'editor');
+    const ops = await createAdmin('tier-ops@gogo.local', 'ops_admin');
+    places.seed({ providerPlaceId: 'fake-tier', name: 'Quán Phân Tầng', lat: 10.78, lng: 106.7 });
+
+    const job = await createJob(editor.token, [
+      'TIER-1,Quán Phân Tầng,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-tier,cafe,100000,200000,per_person',
+    ]);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+
+    places.tiersRequested.length = 0;
+    await imports.processJob(job.id);
+    // Resolve settles an identity, a category and a confidence. Every field it
+    // reads is a Pro field.
+    expect(places.tiersRequested, 'resolve buys Pro, not Enterprise').toEqual(['core']);
+
+    places.tiersRequested.length = 0;
+    const published = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(published.json().created).toBe(1);
+    // Publish writes the catalogue row, and that row carries rating, review
+    // count, price level and the weekly hours.
+    expect(places.tiersRequested, 'publish buys Enterprise, because it keeps it').toEqual([
+      'quality',
+    ]);
+
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Quán Phân Tầng'));
+    // The cheaper resolve did not cost the catalogue anything: the row holds
+    // the same provider facts it always did.
+    expect(place!.rating).toBe('4.40');
+    expect(place!.ratingCount).toBe(250);
+    expect(place!.priceLevel).toBe(2);
+
+    const [source] = await db
+      .select()
+      .from(schema.placeProviderSources)
+      .where(eq(schema.placeProviderSources.externalId, 'fake-tier'));
+    expect(source!.fetchTier, 'the row records the tier that produced it').toBe('quality');
+  });
+
+  it('update_existing resolves at quality — it writes what it reads', async () => {
+    const editor = await createAdmin('tier-upd-editor@gogo.local', 'editor');
+    const ops = await createAdmin('tier-upd-ops@gogo.local', 'ops_admin');
+    places.seed({
+      providerPlaceId: 'fake-tier-upd',
+      name: 'Quán Cập Nhật',
+      lat: 10.78,
+      lng: 106.7,
+    });
+
+    const row =
+      'TIER-2,Quán Cập Nhật,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-tier-upd,cafe,,,';
+    const first = await createJob(editor.token, [row]);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${first.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(first.id);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${first.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+
+    const second = await createJob(editor.token, [row], 'update_existing');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${second.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    places.tiersRequested.length = 0;
+    await imports.processJob(second.id);
+
+    // This mode overwrites `rating`, `ratingCount` and `priceLevel` on a live
+    // catalogue row. A `core` fetch would write `null`, `0` and `null` over
+    // them — a cheaper call that destroys data is not a saving.
+    expect(places.tiersRequested, 'the refreshing mode pays for what it refreshes').toEqual([
+      'quality',
+    ]);
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Quán Cập Nhật'));
+    expect(place!.rating).toBe('4.40');
+    expect(place!.ratingCount).toBe(250);
+  });
+
   it('cancel stops pending work and retry re-queues failed rows', async () => {
     const editor = await createAdmin('cancel-editor@gogo.local', 'editor');
     const job = await createJob(editor.token, [

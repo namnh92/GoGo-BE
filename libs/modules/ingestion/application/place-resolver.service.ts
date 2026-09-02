@@ -8,6 +8,7 @@ import {
   ProviderInvalidRequestError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
+  type PlaceDescriptionTier,
   type PlaceProviderPort,
   type ResolvedProviderPlace,
 } from '@gogo/providers';
@@ -122,17 +123,39 @@ export class PlaceResolverService {
     return expandShortLink(url, this.fetcher);
   }
 
-  async resolveFromUrl(url: string, hints: MatchInput = {}): Promise<ResolveOutcome> {
+  async resolveFromUrl(
+    url: string,
+    tier: PlaceDescriptionTier,
+    hints: MatchInput = {},
+  ): Promise<ResolveOutcome> {
     const identified = await this.identifyUrl(url);
     if (!identified.ok) return { status: 'UNRESOLVED', reasonCode: identified.reasonCode };
-    return this.resolveIdentified(identified.value, hints);
+    return this.resolveIdentified(identified.value, tier, hints);
   }
 
   /**
    * The half of `resolveFromUrl` that costs money, over a URL already parsed
    * and expanded.
+   *
+   * `tier` is the caller's, and it governs **every** Details call this resolve
+   * makes — the candidates it scores as well as the one it returns (#338).
+   *
+   * Scoring genuinely needs only `core`: `MatchTarget` is an id, a name, an
+   * address, a coordinate and a primary type, all Pro fields. It would
+   * therefore be tempting to always score at `core` and re-fetch the winner at
+   * whatever the caller wanted — and that would cost *more*, not less. Three
+   * candidates at Pro plus one winner at Enterprise is $71/1k against $60/1k
+   * for three at Enterprise. The saving is real only when the caller does not
+   * need Enterprise at all, which is exactly what asking it to say so buys.
+   *
+   * `liveness` is not accepted: a decision needs a name and a coordinate to
+   * score, and there is nothing to score without them.
    */
-  async resolveIdentified(parsed: MapsUrlHints, hints: MatchInput = {}): Promise<ResolveOutcome> {
+  async resolveIdentified(
+    parsed: MapsUrlHints,
+    tier: PlaceDescriptionTier,
+    hints: MatchInput = {},
+  ): Promise<ResolveOutcome> {
     const merged: MatchInput = {
       ...hints,
       // Spec §6.2 step 5 keeps the display query and the name apart. Folding
@@ -145,7 +168,7 @@ export class PlaceResolverService {
     };
 
     // Provider id in the URL is authoritative — no search, no ambiguity.
-    if (parsed.providerPlaceId) return this.resolveByProviderId(parsed.providerPlaceId);
+    if (parsed.providerPlaceId) return this.resolveByProviderId(parsed.providerPlaceId, tier);
 
     const query = merged.name ?? merged.query;
     if (!query) return { status: 'UNRESOLVED', reasonCode: 'NO_QUERY' };
@@ -156,7 +179,7 @@ export class PlaceResolverService {
 
     // One unusable candidate does not sink the others: it drops out and the
     // rest are still scored.
-    const detailed = (await Promise.all(ids.map((id) => this.safeDetails(id))))
+    const detailed = (await Promise.all(ids.map((id) => this.safeDetails(id, tier))))
       .filter((d): d is { ok: true; details: ResolvedProviderPlace } => d.ok)
       .map((d) => d.details);
     if (detailed.length === 0) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
@@ -181,8 +204,11 @@ export class PlaceResolverService {
    * parsing to arrive here — which read as a lookup by link and cost a parse to
    * express "fetch this id". Same request, same tier, said plainly.
    */
-  async resolveByProviderId(providerPlaceId: string): Promise<ResolveOutcome> {
-    const looked = await this.safeDetails(providerPlaceId);
+  async resolveByProviderId(
+    providerPlaceId: string,
+    tier: PlaceDescriptionTier,
+  ): Promise<ResolveOutcome> {
+    const looked = await this.safeDetails(providerPlaceId, tier);
     if (!looked.ok) return { status: 'UNRESOLVED', reasonCode: looked.reasonCode };
     const { details } = looked;
     return { status: 'RESOLVED', decision: exactProviderMatch(toTarget(details)), details };
@@ -229,9 +255,9 @@ export class PlaceResolverService {
    * lead the user to different actions — retry later versus fix the link —
    * so they do not share a reason code (#314).
    */
-  private async safeDetails(id: string): Promise<DetailsOutcome> {
+  private async safeDetails(id: string, tier: PlaceDescriptionTier): Promise<DetailsOutcome> {
     try {
-      const details = await this.provider.details(id);
+      const details = await this.provider.details(id, tier);
       return details ? { ok: true, details } : { ok: false, reasonCode: 'NOT_FOUND' };
     } catch (err) {
       PlaceResolverService.rethrowIfOperational(err);

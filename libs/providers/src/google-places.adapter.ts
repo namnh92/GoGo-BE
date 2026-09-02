@@ -6,8 +6,10 @@ import {
   ProviderUnavailableError,
   type AreaAutocompletePort,
   type AreaPrediction,
+  type PlaceDescriptionTier,
   type PlaceFetchTier,
   type PlaceProviderPort,
+  type ProviderPlaceIdentity,
   type ProviderMetrics,
   type ProviderPhotoRef,
   type ResolvedProviderPlace,
@@ -33,6 +35,21 @@ const RESILIENCE = {
  * the exact string is the only thing standing between a one-word edit and a
  * silently larger invoice.
  */
+/**
+ * Google's Place Details **IDs-Only** SKU, verbatim from plan §2.4: free,
+ * unlimited, and able to answer exactly one question — does this id still
+ * resolve, and where has it moved to.
+ *
+ * `movedPlaceId` is an IDs-Only field, so it is on the free side of the SKU
+ * boundary: asking for it changes neither the tier nor the bill. It is the
+ * signal PR7's refresh keys on, and it is the only one that arrives when
+ * Google answers under the id it was given and names the successor separately
+ * — the id comparison behind `requestedProviderPlaceId` (#334) does not see
+ * that case at all, which is why the refresh needs this mask rather than `id`
+ * alone.
+ */
+const LIVENESS_FIELDS = ['id', 'movedPlaceId'] as const;
+
 const CORE_FIELDS = [
   'id',
   'displayName',
@@ -56,6 +73,7 @@ const QUALITY_FIELDS = [
 const DETAIL_FIELDS = ['reviews'] as const;
 
 export const PLACE_FIELD_MASKS: Readonly<Record<PlaceFetchTier, string>> = {
+  liveness: LIVENESS_FIELDS.join(','),
   core: CORE_FIELDS.join(','),
   quality: [...CORE_FIELDS, ...QUALITY_FIELDS].join(','),
   detail: [...CORE_FIELDS, ...QUALITY_FIELDS, ...DETAIL_FIELDS].join(','),
@@ -137,10 +155,15 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
     return (data.places ?? []).map((p) => p.id).filter((id): id is string => Boolean(id));
   }
 
+  async details(providerPlaceId: string, tier: 'liveness'): Promise<ProviderPlaceIdentity | null>;
   async details(
     providerPlaceId: string,
-    tier: PlaceFetchTier = 'quality',
-  ): Promise<ResolvedProviderPlace | null> {
+    tier: PlaceDescriptionTier,
+  ): Promise<ResolvedProviderPlace | null>;
+  async details(
+    providerPlaceId: string,
+    tier: PlaceFetchTier,
+  ): Promise<ResolvedProviderPlace | ProviderPlaceIdentity | null> {
     type GooglePlace = {
       id: string;
       displayName?: { text: string };
@@ -153,6 +176,8 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       primaryType?: string;
       types?: string[];
       googleMapsUri?: string;
+      /** IDs-Only: the successor Google names for a place id that moved. */
+      movedPlaceId?: string;
       photos?: {
         name?: string;
         widthPx?: number;
@@ -190,6 +215,25 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       if (err instanceof ProviderInvalidRequestError) throw err;
       return null;
     }
+
+    // A liveness answer is identity and nothing else — including no
+    // `location`, which is why it returns here rather than falling into the
+    // guard below that (correctly) treats a *described* place with no
+    // coordinates as no answer at all.
+    //
+    // Both move signals are passed through as Google sent them, and neither is
+    // derived from the other: `movedPlaceId` is Google naming a successor,
+    // `requestedProviderPlaceId` is Google quietly answering as one.
+    if (tier === 'liveness') {
+      if (!data?.id) return null;
+      return {
+        providerPlaceId: data.id,
+        ...(data.id !== providerPlaceId ? { requestedProviderPlaceId: providerPlaceId } : {}),
+        ...(data.movedPlaceId ? { movedPlaceId: data.movedPlaceId } : {}),
+        fetchTier: 'liveness',
+      };
+    }
+
     if (!data?.id || !data.location) return null;
 
     const hours = (data.regularOpeningHours?.periods ?? [])

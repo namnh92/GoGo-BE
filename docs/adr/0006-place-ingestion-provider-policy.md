@@ -23,14 +23,58 @@ parsing, resolution, scoring, dedup and enrichment; the provider sits behind
 
 ### 2. Field-mask tiers (cost control)
 
-| Tier      | When                         | Fields                                                                                           |
-| --------- | ---------------------------- | ------------------------------------------------------------------------------------------------ |
-| `core`    | every resolve                | `id,displayName,formattedAddress,location,businessStatus,primaryType,types,googleMapsUri,photos` |
-| `quality` | row accepted / preview shown | `+ rating,userRatingCount,regularOpeningHours,priceLevel,priceRange`                             |
-| `detail`  | explicit open by admin/user  | `+ reviews`                                                                                      |
+| Tier       | When                                      | SKU                         | $/1k | Fields                                                                                           |
+| ---------- | ----------------------------------------- | --------------------------- | ---- | ------------------------------------------------------------------------------------------------ |
+| `liveness` | refresh; id/moved-place verification only | Details Essentials IDs-Only | 0    | `id,movedPlaceId`                                                                                |
+| `core`     | every resolve                             | Details Pro                 | 17   | `id,displayName,formattedAddress,location,businessStatus,primaryType,types,googleMapsUri,photos` |
+| `quality`  | row accepted / preview shown / publish    | Details Enterprise          | 20   | `+ rating,userRatingCount,regularOpeningHours,priceLevel,priceRange`                             |
+| `detail`   | explicit open by admin/user               | Details E + Atmosphere      | 25   | `+ reviews`                                                                                      |
 
 Bulk jobs never request `detail`. Each call records its tier so cost per SKU
-is attributable (`places_provider_requests_total{method,status}`).
+is attributable (`places_provider_requests_total{method,status}`), and the
+masks are pinned by equality in `google-places-field-mask.spec.ts`: the field
+mask _is_ the cost decision, so changing one is a cost change that needs the
+test updated in the same PR.
+
+**Amendment 2026-09-02 (#338, plan §2.4).** Three things settled with the
+`liveness` tier:
+
+- `PlaceProviderPort.details` has **no default tier**. The default was
+  `quality`, so a caller that never thought about cost bought Enterprise; the
+  argument is now required and the compiler asks the question at every call
+  site.
+- `liveness` returns a `ProviderPlaceIdentity`, not a `ResolvedProviderPlace`.
+  A tier that fetches no rating must not be able to report `ratingCount: 0` —
+  that is "unknown" written as "zero", and it is the failure the tiers exist to
+  prevent. `place_provider_sources.fetch_tier` therefore accepts only the three
+  describing tiers.
+- The mask is plan §2.4 verbatim, `id,movedPlaceId`. Both are Place Details
+  Essentials IDs-Only fields, so the move pointer rides along without lifting
+  the request to a billed tier. It carries **two independent move signals**, and
+  PR7 needs both: `movedPlaceId` is Google naming a successor outright, and
+  `requestedProviderPlaceId` is Google answering under a different id without
+  saying so — the case §8 detects by comparison. Neither substitutes for the
+  other, and a refresh watching only the id comparison would reset the freshness
+  clock on every place Google moved politely. `movedPlaceId` stays out of
+  `core`/`quality`/`detail`: those tiers describe a place to a caller that
+  already knows which id answered.
+
+There is no cheaper tier between `liveness` and `core`: `businessStatus` is a
+Pro field, so a "is it still open?" tier would be billed exactly as `core` is.
+
+**Tier per call site**, as shipped:
+
+| Path                                                              | Tier      | Why                                                           |
+| ----------------------------------------------------------------- | --------- | ------------------------------------------------------------- |
+| CMS bulk resolve (`create_drafts`, `dry_run`, `publish_approved`) | `core`    | settles identity, category, confidence — all Pro fields       |
+| CMS bulk resolve (`update_existing`)                              | `quality` | the mode overwrites rating / review count / price level       |
+| CMS bulk publish                                                  | `quality` | writes the catalogue row and its hours                        |
+| CMS bulk merge into an existing place                             | `quality` | writes the canonical provider row                             |
+| CMS row confirm                                                   | `core`    | reaches `applyResolved` without a context; cannot write facts |
+| Mobile resolve-link preview                                       | `quality` | the candidate renders Google's rating and review count        |
+| Mobile submit, un-attested                                        | `core`    | reads `businessStatus` and dedups by name + coordinate        |
+| Moderator approve                                                 | `quality` | this fetch becomes the catalogue row                          |
+| `POST /v1/places/imports`                                         | `quality` | gates on rating and review count, then writes them            |
 
 ### 3. Data ownership
 

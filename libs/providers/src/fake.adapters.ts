@@ -2,8 +2,10 @@ import { ProviderQuotaExceededError, ProviderUnavailableError, SheetAccessError 
 import type {
   AreaAutocompletePort,
   AreaPrediction,
+  PlaceDescriptionTier,
   PlaceFetchTier,
   PlaceProviderPort,
+  ProviderPlaceIdentity,
   PushPort,
   ResolvedProviderPlace,
   SheetTab,
@@ -87,20 +89,41 @@ export class FakePlaceProvider implements PlaceProviderPort {
       .map(([id]) => id);
   }
 
+  async details(providerPlaceId: string, tier: 'liveness'): Promise<ProviderPlaceIdentity | null>;
   async details(
     providerPlaceId: string,
-    tier: PlaceFetchTier = 'quality',
-  ): Promise<ResolvedProviderPlace | null> {
+    tier: PlaceDescriptionTier,
+  ): Promise<ResolvedProviderPlace | null>;
+  async details(
+    providerPlaceId: string,
+    tier: PlaceFetchTier,
+  ): Promise<ResolvedProviderPlace | ProviderPlaceIdentity | null> {
     this.guard();
     this.tiersRequested.push(tier);
     if (this.failing) throw new Error('fake provider down');
     const resolvedId = this.movedTo.get(providerPlaceId) ?? providerPlaceId;
     const stored = this.registry.get(resolvedId);
     if (!stored) return null;
-    const place: ResolvedProviderPlace =
-      resolvedId === providerPlaceId
-        ? stored
-        : { ...stored, requestedProviderPlaceId: providerPlaceId };
+    const moved = resolvedId !== providerPlaceId;
+    // Liveness answers the identity question and refuses the rest, exactly as
+    // the IDs-Only mask does. A fake that returned a whole place here would let
+    // a caller read a rating it never paid for and never noticed it had lost.
+    //
+    // `movedTo` models a place whose id Google now redirects, so the fake
+    // reports both signals the real mask can carry: the successor named
+    // outright, and the answer arriving under a different id than was asked
+    // for. Google can send either alone; a caller that handles both handles
+    // every move it will meet.
+    if (tier === 'liveness') {
+      return {
+        providerPlaceId: resolvedId,
+        ...(moved ? { requestedProviderPlaceId: providerPlaceId, movedPlaceId: resolvedId } : {}),
+        fetchTier: 'liveness',
+      };
+    }
+    const place: ResolvedProviderPlace = moved
+      ? { ...stored, requestedProviderPlaceId: providerPlaceId }
+      : stored;
     // A `core` fetch cannot return quality fields, and a fake that hands them
     // over anyway teaches a test that the cheap tier is as good as the dear one.
     if (tier === 'core') {
