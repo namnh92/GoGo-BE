@@ -52,7 +52,7 @@ export type UsageLedgerOptions = {
   /** How long counts may sit in memory. The SIGKILL loss window. */
   flushMs?: number;
   /** Where flush outcomes are counted. Never the ledger itself — that recurses. */
-  metrics?: Pick<MetricsPort, 'increment'>;
+  metrics?: Pick<MetricsPort, 'increment'> & Partial<Pick<MetricsPort, 'observe'>>;
   /** Off makes every method a no-op. `COST_LEDGER_ENABLED=false` rolls this PR back. */
   enabled?: boolean;
 };
@@ -75,7 +75,8 @@ export class DbUsageLedger implements MetricsPort {
   private flushing: Promise<void> | null = null;
   private readonly environment: string;
   private readonly flushMs: number;
-  private readonly metrics: Pick<MetricsPort, 'increment'> | null;
+  private readonly metrics:
+    (Pick<MetricsPort, 'increment'> & Partial<Pick<MetricsPort, 'observe'>>) | null;
   private readonly enabled: boolean;
 
   constructor(
@@ -191,6 +192,8 @@ export class DbUsageLedger implements MetricsPort {
 
   private async flushOnce(): Promise<void> {
     if (this.buffer.size === 0) return;
+    // #369 — the flush duration ADR-0012's DEV validation could not measure.
+    const started = Date.now();
     // Drained before the await, so calls arriving during the write accumulate
     // into a fresh buffer instead of being lost to the clear that follows it.
     const drained = [...this.buffer.entries()];
@@ -255,6 +258,13 @@ export class DbUsageLedger implements MetricsPort {
       this.metrics?.increment('provider_usage_ledger_flush_total', {
         outcome: 'ok',
       });
+      if (this.metrics?.observe) {
+        this.metrics.observe(
+          'provider_usage_ledger_flush_duration_seconds',
+          (Date.now() - started) / 1000,
+          {},
+        );
+      }
     } catch (err) {
       // Put them back. A ledger that drops counts on a transient database blip
       // and says nothing is worse than no ledger: the number it prints later

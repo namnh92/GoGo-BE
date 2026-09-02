@@ -161,6 +161,10 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `places_provider_cost_units`                     | `sku`                        | call Places/Routes thành công (Routes cộng elements). Không có Sheets                         |
 | `provider_usage_ledger_flush_total`              | `outcome`                    | mỗi lần ghi `provider_usage_daily` (#335); `outcome=error` = sổ chi phí đang tụt lại          |
 | `place_refresh_total`                            | `outcome`                    | mỗi tick/row của `gogo:worker:place-refresh` (#340); 10 giá trị đóng, không có id nào         |
+| `provider_usage_ledger_flush_duration_seconds`   | —                            | histogram, thời lượng một lần flush ledger (#369) — số ADR-0012 chưa đo được                  |
+| `cost_collector_runs_total`                      | `collector`, `outcome`       | mỗi collector mỗi tick `gogo:worker:cost-collectors` (#369); `collector` là id literal        |
+| `cost_collector_duration_seconds`                | `collector`                  | histogram, thời lượng một lần collect (#369)                                                  |
+| `cost_monitoring_over_budget_total`              | —                            | mỗi tick phải tạm dừng collector trả phí vì vượt ngân sách cost-of-cost (#369, epic §20)      |
 | `worker_periodic_runs_total`                     | `job`, `result`              | mỗi tick của worker (#340); `result` = `ok`/`failed`/`lock_skipped`                           |
 | `worker_periodic_duration_seconds`               | `job`                        | histogram, thời lượng mỗi tick worker (#340)                                                  |
 | `mobile_place_submissions_total`                 | `status`                     | submit / dedupe / decide                                                                      |

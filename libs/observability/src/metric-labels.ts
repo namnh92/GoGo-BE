@@ -52,6 +52,15 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // and the cost screen is under-reporting, which is the one failure mode a
   // ledger has that a counter does not.
   provider_usage_ledger_flush_total: ['outcome'],
+  // #369 — how long one ledger flush takes; the number ADR-0012's DEV
+  // validation could not measure. No labels: one process, one ledger.
+  provider_usage_ledger_flush_duration_seconds: [],
+  // #369 — the collector scheduler. `collector` is a registered literal id
+  // (`ledger`, …), `outcome` a closed set from CollectorOutcome.
+  cost_collector_runs_total: ['collector', 'outcome'],
+  cost_collector_duration_seconds: ['collector'],
+  // #369 — counted once per tick that had to pause paid collectors.
+  cost_monitoring_over_budget_total: [],
 
   // --- worker --------------------------------------------------------------
   // #340 — `job` is the registered job name (a literal in `apps/worker`),

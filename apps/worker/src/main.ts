@@ -13,6 +13,9 @@ import {
   budgetLimitsFrom,
   CostEstimatorService,
   defaultRecomputeRange,
+  COST_REGISTRY,
+  CollectorSchedulerService,
+  ledgerFreshnessCollector,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -60,6 +63,18 @@ const OUTBOX_POLL_MS = pollIntervalMs('OUTBOX_POLL_MS', 5000);
  */
 const COST_ESTIMATE_POLL_MS = Number(process.env.COST_ESTIMATE_POLL_MS ?? 15 * 60 * 1000);
 const COST_ESTIMATE_ENABLED = process.env.COST_ESTIMATE_ENABLED !== 'false';
+/**
+ * COST-BE-017 (#369): the collector scheduler tick — freshness rows, paid
+ * collector guardrails, cost-of-cost. Every collector decides for itself
+ * whether it is due; the tick only asks. `COST_COLLECTORS_ENABLED=false`
+ * stops the whole thing; `COST_MONITORING_BUDGET_MICROS` overrides epic §20's
+ * per-environment default ($1 DEV, $5 PROD, per month).
+ */
+const COST_COLLECTOR_POLL_MS = Number(process.env.COST_COLLECTOR_POLL_MS ?? 5 * 60 * 1000);
+const COST_COLLECTORS_ENABLED = process.env.COST_COLLECTORS_ENABLED !== 'false';
+const COST_MONITORING_BUDGET_MICROS = process.env.COST_MONITORING_BUDGET_MICROS
+  ? Number(process.env.COST_MONITORING_BUDGET_MICROS)
+  : undefined;
 const INGEST_POLL_MS = pollIntervalMs('INGEST_POLL_MS', 5000);
 /**
  * #340 — how often the liveness refresh looks for due rows. Plan §2.5 sets DEV
@@ -237,6 +252,14 @@ async function bootstrap(): Promise<void> {
   );
 
   const estimator = new CostEstimatorService(db, { environment: process.env.APP_ENV ?? 'dev' });
+  const collectors = new CollectorSchedulerService(db, COST_REGISTRY, {
+    environment: process.env.APP_ENV ?? 'dev',
+    metrics,
+    logger,
+    ...(COST_MONITORING_BUDGET_MICROS !== undefined
+      ? { monitoringBudgetMicros: COST_MONITORING_BUDGET_MICROS }
+      : {}),
+  }).register(ledgerFreshnessCollector(db));
 
   const periodic = startPeriodic(
     [
@@ -311,6 +334,19 @@ async function bootstrap(): Promise<void> {
               },
               'cost estimate recomputed',
             );
+          }
+        },
+      },
+      {
+        name: 'gogo:worker:cost-collectors',
+        schedule: { everyMs: COST_COLLECTOR_POLL_MS },
+        run: async () => {
+          if (!COST_COLLECTORS_ENABLED) return;
+          const report = await collectors.tick();
+          await collectors.writeMonitoringCostRow();
+          const ran = report.results.filter((r) => !r.outcome.startsWith('skipped'));
+          if (ran.length > 0 || report.monitoring.overBudget) {
+            logger.info({ results: ran, monitoring: report.monitoring }, 'cost collectors ticked');
           }
         },
       },

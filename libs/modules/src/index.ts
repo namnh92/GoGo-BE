@@ -294,3 +294,31 @@ export {
   type UsageSample,
 } from '../cost/ports/collectors.port';
 export { AdapterRegistryError, CostAdapterRegistry } from '../cost/ports/adapter-registry';
+export {
+  FRESHNESS_STATUSES,
+  freshnessStatus,
+  nextAttemptDelayMs,
+  type FreshnessFacts,
+  type FreshnessStatus,
+} from '../cost/domain/freshness';
+export {
+  MONITORING_COST_MODELS,
+  PER_COLLECTOR_APPROVAL_LINE_MICROS,
+  defaultMonitoringBudgetMicros,
+  isEnabledIn,
+  monitoringCostSummary,
+  type CollectorDefinition,
+  type CollectorRunContext,
+  type CollectorRunResult,
+  type MonitoringCost,
+  type MonitoringCostModel,
+  type MonitoringCostSummary,
+  type RetryPolicy,
+} from '../cost/domain/collector';
+export {
+  CollectorSchedulerService,
+  type CollectorOutcome,
+  type CollectorTickReport,
+  type SchedulerLogger,
+} from '../cost/application/collector-scheduler.service';
+export { ledgerFreshnessCollector } from '../cost/application/ledger-freshness.collector';
