@@ -19,10 +19,22 @@ export type PlatformConfig = { APP_ENV: 'dev' | 'staging' | 'prod' | 'production
  * verify the proof, so the submit path falls back to the Google fetch it did
  * before. See `apps/api/src/config/env.ts` for why that is the safe direction.
  */
-export type ResolutionAttestationConfig = {
+export type ResolutionAttestationConfig = VerificationWindowConfig & {
   PLACE_RESOLUTION_ATTESTATION_SECRET: string;
-  PLACE_RESOLUTION_TTL_S: number;
 };
+
+/**
+ * #337 — how old a persisted provider fact may be and still count as
+ * *verification*, as opposed to *identity*.
+ *
+ * The two are different questions and were briefly answered by the same window,
+ * which is the review finding this exists to close. `refresh_after` says how
+ * long the catalogue may keep serving a row; it says nothing about whether that
+ * row is recent enough to decide, right now, that a place is open. So anything
+ * standing in for a live provider answer is held to the attestation's own
+ * lifetime — deliberately the same number, so the two cannot drift apart.
+ */
+export type VerificationWindowConfig = { PLACE_RESOLUTION_TTL_S: number };
 
 export type IdentityConfig = {
   NODE_ENV: 'development' | 'test' | 'production';

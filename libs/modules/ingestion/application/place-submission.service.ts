@@ -123,7 +123,9 @@ export class PlaceSubmissionService {
 
     const knownId = identified.value.providerPlaceId;
     if (knownId && (await this.dbFirstEnabled())) {
-      const known = await this.dedup.knownProviderPlace(knownId);
+      const known = await this.dedup.knownProviderPlace(knownId, {
+        verificationWindowSeconds: this.config.PLACE_RESOLUTION_TTL_S,
+      });
       if (known.kind === 'CONFLICT') {
         return { status: 'UNRESOLVED', reasonCodes: ['PLACE_IDENTITY_CONFLICT'] };
       }
@@ -347,19 +349,30 @@ export class PlaceSubmissionService {
     // to answer `ALREADY_EXISTS` from our own row a moment later — was one
     // Enterprise `details` spent to learn nothing.
     if (await this.dbFirstEnabled()) {
-      const known = await this.dedup.knownProviderPlace(input.googlePlaceId);
+      const known = await this.dedup.knownProviderPlace(input.googlePlaceId, {
+        verificationWindowSeconds: this.config.PLACE_RESOLUTION_TTL_S,
+      });
       if (known.kind === 'CONFLICT') throw identityConflict(this.metrics);
       if (known.kind === 'KNOWN') {
         this.metrics.increment('place_dbfirst_hit_total', { path: 'submit' });
-        // Closure first, and from the stored status: the answer this endpoint
-        // gives about a place it already knows must not depend on whether a
-        // Details call happened to be made.
-        if (known.place.businessStatus !== 'OPERATIONAL') {
+        // An **identity** answer: this Google ID is already a GoGo place, so
+        // the proposal is redundant and nothing is created. Identity does not
+        // go stale, so the catalogue's own freshness window governs it.
+        if (known.place.businessStatus === 'OPERATIONAL') {
+          return { status: 'ALREADY_EXISTS' as const, placeId: known.place.placeId };
+        }
+        // A **verification** answer, and a refusal at that. Held to the short
+        // window: `source_status` from three weeks ago would tell someone their
+        // reopened café is shut, and a stored fact that old is not evidence
+        // about right now. Stale closure costs one Details call, which is the
+        // right thing to spend it on.
+        if (known.place.verificationFresh) {
           throw AppError.conflict('PLACE_CLOSED', 'Place is closed and cannot be added');
         }
-        return { status: 'ALREADY_EXISTS' as const, placeId: known.place.placeId };
+        this.metrics.increment('place_dbfirst_miss_total', { reason: 'closure_unverified' });
+      } else {
+        this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
       }
-      this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
     }
 
     // The attestation replaces the *fetch*, never a check. Everything below —
@@ -369,7 +382,21 @@ export class PlaceSubmissionService {
     const attested = await this.acceptAttestation(input.resolutionToken, input.googlePlaceId);
 
     let verdict: DedupVerdict;
+    /**
+     * What we are standing on if this request ends up creating a proposal.
+     *
+     * Made explicit after review, because until now the rule held by accident:
+     * a DB-first hit always resolved to an existing place, so it could never
+     * reach the insert. That is a property of one `if`, not an invariant — the
+     * next person to add a DB-derived shortcut here would not be told they had
+     * broken it. Now they are, twice: this has no initialiser, so a branch that
+     * reaches the insert without setting it fails `tsc` with "used before being
+     * assigned", and `assertFreshlyVerified` catches a value outside the two
+     * kinds of evidence that count.
+     */
+    let verifiedBy: 'attestation' | 'provider';
     if (attested) {
+      verifiedBy = 'attestation';
       // No provider object, so identity is read directly. `check()`'s other
       // verdicts need a name and coordinates, and neither changes the outcome
       // here: `MERGE_CANDIDATE` and `NEW` both create the same pending
@@ -397,11 +424,16 @@ export class PlaceSubmissionService {
       }
       this.dedup.reportIdMismatch(details.details, 'submission');
       verdict = await this.dedup.check(details.details);
+      verifiedBy = 'provider';
     }
     if (verdict.kind === 'IDENTITY_CONFLICT') throw identityConflict(this.metrics);
     if (verdict.kind === 'LINKED_EXISTING') {
       return { status: 'ALREADY_EXISTS' as const, placeId: verdict.placeId };
     }
+
+    // Nothing below this line may run on a stored provider fact. See
+    // `assertFreshlyVerified`.
+    assertFreshlyVerified(verifiedBy);
 
     // Same provider id from many users bumps the counter, never a new draft.
     const [existing] = await this.db
@@ -688,6 +720,36 @@ export class PlaceSubmissionService {
         return placeId;
       });
   }
+}
+
+/**
+ * The gate between "GoGo already has this" and "GoGo is being asked to add it".
+ *
+ * Everything past this point creates or bumps a proposal for a place the
+ * catalogue does not hold, and the only acceptable evidence for that is minutes
+ * old: a provider answer from this request, or an attestation over one, whose
+ * lifetime is `PLACE_RESOLUTION_TTL_S`.
+ *
+ * A persisted `place_provider_sources` row is **not** that evidence, however
+ * comfortably it sits inside `refresh_after`. Identity may be read from it —
+ * knowing which place an ID belongs to is what makes the cheap
+ * `ALREADY_EXISTS` correct — but identity answers return above and never arrive
+ * here.
+ *
+ * Takes a `string` rather than the narrow union on purpose. The union is the
+ * compile-time half of the guard — `verifiedBy` has no initialiser, so a new
+ * branch that forgets it fails `tsc` outright — and this is the half that still
+ * means something once someone widens that union to add a third kind of
+ * evidence. It throws rather than returning, because there is no correct
+ * fallback: a request that reaches it has already skipped the verification it
+ * needed, and quietly fetching now would paper over the bug instead of
+ * surfacing it.
+ */
+function assertFreshlyVerified(verifiedBy: string): void {
+  if (verifiedBy === 'attestation' || verifiedBy === 'provider') return;
+  throw AppError.internal(
+    'A place submission was about to be created without a fresh provider verification',
+  );
 }
 
 /**

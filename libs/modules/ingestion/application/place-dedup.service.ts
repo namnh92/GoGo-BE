@@ -51,6 +51,21 @@ export type KnownProviderPlace = {
   attribution: string | null;
   /** When GoGo last heard this from Google — the stored value, never `now()`. */
   fetchedAt: string;
+  /**
+   * Whether `fetchedAt` is recent enough to stand in for a live provider answer.
+   *
+   * **Not the same question as whether this row may be served.** A row inside
+   * `refresh_after` is good enough to say *which place this Google ID is* —
+   * identity does not go stale in thirty days. It is not good enough to say
+   * *whether that place is open right now*, and a review of #337 caught the two
+   * being answered by one window: `source_status` weeks old could refuse a
+   * reopened place, and — had any caller ever wired it that way — could have
+   * stood in for verification on a path that creates something.
+   *
+   * So closure and any other verification decision reads this flag, and a false
+   * here means ask Google. Identity answers ignore it.
+   */
+  verificationFresh: boolean;
 };
 
 /**
@@ -161,8 +176,18 @@ export class PlaceDedupService {
    * `unknown`/`moved` statuses are a miss on purpose: neither says whether the
    * place is open, and inventing `OPERATIONAL` for them would turn "we never
    * found out" into a product answer.
+   *
+   * `verificationWindowSeconds` is the *second*, much shorter window — see
+   * `KnownProviderPlace.verificationFresh`. It is passed in rather than read
+   * here because this service is shared with the places module and holds no
+   * config of its own; every caller passes `PLACE_RESOLUTION_TTL_S`, so the
+   * window a stored fact must clear is by construction the window an
+   * attestation must clear.
    */
-  async knownProviderPlace(googlePlaceId: string): Promise<KnownProviderLookup> {
+  async knownProviderPlace(
+    googlePlaceId: string,
+    options: { verificationWindowSeconds: number },
+  ): Promise<KnownProviderLookup> {
     const identity = await this.resolveGoogleIdentity(googlePlaceId);
     if (identity.kind === 'CONFLICT') {
       this.metrics.increment('place_identity_conflict_blocked_total', { path: 'dbfirst' });
@@ -175,6 +200,8 @@ export class PlaceDedupService {
         s.place_id, s.external_id, s.rating, s.rating_count, s.derived_score,
         s.source_status, s.attribution, s.fetched_at,
         (s.refresh_after is not null and s.refresh_after > now()) as fresh,
+        (s.fetched_at > now() - make_interval(secs => ${options.verificationWindowSeconds}))
+          as verification_fresh,
         p.name, p.address_text,
         ST_Y(p.geom::geometry) as lat, ST_X(p.geom::geometry) as lng
       from place_provider_sources s
@@ -193,6 +220,7 @@ export class PlaceDedupService {
           attribution: { text?: string } | null;
           fetched_at: Date | string;
           fresh: boolean;
+          verification_fresh: boolean;
           name: string;
           address_text: string | null;
           lat: number;
@@ -224,6 +252,7 @@ export class PlaceDedupService {
         businessStatus,
         attribution: row.attribution?.text ?? null,
         fetchedAt: fetchedAt.toISOString(),
+        verificationFresh: row.verification_fresh === true,
       },
     };
   }

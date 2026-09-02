@@ -14,7 +14,11 @@ import {
 } from '@gogo/providers';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
-import { APP_CONFIG, type PlatformConfig } from '../../shared/config';
+import {
+  APP_CONFIG,
+  type PlatformConfig,
+  type VerificationWindowConfig,
+} from '../../shared/config';
 import { flagEnvironmentOf, resolveBooleanFlag } from '../../shared/feature-flags';
 import { DB } from '../../shared/tokens';
 import {
@@ -59,9 +63,20 @@ export class PlaceImportJobService {
     private readonly resolver: PlaceResolverService,
     private readonly dedup: PlaceDedupService,
     @Inject(SHEETS_PROVIDER) private readonly sheets: SheetsPort,
-    @Inject(APP_CONFIG) private readonly config: PlatformConfig,
+    @Inject(APP_CONFIG) private readonly config: PlatformConfig & VerificationWindowConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
+
+  /**
+   * Every DB-first answer in this service is an **identity** answer — "this
+   * Google ID is already a GoGo place", which ends the row as `duplicate` and
+   * creates nothing. None of them decides whether a place is open, so none is
+   * held to the short verification window; the window is still passed so the
+   * lookup has one meaning everywhere (#337 review).
+   */
+  private verificationWindow(): { verificationWindowSeconds: number } {
+    return { verificationWindowSeconds: this.config.PLACE_RESOLUTION_TTL_S };
+  }
 
   /** #337 — rollback switch for every DB-first shortcut in this service. */
   private async dbFirst(): Promise<boolean> {
@@ -850,7 +865,7 @@ export class PlaceImportJobService {
     // exists to pull fresh provider facts onto a place we already have, so
     // answering it from that same place would make the mode do nothing.
     if (knownId && mode !== 'update_existing' && (await this.dbFirst())) {
-      const known = await this.dedup.knownProviderPlace(knownId);
+      const known = await this.dedup.knownProviderPlace(knownId, this.verificationWindow());
       if (known.kind === 'CONFLICT') {
         return { kind: 'DB_FIRST_CONFLICT', googlePlaceId: knownId, placeIds: known.placeIds };
       }
@@ -1206,7 +1221,7 @@ export class PlaceImportJobService {
     // that verdict comes from the id alone (#337). `update_existing` still
     // fetches: refreshing the place from Google is the mode's entire purpose.
     if (job.mode !== 'update_existing' && (await this.dbFirst())) {
-      const known = await this.dedup.knownProviderPlace(googlePlaceId);
+      const known = await this.dedup.knownProviderPlace(googlePlaceId, this.verificationWindow());
       if (known.kind === 'CONFLICT') {
         await this.markIdentityConflict(rowId, known.placeIds.length, {
           resolvedGooglePlaceId: googlePlaceId,
@@ -1273,7 +1288,7 @@ export class PlaceImportJobService {
     // `upsertProviderSource` would rewrite the same values onto the same row
     // (#337).
     const alreadyLinked = (await this.dbFirst())
-      ? await this.dedup.knownProviderPlace(row.resolvedGooglePlaceId)
+      ? await this.dedup.knownProviderPlace(row.resolvedGooglePlaceId, this.verificationWindow())
       : ({ kind: 'MISS', reason: 'absent' } as const);
     if (alreadyLinked.kind === 'KNOWN' && alreadyLinked.place.placeId === placeId) {
       this.metrics.increment('place_dbfirst_hit_total', { path: 'merge' });

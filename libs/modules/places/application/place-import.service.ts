@@ -9,7 +9,11 @@ import {
 } from '@gogo/providers';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
-import { APP_CONFIG, type PlatformConfig } from '../../shared/config';
+import {
+  APP_CONFIG,
+  type PlatformConfig,
+  type VerificationWindowConfig,
+} from '../../shared/config';
 import { flagEnvironmentOf, resolveBooleanFlag, resolveFlag } from '../../shared/feature-flags';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
@@ -47,7 +51,7 @@ export class PlaceImportService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(PLACE_PROVIDER) private readonly provider: PlaceProviderPort,
-    @Inject(APP_CONFIG) private readonly config: PlatformConfig,
+    @Inject(APP_CONFIG) private readonly config: PlatformConfig & VerificationWindowConfig,
     private readonly dedup: PlaceDedupService,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
@@ -177,17 +181,28 @@ export class PlaceImportService {
     // "you already have this" would reject the import of a place the user can
     // already open, which is a worse answer than the one it replaces.
     if (await this.dbFirst()) {
-      const known = await this.dedup.knownProviderPlace(providerPlaceId);
+      const known = await this.dedup.knownProviderPlace(providerPlaceId, {
+        verificationWindowSeconds: this.config.PLACE_RESOLUTION_TTL_S,
+      });
       if (known.kind === 'CONFLICT') {
         this.metrics.increment('place_identity_conflict_blocked_total', { path: 'import' });
         return reject('IDENTITY_CONFLICT');
       }
       if (known.kind === 'KNOWN') {
         this.metrics.increment('place_dbfirst_hit_total', { path: 'import' });
-        if (known.place.businessStatus !== 'OPERATIONAL') return reject('CLOSED');
-        return this.markVerified(row, known.place.googlePlaceId, known.place.placeId, true);
+        // Identity: this row links to a place the catalogue already published
+        // and creates nothing, so the catalogue's freshness window governs.
+        if (known.place.businessStatus === 'OPERATIONAL') {
+          return this.markVerified(row, known.place.googlePlaceId, known.place.placeId, true);
+        }
+        // Verification: rejecting an import as `CLOSED` on a `source_status`
+        // that may be weeks old tells someone their reopened place is shut.
+        // Held to the short window; otherwise ask Google (#337 review).
+        if (known.place.verificationFresh) return reject('CLOSED');
+        this.metrics.increment('place_dbfirst_miss_total', { reason: 'closure_unverified' });
+      } else {
+        this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
       }
-      this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
     }
 
     let details: ResolvedProviderPlace | null;

@@ -649,3 +649,203 @@ describe('#337 — duplicate Google calls', () => {
     ).toBe(0);
   });
 });
+
+/**
+ * COST-BE-004 review (#337) — identity and verification are different questions
+ * and must not share a freshness window.
+ *
+ * `refresh_after` says how long the catalogue may keep serving a provider row.
+ * It says nothing about whether that row is recent enough to decide, right now,
+ * that a place is open. Answering both with one window meant a `source_status`
+ * from three weeks ago could refuse a reopened place — and, had anyone wired a
+ * DB-derived shortcut into the creating path, could have stood in for
+ * verification on a proposal for a place GoGo does not have.
+ */
+describe('#337 review — a stored fact may prove identity, never freshness', () => {
+  const submit = (payload: Record<string, unknown>, token: string) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/place-submissions',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload,
+    });
+
+  /** Puts a place in the catalogue through the product's own path. */
+  async function catalogue(googlePlaceId: string, name: string): Promise<string> {
+    const moderator = await createAdmin(`rev-${googlePlaceId}@gogo.local`, 'moderator');
+    const user = await register(`rev-${googlePlaceId}@gogo.id.vn`);
+    places.seed({ providerPlaceId: googlePlaceId, name, lat: 10.7769, lng: 106.7009 });
+    const preview = await resolve({
+      url: `https://www.google.com/maps?place_id=${googlePlaceId}`,
+    });
+    const submitted = await submit(
+      { googlePlaceId, resolutionToken: preview.json().resolutionToken },
+      user,
+    );
+    const decided = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-submissions/${submitted.json().submissionId}/decide`,
+      remoteAddress: ip(),
+      headers: auth(moderator.token),
+      payload: { decision: 'approved', reason: 'đã duyệt' },
+    });
+    expect(decided.statusCode, JSON.stringify(decided.json())).toBe(201);
+    return decided.json().placeId as string;
+  }
+
+  /** Ages the provider row without touching how long it may be served for. */
+  async function ageProviderRow(googlePlaceId: string, interval: string): Promise<void> {
+    await db.execute(sql`
+      update place_provider_sources
+      set fetched_at = now() - ${interval}::interval,
+          refresh_after = now() + interval '20 days'
+      where external_id = ${googlePlaceId}
+    `);
+  }
+
+  async function setStoredStatus(googlePlaceId: string, status: string): Promise<void> {
+    await db.execute(sql`
+      update place_provider_sources set source_status = ${status}
+      where external_id = ${googlePlaceId}
+    `);
+  }
+
+  it('refuses a closed place from a stored status only while that status is recent', async () => {
+    await catalogue('ChIJrevFresh', 'Quán Vừa Đóng');
+    await setStoredStatus('ChIJrevFresh', 'closed');
+    await ageProviderRow('ChIJrevFresh', '30 seconds');
+    const user = await register('rev-fresh-closed@gogo.id.vn');
+
+    places.tiersRequested.length = 0;
+    const res = await submit({ googlePlaceId: 'ChIJrevFresh' }, user);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('PLACE_CLOSED');
+    expect(places.tiersRequested, 'a recent closure needs no confirmation').toEqual([]);
+  });
+
+  it('asks Google again when the only closure proof is weeks old', async () => {
+    const placeId = await catalogue('ChIJrevStale', 'Quán Mở Lại');
+    await setStoredStatus('ChIJrevStale', 'closed');
+    // Well outside PLACE_RESOLUTION_TTL_S, comfortably inside `refresh_after`:
+    // the exact gap the review is about.
+    await ageProviderRow('ChIJrevStale', '21 days');
+    const user = await register('rev-stale-closed@gogo.id.vn');
+
+    places.tiersRequested.length = 0;
+    const res = await submit({ googlePlaceId: 'ChIJrevStale' }, user);
+
+    // Google still has it operational, so the reopened place is not refused on
+    // a three-week-old fact — and the answer cost exactly one Details call.
+    expect(places.tiersRequested, 'stale closure is re-verified, not trusted').toEqual(['quality']);
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toEqual({ status: 'ALREADY_EXISTS', placeId });
+  });
+
+  it('still answers identity from an old row — identity does not go stale', async () => {
+    const placeId = await catalogue('ChIJrevIdentity', 'Quán Vẫn Còn Đó');
+    await ageProviderRow('ChIJrevIdentity', '21 days');
+    const user = await register('rev-identity@gogo.id.vn');
+
+    places.tiersRequested.length = 0;
+    const res = await submit({ googlePlaceId: 'ChIJrevIdentity' }, user);
+
+    expect(res.json()).toEqual({ status: 'ALREADY_EXISTS', placeId });
+    expect(
+      places.tiersRequested,
+      'which place an ID belongs to is not a question Google needs to re-answer',
+    ).toEqual([]);
+    // …and the cheap answer is still the true one.
+    const preview = await resolve({
+      url: 'https://www.google.com/maps?place_id=ChIJrevIdentity',
+    });
+    expect(preview.json().status).toBe('ALREADY_EXISTS');
+    expect(preview.json().existingPlaceId).toBe(placeId);
+  });
+
+  /**
+   * The invariant the review asked to be enforced rather than emergent: a
+   * proposal for a place GoGo does not hold is only ever created on evidence
+   * minutes old. `assertFreshlyVerified` is the runtime half; this is the half
+   * that would notice if the runtime half were deleted.
+   */
+  it('creates a proposal only after a live fetch or a valid attestation', async () => {
+    const before = await db.execute(sql`select count(*)::int as n from place_submissions`);
+    const startCount = (before.rows[0] as { n: number }).n;
+
+    // 1 · no token → one live Details, then the proposal.
+    places.seed({ providerPlaceId: 'ChIJrevNew1', name: 'Quán Mới Một' });
+    places.tiersRequested.length = 0;
+    const live = await submit(
+      { googlePlaceId: 'ChIJrevNew1' },
+      await register('rev-new-1@gogo.id.vn'),
+    );
+    expect(live.json().status).toBe('PENDING');
+    expect(places.tiersRequested).toEqual(['quality']);
+
+    // 2 · valid token → no Details, and the proposal still requires the token
+    //     to have been minted from a live check moments ago.
+    places.seed({ providerPlaceId: 'ChIJrevNew2', name: 'Quán Mới Hai' });
+    const preview = await resolve({ url: 'https://www.google.com/maps?place_id=ChIJrevNew2' });
+    places.tiersRequested.length = 0;
+    const attested = await submit(
+      { googlePlaceId: 'ChIJrevNew2', resolutionToken: preview.json().resolutionToken },
+      await register('rev-new-2@gogo.id.vn'),
+    );
+    expect(attested.json().status).toBe('PENDING');
+    expect(places.tiersRequested).toEqual([]);
+
+    // 3 · neither → no proposal at all, and no silent fetch to rescue it.
+    places.failing = true;
+    try {
+      const refused = await submit(
+        { googlePlaceId: 'ChIJrevNever' },
+        await register('rev-new-3@gogo.id.vn'),
+      );
+      expect(refused.statusCode).toBeGreaterThanOrEqual(400);
+    } finally {
+      places.failing = false;
+    }
+
+    const after = await db.execute(sql`select count(*)::int as n from place_submissions`);
+    expect(
+      (after.rows[0] as { n: number }).n - startCount,
+      'exactly the two that were verified — never the third',
+    ).toBe(2);
+  });
+
+  /**
+   * Review item 1: the legacy import path may skip its create-gating rules on a
+   * DB-first hit **only** because that hit creates nothing. Asserted, not
+   * assumed.
+   */
+  it('legacy import links to the existing place without creating or touching one', async () => {
+    const placeId = await catalogue('ChIJrevImport', 'Quán Nhập Lại');
+    const user = await register('rev-import@gogo.id.vn');
+    const snapshot = await db.execute(sql`
+      select count(*)::int as places, max(updated_at) as newest from places
+    `);
+    const before = snapshot.rows[0] as { places: number; newest: string };
+
+    places.tiersRequested.length = 0;
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/places/imports',
+      remoteAddress: ip(),
+      headers: auth(user),
+      payload: { url: 'https://www.google.com/maps?place_id=ChIJrevImport' },
+    });
+
+    expect(res.json().status).toBe('verified');
+    expect(res.json().placeId).toBe(placeId);
+    expect(places.tiersRequested, 'no Details for a place we already hold').toEqual([]);
+
+    const after = await db.execute(sql`
+      select count(*)::int as places, max(updated_at) as newest from places
+    `);
+    const now = after.rows[0] as { places: number; newest: string };
+    expect(now.places, 'no canonical place created').toBe(before.places);
+    expect(String(now.newest), 'no canonical place materially updated').toBe(String(before.newest));
+  });
+});

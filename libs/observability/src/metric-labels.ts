@@ -75,7 +75,9 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   place_dbfirst_hit_total: ['path'],
   // …and why a lookup fell through, which is the more useful half: `absent` is
   // the catalogue growing, `stale` is refresh falling behind, `legacy` is a
-  // pre-PR1 row, `indeterminate` is a provider status we never learned.
+  // pre-PR1 row, `indeterminate` is a provider status we never learned, and
+  // `closure_unverified` is a row that knows the place as closed but not
+  // recently enough to refuse on — the one miss that is a deliberate spend.
   place_dbfirst_miss_total: ['reason'],
   // #337 — the short-lived resolve proof (`issued`, `accepted`, `expired`,
   // `bad_signature`, `malformed`, `unsupported_version`, `wrong_purpose`,

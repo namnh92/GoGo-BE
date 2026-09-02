@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "name": "after-pr4-stub",
   "kind": "BEFORE",
-  "createdAt": "2026-09-02T01:19:38.037Z",
+  "createdAt": "2026-09-02T02:39:54.578Z",
   "run": {
     "transport": "stub",
     "environment": "dev",
     "providerMode": "google",
-    "gitSha": "2213a72a36b62ab30aae12eea6870a9b27701ed2",
+    "gitSha": "52749400c2e6fb424214226ff2287b4b03d98368",
     "day": "2026-09-02",
     "pricingVersion": "2026-09-01",
     "currency": "USD",
@@ -38,7 +38,7 @@
         "name": "working tree clean",
         "required": false,
         "pass": false,
-        "detail": "measured at 2213a72a36b62ab30aae12eea6870a9b27701ed2 with uncommitted changes — the code under measurement is not the code in the commit"
+        "detail": "measured at 52749400c2e6fb424214226ff2287b4b03d98368 with uncommitted changes — the code under measurement is not the code in the commit"
       }
     ],
     "quiet": true
@@ -53,8 +53,8 @@
       "reservations": [],
       "crossCheck": [],
       "latency": {
-        "apiP50Ms": 73,
-        "apiP95Ms": 95,
+        "apiP50Ms": 26,
+        "apiP95Ms": 116,
         "providerP50Ms": null,
         "providerP95Ms": null,
         "measuresRealNetwork": false
@@ -105,8 +105,8 @@
       "reservations": [],
       "crossCheck": [],
       "latency": {
-        "apiP50Ms": 45,
-        "apiP95Ms": 100,
+        "apiP50Ms": 36,
+        "apiP95Ms": 103,
         "providerP50Ms": null,
         "providerP95Ms": null,
         "measuresRealNetwork": false
@@ -151,8 +151,8 @@
       "reservations": [],
       "crossCheck": [],
       "latency": {
-        "apiP50Ms": 25,
-        "apiP95Ms": 39,
+        "apiP50Ms": 27,
+        "apiP95Ms": 72,
         "providerP50Ms": null,
         "providerP95Ms": null,
         "measuresRealNetwork": false
@@ -225,8 +225,8 @@
         }
       ],
       "latency": {
-        "apiP50Ms": 23,
-        "apiP95Ms": 79,
+        "apiP50Ms": 5,
+        "apiP95Ms": 18,
         "providerP50Ms": 13,
         "providerP95Ms": 24,
         "measuresRealNetwork": false
@@ -299,8 +299,8 @@
         }
       ],
       "latency": {
-        "apiP50Ms": 132,
-        "apiP95Ms": 428,
+        "apiP50Ms": 114,
+        "apiP95Ms": 485,
         "providerP50Ms": 13,
         "providerP95Ms": 24,
         "measuresRealNetwork": false
@@ -393,8 +393,8 @@
         }
       ],
       "latency": {
-        "apiP50Ms": 65,
-        "apiP95Ms": 1612,
+        "apiP50Ms": 43,
+        "apiP95Ms": 1869,
         "providerP50Ms": 13,
         "providerP95Ms": 24,
         "measuresRealNetwork": false

@@ -183,7 +183,13 @@ async function bootstrap(): Promise<void> {
     sheetsKey ? new GoogleSheetsAdapter(sheetsKey, metrics) : new FakeSheets(),
     // Which deployment's `feature_flags` rows apply — the same value the API
     // resolves flags against, so a switch thrown in the CMS reaches both.
-    { APP_ENV: (process.env.APP_ENV as 'dev' | 'staging' | 'prod' | 'production') ?? 'dev' },
+    {
+      APP_ENV: (process.env.APP_ENV as 'dev' | 'staging' | 'prod' | 'production') ?? 'dev',
+      // Same default as the API's zod schema. The worker's DB-first answers are
+      // all identity, so this window changes nothing here today — it is passed
+      // so the lookup cannot mean two things in two processes (#337).
+      PLACE_RESOLUTION_TTL_S: Number(process.env.PLACE_RESOLUTION_TTL_S ?? 600),
+    },
     metrics,
   );
 
