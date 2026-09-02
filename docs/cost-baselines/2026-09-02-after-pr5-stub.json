@@ -1,0 +1,552 @@
+{
+  "schemaVersion": 1,
+  "name": "after-pr5-stub",
+  "kind": "BEFORE",
+  "createdAt": "2026-09-02T03:09:18.064Z",
+  "run": {
+    "transport": "stub",
+    "environment": "dev",
+    "providerMode": "google",
+    "gitSha": "d9646320a40b6993f5628edc8eef04dbc1edd106",
+    "day": "2026-09-02",
+    "pricingVersion": "2026-09-01",
+    "currency": "USD",
+    "basis": "ESTIMATED",
+    "confidence": "MEDIUM"
+  },
+  "preflight": {
+    "checks": [
+      {
+        "name": "no import job processing",
+        "required": true,
+        "pass": true,
+        "detail": "no row in place_ingest_jobs is processing"
+      },
+      {
+        "name": "usage ledger enabled",
+        "required": true,
+        "pass": true,
+        "detail": "COST_LEDGER_ENABLED — provider_usage_daily is being written"
+      },
+      {
+        "name": "quiet window",
+        "required": false,
+        "pass": true,
+        "detail": "not applicable: the stub transport answers in-process, so no other traffic can reach it"
+      },
+      {
+        "name": "working tree clean",
+        "required": false,
+        "pass": false,
+        "detail": "measured at d9646320a40b6993f5628edc8eef04dbc1edd106 with uncommitted changes — the code under measurement is not the code in the commit"
+      }
+    ],
+    "quiet": true
+  },
+  "scenarios": [
+    {
+      "id": "A",
+      "title": "known GoGo search hit",
+      "pinnedInput": "scenarios.json#A",
+      "operations": [],
+      "noNetworkResolutions": 0,
+      "reservations": [],
+      "crossCheck": [],
+      "latency": {
+        "apiP50Ms": 7,
+        "apiP95Ms": 26,
+        "providerP50Ms": null,
+        "providerP95Ms": null,
+        "measuresRealNetwork": false
+      },
+      "errors": {
+        "providerRequests": 0,
+        "providerFailures": 0,
+        "providerErrorRate": null,
+        "apiNon2xx": 0
+      },
+      "functional": {
+        "assertions": [
+          {
+            "name": "same top result across every repeat",
+            "expected": "1",
+            "actual": "1",
+            "pass": true
+          },
+          {
+            "name": "same reasonCodes across every repeat",
+            "expected": "1",
+            "actual": "1",
+            "pass": true
+          },
+          {
+            "name": "top result is a catalog hit, not empty",
+            "expected": "false",
+            "actual": "false",
+            "pass": true
+          }
+        ],
+        "rowsCreated": 0,
+        "rowsDeduped": 0,
+        "rowsRejected": 0,
+        "duplicatePlaceRate": 1
+      },
+      "redis": {
+        "commands": null,
+        "method": "measured by hand: Upstash console daily counter before/after the run, plus one MONITOR sample via redis-diag. The free tier exposes no per-command API, so a number here would be invented (plan §4)."
+      }
+    },
+    {
+      "id": "B",
+      "title": "unknown GoGo text search",
+      "pinnedInput": "scenarios.json#B",
+      "operations": [],
+      "noNetworkResolutions": 0,
+      "reservations": [],
+      "crossCheck": [],
+      "latency": {
+        "apiP50Ms": 7,
+        "apiP95Ms": 11,
+        "providerP50Ms": null,
+        "providerP95Ms": null,
+        "measuresRealNetwork": false
+      },
+      "errors": {
+        "providerRequests": 0,
+        "providerFailures": 0,
+        "providerErrorRate": null,
+        "apiNon2xx": 0
+      },
+      "functional": {
+        "assertions": [
+          {
+            "name": "every pinned nonsense query returns empty",
+            "expected": "10",
+            "actual": "10",
+            "pass": true
+          },
+          {
+            "name": "no rows created by a search miss",
+            "expected": "0",
+            "actual": "0",
+            "pass": true
+          }
+        ],
+        "rowsCreated": 0,
+        "rowsDeduped": 0,
+        "rowsRejected": 0,
+        "duplicatePlaceRate": 1
+      },
+      "redis": {
+        "commands": null,
+        "method": "measured by hand: Upstash console daily counter before/after the run, plus one MONITOR sample via redis-diag. The free tier exposes no per-command API, so a number here would be invented (plan §4)."
+      }
+    },
+    {
+      "id": "C1",
+      "title": "import Google place already known — direct place_id URL",
+      "pinnedInput": "scenarios.json#C1",
+      "operations": [],
+      "noNetworkResolutions": 3,
+      "reservations": [],
+      "crossCheck": [],
+      "latency": {
+        "apiP50Ms": 3,
+        "apiP95Ms": 6,
+        "providerP50Ms": null,
+        "providerP95Ms": null,
+        "measuresRealNetwork": false
+      },
+      "errors": {
+        "providerRequests": 0,
+        "providerFailures": 0,
+        "providerErrorRate": null,
+        "apiNon2xx": 0
+      },
+      "functional": {
+        "assertions": [
+          {
+            "name": "every pinned link resolves to an existing place",
+            "expected": "3",
+            "actual": "3",
+            "pass": true
+          },
+          {
+            "name": "each resolves to a distinct catalogued place",
+            "expected": "3",
+            "actual": "3",
+            "pass": true
+          },
+          {
+            "name": "no short-link expansion needed",
+            "expected": "3",
+            "actual": "3",
+            "pass": true
+          }
+        ],
+        "rowsCreated": 0,
+        "rowsDeduped": 6,
+        "rowsRejected": 0,
+        "duplicatePlaceRate": 1
+      },
+      "redis": {
+        "commands": null,
+        "method": "measured by hand: Upstash console daily counter before/after the run, plus one MONITOR sample via redis-diag. The free tier exposes no per-command API, so a number here would be invented (plan §4)."
+      }
+    },
+    {
+      "id": "C2",
+      "title": "import Google place already known — maps.app.goo.gl short link",
+      "pinnedInput": "scenarios.json#C2",
+      "operations": [
+        {
+          "operation": "google.expand",
+          "provider": "places",
+          "googleSku": null,
+          "unit": "request",
+          "callsAttempted": 2,
+          "callsSucceeded": 0,
+          "billableUnits": 0,
+          "estimatedCostMicros": 0,
+          "estimatedCostAfterFreeCapMicros": 0,
+          "metricsCalls": 2,
+          "ledgerMinusMetrics": 0,
+          "gap": null
+        }
+      ],
+      "noNetworkResolutions": 0,
+      "reservations": [],
+      "crossCheck": [
+        {
+          "operation": "google.expand",
+          "ledgerCalls": 2,
+          "grafanaCalls": null,
+          "agreesWithinOne": null
+        }
+      ],
+      "latency": {
+        "apiP50Ms": 3,
+        "apiP95Ms": 6,
+        "providerP50Ms": 13,
+        "providerP95Ms": 24,
+        "measuresRealNetwork": false
+      },
+      "errors": {
+        "providerRequests": 2,
+        "providerFailures": 0,
+        "providerErrorRate": 0,
+        "apiNon2xx": 0
+      },
+      "functional": {
+        "assertions": [
+          {
+            "name": "every pinned link resolves to an existing place",
+            "expected": "2",
+            "actual": "2",
+            "pass": true
+          },
+          {
+            "name": "each resolves to a distinct catalogued place",
+            "expected": "2",
+            "actual": "2",
+            "pass": true
+          },
+          {
+            "name": "short links carry no place id",
+            "expected": "0",
+            "actual": "0",
+            "pass": true
+          }
+        ],
+        "rowsCreated": 0,
+        "rowsDeduped": 4,
+        "rowsRejected": 0,
+        "duplicatePlaceRate": 1
+      },
+      "redis": {
+        "commands": null,
+        "method": "measured by hand: Upstash console daily counter before/after the run, plus one MONITOR sample via redis-diag. The free tier exposes no per-command API, so a number here would be invented (plan §4)."
+      }
+    },
+    {
+      "id": "D",
+      "title": "import new Google place",
+      "pinnedInput": "scenarios.json#D",
+      "operations": [
+        {
+          "operation": "google.details.quality",
+          "provider": "places",
+          "googleSku": "Places API (New) — Place Details Enterprise",
+          "unit": "request",
+          "callsAttempted": 10,
+          "callsSucceeded": 10,
+          "billableUnits": 10,
+          "estimatedCostMicros": 200000,
+          "estimatedCostAfterFreeCapMicros": 0,
+          "metricsCalls": 10,
+          "ledgerMinusMetrics": 0,
+          "gap": null
+        }
+      ],
+      "noNetworkResolutions": 5,
+      "reservations": [],
+      "crossCheck": [
+        {
+          "operation": "google.details.quality",
+          "ledgerCalls": 10,
+          "grafanaCalls": null,
+          "agreesWithinOne": null
+        }
+      ],
+      "latency": {
+        "apiP50Ms": 8,
+        "apiP95Ms": 18,
+        "providerP50Ms": 13,
+        "providerP95Ms": 24,
+        "measuresRealNetwork": false
+      },
+      "errors": {
+        "providerRequests": 10,
+        "providerFailures": 0,
+        "providerErrorRate": 0,
+        "apiNon2xx": 0
+      },
+      "functional": {
+        "assertions": [
+          {
+            "name": "every pinned new place is approved into the catalog",
+            "expected": "5",
+            "actual": "5",
+            "pass": true
+          },
+          {
+            "name": "every pinned URL named its place id",
+            "expected": "5",
+            "actual": "5",
+            "pass": true
+          },
+          {
+            "name": "every preview issued a resolution attestation",
+            "expected": "5",
+            "actual": "5",
+            "pass": true
+          }
+        ],
+        "rowsCreated": 5,
+        "rowsDeduped": 0,
+        "rowsRejected": 0,
+        "duplicatePlaceRate": 1
+      },
+      "redis": {
+        "commands": null,
+        "method": "measured by hand: Upstash console daily counter before/after the run, plus one MONITOR sample via redis-diag. The free tier exposes no per-command API, so a number here would be invented (plan §4)."
+      }
+    },
+    {
+      "id": "E",
+      "title": "deterministic bulk import — pinned 20-row sheet",
+      "pinnedInput": "scenarios.json#E + scenario-e-sheet.csv",
+      "operations": [
+        {
+          "operation": "google.details.core",
+          "provider": "places",
+          "googleSku": "Places API (New) — Place Details Pro",
+          "unit": "request",
+          "callsAttempted": 15,
+          "callsSucceeded": 15,
+          "billableUnits": 15,
+          "estimatedCostMicros": 255000,
+          "estimatedCostAfterFreeCapMicros": 0,
+          "metricsCalls": 15,
+          "ledgerMinusMetrics": 0,
+          "gap": null
+        },
+        {
+          "operation": "google.details.quality",
+          "provider": "places",
+          "googleSku": "Places API (New) — Place Details Enterprise",
+          "unit": "request",
+          "callsAttempted": 10,
+          "callsSucceeded": 10,
+          "billableUnits": 10,
+          "estimatedCostMicros": 200000,
+          "estimatedCostAfterFreeCapMicros": 0,
+          "metricsCalls": 10,
+          "ledgerMinusMetrics": 0,
+          "gap": null
+        },
+        {
+          "operation": "google.searchText",
+          "provider": "places",
+          "googleSku": "Places API (New) — Text Search Essentials IDs Only",
+          "unit": "request",
+          "callsAttempted": 5,
+          "callsSucceeded": 5,
+          "billableUnits": 5,
+          "estimatedCostMicros": 0,
+          "estimatedCostAfterFreeCapMicros": 0,
+          "metricsCalls": 5,
+          "ledgerMinusMetrics": 0,
+          "gap": null
+        }
+      ],
+      "noNetworkResolutions": 0,
+      "reservations": [],
+      "crossCheck": [
+        {
+          "operation": "google.details.core",
+          "ledgerCalls": 15,
+          "grafanaCalls": null,
+          "agreesWithinOne": null
+        },
+        {
+          "operation": "google.details.quality",
+          "ledgerCalls": 10,
+          "grafanaCalls": null,
+          "agreesWithinOne": null
+        },
+        {
+          "operation": "google.searchText",
+          "ledgerCalls": 5,
+          "grafanaCalls": null,
+          "agreesWithinOne": null
+        }
+      ],
+      "latency": {
+        "apiP50Ms": 8,
+        "apiP95Ms": 145,
+        "providerP50Ms": 13,
+        "providerP95Ms": 24,
+        "measuresRealNetwork": false
+      },
+      "errors": {
+        "providerRequests": 30,
+        "providerFailures": 0,
+        "providerErrorRate": 0,
+        "apiNon2xx": 0
+      },
+      "functional": {
+        "assertions": [
+          {
+            "name": "every sheet row is accounted for",
+            "expected": "20",
+            "actual": "20",
+            "pass": true
+          },
+          {
+            "name": "invalid URLs never become importable",
+            "expected": "2",
+            "actual": "2",
+            "pass": true
+          },
+          {
+            "name": "row outcome mix",
+            "expected": "duplicate=3 needs_confirmation=5 ready=10 validation_failed=2",
+            "actual": "duplicate=3 needs_confirmation=5 ready=10 validation_failed=2",
+            "pass": true
+          },
+          {
+            "name": "publish created a place for every ready row",
+            "expected": "10",
+            "actual": "10",
+            "pass": true
+          }
+        ],
+        "rowsCreated": 10,
+        "rowsDeduped": 3,
+        "rowsRejected": 2,
+        "duplicatePlaceRate": 1
+      },
+      "redis": {
+        "commands": null,
+        "method": "measured by hand: Upstash console daily counter before/after the run, plus one MONITOR sample via redis-diag. The free tier exposes no per-command API, so a number here would be invented (plan §4)."
+      }
+    }
+  ],
+  "totals": [
+    {
+      "operation": "google.details.core",
+      "provider": "places",
+      "googleSku": "Places API (New) — Place Details Pro",
+      "unit": "request",
+      "callsAttempted": 15,
+      "callsSucceeded": 15,
+      "billableUnits": 15,
+      "estimatedCostMicros": 255000,
+      "estimatedCostAfterFreeCapMicros": 0,
+      "metricsCalls": 15,
+      "ledgerMinusMetrics": 0,
+      "gap": null
+    },
+    {
+      "operation": "google.details.quality",
+      "provider": "places",
+      "googleSku": "Places API (New) — Place Details Enterprise",
+      "unit": "request",
+      "callsAttempted": 20,
+      "callsSucceeded": 20,
+      "billableUnits": 20,
+      "estimatedCostMicros": 400000,
+      "estimatedCostAfterFreeCapMicros": 0,
+      "metricsCalls": 20,
+      "ledgerMinusMetrics": 0,
+      "gap": null
+    },
+    {
+      "operation": "google.expand",
+      "provider": "places",
+      "googleSku": null,
+      "unit": "request",
+      "callsAttempted": 2,
+      "callsSucceeded": 0,
+      "billableUnits": 0,
+      "estimatedCostMicros": 0,
+      "estimatedCostAfterFreeCapMicros": 0,
+      "metricsCalls": 2,
+      "ledgerMinusMetrics": 0,
+      "gap": null
+    },
+    {
+      "operation": "google.searchText",
+      "provider": "places",
+      "googleSku": "Places API (New) — Text Search Essentials IDs Only",
+      "unit": "request",
+      "callsAttempted": 5,
+      "callsSucceeded": 5,
+      "billableUnits": 5,
+      "estimatedCostMicros": 0,
+      "estimatedCostAfterFreeCapMicros": 0,
+      "metricsCalls": 5,
+      "ledgerMinusMetrics": 0,
+      "gap": null
+    }
+  ],
+  "gaps": [
+    {
+      "key": "google.routeMatrix",
+      "provider": "routes",
+      "kind": "price_unknown",
+      "detail": "Google Places/Routes pricing pages, fetched 2026-09-01 (plan §2.2) records the SKU and the free cap but no per-element list price. UNKNOWN until one is verified — units are measured exactly, the money is not. Billed per matrix element, which is why the adapter increments by `destinations.length` and not by one."
+    },
+    {
+      "key": "google.maps_sdk_ios",
+      "provider": "maps_sdk",
+      "kind": "not_instrumented",
+      "detail": "MEASUREMENT GAP. The SDK renders on the handset; this process sees no map load, so there is no unit count to price and no price verified. Reported as a gap, never as zero usage or zero cost (plan §6, ADR-0004 amendment)."
+    },
+    {
+      "key": "google.maps_sdk_android",
+      "provider": "maps_sdk",
+      "kind": "not_instrumented",
+      "detail": "MEASUREMENT GAP. Same as iOS: client-side rendering, no server-side telemetry, no verified Dynamic Maps price. Never zero."
+    }
+  ],
+  "limitations": [
+    "TRANSPORT=stub: the real adapters, masks, resolver and ledger ran; only the HTTP transport was a pinned response table. Call counts are real, latency and error rate are not — they measure this machine. Billable units are what GoGo would be charged for, as counted by our own adapter, not as counted by Google.",
+    "Money is an ESTIMATE at Google list price, never an invoice. No field in this artifact is a billed amount.",
+    "Redis commands are measured by hand (Upstash console + one MONITOR sample) and are reported as null here rather than guessed.",
+    "Maps SDK map loads are a MEASUREMENT GAP: the SDK renders on the handset and this process sees nothing. Never read the absence as zero.",
+    "API latency is client-side wall clock from the runner. There is no server-side HTTP duration histogram in this codebase (metric-labels.ts has a provider histogram only), so the number includes the runner’s own overhead.",
+    "google.routeMatrix has exact units and no verified per-element price, so its money columns are null by construction (price_unknown), not zero."
+  ]
+}

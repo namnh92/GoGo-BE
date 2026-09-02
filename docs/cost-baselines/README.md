@@ -53,7 +53,8 @@ day, because that is how `provider_usage_daily` is keyed.
 | File                             | What it records                                                    | Status                              |
 | -------------------------------- | ------------------------------------------------------------------ | ----------------------------------- |
 | `2026-09-01-before-stub.json`    | what every flow cost before any of PR4–PR7                         | **immutable** — PR9's BEFORE column |
-| `2026-09-02-after-pr4-stub.json` | after #337: same-execution reuse, DB-first, resolution attestation | the golden the spec checks          |
+| `2026-09-02-after-pr4-stub.json` | after #337: same-execution reuse, DB-first, resolution attestation | superseded — PR9's per-PR column    |
+| `2026-09-02-after-pr5-stub.json` | after #338: Details tiered by what each call site actually reads   | the golden the spec checks          |
 
 The newest file is a golden: the spec re-runs the scenarios and refuses any
 drift from it, so a behaviour change that moves a call count cannot land
@@ -67,8 +68,11 @@ COST_BASELINE_WRITE=1 pnpm vitest run --project integration cost-baseline
 **A re-freeze adds a file; it never rewrites an older one.** PR9 (#342) owes a
 BEFORE/AFTER/DELTA table per operation, and a BEFORE column reconstructed from
 git history is not evidence anybody will check. The spec asserts that
-`2026-09-01-before-stub.json` still exists and is not the golden, so overwriting
-it fails the build rather than passing quietly.
+`2026-09-01-before-stub.json` and every superseded golden still exist and are
+not the current golden, so overwriting one fails the build rather than passing
+quietly. Attribution needs the intermediate files too: "quality fell by
+thirty-three" is a different claim from "PR4 took eighteen and PR5 took
+fifteen", and only the second can be checked against the PR that made it.
 
 ### What #337 moved, and what it did not
 
@@ -87,6 +91,39 @@ it fails the build rather than passing quietly.
 - **Unmoved on purpose** — A and B (still zero Places operations), every tier
   and field mask (that is PR5), and anything that would require storing more
   Google content (ADR-0006 §9.5).
+
+### What #338 moved, and what it did not
+
+PR5 changes no flow's behaviour and no flow's result. It changes which Google
+SKU each call site buys, from a single default that bought the most expensive
+one to a tier each path has to state and justify (ADR-0006 §2, amended).
+
+| Operation                | before (2026-09-01) | after PR4 | after PR5 | at list price   |
+| ------------------------ | ------------------- | --------- | --------- | --------------- |
+| `google.details.core`    | 0                   | 0         | **15**    | $0.000 → $0.255 |
+| `google.details.quality` | 53                  | 35        | **20**    | $1.060 → $0.400 |
+| `google.searchText`      | 5                   | 5         | 5         | $0 (IDs-Only)   |
+| `google.expand`          | 2                   | 2         | 2         | free, not a SKU |
+
+- **E (bulk)** is the whole of it: fifteen resolve-stage Details move from
+  Enterprise to Pro. The rows that come out are identical — resolving settles an
+  identity, a category and a confidence, and every field that reads is a Pro
+  field. Publish still buys Enterprise on the ten `ready` rows, because that
+  call is what becomes the catalogue row.
+- **D (new place)** is unchanged at two Enterprise calls per place. The preview
+  renders Google's rating and review count, so it stays `quality`; the approve
+  writes the catalogue row, so it stays `quality`. Plan §4's target cell for D
+  reads `details.core` for the preview — that is a deviation, recorded here and
+  in ADR-0006 §2, because a `core` preview would silently delete the rating from
+  the mobile card rather than degrade it.
+- **The submit path did move**, and this baseline cannot show it: with
+  `PLACE_RESOLUTION_ATTESTATION_SECRET` set the submit makes no call at all. The
+  rollback path — attestation off — went from `quality` to `core`, which
+  `ingestion.int.spec.ts` pins.
+- **Unmoved on purpose** — A, B and C (still zero Places operations), the
+  `searchText` IDs-Only mask, and anything that would require storing more
+  Google content (ADR-0006 §9.5). `liveness` is added and pinned but has no
+  production caller yet; PR7's refresh is what will call it.
 
 The same spec also runs the scenarios twice from the same starting state and
 asserts they agree within ±1 per operation, which is the plan's acceptance

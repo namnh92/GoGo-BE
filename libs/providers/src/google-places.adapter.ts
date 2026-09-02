@@ -6,8 +6,10 @@ import {
   ProviderUnavailableError,
   type AreaAutocompletePort,
   type AreaPrediction,
+  type PlaceDescriptionTier,
   type PlaceFetchTier,
   type PlaceProviderPort,
+  type ProviderPlaceIdentity,
   type ProviderMetrics,
   type ProviderPhotoRef,
   type ResolvedProviderPlace,
@@ -33,6 +35,25 @@ const RESILIENCE = {
  * the exact string is the only thing standing between a one-word edit and a
  * silently larger invoice.
  */
+/**
+ * Google's Place Details **IDs-Only** SKU: free, unlimited, and able to answer
+ * exactly one question — does this id still resolve, and under which id.
+ *
+ * Deviation from plan §2.4, recorded deliberately. The plan writes this mask as
+ * `id,movedPlaceId`, but `movedPlaceId` is not a field of the Places API (New)
+ * `Place` resource; sending it would make Google reject **every** liveness
+ * request with `INVALID_ARGUMENT` ("Cannot find matching fields for path"),
+ * which the stub transport cannot catch because the stub does not validate
+ * paths. A refresh job built on that mask would look green in CI and fail
+ * against production on its first tick.
+ *
+ * Nothing is lost. A place that moved is detected the way #334 already detects
+ * it: Google answers about the successor, so `data.id` differs from the id we
+ * asked for, and `requestedProviderPlaceId` carries the difference to the
+ * caller. That comparison works at every tier, this one included.
+ */
+const LIVENESS_FIELDS = ['id'] as const;
+
 const CORE_FIELDS = [
   'id',
   'displayName',
@@ -56,6 +77,7 @@ const QUALITY_FIELDS = [
 const DETAIL_FIELDS = ['reviews'] as const;
 
 export const PLACE_FIELD_MASKS: Readonly<Record<PlaceFetchTier, string>> = {
+  liveness: LIVENESS_FIELDS.join(','),
   core: CORE_FIELDS.join(','),
   quality: [...CORE_FIELDS, ...QUALITY_FIELDS].join(','),
   detail: [...CORE_FIELDS, ...QUALITY_FIELDS, ...DETAIL_FIELDS].join(','),
@@ -137,10 +159,15 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
     return (data.places ?? []).map((p) => p.id).filter((id): id is string => Boolean(id));
   }
 
+  async details(providerPlaceId: string, tier: 'liveness'): Promise<ProviderPlaceIdentity | null>;
   async details(
     providerPlaceId: string,
-    tier: PlaceFetchTier = 'quality',
-  ): Promise<ResolvedProviderPlace | null> {
+    tier: PlaceDescriptionTier,
+  ): Promise<ResolvedProviderPlace | null>;
+  async details(
+    providerPlaceId: string,
+    tier: PlaceFetchTier,
+  ): Promise<ResolvedProviderPlace | ProviderPlaceIdentity | null> {
     type GooglePlace = {
       id: string;
       displayName?: { text: string };
@@ -190,6 +217,20 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       if (err instanceof ProviderInvalidRequestError) throw err;
       return null;
     }
+
+    // A liveness answer is an id and nothing else — including no `location`,
+    // which is why it returns here rather than falling into the guard below
+    // that (correctly) treats a described place with no coordinates as no
+    // answer at all.
+    if (tier === 'liveness') {
+      if (!data?.id) return null;
+      return {
+        providerPlaceId: data.id,
+        ...(data.id !== providerPlaceId ? { requestedProviderPlaceId: providerPlaceId } : {}),
+        fetchTier: 'liveness',
+      };
+    }
+
     if (!data?.id || !data.location) return null;
 
     const hours = (data.regularOpeningHours?.periods ?? [])

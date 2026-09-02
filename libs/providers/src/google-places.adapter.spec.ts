@@ -83,10 +83,10 @@ describe('#314 — a rejected request is not an outage', () => {
     respond(400, INVALID_PLACE_ID_BODY);
     const adapter = new GooglePlacesAdapter(API_KEY);
 
-    await expect(adapter.details('ChIJ0000000000000000000')).rejects.toBeInstanceOf(
+    await expect(adapter.details('ChIJ0000000000000000000', 'quality')).rejects.toBeInstanceOf(
       ProviderInvalidRequestError,
     );
-    await expect(adapter.details('ChIJ0000000000000000000')).rejects.toMatchObject({
+    await expect(adapter.details('ChIJ0000000000000000000', 'quality')).rejects.toMatchObject({
       canonicalStatus: 'INVALID_ARGUMENT',
     });
   });
@@ -95,7 +95,9 @@ describe('#314 — a rejected request is not an outage', () => {
     const fetchMock = respond(400, INVALID_PLACE_ID_BODY);
     const adapter = new GooglePlacesAdapter(API_KEY);
 
-    await expect(adapter.details('ChIJbad')).rejects.toBeInstanceOf(ProviderInvalidRequestError);
+    await expect(adapter.details('ChIJbad', 'quality')).rejects.toBeInstanceOf(
+      ProviderInvalidRequestError,
+    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -106,11 +108,13 @@ describe('#314 — a rejected request is not an outage', () => {
     // Enough to trip the breaker if these counted as failures — which is the
     // second half of the bug: pasted junk would break resolution for everyone.
     for (let i = 0; i < 8; i += 1) {
-      await expect(adapter.details(`ChIJbad${i}`)).rejects.toBeInstanceOf(
+      await expect(adapter.details(`ChIJbad${i}`, 'quality')).rejects.toBeInstanceOf(
         ProviderInvalidRequestError,
       );
     }
-    await expect(adapter.details('ChIJbad')).rejects.not.toBeInstanceOf(ProviderUnavailableError);
+    await expect(adapter.details('ChIJbad', 'quality')).rejects.not.toBeInstanceOf(
+      ProviderUnavailableError,
+    );
   });
 
   it('reads 404 NOT_FOUND as a rejected request too, and says which', async () => {
@@ -119,7 +123,7 @@ describe('#314 — a rejected request is not an outage', () => {
     });
     const adapter = new GooglePlacesAdapter(API_KEY);
 
-    await expect(adapter.details('ChIJretired')).rejects.toMatchObject({
+    await expect(adapter.details('ChIJretired', 'quality')).rejects.toMatchObject({
       canonicalStatus: 'NOT_FOUND',
     });
   });
@@ -131,7 +135,9 @@ describe('#314 — a rejected request is not an outage', () => {
     // No status, no verdict: it stays a transient failure and is retried, which
     // is the conservative reading. Silently swallowing every 400 as "bad input"
     // is the over-correction this issue must not make.
-    await expect(adapter.details('ChIJexample')).rejects.toBeInstanceOf(ProviderUnavailableError);
+    await expect(adapter.details('ChIJexample', 'quality')).rejects.toBeInstanceOf(
+      ProviderUnavailableError,
+    );
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
@@ -148,7 +154,9 @@ describe('#314 — a rejected request is not an outage', () => {
     const adapter = new GooglePlacesAdapter(API_KEY);
 
     // Our console is what needs fixing, not the caller's argument.
-    await expect(adapter.details('ChIJexample')).rejects.toBeInstanceOf(ProviderConfigurationError);
+    await expect(adapter.details('ChIJexample', 'quality')).rejects.toBeInstanceOf(
+      ProviderConfigurationError,
+    );
   });
 
   it('counts a rejection on its own series, never as a provider failure', async () => {
@@ -159,7 +167,9 @@ describe('#314 — a rejected request is not an outage', () => {
       observe: () => undefined,
     });
 
-    await expect(adapter.details('ChIJbad')).rejects.toBeInstanceOf(ProviderInvalidRequestError);
+    await expect(adapter.details('ChIJbad', 'quality')).rejects.toBeInstanceOf(
+      ProviderInvalidRequestError,
+    );
 
     const names = seen.map((m) => m.name);
     expect(names).toContain('places_provider_rejected_total');
@@ -188,8 +198,10 @@ describe('#273 — GooglePlacesAdapter failure classification', () => {
     // The whole defect in one assertion: this used to resolve to null, which
     // the resolver reported as NOT_FOUND and Mobile printed as "Không tìm thấy
     // địa điểm trên Google Maps" about a place that exists.
-    await expect(adapter.details('ChIJexample')).rejects.toBeInstanceOf(ProviderConfigurationError);
-    await expect(adapter.details('ChIJexample')).rejects.toMatchObject({
+    await expect(adapter.details('ChIJexample', 'quality')).rejects.toBeInstanceOf(
+      ProviderConfigurationError,
+    );
+    await expect(adapter.details('ChIJexample', 'quality')).rejects.toMatchObject({
       faultCode: 'AUTH_FAILED',
       providerReason: 'SERVICE_DISABLED',
     });
@@ -211,14 +223,18 @@ describe('#273 — GooglePlacesAdapter failure classification', () => {
     respond(403, { error: { code: 403, status: 'PERMISSION_DENIED' } });
     const adapter = new GooglePlacesAdapter(API_KEY);
 
-    await expect(adapter.details('ChIJexample')).rejects.toBeInstanceOf(ProviderConfigurationError);
+    await expect(adapter.details('ChIJexample', 'quality')).rejects.toBeInstanceOf(
+      ProviderConfigurationError,
+    );
   });
 
   it('does not retry a configuration fault', async () => {
     const fetchMock = respond(403, SERVICE_DISABLED_BODY);
     const adapter = new GooglePlacesAdapter(API_KEY);
 
-    await expect(adapter.details('ChIJexample')).rejects.toBeInstanceOf(ProviderConfigurationError);
+    await expect(adapter.details('ChIJexample', 'quality')).rejects.toBeInstanceOf(
+      ProviderConfigurationError,
+    );
     // One call, not three. Retrying an API nobody enabled burns the breaker
     // and produces the "opens and closes forever" symptom from the issue.
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -228,14 +244,18 @@ describe('#273 — GooglePlacesAdapter failure classification', () => {
     respond(429, { error: { code: 429, status: 'RESOURCE_EXHAUSTED' } });
     const adapter = new GooglePlacesAdapter(API_KEY);
 
-    await expect(adapter.details('ChIJexample')).rejects.toBeInstanceOf(ProviderQuotaExceededError);
+    await expect(adapter.details('ChIJexample', 'quality')).rejects.toBeInstanceOf(
+      ProviderQuotaExceededError,
+    );
   });
 
   it('still reports a 5xx as a transient outage', async () => {
     respond(503, { error: { code: 503 } });
     const adapter = new GooglePlacesAdapter(API_KEY);
 
-    await expect(adapter.details('ChIJexample')).rejects.toBeInstanceOf(ProviderUnavailableError);
+    await expect(adapter.details('ChIJexample', 'quality')).rejects.toBeInstanceOf(
+      ProviderUnavailableError,
+    );
   });
 
   it('a successful search with no match is still a genuine no-result', async () => {
@@ -253,7 +273,7 @@ describe('#273 — GooglePlacesAdapter failure classification', () => {
     respond(403, SERVICE_DISABLED_BODY);
     const adapter = new GooglePlacesAdapter(API_KEY);
 
-    const err = (await adapter.details('ChIJexample').catch((e: unknown) => e)) as Error;
+    const err = (await adapter.details('ChIJexample', 'quality').catch((e: unknown) => e)) as Error;
     // Own enumerable fields plus the message, which is what a log serializer
     // and an error reporter each pick up.
     const serialized = JSON.stringify({ ...err, message: err.message });
@@ -306,7 +326,7 @@ describe('#313 — adapter emits bounded labels and a latency observation', () =
     const rec = recorder();
     const adapter = new GooglePlacesAdapter(API_KEY, rec.metrics);
 
-    await adapter.details('ChIJ1');
+    await adapter.details('ChIJ1', 'quality');
 
     const requests = rec.counters.find((c) => c.name === 'places_provider_requests_total');
     expect(requests?.labels).toEqual({ method: 'google.details.quality', status: 200 });
@@ -322,7 +342,7 @@ describe('#313 — adapter emits bounded labels and a latency observation', () =
     const rec = recorder();
     const adapter = new GooglePlacesAdapter(API_KEY, rec.metrics);
 
-    await adapter.details('ChIJ1');
+    await adapter.details('ChIJ1', 'quality');
 
     const timing = rec.observations.find(
       (o) => o.name === 'place_provider_request_duration_seconds',
@@ -345,7 +365,7 @@ describe('#313 — adapter emits bounded labels and a latency observation', () =
     const rec = recorder();
     const adapter = new GooglePlacesAdapter(API_KEY, rec.metrics);
 
-    for (let i = 0; i < 5; i += 1) await adapter.details('ChIJ1');
+    for (let i = 0; i < 5; i += 1) await adapter.details('ChIJ1', 'quality');
 
     const shapes = new Set(
       rec.counters
@@ -364,7 +384,7 @@ describe('#313 — adapter emits bounded labels and a latency observation', () =
     const rec = recorder();
     const adapter = new GooglePlacesAdapter(API_KEY, rec.metrics);
 
-    await adapter.details('ChIJ1');
+    await adapter.details('ChIJ1', 'quality');
 
     const allowed = new Set(['method', 'status', 'sku', 'reason', 'canonical_status']);
     for (const c of [...rec.counters, ...rec.observations]) {
@@ -393,7 +413,7 @@ describe('#334 — the id that came back is not always the id we asked for', () 
     });
     const adapter = new GooglePlacesAdapter(API_KEY);
 
-    const details = await adapter.details('ChIJold');
+    const details = await adapter.details('ChIJold', 'quality');
 
     // Both ids, so the caller can see the change rather than infer it. What it
     // must not do is relink on its own — that is PR7's review path.
@@ -409,7 +429,7 @@ describe('#334 — the id that came back is not always the id we asked for', () 
     });
     const adapter = new GooglePlacesAdapter(API_KEY);
 
-    const details = await adapter.details('ChIJsame');
+    const details = await adapter.details('ChIJsame', 'quality');
 
     expect(details?.providerPlaceId).toBe('ChIJsame');
     expect(details?.requestedProviderPlaceId).toBeUndefined();

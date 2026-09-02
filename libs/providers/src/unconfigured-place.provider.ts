@@ -2,8 +2,8 @@ import {
   ProviderConfigurationError,
   type AreaAutocompletePort,
   type AreaPrediction,
+  type PlaceFetchTier,
   type PlaceProviderPort,
-  type ResolvedProviderPlace,
 } from './ports';
 
 /**
@@ -39,7 +39,9 @@ export class UnconfiguredPlaceProvider implements PlaceProviderPort, AreaAutocom
     this.refuse();
   }
 
-  async details(_providerPlaceId: string): Promise<ResolvedProviderPlace | null> {
+  // One signature for both tier overloads: it never returns, and `never` is
+  // assignable to every one of them.
+  async details(_providerPlaceId: string, _tier: PlaceFetchTier): Promise<never> {
     this.refuse();
   }
 

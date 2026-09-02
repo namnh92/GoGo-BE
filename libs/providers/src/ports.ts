@@ -5,14 +5,48 @@
  */
 
 /**
- * ADR-0006 §2 — how much of a place to pay for.
+ * ADR-0006 §2 / plan §2.4 — how much of a place to pay for.
  *
- * `core` identifies a place, `quality` adds the facts a preview or a catalog
- * row needs, `detail` adds reviews and is never requested by a bulk job. The
+ * `liveness` asks only *which id this is now* and is billed at Google's
+ * IDs-Only SKU, which is free; `core` identifies a place (Pro); `quality` adds
+ * the facts a preview or a catalog row needs (Enterprise); `detail` adds
+ * reviews (Enterprise + Atmosphere) and is never requested by a bulk job. The
  * tier a snapshot was taken at is recorded on `place_provider_sources`, so a
  * row always says which fields it could legitimately have.
+ *
+ * The gap between `liveness` and `core` is a factor of infinity, and between
+ * `core` and `quality` a factor of 20/17 on every single call. There is no
+ * cheaper tier hiding between them: `businessStatus` is a Pro field, so a
+ * "just tell me if it is open" tier would be billed exactly as `core` is.
  */
-export type PlaceFetchTier = 'core' | 'quality' | 'detail';
+export type PlaceFetchTier = 'liveness' | 'core' | 'quality' | 'detail';
+
+/**
+ * The tiers that actually describe a place.
+ *
+ * `liveness` is deliberately outside this union. A liveness answer carries no
+ * name, no coordinates and no status, so anything that stores, scores or shows
+ * a place must ask for a tier that can supply those — and the compiler, not a
+ * reviewer, is what says so. It is also the type `place_provider_sources`
+ * persists: a row fetched at `liveness` has nothing to persist.
+ */
+export type PlaceDescriptionTier = Exclude<PlaceFetchTier, 'liveness'>;
+
+/**
+ * All a `liveness` fetch can tell you: this id still resolves, and whether the
+ * provider now answers under a different one.
+ *
+ * A separate type rather than a mostly-empty `ResolvedProviderPlace`, because
+ * the alternative is a `ratingCount: 0` on a place whose rating was never
+ * requested — "unknown" written as "zero", which is the exact failure the tier
+ * system exists to make impossible.
+ */
+export type ProviderPlaceIdentity = {
+  providerPlaceId: string;
+  /** Set only when the provider answered about a different id — see below. */
+  requestedProviderPlaceId?: string;
+  fetchTier: 'liveness';
+};
 
 /**
  * A photo the provider holds, **not** an image.
@@ -71,7 +105,7 @@ export type ResolvedProviderPlace = {
   googleMapsUri: string | null;
   photos: ProviderPhotoRef[];
   /** The tier this snapshot was fetched at; fields outside it are absent. */
-  fetchTier: PlaceFetchTier;
+  fetchTier: PlaceDescriptionTier;
   attribution: string;
   raw: unknown;
 };
@@ -93,12 +127,22 @@ export interface PlaceProviderPort {
    * Fetch canonical details; null when the place does not exist.
    *
    * `tier` decides how much is asked for, and therefore what it costs
-   * (ADR-0006 §2). It defaults to `quality` because every current caller
-   * resolves a place in order to keep it: asking for `core` first would mean
-   * two billed calls for one row, which is the opposite of what the tiers are
-   * for.
+   * (ADR-0006 §2, plan §2.4). It has **no default** on purpose (#338): the
+   * default used to be `quality`, so every caller that never thought about
+   * cost silently bought Google's most expensive Details SKU — including the
+   * bulk resolver, which reads a name, an address, a coordinate and a type and
+   * throws the rating away. A required argument is what turns "which tier does
+   * this path need?" from a question a reviewer might ask into one the
+   * compiler always asks.
+   *
+   * The return type narrows with the tier, so a `liveness` caller cannot read
+   * a rating that was never fetched.
    */
-  details(providerPlaceId: string, tier?: PlaceFetchTier): Promise<ResolvedProviderPlace | null>;
+  details(providerPlaceId: string, tier: 'liveness'): Promise<ProviderPlaceIdentity | null>;
+  details(
+    providerPlaceId: string,
+    tier: PlaceDescriptionTier,
+  ): Promise<ResolvedProviderPlace | null>;
 }
 
 export type AreaPrediction = {

@@ -108,7 +108,7 @@ reported per row instead, as `ROW_ID_DERIVED`.
 
 ## What Google supplies, and what the sheet must
 
-ADR-0006 §2 defines three field-mask tiers. Until #286 the adapter sent one flat
+ADR-0006 §2 defines four field-mask tiers. Until #286 the adapter sent one flat
 mask that matched none of them: it carried the `quality` aggregates while
 omitting `types`, `googleMapsUri` and `photos`, all three of which the ADR puts
 in `core`. `place_provider_sources.fetch_tier` recorded `'quality'` for every
@@ -120,10 +120,26 @@ one tier built from the one below it, with a test asserting each exact string.
 The field mask is the cost decision, so a containment check is not enough —
 that is precisely what let the drift survive.
 
-`details(id, tier)` defaults to `quality`. Every current caller resolves a place
-in order to keep it, so asking for `core` first would mean two billed calls for
-one row. No caller requests `core` alone today; the tier exists, is tested, and
-is what `fetch_tier` now records.
+`details(id, tier)` has **no default** (#338). It used to default to `quality`,
+which meant every caller that never thought about cost bought Google's most
+expensive Details SKU — the bulk resolver included, which reads a name, an
+address, a coordinate and a type and throws the rating away. The argument is now
+required, so the compiler asks "which tier does this path need?" at every call
+site, and `fetch_tier` records the answer.
+
+For the import pipeline that answer is: **resolve at `core`, publish at
+`quality`**. Resolving settles which Google place a row names, whether the
+catalogue already holds it, which GoGo category its `types[]` imply and how
+confident the match was — all Pro fields. Publishing writes the catalogue row,
+with its rating, review count, price level and weekly hours, and that is
+Enterprise. The one mode that resolves at `quality` is `update_existing`: it
+exists to pull fresh provider facts onto a place GoGo already has, so a `core`
+fetch would overwrite a live rating with `null`.
+
+`liveness` (`id`, IDs-Only, free) is pinned and tested but has no caller in the
+import pipeline; it is what PR7's refresh job will use to ask "does this id
+still resolve, and under which one?" without paying for a description. See
+ADR-0006 §2 for why its mask is `id` and not the plan's `id,movedPlaceId`.
 
 ### Category comes from `types[]`
 

@@ -9,6 +9,7 @@ import {
   SHEETS_PROVIDER,
   SheetAccessError,
   parseSpreadsheetId,
+  type PlaceDescriptionTier,
   type ResolvedProviderPlace,
   type SheetsPort,
 } from '@gogo/providers';
@@ -43,6 +44,32 @@ import { PlaceResolverService, type ResolveOutcome } from './place-resolver.serv
 import { writeAudit } from '../../shared/audit';
 
 export type ImportMode = 'dry_run' | 'create_drafts' | 'publish_approved' | 'update_existing';
+
+/**
+ * Which Details tier a row's *resolve* needs, decided by what the job will do
+ * with the answer (#338, plan §2.4).
+ *
+ * Resolving a row settles four things — which Google place it is, whether the
+ * catalogue already holds it, which GoGo category its provider types imply, and
+ * how confident the match was. `applyResolved` reads a name, an address, a
+ * coordinate, `primaryType`/`types` and nothing else; the row it writes carries
+ * an id, a confidence and a status. All Pro fields, so `core` is the honest
+ * price of a resolve.
+ *
+ * `update_existing` is the exception, and it is not an exception about
+ * resolving: that mode's whole purpose is to pull fresh provider facts onto a
+ * place GoGo already has, so the same object goes on to write `rating`,
+ * `ratingCount` and `priceLevel`. Those are Enterprise fields, and a `core`
+ * fetch would overwrite a live rating with `null` — a cheaper call that
+ * destroys catalogue data is not a saving.
+ *
+ * Publish is not covered here: it re-fetches at `quality` in
+ * `createPlaceFromRow`, deliberately, because that call is what becomes the
+ * catalogue row.
+ */
+function resolveTierFor(mode: ImportMode): PlaceDescriptionTier {
+  return mode === 'update_existing' ? 'quality' : 'core';
+}
 
 type JobRow = typeof schema.placeIngestJobs.$inferSelect;
 type IngestRow = typeof schema.placeIngestRows.$inferSelect;
@@ -845,7 +872,7 @@ export class PlaceImportJobService {
    */
   private async identifyThenResolve(
     url: string,
-    hints: Parameters<PlaceResolverService['resolveIdentified']>[1],
+    hints: Parameters<PlaceResolverService['resolveIdentified']>[2],
     mode: ImportMode,
   ): Promise<
     | { kind: 'DB_FIRST'; place: KnownProviderPlace }
@@ -875,7 +902,7 @@ export class PlaceImportJobService {
 
     return {
       kind: 'RESOLVED',
-      outcome: await this.resolver.resolveIdentified(identified.value, hints),
+      outcome: await this.resolver.resolveIdentified(identified.value, resolveTierFor(mode), hints),
     };
   }
 
@@ -1261,7 +1288,12 @@ export class PlaceImportJobService {
       this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
     }
 
-    const outcome = await this.resolver.resolveByProviderId(googlePlaceId);
+    // `core`, in every mode (#338). `applyResolved` is called below without a
+    // `context`, which is what makes that safe rather than lucky: `update_existing`
+    // is only reachable through the context branch, so nothing on this path can
+    // write a rating, an hour or a price level from this object. It settles an
+    // identity and a category, and both are Pro fields.
+    const outcome = await this.resolver.resolveByProviderId(googlePlaceId, 'core');
     if (outcome.status !== 'RESOLVED') {
       throw AppError.conflict('PROVIDER_UNAVAILABLE', 'Không xác minh được địa điểm lúc này');
     }
@@ -1302,7 +1334,11 @@ export class PlaceImportJobService {
       return this.rowView(rowId);
     }
 
-    const outcome = await this.resolver.resolveByProviderId(row.resolvedGooglePlaceId);
+    // `quality`: a merge that gets past the DB-first shortcut writes the
+    // provider row for the place it merges into, and `upsertProviderSource`
+    // stores `rating`, `ratingCount`, the score derived from them and
+    // `priceLevel` (#338).
+    const outcome = await this.resolver.resolveByProviderId(row.resolvedGooglePlaceId, 'quality');
     if (outcome.status === 'RESOLVED') {
       const score = await this.resolver.scoreFor(
         outcome.details,
@@ -1395,8 +1431,9 @@ export class PlaceImportJobService {
     }
     // Publish still re-fetches, deliberately: it writes the catalogue row, and
     // the plan keeps that call until PR8 settles what may be stored (plan §3
-    // PR4 item 4). What changed here is only how the id is asked for.
-    const outcome = await this.resolver.resolveByProviderId(row.resolvedGooglePlaceId);
+    // PR4 item 4). `quality` is the tier that row needs — `rating`,
+    // `ratingCount`, `priceLevel` and the weekly hours all come from it (#338).
+    const outcome = await this.resolver.resolveByProviderId(row.resolvedGooglePlaceId, 'quality');
     if (outcome.status !== 'RESOLVED') {
       throw AppError.conflict('PROVIDER_UNAVAILABLE', 'Không xác minh được địa điểm lúc này');
     }
