@@ -196,3 +196,32 @@ export const providerCostDaily = pgTable(
     index('provider_cost_daily_env_day_idx').on(t.environment, t.day),
   ],
 );
+
+/**
+ * COST-BE-017 (#369) — epic §23, source freshness + the scheduler's own
+ * bookkeeping (epic §19/§22). One row per (environment, collector). The facts
+ * are timestamps and counters; `status` is what they meant at the last write
+ * and is recomputed by readers against `now` (`freshnessStatus`).
+ */
+export const costSourceFreshness = pgTable(
+  'cost_source_freshness',
+  {
+    environment: text('environment').notNull(),
+    sourceId: text('source_id').notNull(),
+    providerId: text('provider_id').notNull(),
+    serviceId: text('service_id'),
+    lastSuccessfulAt: timestamp('last_successful_at', { withTimezone: true }),
+    lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }),
+    sourceAsOf: timestamp('source_as_of', { withTimezone: true }),
+    staleAfterS: integer('stale_after_s').notNull(),
+    /** FRESH | STALE | UNAVAILABLE | UNKNOWN — check constraint in the migration. */
+    status: text('status').notNull(),
+    lastErrorCode: text('last_error_code'),
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    callsDay: date('calls_day'),
+    callsCount: integer('calls_count').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.environment, t.sourceId] })],
+);

@@ -755,18 +755,29 @@ export const COST_REGISTRY_DATA: RegistryData = {
     planned('github', 'GitHub', [
       { name: 'actions', displayName: 'Actions', category: 'ci', meters: [['minutes', 'minute']] },
     ]),
-    planned('gogo', 'GoGo (internal)', [
-      // Epic §21: the cost of tracking cost, as a first-class provider.
-      {
-        name: 'cost_observability',
-        displayName: 'Cost observability',
-        category: 'internal',
-        meters: [
-          ['collector_runs', 'run'],
-          ['monitoring_usd_micros', 'usd_micros'],
-        ],
-      },
-    ]),
+    {
+      // Epic §21: the cost of tracking cost, as a first-class provider. Its
+      // one FIXED_COST row per day is written by the collector scheduler from
+      // the declared monitoring cost of every enabled collector (#369).
+      id: 'gogo',
+      displayName: 'GoGo (internal)',
+      status: 'active',
+      capabilities: ['FIXED_COST'],
+      services: [
+        {
+          id: 'gogo.cost_observability',
+          providerId: 'gogo',
+          displayName: 'Cost observability',
+          category: 'internal',
+          capabilities: ['FIXED_COST'],
+          operations: [],
+          meters: [
+            serviceMeter('gogo.cost_observability', 'collector_runs', 'run'),
+            serviceMeter('gogo.cost_observability', 'monitoring_usd_micros', 'usd_micros'),
+          ],
+        },
+      ],
+    },
     planned('onesignal', 'OneSignal', [
       {
         name: 'push',
