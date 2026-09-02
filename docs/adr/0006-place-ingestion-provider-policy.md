@@ -95,8 +95,9 @@ survive the change is an editorial decision, not one the importer should make.
 ## 9. Amendment 2026-09-01 — Google content persistence policy
 
 **Status: Proposed — the restrictive half is in force now; the permissive half
-does not take effect until counsel and product sign §9.6.** No PR may rely on a
-row of §9.3 marked _needs decision_ being permitted.
+does not take effect until counsel signs §9.6.** Product signed on 2026-09-02;
+counsel has not. No PR may rely on a row of §9.3 marked _needs decision_ being
+permitted.
 
 Source: `Cost-Spec/GOGO_COST_AND_PLACES_EXECUTION_PLAN_v2_DECIDED.md` §0.2 C3/C4,
 §3 PR0, §7. Supersedes ADR-0004 §3's caching sentence for everything except the
@@ -235,14 +236,52 @@ with the IDs-only mask.
 
 ### 9.6 Sign-off (required before PR8)
 
-| Role                   | Name      | Date      | Outcome recorded                                 |
-| ---------------------- | --------- | --------- | ------------------------------------------------ |
-| Counsel / legal review | _pending_ | _pending_ | classifies every **needs decision** row of §9.3  |
-| Product owner          | _pending_ | _pending_ | accepts the product consequences of each refusal |
+| Role                   | Name                                | Date       | Outcome recorded                                                            |
+| ---------------------- | ----------------------------------- | ---------- | --------------------------------------------------------------------------- |
+| Counsel / legal review | _pending_                           | _pending_  | will classify every **needs decision** row of §9.3                          |
+| Product owner          | _product owner, name not on record_ | 2026-09-02 | **APPROVED** — accepts the consequences of the deny-by-default policy below |
 
-Until both rows are filled, this amendment's status stays _Proposed_, PR8
+The product row was recorded from a decision relayed by the repository owner on
+2026-09-02. No individual name or signature was supplied, so none is written
+here: an ADR that invents a signatory is worse evidence than one that says the
+name was not recorded.
+
+**The counsel row is empty and stays empty until counsel answers.** Nothing in
+this section may be read as legal sign-off, and no later change may infer one
+from the product approval — they answer different questions. Product accepted
+what the current policy costs the product; counsel has not yet classified what
+the policy is allowed to be.
+
+One row of two is filled, so **this amendment's status stays _Proposed_**, PR8
 (GoGo-BE#341) stays blocked, and production Google Places keys stay gated
 (ADR-0004 §5 amendment; ex-BE#80).
+
+#### 9.6.1 Program gate as amended 2026-09-02
+
+Product approval unblocks the work that was only ever waiting on it. It changes
+no row of §9.3 and relaxes no clause of §9.5.
+
+**Allowed to proceed** — each must preserve §9.5 in full: no new persisted
+Google content, no cross-request Google content snapshot, no widened retention.
+
+| PR   | Issues                           |
+| ---- | -------------------------------- |
+| PR4  | GoGo-BE#337 + GoGo-MobileApp#128 |
+| PR5  | GoGo-BE#338                      |
+| PR7  | GoGo-BE#340                      |
+| PR10 | GoGo-BE#343                      |
+
+**Still blocked on counsel sign-off:**
+
+| Item                                                                                                                                     | Issues                    |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| PR8 — provider-content refresh                                                                                                           | GoGo-BE#341 + GoGo-CMS#98 |
+| Candidate `name` / `address` persistence decision (R3b)                                                                                  | GoGo-BE#346               |
+| R2 (`places.geom` under SST §14.3) and R4, and any work needing persistence of Google-derived content classed **needs decision** in §9.3 | §9.4 R2/R4                |
+
+A reviewer who finds a diff in the allowed column writing a provider-derived
+field has found a blocking defect, exactly as §9.5 already says. The gate moved;
+the freeze did not.
 
 ## Consequences
 
