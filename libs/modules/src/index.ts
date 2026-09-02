@@ -333,3 +333,23 @@ export {
   type TestRunDelta,
   type TestRunResult,
 } from '../cost/application/test-cost.service';
+export {
+  FORECAST_MIN_ELAPSED_DAYS,
+  WARNING_PCT,
+  costBudgetStatus,
+  daysInMonth,
+  elapsedDays,
+  forecastMonthMicros,
+  inScope,
+  spend,
+  type CostBudgetScope,
+  type CostBudgetState,
+  type CostBudgetStatus,
+  type CostRow,
+  type SpendBreakdown,
+} from '../cost/domain/budget';
+export {
+  BudgetService,
+  type BudgetRow,
+  type MonthOverview,
+} from '../cost/application/budget.service';
