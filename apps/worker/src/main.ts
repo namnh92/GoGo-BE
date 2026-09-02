@@ -181,6 +181,9 @@ async function bootstrap(): Promise<void> {
     new PlaceResolverService(placeProvider, db, metrics),
     new PlaceDedupService(db),
     sheetsKey ? new GoogleSheetsAdapter(sheetsKey, metrics) : new FakeSheets(),
+    // Which deployment's `feature_flags` rows apply — the same value the API
+    // resolves flags against, so a switch thrown in the CMS reaches both.
+    { APP_ENV: (process.env.APP_ENV as 'dev' | 'staging' | 'prod' | 'production') ?? 'dev' },
     metrics,
   );
 

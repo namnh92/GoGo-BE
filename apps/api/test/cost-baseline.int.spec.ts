@@ -47,11 +47,13 @@ import {
  * Its latency and error rate are not; they measure this machine, and the
  * artifact says so in `limitations`.
  *
- * The committed artifact is a golden file. When PR4 lands and a flow stops
- * calling Google twice, this spec fails — deliberately. Re-freezing is a
- * decision with a diff and a reviewer:
+ * The committed artifact is a golden file. When PR4 landed and these flows
+ * stopped calling Google twice, this spec failed — deliberately — and was
+ * re-frozen as a decision with a diff and a reviewer:
  *
  *   COST_BASELINE_WRITE=1 pnpm vitest run --project integration cost-baseline
+ *
+ * PR5 and PR7 will fail it again, for the same good reason.
  *
  * Two consecutive runs inside one boot are also compared, which is the plan's
  * own acceptance criterion ("agree within ±1 call per operation") — asserted
@@ -72,11 +74,25 @@ let ipc = 0;
 const ip = () => `10.91.${Math.floor(++ipc / 250)}.${(ipc % 250) + 1}`;
 
 /**
- * Named by the **UTC** day, because that is the day `provider_usage_daily` is
- * keyed by. A local calendar date would put a run and the ledger rows it
- * describes under two different dates for seven hours of every day in ICT.
+ * The golden this spec holds current behaviour to, and the BEFORE freeze it
+ * must never overwrite.
+ *
+ * Both are named by the **UTC** day, because that is the day
+ * `provider_usage_daily` is keyed by — a local calendar date would put a run
+ * and the ledger rows it describes under two different dates for seven hours of
+ * every day in ICT.
+ *
+ * PR4 moved the numbers on purpose, so the golden moves with it. What does not
+ * move is `BEFORE_FREEZE`: PR9 (#342) owes a BEFORE/AFTER/DELTA table, and a
+ * BEFORE column reconstructed from git history is not evidence anybody will
+ * check. Re-freezing means *adding* a file and pointing `ARTIFACT` at it, never
+ * rewriting the one that recorded what the flows used to cost.
  */
 const ARTIFACT = path.resolve(
+  __dirname,
+  '../../../docs/cost-baselines/2026-09-02-after-pr4-stub.json',
+);
+const BEFORE_FREEZE = path.resolve(
   __dirname,
   '../../../docs/cost-baselines/2026-09-01-before-stub.json',
 );
@@ -127,6 +143,10 @@ beforeAll(async () => {
   // Flushes are awaited by the runner, so the interval only bounds what a
   // SIGKILL would lose. Short here so nothing lingers between scenarios.
   process.env.COST_LEDGER_FLUSH_MS = '250';
+  // #337 — without a secret no attestation is issued, scenario D's submit falls
+  // back to a second Details call, and the baseline would freeze the cost of a
+  // feature that is switched off rather than the cost of the product.
+  process.env.PLACE_RESOLUTION_ATTESTATION_SECRET = 'cost-baseline-stub-attestation-secret';
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
   pool.on('error', () => undefined);
@@ -232,7 +252,7 @@ async function resetCatalogue(actors: { user: string; moderator: string }): Prom
   await seedCatalogue(actors);
 }
 
-describe('#336 — frozen BEFORE baseline', () => {
+describe('#336 — frozen baseline, re-frozen by #337', () => {
   it('freezes the pinned A–E scenarios, per operation, and repeats within ±1', async () => {
     const user = await register('baseline-user@gogo.local');
     const moderator = await createAdmin('baseline-mod@gogo.local', 'moderator');
@@ -271,7 +291,7 @@ describe('#336 — frozen BEFORE baseline', () => {
       day: utcDay(),
     };
 
-    const first = await runBaseline({ ...options, name: 'before-stub' });
+    const first = await runBaseline({ ...options, name: 'after-pr4-stub' });
 
     // Every scenario's correctness column has to be green, or the numbers
     // beside it are the cost of a broken flow.
@@ -311,7 +331,7 @@ describe('#336 — frozen BEFORE baseline', () => {
     // from the same starting state, which is what "consecutive" has to mean
     // for scenarios that create catalog rows.
     await resetCatalogue({ user, moderator });
-    const second = await runBaseline({ ...options, name: 'before-stub-repeat' });
+    const second = await runBaseline({ ...options, name: 'after-pr4-stub-repeat' });
     const repeat = compareBaselines(first, second);
     expect(repeat.agrees, formatComparison(repeat)).toBe(true);
 
@@ -326,5 +346,14 @@ describe('#336 — frozen BEFORE baseline', () => {
       drift.agrees,
       `baseline drift vs the committed freeze:\n${formatComparison(drift)}`,
     ).toBe(true);
+
+    // The BEFORE freeze is evidence, not a working file. PR9 reports
+    // BEFORE/AFTER/DELTA from it, so a re-freeze that quietly overwrote it
+    // would delete the only record of what these flows used to cost.
+    expect(
+      existsSync(BEFORE_FREEZE),
+      `${BEFORE_FREEZE} must survive every re-freeze — PR9 reads it as the BEFORE column`,
+    ).toBe(true);
+    expect(BEFORE_FREEZE, 'never point the golden at the BEFORE freeze').not.toBe(ARTIFACT);
   }, 300_000);
 });

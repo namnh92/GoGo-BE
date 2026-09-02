@@ -215,6 +215,40 @@ The moderation queue is being ignored rather than failing. Check
 `GET /v1/cms/place-submissions` for depth, and whether one editor account is
 carrying the whole queue.
 
+### Duplicate Google calls came back (`place_dbfirst_hit_total`, `place_resolution_attestation_total`)
+
+#337 removed two repeated `details` calls. Both removals are switchable, so the
+first question when spend climbs is whether they are still on.
+
+| Symptom                                                     | Read it as                                                                                              | Do                                                                                                               |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `place_dbfirst_hit_total` at ~0 with imports still running  | the shortcut is off, or every id is genuinely new                                                       | check `feature_flags` for `place_dbfirst.enabled`; then read `place_dbfirst_miss_total{reason}`                  |
+| `place_dbfirst_miss_total{reason="stale"}` climbing         | provider rows are past `refresh_after`, so DB-first cannot answer for them — this is a refresh backlog  | PR7's refresh job is what fixes it; the fallback is correct, just expensive                                      |
+| `place_dbfirst_miss_total{reason="legacy"}` non-zero        | pre-PR1 `place_sources` rows with no freshness to check                                                 | expected to trend to zero as PR1's backfill completes; a rising count is a regression                            |
+| `place_resolution_attestation_total{result="unconfigured"}` | the deployment has no `PLACE_RESOLUTION_ATTESTATION_SECRET` and is silently paying for the second fetch | set the SSM parameter `places/resolution-attestation-secret` (GoGo-Infra manifest) and redeploy                  |
+| `..._total{result="bad_signature"}` non-zero                | tokens are being forged, or the secret was rotated without draining the old TTL                         | a rotation shows as a burst that decays within `PLACE_RESOLUTION_TTL_S`; anything sustained is abuse             |
+| `..._total{result="expired"}` high                          | users take longer than the TTL between preview and submit                                               | that is a product measurement, not a fault — raising the TTL widens the replay window, so decide it deliberately |
+
+**Turning either off is the rollback**, and neither loses correctness — both
+paths fall back to asking Google, which is what the code did before:
+
+```sql
+-- kill the DB-first shortcut for this environment
+insert into feature_flags (key, environment, platform, enabled)
+values ('place_dbfirst.enabled', 'production', 'all', false)
+on conflict (key, environment, platform) do update set enabled = false;
+
+-- …or the attestation
+insert into feature_flags (key, environment, platform, enabled)
+values ('place_resolution_attestation.enabled', 'production', 'all', false)
+on conflict (key, environment, platform) do update set enabled = false;
+```
+
+Both default **on** with no row, because they remove spend rather than add a
+feature. A `RESOLUTION_TOKEN_INVALID` in a client's hands is not an incident:
+the client is being told to resolve again, which is the one thing that has to
+happen rather than a silent second Google call.
+
 ### super_admin bypass (`cms_super_admin_bypass_total`)
 
 A rising count means the role model does not fit the work people actually do —

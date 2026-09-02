@@ -291,6 +291,7 @@ const scenarioD: Scenario = {
   async run(ctx) {
     const rec = new Recorder(ctx.http);
     let approved = 0;
+    let attested = 0;
 
     for (const url of ctx.fixtures.D.urls) {
       if (carriesPlaceId(url)) rec.noNetworkResolutions += 1;
@@ -301,19 +302,31 @@ const scenarioD: Scenario = {
         url: '/v1/places/resolve-google-maps-link',
         payload: { url },
       });
-      const candidate = (resolved.body as { candidate?: { googlePlaceId?: string } }).candidate;
-      const googlePlaceId = candidate?.googlePlaceId ?? /[?&]place_id=([\w-]+)/.exec(url)?.[1];
+      const preview = resolved.body as {
+        candidate?: { googlePlaceId?: string };
+        resolutionToken?: string;
+      };
+      const googlePlaceId =
+        preview.candidate?.googlePlaceId ?? /[?&]place_id=([\w-]+)/.exec(url)?.[1];
       if (!googlePlaceId) {
         rec.rowsRejected += 1;
         continue;
       }
+      if (preview.resolutionToken) attested += 1;
 
-      // 2 · submit
+      // 2 · submit — carrying the resolve attestation, which is what a PR4
+      // client does (#337 / GoGo-MobileApp#128). Without it the server verifies
+      // the place with Google a second time, which is the number this scenario
+      // exists to move.
       const submitted = await rec.call({
         method: 'POST',
         url: '/v1/place-submissions',
         token: ctx.actors.user,
-        payload: { googlePlaceId, category: 'cafe' },
+        payload: {
+          googlePlaceId,
+          category: 'cafe',
+          ...(preview.resolutionToken ? { resolutionToken: preview.resolutionToken } : {}),
+        },
       });
       const submissionId = (submitted.body as { submissionId?: string }).submissionId;
       if (!submissionId) {
@@ -345,6 +358,14 @@ const scenarioD: Scenario = {
       'every pinned URL named its place id',
       ctx.fixtures.D.urls.length,
       rec.noNetworkResolutions,
+    );
+    // An operational place must hand back a token, or the submit silently
+    // reverts to the second Details call and the saving disappears with no
+    // failing assertion to say so (#337).
+    rec.expect(
+      'every preview issued a resolution attestation',
+      ctx.fixtures.D.urls.length,
+      attested,
     );
     return rec.done();
   },

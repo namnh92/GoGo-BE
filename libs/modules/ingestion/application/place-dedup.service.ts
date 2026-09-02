@@ -29,6 +29,52 @@ export type GoogleIdentity =
   | { kind: 'CONFLICT'; placeIds: string[]; conflictId: string };
 
 /**
+ * What the catalogue already knows about a Google Place ID, from rows GoGo
+ * already holds — no provider request (#337 / plan §3 PR4 item 3).
+ *
+ * Every field here is already persisted and already served by
+ * `/v1/places/:id`; reading it back is not a new store, and ADR-0006 §9.5
+ * freezes new persistence, not new reads. Nothing is copied anywhere: the
+ * lookup answers a question and the answer goes to the caller.
+ */
+export type KnownProviderPlace = {
+  placeId: string;
+  googlePlaceId: string;
+  name: string;
+  addressText: string;
+  lat: number;
+  lng: number;
+  rating: number | null;
+  ratingCount: number;
+  derivedScore: number | null;
+  businessStatus: 'OPERATIONAL' | 'CLOSED_TEMPORARILY' | 'CLOSED_PERMANENTLY';
+  attribution: string | null;
+  /** When GoGo last heard this from Google — the stored value, never `now()`. */
+  fetchedAt: string;
+};
+
+/**
+ * `MISS` carries why, because the four reasons behave identically for the
+ * caller (ask Google) and completely differently for whoever is looking at the
+ * hit rate: `absent` is the catalogue growing, `stale` is the refresh job not
+ * keeping up, `legacy` is a pre-PR1 row with no freshness to check, and
+ * `indeterminate` is a provider row whose status we never learned.
+ */
+export type KnownProviderLookup =
+  | { kind: 'MISS'; reason: 'absent' | 'stale' | 'legacy' | 'indeterminate' }
+  | { kind: 'CONFLICT'; placeIds: string[]; conflictId: string }
+  | { kind: 'KNOWN'; place: KnownProviderPlace };
+
+const PROVIDER_STATUS_TO_BUSINESS_STATUS: Record<
+  string,
+  KnownProviderPlace['businessStatus'] | undefined
+> = {
+  active: 'OPERATIONAL',
+  temporarily_closed: 'CLOSED_TEMPORARILY',
+  closed: 'CLOSED_PERMANENTLY',
+};
+
+/**
  * PI-BE-006 / FR-INGEST-009 — duplicate rules, strongest signal first:
  * provider id (exact) → same name within 150 m (merge candidate) → new.
  * Ambiguity always becomes a human decision, never an automatic merge.
@@ -89,6 +135,97 @@ export class PlaceDedupService {
     if (row.canonical_place_id) return { kind: 'RESOLVED', placeId: row.canonical_place_id };
     if (row.legacy_place_id) return { kind: 'RESOLVED', placeId: row.legacy_place_id };
     return { kind: 'NONE' };
+  }
+
+  /**
+   * DB-first: what we can answer about a Google Place ID without paying Google.
+   *
+   * The import, submit and bulk paths all used to call Details *before* asking
+   * whether GoGo already had the place — so importing a place that is already
+   * in the catalogue cost an Enterprise `details` to be told "you have this
+   * already" (plan §4, scenario C). The order is simply wrong: the id is the
+   * dedup key, and we hold it.
+   *
+   * A hit needs three things, and a miss on any of them means ask Google:
+   *
+   * - the id resolves to exactly one place — a `CONFLICT` is nobody's to
+   *   collapse here any more than in `check()` (#334);
+   * - the canonical provider row exists, so the freshness contract of
+   *   ADR-0006 §4 actually applies (a legacy `place_sources` row has no
+   *   `refresh_after` to check and is not treated as fresh);
+   * - `refresh_after` is still in the future, which is the *same* window the
+   *   catalogue already claims these facts are good for. This introduces no new
+   *   retention: it reads a row for as long as that row was already allowed to
+   *   answer for itself, and never longer.
+   *
+   * `unknown`/`moved` statuses are a miss on purpose: neither says whether the
+   * place is open, and inventing `OPERATIONAL` for them would turn "we never
+   * found out" into a product answer.
+   */
+  async knownProviderPlace(googlePlaceId: string): Promise<KnownProviderLookup> {
+    const identity = await this.resolveGoogleIdentity(googlePlaceId);
+    if (identity.kind === 'CONFLICT') {
+      this.metrics.increment('place_identity_conflict_blocked_total', { path: 'dbfirst' });
+      return { kind: 'CONFLICT', placeIds: identity.placeIds, conflictId: identity.conflictId };
+    }
+    if (identity.kind === 'NONE') return { kind: 'MISS', reason: 'absent' };
+
+    const found = await this.db.execute(sql`
+      select
+        s.place_id, s.external_id, s.rating, s.rating_count, s.derived_score,
+        s.source_status, s.attribution, s.fetched_at,
+        (s.refresh_after is not null and s.refresh_after > now()) as fresh,
+        p.name, p.address_text,
+        ST_Y(p.geom::geometry) as lat, ST_X(p.geom::geometry) as lng
+      from place_provider_sources s
+      join places p on p.id = s.place_id
+      where s.provider = ${GOOGLE_PROVIDER} and s.external_id = ${googlePlaceId}
+      limit 1
+    `);
+    const row = found.rows[0] as
+      | {
+          place_id: string;
+          external_id: string;
+          rating: string | null;
+          rating_count: number | null;
+          derived_score: string | null;
+          source_status: string;
+          attribution: { text?: string } | null;
+          fetched_at: Date | string;
+          fresh: boolean;
+          name: string;
+          address_text: string | null;
+          lat: number;
+          lng: number;
+        }
+      | undefined;
+
+    // Identity resolved but no canonical row: a legacy `place_sources` link
+    // that PR1's backfill has not reached, or a place archived out from under
+    // it. Either way there is no freshness to stand on.
+    if (!row) return { kind: 'MISS', reason: 'legacy' };
+    if (!row.fresh) return { kind: 'MISS', reason: 'stale' };
+    const businessStatus = PROVIDER_STATUS_TO_BUSINESS_STATUS[row.source_status];
+    if (!businessStatus) return { kind: 'MISS', reason: 'indeterminate' };
+
+    const fetchedAt = row.fetched_at instanceof Date ? row.fetched_at : new Date(row.fetched_at);
+    return {
+      kind: 'KNOWN',
+      place: {
+        placeId: row.place_id,
+        googlePlaceId: row.external_id,
+        name: row.name,
+        addressText: row.address_text ?? '',
+        lat: Number(row.lat),
+        lng: Number(row.lng),
+        rating: row.rating === null ? null : Number(row.rating),
+        ratingCount: row.rating_count ?? 0,
+        derivedScore: row.derived_score === null ? null : Number(row.derived_score),
+        businessStatus,
+        attribution: row.attribution?.text ?? null,
+        fetchedAt: fetchedAt.toISOString(),
+      },
+    };
   }
 
   /**

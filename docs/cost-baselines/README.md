@@ -45,18 +45,48 @@ decided by how many times the stack calls `fetch` and with what field mask —
 exactly what PR4 and PR5 change — so a stubbed run freezes the half of the
 matrix that can be frozen today, and says in `limitations` which half it is not.
 
-## The frozen BEFORE run
+## The freezes
 
-`docs/cost-baselines/2026-09-01-before-stub.json`, produced by
-`apps/api/test/cost-baseline.int.spec.ts` (named by the **UTC** day, because
-that is how `provider_usage_daily` is keyed).
+Produced by `apps/api/test/cost-baseline.int.spec.ts`, each named by the **UTC**
+day, because that is how `provider_usage_daily` is keyed.
 
-It is a golden file. When PR4 stops a flow calling Google twice, that spec
-fails — deliberately. Re-freezing is a decision with a diff and a reviewer:
+| File                             | What it records                                                    | Status                              |
+| -------------------------------- | ------------------------------------------------------------------ | ----------------------------------- |
+| `2026-09-01-before-stub.json`    | what every flow cost before any of PR4–PR7                         | **immutable** — PR9's BEFORE column |
+| `2026-09-02-after-pr4-stub.json` | after #337: same-execution reuse, DB-first, resolution attestation | the golden the spec checks          |
+
+The newest file is a golden: the spec re-runs the scenarios and refuses any
+drift from it, so a behaviour change that moves a call count cannot land
+silently. When PR5 or PR7 moves one on purpose, that spec fails — deliberately.
+Re-freezing is a decision with a diff and a reviewer:
 
 ```bash
 COST_BASELINE_WRITE=1 pnpm vitest run --project integration cost-baseline
 ```
+
+**A re-freeze adds a file; it never rewrites an older one.** PR9 (#342) owes a
+BEFORE/AFTER/DELTA table per operation, and a BEFORE column reconstructed from
+git history is not evidence anybody will check. The spec asserts that
+`2026-09-01-before-stub.json` still exists and is not the golden, so overwriting
+it fails the build rather than passing quietly.
+
+### What #337 moved, and what it did not
+
+- **C (place already catalogued)** — `details.quality` 6 → 0. The Google Place
+  ID is the dedup key and GoGo holds it, so both the preview and the submit are
+  answered from the canonical provider row. C2 still pays its one
+  `google.expand`: that HTTP hop is how a short link's id is learned, and it is
+  not a Places request.
+- **D (new place)** — three Enterprise `details` per place become two. The
+  preview issues a short-lived signed attestation, the submit presents it
+  instead of re-verifying, and the moderator's approve still re-verifies against
+  Google because moderation delay outlives any attestation.
+- **E (bulk)** — the three catalogued direct-id rows resolve without a Details
+  call. Publish still re-fetches; that stays until PR8 settles what may be
+  stored.
+- **Unmoved on purpose** — A and B (still zero Places operations), every tier
+  and field mask (that is PR5), and anything that would require storing more
+  Google content (ADR-0006 §9.5).
 
 The same spec also runs the scenarios twice from the same starting state and
 asserts they agree within ±1 per operation, which is the plan's acceptance

@@ -12,6 +12,18 @@ export type ProvenanceConfig = { PROVENANCE_UNIFIED_READS: boolean };
 /** The deployment a flag row is scoped to (#221). */
 export type PlatformConfig = { APP_ENV: 'dev' | 'staging' | 'prod' | 'production' };
 
+/**
+ * #337 — the resolution attestation's key and lifetime (plan §2.8).
+ *
+ * An empty secret is a valid state: it means the deployment cannot mint or
+ * verify the proof, so the submit path falls back to the Google fetch it did
+ * before. See `apps/api/src/config/env.ts` for why that is the safe direction.
+ */
+export type ResolutionAttestationConfig = {
+  PLACE_RESOLUTION_ATTESTATION_SECRET: string;
+  PLACE_RESOLUTION_TTL_S: number;
+};
+
 export type IdentityConfig = {
   NODE_ENV: 'development' | 'test' | 'production';
   /** The deployment, not the build mode. See apps/api/src/config/env.ts. */

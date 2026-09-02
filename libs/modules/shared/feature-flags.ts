@@ -108,6 +108,24 @@ export const FEATURE_FLAGS = {
     description: 'Thresholds a community-imported place must clear.',
     platformScoped: false,
   },
+  // #337 (PR4). Both default **on**: they are rollback switches for a change
+  // that removes provider calls, so "no row" has to mean the new behaviour —
+  // otherwise shipping the code would change nothing until somebody remembered
+  // to insert a row, and the saving would be invisible.
+  'place_resolution_attestation.enabled': {
+    valueType: 'boolean',
+    defaultValue: true,
+    description:
+      'Accept a short-lived signed resolution attestation on submit instead of re-fetching Google.',
+    platformScoped: false,
+  },
+  'place_dbfirst.enabled': {
+    valueType: 'boolean',
+    defaultValue: true,
+    description:
+      'Answer from the canonical provider row when the Google Place ID is already known and fresh.',
+    platformScoped: false,
+  },
 } as const satisfies Record<string, FlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAGS;
@@ -125,6 +143,32 @@ export function flagDefinition(key: string): FlagDefinition {
     throw AppError.notFound('FLAG_UNKNOWN', 'No such application flag');
   }
   return FEATURE_FLAGS[key];
+}
+
+/**
+ * A boolean flag's value, with the registry default honoured when nothing is
+ * stored.
+ *
+ * `resolveFlag` reports `enabled: false` for an unconfigured flag, which is the
+ * right answer for a feature that has to be switched on deliberately and the
+ * wrong one for a kill switch that ships on. #337's two switches are the second
+ * kind: they turn *off* a behaviour that is meant to be the default, so an
+ * empty `feature_flags` table must read as on.
+ *
+ * The difference is `isDefault`, which `resolveFlag` already reports — this
+ * only stops every call site from re-deriving it.
+ */
+export async function resolveBooleanFlag(
+  db: Pick<Db, 'execute'>,
+  key: FeatureFlagKey,
+  target: { environment: FlagEnvironment; platform?: FlagPlatform },
+): Promise<boolean> {
+  const definition = FEATURE_FLAGS[key];
+  if (definition.valueType !== 'boolean') {
+    throw new Error(`resolveBooleanFlag called for non-boolean flag ${key}`);
+  }
+  const resolved = await resolveFlag(db, key, target);
+  return resolved.isDefault ? definition.defaultValue === true : resolved.enabled;
 }
 
 /**

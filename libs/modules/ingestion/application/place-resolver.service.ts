@@ -19,7 +19,13 @@ import {
   type MatchInput,
   type MatchTarget,
 } from '../domain/match-score';
-import { expandShortLink, parseMapsUrl, type Fetcher } from '../domain/maps-url';
+import {
+  expandShortLink,
+  parseMapsUrl,
+  type Fetcher,
+  type MapsUrlHints,
+  type UrlParseResult,
+} from '../domain/maps-url';
 import { providerScore, type RatingPriors } from '../domain/quality-score';
 
 /** What a details lookup produced, and why, when it produced nothing. */
@@ -96,33 +102,50 @@ export class PlaceResolverService {
     });
   }
 
+  /**
+   * URL → what Google Place it names, **without asking Google about it**.
+   *
+   * Split out for #337: a caller that only needs the id — to look it up in our
+   * own catalogue before deciding whether a Details call is warranted — used to
+   * have no way to get one except by paying for the whole resolve. Short links
+   * still cost one HTTP hop (`google.expand`), because learning the id is what
+   * that hop is for; nothing here reaches the Places API.
+   *
+   * The expansion happens exactly once. A caller that identifies first and then
+   * resolves passes the value back in rather than the original URL, so a
+   * `maps.app.goo.gl` link is never walked twice.
+   */
+  async identifyUrl(url: string): Promise<UrlParseResult> {
+    const parsed = parseMapsUrl(url);
+    if (!parsed.ok) return parsed;
+    if (!parsed.value.needsExpansion) return parsed;
+    return expandShortLink(url, this.fetcher);
+  }
+
   async resolveFromUrl(url: string, hints: MatchInput = {}): Promise<ResolveOutcome> {
-    let parsed = parseMapsUrl(url);
-    if (!parsed.ok) return { status: 'UNRESOLVED', reasonCode: parsed.reasonCode };
+    const identified = await this.identifyUrl(url);
+    if (!identified.ok) return { status: 'UNRESOLVED', reasonCode: identified.reasonCode };
+    return this.resolveIdentified(identified.value, hints);
+  }
 
-    if (parsed.value.needsExpansion) {
-      parsed = await expandShortLink(url, this.fetcher);
-      if (!parsed.ok) return { status: 'UNRESOLVED', reasonCode: parsed.reasonCode };
-    }
-
+  /**
+   * The half of `resolveFromUrl` that costs money, over a URL already parsed
+   * and expanded.
+   */
+  async resolveIdentified(parsed: MapsUrlHints, hints: MatchInput = {}): Promise<ResolveOutcome> {
     const merged: MatchInput = {
       ...hints,
       // Spec §6.2 step 5 keeps the display query and the name apart. Folding
       // the query into `name` made the scorer treat "Lacaph Coffee … Ho Chi
       // Minh City" as the place's name and penalise every locality token in
       // it, so a correct link could not clear the threshold (#311).
-      query: parsed.value.query,
-      lat: hints.lat ?? parsed.value.lat,
-      lng: hints.lng ?? parsed.value.lng,
+      query: parsed.query,
+      lat: hints.lat ?? parsed.lat,
+      lng: hints.lng ?? parsed.lng,
     };
 
     // Provider id in the URL is authoritative — no search, no ambiguity.
-    if (parsed.value.providerPlaceId) {
-      const looked = await this.safeDetails(parsed.value.providerPlaceId);
-      if (!looked.ok) return { status: 'UNRESOLVED', reasonCode: looked.reasonCode };
-      const { details } = looked;
-      return { status: 'RESOLVED', decision: exactProviderMatch(toTarget(details)), details };
-    }
+    if (parsed.providerPlaceId) return this.resolveByProviderId(parsed.providerPlaceId);
 
     const query = merged.name ?? merged.query;
     if (!query) return { status: 'UNRESOLVED', reasonCode: 'NO_QUERY' };
@@ -148,6 +171,21 @@ export class PlaceResolverService {
       return { status: 'NEEDS_CONFIRMATION', decision };
     }
     return { status: 'UNRESOLVED', reasonCode: 'LOW_CONFIDENCE', decision };
+  }
+
+  /**
+   * One Details call for an id we already hold.
+   *
+   * Every caller that knew the Place ID used to build
+   * `https://www.google.com/maps?place_id=<id>` and send it back through URL
+   * parsing to arrive here — which read as a lookup by link and cost a parse to
+   * express "fetch this id". Same request, same tier, said plainly.
+   */
+  async resolveByProviderId(providerPlaceId: string): Promise<ResolveOutcome> {
+    const looked = await this.safeDetails(providerPlaceId);
+    if (!looked.ok) return { status: 'UNRESOLVED', reasonCode: looked.reasonCode };
+    const { details } = looked;
+    return { status: 'RESOLVED', decision: exactProviderMatch(toTarget(details)), details };
   }
 
   /**

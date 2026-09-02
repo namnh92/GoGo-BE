@@ -68,6 +68,22 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // is recorded against two places and the conflict is still open. `path` is
   // the finite set of doors; a non-zero rate means the merge queue is behind.
   place_identity_conflict_blocked_total: ['path'],
+  // #337 — a Google Place ID answered from the catalogue instead of from
+  // Google. `path` is the finite set of doors DB-first sits behind
+  // (`resolve_link`, `submit`, `import`, `ingest`, `confirm`, `merge`); the hit
+  // rate is what says whether PR4's saving is actually being taken.
+  place_dbfirst_hit_total: ['path'],
+  // …and why a lookup fell through, which is the more useful half: `absent` is
+  // the catalogue growing, `stale` is refresh falling behind, `legacy` is a
+  // pre-PR1 row, `indeterminate` is a provider status we never learned.
+  place_dbfirst_miss_total: ['reason'],
+  // #337 — the short-lived resolve proof (`issued`, `accepted`, `expired`,
+  // `bad_signature`, `malformed`, `unsupported_version`, `wrong_purpose`,
+  // `mismatch`, `disabled`, `unconfigured`). A closed set from
+  // `AttestationRejection` plus the four operational outcomes; never a token,
+  // never a place id. `unconfigured` climbing means a deployment lost its
+  // secret and is quietly paying for the second Details call again.
+  place_resolution_attestation_total: ['result'],
 
   // --- submissions ---------------------------------------------------------
   mobile_place_submissions_total: ['status'],

@@ -9,6 +9,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PLACE_PROVIDER } from '@gogo/providers';
 import type { FakePlaceProvider } from '@gogo/providers';
+import { signResolutionAttestation } from '@gogo/modules';
 
 /**
  * PI-BE-003..010, PI-BE-018..020 acceptance over real HTTP + PostGIS:
@@ -63,6 +64,11 @@ beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
   process.env.GOOGLE_PLACES_API_KEY = '';
+  // #337 — with no secret the attestation is simply unavailable, which is the
+  // state most of this file exercises by accident. The PR4 block below needs it
+  // configured, so it is set here and the "unconfigured" path is asserted by
+  // the unit spec instead.
+  process.env.PLACE_RESOLUTION_ATTESTATION_SECRET = 'ingestion-int-attestation-secret-0123456789';
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
   // The container is stopped in afterAll; an idle client erroring as the
@@ -425,5 +431,221 @@ describe('PI-CMS-007 — submission queue (list)', () => {
       .items.find((i: { id: string }) => i.id === submitted.json().submissionId);
     expect(row.decisionReason).toBe('trùng địa điểm đã có');
     expect(row.decidedAt).toBeTruthy();
+  });
+});
+
+/**
+ * COST-BE-004 (#337) — the duplicate Google call is gone, and nothing about
+ * Google is stored to replace it.
+ *
+ * Every assertion here is on `places.tiersRequested`, the fake provider's log
+ * of what a flow would actually be billed for. Asserting the response body
+ * alone would pass with the calls still happening, which is the whole failure
+ * mode this PR exists to fix.
+ */
+describe('#337 — duplicate Google calls', () => {
+  const ATTESTATION_SECRET = 'ingestion-int-attestation-secret-0123456789';
+
+  const submit = (payload: Record<string, unknown>, token: string) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/place-submissions',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload,
+    });
+
+  /** What a flow cost, from the point this is called. */
+  function billed(): string[] {
+    return [...places.tiersRequested];
+  }
+  function resetBilling(): void {
+    places.tiersRequested.length = 0;
+  }
+
+  it('preview → attested submit → approve costs two Details, not three', async () => {
+    const moderator = await createAdmin('pr4-mod@gogo.local', 'moderator');
+    const user = await register('pr4-new@gogo.id.vn');
+    places.seed({
+      providerPlaceId: 'ChIJpr4New',
+      name: 'Quán PR4 Mới',
+      lat: 10.7769,
+      lng: 106.7009,
+    });
+
+    resetBilling();
+    const preview = await resolve({ url: 'https://www.google.com/maps?place_id=ChIJpr4New' });
+    expect(preview.statusCode).toBe(201);
+    expect(preview.json().status).toBe('RESOLVED');
+    const resolutionToken = preview.json().resolutionToken as string;
+    expect(resolutionToken, 'an operational place gets a token').toBeTruthy();
+    expect(billed(), 'preview is one Details').toEqual(['quality']);
+
+    resetBilling();
+    const submitted = await submit({ googlePlaceId: 'ChIJpr4New', resolutionToken }, user);
+    expect(submitted.statusCode).toBe(201);
+    expect(submitted.json().status).toBe('PENDING');
+    expect(billed(), 'the attested submit asks Google nothing').toEqual([]);
+
+    resetBilling();
+    const decided = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-submissions/${submitted.json().submissionId}/decide`,
+      remoteAddress: ip(),
+      headers: auth(moderator.token),
+      payload: { decision: 'approved', reason: 'đã duyệt' },
+    });
+    expect(decided.statusCode).toBe(201);
+    // Approve re-verifies on purpose: moderation outlives any attestation.
+    expect(billed(), 'approve revalidates').toEqual(['quality']);
+  });
+
+  it('a place GoGo already holds is answered from the catalogue, not from Google', async () => {
+    const moderator = await createAdmin('pr4-mod-known@gogo.local', 'moderator');
+    const user = await register('pr4-known@gogo.id.vn');
+    places.seed({
+      providerPlaceId: 'ChIJpr4Known',
+      name: 'Quán PR4 Đã Có',
+      lat: 10.7779,
+      lng: 106.7019,
+    });
+
+    const preview = await resolve({ url: 'https://www.google.com/maps?place_id=ChIJpr4Known' });
+    const first = await submit(
+      { googlePlaceId: 'ChIJpr4Known', resolutionToken: preview.json().resolutionToken },
+      user,
+    );
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-submissions/${first.json().submissionId}/decide`,
+      remoteAddress: ip(),
+      headers: auth(moderator.token),
+      payload: { decision: 'approved', reason: 'đã duyệt' },
+    });
+
+    // Now the id is catalogued. Scenario C: both halves must cost nothing.
+    resetBilling();
+    const second = await resolve({ url: 'https://www.google.com/maps?place_id=ChIJpr4Known' });
+    expect(second.json().status).toBe('ALREADY_EXISTS');
+    expect(second.json().existingPlaceId).toBeTruthy();
+    expect(second.json().reasonCodes).toContain('DB_FIRST');
+    // Served from the stored row, so it must say when that row was fetched —
+    // never `now()`, which would claim a freshness we did not check.
+    expect(second.json().candidate.fetchedAt).toBeTruthy();
+    // And no token: nothing was verified with Google in that request.
+    expect(second.json().resolutionToken).toBeUndefined();
+
+    const again = await submit(
+      { googlePlaceId: 'ChIJpr4Known' },
+      await register('pr4-known-2@gogo.id.vn'),
+    );
+    expect(again.json().status).toBe('ALREADY_EXISTS');
+    expect(billed(), 'a catalogued place costs no Details at all').toEqual([]);
+  });
+
+  it('submitting without a token still works, and still pays', async () => {
+    const user = await register('pr4-notoken@gogo.id.vn');
+    places.seed({ providerPlaceId: 'ChIJpr4NoToken', name: 'Quán PR4 Không Token' });
+
+    resetBilling();
+    const submitted = await submit({ googlePlaceId: 'ChIJpr4NoToken' }, user);
+    expect(submitted.statusCode).toBe(201);
+    expect(billed(), 'the old path is the rollback, and it is unchanged').toEqual(['quality']);
+  });
+
+  it.each([
+    [
+      'edited',
+      () =>
+        `${signResolutionAttestation({
+          googlePlaceId: 'ChIJpr4Bad',
+          secret: 'not-the-servers-secret',
+          ttlSeconds: 600,
+        })}`,
+    ],
+    [
+      'expired',
+      () =>
+        signResolutionAttestation({
+          googlePlaceId: 'ChIJpr4Bad',
+          secret: ATTESTATION_SECRET,
+          ttlSeconds: 600,
+          now: new Date(Date.now() - 3_600_000),
+        }),
+    ],
+    [
+      'minted for another place',
+      () =>
+        signResolutionAttestation({
+          googlePlaceId: 'ChIJsomewhere-else',
+          secret: ATTESTATION_SECRET,
+          ttlSeconds: 600,
+        }),
+    ],
+  ])('refuses a %s token instead of quietly fetching Google', async (_label, mint) => {
+    const user = await register(`pr4-bad-${_label.replace(/\W+/g, '')}@gogo.id.vn`);
+    places.seed({ providerPlaceId: 'ChIJpr4Bad', name: 'Quán PR4 Token Hỏng' });
+
+    resetBilling();
+    const res = await submit({ googlePlaceId: 'ChIJpr4Bad', resolutionToken: mint() }, user);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('RESOLUTION_TOKEN_INVALID');
+    // The client is told to re-resolve; it is not silently charged for one.
+    expect(res.json().retryable).toBe(true);
+    expect(billed(), 'a rejected token never becomes a Google call').toEqual([]);
+  });
+
+  it('mints no token for a closed place, so submit still refuses it', async () => {
+    const user = await register('pr4-closed@gogo.id.vn');
+    places.seed({
+      providerPlaceId: 'ChIJpr4Closed',
+      name: 'Quán PR4 Đã Đóng',
+      businessStatus: 'CLOSED_PERMANENTLY',
+    });
+
+    const preview = await resolve({ url: 'https://www.google.com/maps?place_id=ChIJpr4Closed' });
+    expect(preview.json().status).toBe('RESOLVED');
+    // Closure is Google content and may not ride in the token, so the token's
+    // absence is what carries it (plan §2.8).
+    expect(preview.json().resolutionToken).toBeUndefined();
+
+    const res = await submit({ googlePlaceId: 'ChIJpr4Closed' }, user);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('PLACE_CLOSED');
+  });
+
+  /**
+   * ADR-0006 §9.5, asserted rather than promised: PR4 may remove provider
+   * calls, and may not add a single stored provider-derived field.
+   */
+  it('stores no Google content it did not store before', async () => {
+    const before = await db.execute(sql`
+      select column_name from information_schema.columns
+      where table_name in ('place_submissions', 'place_imports')
+      order by column_name
+    `);
+    const columns = (before.rows as { column_name: string }[]).map((r) => r.column_name);
+
+    // `place_imports.provider_snapshot` is still here: #348 stopped writing it
+    // and purged it, and the column drops one release later. What must not
+    // appear is anything *this* PR could have been tempted to add — a stored
+    // token, or the provider facts the attestation deliberately does not carry.
+    for (const forbidden of [
+      'resolution_token',
+      'resolution_attestation',
+      'provider_name',
+      'provider_address',
+      'provider_business_status',
+    ]) {
+      expect(columns, `${forbidden} would be a new Google content store`).not.toContain(forbidden);
+    }
+    const snapshot = await db.execute(
+      sql`select count(*)::int as n from place_imports where provider_snapshot is not null`,
+    );
+    expect(
+      (snapshot.rows[0] as { n: number }).n,
+      'the R5 column stays empty — PR4 must not start filling it again',
+    ).toBe(0);
   });
 });

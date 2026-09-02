@@ -29,6 +29,12 @@ const submitSchema = z.object({
     .optional(),
   vibes: z.array(z.string().max(40)).max(10).default([]),
   note: z.string().max(1000).optional(),
+  /**
+   * #337 — the opaque proof returned by `POST /places/resolve-google-maps-link`.
+   * Optional: a client that does not send one gets the old behaviour, which is
+   * one more Google Details call.
+   */
+  resolutionToken: z.string().max(1024).optional(),
 });
 type SubmitDto = z.infer<typeof submitSchema>;
 
@@ -60,6 +66,7 @@ export class IngestionController {
       priceUnit: body.estimatedPrice?.unit,
       vibeKeys: body.vibes,
       note: body.note,
+      resolutionToken: body.resolutionToken,
     });
   }
 
