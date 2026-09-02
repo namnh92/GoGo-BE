@@ -281,6 +281,10 @@ values are set and the scope still authorises nothing.
 | `outcome="deadline"` non-zero                                              | the tick ran out of wall clock before its batch                                                                                                                   | usually a slow provider; the leftovers are still due and the next tick takes them in the same order       |
 | `worker_periodic_runs_total{job="gogo:worker:place-refresh"}` flat at zero | the job is not ticking at all — process down, or the advisory lock is held by a replica that never releases it                                                    | this is the alert that a scheduled job stopped, and it is the reason the runner reports at all            |
 
+Two counters, deliberately apart: `refresh_attempts` is evidence about a Place
+ID, `transient_failures` is evidence about a bad afternoon. Nothing that raises
+the second can ever move a place to `review`.
+
 Rollback is the flag, and it loses nothing — `refresh_after` simply stops being
 read, which is what every release before PR7 did:
 

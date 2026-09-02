@@ -3,6 +3,8 @@ import {
   BACKOFF_BASE_DAYS,
   MAX_REFRESH_ATTEMPTS,
   REFRESH_INTERVAL_DAYS,
+  TRANSIENT_BASE_MINUTES,
+  TRANSIENT_MAX_MINUTES,
   classifyLiveness,
   scheduleFor,
 } from './place-refresh';
@@ -17,6 +19,7 @@ import {
 const NOW = new Date('2026-09-02T00:00:00.000Z');
 const DAY_MS = 24 * 60 * 60 * 1000;
 const days = (from: Date, to: Date) => Math.round((to.getTime() - from.getTime()) / DAY_MS);
+const minutes = (from: Date, to: Date) => Math.round((to.getTime() - from.getTime()) / 60_000);
 
 describe('classifyLiveness', () => {
   it('same id back is alive', () => {
@@ -86,38 +89,46 @@ describe('classifyLiveness', () => {
 
 describe('scheduleFor', () => {
   it('alive schedules the flat cadence and clears the failure count', () => {
-    const next = scheduleFor({ kind: 'alive' }, 2, NOW);
-    expect(next.state).toBe('alive');
-    expect(next.attempts).toBe(0);
-    expect(next.errorCode).toBeNull();
-    expect(days(NOW, next.refreshAfter as Date)).toBe(REFRESH_INTERVAL_DAYS);
+    const next = scheduleFor({ kind: 'alive' }, { attempts: 2, transientFailures: 1 }, NOW);
+    expect(next).toMatchObject({ state: 'alive', attempts: 0, errorCode: null });
+    expect(days(NOW, (next as { refreshAfter: Date }).refreshAfter)).toBe(REFRESH_INTERVAL_DAYS);
   });
 
   it('moved goes dormant: a person decides, and the ceiling is not spent re-asking', () => {
     const next = scheduleFor(
       { kind: 'moved', movedToExternalId: 'ChIJ_b', signal: 'moved_place_id' },
-      0,
+      { attempts: 0, transientFailures: 0 },
       NOW,
     );
     expect(next).toMatchObject({ state: 'moved', refreshAfter: null, attempts: 0 });
   });
 
   it('first rejection waits one base interval', () => {
-    const next = scheduleFor({ kind: 'invalid_identity', errorCode: 'NOT_FOUND' }, 0, NOW);
-    expect(next.state).toBe('retry');
-    expect(next.attempts).toBe(1);
-    expect(days(NOW, next.refreshAfter as Date)).toBe(BACKOFF_BASE_DAYS);
+    const next = scheduleFor(
+      { kind: 'invalid_identity', errorCode: 'NOT_FOUND' },
+      { attempts: 0, transientFailures: 0 },
+      NOW,
+    );
+    expect(next).toMatchObject({ state: 'retry', attempts: 1 });
+    expect(days(NOW, (next as { refreshAfter: Date }).refreshAfter)).toBe(BACKOFF_BASE_DAYS);
   });
 
   it('second rejection doubles it', () => {
-    const next = scheduleFor({ kind: 'invalid_identity', errorCode: 'NOT_FOUND' }, 1, NOW);
-    expect(next.state).toBe('retry');
-    expect(next.attempts).toBe(2);
-    expect(days(NOW, next.refreshAfter as Date)).toBe(BACKOFF_BASE_DAYS * 2);
+    const next = scheduleFor(
+      { kind: 'invalid_identity', errorCode: 'NOT_FOUND' },
+      { attempts: 1, transientFailures: 0 },
+      NOW,
+    );
+    expect(next).toMatchObject({ state: 'retry', attempts: 2 });
+    expect(days(NOW, (next as { refreshAfter: Date }).refreshAfter)).toBe(BACKOFF_BASE_DAYS * 2);
   });
 
   it('the third stops the asking without asserting the place is closed', () => {
-    const next = scheduleFor({ kind: 'invalid_identity', errorCode: 'INVALID_ARGUMENT' }, 2, NOW);
+    const next = scheduleFor(
+      { kind: 'invalid_identity', errorCode: 'INVALID_ARGUMENT' },
+      { attempts: 2, transientFailures: 0 },
+      NOW,
+    );
     expect(next).toMatchObject({
       state: 'dormant',
       refreshAfter: null,
@@ -126,9 +137,46 @@ describe('scheduleFor', () => {
     });
   });
 
-  it('refuses to schedule a provider error at all — the tick stops, the row stays due', () => {
-    expect(() =>
-      scheduleFor({ kind: 'provider_error', errorCode: 'PROVIDER_UNAVAILABLE' }, 0, NOW),
-    ).toThrow(/tick stops/);
+  it('defers a provider error instead of leaving the row hot, and counts it apart', () => {
+    const next = scheduleFor(
+      { kind: 'provider_error', errorCode: 'QUOTA_EXCEEDED' },
+      { attempts: 2, transientFailures: 0 },
+      NOW,
+    );
+    expect(next).toMatchObject({
+      state: 'deferred',
+      transientFailures: 1,
+      errorCode: 'QUOTA_EXCEEDED',
+    });
+    expect(minutes(NOW, (next as { refreshAfter: Date }).refreshAfter)).toBe(
+      TRANSIENT_BASE_MINUTES,
+    );
+    // The invalid-identity counter is untouched: an outage is not evidence
+    // about a Place ID, and three outages must never look like a dead id.
+    expect(next).not.toHaveProperty('attempts');
+  });
+
+  it('doubles the transient wait and caps it', () => {
+    const steps = [0, 1, 2, 3, 4, 5, 9].map((transientFailures) => {
+      const next = scheduleFor(
+        { kind: 'provider_error', errorCode: 'PROVIDER_UNAVAILABLE' },
+        { attempts: 0, transientFailures },
+        NOW,
+      );
+      return minutes(NOW, (next as { refreshAfter: Date }).refreshAfter);
+    });
+    expect(steps).toEqual([30, 60, 120, 240, 360, 360, 360]);
+    expect(Math.max(...steps)).toBe(TRANSIENT_MAX_MINUTES);
+  });
+
+  it('a definitive answer clears the transient count', () => {
+    // The reset lives in the writer, but the contract is stated here: an
+    // `alive` schedule carries attempts 0 and no transient state to carry over.
+    expect(
+      scheduleFor({ kind: 'alive' }, { attempts: 0, transientFailures: 4 }, NOW),
+    ).toMatchObject({
+      state: 'alive',
+      attempts: 0,
+    });
   });
 });

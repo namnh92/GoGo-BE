@@ -48,9 +48,16 @@ export type RefreshSchedule =
   | { state: 'alive'; refreshAfter: Date; attempts: 0; errorCode: null }
   | { state: 'moved'; refreshAfter: null; attempts: 0; errorCode: null }
   | { state: 'retry'; refreshAfter: Date; attempts: number; errorCode: string }
-  | { state: 'dormant'; refreshAfter: null; attempts: number; errorCode: string };
+  | { state: 'dormant'; refreshAfter: null; attempts: number; errorCode: string }
+  /**
+   * The provider failed, so the row learned nothing and is pushed out of the
+   * way for a while. `attempts` is untouched — a quota error is not evidence
+   * about a Place ID — and `transientFailures` counts separately.
+   */
+  | { state: 'deferred'; refreshAfter: Date; transientFailures: number; errorCode: string };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
 
 /** Plan §2.5 / D7: one flat cadence at MVP, no adaptive ladder. */
 export const REFRESH_INTERVAL_DAYS = 30;
@@ -69,6 +76,24 @@ export const BACKOFF_BASE_DAYS = 7;
  * trusting a fact we failed to verify.
  */
 export const MAX_REFRESH_ATTEMPTS = 3;
+
+/**
+ * How long a row waits after a failure that was not its fault.
+ *
+ * Without this the tick is a spinner. A provider outage stops the tick at its
+ * first call, and every row it was going to ask about is still due — so the
+ * next tick asks the same first row, fails the same way, and the only thing
+ * that moves is the budget: reservations are never refunded, so an outage that
+ * lasts an afternoon can spend a day's ceiling on a handful of actual calls.
+ * Pushing the row out by a bounded, doubling interval means an outage costs one
+ * call per row per backoff step instead of one per tick.
+ *
+ * 30m, 1h, 2h, 4h, then capped at 6h — short enough that a blip does not delay
+ * a 30-day cadence in any way that matters, long enough that a sustained outage
+ * stops being expensive.
+ */
+export const TRANSIENT_BASE_MINUTES = 30;
+export const TRANSIENT_MAX_MINUTES = 6 * 60;
 
 /**
  * Classify one liveness answer.
@@ -127,9 +152,10 @@ export function classifyLiveness(input: {
  */
 export function scheduleFor(
   answer: RefreshAnswer,
-  attemptsBefore: number,
+  before: { attempts: number; transientFailures: number },
   now: Date,
 ): RefreshSchedule {
+  const attemptsBefore = before.attempts;
   switch (answer.kind) {
     case 'alive':
       return {
@@ -162,13 +188,27 @@ export function scheduleFor(
       };
     }
 
-    case 'provider_error':
-      // Not the row's fault, so the row does not pay for it: no attempt is
-      // recorded, `refresh_after` is untouched, and the row stays due for the
-      // next tick. This is the difference between "Google is down" and "this
-      // place is gone", and conflating them is how a provider outage would
-      // quietly mark a whole catalogue unverifiable.
-      throw new Error('provider_error has no row schedule — the tick stops instead');
+    case 'provider_error': {
+      // Not the row's fault, so the row does not pay for it in the currency
+      // that matters: `refresh_attempts` is untouched and `source_status` is
+      // left exactly as it was. This is the difference between "Google is
+      // down" and "this place is gone", and conflating them is how an outage
+      // would quietly mark a whole catalogue unverifiable.
+      //
+      // It does still move `refresh_after`, and that is the point: a row that
+      // stays due is a row the next tick pays to ask about again.
+      const transientFailures = before.transientFailures + 1;
+      const waitMinutes = Math.min(
+        TRANSIENT_BASE_MINUTES * 2 ** (transientFailures - 1),
+        TRANSIENT_MAX_MINUTES,
+      );
+      return {
+        state: 'deferred',
+        refreshAfter: new Date(now.getTime() + waitMinutes * MINUTE_MS),
+        transientFailures,
+        errorCode: answer.errorCode,
+      };
+    }
   }
 }
 

@@ -18,9 +18,18 @@
 --                            `fetched_at` moves only on success, so a row that
 --                            is being asked about and refusing to resolve is
 --                            visible as the gap between the two.
---   last_refresh_error_code  Google's canonical status for the last failure
---                            (`NOT_FOUND`, `INVALID_ARGUMENT`) or `EMPTY_ANSWER`.
---                            A status code, not a message, and never a payload.
+--   transient_failures       consecutive failures that were **ours or Google's**,
+--                            not the row's: quota, outage, a disabled API. Kept
+--                            apart from `refresh_attempts` because they mean
+--                            opposite things — one is evidence about a Place ID,
+--                            the other is evidence about a bad afternoon. Reset
+--                            by any definitive answer.
+--   last_refresh_error_code  why the last attempt failed: Google's canonical
+--                            status (`NOT_FOUND`, `INVALID_ARGUMENT`),
+--                            `EMPTY_ANSWER`, or a transport code
+--                            (`QUOTA_EXCEEDED`, `PROVIDER_UNAVAILABLE`,
+--                            `MISSING_CREDENTIAL`). A status code, not a
+--                            message, and never a payload.
 --   moved_to_external_id     the successor Place ID when Google names one.
 --
 -- `moved_to_external_id` is the only Google-derived value PR7 stores, and it is
@@ -41,6 +50,7 @@
 --   CREATE INDEX place_provider_sources_refresh_idx ON place_provider_sources (refresh_after);
 --   ALTER TABLE place_provider_sources
 --     DROP COLUMN refresh_priority, DROP COLUMN refresh_attempts,
+--     DROP COLUMN transient_failures,
 --     DROP COLUMN last_refresh_attempt_at, DROP COLUMN last_refresh_error_code,
 --     DROP COLUMN moved_to_external_id;
 --   Additive columns with defaults, so the previous deployment runs unchanged
@@ -48,6 +58,7 @@
 ALTER TABLE place_provider_sources
   ADD COLUMN IF NOT EXISTS refresh_priority smallint NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS refresh_attempts smallint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS transient_failures smallint NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS last_refresh_attempt_at timestamptz,
   ADD COLUMN IF NOT EXISTS last_refresh_error_code text,
   ADD COLUMN IF NOT EXISTS moved_to_external_id text;

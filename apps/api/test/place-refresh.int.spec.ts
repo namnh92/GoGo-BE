@@ -8,7 +8,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { schema } from '@gogo/database';
 import { MetricsRegistry } from '@gogo/observability';
 import { GooglePlacesAdapter } from '@gogo/providers';
-import { PlaceRefreshService, ProviderBudgetService, budgetLimitsFrom } from '@gogo/modules';
+import {
+  PlaceRefreshService,
+  ProviderBudgetService,
+  TRANSIENT_BASE_MINUTES,
+  TRANSIENT_MAX_MINUTES,
+  budgetLimitsFrom,
+} from '@gogo/modules';
 import { AdvisoryLock } from '../../worker/src/periodic';
 
 /**
@@ -119,8 +125,8 @@ async function seedSource(input: {
 async function sourceRow(id: string) {
   const { rows } = await db.execute(sql`
     select external_id, source_status, fetch_tier, rating, rating_count, price_level, primary_type,
-           refresh_after, refresh_attempts, last_refresh_error_code, moved_to_external_id,
-           fetched_at, last_refresh_attempt_at
+           refresh_after, refresh_attempts, transient_failures, last_refresh_error_code,
+           moved_to_external_id, fetched_at, last_refresh_attempt_at
     from place_provider_sources where id = ${id}
   `);
   return rows[0] as unknown as Record<string, unknown>;
@@ -166,6 +172,62 @@ function service(overrides?: {
 
 /** `{ id }` — what Google answers for a place that is still itself. */
 const alive = (id: string) => ({ status: 200, body: { id } });
+
+/** One failed call is three HTTP attempts: the adapter retries twice. */
+const outage = (calls: number): Stub[] =>
+  Array.from({ length: calls * 3 }, () => ({
+    status: 429,
+    body: { error: { status: 'RESOURCE_EXHAUSTED' } },
+  }));
+
+/**
+ * Minutes from the job's clock, not the wall clock: the service schedules from
+ * the injected `NOW`, so measuring against `Date.now()` would report the offset
+ * between the two rather than the backoff being tested.
+ */
+const minutesUntilDue = (refreshAfter: string) =>
+  Math.round((new Date(refreshAfter).getTime() - NOW().getTime()) / 60_000);
+
+/** Rows carrying a transient failure — one per tick an outage cost. */
+async function deferredCount(): Promise<number> {
+  const { rows } = await db.execute(
+    sql`select count(*)::int as n from place_provider_sources where transient_failures > 0`,
+  );
+  return (rows[0] as { n: number }).n;
+}
+
+async function dueCount(): Promise<number> {
+  const { rows } = await db.execute(
+    sql`select count(*)::int as n from place_provider_sources where refresh_after <= now()`,
+  );
+  return (rows[0] as { n: number }).n;
+}
+
+async function reservedCalls(): Promise<number> {
+  const { rows } = await db.execute(
+    sql`select coalesce(sum(reserved_calls), 0)::int as n from provider_budget_daily`,
+  );
+  return (rows[0] as { n: number }).n;
+}
+
+/**
+ * Reachable by search — the exact status predicate `SearchRepository` applies
+ * (`p.status = 'published'`, `search.repository.ts`). Asserted through the
+ * predicate rather than the whole query so the test says which rule it relies
+ * on, and fails if that rule is what changes.
+ */
+async function visibleInCatalogue(placeId: string): Promise<boolean> {
+  const { rows } = await db.execute(sql`
+    select 1 from places p
+    where p.id = ${placeId}
+      and p.status = 'published'
+      and not exists (
+        select 1 from place_provider_sources ps
+        where ps.place_id = p.id and ps.source_status in ('closed', 'temporarily_closed')
+      )
+  `);
+  return rows.length > 0;
+}
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgis/postgis:16-3.4')
@@ -479,41 +541,138 @@ describe('answers', () => {
       last_refresh_error_code: 'NOT_FOUND',
     });
     expect(Number(row.refresh_attempts)).toBe(3);
-    // Not closed, not deleted, and still published: three failed lookups are a
-    // reason to ask a person, not a licence to decide the business is gone.
-    expect((await placeRow(place)).status).toBe('published');
+    // Not closed and not deleted — the row and the Place ID are kept in full.
+    // But the job has permanently stopped checking this identity, so the place
+    // stops being served: `review` is a queue an editor works, not a deletion.
+    expect((await placeRow(place)).status).toBe('review');
     expect(await auditActions(place)).toEqual(['place.refresh_identity_unverifiable']);
+    // …and that is what removes it from search, through the same predicate
+    // `search.repository.ts` applies (`p.status = 'published'`).
+    expect(await visibleInCatalogue(place)).toBe(false);
   });
 
-  it('a provider outage writes nothing, records no attempt, and leaves the rows due', async () => {
+  it('a place already out of circulation is left where it is, and the audit says so', async () => {
+    stubFetch();
+    const place = await seedPlace('draft');
+    await seedSource({ placeId: place, externalId: 'ChIJ-draft-bad', dueInDays: -1, attempts: 2 });
+    queued = [{ status: 404, body: { error: { code: 404, status: 'NOT_FOUND' } } }];
+
+    await service().tick();
+
+    expect((await placeRow(place)).status).toBe('draft');
+    const { rows } = await db.execute(sql`
+      select diff from audit_logs
+      where resource_id = ${place} and action = 'place.refresh_identity_unverifiable'
+    `);
+    expect((rows[0] as { diff: { removedFromCatalogue: boolean } }).diff.removedFromCatalogue).toBe(
+      false,
+    );
+  });
+
+  it('a provider outage records no attempt against the row, and never touches its status', async () => {
     stubFetch();
     const place = await seedPlace();
     const other = await seedPlace();
     const source = await seedSource({ placeId: place, externalId: 'ChIJ-out-1', dueInDays: -2 });
     await seedSource({ placeId: other, externalId: 'ChIJ-out-2', dueInDays: -1 });
-    // 429 three times: the adapter retries twice inside one call.
-    queued = [
-      { status: 429, body: { error: { status: 'RESOURCE_EXHAUSTED' } } },
-      { status: 429, body: { error: { status: 'RESOURCE_EXHAUSTED' } } },
-      { status: 429, body: { error: { status: 'RESOURCE_EXHAUSTED' } } },
-    ];
+    queued = outage(1);
 
     const report = await service().tick();
 
     expect(report).toMatchObject({
       attempted: 1,
+      deferred: 1,
       stoppedBy: 'provider_error',
       errorCode: 'QUOTA_EXCEEDED',
     });
     const row = await sourceRow(source);
+    // The row learned nothing about itself, so nothing about it changed except
+    // when we will ask again and why we did not get an answer.
     expect(Number(row.refresh_attempts)).toBe(0);
-    expect(row.last_refresh_error_code).toBeNull();
+    expect(Number(row.transient_failures)).toBe(1);
+    expect(row.last_refresh_error_code).toBe('QUOTA_EXCEEDED');
     expect(row.source_status).toBe('active');
-    // Both rows still due — the second was never reached.
-    const { rows } = await db.execute(
-      sql`select count(*)::int as n from place_provider_sources where refresh_after <= now()`,
+    expect((await placeRow(place)).status).toBe('published');
+    expect(await auditActions(place)).toEqual([]);
+    // …and it is no longer hot: pushed out by the first backoff step.
+    expect(minutesUntilDue(row.refresh_after as string)).toBe(TRANSIENT_BASE_MINUTES);
+    // The second row was never reached and stays due.
+    expect(await dueCount()).toBe(1);
+  });
+
+  it('an outage that lasts does not spin: one call and one reservation per tick', async () => {
+    stubFetch();
+    for (let i = 0; i < 5; i += 1) {
+      const place = await seedPlace();
+      await seedSource({ placeId: place, externalId: `ChIJ-spin-${i}`, dueInDays: -1 });
+    }
+
+    for (let tick = 0; tick < 3; tick += 1) {
+      queued = outage(1);
+      const report = await service({ batchSize: 5 }).tick();
+      expect(report).toMatchObject({ attempted: 1, deferred: 1, stoppedBy: 'provider_error' });
+    }
+
+    // The property this test exists for. Before the fix each tick reserved the
+    // whole batch and made one call, so three ticks spent fifteen of the day's
+    // ceiling to ask three questions — and because the rows stayed hot, it
+    // repeated every interval until the budget was gone. Now the reservation
+    // equals the calls, and each tick moves one row out of the way.
+    expect(await reservedCalls()).toBe(3);
+    expect(await deferredCount()).toBe(3);
+    expect(await dueCount()).toBe(2);
+    // Nothing learned about any place: no attempt counted, no status changed.
+    const { rows } = await db.execute(sql`
+      select count(*)::int as n from place_provider_sources
+      where refresh_attempts > 0 or source_status <> 'active'
+    `);
+    expect((rows[0] as { n: number }).n).toBe(0);
+  });
+
+  it('the transient wait doubles while the outage lasts, and is bounded', async () => {
+    stubFetch();
+    const place = await seedPlace();
+    const source = await seedSource({ placeId: place, externalId: 'ChIJ-backoff', dueInDays: -1 });
+
+    const waits: number[] = [];
+    for (let tick = 0; tick < 4; tick += 1) {
+      await db.execute(
+        sql`update place_provider_sources set refresh_after = now() - interval '1 minute'`,
+      );
+      queued = outage(1);
+      await service().tick();
+      const row = await sourceRow(source);
+      waits.push(minutesUntilDue(row.refresh_after as string));
+      expect(Number(row.transient_failures)).toBe(tick + 1);
+      expect(Number(row.refresh_attempts)).toBe(0);
+    }
+
+    // 30m, 1h, 2h, 4h — doubling, and never past the cap.
+    expect(waits).toEqual([30, 60, 120, 240]);
+    expect(Math.max(...waits)).toBeLessThanOrEqual(TRANSIENT_MAX_MINUTES);
+  });
+
+  it('a definitive answer clears the transient count the outage left behind', async () => {
+    stubFetch();
+    const place = await seedPlace();
+    const source = await seedSource({
+      placeId: place,
+      externalId: 'ChIJ-recovered',
+      dueInDays: -1,
+    });
+    queued = outage(1);
+    await service().tick();
+    expect(Number((await sourceRow(source)).transient_failures)).toBe(1);
+
+    await db.execute(
+      sql`update place_provider_sources set refresh_after = now() - interval '1 minute'`,
     );
-    expect((rows[0] as { n: number }).n).toBe(2);
+    queued = [alive('ChIJ-recovered')];
+    await service().tick();
+
+    const row = await sourceRow(source);
+    expect(Number(row.transient_failures)).toBe(0);
+    expect(row.last_refresh_error_code).toBeNull();
   });
 });
 

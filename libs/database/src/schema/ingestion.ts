@@ -214,6 +214,7 @@ export const placeProviderSources = pgTable(
      */
     refreshPriority: smallint('refresh_priority').notNull().default(0),
     refreshAttempts: smallint('refresh_attempts').notNull().default(0),
+    transientFailures: smallint('transient_failures').notNull().default(0),
     lastRefreshAttemptAt: timestamp('last_refresh_attempt_at', { withTimezone: true }),
     lastRefreshErrorCode: text('last_refresh_error_code'),
     movedToExternalId: text('moved_to_external_id'),

@@ -75,6 +75,7 @@ type DueRow = {
   placeId: string;
   externalId: string;
   refreshAttempts: number;
+  transientFailures: number;
 };
 
 export type PlaceRefreshReport = {
@@ -85,8 +86,10 @@ export type PlaceRefreshReport = {
   moved: number;
   invalidIdentity: number;
   dormant: number;
+  /** Rows pushed out of the way because the provider, not the row, failed. */
+  deferred: number;
   /** Set when the tick stopped early. */
-  stoppedBy?: 'provider_error' | 'deadline';
+  stoppedBy?: 'provider_error' | 'deadline' | 'refused_budget';
   refusal?: string;
   errorCode?: string;
 };
@@ -129,6 +132,7 @@ export class PlaceRefreshService {
       moved: 0,
       invalidIdentity: 0,
       dormant: 0,
+      deferred: 0,
     };
 
     if (!(await this.enabled())) {
@@ -142,31 +146,6 @@ export class PlaceRefreshService {
       return { ...report, tick: 'nothing_due' };
     }
 
-    /**
-     * Reserve for exactly the rows in hand, before the first call.
-     *
-     * Plan §2.5 words this as "reserve N, then select N". Selecting first and
-     * reserving the real count is the same guarantee — nothing is called
-     * before it is reserved — and it stops a near-empty queue from spending
-     * the day's ceiling on rows that do not exist. A reservation is never
-     * refunded (a call that failed still consumed Google quota), so a tick cut
-     * short by an outage has over-reserved by the rows it did not reach; that
-     * is the conservative direction and it is the one the guard is for.
-     */
-    const reservation = await this.budget.reserve(
-      {
-        scope: REFRESH_SCOPE,
-        operation: REFRESH_OPERATION,
-        calls: rows.length,
-        units: rows.length,
-      },
-      this.options.limits,
-    );
-    if (!reservation.ok) {
-      this.count('refused_budget');
-      return { ...report, tick: 'refused_budget', refusal: reservation.reason };
-    }
-
     const startedAt = Date.now();
     for (const row of rows) {
       if (Date.now() - startedAt >= this.deadlineMs) {
@@ -175,17 +154,46 @@ export class PlaceRefreshService {
         break;
       }
 
+      /**
+       * One reservation per call, immediately before it.
+       *
+       * Plan §2.5 words this as "reserve N, then select N", and PR7 first
+       * shipped it as one reservation for the whole batch. That is wrong in
+       * the one case a hard budget exists for. Reservations are never refunded
+       * (a call that failed still consumed Google quota), so a tick that
+       * reserves twenty and stops on the first row's outage has spent twenty
+       * and asked once — and because the rows stay due, the next tick does it
+       * again. An afternoon of quota errors would eat a day's ceiling in a few
+       * hours of one-call ticks. Reserving per call keeps the ledger equal to
+       * the calls that happened, which is the property the guard was for.
+       */
+      const reservation = await this.budget.reserve(
+        { scope: REFRESH_SCOPE, operation: REFRESH_OPERATION, calls: 1, units: 1 },
+        this.options.limits,
+      );
+      if (!reservation.ok) {
+        this.count('refused_budget');
+        report.refusal = reservation.reason;
+        // Refused before any call is a refused tick; refused part-way is a
+        // tick that ran and hit its ceiling. Both leave the rest due.
+        if (report.attempted === 0) return { ...report, tick: 'refused_budget' };
+        report.stoppedBy = 'refused_budget';
+        break;
+      }
+
       report.attempted += 1;
       this.count('attempted');
       const answer = await this.ask(row);
 
       if (answer.kind === 'provider_error') {
-        // The row did not fail — the provider did. No attempt is recorded
-        // against it, `refresh_after` is untouched, and the whole tick stops:
-        // whatever broke the first call breaks the next nineteen, and a
-        // catalogue must not be marked unverifiable because Google had an
-        // afternoon.
+        // The row did not fail — the provider did. It keeps its attempt count
+        // and its status, and it is pushed out of the way for a bounded while
+        // so the next tick does not pay to ask the same question into the same
+        // outage. Then the tick stops: whatever broke this call breaks the
+        // next nineteen.
         this.count('provider_error');
+        await this.defer(row, answer.errorCode);
+        report.deferred += 1;
         report.stoppedBy = 'provider_error';
         report.errorCode = answer.errorCode;
         break;
@@ -195,6 +203,30 @@ export class PlaceRefreshService {
     }
 
     return report;
+  }
+
+  /**
+   * Push a row past a transient failure.
+   *
+   * Everything that describes the *place* is untouched: `refresh_attempts`,
+   * `source_status`, and the place's own row. The only things that move are
+   * when we will ask again and why we did not get an answer.
+   */
+  private async defer(row: DueRow, errorCode: string): Promise<void> {
+    const next = scheduleFor(
+      { kind: 'provider_error', errorCode },
+      { attempts: row.refreshAttempts, transientFailures: row.transientFailures },
+      this.now(),
+    );
+    if (next.state !== 'deferred') return;
+    await this.db.execute(sql`
+      update place_provider_sources
+      set refresh_after = ${next.refreshAfter.toISOString()},
+          transient_failures = ${next.transientFailures},
+          last_refresh_attempt_at = now(),
+          last_refresh_error_code = ${next.errorCode}
+      where id = ${row.id}
+    `);
   }
 
   /**
@@ -221,7 +253,7 @@ export class PlaceRefreshService {
    */
   private async dueRows(): Promise<DueRow[]> {
     const { rows } = await this.db.execute(sql`
-      select id, place_id, external_id, refresh_attempts
+      select id, place_id, external_id, refresh_attempts, transient_failures
       from place_provider_sources
       where provider = ${GOOGLE_PROVIDER}
         and refresh_after is not null
@@ -235,12 +267,14 @@ export class PlaceRefreshService {
         place_id: string;
         external_id: string;
         refresh_attempts: number | string;
+        transient_failures: number | string;
       }[]
     ).map((row) => ({
       id: row.id,
       placeId: row.place_id,
       externalId: row.external_id,
       refreshAttempts: Number(row.refresh_attempts ?? 0),
+      transientFailures: Number(row.transient_failures ?? 0),
     }));
   }
 
@@ -278,7 +312,17 @@ export class PlaceRefreshService {
     report: PlaceRefreshReport,
   ): Promise<void> {
     const now = this.now();
-    const next = scheduleFor(answer, row.refreshAttempts, now);
+    const next = scheduleFor(
+      answer,
+      { attempts: row.refreshAttempts, transientFailures: row.transientFailures },
+      now,
+    );
+
+    // Unreachable by construction — `apply` is never called for a provider
+    // error, which is the only answer that defers. Stated for the compiler so
+    // the dormant branch below can read `next.attempts` without a cast, and so
+    // a future answer kind cannot silently fall into it.
+    if (next.state === 'deferred') return;
 
     await this.db.transaction(async (tx) => {
       if (next.state === 'alive') {
@@ -287,6 +331,7 @@ export class PlaceRefreshService {
           set fetched_at = now(),
               refresh_after = ${next.refreshAfter.toISOString()},
               refresh_attempts = 0,
+              transient_failures = 0,
               last_refresh_attempt_at = now(),
               last_refresh_error_code = null
           where id = ${row.id}
@@ -306,6 +351,7 @@ export class PlaceRefreshService {
               moved_to_external_id = ${answer.kind === 'moved' ? answer.movedToExternalId : null},
               refresh_after = null,
               refresh_attempts = 0,
+              transient_failures = 0,
               last_refresh_attempt_at = now(),
               last_refresh_error_code = null
           where id = ${row.id}
@@ -348,6 +394,7 @@ export class PlaceRefreshService {
           update place_provider_sources
           set refresh_attempts = ${next.attempts},
               refresh_after = ${next.refreshAfter.toISOString()},
+              transient_failures = 0,
               last_refresh_attempt_at = now(),
               last_refresh_error_code = ${next.errorCode}
           where id = ${row.id}
@@ -359,17 +406,38 @@ export class PlaceRefreshService {
       // resolving: it is not `closed` (nobody told us the business shut) and
       // not `active` (we could not confirm it). It is also the one status a
       // DB-first read declines to answer from, so the next path that needs the
-      // truth asks Google rather than trusting this row. The place stays
-      // published and searchable — hiding a place on three failed lookups is a
-      // decision for a person, and this is what puts it in front of one.
+      // truth asks Google rather than trusting this row.
       await tx.execute(sql`
         update place_provider_sources
         set refresh_attempts = ${next.attempts},
             refresh_after = null,
+            transient_failures = 0,
             source_status = 'unknown',
             last_refresh_attempt_at = now(),
             last_refresh_error_code = ${next.errorCode}
         where id = ${row.id}
+      `);
+      /**
+       * …and the place stops being served.
+       *
+       * The job has now permanently stopped checking this identity, and the
+       * first version of this shipped leaving the place `published`. That is
+       * the worst of both: nothing is watching the id any more, and search
+       * keeps offering the place — an unverifiable identity would sit in the
+       * catalogue indefinitely with no clock on it and nobody told.
+       *
+       * `review` is the same door #339 uses for an identity change, and it is
+       * a review queue, not a deletion: the row is kept in full, the Place ID
+       * is kept, and an editor can re-resolve or retire it. Search reads
+       * `places.status = 'published'`, so this is what takes it out of results
+       * (`search.repository.ts`), and it is only reached by three *definitive*
+       * rejections — a provider outage never gets here, because a transient
+       * failure is deferred long before it can count.
+       */
+      const removed = await tx.execute(sql`
+        update places set status = 'review', updated_at = now()
+        where id = ${row.placeId} and status = 'published'
+        returning id
       `);
       await writeAudit(tx, {
         actorType: 'system',
@@ -380,6 +448,10 @@ export class PlaceRefreshService {
           externalId: row.externalId,
           attempts: next.attempts,
           errorCode: next.errorCode,
+          // Whether this actually took a place out of circulation, or it was
+          // already out. An audit line that always claims the former would be
+          // false for every draft place.
+          removedFromCatalogue: removed.rows.length > 0,
           source: 'place_refresh',
         },
       });
