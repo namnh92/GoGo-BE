@@ -160,6 +160,9 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `place_relocation_invalidated_total`             | `source`                     | place dời > 50 m → xoá `travel_legs` hai chiều, plan đang sống thành stale (#339)             |
 | `places_provider_cost_units`                     | `sku`                        | call Places/Routes thành công (Routes cộng elements). Không có Sheets                         |
 | `provider_usage_ledger_flush_total`              | `outcome`                    | mỗi lần ghi `provider_usage_daily` (#335); `outcome=error` = sổ chi phí đang tụt lại          |
+| `place_refresh_total`                            | `outcome`                    | mỗi tick/row của `gogo:worker:place-refresh` (#340); 10 giá trị đóng, không có id nào         |
+| `worker_periodic_runs_total`                     | `job`, `result`              | mỗi tick của worker (#340); `result` = `ok`/`failed`/`lock_skipped`                           |
+| `worker_periodic_duration_seconds`               | `job`                        | histogram, thời lượng mỗi tick worker (#340)                                                  |
 | `mobile_place_submissions_total`                 | `status`                     | submit / dedupe / decide                                                                      |
 | `place_submission_publish_latency_hours`         | `decision`                   | khi editor quyết định                                                                         |
 | `cms_emergency_takedown_total`                   | `resource_type`, `role`      | break-glass gỡ nội dung                                                                       |

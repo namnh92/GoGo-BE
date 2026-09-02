@@ -85,6 +85,26 @@ export {
   type ImportMode,
 } from '../ingestion/application/place-import-job.service';
 export {
+  PlaceRefreshService,
+  REFRESH_BATCH_SIZE,
+  REFRESH_CALL_BUDGET_MS,
+  type PlaceRefreshOptions,
+  type PlaceRefreshReport,
+} from '../ingestion/application/place-refresh.service';
+export {
+  BACKOFF_BASE_DAYS,
+  MAX_REFRESH_ATTEMPTS,
+  REFRESH_INTERVAL_DAYS,
+  TRANSIENT_BASE_MINUTES,
+  TRANSIENT_MAX_MINUTES,
+  REFRESH_OUTCOMES,
+  classifyLiveness,
+  scheduleFor,
+  type RefreshAnswer,
+  type RefreshOutcome,
+  type RefreshSchedule,
+} from '../ingestion/domain/place-refresh';
+export {
   RESOLUTION_ATTESTATION_VERSION,
   RESOLUTION_PURPOSE,
   signResolutionAttestation,

@@ -6,8 +6,11 @@ import {
   OutboxDispatcher,
   PlaceDedupService,
   PlaceImportJobService,
+  PlaceRefreshService,
   PlaceResolverService,
   PrivacyJobs,
+  ProviderBudgetService,
+  budgetLimitsFrom,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -48,6 +51,14 @@ const pollIntervalMs = (name: string, fallback: number): number => {
 
 const OUTBOX_POLL_MS = pollIntervalMs('OUTBOX_POLL_MS', 5000);
 const INGEST_POLL_MS = pollIntervalMs('INGEST_POLL_MS', 5000);
+/**
+ * #340 — how often the liveness refresh looks for due rows. Plan §2.5 sets DEV
+ * to 15 minutes: the work is due-work on a 30-day cadence, so the interval
+ * decides how finely a day's worth of rows is spread, not how fresh anything
+ * is. Nothing is spent on an empty tick — the due query answers first, and the
+ * budget reservation only happens when there are rows.
+ */
+const PLACE_REFRESH_POLL_MS = pollIntervalMs('PLACE_REFRESH_POLL_MS', 15 * 60 * 1000);
 const PRIVACY_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /**
  * How often this process says it is alive. Its own job, on its own cadence:
@@ -193,6 +204,28 @@ async function bootstrap(): Promise<void> {
     metrics,
   );
 
+  /**
+   * #340 — PR7's liveness refresh.
+   *
+   * Two independent switches have to be on for this to call Google at all: the
+   * `place_refresh.enabled` flag (default off, `FLAG_PLACE_REFRESH` as the
+   * deploy-time default) and a configured `google.places.refresh` budget. The
+   * budget guard is default-deny, so an environment with no ceilings runs the
+   * job, reserves nothing and spends nothing — which is exactly what DEV does
+   * until INF-057's values are written.
+   */
+  const refresh = new PlaceRefreshService(
+    db,
+    placeProvider,
+    new ProviderBudgetService(db),
+    metrics,
+    {
+      appEnv: process.env.APP_ENV ?? 'dev',
+      flagDefault: process.env.FLAG_PLACE_REFRESH === 'true',
+      limits: budgetLimitsFrom('google.places.refresh', process.env),
+    },
+  );
+
   const periodic = startPeriodic(
     [
       {
@@ -239,6 +272,17 @@ async function bootstrap(): Promise<void> {
         },
       },
       {
+        name: 'gogo:worker:place-refresh',
+        schedule: { everyMs: PLACE_REFRESH_POLL_MS },
+        run: async () => {
+          const report = await refresh.tick();
+          // A tick that found nothing due is the common case and says nothing
+          // worth a line; everything else is either spend or a reason there was
+          // none, and both are what an operator reads this log for.
+          if (report.tick !== 'nothing_due') logger.info({ report }, 'place refresh tick');
+        },
+      },
+      {
         name: 'gogo:worker:heartbeat',
         schedule: { everyMs: HEARTBEAT_INTERVAL_MS },
         run: async () => {
@@ -251,11 +295,16 @@ async function bootstrap(): Promise<void> {
         },
       },
     ],
-    { lock: new AdvisoryLock(pool), logger },
+    { lock: new AdvisoryLock(pool), logger, metrics },
   );
 
   logger.info(
-    { outboxPollMs: OUTBOX_POLL_MS, ingestPollMs: INGEST_POLL_MS },
+    {
+      outboxPollMs: OUTBOX_POLL_MS,
+      ingestPollMs: INGEST_POLL_MS,
+      placeRefreshPollMs: PLACE_REFRESH_POLL_MS,
+      placeRefreshFlagDefault: process.env.FLAG_PLACE_REFRESH === 'true',
+    },
     'worker booted: privacy sweep every 6h',
   );
 

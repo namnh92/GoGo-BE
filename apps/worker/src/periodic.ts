@@ -39,9 +39,28 @@ export interface PeriodicLogger {
   error(obj: Record<string, unknown>, msg: string): void;
 }
 
+/**
+ * #340 — what a tick reports about itself.
+ *
+ * Structural rather than `MetricsPort`, for the same reason the lock is: this
+ * file describes a runner, and a runner that imports an observability package
+ * to be testable is one more thing to stand up in a test that is about timers.
+ */
+export interface PeriodicMetrics {
+  increment(name: string, labels?: Record<string, string | number | undefined>, by?: number): void;
+  observe(name: string, value: number, labels?: Record<string, string | number | undefined>): void;
+}
+
 export interface PeriodicOptions {
   lock: JobLock;
   logger: PeriodicLogger;
+  /**
+   * Optional so existing callers and tests are unchanged, but production
+   * passes one: without it the only evidence a scheduled job ran is a log
+   * line, and "the refresh job stopped ticking" is not a question a log
+   * search should have to answer (plan §2.5).
+   */
+  metrics?: PeriodicMetrics;
 }
 
 export interface PeriodicHandle {
@@ -64,6 +83,10 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
     );
   };
 
+  const record = (job: PeriodicJob, result: 'ok' | 'failed' | 'lock_skipped') => {
+    options.metrics?.increment('worker_periodic_runs_total', { job: job.name, result });
+  };
+
   const tick = async (job: PeriodicJob) => {
     timers.delete(job.name);
     if (stopping || inFlight.has(job.name)) return;
@@ -73,12 +96,26 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
         options.logger.error({ err, job: job.name }, 'periodic job could not reach the lock');
         return undefined;
       });
-      if (!release) return; // another replica has it this tick, or the lock was unreachable
+      if (!release) {
+        // Another replica has it this tick, or the lock was unreachable. Both
+        // are "this process did not run the job", and a rate that never leaves
+        // zero on every replica is how a lock nobody can take looks.
+        record(job, 'lock_skipped');
+        return;
+      }
+      const startedAt = Date.now();
       try {
         await job.run();
+        record(job, 'ok');
       } catch (err) {
         options.logger.error({ err, job: job.name }, 'periodic job failed');
+        record(job, 'failed');
       } finally {
+        options.metrics?.observe(
+          'worker_periodic_duration_seconds',
+          (Date.now() - startedAt) / 1000,
+          { job: job.name },
+        );
         await release().catch((err) =>
           options.logger.warn({ err, job: job.name }, 'periodic job lock release failed'),
         );

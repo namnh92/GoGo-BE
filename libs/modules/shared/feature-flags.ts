@@ -126,6 +126,17 @@ export const FEATURE_FLAGS = {
       'Answer from the canonical provider row when the Google Place ID is already known and fresh.',
     platformScoped: false,
   },
+  // #340 (PR7). Default **off**, unlike the two above: those switch off spend,
+  // this one switches on a scheduled spender. A job that starts calling Google
+  // the moment its code is deployed is not a job anyone chose to run — the
+  // deploy-time default is `FLAG_PLACE_REFRESH`, and this row is the switch an
+  // operator can throw during an incident without a deploy.
+  'place_refresh.enabled': {
+    valueType: 'boolean',
+    defaultValue: false,
+    description: 'Run the periodic Google Place ID liveness refresh (IDs-Only, billed at $0).',
+    platformScoped: false,
+  },
 } as const satisfies Record<string, FlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAGS;
