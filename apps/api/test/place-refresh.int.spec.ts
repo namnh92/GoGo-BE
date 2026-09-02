@@ -44,7 +44,16 @@ const OPEN_LIMITS = budgetLimitsFrom('google.places.refresh', {
   PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_LIVENESS: '1000',
 });
 
-type Stub = { status: number; body?: unknown };
+/**
+ * `echo` answers with the id that was asked for.
+ *
+ * Rows seeded with the same `refresh_after` tie-break on their (random) row id,
+ * so a test that seeds several cannot know which one the tick will ask about.
+ * A stub with a hard-coded id would then be served to a different row and read
+ * as a *move* — the assertion would pass or fail by luck, which is how this
+ * first reached CI.
+ */
+type Stub = { status: number; body?: unknown; echo?: true };
 let queued: Stub[] = [];
 let requests: { url: string; fieldMask: string | null }[] = [];
 
@@ -53,17 +62,21 @@ function stubFetch() {
     'fetch',
     vi.fn(async (input: unknown, init?: { headers?: Record<string, string> }) => {
       const next = queued.shift() ?? { status: 200, body: {} };
+      const url = String(input);
       requests.push({
-        url: String(input),
+        url,
         fieldMask: init?.headers?.['X-Goog-FieldMask'] ?? null,
       });
+      const body = next.echo
+        ? { id: decodeURIComponent(url.split('/places/')[1] ?? '') }
+        : next.body;
       return {
         ok: next.status >= 200 && next.status < 300,
         status: next.status,
         url: String(input),
         headers: { get: () => null },
-        json: async () => next.body ?? {},
-        text: async () => JSON.stringify(next.body ?? {}),
+        json: async () => body ?? {},
+        text: async () => JSON.stringify(body ?? {}),
       };
     }),
   );
@@ -172,6 +185,9 @@ function service(overrides?: {
 
 /** `{ id }` — what Google answers for a place that is still itself. */
 const alive = (id: string) => ({ status: 200, body: { id } });
+
+/** Alive, whichever row the tick happened to pick. */
+const aliveEcho = (): Stub => ({ status: 200, echo: true });
 
 /** One failed call is three HTTP attempts: the adapter retries twice. */
 const outage = (calls: number): Stub[] =>
@@ -307,7 +323,7 @@ describe('due-row selection', () => {
       const place = await seedPlace();
       await seedSource({ placeId: place, externalId: `ChIJ-batch-${i}`, dueInDays: -1 });
     }
-    queued = [alive('x'), alive('x')];
+    queued = [aliveEcho(), aliveEcho()];
 
     const report = await service({ batchSize: 2 }).tick();
 
@@ -377,7 +393,7 @@ describe('bounds that stop the tick', () => {
       PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_LIVENESS: '1000',
     });
 
-    queued = [alive('ChIJ-cap-0')];
+    queued = [aliveEcho()];
     const first = await service({ limits: tightLimits, batchSize: 1 }).tick();
     expect(first.succeeded).toBe(1);
 
@@ -392,7 +408,7 @@ describe('bounds that stop the tick', () => {
       const place = await seedPlace();
       await seedSource({ placeId: place, externalId: `ChIJ-slow-${i}`, dueInDays: -1 });
     }
-    queued = [alive('ChIJ-slow-0'), alive('ChIJ-slow-1'), alive('ChIJ-slow-2')];
+    queued = [aliveEcho(), aliveEcho(), aliveEcho()];
 
     const report = await service({ deadlineMs: 0 }).tick();
 
