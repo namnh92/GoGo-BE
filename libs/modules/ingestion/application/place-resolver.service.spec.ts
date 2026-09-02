@@ -5,6 +5,7 @@ import {
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   UnconfiguredPlaceProvider,
+  type PlaceFetchTier,
   type PlaceProviderPort,
   type ResolvedProviderPlace,
 } from '@gogo/providers';
@@ -20,7 +21,17 @@ const db = {} as Db;
 const LACAPH =
   'https://www.google.com/maps/search/?api=1&query=Lacaph+Coffee+Experiences+Space+Ho+Chi+Minh+City';
 
-function providerThat(behaviour: Partial<PlaceProviderPort>): PlaceProviderPort {
+/**
+ * `details` is overloaded on the port so a `liveness` caller cannot read a
+ * place (#338). A stub does not need that narrowing — it is never called at
+ * `liveness` here — so it is declared with the single signature the resolver
+ * actually uses, and the object is cast once at the end as it always was.
+ */
+type PlaceProviderStub = Omit<Partial<PlaceProviderPort>, 'details'> & {
+  details?: (id: string, tier: PlaceFetchTier) => Promise<ResolvedProviderPlace | null>;
+};
+
+function providerThat(behaviour: PlaceProviderStub): PlaceProviderPort {
   return {
     resolveUrl: async () => null,
     searchCandidates: async () => [],
@@ -57,7 +68,7 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
       db,
     );
 
-    await expect(resolver.resolveFromUrl(LACAPH)).resolves.toMatchObject({
+    await expect(resolver.resolveFromUrl(LACAPH, 'quality')).resolves.toMatchObject({
       status: 'UNRESOLVED',
       reasonCode: 'NOT_FOUND',
     });
@@ -72,7 +83,7 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
       db,
     );
 
-    const outcome = await resolver.resolveFromUrl(LACAPH, { name: A_REAL_PLACE.name });
+    const outcome = await resolver.resolveFromUrl(LACAPH, 'quality', { name: A_REAL_PLACE.name });
     expect(outcome.status).not.toBe('UNRESOLVED');
   });
 
@@ -89,7 +100,7 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
     // The regression this whole issue is about: this used to resolve to
     // UNRESOLVED/NOT_FOUND with a 201, and Mobile printed it as a fact about
     // the user's place.
-    await expect(resolver.resolveFromUrl(LACAPH)).rejects.toBeInstanceOf(
+    await expect(resolver.resolveFromUrl(LACAPH, 'quality')).rejects.toBeInstanceOf(
       ProviderConfigurationError,
     );
   });
@@ -97,7 +108,7 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
   it('does not turn a missing credential into NOT_FOUND', async () => {
     const resolver = new PlaceResolverService(new UnconfiguredPlaceProvider(), db);
 
-    await expect(resolver.resolveFromUrl(LACAPH)).rejects.toMatchObject({
+    await expect(resolver.resolveFromUrl(LACAPH, 'quality')).rejects.toMatchObject({
       faultCode: 'MISSING_CREDENTIAL',
     });
   });
@@ -112,7 +123,9 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
       db,
     );
 
-    await expect(resolver.resolveFromUrl(LACAPH)).rejects.toBeInstanceOf(ProviderUnavailableError);
+    await expect(resolver.resolveFromUrl(LACAPH, 'quality')).rejects.toBeInstanceOf(
+      ProviderUnavailableError,
+    );
   });
 
   it('still propagates quota, as it always did', async () => {
@@ -125,7 +138,7 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
       db,
     );
 
-    await expect(resolver.resolveFromUrl(LACAPH)).rejects.toBeInstanceOf(
+    await expect(resolver.resolveFromUrl(LACAPH, 'quality')).rejects.toBeInstanceOf(
       ProviderQuotaExceededError,
     );
   });
@@ -141,7 +154,7 @@ describe('#279 — a provider that cannot answer is not a place that does not ex
       db,
     );
 
-    await expect(resolver.resolveFromUrl(LACAPH)).rejects.toBeInstanceOf(
+    await expect(resolver.resolveFromUrl(LACAPH, 'quality')).rejects.toBeInstanceOf(
       ProviderConfigurationError,
     );
   });
@@ -205,7 +218,7 @@ describe('#314 — a link the provider rejects is a broken link, not an outage',
       db,
     );
 
-    const out = await resolver.resolveFromUrl(withId);
+    const out = await resolver.resolveFromUrl(withId, 'quality');
 
     expect(out.status).toBe('UNRESOLVED');
     if (out.status !== 'UNRESOLVED') return;
@@ -222,7 +235,7 @@ describe('#314 — a link the provider rejects is a broken link, not an outage',
       db,
     );
 
-    const out = await resolver.resolveFromUrl(withId);
+    const out = await resolver.resolveFromUrl(withId, 'quality');
 
     expect(out.status).toBe('UNRESOLVED');
     if (out.status !== 'UNRESOLVED') return;
@@ -232,7 +245,7 @@ describe('#314 — a link the provider rejects is a broken link, not an outage',
   it('a provider that answers "nothing here" is still NOT_FOUND', async () => {
     const resolver = new PlaceResolverService(providerThat({ details: async () => null }), db);
 
-    const out = await resolver.resolveFromUrl(withId);
+    const out = await resolver.resolveFromUrl(withId, 'quality');
 
     expect(out.status).toBe('UNRESOLVED');
     if (out.status !== 'UNRESOLVED') return;
@@ -249,7 +262,7 @@ describe('#314 — a link the provider rejects is a broken link, not an outage',
       db,
     );
 
-    await expect(resolver.resolveFromUrl(withId)).rejects.toBeInstanceOf(
+    await expect(resolver.resolveFromUrl(withId, 'quality')).rejects.toBeInstanceOf(
       ProviderConfigurationError,
     );
   });
@@ -269,7 +282,7 @@ describe('#314 — a link the provider rejects is a broken link, not an outage',
       db,
     );
 
-    const out = await resolver.resolveFromUrl(LACAPH, { name: good.name });
+    const out = await resolver.resolveFromUrl(LACAPH, 'quality', { name: good.name });
 
     expect(out.status).not.toBe('UNRESOLVED');
   });

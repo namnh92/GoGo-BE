@@ -225,7 +225,14 @@ describe('GooglePlacesAdapter.details', () => {
         increment: (name, labels) => void increments.push({ name, ...labels }),
         observe: () => undefined,
       });
-      await adapter.details('ChIJ-lacaph', tier);
+      // The branch is not ceremony — `details` has no signature accepting an
+      // un-narrowed tier, and that is the point: a caller holding a variable
+      // tier cannot ask for a place, because it cannot know whether the answer
+      // would be one. Narrowing here is what a real caller does at the point it
+      // decides which question it is asking.
+      await (tier === 'liveness'
+        ? adapter.details('ChIJ-lacaph', 'liveness')
+        : adapter.details('ChIJ-lacaph', tier));
       // Both counters, because the ledger prices by SKU and the dashboard
       // counts by method. A tier that moved one and not the other would make
       // the two disagree about what the same call was.
