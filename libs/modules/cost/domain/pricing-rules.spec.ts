@@ -1,0 +1,200 @@
+import { describe, expect, it } from 'vitest';
+import {
+  PRICING_RULES,
+  estimateMicros,
+  newestEffectiveFrom,
+  ruleInForce,
+  type PricingRule,
+} from './pricing-rules';
+import { PRICING_VERSION } from './provider-pricing';
+import { COST_REGISTRY } from './registry';
+
+const TODAY = '2026-09-02';
+
+const base: PricingRule = {
+  id: 'test-rule',
+  providerId: 'x',
+  serviceId: 'x.svc',
+  operationId: 'x.op',
+  usageMetricId: 'x.op/requests',
+  billingSkuId: 'x.sku',
+  region: null,
+  platform: null,
+  effectiveFrom: '2026-01-01',
+  effectiveTo: null,
+  currency: 'USD',
+  pricingModel: 'PER_REQUEST',
+  unitPriceMicros: 1_000,
+  tiers: null,
+  freeAllowance: null,
+  version: 'test-v1',
+  sourceReference: 'test',
+  reviewedAt: '2026-01-01',
+};
+
+describe('pricing models (epic §13)', () => {
+  it('FREE is a known zero, never an unknown', () => {
+    const r = estimateMicros({ ...base, pricingModel: 'FREE', unitPriceMicros: 0 }, 10_000);
+    expect(r).toEqual({ known: true, listMicros: 0, freeAdjustedMicros: 0 });
+  });
+
+  it('an unknown unit price is unknown, never zero', () => {
+    expect(estimateMicros({ ...base, unitPriceMicros: null }, 500)).toEqual({ known: false });
+    expect(
+      estimateMicros({ ...base, pricingModel: 'PER_1K_REQUESTS', unitPriceMicros: null }, 500),
+    ).toEqual({
+      known: false,
+    });
+  });
+
+  it('PER_REQUEST / PER_OPERATION multiply per unit', () => {
+    expect(estimateMicros(base, 12)).toMatchObject({ listMicros: 12_000 });
+    expect(estimateMicros({ ...base, pricingModel: 'PER_OPERATION' }, 12)).toMatchObject({
+      listMicros: 12_000,
+    });
+  });
+
+  it('PER_1K_REQUESTS and PER_MILLION_REQUESTS divide, rounding up', () => {
+    // $20/1k Enterprise Details → 250 calls = $5.00.
+    expect(
+      estimateMicros(
+        { ...base, pricingModel: 'PER_1K_REQUESTS', unitPriceMicros: 20_000_000 },
+        250,
+      ),
+    ).toMatchObject({
+      listMicros: 5_000_000,
+    });
+    // 3 autocomplete at $2.83/1k = 8,490 micros, not 8,489.99.
+    expect(
+      estimateMicros({ ...base, pricingModel: 'PER_1K_REQUESTS', unitPriceMicros: 2_830_000 }, 3),
+    ).toMatchObject({
+      listMicros: 8_490,
+    });
+    expect(
+      estimateMicros(
+        { ...base, pricingModel: 'PER_MILLION_REQUESTS', unitPriceMicros: 500_000 },
+        1_000,
+      ),
+    ).toMatchObject({
+      listMicros: 500,
+    });
+  });
+
+  it('TIERED charges each band at its own price and refuses units past the last bounded tier', () => {
+    const tiered: PricingRule = {
+      ...base,
+      pricingModel: 'TIERED',
+      unitPriceMicros: null,
+      tiers: [
+        { upTo: 100, unitPriceMicros: 0 },
+        { upTo: 1_000, unitPriceMicros: 10 },
+        { upTo: null, unitPriceMicros: 5 },
+      ],
+    };
+    // 100 free, 900 at 10, 500 at 5.
+    expect(estimateMicros(tiered, 1_500)).toMatchObject({ listMicros: 900 * 10 + 500 * 5 });
+    const bounded: PricingRule = { ...tiered, tiers: [{ upTo: 100, unitPriceMicros: 0 }] };
+    expect(estimateMicros(bounded, 50)).toMatchObject({ listMicros: 0 });
+    expect(estimateMicros(bounded, 150)).toEqual({ known: false });
+  });
+
+  it('FIXED_MONTHLY is the price regardless of quantity', () => {
+    const fixed: PricingRule = {
+      ...base,
+      pricingModel: 'FIXED_MONTHLY',
+      unitPriceMicros: 99_000_000,
+    };
+    expect(estimateMicros(fixed, 0)).toMatchObject({ listMicros: 99_000_000 });
+    expect(estimateMicros(fixed, 1_000)).toMatchObject({ listMicros: 99_000_000 });
+  });
+});
+
+describe('free allowance (epic §15, reporting only)', () => {
+  const withCap: PricingRule = {
+    ...base,
+    pricingModel: 'PER_1K_REQUESTS',
+    unitPriceMicros: 20_000_000,
+    freeAllowance: { quantity: 1_000, unit: 'request', period: 'MONTH', scope: 'SKU' },
+  };
+
+  it('charges nothing until the allowance is consumed, then only the excess', () => {
+    expect(estimateMicros(withCap, 400, 0)).toMatchObject({
+      listMicros: 8_000_000,
+      freeAdjustedMicros: 0,
+    });
+    expect(estimateMicros(withCap, 200, 900)).toMatchObject({ freeAdjustedMicros: 2_000_000 });
+    expect(estimateMicros(withCap, 100, 5_000)).toMatchObject({ freeAdjustedMicros: 2_000_000 });
+  });
+
+  it('keeps list price untouched by the allowance', () => {
+    expect(estimateMicros(withCap, 100, 5_000)).toMatchObject({ listMicros: 2_000_000 });
+  });
+});
+
+describe('historical pricing (epic §14)', () => {
+  it("prices a day with the rule in force on that day, never today's", () => {
+    const v1: PricingRule = {
+      ...base,
+      id: 'v1',
+      effectiveFrom: '2026-01-01',
+      effectiveTo: '2026-10-01',
+      unitPriceMicros: 1_000,
+    };
+    const v2: PricingRule = {
+      ...base,
+      id: 'v2',
+      effectiveFrom: '2026-10-01',
+      unitPriceMicros: 2_000,
+      version: 'test-v2',
+    };
+    const rules = [v1, v2];
+    expect(ruleInForce(rules, { operationId: 'x.op' }, '2026-09-15')?.id).toBe('v1');
+    expect(ruleInForce(rules, { operationId: 'x.op' }, '2026-10-15')?.id).toBe('v2');
+    expect(ruleInForce(rules, { billingSkuId: 'x.sku' }, '2025-12-31')).toBeNull();
+  });
+
+  it('never has two rules in force for one SKU on one day', () => {
+    for (const a of PRICING_RULES) {
+      if (a.billingSkuId === null) continue;
+      const others = PRICING_RULES.filter(
+        (b) =>
+          b !== a &&
+          b.billingSkuId === a.billingSkuId &&
+          b.effectiveFrom <= a.effectiveFrom &&
+          (b.effectiveTo === null || a.effectiveFrom < b.effectiveTo),
+      );
+      expect(others, `overlap on ${a.billingSkuId}`).toEqual([]);
+    }
+  });
+
+  it('labels reports with the newest effectiveFrom', () => {
+    expect(PRICING_VERSION).toBe(newestEffectiveFrom());
+  });
+});
+
+describe('seed integrity', () => {
+  it('every rule refers to a registered service, operation, meter and SKU', () => {
+    for (const rule of PRICING_RULES) {
+      expect(COST_REGISTRY.service(rule.serviceId), rule.id).not.toBeNull();
+      if (rule.operationId !== null)
+        expect(COST_REGISTRY.operation(rule.operationId), rule.id).not.toBeNull();
+      if (rule.usageMetricId !== null) {
+        const meter = COST_REGISTRY.meter(rule.usageMetricId);
+        expect(meter, rule.id).not.toBeNull();
+        // The rule binds to the meter that is billed, not to a request count
+        // by assumption (epic §44.23).
+        expect(meter!.billingSkuId, rule.id).toBe(rule.billingSkuId);
+      }
+      if (rule.billingSkuId !== null)
+        expect(COST_REGISTRY.billingSku(rule.billingSkuId), rule.id).not.toBeNull();
+      expect(rule.currency).toBe('USD');
+      expect(rule.reviewedAt <= TODAY).toBe(true);
+    }
+  });
+
+  it('keeps the two known-unknowns unknown', () => {
+    for (const sku of ['routes.computeRouteMatrix', 'maps.dynamic.ios', 'maps.dynamic.android']) {
+      expect(ruleInForce(PRICING_RULES, { billingSkuId: sku }, TODAY)?.unitPriceMicros).toBeNull();
+    }
+  });
+});

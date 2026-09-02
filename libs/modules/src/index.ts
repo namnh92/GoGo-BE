@@ -237,3 +237,48 @@ export {
   type OpsProvider,
   type PricingRow,
 } from '../cost/domain/provider-pricing';
+export { CAPABILITIES, isCapability, type Capability } from '../cost/domain/capabilities';
+export {
+  COST_REGISTRY,
+  COST_REGISTRY_DATA,
+  CostRegistry,
+  RegistryError,
+  assertCapabilitiesKnown,
+  type BillingSkuDefinition,
+  type MeterUnit,
+  type OperationDefinition,
+  type ProviderDefinition,
+  type ProviderStatus,
+  type RegistryData,
+  type ServiceCategory,
+  type ServiceDefinition,
+  type UsageMeterDefinition,
+} from '../cost/domain/registry';
+export {
+  PRICING_MODELS,
+  PRICING_RULES,
+  estimateMicros,
+  newestEffectiveFrom,
+  ruleInForce,
+  type EstimateResult,
+  type FreeAllowance,
+  type PricingModel,
+  type PricingRule,
+  type PricingTier,
+} from '../cost/domain/pricing-rules';
+export {
+  type ActualCostCollector,
+  type CollectContext,
+  type Confidence,
+  type CostBasis,
+  type CostEstimate,
+  type CostEstimator,
+  type CostSample,
+  type FixedCostItem,
+  type FixedCostProvider,
+  type QuotaCollector,
+  type QuotaSnapshot,
+  type UsageCollector,
+  type UsageSample,
+} from '../cost/ports/collectors.port';
+export { AdapterRegistryError, CostAdapterRegistry } from '../cost/ports/adapter-registry';
