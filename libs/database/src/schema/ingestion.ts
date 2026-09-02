@@ -8,6 +8,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -202,11 +203,31 @@ export const placeProviderSources = pgTable(
     sourceStatus: providerSourceStatus('source_status').notNull().default('active'),
     /** Field tier the snapshot was fetched at (core | quality | detail). */
     fetchTier: text('fetch_tier').notNull().default('core'),
+    /**
+     * PR7 (#340) — what the liveness refresh needs to run and to stop.
+     *
+     * `refreshAfter` above says *when*; these say *in what order*, *how many
+     * times it has failed*, *when it was last asked* and *where the provider
+     * says the place went*. `movedToExternalId` is a Place ID, the one Google
+     * value SST §3 permits storing indefinitely — a liveness answer carries
+     * nothing else, which is why refresh can add no other provider content.
+     */
+    refreshPriority: smallint('refresh_priority').notNull().default(0),
+    refreshAttempts: smallint('refresh_attempts').notNull().default(0),
+    lastRefreshAttemptAt: timestamp('last_refresh_attempt_at', { withTimezone: true }),
+    lastRefreshErrorCode: text('last_refresh_error_code'),
+    movedToExternalId: text('moved_to_external_id'),
   },
   (t) => [
     uniqueIndex('place_provider_sources_provider_external_unique').on(t.provider, t.externalId),
     index('place_provider_sources_place_idx').on(t.placeId),
-    index('place_provider_sources_refresh_idx').on(t.refreshAfter),
+    // Partial and composite, matching the due query's ORDER BY exactly. Dormant
+    // and moved rows carry `refresh_after IS NULL` and are excluded, so a
+    // growing set of rows the job will never ask about does not grow the index
+    // it reads every tick (#340).
+    index('place_provider_sources_refresh_due_idx')
+      .on(t.refreshPriority.desc(), t.refreshAfter.asc())
+      .where(sql`${t.refreshAfter} is not null`),
   ],
 );
 

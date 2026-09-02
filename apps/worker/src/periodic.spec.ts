@@ -22,6 +22,22 @@ function lock(granted = true): JobLock & { acquired: number; released: number } 
   return l;
 }
 
+function recorder() {
+  const counts: Record<string, number> = {};
+  const durations: string[] = [];
+  return {
+    counts,
+    durations,
+    increment(name: string, labels?: Record<string, string | number | undefined>) {
+      const key = `${name}{${labels?.job as string},${labels?.result as string}}`;
+      counts[key] = (counts[key] ?? 0) + 1;
+    },
+    observe(name: string, _value: number, labels?: Record<string, string | number | undefined>) {
+      durations.push(`${name}{${labels?.job as string}}`);
+    },
+  };
+}
+
 describe('startPeriodic', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -136,5 +152,53 @@ describe('startPeriodic', () => {
     expect(stopped).toBe(true);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(started).toBe(1);
+  });
+
+  it('reports each tick — a scheduled job that stops ticking is otherwise silent (#340)', async () => {
+    const metrics = recorder();
+    const handle = startPeriodic(
+      [{ name: 'refresh', schedule: { everyMs: 1_000 }, run: async () => undefined }],
+      { lock: lock(), logger, metrics },
+    );
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(metrics.counts['worker_periodic_runs_total{refresh,ok}']).toBe(2);
+    expect(metrics.durations).toEqual([
+      'worker_periodic_duration_seconds{refresh}',
+      'worker_periodic_duration_seconds{refresh}',
+    ]);
+    await handle.stop();
+  });
+
+  it('tells a failed tick apart from one another replica took', async () => {
+    const failing = recorder();
+    const failed = startPeriodic(
+      [
+        {
+          name: 'refresh',
+          schedule: { everyMs: 1_000 },
+          run: async () => {
+            throw new Error('boom');
+          },
+        },
+      ],
+      { lock: lock(), logger, metrics: failing },
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(failing.counts['worker_periodic_runs_total{refresh,failed}']).toBe(1);
+    // The duration is still observed: a tick that failed slowly is the one
+    // worth seeing.
+    expect(failing.durations).toHaveLength(1);
+    await failed.stop();
+
+    const skipping = recorder();
+    const skipped = startPeriodic(
+      [{ name: 'refresh', schedule: { everyMs: 1_000 }, run: async () => undefined }],
+      { lock: lock(false), logger, metrics: skipping },
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(skipping.counts['worker_periodic_runs_total{refresh,lock_skipped}']).toBe(1);
+    expect(skipping.durations).toHaveLength(0);
+    await skipped.stop();
   });
 });

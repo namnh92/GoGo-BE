@@ -53,6 +53,13 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // ledger has that a counter does not.
   provider_usage_ledger_flush_total: ['outcome'],
 
+  // --- worker --------------------------------------------------------------
+  // #340 — `job` is the registered job name (a literal in `apps/worker`),
+  // `result` is ok | failed | lock_skipped. Both closed sets; no timings as
+  // labels, the duration is its own histogram.
+  worker_periodic_runs_total: ['job', 'result'],
+  worker_periodic_duration_seconds: ['job'],
+
   // --- ingestion -----------------------------------------------------------
   place_resolve_duration_seconds: ['source', 'outcome'],
   place_resolve_confidence_bucket: ['source', 'bucket'],
@@ -81,6 +88,12 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // Google. `path` is the finite set of doors DB-first sits behind
   // (`resolve_link`, `submit`, `import`, `ingest`, `confirm`, `merge`); the hit
   // rate is what says whether PR4's saving is actually being taken.
+  // #340 — the refresh job's own ledger. `outcome` is REFRESH_OUTCOMES, a
+  // closed set of ten declared in `place-refresh.ts`: per-row (`attempted`,
+  // `succeeded`, `moved`, `invalid_identity`, `dormant`) and per-tick
+  // (`deferred_not_due`, `refused_budget`, `disabled`, `provider_error`,
+  // `deadline`). No place id, no external id, no Google status text.
+  place_refresh_total: ['outcome'],
   place_dbfirst_hit_total: ['path'],
   // …and why a lookup fell through, which is the more useful half: `absent` is
   // the catalogue growing, `stale` is refresh falling behind, `legacy` is a

@@ -250,6 +250,65 @@ feature. A `RESOLUTION_TOKEN_INVALID` in a client's hands is not an incident:
 the client is being told to resolve again, which is the one thing that has to
 happen rather than a silent second Google call.
 
+### Place refresh (`place_refresh_total`, `worker_periodic_runs_total{job="gogo:worker:place-refresh"}`)
+
+PR7 (#340). `gogo:worker:place-refresh` asks Google, for rows whose
+`refresh_after` has passed, one question: _does this Place ID still resolve, and
+has it moved?_ That is the IDs-Only mask, billed at $0. It never fetches a
+richer tier, never writes provider content, and cannot conclude a place is
+closed — a liveness answer carries no `businessStatus`.
+
+**Two switches have to be on before it calls anything.** Either one off is a
+silent, correct no-op, so check both before debugging the job:
+
+| Check       | Where                                                                  | Off looks like                                                        |
+| ----------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| kill switch | `feature_flags` row `place_refresh.enabled`, else `FLAG_PLACE_REFRESH` | `place_refresh_total{outcome="disabled"}` climbing, no provider calls |
+| hard budget | `PLACE_REFRESH_DAILY_MAX_*` (SSM, INF-057)                             | `place_refresh_total{outcome="refused_budget"}` climbing              |
+
+`refused_budget` with reason `not_configured` in the tick log is an environment
+that has no ceilings at all — the deliberate state of every environment until
+its numbers are written. `GoGo-Infra/scripts/lib/place-refresh-budget.sh` prints
+`REFUSE-ALL` on each deploy for exactly that case, and `MISCONFIGURED` when some
+values are set and the scope still authorises nothing.
+
+| Symptom                                                                    | Read it as                                                                                                                                                        | Do                                                                                                        |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `outcome="provider_error"` non-zero                                        | the tick stopped at the first failing call; rows stayed due and no attempt was recorded against them                                                              | read `places_provider_failures_total`; this is Google or our key, never the catalogue                     |
+| `outcome="invalid_identity"` climbing                                      | Place IDs that no longer resolve. Backoff is 7d, then 14d, then dormant                                                                                           | expected at a low rate as places churn; a spike means a bad backfill or a key restricted away from Places |
+| `outcome="dormant"` non-zero                                               | a row failed three times and the job stopped asking. `source_status = 'unknown'`, `refresh_after = null`, and an audit line `place.refresh_identity_unverifiable` | a person decides. The place stays published: three failed lookups are not evidence a business shut        |
+| `outcome="moved"` non-zero                                                 | Google named a successor id, or answered as one. Row is `moved` with `moved_to_external_id`; a published place goes to `review`                                   | an editor merges or re-resolves. Nothing repoints the place automatically and no place is created         |
+| `outcome="deadline"` non-zero                                              | the tick ran out of wall clock before its batch                                                                                                                   | usually a slow provider; the leftovers are still due and the next tick takes them in the same order       |
+| `worker_periodic_runs_total{job="gogo:worker:place-refresh"}` flat at zero | the job is not ticking at all — process down, or the advisory lock is held by a replica that never releases it                                                    | this is the alert that a scheduled job stopped, and it is the reason the runner reports at all            |
+
+Rollback is the flag, and it loses nothing — `refresh_after` simply stops being
+read, which is what every release before PR7 did:
+
+```sql
+insert into feature_flags (key, environment, platform, enabled)
+values ('place_refresh.enabled', 'production', 'all', false)
+on conflict (key, environment, platform) do update set enabled = false;
+```
+
+**Before enabling it in an environment**, read the backlog — every row written
+since the first ingestion migration carries `refresh_after`, so on first enable
+a large share of the catalogue is already due:
+
+```sql
+-- how many rows the job would consider due right now, and the oldest
+select count(*) as due, min(refresh_after) as oldest
+from place_provider_sources
+where provider = 'google_places' and refresh_after is not null and refresh_after <= now();
+
+-- steady state after the backlog drains: one call per row per 30 days
+select ceil(count(*) / 30.0) as calls_per_day
+from place_provider_sources where provider = 'google_places';
+```
+
+The daily call ceiling is what decides how fast that backlog drains: at 500
+calls/day a 2,000-row backlog takes four days, and the drain is visible in
+`place_refresh_total{outcome="succeeded"}` rather than arriving as one spike.
+
 ### super_admin bypass (`cms_super_admin_bypass_total`)
 
 A rising count means the role model does not fit the work people actually do —
