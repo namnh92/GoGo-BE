@@ -1,5 +1,15 @@
 export * from './ports';
 export {
+  MAX_REDIRECTS,
+  REDIRECT_TIMEOUT_MS,
+  expandShortLink,
+  isAllowedMapsHost,
+  parseMapsUrl,
+  type Fetcher,
+  type MapsUrlHints,
+  type UrlParseResult,
+} from './maps-url';
+export {
   withResilience,
   resetBreakers,
   breakerSnapshots,

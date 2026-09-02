@@ -1,7 +1,7 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -461,5 +461,76 @@ describe('search analytics (SE-006, #36)', () => {
     expect(body.totals.zeroResultRate).toBeLessThanOrEqual(1);
     expect(body.trend.length).toBeGreaterThanOrEqual(1);
     expect(body.totals.avgLatencyMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+/**
+ * COST-BE-006 (#339) — the release-gate flow: "a closed place never appears in
+ * search".
+ *
+ * `places.status` is what GoGo decided; `source_status` is what Google last
+ * said about the business. A shut place stays `published` because nobody
+ * moderated it, and search read only the first of those two — so the same
+ * place was unrecommendable by the suggestion engine and findable by name at
+ * the same time.
+ */
+describe('#339 — a place the provider reports shut never reaches search', () => {
+  async function shutter(name: string, status: 'closed' | 'temporarily_closed' | 'active') {
+    const [place] = await db
+      .select({ id: schema.places.id })
+      .from(schema.places)
+      .where(eq(schema.places.name, name))
+      .limit(1);
+    expect(place, `corpus place ${name} missing`).toBeTruthy();
+    await db
+      .insert(schema.placeProviderSources)
+      .values({
+        placeId: place!.id,
+        provider: 'google_places',
+        externalId: `ChIJ-${name.replace(/\s+/g, '-')}-${status}`,
+        sourceStatus: status,
+      })
+      .onConflictDoNothing();
+    return place!.id;
+  }
+
+  it('excludes a permanently closed place from a query that names it', async () => {
+    const target = CORPUS[0]!.name;
+    const before = await search(`q=${encodeURIComponent(target)}`);
+    expect(
+      before.results.some((r) => r.name === target),
+      'precondition: the place is findable while it is open',
+    ).toBe(true);
+
+    await shutter(target, 'closed');
+
+    const after = await search(`q=${encodeURIComponent(target)}`);
+    expect(
+      after.results.some((r) => r.name === target),
+      'a permanently closed place is not a search result',
+    ).toBe(false);
+  });
+
+  it('excludes a temporarily closed place too', async () => {
+    // Core rule 8 does not distinguish: an unavailable place is excluded or
+    // warned, never presented as certain. A search result has no warning
+    // surface today, so it is excluded — the same call the suggestion engine
+    // already made.
+    const target = CORPUS[1]!.name;
+    await shutter(target, 'temporarily_closed');
+
+    const after = await search(`q=${encodeURIComponent(target)}`);
+    expect(after.results.some((r) => r.name === target)).toBe(false);
+  });
+
+  it('leaves an open place alone — the filter is about the business, not the row', async () => {
+    const target = CORPUS[2]!.name;
+    await shutter(target, 'active');
+
+    const after = await search(`q=${encodeURIComponent(target)}`);
+    expect(
+      after.results.some((r) => r.name === target),
+      'a provider row saying `active` must not cost a place its visibility',
+    ).toBe(true);
   });
 });

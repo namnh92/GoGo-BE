@@ -36,12 +36,13 @@ import {
   parseTabularSource,
   type SheetGrid,
 } from '../domain/tabular';
-import { detectIdentityChange } from '../domain/identity-change';
+import { detectIdentityChange, type IdentityVerdict } from '../domain/identity-change';
 import { deriveCategory } from '../domain/google-types';
 import { validateRow, type NormalizedImportRow } from '../domain/template';
 import { PlaceDedupService, type KnownProviderPlace } from './place-dedup.service';
 import { PlaceResolverService, type ResolveOutcome } from './place-resolver.service';
 import { writeAudit } from '../../shared/audit';
+import { invalidateTravelOnMove } from '../../shared/place-relocation';
 
 export type ImportMode = 'dry_run' | 'create_drafts' | 'publish_approved' | 'update_existing';
 
@@ -907,6 +908,49 @@ export class PlaceImportJobService {
   }
 
   /**
+   * #339 / ADR-0006 §8 — take a place out of circulation and tell an editor why.
+   *
+   * The audit row is the diff. `place_ingest_rows` records the finding for the
+   * job, but a job is a transient artifact and the editor who eventually opens
+   * the place has no reason to go looking through one; `audit_logs` is keyed by
+   * the place and is where the CMS already shows a place's history. It carries
+   * the before/after that triggered the verdict so the decision can be made
+   * without re-fetching anything from Google.
+   *
+   * `actorType: 'system'` because nothing human decided this. The importer
+   * noticed; a person still has to rule.
+   */
+  private async markPlaceForReview(
+    placeId: string,
+    previousName: string | null,
+    details: ResolvedProviderPlace,
+    verdict: IdentityVerdict,
+  ): Promise<void> {
+    const moved = await this.db
+      .update(schema.places)
+      .set({ status: 'review', updatedAt: sql`now()` })
+      .where(and(eq(schema.places.id, placeId), eq(schema.places.status, 'published')))
+      .returning({ id: schema.places.id });
+    // Nothing to record when the place was not published: it was already out
+    // of circulation, and an audit line saying "moved to review" about a place
+    // that never left draft would be false.
+    if (moved.length === 0) return;
+    await writeAudit(this.db, {
+      actorType: 'system',
+      action: 'place.identity_review_required',
+      resourceType: 'place',
+      resourceId: placeId,
+      diff: {
+        reasons: verdict.reasons,
+        nameSimilarity: verdict.nameSimilarity,
+        name: { before: previousName, after: details.name },
+        primaryType: { after: details.primaryType },
+        businessStatus: { after: details.businessStatus },
+      },
+    });
+  }
+
+  /**
    * #334 — not `duplicate`: that status asserts which place this row is a
    * duplicate *of*, and that is the one thing nobody has decided yet.
    */
@@ -1170,6 +1214,18 @@ export class PlaceImportJobService {
           ],
         })
         .where(eq(schema.placeIngestRows.id, rowId));
+      // #339 — ADR-0006 §8 says an identity change routes the *place* to
+      // review, not just the import row that noticed it. Holding the finding on
+      // the row alone left the suspect place published: it kept being searched,
+      // suggested and planned onto someone's evening while a job artifact
+      // nobody opens carried the only record that it might now be a different
+      // business. Search reads `places.status`, so this is what takes it out of
+      // circulation until an editor decides.
+      //
+      // Draft and community-submitted places are left alone: they are not
+      // being served, and moving them would lose the state moderation is
+      // already tracking them in.
+      await this.markPlaceForReview(placeId, snapshot?.name ?? null, details, verdict);
       this.countRow('needs_confirmation', 'PLACE_IDENTITY_CHANGED');
       this.metrics.increment('place_identity_change_total', {
         reason: verdict.reasons[0] ?? 'unknown',
@@ -1179,6 +1235,17 @@ export class PlaceImportJobService {
 
     const score = await this.resolver.scoreFor(details, null, normalized.categoryKey);
     await this.db.transaction(async (tx) => {
+      // #339 — before the new coordinate lands, not after: the measurement is
+      // against the stored position, and once it is overwritten the move
+      // cannot be seen. "The place may have been renamed or moved" was already
+      // written on the line below; nothing acted on the second half of it.
+      const move = await invalidateTravelOnMove(tx, placeId, {
+        lat: details.lat,
+        lng: details.lng,
+      });
+      if (move?.invalidated) {
+        this.metrics.increment('place_relocation_invalidated_total', { source: 'cms_import' });
+      }
       await tx
         .update(schema.places)
         .set({
@@ -1438,6 +1505,17 @@ export class PlaceImportJobService {
       throw AppError.conflict('PROVIDER_UNAVAILABLE', 'Không xác minh được địa điểm lúc này');
     }
     const details = outcome.details;
+    // #339 — the third door. Submit and `/v1/places/imports` both refuse a
+    // place that has not opened; bulk publish did not, and it is the one door
+    // that could not be made safe downstream: a closed place reaches the
+    // catalogue and is then hidden by the `source_status` filter, but
+    // `FUTURE_OPENING` has no `provider_source_status` to be stored as (see
+    // `upsertProviderSource`), so it would land on `unknown` and stay
+    // searchable. Refusing it here is what makes the lossy mapping harmless
+    // rather than a hole.
+    if (details.businessStatus === 'FUTURE_OPENING') {
+      throw AppError.conflict('PLACE_NOT_YET_OPEN', 'Địa điểm chưa khai trương');
+    }
     const normalized = normalizedOf(row);
     const score = await this.resolver.scoreFor(details, null, normalized.categoryKey ?? null);
     const status = mode === 'publish_approved' ? 'published' : 'draft';

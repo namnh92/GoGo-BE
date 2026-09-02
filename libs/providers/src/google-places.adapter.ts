@@ -1,4 +1,5 @@
 import {
+  GOOGLE_ATTRIBUTION,
   NO_PROVIDER_METRICS,
   ProviderConfigurationError,
   ProviderInvalidRequestError,
@@ -15,6 +16,7 @@ import {
   type ResolvedProviderPlace,
 } from './ports';
 import { boundedReason, googleFailure, readGoogleError } from './google-error';
+import { expandShortLink, parseMapsUrl, type Fetcher, type UrlParseResult } from './maps-url';
 import { withResilience } from './resilience';
 
 const RESILIENCE = {
@@ -94,48 +96,78 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
     private readonly metrics: ProviderMetrics = NO_PROVIDER_METRICS,
   ) {}
 
+  /**
+   * URL → provider place id, over the **SSRF-guarded** walker (#339).
+   *
+   * This used to be a second, unguarded short-link expander: a bare
+   * `fetch(url, { redirect: 'follow' })` that let the platform chase every hop
+   * with no hostname allowlist, no private-address block and no per-hop
+   * re-validation. `POST /v1/places/imports` hands it a URL typed by a user, so
+   * an open redirect on a Google host — or simply a link to somewhere else
+   * entirely — was a request this server would make on request. The resolver
+   * has had the guarded walker since PI-BE-003; the adapter just could not
+   * reach it, which is why `maps-url` now lives in this package.
+   *
+   * `parseMapsUrl` also replaces the hand-rolled regexes. They accepted any
+   * host at all, so `https://evil.test/maps/place/X` reached the branch below
+   * and turned an attacker's string into a billed Text Search.
+   */
   async resolveUrl(url: string): Promise<string | null> {
-    // Direct place_id in the URL — no network needed.
-    const byParam = /[?&]place_id=([\w-]+)/.exec(url);
-    if (byParam) return byParam[1]!;
-
-    // Short links redirect to a canonical URL carrying the place reference.
-    if (/(maps\.app\.goo\.gl|goo\.gl\/maps)/.test(url)) {
-      const expanded = await withResilience(
-        { name: 'google.expand', ...RESILIENCE },
-        async (signal) => {
-          // #335: this was the one provider call in the codebase emitting no
-          // counter at all, so it appeared in no dashboard and in no cost
-          // ledger. It costs nothing — an unauthenticated HEAD to a URL
-          // shortener, not a billed SKU — but "free" and "unmeasured" are
-          // different facts, and the second one is what the baseline
-          // (scenario C2) has to count. Latency is worth having for its own
-          // sake: a short link that hangs stalls a user-facing resolve.
-          const started = Date.now();
-          const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal });
-          this.metrics.increment('places_provider_requests_total', {
-            method: 'google.expand',
-            status: res.status,
-          });
-          this.metrics.observe(
-            'place_provider_request_duration_seconds',
-            (Date.now() - started) / 1000,
-            { method: 'google.expand', status: res.status },
-          );
-          return res.url;
-        },
-      );
-      const fromExpanded = /[?&]place_id=([\w-]+)/.exec(expanded) ?? /!1s([\w:]+)!/.exec(expanded);
-      if (fromExpanded) return fromExpanded[1]!;
-      url = expanded;
-    }
+    const identified = await this.identifyUrl(url);
+    if (!identified.ok) return null;
+    if (identified.value.providerPlaceId) return identified.value.providerPlaceId;
 
     // Canonical /maps/place/<name>/… — resolve by text search.
-    const nameMatch = /\/maps\/place\/([^/@]+)/.exec(url);
-    const query = nameMatch ? decodeURIComponent(nameMatch[1]!).replace(/\+/g, ' ') : null;
+    const query = identified.value.query;
     if (!query) return null;
     return (await this.searchCandidates(query, 1))[0] ?? null;
   }
+
+  /**
+   * The guarded walker, wearing this adapter's instrumentation.
+   *
+   * #335/#336: the expansion hop is free — an unauthenticated HEAD to a URL
+   * shortener, not a billed SKU — but "free" and "unmeasured" are different
+   * facts, and baseline scenario C2 counts it. One count per hop, the same as
+   * the resolver's walker emits, under the same `google.expand` label: they
+   * are the same operation against the same host, and splitting the label
+   * would report one operation as two.
+   */
+  private async identifyUrl(url: string): Promise<UrlParseResult> {
+    const parsed = parseMapsUrl(url);
+    if (!parsed.ok) return parsed;
+    if (!parsed.value.needsExpansion) return parsed;
+    return expandShortLink(url, this.expandFetcher);
+  }
+
+  private readonly expandFetcher: Fetcher = async (target, init) => {
+    const started = Date.now();
+    const record = (status: number | 'error'): void => {
+      this.metrics.increment('places_provider_requests_total', {
+        method: 'google.expand',
+        status,
+      });
+      this.metrics.observe(
+        'place_provider_request_duration_seconds',
+        (Date.now() - started) / 1000,
+        { method: 'google.expand', status },
+      );
+    };
+    try {
+      const res = await fetch(target, {
+        method: init.method,
+        redirect: init.redirect,
+        signal: init.signal,
+      });
+      record(res.status);
+      return res;
+    } catch (err) {
+      // A hop that threw still happened and still took time. Recording it
+      // keeps the count equal to the number of requests that left this process.
+      record('error');
+      throw err;
+    }
+  };
 
   /**
    * Text Search (New), IDs-Only field mask — spec §6.2 step 6 keeps the search
@@ -287,12 +319,7 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       lng: data.location.longitude,
       rating: data.rating ?? null,
       ratingCount: data.userRatingCount ?? 0,
-      businessStatus:
-        data.businessStatus === 'CLOSED_PERMANENTLY'
-          ? 'CLOSED_PERMANENTLY'
-          : data.businessStatus === 'CLOSED_TEMPORARILY'
-            ? 'CLOSED_TEMPORARILY'
-            : 'OPERATIONAL',
+      businessStatus: this.businessStatusOf(data.businessStatus),
       hours,
       priceLevel: data.priceLevel ? (priceLevelMap[data.priceLevel] ?? null) : null,
       primaryType: data.primaryType ?? null,
@@ -300,9 +327,46 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       googleMapsUri: data.googleMapsUri ?? null,
       photos,
       fetchTier: tier,
-      attribution: 'Data © Google',
+      attribution: GOOGLE_ATTRIBUTION,
       raw: data,
     };
+  }
+
+  /**
+   * Google's `businessStatus`, mapped explicitly (#339).
+   *
+   * This was a two-armed ternary whose default was `OPERATIONAL`, so every
+   * status it did not name — `FUTURE_OPENING` among them — became "open for
+   * business". A place that has been announced but has never traded was
+   * therefore imported, published, and offered to someone deciding where to eat
+   * tonight.
+   *
+   * The unmapped case still resolves to `OPERATIONAL`, deliberately and
+   * narrowly: `BUSINESS_STATUS_UNSPECIFIED` and an absent field both mean
+   * "Google did not say", and refusing every place Google is quiet about would
+   * reject good imports for a field that is frequently just missing. What
+   * changes is that it is no longer silent — the counter is what will say
+   * whether a future Google value is arriving in volume, without putting
+   * provider text into a metric label.
+   */
+  private businessStatusOf(raw: string | undefined): ResolvedProviderPlace['businessStatus'] {
+    switch (raw) {
+      case 'CLOSED_PERMANENTLY':
+        return 'CLOSED_PERMANENTLY';
+      case 'CLOSED_TEMPORARILY':
+        return 'CLOSED_TEMPORARILY';
+      case 'FUTURE_OPENING':
+        return 'FUTURE_OPENING';
+      case 'OPERATIONAL':
+      case 'BUSINESS_STATUS_UNSPECIFIED':
+      case undefined:
+        return 'OPERATIONAL';
+      default:
+        this.metrics.increment('places_provider_business_status_unmapped_total', {
+          method: 'google.details',
+        });
+        return 'OPERATIONAL';
+    }
   }
 
   async suggest(query: string, sessionToken: string): Promise<AreaPrediction[]> {

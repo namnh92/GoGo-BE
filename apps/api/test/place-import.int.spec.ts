@@ -1083,6 +1083,215 @@ describe('PI-BE-015/016 — processing, quota pause, publish RBAC', () => {
     expect(place!.ratingCount).toBe(250);
   });
 
+  /**
+   * COST-BE-006 (#339) / ADR-0006 §8 — an identity change routes the *place*
+   * to review, not just the import row that noticed it.
+   */
+  it('a place that may have changed hands leaves circulation', async () => {
+    const editor = await createAdmin('idc-editor@gogo.local', 'editor');
+    const ops = await createAdmin('idc-ops@gogo.local', 'ops_admin');
+    places.seed({
+      providerPlaceId: 'fake-identity',
+      name: 'Nhà Hàng Sen Việt',
+      lat: 10.78,
+      lng: 106.7,
+    });
+
+    const row =
+      'IDC-1,Nhà Hàng Sen Việt,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-identity,restaurant,,,';
+    // `publish_approved`, so the place really reaches `published` — the state
+    // this rule exists to take it out of.
+    const first = await createJob(editor.token, [row], 'publish_approved');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${first.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(first.id);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${first.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+
+    const [published] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Nhà Hàng Sen Việt'));
+    expect(published!.status, 'precondition: it is published and being served').toBe('published');
+
+    // The same Google id, describing a different business: a name sharing
+    // nothing with the old one, and the review count reset the way Google
+    // resets it for a new listing.
+    places.seed({
+      providerPlaceId: 'fake-identity',
+      name: 'Karaoke Hoàng Kim',
+      lat: 10.78,
+      lng: 106.7,
+      ratingCount: 4,
+      primaryType: 'karaoke',
+    });
+
+    const second = await createJob(editor.token, [row], 'update_existing');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${second.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(second.id);
+
+    const [after] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.id, published!.id));
+    // Search reads `places.status`. Holding the finding on the import row
+    // alone left the suspect place published: still searched, still suggested,
+    // still plannable, while a job artifact nobody opens carried the only
+    // record that it might now be a different business.
+    expect(after!.status, 'the place is out of circulation until an editor rules').toBe('review');
+    // …and nothing was overwritten. Taking the new name onto the old
+    // highlight, price and category produces a record that lies.
+    expect(after!.name).toBe('Nhà Hàng Sen Việt');
+
+    const audit = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.resourceId, published!.id));
+    const entry = audit.find((a) => a.action === 'place.identity_review_required');
+    // The diff is what an editor decides on. `place_ingest_rows` records the
+    // finding for the job, but a job is transient and the editor who opens the
+    // place months later has no reason to go looking through one.
+    expect(entry, 'an editor is told why, on the place').toBeTruthy();
+    const diff = entry!.diff as { reasons: string[]; name: { before: string; after: string } };
+    expect(diff.reasons.length).toBeGreaterThan(0);
+    expect(diff.name).toEqual({ before: 'Nhà Hàng Sen Việt', after: 'Karaoke Hoàng Kim' });
+    expect(entry!.actorType, 'the importer noticed; a person still has to rule').toBe('system');
+  });
+
+  /**
+   * COST-BE-006 (#339) — the third door, and the debt behind it.
+   *
+   * A closed place may reach the catalogue: it is then hidden by the
+   * `source_status` filter. `FUTURE_OPENING` cannot be hidden that way,
+   * because `provider_source_status` has no value for it (migrations 0002,
+   * 0007) and ADR-0006 §9.5 forbids adding one while §9.6 is unsigned. So the
+   * refusal has to happen before the row is written.
+   */
+  it('bulk publish refuses a place that has not opened yet', async () => {
+    const editor = await createAdmin('fo-editor@gogo.local', 'editor');
+    const ops = await createAdmin('fo-ops@gogo.local', 'ops_admin');
+    places.seed({
+      providerPlaceId: 'fake-future',
+      name: 'Quán Sắp Mở',
+      lat: 10.78,
+      lng: 106.7,
+      businessStatus: 'FUTURE_OPENING',
+    });
+
+    const job = await createJob(editor.token, [
+      'FO-1,Quán Sắp Mở,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-future,cafe,,,',
+    ]);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(job.id);
+
+    const published = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+
+    expect(published.json().created, 'nothing unopened reaches the catalogue').toBe(0);
+    expect(published.json().failed).toEqual([
+      expect.objectContaining({ code: 'PLACE_NOT_YET_OPEN' }),
+    ]);
+    const rows = await db.select().from(schema.places).where(eq(schema.places.name, 'Quán Sắp Mở'));
+    expect(rows, 'no place row, so nothing to hide from search later').toEqual([]);
+  });
+
+  it('records the lossy status mapping that ADR-0006 §9.5 currently forces', async () => {
+    // Not a feature — a debt, pinned so it is visible and so the migration
+    // that closes it has a test to flip. `provider_source_status` cannot say
+    // `future_opening`, so `upsertProviderSource` flattens it to `unknown`,
+    // losing the difference between "Google says this has not opened" and "we
+    // do not know". `unknown` is the safe direction: it is the one value
+    // DB-first declines to map, so such a row is re-asked rather than served.
+    const editor = await createAdmin('fo-map-editor@gogo.local', 'editor');
+    const ops = await createAdmin('fo-map-ops@gogo.local', 'ops_admin');
+    places.seed({
+      providerPlaceId: 'fake-future-map',
+      name: 'Quán Đổi Trạng Thái',
+      lat: 10.78,
+      lng: 106.7,
+    });
+
+    const row =
+      'FO-2,Quán Đổi Trạng Thái,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-future-map,cafe,,,';
+    const job = await createJob(editor.token, [row], 'publish_approved');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(job.id);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+
+    // The place exists and is `active` while Google calls it operational.
+    const [live] = await db
+      .select()
+      .from(schema.placeProviderSources)
+      .where(eq(schema.placeProviderSources.externalId, 'fake-future-map'));
+    expect(live!.sourceStatus).toBe('active');
+
+    // Google now says it has not opened. `update_existing` is the one mode
+    // that re-writes the provider row.
+    places.seed({
+      providerPlaceId: 'fake-future-map',
+      name: 'Quán Đổi Trạng Thái',
+      lat: 10.78,
+      lng: 106.7,
+      businessStatus: 'FUTURE_OPENING',
+    });
+    const second = await createJob(editor.token, [row], 'update_existing');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${second.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(second.id);
+
+    const [after] = await db
+      .select()
+      .from(schema.placeProviderSources)
+      .where(eq(schema.placeProviderSources.externalId, 'fake-future-map'));
+    // `unknown`, not `active` — the catalogue must not go on calling it open.
+    // When §9.6 is signed this becomes `future_opening` and this assertion is
+    // the one that has to change.
+    expect(after!.sourceStatus).toBe('unknown');
+    expect(
+      after!.sourceStatus,
+      'never `active`: that would put an unopened place back into search',
+    ).not.toBe('active');
+  });
+
   it('cancel stops pending work and retry re-queues failed rows', async () => {
     const editor = await createAdmin('cancel-editor@gogo.local', 'editor');
     const job = await createJob(editor.token, [

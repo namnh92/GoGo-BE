@@ -62,6 +62,35 @@ test updated in the same PR.
 There is no cheaper tier between `liveness` and `core`: `businessStatus` is a
 Pro field, so a "is it still open?" tier would be billed exactly as `core` is.
 
+**Amendment 2026-09-02 (#339) — `FUTURE_OPENING` is owned in the domain, not in
+storage.**
+
+The adapter used to coerce every unrecognised `businessStatus` to
+`OPERATIONAL`, so `FUTURE_OPENING` — a place Google lists as announced but not
+yet trading — was imported as open and published. It now has its own value on
+`ResolvedProviderPlace`, and all three doors into the catalogue refuse it:
+`POST /v1/place-submissions` and bulk publish with `409 PLACE_NOT_YET_OPEN`,
+`POST /v1/places/imports` with `reasonCode: 'NOT_YET_OPEN'`.
+
+It is **not** owned in storage, and that is a recorded debt rather than an
+oversight. `provider_source_status` is `active | moved | temporarily_closed |
+closed | unknown` (migrations 0002, 0007); adding `future_opening` would store a
+strictly more specific Google fact than the column holds today, which §9.5
+forbids until §9.6 is signed. `upsertProviderSource` therefore flattens it to
+`unknown`, losing the difference between "Google says this has not opened" and
+"we do not know".
+
+The flattening is reachable but not load-bearing — the three refusals above mean
+no place should be sitting on such a row — and `unknown` is the safe direction:
+it is the one value `PROVIDER_STATUS_TO_BUSINESS_STATUS` declines to map, so a
+DB-first read misses and asks Google instead of answering "open" from a fact
+that was never stored.
+
+**When §9.6 is signed**, this closes as a one-value enum migration plus a
+one-word change in `upsertProviderSource`, and `future_opening` joins `closed`
+and `temporarily_closed` in the search exclusion. Until then the catalogue
+cannot express it, and no code should claim it can.
+
 **Tier per call site**, as shipped:
 
 | Path                                                              | Tier      | Why                                                           |

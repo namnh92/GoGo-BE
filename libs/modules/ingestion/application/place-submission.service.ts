@@ -15,6 +15,7 @@ import {
   type ResolutionAttestationConfig,
 } from '../../shared/config';
 import { flagEnvironmentOf, resolveBooleanFlag } from '../../shared/feature-flags';
+import { normalizeGoogleAttribution } from '../../shared/attribution';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
@@ -152,7 +153,10 @@ export class PlaceSubmissionService {
             // last refreshed three weeks ago is the one lie this path could
             // tell, and freshness is what the user is judging the answer on.
             fetchedAt: known.place.fetchedAt,
-            attributions: known.place.attribution ? [known.place.attribution] : [],
+            // #339 — a stored row may carry the old wording; the user sees one.
+            attributions: known.place.attribution
+              ? [normalizeGoogleAttribution(known.place.attribution)]
+              : [],
           },
         };
       }
@@ -270,7 +274,7 @@ export class PlaceSubmissionService {
       businessStatus: details.businessStatus,
       source: 'google_places' as const,
       fetchedAt: new Date().toISOString(),
-      attributions: [details.attribution],
+      attributions: [normalizeGoogleAttribution(details.attribution)],
     };
   }
 
@@ -430,9 +434,28 @@ export class PlaceSubmissionService {
       // still Enterprise.
       const details = await this.resolver
         .resolveByProviderId(input.googlePlaceId, 'core')
-        .catch(() => null);
+        // #339 — `catch(() => null)` turned every provider fault into
+        // `400 PLACE_NOT_FOUND`: a disabled API, an exhausted quota and an
+        // upstream outage all reached the submitter as "that place does not
+        // exist". It is the same conflation #279 fixed at the resolver, still
+        // alive at the door one level up, and 400 is the reading that does the
+        // most damage — it is not retryable, so a client that believes it stops
+        // trying and the user is told their real place is not real.
+        .catch((err: unknown) => {
+          throw placeProviderUnavailable(err);
+        });
       if (!details || details.status !== 'RESOLVED') {
         throw AppError.badRequest('PLACE_NOT_FOUND', 'Provider place could not be verified');
+      }
+      if (details.details.businessStatus === 'FUTURE_OPENING') {
+        // #339 — not `PLACE_CLOSED`. A place Google lists as opening soon has
+        // never traded, and telling a submitter their find is shut is both
+        // wrong and discouraging in the one direction that matters: they are
+        // early, not mistaken.
+        throw AppError.conflict(
+          'PLACE_NOT_YET_OPEN',
+          'Địa điểm này chưa khai trương — thêm lại khi đã mở cửa',
+        );
       }
       if (details.details.businessStatus !== 'OPERATIONAL') {
         throw AppError.conflict('PLACE_CLOSED', 'Place is closed and cannot be added');

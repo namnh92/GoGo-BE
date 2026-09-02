@@ -105,6 +105,28 @@ export function vnDayMinute(at: Date): { dow: number; minute: number } {
 }
 
 /**
+ * COST-BE-006 (#339) — a place the provider reports shut never reaches a user.
+ *
+ * `places.status` is what GoGo decided about a place; `source_status` is what
+ * Google last reported about the business. The two are deliberately separate,
+ * and a shut business stays `published` because nobody moderated it — so
+ * without this, search happily returned a permanently closed restaurant as a
+ * live result. Suggestions has excluded these since BE-IMP-004; search did not,
+ * which meant the same place was unrecommendable and findable at the same time.
+ *
+ * `temporarily_closed` goes with `closed`. A door that is shut this month is
+ * shut whichever word explains it, and core rule 8 does not distinguish: an
+ * unavailable place is excluded or warned, never presented as certain. GoGo has
+ * no warning surface on a search result today, so it is excluded.
+ */
+function notProviderClosed(): SQL {
+  return sql`not exists (
+    select 1 from place_provider_sources ps
+    where ps.place_id = p.id and ps.source_status in ('closed', 'temporarily_closed')
+  )`;
+}
+
+/**
  * SE-002/003/004 — single parameterized retrieval query: FTS + trigram over
  * normalized Vietnamese, PostGIS radius, hard filters, weighted relevance,
  * stable keyset pagination. Raw SQL per ADR-0002 (hot path).
@@ -122,7 +144,7 @@ export class SearchRepository {
   }
 
   async search(f: SearchFilters, w: SearchWeights): Promise<SearchRow[]> {
-    const conditions: SQL[] = [sql`p.status = 'published'`];
+    const conditions: SQL[] = [sql`p.status = 'published'`, notProviderClosed()];
 
     const q = f.q ? toSearchQuery(f.q) : '';
     if (q) {

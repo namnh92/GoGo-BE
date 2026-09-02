@@ -278,6 +278,60 @@ describe('GooglePlacesAdapter.details', () => {
     },
   );
 
+  it.each([
+    ['CLOSED_PERMANENTLY', 'CLOSED_PERMANENTLY'],
+    ['CLOSED_TEMPORARILY', 'CLOSED_TEMPORARILY'],
+    ['FUTURE_OPENING', 'FUTURE_OPENING'],
+    ['OPERATIONAL', 'OPERATIONAL'],
+    ['BUSINESS_STATUS_UNSPECIFIED', 'OPERATIONAL'],
+  ])('maps businessStatus %s to %s', async (raw, expected) => {
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ...googlePlace, businessStatus: raw }),
+    }));
+    const place = await new GooglePlacesAdapter('key').details('ChIJ-lacaph', 'quality');
+    expect(place?.businessStatus).toBe(expected);
+  });
+
+  it('does not report a place that has never opened as operational', async () => {
+    // #339 — the mapping was a two-armed ternary defaulting to OPERATIONAL, so
+    // `FUTURE_OPENING` — a status Google really returns — arrived as "open for
+    // business". A place announced but not yet trading was imported, published
+    // and offered to someone choosing where to eat tonight.
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ...googlePlace, businessStatus: 'FUTURE_OPENING' }),
+    }));
+    const place = await new GooglePlacesAdapter('key').details('ChIJ-lacaph', 'quality');
+    expect(place?.businessStatus).not.toBe('OPERATIONAL');
+  });
+
+  it('counts a status it cannot map, without putting the value in a label', async () => {
+    const increments: Record<string, unknown>[] = [];
+    const adapter = new GooglePlacesAdapter('key', {
+      increment: (name, labels) => void increments.push({ name, ...labels }),
+      observe: () => undefined,
+    });
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ...googlePlace, businessStatus: 'SOMETHING_GOOGLE_ADDED_LATER' }),
+    }));
+    const place = await adapter.details('ChIJ-lacaph', 'quality');
+    // Still importable: an unrecognised status usually means Google said
+    // nothing useful, and refusing every such place would reject good imports.
+    expect(place?.businessStatus).toBe('OPERATIONAL');
+    const unmapped = increments.find(
+      (i) => i['name'] === 'places_provider_business_status_unmapped_total',
+    );
+    expect(unmapped, 'silence is how the FUTURE_OPENING bug survived').toBeDefined();
+    // Google's vocabulary can grow; a label carrying it would be free text
+    // wearing a counter's clothes, which #319 already had to take back out.
+    expect(Object.values(unmapped ?? {})).not.toContain('SOMETHING_GOOGLE_ADDED_LATER');
+  });
+
   it('normalizes types with primaryType first and no duplicates', async () => {
     const place = await new GooglePlacesAdapter('key').details('ChIJ-lacaph', 'quality');
     expect(place?.primaryType).toBe('coffee_shop');

@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
 import { APP_CONFIG, type MediaConfig } from '../../shared/config';
 import { AppError } from '../../shared/app-error';
+import { normalizeGoogleAttribution } from '../../shared/attribution';
 import { iso, num, toPhotos, type PlacePhotoRow } from '../domain/place-dto';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
@@ -257,7 +258,11 @@ export class SearchService {
     if (!row) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
 
     const sources = (row['sources'] ?? []) as { provider: string; attribution?: string }[];
-    const providerAttribution = sources.find((s) => s.attribution)?.attribution;
+    // #339 — rows written before the wording was unified still say `Data ©
+    // Google`. One obligation, one sentence, wherever the user meets it.
+    const providerAttribution = normalizeGoogleAttribution(
+      sources.find((s) => s.attribution)?.attribution,
+    );
 
     return {
       id: row['id'] as string,

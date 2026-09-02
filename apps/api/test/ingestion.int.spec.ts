@@ -4,7 +4,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { eq, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PLACE_PROVIDER } from '@gogo/providers';
@@ -858,5 +858,92 @@ describe('#337 review — a stored fact may prove identity, never freshness', ()
     const now = after.rows[0] as { places: number; newest: string };
     expect(now.places, 'no canonical place created').toBe(before.places);
     expect(String(now.newest), 'no canonical place materially updated').toBe(String(before.newest));
+  });
+});
+
+/**
+ * COST-BE-006 (#339) — two refusals that were telling the submitter something
+ * false.
+ */
+describe('#339 — refusing a place says the true reason', () => {
+  const submit = (payload: Record<string, unknown>, token: string) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/place-submissions',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload,
+    });
+
+  afterEach(() => {
+    places.timingOut = false;
+    places.quotaExhausted = false;
+  });
+
+  it('a place that has not opened yet is not a place that closed', async () => {
+    const user = await register('pr6-future@gogo.id.vn');
+    places.seed({
+      providerPlaceId: 'ChIJpr6Future',
+      name: 'Quán Sắp Khai Trương',
+      businessStatus: 'FUTURE_OPENING',
+    });
+
+    const res = await submit({ googlePlaceId: 'ChIJpr6Future' }, user);
+
+    expect(res.statusCode).toBe(409);
+    // Before #339 the adapter mapped `FUTURE_OPENING` to `OPERATIONAL`, so this
+    // was a 201 and the unopened place was published. Now it is refused — and
+    // refused with its own reason, because `PLACE_CLOSED` would tell someone
+    // who found a place early that it had already shut.
+    expect(res.json().code).toBe('PLACE_NOT_YET_OPEN');
+  });
+
+  it('an unopened place is never handed an attestation to submit with', async () => {
+    places.seed({
+      providerPlaceId: 'ChIJpr6FutureToken',
+      name: 'Quán Chưa Mở',
+      businessStatus: 'FUTURE_OPENING',
+    });
+
+    const preview = await resolve({
+      url: 'https://www.google.com/maps?place_id=ChIJpr6FutureToken',
+    });
+
+    expect(preview.json().status).toBe('RESOLVED');
+    // The preview still describes the place — a submitter is allowed to see
+    // what they found. What it must not do is mint the proof that lets the
+    // submit skip verification, or the refusal above becomes unreachable.
+    expect(preview.json().resolutionToken).toBeUndefined();
+    expect(preview.json().candidate.businessStatus).toBe('FUTURE_OPENING');
+  });
+
+  it.each([
+    ['an upstream outage', () => void (places.timingOut = true)],
+    ['an exhausted quota', () => void (places.quotaExhausted = true)],
+  ])('%s is 503 and retryable, not "no such place"', async (_label, breakIt) => {
+    const user = await register(`pr6-outage-${_label.replace(/\W+/g, '')}@gogo.id.vn`);
+    places.seed({ providerPlaceId: 'ChIJpr6Outage', name: 'Quán Có Thật' });
+    breakIt();
+
+    const res = await submit({ googlePlaceId: 'ChIJpr6Outage' }, user);
+
+    // `catch(() => null)` collapsed every provider fault into
+    // `400 PLACE_NOT_FOUND`. 400 is the reading that does the most damage: it
+    // is not retryable, so a client that believes it stops trying, and the
+    // user is told their real place does not exist.
+    expect(res.statusCode).toBe(503);
+    expect(res.json().code).toBe('PLACE_PROVIDER_UNAVAILABLE');
+    expect(res.json().retryable).toBe(true);
+  });
+
+  it('still says NOT_FOUND when Google looked and found nothing', async () => {
+    const user = await register('pr6-genuine-miss@gogo.id.vn');
+
+    // The contract this must not break: a provider that *answered* is an
+    // outcome, and "nothing here" is a fact about the world (#279).
+    const res = await submit({ googlePlaceId: 'ChIJpr6NeverSeeded' }, user);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('PLACE_NOT_FOUND');
   });
 });

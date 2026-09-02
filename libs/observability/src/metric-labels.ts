@@ -31,6 +31,15 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // `method` is the adapter's own operation name, `status` an HTTP code.
   places_provider_requests_total: ['method', 'status'],
   place_provider_request_duration_seconds: ['method', 'status'],
+  // #339 — a `businessStatus` the adapter has no mapping for. Deliberately
+  // **not** labelled with the value: that is Google's vocabulary and it can
+  // grow, which is exactly how `place_import_unknown_mapping_total{field}`
+  // became free text wearing a counter's clothes. The count alone answers the
+  // question it exists for — is a status we do not handle arriving in volume?
+  places_provider_business_status_unmapped_total: ['method'],
+  // #339 — a place moved far enough to throw its cached travel legs away.
+  // `source` is the door the move came through, not the place.
+  place_relocation_invalidated_total: ['source'],
   // `reason` is Google's `ErrorInfo.reason`. Finite in practice but it is
   // Google's vocabulary, not ours — see the note in the spec.
   places_provider_failures_total: ['method', 'status', 'reason'],
