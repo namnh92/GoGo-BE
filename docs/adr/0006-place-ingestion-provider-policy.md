@@ -5,6 +5,19 @@
 - **Related:** PI-BE-001, FR-INGEST-001..015, `GOGO_PLACE_INGESTION_SPEC.md` §3/§7
 - **Supersedes nothing; extends** ADR-0004 (maps/place provider)
 - **Amended 2026-09-01** — §9 Google content persistence policy (status _Proposed_, sign-off pending; the freeze in §9.5 applies from today)
+- **Scope note 2026-09-02 (Data Strategy Reset, #366)** — this ADR is the
+  _provider_ policy: how GoGo talks to Google and what of Google's content may
+  be held. It is subordinate to the GoGo Product/Data Architecture
+  (`GOGO_PRODUCT_DATA_ARCHITECTURE.md` in the workspace, detailed in
+  `GOGO_DATA_STRATEGY_RESET_PROPOSAL.md`): Google is a bounded infrastructure
+  dependency — external identity, routes, directions — and never the
+  catalogue's knowledge source. Nothing in this ADR defines the GoGo place
+  model, and a Google tier or field mask is not a domain concept. The §9.7
+  "Option 2" amendment lived only on the cancelled PR8 branch (#365, closed
+  without merge) and is **not** part of this document on `develop`. Ownership
+  of a fact requires independent provenance: an editor confirming or
+  transcribing a Google value verifies a Google-derived fact and does not make
+  it GoGo-owned.
 
 ## Context
 
@@ -172,7 +185,7 @@ does not take effect until counsel signs §9.6.** Product signed on 2026-09-02;
 counsel has not. No PR may rely on a row of §9.3 marked _needs decision_ being
 permitted.
 
-Source: `Cost-Spec/GOGO_COST_AND_PLACES_EXECUTION_PLAN_v2_DECIDED.md` §0.2 C3/C4,
+Source: `Cost-Spec/GOGO_COST_AND_PLACES_EXECUTION_PLAN_v2_DECIDED.md` §0.2 C3/C4 (historical only since 2026-09-02),
 §3 PR0, §7. Supersedes ADR-0004 §3's caching sentence for everything except the
 Place ID.
 

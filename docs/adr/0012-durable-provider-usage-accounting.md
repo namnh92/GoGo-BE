@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-02
 - **Issues:** GoGo-BE#335 (COST-BE-002), GoGo-CMS#97
-- **Source:** `Cost-Spec/GOGO_COST_AND_PLACES_EXECUTION_PLAN_v2_DECIDED.md`
+- **Source:** `Cost-Spec/GOGO_COST_AND_PLACES_EXECUTION_PLAN_v2_DECIDED.md` (SUPERSEDED — HISTORICAL ONLY since 2026-09-02; the requirement authority for this ADR's subject is now `Cost-Spec/GoGo-Cost-Observability-Epic-FINAL.md`, COST-OBS-EPIC-001)
   §0.2 C5–C7, §2.2, §2.3 — the plan requires this choice to be made explicitly,
   before the code, and written down
 - **Relates to:** ADR-0004 (map/place provider), ADR-0006 (ingestion provider
@@ -212,7 +212,31 @@ The SIGKILL window is unchanged: at most one `COST_LEDGER_FLUSH_MS` interval.
 
 ## POST-MERGE VALIDATION REQUIRED — DEV flush measurement
 
-**Status: still not passed** (unchanged by #336 — that PR measured call shape
+**Status: PASSED WITH CAVEATS — measured on DEV 2026-09-02 (#366).** The
+numbers, taken against Neon (`provider_usage_daily`, env `dev`, UTC day
+2026-09-02) and Grafana Cloud over the same window:
+
+| Quantity                     | Result                                                                                                                                                                                                                               |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Ledger rows for the day      | one: `google.details.liveness` attempted 1 / succeeded 1 / units 1, `updated_at = 2026-09-02T07:01:47.776Z`                                                                                                                          |
+| Freshness lag                | the counted call happened at 07:01:47Z (first eligible refresh tick, #340); the row is stamped in the same second → observed **< 1 s**, design bound ≤ `COST_LEDGER_FLUSH_MS` = 5 s                                                  |
+| Agreement, ledger vs Grafana | `places_provider_requests_total{instance="worker",method="google.details.liveness"}` = 1, `provider_usage_ledger_flush_total{outcome="ok"}` = 1, no `outcome="error"` → **±1 PASS** for every call made since the ledger reached DEV |
+| Flush duration               | **not measured — not instrumented.** There is no histogram around `flushOnce`; a single-row upsert on the pooled Neon endpoint is not worth guessing at. Owed by COST-BE-017 (#369) as `provider_usage_ledger_flush_duration_ms`.    |
+| `COST_LEDGER_FLUSH_MS=5000`  | kept. Nothing measured argues for a different value.                                                                                                                                                                                 |
+
+**Caveat — unledgered history, not a defect.** Grafana also holds ten
+`google.routeMatrix` requests from the `api` instance (six around
+2026-09-01T13:00Z, four around 2026-09-02T05:00Z) that appear in no ledger row.
+They cannot: the DEV image serving those calls was deployed at 2026-09-01T13:02Z
+(`0cfb29c`), before this ADR's PR merged (2026-09-01T19:05Z), and the next DEV
+deploy — the first to carry the ledger — was 2026-09-02T06:12Z (`9ade011`,
+run 33597876652). Recovering them is a backfill from extrapolated Prometheus
+data and may only ever land as `basis = ESTIMATED` (epic §25, §10), which is
+future work, not a correction to this table.
+
+The paragraph below is the original text of this section, kept for the record.
+
+**Original status: still not passed** (unchanged by #336 — that PR measured call shape
 with a pinned transport and no Google credentials, which is precisely what
 this section says is _not_ a substitute for a DEV measurement). Plan §2.3 requires the accounting boundary to be
 settled _by measurement on DEV_, and that measurement has not been taken —

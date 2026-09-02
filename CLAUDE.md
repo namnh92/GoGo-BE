@@ -16,11 +16,21 @@ Backend BFF for GoGo (couple/group date planning). Modular monolith: `apps/api` 
 - Constraint change → dependent scores/plans stale. Locked stops survive regenerate. Votes idempotent.
 - AI never overrides hard constraints; only allowlisted candidate IDs; schema + budget/time validation; ≤15s timeout → deterministic fallback; kill switch.
 - Place facts (price/hours/availability) only from verified data, never AI output.
-- **No new persistent Google content** until ADR-0006 §9 is signed. Place IDs may
-  be stored indefinitely; a provider object reused inside one execution persists
-  nothing. Adding a provider-response snapshot, a new provider-derived column, or
-  a cache of names/addresses/ratings/hours/coordinates is a blocking review
-  finding outside the PR that lifts the freeze (GoGo-BE#341).
+- **No new persistent Google content.** Place IDs may be stored indefinitely; a
+  provider object reused inside one execution persists nothing. Adding a
+  provider-response snapshot, a new provider-derived column, or a cache of
+  names/addresses/ratings/hours/coordinates is a blocking review finding. The
+  freeze is permanent under the Product/Data Architecture (Google = identity,
+  routes, directions only), not a wait for a sign-off; PR8 (#341/#365) was
+  cancelled, not deferred.
+- **Requirement authority (2026-09-02 reset):** cost work follows
+  `Cost-Spec/GoGo-Cost-Observability-Epic-FINAL.md`; Places ownership,
+  personalization and AI follow `GOGO_PRODUCT_DATA_ARCHITECTURE.md` (workspace).
+  `develop` is implementation truth — it says what exists and where it drifts,
+  never what is required. The combined plans
+  `Cost-Spec/GOGO_COST_AND_PLACES_EXECUTION_PLAN_v2_DECIDED.md` and
+  `…_SOURCE_DRIVEN.md` are SUPERSEDED — HISTORICAL ONLY. Google-derived content
+  never becomes GoGo-owned by copying, editor confirmation or transcription.
 - Outbox + idempotent consumers; no distributed transactions; no DB transaction held across provider calls; providers behind adapters.
 - Error envelope `{ code, message, field_errors, request_id, retryable }`; `Idempotency-Key` on retryable mutations; cursor pagination; ISO-8601 UTC.
 - Migrations: forward-tested on snapshot, rollback path, no long locks. Append-only audit log for sensitive writes.

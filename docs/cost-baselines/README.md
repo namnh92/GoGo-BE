@@ -1,6 +1,13 @@
 # Cost baselines
 
-PR3 / COST-BE-003 (#336). Source: `Cost-Spec/GOGO_COST_AND_PLACES_EXECUTION_PLAN_v2_DECIDED.md` §3 PR3 and §4.
+PR3 / COST-BE-003 (#336). Source: `Cost-Spec/GOGO_COST_AND_PLACES_EXECUTION_PLAN_v2_DECIDED.md` §3 PR3 and §4 — **historical only since 2026-09-02**; the requirement for test-run cost measurement is now `Cost-Spec/GoGo-Cost-Observability-Epic-FINAL.md` §28–§30 and §43.
+
+> **Status 2026-09-02.** Every file in this directory is frozen historical
+> evidence and is never rewritten — a later measurement adds a file. The
+> scenarios A–E describe the Google-seeded flows of that period and are not
+> product architecture targets. PR9 (#342, "AFTER baseline") is no longer a
+> roadmap item; the epic-shaped `cost_test_runs` / `cost_test_run_deltas` model
+> supersedes it (tracker #370).
 
 A baseline answers one question: **how many provider requests, of which
 operation, does each product flow make today?** PR4 (same-execution reuse,
