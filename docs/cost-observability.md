@@ -318,6 +318,90 @@ freshness `UNKNOWN` / cost `UNKNOWN`: the truthful state, not a zero.
   window rule, definition), `cost-upstash.int.spec.ts` (replace-upsert, freshness,
   failure, estimator free tier in date order, Cost Center read-back).
 
+## Neon Postgres collector (#385, epic §41-P2)
+
+One `CollectorDefinition` built by `neonPostgresCollector(db, client, options)`
+(`cost/application/neon.collector.ts`) and registered at worker boot **only
+when** `neonApiFromEnv(process.env)` returns a client — i.e. both `NEON_API_KEY`
+(SSM `neon/api-key`, INF-008 Infra#8) and `NEON_PROJECT_ID` (`neon/project-id`,
+INF-060 Infra#114) are set. Absent, nothing registers, nothing errors, and the
+provider row reads freshness `UNKNOWN` / cost `UNKNOWN`.
+
+| Collector       | Service         | Source                                                                      | Meters written                                                                              |
+| --------------- | --------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `neon_postgres` | `neon.postgres` | `GET /consumption_history/projects` (daily) **and/or** `GET /projects/{id}` | `compute_hours`, `written_data_gb`, `data_transfer_gb`, `storage_bytes`, `storage_gb_month` |
+
+- Settings (issue #385): every 6h, timeout 15s, one attempt per tick,
+  `maxCallsPerDay` 8, `staleAfter` 24h, FREE (neither endpoint is charged or wakes
+  a compute), non-essential. **Up to two GETs per run.**
+- **Two sources, chosen by the plan.** The history endpoint (the issue's source,
+  one entry per UTC day) answers only on Launch, Scale, Agent and Enterprise —
+  `api-docs.neon.tech` fetched 2026-09-03 says 403 "not available" elsewhere, and
+  `gogo-dev` is on **Free**. The adapter reports that 403 as `PLAN_NOT_SUPPORTED`
+  and the collector falls back to the project endpoint, which every plan has and
+  which carries the same counters as **period-to-date totals** (they reset at
+  `consumption_period_start`) plus `data_transfer_bytes` — a field the history
+  endpoint does not list — and the live `synthetic_storage_size`. The probe is
+  once per UTC day: after a 403 the rest of the day's runs skip history, so Free
+  costs one GET per run and an upgrade is noticed the next day.
+- **History path** (`metadata.from = 'consumption_history'`, HIGH): yesterday
+  and today are **replaced** on every run (`source = 'neon_api'`); a day the
+  answer does not carry gets **no row** — absent is not zero. `compute_hours` is
+  round(`compute_time_seconds` / 3600) — CPU-seconds are active seconds × compute
+  size, so this is Neon's own CU-hour; `written_data_gb` is round(bytes / 1e9);
+  `data_transfer_gb` is written from history only when a body carries the field.
+- **Snapshot path** (`metadata.from = 'project'`, MEDIUM): today's row is the
+  **difference between two measured counters** — this run's total and the total at
+  the last run of an earlier day (the baseline) — `floor(now / unit) − floor(baseline
+/ unit)`, so a month's rows telescope to the exact period total while each day
+  rounds to a whole unit; the exact second/byte deltas ride in `metadata.exact`.
+  Attribution across midnight drifts by at most one run interval, hence MEDIUM.
+  The baseline is read back from the `data_transfer_gb` row (today's row carries
+  the baseline the day started from in `metadata.baseline`; an earlier day's row
+  carries its last totals in `metadata.cumulative`). No row on record → the
+  baseline is this snapshot and today reads `0` from here on
+  (`metadata.firstRun`) — the period's earlier usage was never observed daily
+  and is not attributed. A new `consumption_period_start`, or a counter below
+  its baseline, resets the baseline to zero (`metadata.periodRollover`). On the
+  history path only `data_transfer_gb` takes this route
+  (`metadata.historyStatus = 'not_listed'`); on Free all three counters do
+  (`'PLAN_NOT_SUPPORTED'`).
+- `storage_bytes` is the peak `synthetic_storage_size` seen on the day (the history
+  entry's gauge, the live project figure, and today's row so far — a replace
+  never loses an earlier peak); `storage_gb_month` is ceil(bytes / 1e9), decimal
+  GB as R2, prorated by the estimator. A whole-GB row on a 0.5 GB cap reads `1`;
+  the byte row is the exact figure.
+- Billed: `compute_hours` (`postgres.compute`), `storage_gb_month`
+  (`postgres.storage`), `data_transfer_gb` (`postgres.data_transfer`).
+  `written_data_gb` is non-billable — Neon's page prices no written-data line.
+- Pricing (`neon-postgres.{compute,storage,data_transfer}-2026-09-01-v1`,
+  reviewed 2026-09-03, `neon.com/pricing`): the plan in force is **Free**, so
+  all three are `FREE` with the caps on record as allowances — 100 CU-hours,
+  0.5 GB-month, 5 GB transfer, per project per month (scope PROJECT). The
+  usage-based list prices the issue asks to record are in each rule's
+  `sourceReference` and become the v2 rules the day the plan changes: Launch
+  $0.106/CU-hour (`PER_OPERATION`, 106,000 micros), $0.35/GB-month
+  (`PER_GB_MONTH`, 350,000), $0.10/GB beyond 500 GB included (`PER_GB`,
+  100,000); Scale compute $0.222/CU-hour. **Deviation from the issue text:**
+  #385 lists `data_transfer_gb` among the history endpoint's outputs; the
+  reference lists no such metric there, so transfer comes from the project
+  endpoint. The `~191.9 compute-hours` figure in `check-quotas.sh` and the
+  inventory is the pre-2025 Free tier; the page now says 100 CU-hours/project.
+- Registry: `neon` is `active` with `USAGE_COLLECTOR` + `ESTIMATED_COST`;
+  `neon.postgres` gains `written_data_gb` and `storage_bytes`. Credentials absent
+  ⇒ `active` with `UNKNOWN` freshness, same as Cloudflare and Upstash.
+- First live run, watch: the freshness row `neon_postgres` for `AUTH_FAILED`
+  (key) or `NOT_FOUND` (project id — the console id, not the name); that today's
+  rows say `metadata.historyStatus = 'PLAN_NOT_SUPPORTED'` and `firstRun` on
+  Free; and, should the plan ever be usage-based, that history rows land for
+  both yesterday and today (`to = now` is rounded by the API — the request
+  window is not stored, so compare `metadata.timeframeStart/End`).
+- Tests: `neon-api.adapter.spec.ts` (documented bodies, plan-gated 403, pagination,
+  error codes, env gate), `neon.collector.spec.ts` (history rows, delta rows,
+  baseline/rollover, probe-once-a-day), `cost-neon.int.spec.ts` (replace-upsert,
+  baseline read-back across runs and days, period rollover, freshness, failure,
+  Free-plan pricing, Cost Center read-back).
+
 ## Ids
 
 - **Provider** `google`, `cloudflare`, … — epic §5 list, immutable once persisted.

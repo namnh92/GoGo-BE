@@ -238,6 +238,46 @@ describe('upstash rule (#384)', () => {
   });
 });
 
+describe('neon rules (#385)', () => {
+  const rule = (sku: string) => ruleInForce(PRICING_RULES, { billingSkuId: sku }, TODAY)!;
+
+  it('records the Free plan in force: a known zero with each cap on record, per project per month', () => {
+    expect(rule('postgres.compute')).toMatchObject({
+      providerId: 'neon',
+      serviceId: 'neon.postgres',
+      usageMetricId: 'neon.postgres/compute_hours',
+      pricingModel: 'FREE',
+      unitPriceMicros: 0,
+      freeAllowance: { quantity: 100, unit: 'compute_hour', period: 'MONTH', scope: 'PROJECT' },
+      effectiveFrom: '2026-09-01',
+      reviewedAt: '2026-09-03',
+    });
+    expect(rule('postgres.storage')).toMatchObject({
+      usageMetricId: 'neon.postgres/storage_gb_month',
+      pricingModel: 'FREE',
+      freeAllowance: { quantity: 0.5, unit: 'gb_month', period: 'MONTH', scope: 'PROJECT' },
+    });
+    expect(rule('postgres.data_transfer')).toMatchObject({
+      usageMetricId: 'neon.postgres/data_transfer_gb',
+      pricingModel: 'FREE',
+      freeAllowance: { quantity: 5, unit: 'gb', period: 'MONTH', scope: 'PROJECT' },
+    });
+    // Free never bills, over the cap included: Neon suspends instead.
+    expect(estimateMicros(rule('postgres.compute'), 150)).toEqual({
+      known: true,
+      listMicros: 0,
+      freeAdjustedMicros: 0,
+    });
+  });
+
+  it('keeps the usage-based list prices the issue asks for on record, for the day the plan changes', () => {
+    expect(rule('postgres.compute').sourceReference).toContain('$0.106/CU-hour');
+    expect(rule('postgres.compute').sourceReference).toContain('neon.com/pricing');
+    expect(rule('postgres.storage').sourceReference).toContain('$0.35/GB-month');
+    expect(rule('postgres.data_transfer').sourceReference).toContain('$0.10/GB');
+  });
+});
+
 describe('cloudflare rules (#383) and PER_GB_MONTH proration', () => {
   const rule = (sku: string) => ruleInForce(PRICING_RULES, { billingSkuId: sku }, TODAY)!;
 

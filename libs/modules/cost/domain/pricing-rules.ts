@@ -333,6 +333,8 @@ const CLOUDFLARE_RULES: readonly PricingRule[] = [
 const UPSTASH_FETCHED =
   'Upstash Redis pricing page, fetched 2026-09-03 (upstash.com/pricing/redis)';
 const UPSTASH_VERSION = 'upstash-2026-09-03-v1';
+const NEON_FETCHED = 'Neon pricing page, fetched 2026-09-03 (neon.com/pricing)';
+const NEON_VERSION = 'neon-2026-09-03-v1';
 
 const UPSTASH_RULES: readonly PricingRule[] = [
   {
@@ -354,6 +356,78 @@ const UPSTASH_RULES: readonly PricingRule[] = [
     freeAllowance: { quantity: 500_000, unit: 'command', period: 'MONTH', scope: 'SKU' },
     version: UPSTASH_VERSION,
     sourceReference: `${UPSTASH_FETCHED}: pay-as-you-go "$0.2 per 100K commands"; Free tier "500K" commands per month, "256 MB" data, "10 GB" bandwidth per month; "Operational commands like AUTH, HELLO, SELECT, COMMAND, CONFIG, INFO, PING, RESET, and QUIT are not charged." The meter is the day's request total from the Developer API, so this is a ceiling on the billable count. Issue #384's "10k commands/day" is the pre-2024 Free tier and is not on the page.`,
+    reviewedAt: '2026-09-03',
+  },
+  /**
+   * Neon (#385) — the plan `gogo-dev` is on is **Free**, so what is in force
+   * is a cap, not a price (pricing page fetched 2026-09-03, neon.com/pricing):
+   * "100 CU-hours/project", "0.5 GB/project" storage, "5 GB per project per
+   * month" public network transfer. The usage-based list prices the issue
+   * asks to record are in `sourceReference` and become the v2 rules the day
+   * the plan changes: Launch "$0.106/CU-hour" (106,000 micros, PER_OPERATION
+   * per compute_hour), "$0.35/GB-month" storage (350,000 micros PER_GB_MONTH),
+   * "$0.10/GB" transfer beyond "500 GB per project included" (100,000 micros
+   * PER_GB); Scale compute "$0.222/CU-hour". Written data has no price line.
+   * Allowances are per project (scope PROJECT), reset monthly.
+   */
+  {
+    id: 'neon-postgres.compute-2026-09-01-v1',
+    providerId: 'neon',
+    serviceId: 'neon.postgres',
+    operationId: null,
+    usageMetricId: 'neon.postgres/compute_hours',
+    billingSkuId: 'postgres.compute',
+    region: null,
+    platform: null,
+    effectiveFrom: '2026-09-01',
+    effectiveTo: null,
+    currency: 'USD',
+    pricingModel: 'FREE',
+    unitPriceMicros: 0,
+    tiers: null,
+    freeAllowance: { quantity: 100, unit: 'compute_hour', period: 'MONTH', scope: 'PROJECT' },
+    version: NEON_VERSION,
+    sourceReference: `${NEON_FETCHED}: Free plan "100 CU-hours/project" per month, "compute size × hours running = CU-hours"; Launch "$0.106/CU-hour", Scale "$0.222/CU-hour" list. The meter is round(compute_time_seconds / 3600) per day (history) or the floor-telescoped period-to-date delta (project snapshot). Free plan never bills — it suspends at the cap.`,
+    reviewedAt: '2026-09-03',
+  },
+  {
+    id: 'neon-postgres.storage-2026-09-01-v1',
+    providerId: 'neon',
+    serviceId: 'neon.postgres',
+    operationId: null,
+    usageMetricId: 'neon.postgres/storage_gb_month',
+    billingSkuId: 'postgres.storage',
+    region: null,
+    platform: null,
+    effectiveFrom: '2026-09-01',
+    effectiveTo: null,
+    currency: 'USD',
+    pricingModel: 'FREE',
+    unitPriceMicros: 0,
+    tiers: null,
+    freeAllowance: { quantity: 0.5, unit: 'gb_month', period: 'MONTH', scope: 'PROJECT' },
+    version: NEON_VERSION,
+    sourceReference: `${NEON_FETCHED}: Free plan "0.5 GB/project"; Launch and Scale "$0.35/GB-month" list, "1 GB-month = 1 GB stored for 1 month", "metered hourly and summed over the month". The meter row is the day's peak decimal GB of synthetic_storage_size, ceil — a whole-GB row on a 0.5 GB cap reads 1; the exact bytes are the storage_bytes meter.`,
+    reviewedAt: '2026-09-03',
+  },
+  {
+    id: 'neon-postgres.data_transfer-2026-09-01-v1',
+    providerId: 'neon',
+    serviceId: 'neon.postgres',
+    operationId: null,
+    usageMetricId: 'neon.postgres/data_transfer_gb',
+    billingSkuId: 'postgres.data_transfer',
+    region: null,
+    platform: null,
+    effectiveFrom: '2026-09-01',
+    effectiveTo: null,
+    currency: 'USD',
+    pricingModel: 'FREE',
+    unitPriceMicros: 0,
+    tiers: null,
+    freeAllowance: { quantity: 5, unit: 'gb', period: 'MONTH', scope: 'PROJECT' },
+    version: NEON_VERSION,
+    sourceReference: `${NEON_FETCHED}: Free plan "5 GB per project per month" public network transfer; Launch and Scale "500 GB per project included" then "$0.10/GB" list. The meter is the period-to-date data_transfer_bytes delta from the project endpoint (the history endpoint does not list transfer).`,
     reviewedAt: '2026-09-03',
   },
 ];

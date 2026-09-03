@@ -20,6 +20,7 @@ import {
   cloudflareCollectorOptionsFromEnv,
   cloudflareCollectors,
   upstashRedisCollector,
+  neonPostgresCollector,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -33,6 +34,7 @@ import {
   warnFakedProviders,
   cloudflareAnalyticsFromEnv,
   upstashDeveloperApiFromEnv,
+  neonApiFromEnv,
 } from '@gogo/providers';
 import { AdvisoryLock, startPeriodic } from './periodic';
 import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
@@ -302,6 +304,19 @@ async function bootstrap(): Promise<void> {
         missing: 'UPSTASH_API_EMAIL / UPSTASH_API_KEY / UPSTASH_DATABASE_ID',
       },
       'upstash cost collector not registered — credentials absent',
+    );
+  }
+  // COST-BE-026 (#385): Neon Postgres usage — daily history on usage-based
+  // plans, period-to-date deltas from the project endpoint on Free. Same
+  // gate: registered only when INF-060's two values are present.
+  const neon = neonApiFromEnv(process.env);
+  if (neon) {
+    collectors.register(neonPostgresCollector(db, neon));
+    logger.info({ collectors: ['neon_postgres'] }, 'neon cost collector registered');
+  } else {
+    logger.info(
+      { provider: 'neon', missing: 'NEON_API_KEY / NEON_PROJECT_ID' },
+      'neon cost collector not registered — credentials absent',
     );
   }
   // COST-BE-023 (#382): manual / fixed costs are materialised into
