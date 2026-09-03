@@ -210,6 +210,58 @@ A refused write is a 400 `COST_MANUAL_ITEM_INVALID` with one field error
 (`unknown_provider`, `unknown_service`, `manual_cost_not_supported`,
 `invalid_range`, `invalid_currency`, …). CMS counterpart: COST-CMS-010 (CMS#106).
 
+## Cloudflare collectors (#383, epic §41-P2, §42.8–.9)
+
+Two `CollectorDefinition`s built by `cloudflareCollectors(db, client, options)`
+(`cost/application/cloudflare.collector.ts`) and registered at worker boot **only
+when** `cloudflareAnalyticsFromEnv(process.env)` returns a client — i.e. both
+`CLOUDFLARE_ANALYTICS_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (INF-060, Infra#114) are
+set. Absent, nothing registers, nothing errors, and the provider row reads freshness
+`UNKNOWN` / cost `UNKNOWN`: the truthful state, not a zero.
+
+| Collector            | Service              | Source dataset(s)                                       | Meters written                           |
+| -------------------- | -------------------- | ------------------------------------------------------- | ---------------------------------------- |
+| `cloudflare_r2`      | `cloudflare.r2`      | `r2OperationsAdaptiveGroups`, `r2StorageAdaptiveGroups` | `class_a`, `class_b`, `storage_gb_month` |
+| `cloudflare_workers` | `cloudflare.workers` | `workersInvocationsAdaptive`                            | `requests`                               |
+
+- Settings (issue #383): every 6h, timeout 15s, one attempt per tick, `maxCallsPerDay`
+  8, `staleAfter` 24h, FREE (the GraphQL Analytics API has no per-query price),
+  non-essential. Two POSTs per run: **yesterday and today**, because adaptive
+  analytics settle after midnight.
+- Rows go to `provider_usage_meter_daily` with `source = 'cloudflare_api'`,
+  confidence HIGH, and **replace** semantics (`quantity = excluded.quantity`): the
+  dataset is the day's total, unlike the ledger which increments per call. A quiet
+  day is written as `0` — measured zero, never an absent row.
+- Class A / Class B come from the R2 pricing page's action lists
+  (`R2_CLASS_A_ACTIONS` / `R2_CLASS_B_ACTIONS` in the providers adapter). An action
+  the page does not list is counted in `metadata.unclassified`, the two operation
+  rows drop to MEDIUM, and nothing is guessed into a class.
+- `storage_gb_month` is the day's **peak** payload+metadata bytes, ceil to decimal
+  GB. A `gb_month` meter is sampled daily; the month's GB-month is the mean of its
+  days (Cloudflare's own definition), so `estimateMicros(rule, qty, prior, day)`
+  prices a `PER_GB_MONTH` row at 1/D of the monthly price and the 10 GB-month
+  allowance as 10 × D GB-days. Without a `day` the old whole-GB-month meaning holds.
+- Declared, **not** collected: `egress_gb` (R2 egress is free; the dataset has no
+  egress bytes) and `cpu_ms` (only CPU-time quantiles exist, and a quantile × count
+  is an extrapolation, epic §44.8). Both stay non-billable until a source exists.
+- Scope: `CLOUDFLARE_R2_BUCKETS` / `CLOUDFLARE_WORKER_SCRIPTS` (comma lists) narrow
+  the account-wide datasets to this environment's resources (Terraform names them
+  `<prefix>-assets`, `<prefix>-share-link`). Unset → whole account, and
+  `metadata.scope = 'account'` says so. The R2 free tier is per account either way,
+  which is why the estimate stays MEDIUM.
+- Pricing (`cloudflare-*-2026-09-01-v1`, reviewed 2026-09-03): Class A $4.50/M with
+  1M/month free, Class B $0.36/M with 10M/month free, storage $0.015/GB-month with
+  10 GB-month free, Workers `FREE` with the Free plan's 100k requests/day recorded as
+  a daily allowance — a cap, not a price; the rule switches to `PER_MILLION_REQUESTS`
+  the day the plan does.
+- Registry: `cloudflare` is `active` with `USAGE_COLLECTOR` + `ESTIMATED_COST` (the
+  registry invariant is _planned ⇒ no capabilities_, so an implemented-but-
+  unconfigured provider is `active` with `UNKNOWN` freshness, not `planned`).
+- Tests: `cloudflare-analytics.adapter.spec.ts` (GraphQL fixtures, error codes,
+  env gate), `cloudflare.collector.spec.ts` (rows, definitions, day pairing),
+  `cost-cloudflare.int.spec.ts` (replace-upsert, freshness, failure isolation,
+  estimator free tier + proration, Cost Center read-back).
+
 ## Ids
 
 - **Provider** `google`, `cloudflare`, … — epic §5 list, immutable once persisted.

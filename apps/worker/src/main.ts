@@ -17,6 +17,8 @@ import {
   CollectorSchedulerService,
   ledgerFreshnessCollector,
   ManualCostService,
+  cloudflareCollectorOptionsFromEnv,
+  cloudflareCollectors,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -28,6 +30,7 @@ import {
   GooglePlacesAdapter,
   GoogleSheetsAdapter,
   warnFakedProviders,
+  cloudflareAnalyticsFromEnv,
 } from '@gogo/providers';
 import { AdvisoryLock, startPeriodic } from './periodic';
 import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
@@ -261,6 +264,28 @@ async function bootstrap(): Promise<void> {
       ? { monitoringBudgetMicros: COST_MONITORING_BUDGET_MICROS }
       : {}),
   }).register(ledgerFreshnessCollector(db));
+  // COST-BE-024 (#383): Cloudflare R2 + Workers usage from the GraphQL
+  // Analytics API. Registered only when INF-060's credentials are present;
+  // without them the provider stays visible with freshness UNKNOWN — the
+  // truthful state — and nothing errors.
+  const cloudflare = cloudflareAnalyticsFromEnv(process.env);
+  if (cloudflare) {
+    const options = cloudflareCollectorOptionsFromEnv(process.env);
+    for (const def of cloudflareCollectors(db, cloudflare, options)) collectors.register(def);
+    logger.info(
+      {
+        collectors: ['cloudflare_r2', 'cloudflare_workers'],
+        buckets: options.buckets ?? 'account',
+        scripts: options.scripts ?? 'account',
+      },
+      'cloudflare cost collectors registered',
+    );
+  } else {
+    logger.info(
+      { provider: 'cloudflare', missing: 'CLOUDFLARE_ANALYTICS_TOKEN / CLOUDFLARE_ACCOUNT_ID' },
+      'cloudflare cost collectors not registered — credentials absent',
+    );
+  }
   // COST-BE-023 (#382): manual / fixed costs are materialised into
   // `provider_cost_daily` on every CMS write, and once per UTC day here so
   // today's share of a subscription appears without anyone touching the

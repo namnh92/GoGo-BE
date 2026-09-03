@@ -96,19 +96,36 @@ export function estimateMicros(
   rule: PricingRule,
   quantity: number,
   priorInPeriod = 0,
+  day?: string,
 ): EstimateResult {
   const qty = Math.max(0, quantity);
-  const priced = priceAtList(rule, qty);
+  // A `PER_GB_MONTH` rule priced for one day charges 1/D of the monthly price
+  // and consumes 1/D of a GB-month of allowance (see `priceAtList`).
+  const share = rule.pricingModel === 'PER_GB_MONTH' && day !== undefined ? daysInMonthOf(day) : 1;
+  const priced = priceAtList(rule, qty, share);
   if (priced === null) return { known: false };
   const allowance = rule.freeAllowance;
   if (allowance === null) return { known: true, listMicros: priced, freeAdjustedMicros: priced };
-  const remaining = Math.max(0, allowance.quantity - Math.max(0, priorInPeriod));
+  const remaining = Math.max(0, allowance.quantity * share - Math.max(0, priorInPeriod));
   const billable = Math.max(0, qty - remaining);
-  const adjusted = priceAtList(rule, billable);
+  const adjusted = priceAtList(rule, billable, share);
   return { known: true, listMicros: priced, freeAdjustedMicros: adjusted ?? priced };
 }
 
-function priceAtList(rule: PricingRule, qty: number): number | null {
+/** Days in the UTC month of `day` (`YYYY-MM-DD`). */
+function daysInMonthOf(day: string): number {
+  const [y, m] = day.split('-').map(Number) as [number, number];
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+/**
+ * List price of `qty` model units. `share` > 1 only for `PER_GB_MONTH` rows
+ * that carry one day of a monthly average: a `gb_month` meter is sampled
+ * daily as that day's peak GB (Cloudflare R2 bills "the average of the peak
+ * storage per day over a billing period"), so one day is worth 1/D of the
+ * monthly price. Without a `day` the quantity is taken as whole GB-months.
+ */
+function priceAtList(rule: PricingRule, qty: number, share = 1): number | null {
   switch (rule.pricingModel) {
     case 'FREE':
       return 0;
@@ -140,10 +157,11 @@ function priceAtList(rule: PricingRule, qty: number): number | null {
       return rule.unitPriceMicros === null
         ? null
         : Math.ceil((qty * rule.unitPriceMicros) / 1_000_000);
+    case 'PER_GB_MONTH':
+      return rule.unitPriceMicros === null ? null : Math.ceil((qty * rule.unitPriceMicros) / share);
     case 'PER_REQUEST':
     case 'PER_OPERATION':
     case 'PER_GB':
-    case 'PER_GB_MONTH':
     case 'PER_ACTIVE_USER':
     case 'PER_CONVERSION':
       return rule.unitPriceMicros === null ? null : Math.ceil(qty * rule.unitPriceMicros);
@@ -210,6 +228,91 @@ const monthlySku = (quantity: number, unit: MeterUnit): FreeAllowance => ({
   period: 'MONTH',
   scope: 'SKU',
 });
+
+/**
+ * COST-BE-024 (#383) — Cloudflare R2 and Workers, from the pricing pages
+ * fetched 2026-09-03 (`developers.cloudflare.com/r2/pricing`,
+ * `developers.cloudflare.com/workers/platform/pricing`). Every meter is a
+ * service-level meter (no operation), so the rules bind to the SKU and the
+ * meter id and leave `operationId` null.
+ *
+ * R2 free tier (epic §15 allowance, per account per month): 10 GB-month of
+ * storage, 1 million Class A, 10 million Class B; egress free. Workers is on
+ * the Free plan (Terraform: one script, no paid subscription): 100,000
+ * requests per day is a hard cap, not a price, hence `FREE` with the daily
+ * allowance recorded for reporting — the rule becomes `PER_MILLION_REQUESTS`
+ * at 300,000 micros with a 10M/month allowance the day the plan changes.
+ */
+const CF_FETCHED =
+  'Cloudflare R2 / Workers pricing pages, fetched 2026-09-03 (developers.cloudflare.com/r2/pricing, developers.cloudflare.com/workers/platform/pricing)';
+const CLOUDFLARE_VERSION = 'cloudflare-2026-09-03-v1';
+
+function cloudflareRule(
+  input: Pick<
+    PricingRule,
+    | 'serviceId'
+    | 'usageMetricId'
+    | 'billingSkuId'
+    | 'pricingModel'
+    | 'unitPriceMicros'
+    | 'freeAllowance'
+    | 'sourceReference'
+  >,
+): PricingRule {
+  return {
+    id: `cloudflare-${input.billingSkuId}-2026-09-01-v1`,
+    providerId: 'cloudflare',
+    operationId: null,
+    region: null,
+    platform: null,
+    effectiveFrom: '2026-09-01',
+    effectiveTo: null,
+    currency: 'USD',
+    tiers: null,
+    version: CLOUDFLARE_VERSION,
+    reviewedAt: '2026-09-03',
+    ...input,
+  };
+}
+
+const CLOUDFLARE_RULES: readonly PricingRule[] = [
+  cloudflareRule({
+    serviceId: 'cloudflare.r2',
+    usageMetricId: 'cloudflare.r2/class_a',
+    billingSkuId: 'r2.class_a',
+    pricingModel: 'PER_MILLION_REQUESTS',
+    unitPriceMicros: 4_500_000,
+    freeAllowance: { quantity: 1_000_000, unit: 'operation', period: 'MONTH', scope: 'SKU' },
+    sourceReference: `${CF_FETCHED}: "Class A operations $4.50 / million requests", "1 million requests / month" free. Writes and lists — PutObject, CopyObject, ListObjects, multipart parts.`,
+  }),
+  cloudflareRule({
+    serviceId: 'cloudflare.r2',
+    usageMetricId: 'cloudflare.r2/class_b',
+    billingSkuId: 'r2.class_b',
+    pricingModel: 'PER_MILLION_REQUESTS',
+    unitPriceMicros: 360_000,
+    freeAllowance: { quantity: 10_000_000, unit: 'operation', period: 'MONTH', scope: 'SKU' },
+    sourceReference: `${CF_FETCHED}: "Class B operations $0.36 / million requests", "10 million requests / month" free. Reads and heads — GetObject, HeadObject, HeadBucket.`,
+  }),
+  cloudflareRule({
+    serviceId: 'cloudflare.r2',
+    usageMetricId: 'cloudflare.r2/storage_gb_month',
+    billingSkuId: 'r2.storage',
+    pricingModel: 'PER_GB_MONTH',
+    unitPriceMicros: 15_000,
+    freeAllowance: { quantity: 10, unit: 'gb_month', period: 'MONTH', scope: 'SKU' },
+    sourceReference: `${CF_FETCHED}: "Storage $0.015 / GB-month", "10 GB-month / month" free; "a GB-month is determined by averaging the peak storage per day over a billing period". The meter row is the day's peak decimal GB; the estimator prorates by days in the month.`,
+  }),
+  cloudflareRule({
+    serviceId: 'cloudflare.workers',
+    usageMetricId: 'cloudflare.workers/requests',
+    billingSkuId: 'workers.requests',
+    pricingModel: 'FREE',
+    unitPriceMicros: 0,
+    freeAllowance: { quantity: 100_000, unit: 'request', period: 'DAY', scope: 'SERVICE' },
+    sourceReference: `${CF_FETCHED}: Workers Free plan "100,000 requests per day", "10 milliseconds of CPU time per invocation" — a hard cap on the Free plan, not a price. Paid plan would be $5/month, 10M requests included, then $0.30 per million; CPU 30M ms included, then $0.02 per million ms.`,
+  }),
+];
 
 /**
  * The registry. Read through `PRICING_RULES`; add a rule by appending, never
@@ -358,6 +461,7 @@ export const PRICING_RULES: readonly PricingRule[] = [
     sourceReference:
       'MEASUREMENT GAP. Same as iOS: client-side rendering, no server-side telemetry, no verified Dynamic Maps price. Never zero.',
   }),
+  ...CLOUDFLARE_RULES,
 ];
 
 /**

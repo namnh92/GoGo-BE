@@ -138,7 +138,7 @@ export function planEstimates(
         ? null
         : `${row.source}|${scopeKey(row, rule, allowance)}|${periodKey(row.day, allowance)}`;
     const prior = key === null ? 0 : (consumed.get(key) ?? 0);
-    const estimate = estimateMicros(rule, row.quantity, prior);
+    const estimate = estimateMicros(rule, row.quantity, prior, row.day);
     if (key !== null) consumed.set(key, prior + row.quantity);
     if (!estimate.known) {
       if (row.day >= range.from && row.day <= range.to) {

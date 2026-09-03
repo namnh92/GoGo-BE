@@ -63,6 +63,7 @@ export type MeterUnit =
   | 'byte'
   | 'gb'
   | 'gb_month'
+  | 'millisecond'
   | 'minute'
   | 'compute_hour'
   | 'notification'
@@ -646,6 +647,80 @@ const GOOGLE: ProviderDefinition = {
   ],
 };
 
+/**
+ * COST-BE-024 (#383) — Cloudflare, the first provider after Google with a
+ * collector. Ids are GoGo's; display names are the pricing page's (fetched
+ * 2026-09-03).
+ */
+const CLOUDFLARE_SKUS: readonly BillingSkuDefinition[] = [
+  { id: 'r2.class_a', providerId: 'cloudflare', displayName: 'R2 — Class A operations' },
+  { id: 'r2.class_b', providerId: 'cloudflare', displayName: 'R2 — Class B operations' },
+  { id: 'r2.storage', providerId: 'cloudflare', displayName: 'R2 — Standard storage' },
+  { id: 'workers.requests', providerId: 'cloudflare', displayName: 'Workers — Requests' },
+];
+
+const R2 = 'cloudflare.r2';
+const WORKERS = 'cloudflare.workers';
+
+function billedServiceMeter(
+  serviceId: string,
+  metric: string,
+  unit: MeterUnit,
+  billingSkuId: string,
+): UsageMeterDefinition {
+  return { ...serviceMeter(serviceId, metric, unit), billingSkuId, billable: true };
+}
+
+/**
+ * Two services, service-level meters only: R2 and Workers have no
+ * per-operation instrumentation in this process — the GraphQL Analytics
+ * collector (`cloudflare_api`, #383) reads the day's totals from Cloudflare.
+ *
+ * A `gb_month` meter is sampled daily: a row's quantity is that day's peak
+ * decimal GB, and the month's GB-month is the mean of its days, which is
+ * how Cloudflare itself bills R2 storage ("averaging the peak storage per
+ * day over a billing period"). `PER_GB_MONTH` pricing prorates accordingly.
+ *
+ * Declared but not collected, deliberately (epic §44.8 — no extrapolation):
+ * `egress_gb` (R2 egress is free and the dataset exposes no egress bytes) and
+ * `cpu_ms` (the dataset sums requests but only offers CPU-time quantiles).
+ * Both stay non-billable until a source exists.
+ */
+const CLOUDFLARE: ProviderDefinition = {
+  id: 'cloudflare',
+  displayName: 'Cloudflare',
+  status: 'active',
+  capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
+  services: [
+    {
+      id: R2,
+      providerId: 'cloudflare',
+      displayName: 'R2',
+      category: 'object_storage',
+      capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
+      operations: [],
+      meters: [
+        billedServiceMeter(R2, 'class_a', 'operation', 'r2.class_a'),
+        billedServiceMeter(R2, 'class_b', 'operation', 'r2.class_b'),
+        billedServiceMeter(R2, 'storage_gb_month', 'gb_month', 'r2.storage'),
+        serviceMeter(R2, 'egress_gb', 'gb'),
+      ],
+    },
+    {
+      id: WORKERS,
+      providerId: 'cloudflare',
+      displayName: 'Workers',
+      category: 'edge_compute',
+      capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
+      operations: [],
+      meters: [
+        billedServiceMeter(WORKERS, 'requests', 'request', 'workers.requests'),
+        serviceMeter(WORKERS, 'cpu_ms', 'millisecond'),
+      ],
+    },
+  ],
+};
+
 function serviceMeter(serviceId: string, metric: string, unit: MeterUnit): UsageMeterDefinition {
   return {
     id: `${serviceId}/${metric}`,
@@ -716,31 +791,10 @@ function manual(
 }
 
 export const COST_REGISTRY_DATA: RegistryData = {
-  billingSkus: GOOGLE_SKUS,
+  billingSkus: [...GOOGLE_SKUS, ...CLOUDFLARE_SKUS],
   providers: [
     GOOGLE,
-    planned('cloudflare', 'Cloudflare', [
-      {
-        name: 'r2',
-        displayName: 'R2',
-        category: 'object_storage',
-        meters: [
-          ['class_a', 'operation'],
-          ['class_b', 'operation'],
-          ['storage_gb_month', 'gb_month'],
-          ['egress_gb', 'gb'],
-        ],
-      },
-      {
-        name: 'workers',
-        displayName: 'Workers',
-        category: 'edge_compute',
-        meters: [
-          ['requests', 'request'],
-          ['cpu_ms', 'minute'],
-        ],
-      },
-    ]),
+    CLOUDFLARE,
     planned('upstash', 'Upstash', [
       {
         name: 'redis',
