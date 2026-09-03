@@ -1,0 +1,19 @@
+{
+  "name": "@gogo/cost-observability",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@gogo/database": "workspace:*",
+    "@gogo/observability": "workspace:*",
+    "@gogo/providers": "workspace:*",
+    "drizzle-orm": "^0.44.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

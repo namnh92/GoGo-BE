@@ -12,6 +12,8 @@
  * 2. The lower libs (`database`, `observability`, `providers`) must not import
  *    from `modules`. They are the leaves; `modules` composes them. A cycle
  *    here is what makes a package impossible to extract later.
+ *    `cost-observability` (#388) is held to the same rule for the same reason:
+ *    `modules` re-exports it, so an import back would be a cycle.
  */
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -31,6 +33,18 @@ function sources(): string[] {
 }
 
 const LEAF_PACKAGES = ['libs/database', 'libs/observability', 'libs/providers'];
+
+/**
+ * COST-BE-029 (#388) — packages that sit *above* the leaves but still below
+ * `modules`, and are subject to the same rule.
+ *
+ * `@gogo/cost-observability` depends on all three leaves; it is not one. What
+ * it must not do is import `modules`, because `modules` re-exports it — the
+ * cycle that would make the package impossible to extract, which is the whole
+ * point of moving it out. The audit writer it used to reach for is inverted
+ * into `ports/audit.port.ts` for exactly this reason.
+ */
+const NON_MODULE_PACKAGES = [...LEAF_PACKAGES, 'libs/cost-observability'];
 
 type Violation = { file: string; line: number; statement: string; rule: string };
 
@@ -56,13 +70,15 @@ function violationsIn(file: string): Violation[] {
       });
     }
 
-    const leaf = LEAF_PACKAGES.find((pkg) => file.startsWith(`${pkg}/`));
-    if (leaf && (resolved.startsWith('libs/modules') || specifier === '@gogo/modules')) {
+    const pkg = NON_MODULE_PACKAGES.find((p) => file.startsWith(`${p}/`));
+    if (pkg && (resolved.startsWith('libs/modules') || specifier === '@gogo/modules')) {
       found.push({
         file,
         line: index + 1,
         statement: specifier,
-        rule: `${leaf} is a leaf and must not import modules`,
+        rule: LEAF_PACKAGES.includes(pkg)
+          ? `${pkg} is a leaf and must not import modules`
+          : `${pkg} is re-exported by modules and must not import it back`,
       });
     }
   });
@@ -75,7 +91,7 @@ function main(): void {
 
   console.log(`checked ${sources().length} files under libs/`);
   if (violations.length === 0) {
-    console.log('OK: no package imports an app, and no leaf package imports modules.');
+    console.log('OK: no package imports an app, and nothing below modules imports modules.');
     process.exit(0);
   }
 

@@ -1,8 +1,12 @@
 // Static, not `await import()` — see scripts/cost-baseline/index.ts for why.
 import { closeDb, createDb } from '../../libs/database/src/client';
 import { PrometheusQueryAdapter } from '../../libs/providers/src/prometheus-query.adapter';
-import { PrometheusBackfillService } from '../../libs/modules/cost/application/prometheus-backfill.service';
-import { ReconciliationService } from '../../libs/modules/cost/application/reconciliation.service';
+import { PrometheusBackfillService } from '../../libs/cost-observability/application/prometheus-backfill.service';
+import { ReconciliationService } from '../../libs/cost-observability/application/reconciliation.service';
+// #388 — the package declares what it needs written; the composer supplies the
+// writer. A CLI has no request context, so the row carries no request id or IP,
+// exactly as it did before the port existed.
+import { writeAudit } from '../../libs/modules/shared/audit';
 
 /**
  * COST-BE-021 (#380) — the operator's door to backfill and reconciliation.
@@ -90,7 +94,7 @@ async function main(): Promise<void> {
       );
     }
     const metrics = new PrometheusQueryAdapter({ url, username, token });
-    const result = await new PrometheusBackfillService(db, metrics).run({
+    const result = await new PrometheusBackfillService(db, metrics, writeAudit).run({
       environment: env,
       from,
       to,

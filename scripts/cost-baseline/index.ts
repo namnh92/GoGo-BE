@@ -41,7 +41,7 @@ import type { SqlRunner } from './ledger';
 import { loadFixtures } from './scenarios';
 import { parseMetricsText } from './metrics-text';
 import { runBaseline, type GrafanaProbe } from './runner';
-import { utcDay } from '../../libs/modules/cost/domain/provider-pricing';
+import { utcDay } from '../../libs/cost-observability/pricing/provider-pricing';
 import { FIXTURES_DIR } from './stub-google';
 
 type Args = Record<string, string | boolean | string[]>;

@@ -16,6 +16,7 @@ import {
   CostCenterService,
   CostRegistry,
   TestCostService,
+  writeAudit,
 } from '@gogo/modules';
 
 /**
@@ -185,10 +186,10 @@ beforeAll(async () => {
        now() - interval '3 days', now() - interval '3 days', 86400, 'STALE', 0)
   `);
   // A TOTAL budget large enough that today's spend cannot project past it.
-  await new BudgetService(db as never, COST_REGISTRY, { environment: ENV }).upsert(
-    { scope: { kind: 'TOTAL', id: null }, monthMicros: 1_000_000_000 },
-    { adminId: null },
-  );
+  await new BudgetService(db as never, COST_REGISTRY, {
+    environment: ENV,
+    audit: writeAudit,
+  }).upsert({ scope: { kind: 'TOTAL', id: null }, monthMicros: 1_000_000_000 }, { adminId: null });
   // One finished test run with a priced delta.
   const tests = new TestCostService(db as never);
   runId = await tests.start('cost-center-smoke', { environment: ENV, gitSha: 'abc1234' });

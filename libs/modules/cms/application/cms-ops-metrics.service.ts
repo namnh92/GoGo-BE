@@ -1,12 +1,12 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { METRICS_QUERY, MetricsQueryError, type MetricsQueryPort } from '@gogo/providers';
-import { APP_CONFIG } from '../../shared/config';
 import {
   PRICING_CURRENCY,
   PRICING_VERSION,
   staticCostGaps,
   utcDay,
-} from '../../cost/domain/provider-pricing';
+} from '@gogo/cost-observability';
+import { METRICS_QUERY, MetricsQueryError, type MetricsQueryPort } from '@gogo/providers';
+import { APP_CONFIG } from '../../shared/config';
 import {
   OPS_PROVIDERS,
   LATENCY_EXCLUDED_STATUSES,

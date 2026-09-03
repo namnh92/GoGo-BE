@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
-import { BudgetService, COST_REGISTRY } from '@gogo/modules';
+import { BudgetService, COST_REGISTRY, writeAudit } from '@gogo/modules';
 
 /**
  * COST-BE-020 (#379) — monthly budgets and forecast against a real Postgres:
@@ -68,7 +68,11 @@ afterEach(async () => {
 
 describe('BudgetService (epic §32–§33)', () => {
   it('upserts one budget per scope, refuses unknown registry ids, and audits the change', async () => {
-    const svc = new BudgetService(db as never, COST_REGISTRY, { environment: ENV, now: NOW });
+    const svc = new BudgetService(db as never, COST_REGISTRY, {
+      environment: ENV,
+      now: NOW,
+      audit: writeAudit,
+    });
     await svc.upsert(
       { scope: { kind: 'TOTAL', id: null }, monthMicros: 50_000_000 },
       { adminId: null },
@@ -152,7 +156,11 @@ describe('BudgetService (epic §32–§33)', () => {
     // Outside the month: ignored.
     await cost('2026-08-31', { amount: 9_000_000 });
 
-    const svc = new BudgetService(db as never, COST_REGISTRY, { environment: ENV, now: NOW });
+    const svc = new BudgetService(db as never, COST_REGISTRY, {
+      environment: ENV,
+      now: NOW,
+      audit: writeAudit,
+    });
     await svc.upsert(
       { scope: { kind: 'TOTAL', id: null }, monthMicros: 30_000_000 },
       { adminId: null },
@@ -208,12 +216,14 @@ describe('BudgetService (epic §32–§33)', () => {
     const early = new BudgetService(db as never, COST_REGISTRY, {
       environment: ENV,
       now: () => new Date('2026-09-02T00:00:00Z'),
+      audit: writeAudit,
     });
     await cost('2026-09-01', { amount: 1 });
     expect((await early.overview()).forecastMicros).toBeNull();
     const empty = await new BudgetService(db as never, COST_REGISTRY, {
       environment: ENV,
       now: NOW,
+      audit: writeAudit,
     }).overview('2026-07');
     expect(empty.spend.micros).toBe(0);
     expect(empty.forecastMicros).toBeNull();

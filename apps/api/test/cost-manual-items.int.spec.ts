@@ -9,7 +9,13 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
-import { COST_REGISTRY, ManualCostService, daysInMonth, manualCostSource } from '@gogo/modules';
+import {
+  COST_REGISTRY,
+  daysInMonth,
+  ManualCostService,
+  manualCostSource,
+  writeAudit,
+} from '@gogo/modules';
 
 /**
  * COST-BE-023 (#382) — manual / fixed costs against a real Postgres and the
@@ -399,6 +405,7 @@ describe('#382 — periods and idempotent rebuilds (service level, frozen clock)
     new ManualCostService(db as never, COST_REGISTRY, {
       environment: SVC_ENV,
       now: () => new Date(now),
+      audit: writeAudit,
     });
   const rowsOf = async () => {
     const { rows } = await db.execute(sql`

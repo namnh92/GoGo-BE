@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
+    "@gogo/cost-observability": "workspace:*",
     "@gogo/database": "workspace:*",
     "@gogo/observability": "workspace:*",
     "@gogo/providers": "workspace:*",
