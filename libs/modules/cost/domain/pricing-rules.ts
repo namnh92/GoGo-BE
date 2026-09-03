@@ -315,6 +315,50 @@ const CLOUDFLARE_RULES: readonly PricingRule[] = [
 ];
 
 /**
+ * COST-BE-025 (#384) — Upstash Redis, from the pricing page fetched
+ * 2026-09-03 (`upstash.com/pricing/redis`). One billed meter, service-level
+ * (no operation): `commands`, pay-as-you-go "$0.2 per 100K commands" with the
+ * Free tier's "500K" commands per month recorded as the allowance.
+ *
+ * Issue #384 and epic §41-P2 quote the older Free tier (10k commands per
+ * day, scope DAILY). The page no longer lists a daily figure — the cap the
+ * console's "ERR max daily request limit exceeded" refers to is unpublished —
+ * so the monthly allowance the page states is what is recorded; a verified
+ * daily cap becomes a new rule version, not an edit of this one.
+ *
+ * Storage ("$0.25 per GB", first 1 GB free) and bandwidth ("$0.03/GB" beyond
+ * 200 GB/month) are deliberately unpriced: the meters are bytes and
+ * non-billable until a GB rule with an explicit conversion exists.
+ */
+const UPSTASH_FETCHED =
+  'Upstash Redis pricing page, fetched 2026-09-03 (upstash.com/pricing/redis)';
+const UPSTASH_VERSION = 'upstash-2026-09-03-v1';
+
+const UPSTASH_RULES: readonly PricingRule[] = [
+  {
+    id: 'upstash-redis.commands-2026-09-01-v1',
+    providerId: 'upstash',
+    serviceId: 'upstash.redis',
+    operationId: null,
+    usageMetricId: 'upstash.redis/commands',
+    billingSkuId: 'redis.commands',
+    region: null,
+    platform: null,
+    effectiveFrom: '2026-09-01',
+    effectiveTo: null,
+    currency: 'USD',
+    // $0.2 per 100K = $0.002 per 1,000 commands = 2,000 micros.
+    pricingModel: 'PER_1K_REQUESTS',
+    unitPriceMicros: 2_000,
+    tiers: null,
+    freeAllowance: { quantity: 500_000, unit: 'command', period: 'MONTH', scope: 'SKU' },
+    version: UPSTASH_VERSION,
+    sourceReference: `${UPSTASH_FETCHED}: pay-as-you-go "$0.2 per 100K commands"; Free tier "500K" commands per month, "256 MB" data, "10 GB" bandwidth per month; "Operational commands like AUTH, HELLO, SELECT, COMMAND, CONFIG, INFO, PING, RESET, and QUIT are not charged." The meter is the day's request total from the Developer API, so this is a ceiling on the billable count. Issue #384's "10k commands/day" is the pre-2024 Free tier and is not on the page.`,
+    reviewedAt: '2026-09-03',
+  },
+];
+
+/**
  * The registry. Read through `PRICING_RULES`; add a rule by appending, never
  * by editing a row that a past day was priced with.
  */
@@ -462,6 +506,7 @@ export const PRICING_RULES: readonly PricingRule[] = [
       'MEASUREMENT GAP. Same as iOS: client-side rendering, no server-side telemetry, no verified Dynamic Maps price. Never zero.',
   }),
   ...CLOUDFLARE_RULES,
+  ...UPSTASH_RULES,
 ];
 
 /**

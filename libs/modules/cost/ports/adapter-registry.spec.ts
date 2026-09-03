@@ -27,7 +27,7 @@ describe('cost adapter registry (epic §7)', () => {
       }),
     ).toThrow(AdapterRegistryError);
     // A planned provider declares nothing yet.
-    expect(() => registry.registerUsageCollector(collector('upstash', 'upstash.redis'))).toThrow(
+    expect(() => registry.registerUsageCollector(collector('neon', 'neon.postgres'))).toThrow(
       /does not declare USAGE_COLLECTOR/,
     );
   });

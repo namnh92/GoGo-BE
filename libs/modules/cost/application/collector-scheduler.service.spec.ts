@@ -147,10 +147,10 @@ describe('registration (epic §6/§7)', () => {
     expect(() => s.register(collector({ id: 'x', providerId: 'vietmap' }))).toThrow(
       /unknown provider/,
     );
-    expect(() => s.register(collector({ id: 'y', providerId: 'upstash' }))).toThrow(
+    expect(() => s.register(collector({ id: 'y', providerId: 'neon' }))).toThrow(
       /does not declare/,
     );
-    expect(() => s.register(collector({ id: 'z', serviceId: 'upstash.redis' }))).toThrow(
+    expect(() => s.register(collector({ id: 'z', serviceId: 'neon.postgres' }))).toThrow(
       /is not google's/,
     );
     expect(() =>

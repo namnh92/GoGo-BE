@@ -262,6 +262,62 @@ set. Absent, nothing registers, nothing errors, and the provider row reads fresh
   `cost-cloudflare.int.spec.ts` (replace-upsert, freshness, failure isolation,
   estimator free tier + proration, Cost Center read-back).
 
+## Upstash Redis collector (#384, epic §41-P2, §42.7)
+
+One `CollectorDefinition` built by `upstashRedisCollector(db, client, options)`
+(`cost/application/upstash.collector.ts`) and registered at worker boot **only
+when** `upstashDeveloperApiFromEnv(process.env)` returns a client — i.e. all of
+`UPSTASH_API_EMAIL`, `UPSTASH_API_KEY`, `UPSTASH_DATABASE_ID` (INF-060, Infra#114)
+are set. Absent, nothing registers, nothing errors, and the provider row reads
+freshness `UNKNOWN` / cost `UNKNOWN`: the truthful state, not a zero.
+
+| Collector       | Service         | Source                                           | Meters written                                 |
+| --------------- | --------------- | ------------------------------------------------ | ---------------------------------------------- |
+| `upstash_redis` | `upstash.redis` | Developer API `GET /v2/redis/stats/{databaseId}` | `commands`, `bandwidth_bytes`, `storage_bytes` |
+
+- Settings (issue #384): every 6h, timeout 15s, one attempt per tick, `maxCallsPerDay`
+  8, `staleAfter` 24h, FREE (the Developer API has no per-request charge),
+  non-essential. **One GET per run**: the answer carries the daily charts, so
+  yesterday and today are both written from it, and yesterday is re-read because
+  the last run of a day happens before midnight.
+- Rows go to `provider_usage_meter_daily` with `source = 'upstash_api'` and
+  **replace** semantics (`quantity = excluded.quantity`): the endpoint reports the
+  day's total, unlike the ledger which increments per call.
+- `commands` is the day's `dailyrequests` point (today falls back to the live
+  `daily_net_commands`): HIGH, or MEDIUM when today's two figures disagree —
+  `metadata.dailyNetCommands` keeps the other one. A day inside the charts' window
+  (`days.length`, `metadata.windowDays`) with no point is a measured `0`; a day
+  outside the window gets **no row** — absent is not zero (epic §44.6, §44.10).
+- `bandwidth_bytes` is today's `dailybandwidth` (HIGH, "Total daily bandwidth
+  usage in bytes"); other days come from the `bandwidths` point at MEDIUM, because
+  the docs' example disagrees with the scalar and the series' unit is unverified
+  until a live run compares today's two (`metadata.seriesBandwidthBytes`).
+- `storage_bytes` is the peak of the day's `diskusage` samples plus `current_storage`
+  for today — MEDIUM, `metadata.definition = 'peak of point-in-time samples'`. No
+  sample on the day, no row.
+- Only `commands` is billed (`redis.commands`). Storage and bandwidth are collected
+  in bytes and non-billable: Upstash prices both per GB beyond a free tier, and a
+  byte meter is priced by a GB rule with an explicit conversion, never by assumption.
+- Pricing (`upstash-redis.commands-2026-09-01-v1`, reviewed 2026-09-03):
+  `PER_1K_REQUESTS` at 2,000 micros ($0.2 per 100K commands) with 500K commands a
+  month free (scope SKU). **Deviation from the issue text:** #384 and epic §41-P2
+  say "10k commands/day, scope DAILY" — the pre-2024 Free tier. The pricing page
+  fetched 2026-09-03 states 500K/month and publishes no daily figure (the cap behind
+  "ERR max daily request limit exceeded" is unlisted), so the monthly allowance is
+  what is recorded; a verified daily cap becomes a new rule version, not an edit.
+  The meter is the day's request total, so the estimate is a ceiling on the
+  billable count (operational commands such as PING and INFO are not charged).
+- Registry: `upstash` is `active` with `USAGE_COLLECTOR` + `ESTIMATED_COST`;
+  `upstash.redis` gains `bandwidth_bytes`. Credentials absent ⇒ `active` with
+  `UNKNOWN` freshness, same as Cloudflare.
+- First live run, watch: the freshness row `upstash_redis` for `NOT_FOUND` (wrong
+  database id) or `AUTH_FAILED`; that `metadata.windowDays` ≥ 2 so yesterday is
+  covered; and today's `bandwidth_bytes` against `metadata.seriesBandwidthBytes`.
+- Tests: `upstash-developer-api.adapter.spec.ts` (documented example body, Go
+  timestamps, error codes, env gate), `upstash.collector.spec.ts` (rows per day,
+  window rule, definition), `cost-upstash.int.spec.ts` (replace-upsert, freshness,
+  failure, estimator free tier in date order, Cost Center read-back).
+
 ## Ids
 
 - **Provider** `google`, `cloudflare`, … — epic §5 list, immutable once persisted.

@@ -721,6 +721,49 @@ const CLOUDFLARE: ProviderDefinition = {
   ],
 };
 
+/**
+ * COST-BE-025 (#384) — Upstash, the second provider with a collector. Ids
+ * are GoGo's; the display name is the pricing page's (fetched 2026-09-03).
+ */
+const UPSTASH_SKUS: readonly BillingSkuDefinition[] = [
+  { id: 'redis.commands', providerId: 'upstash', displayName: 'Redis — Commands' },
+];
+
+const UPSTASH_REDIS = 'upstash.redis';
+
+/**
+ * One service, service-level meters only: this process instruments no
+ * per-command path — the Developer API collector (`upstash_api`, #384)
+ * reads the day's totals from Upstash.
+ *
+ * `commands` is billed (pay-as-you-go per 100K, 500K/month free).
+ * `storage_bytes` and `bandwidth_bytes` are collected but non-billable:
+ * Upstash prices both per GB beyond a free tier, and a byte meter is priced
+ * by a GB rule only once one exists with an explicit conversion — never by
+ * assumption (epic §44.23).
+ */
+const UPSTASH: ProviderDefinition = {
+  id: 'upstash',
+  displayName: 'Upstash',
+  status: 'active',
+  capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
+  services: [
+    {
+      id: UPSTASH_REDIS,
+      providerId: 'upstash',
+      displayName: 'Redis',
+      category: 'cache',
+      capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
+      operations: [],
+      meters: [
+        billedServiceMeter(UPSTASH_REDIS, 'commands', 'command', 'redis.commands'),
+        serviceMeter(UPSTASH_REDIS, 'storage_bytes', 'byte'),
+        serviceMeter(UPSTASH_REDIS, 'bandwidth_bytes', 'byte'),
+      ],
+    },
+  ],
+};
+
 function serviceMeter(serviceId: string, metric: string, unit: MeterUnit): UsageMeterDefinition {
   return {
     id: `${serviceId}/${metric}`,
@@ -791,21 +834,11 @@ function manual(
 }
 
 export const COST_REGISTRY_DATA: RegistryData = {
-  billingSkus: [...GOOGLE_SKUS, ...CLOUDFLARE_SKUS],
+  billingSkus: [...GOOGLE_SKUS, ...CLOUDFLARE_SKUS, ...UPSTASH_SKUS],
   providers: [
     GOOGLE,
     CLOUDFLARE,
-    planned('upstash', 'Upstash', [
-      {
-        name: 'redis',
-        displayName: 'Redis',
-        category: 'cache',
-        meters: [
-          ['commands', 'command'],
-          ['storage_bytes', 'byte'],
-        ],
-      },
-    ]),
+    UPSTASH,
     planned('neon', 'Neon', [
       {
         name: 'postgres',

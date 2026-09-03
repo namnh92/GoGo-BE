@@ -19,6 +19,7 @@ import {
   ManualCostService,
   cloudflareCollectorOptionsFromEnv,
   cloudflareCollectors,
+  upstashRedisCollector,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -31,6 +32,7 @@ import {
   GoogleSheetsAdapter,
   warnFakedProviders,
   cloudflareAnalyticsFromEnv,
+  upstashDeveloperApiFromEnv,
 } from '@gogo/providers';
 import { AdvisoryLock, startPeriodic } from './periodic';
 import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
@@ -284,6 +286,22 @@ async function bootstrap(): Promise<void> {
     logger.info(
       { provider: 'cloudflare', missing: 'CLOUDFLARE_ANALYTICS_TOKEN / CLOUDFLARE_ACCOUNT_ID' },
       'cloudflare cost collectors not registered — credentials absent',
+    );
+  }
+  // COST-BE-025 (#384): Upstash Redis usage from the Developer API stats
+  // endpoint. Same gate: registered only when INF-060's three values are
+  // present; absent, the provider stays visible with freshness UNKNOWN.
+  const upstash = upstashDeveloperApiFromEnv(process.env);
+  if (upstash) {
+    collectors.register(upstashRedisCollector(db, upstash));
+    logger.info({ collectors: ['upstash_redis'] }, 'upstash cost collector registered');
+  } else {
+    logger.info(
+      {
+        provider: 'upstash',
+        missing: 'UPSTASH_API_EMAIL / UPSTASH_API_KEY / UPSTASH_DATABASE_ID',
+      },
+      'upstash cost collector not registered — credentials absent',
     );
   }
   // COST-BE-023 (#382): manual / fixed costs are materialised into
