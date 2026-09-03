@@ -14,7 +14,7 @@ import {
 } from './provider-pricing';
 
 const repoRoot = path.resolve(__dirname, '../../../..');
-const TODAY = '2026-09-02';
+const TODAY = '2026-09-03';
 
 describe('pricing registry', () => {
   it('prices a known operation at list price', () => {

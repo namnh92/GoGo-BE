@@ -47,6 +47,25 @@ export {
 } from './provider-selection';
 export { UnconfiguredPlaceProvider } from './unconfigured-place.provider';
 export { R2StorageAdapter, type R2Config } from './r2-storage.adapter';
+export {
+  CLOUDFLARE_GRAPHQL_ENDPOINT,
+  CloudflareAnalyticsClient,
+  CloudflareAnalyticsError,
+  R2_CLASS_A_ACTIONS,
+  R2_CLASS_B_ACTIONS,
+  classifyR2Action,
+  cloudflareAnalyticsFromEnv,
+  foldR2,
+  foldWorkers,
+  r2Query,
+  workersQuery,
+  type CloudflareAnalyticsConfig,
+  type CloudflareAnalyticsErrorCode,
+  type CloudflareAnalyticsPort,
+  type CloudflareAnalyticsQuery,
+  type CloudflareR2DayUsage,
+  type CloudflareWorkersDayUsage,
+} from './cloudflare-analytics.adapter';
 export { KeywordFeedbackParser, foldVietnamese } from './keyword-feedback.adapter';
 export {
   PrometheusQueryAdapter,

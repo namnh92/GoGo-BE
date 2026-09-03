@@ -323,6 +323,19 @@ export {
 } from '../cost/application/collector-scheduler.service';
 export { ledgerFreshnessCollector } from '../cost/application/ledger-freshness.collector';
 export {
+  CLOUDFLARE_R2_COLLECTOR_ID,
+  CLOUDFLARE_SOURCE,
+  CLOUDFLARE_WORKERS_COLLECTOR_ID,
+  cloudflareCollectorOptionsFromEnv,
+  cloudflareCollectors,
+  listFromEnv,
+  previousDay,
+  r2Samples,
+  upsertUsageSamples,
+  workersSamples,
+  type CloudflareCollectorOptions,
+} from '../cost/application/cloudflare.collector';
+export {
   TestCostService,
   checkBudget,
   diffSnapshots,

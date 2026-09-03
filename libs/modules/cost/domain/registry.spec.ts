@@ -9,7 +9,7 @@ import {
   type RegistryData,
 } from './registry';
 
-const TODAY = '2026-09-02';
+const TODAY = '2026-09-03';
 
 /** Epic §5 stable ids — the registry must name every one, immutable. */
 const EPIC_PROVIDER_IDS = [
@@ -318,9 +318,41 @@ describe('adding a provider (epic §40)', () => {
     expect(registry.providerForOperation('openai.embeddings.create')?.id).toBe('openai');
     expect(registry.providersWith('USAGE_COLLECTOR').map((p) => p.id)).toEqual([
       'google',
+      'cloudflare',
       'openai',
     ]);
     // The existing Google attribution is untouched by the addition.
     expect(registry.serviceForOperation('google.routeMatrix')?.id).toBe('google.routes');
+  });
+});
+
+describe('cloudflare (#383)', () => {
+  it('is active with USAGE_COLLECTOR + ESTIMATED_COST, and its billed meters name their SKUs', () => {
+    const cf = COST_REGISTRY.provider('cloudflare')!;
+    expect(cf.status).toBe('active');
+    expect(cf.capabilities).toEqual(['USAGE_COLLECTOR', 'ESTIMATED_COST']);
+    expect(COST_REGISTRY.providersWith('USAGE_COLLECTOR').map((p) => p.id)).toEqual([
+      'google',
+      'cloudflare',
+    ]);
+    const billed = COST_REGISTRY.meters()
+      .filter((m) => m.serviceId.startsWith('cloudflare.') && m.billable)
+      .map((m) => [m.id, m.billingSkuId, m.unit]);
+    expect(billed).toEqual([
+      ['cloudflare.r2/class_a', 'r2.class_a', 'operation'],
+      ['cloudflare.r2/class_b', 'r2.class_b', 'operation'],
+      ['cloudflare.r2/storage_gb_month', 'r2.storage', 'gb_month'],
+      ['cloudflare.workers/requests', 'workers.requests', 'request'],
+    ]);
+    // Declared, not collected, not billed: no source exposes them (epic §44.8).
+    expect(COST_REGISTRY.meter('cloudflare.r2/egress_gb')).toMatchObject({
+      billable: false,
+      billingSkuId: null,
+    });
+    expect(COST_REGISTRY.meter('cloudflare.workers/cpu_ms')).toMatchObject({
+      billable: false,
+      billingSkuId: null,
+      unit: 'millisecond',
+    });
   });
 });

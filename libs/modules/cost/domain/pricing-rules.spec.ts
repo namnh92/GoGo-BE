@@ -9,7 +9,7 @@ import {
 import { PRICING_VERSION } from './provider-pricing';
 import { COST_REGISTRY } from './registry';
 
-const TODAY = '2026-09-02';
+const TODAY = '2026-09-03';
 
 const base: PricingRule = {
   id: 'test-rule',
@@ -196,5 +196,68 @@ describe('seed integrity', () => {
     for (const sku of ['routes.computeRouteMatrix', 'maps.dynamic.ios', 'maps.dynamic.android']) {
       expect(ruleInForce(PRICING_RULES, { billingSkuId: sku }, TODAY)?.unitPriceMicros).toBeNull();
     }
+  });
+});
+
+describe('cloudflare rules (#383) and PER_GB_MONTH proration', () => {
+  const rule = (sku: string) => ruleInForce(PRICING_RULES, { billingSkuId: sku }, TODAY)!;
+
+  it('prices R2 and Workers from the pricing pages with the free tier recorded', () => {
+    expect(rule('r2.class_a')).toMatchObject({
+      pricingModel: 'PER_MILLION_REQUESTS',
+      unitPriceMicros: 4_500_000,
+      freeAllowance: { quantity: 1_000_000, period: 'MONTH', scope: 'SKU' },
+      effectiveFrom: '2026-09-01',
+    });
+    expect(rule('r2.class_b')).toMatchObject({
+      pricingModel: 'PER_MILLION_REQUESTS',
+      unitPriceMicros: 360_000,
+      freeAllowance: { quantity: 10_000_000, period: 'MONTH' },
+    });
+    expect(rule('r2.storage')).toMatchObject({
+      pricingModel: 'PER_GB_MONTH',
+      unitPriceMicros: 15_000,
+      freeAllowance: { quantity: 10, unit: 'gb_month', period: 'MONTH' },
+    });
+    // Free plan: a cap, not a price. Known zero, with the cap on record.
+    expect(rule('workers.requests')).toMatchObject({
+      pricingModel: 'FREE',
+      unitPriceMicros: 0,
+      freeAllowance: { quantity: 100_000, period: 'DAY' },
+    });
+    // 2M Class A in a month: the first million is free, the second is $4.50.
+    expect(estimateMicros(rule('r2.class_a'), 2_000_000)).toEqual({
+      known: true,
+      listMicros: 9_000_000,
+      freeAdjustedMicros: 4_500_000,
+    });
+  });
+
+  it('prorates a daily gb_month row by the days in its month, allowance included', () => {
+    const storage = rule('r2.storage');
+    // 20 GB peak on a September day: list = 20 × 15,000 / 30 = 10,000 micros;
+    // the 10 GB-month allowance is 300 GB-days, so the day is free.
+    expect(estimateMicros(storage, 20, 0, '2026-09-03')).toEqual({
+      known: true,
+      listMicros: 10_000,
+      freeAdjustedMicros: 0,
+    });
+    // After 290 GB-days already consumed, only 10 of the 20 GB are free.
+    expect(estimateMicros(storage, 20, 290, '2026-09-20')).toEqual({
+      known: true,
+      listMicros: 10_000,
+      freeAdjustedMicros: 5_000,
+    });
+    // February has 28 days: the same 20 GB day is worth more of the month.
+    expect(estimateMicros(storage, 20, 0, '2027-02-10')).toMatchObject({
+      known: true,
+      listMicros: Math.ceil((20 * 15_000) / 28),
+    });
+    // Without a day the quantity is whole GB-months — the pre-#383 meaning.
+    expect(estimateMicros(storage, 20)).toEqual({
+      known: true,
+      listMicros: 300_000,
+      freeAdjustedMicros: 150_000,
+    });
   });
 });
