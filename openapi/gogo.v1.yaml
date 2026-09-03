@@ -5573,7 +5573,7 @@ paths:
     get:
       operationId: cmsOpsCosts
       tags: [cms]
-      summary: 'Ops: estimated provider spend today and month to date, from the durable ledger'
+      summary: 'Ops: Cost Center overview — cards, registry-keyed provider rows, legacy #335 lines'
       description: >
         Backed by `provider_usage_daily` since #335 — a per-day, per-environment
         record of what each provider operation actually did, priced against a
@@ -5582,8 +5582,22 @@ paths:
         not.
 
 
-        Three rules the payload keeps, all of them about not overstating what
-        is known:
+        **COST-BE-022 (#381)** adds the epic §35 Cost Center on top of that
+        payload: `cards` (today, month-to-date, projected month, budget,
+        unknown providers/services, cost of monitoring) and `providerRows` —
+        one row per provider in the cost registry with its services nested,
+        each carrying usage meters, estimated / actual / fixed / manual money
+        after epic §12 precedence (ACTUAL beats ESTIMATED for the same spend
+        and the two are never added), a basis, a confidence, a `costStatus`,
+        and per-row freshness from `cost_source_freshness`. An unknown cost is
+        `spendMicros: null` with `costStatus: UNKNOWN`, never 0; a `0` appears
+        only as `MEASURED_ZERO` — an instrumented service under a FRESH or
+        STALE source that counted nothing. A provider added to the registry
+        appears as a row with no API or CMS change (epic §44.2).
+
+
+        The legacy fields keep their #335 rules, one release, for the deployed
+        dashboard (re-vendor is COST-CMS-009) and are deprecated:
 
 
         - **It is an estimate, and says so.** `basis: ESTIMATED`, and no field
@@ -5605,48 +5619,210 @@ paths:
         `sourcesConfigured: false` with an empty list means the ledger is off
         (`COST_LEDGER_ENABLED=false`) and must not render as a zero amount. With
         it on, a zero **is** a measured zero: the operations are instrumented
-        and made no calls.
+        and made no calls. The legacy and v2 shapes share no key.
+      parameters:
+        - $ref: '#/components/parameters/CostWindow'
       responses:
         '200':
-          description: Estimated spend per provider, plus what could not be estimated
+          description: Cost Center overview plus the legacy estimated lines
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    required:
+                      [
+                        providers,
+                        sourcesConfigured,
+                        currency,
+                        pricingVersion,
+                        basis,
+                        confidence,
+                        asOf,
+                        gaps,
+                      ]
+                    properties:
+                      providers:
+                        type: array
+                        deprecated: true
+                        description: >
+                          Legacy #335 lines keyed `places|routes|sheets`. Kept
+                          one release for the deployed dashboard; read
+                          `providerRows` instead.
+                        items: { $ref: '#/components/schemas/CmsCostLine' }
+                      sourcesConfigured:
+                        type: boolean
+                        description: >
+                          False when no durable source is connected. An empty list
+                          with this false must not render as a zero amount.
+                      currency: { type: string, example: USD }
+                      pricingVersion: { type: string, example: '2026-09-01' }
+                      basis: { type: string, enum: [ESTIMATED] }
+                      confidence: { type: string, enum: [MEDIUM] }
+                      asOf:
+                        type: [string, 'null']
+                        format: date-time
+                        description: >
+                          Newest ledger write in the window — how fresh these
+                          numbers are. Null when nothing has been recorded this
+                          month.
+                      gaps:
+                        type: array
+                        deprecated: true
+                        description: >
+                          Legacy gap list. `providerRows[].services[]` carries
+                          the same facts as `costStatus`, `instrumented` and
+                          `freshness`.
+                        items: { $ref: '#/components/schemas/CmsOpsCostGap' }
+                  - $ref: '#/components/schemas/CmsCostOverview'
+        '403': { description: Role may not read operational data }
+
+  /cms/ops/costs/providers:
+    get:
+      operationId: cmsOpsCostProviders
+      tags: [cms]
+      summary: 'Ops: Cost Center — one row per registered provider, with services'
+      description: >
+        Epic §34/§36. Rows are rendered from the cost registry in registry
+        order: a provider added to `COST_REGISTRY_DATA` appears here with no API
+        or CMS change, as `status: planned` and `costStatus: UNKNOWN` until a
+        source covers it. The CMS must not hard-code provider names into
+        overview logic; everything it needs to render a row is on the row.
+
+
+        `ops_admin` and above.
+      parameters:
+        - $ref: '#/components/parameters/CostWindow'
+      responses:
+        '200':
+          description: Provider rows, registry order
           content:
             application/json:
               schema:
                 type: object
-                required:
-                  [
-                    providers,
-                    sourcesConfigured,
-                    currency,
-                    pricingVersion,
-                    basis,
-                    confidence,
-                    asOf,
-                    gaps,
-                  ]
+                required: [window, providers]
                 properties:
+                  window: { $ref: '#/components/schemas/CmsCostWindow' }
                   providers:
                     type: array
-                    items: { $ref: '#/components/schemas/CmsCostLine' }
-                  sourcesConfigured:
-                    type: boolean
-                    description: >
-                      False when no durable source is connected. An empty list
-                      with this false must not render as a zero amount.
-                  currency: { type: string, example: USD }
-                  pricingVersion: { type: string, example: '2026-09-01' }
-                  basis: { type: string, enum: [ESTIMATED] }
-                  confidence: { type: string, enum: [MEDIUM] }
-                  asOf:
-                    type: [string, 'null']
-                    format: date-time
-                    description: >
-                      Newest ledger write in the window — how fresh these
-                      numbers are. Null when nothing has been recorded this
-                      month.
-                  gaps:
+                    items: { $ref: '#/components/schemas/CmsCostProviderRow' }
+        '403': { description: Role may not read operational data }
+
+  /cms/ops/costs/providers/{providerId}:
+    get:
+      operationId: cmsOpsCostProvider
+      tags: [cms]
+      summary: 'Ops: Cost Center — one provider row'
+      description: >
+        Same row as in the list. The id is a registry id, not an enum: the
+        registry is data, so an unknown id is a 404 rather than a 400.
+      parameters:
+        - $ref: '#/components/parameters/CostProviderId'
+        - $ref: '#/components/parameters/CostWindow'
+      responses:
+        '200':
+          description: The provider row
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [window, provider]
+                properties:
+                  window: { $ref: '#/components/schemas/CmsCostWindow' }
+                  provider: { $ref: '#/components/schemas/CmsCostProviderRow' }
+        '403': { description: Role may not read operational data }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/ops/costs/providers/{providerId}/services/{serviceId}:
+    get:
+      operationId: cmsOpsCostService
+      tags: [cms]
+      summary: 'Ops: Cost Center — one service, with usage grouped by operation'
+      description: >
+        The service row plus `operations[]`: every registry operation of the
+        service with its meters for the window, and any operation label seen in
+        the tables that the registry does not know (`unregistered: true`) — a
+        billed call never vanishes because somebody forgot to fold a SKU. A
+        service under another provider is a 404.
+      parameters:
+        - $ref: '#/components/parameters/CostProviderId'
+        - name: serviceId
+          in: path
+          required: true
+          description: A cost-registry service id — `google.places`, `cloudflare.r2`.
+          schema: { type: string, pattern: '^[a-z0-9][a-z0-9_.-]*$', maxLength: 128 }
+        - $ref: '#/components/parameters/CostWindow'
+      responses:
+        '200':
+          description: The service detail
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [window, service]
+                properties:
+                  window: { $ref: '#/components/schemas/CmsCostWindow' }
+                  service: { $ref: '#/components/schemas/CmsCostServiceDetail' }
+        '403': { description: Role may not read operational data }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/ops/costs/test-runs:
+    get:
+      operationId: cmsOpsCostTestRuns
+      tags: [cms]
+      summary: 'Ops: Cost Center — test-run cost records, newest first'
+      description: >
+        Epic §28/§36 — the runs `TestCostService` recorded for this deployment
+        (COST-BE-019, #378). A provider registered after a run started still
+        shows in its deltas: the keys are the table's, not a list in code.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: Runs, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [testRuns]
+                properties:
+                  testRuns:
                     type: array
-                    items: { $ref: '#/components/schemas/CmsOpsCostGap' }
+                    items: { $ref: '#/components/schemas/CmsCostTestRun' }
+        '403': { description: Role may not read operational data }
+
+  /cms/ops/costs/test-runs/{id}:
+    get:
+      operationId: cmsOpsCostTestRun
+      tags: [cms]
+      summary: 'Ops: Cost Center — one test run with its per-meter deltas'
+      description: >
+        While the run is `running` the deltas are its baseline snapshot (delta
+        0, unpriced) and both totals are `null`: nothing has been measured, and
+        a floor of 0 would read as a result. A finished run carries deltas
+        priced at list on the day it finished; a meter with no price is
+        `estimatedCostDelta: null` and named in `unpriced`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The run and its deltas
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [testRun]
+                properties:
+                  testRun: { $ref: '#/components/schemas/CmsCostTestRunDetail' }
+        '400': { description: Not a UUID }
+        '403': { description: Role may not read operational data }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /cms/ops/kpis:
     get:
@@ -5744,9 +5920,17 @@ paths:
   /cms/ops/providers/{provider}:
     get:
       operationId: cmsOpsProvider
+      deprecated: true
       tags: [cms]
       summary: 'Ops: one provider, broken down by adapter operation'
       description: >
+        Deprecated by COST-BE-022 (#381): the `provider` enum
+        (`places|routes|sheets`) is the legacy console grouping, not a registry
+        id. Kept one release; read
+        `/cms/ops/costs/providers/{providerId}/services/{serviceId}` for the
+        registry-keyed row.
+
+
         Adds the per-operation rows the list view omits — for Places that is
         `google.searchText`, `google.details.core|quality|detail`,
         `google.autocomplete` and `google.expand`, each a distinct SKU.
@@ -5818,6 +6002,24 @@ components:
         type: string
         enum: ['1h', '24h', '7d', '30d']
         default: '24h'
+    CostWindow:
+      name: window
+      in: query
+      required: false
+      description: >
+        COST-BE-022 (#381). Day-shaped windows only: the daily cost and usage
+        tables cannot answer `1h`. `mtd` is the default because a free cap and
+        an invoice are monthly; the cards are month-shaped whatever the window,
+        and the rows follow the window.
+      schema: { $ref: '#/components/schemas/CmsCostWindow' }
+    CostProviderId:
+      name: providerId
+      in: path
+      required: true
+      description: >
+        A cost-registry provider id — `google`, `cloudflare`, `gogo`. Not an
+        enum: the registry is data, and an unknown id is a 404.
+      schema: { type: string, pattern: '^[a-z0-9][a-z0-9_.-]*$', maxLength: 128 }
     Cursor:
       name: cursor
       in: query
@@ -6425,6 +6627,531 @@ components:
         properties:
           t: { type: string, format: date-time }
           v: { type: number }
+
+    CmsCostWindow:
+      type: string
+      enum: [today, 7d, 30d, mtd]
+      default: mtd
+
+    CmsCostDateRange:
+      type: object
+      required: [from, to]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+
+    CmsCostStatus:
+      type: string
+      enum: [KNOWN, MEASURED_ZERO, UNKNOWN]
+      description: >
+        `KNOWN` — at least one cost row in the window; `spendMicros` is a
+        number. `MEASURED_ZERO` — no cost row and no usage, but an instrumented
+        operation under a FRESH or STALE source: somebody was counting and
+        counted nothing; `spendMicros` is 0. `UNKNOWN` — nothing else;
+        `spendMicros` is null and the console renders "—" and "Chưa có nguồn
+        chi phí", never `$0`.
+
+    CmsCostBasis:
+      type: string
+      enum: [ACTUAL, ESTIMATED, FIXED, MANUAL, MIXED, UNKNOWN]
+      description: >
+        Where the number came from. `MIXED` when the rows that count carry more
+        than one basis (an estimate beside a fixed fee); `UNKNOWN` when there
+        is no number.
+
+    CmsCostConfidence:
+      type: string
+      enum: [HIGH, MEDIUM, LOW]
+
+    CmsCostFreshnessStatus:
+      type: string
+      enum: [FRESH, STALE, UNAVAILABLE, UNKNOWN]
+      description: >
+        Epic §23, recomputed against now from `cost_source_freshness`. A STALE
+        source has numbers on record that were true when taken; an UNKNOWN one
+        has no numbers at all.
+
+    CmsCostFreshnessSource:
+      type: object
+      required:
+        [
+          sourceId,
+          serviceId,
+          status,
+          lastSuccessfulAt,
+          lastAttemptAt,
+          sourceAsOf,
+          staleAfterS,
+          consecutiveFailures,
+        ]
+      properties:
+        sourceId: { type: string, example: ledger }
+        serviceId:
+          type: [string, 'null']
+          description: Null when the source covers the whole provider.
+        status: { $ref: '#/components/schemas/CmsCostFreshnessStatus' }
+        lastSuccessfulAt: { type: [string, 'null'], format: date-time }
+        lastAttemptAt: { type: [string, 'null'], format: date-time }
+        sourceAsOf: { type: [string, 'null'], format: date-time }
+        staleAfterS: { type: integer }
+        consecutiveFailures: { type: integer }
+
+    CmsCostFreshness:
+      type: object
+      required: [status, sourceAsOf, sources]
+      properties:
+        status:
+          allOf:
+            - $ref: '#/components/schemas/CmsCostFreshnessStatus'
+          description: >
+            The worst covering source (FRESH < STALE < UNKNOWN < UNAVAILABLE).
+            No covering source at all is UNKNOWN.
+        sourceAsOf:
+          type: [string, 'null']
+          format: date-time
+          description: Newest `sourceAsOf` across covering sources.
+        sources:
+          type: array
+          items: { $ref: '#/components/schemas/CmsCostFreshnessSource' }
+
+    CmsCostUsageLine:
+      type: object
+      required:
+        [meterId, operationId, usageMetricId, billingSkuId, unit, billable, quantity, sources]
+      description: >
+        One usage meter over the window. Two sources never sum: for one day
+        the most confident source is taken (the ledger over a Prometheus
+        backfill) and the winners are summed over days.
+      properties:
+        meterId:
+          type: [string, 'null']
+          description: Registry meter id (`google.routeMatrix/billable_elements`); null when unregistered.
+        operationId: { type: [string, 'null'] }
+        usageMetricId: { type: string, example: billable_elements }
+        billingSkuId: { type: [string, 'null'] }
+        unit: { type: string, example: matrix_element }
+        billable: { type: boolean }
+        quantity: { type: integer }
+        sources:
+          type: array
+          items: { type: string }
+
+    CmsCostMoney:
+      type: object
+      required:
+        [
+          spendMicros,
+          estimatedMicros,
+          actualMicros,
+          fixedMicros,
+          manualMicros,
+          shadowedEstimatedMicros,
+          basis,
+          confidence,
+          currency,
+          mixedCurrency,
+          costStatus,
+        ]
+      description: >
+        Money on a row after epic §12 precedence. `spendMicros` is the one
+        number to report; the per-basis figures say what it is made of.
+        Nothing here is ever a sum of ACTUAL and ESTIMATED for the same spend.
+      properties:
+        spendMicros:
+          type: [integer, 'null']
+          description: Original-currency micros after precedence. Null = unknown, never 0.
+        estimatedMicros:
+          type: [integer, 'null']
+          description: >
+            Best estimate per key, shadowed or not — the reconciliation
+            counterpart of `actualMicros`. Null when no ESTIMATED row.
+        actualMicros: { type: [integer, 'null'] }
+        fixedMicros: { type: [integer, 'null'] }
+        manualMicros: { type: [integer, 'null'] }
+        shadowedEstimatedMicros:
+          type: integer
+          description: Estimates an ACTUAL row displaced; part of `estimatedMicros`, never of `spendMicros`.
+        basis: { $ref: '#/components/schemas/CmsCostBasis' }
+        confidence:
+          oneOf:
+            - $ref: '#/components/schemas/CmsCostConfidence'
+            - type: 'null'
+          description: Lowest confidence among the rows that count.
+        currency:
+          type: [string, 'null']
+          description: Null when unknown or when the rows disagree (`mixedCurrency`).
+        mixedCurrency:
+          type: boolean
+          description: More than one billing currency in scope — the number cannot be summed honestly.
+        costStatus: { $ref: '#/components/schemas/CmsCostStatus' }
+
+    CmsCostServiceRow:
+      allOf:
+        - $ref: '#/components/schemas/CmsCostMoney'
+        - type: object
+          required:
+            [
+              serviceId,
+              providerId,
+              displayName,
+              category,
+              capabilities,
+              instrumented,
+              usage,
+              quota,
+              lastUpdated,
+              freshness,
+            ]
+          properties:
+            serviceId: { type: string, example: google.places }
+            providerId: { type: string, example: google }
+            displayName: { type: string }
+            category: { type: string, example: maps }
+            capabilities:
+              type: array
+              items: { type: string }
+            instrumented:
+              type: boolean
+              description: At least one operation emits a metric. False renders as "chưa đo", never as zero.
+            usage:
+              type: array
+              items: { $ref: '#/components/schemas/CmsCostUsageLine' }
+            quota:
+              type: 'null'
+              description: No QUOTA collector exists yet (epic §6); null until one does.
+            lastUpdated:
+              type: [string, 'null']
+              format: date-time
+              description: Newest write among the rows behind this row.
+            freshness: { $ref: '#/components/schemas/CmsCostFreshness' }
+
+    CmsCostOperationUsage:
+      type: object
+      required: [operationId, displayName, instrumented, unregistered, meters]
+      properties:
+        operationId: { type: string, example: google.routeMatrix }
+        displayName: { type: [string, 'null'] }
+        instrumented: { type: boolean }
+        unregistered:
+          type: boolean
+          description: True when the label is in the tables but not in the registry — a SKU somebody forgot to fold.
+        meters:
+          type: array
+          items: { $ref: '#/components/schemas/CmsCostUsageLine' }
+
+    CmsCostServiceDetail:
+      allOf:
+        - $ref: '#/components/schemas/CmsCostServiceRow'
+        - type: object
+          required: [operations]
+          properties:
+            operations:
+              type: array
+              items: { $ref: '#/components/schemas/CmsCostOperationUsage' }
+
+    CmsCostProviderRow:
+      allOf:
+        - $ref: '#/components/schemas/CmsCostMoney'
+        - type: object
+          required:
+            [
+              providerId,
+              displayName,
+              status,
+              capabilities,
+              billingTimezone,
+              unknownServices,
+              services,
+              lastUpdated,
+              freshness,
+            ]
+          properties:
+            providerId: { type: string, example: google }
+            displayName: { type: string }
+            status:
+              type: string
+              enum: [active, planned, manual]
+              description: Registry status. `planned` renders as "chưa nối".
+            capabilities:
+              type: array
+              items: { type: string }
+            billingTimezone: { type: [string, 'null'] }
+            unknownServices:
+              type: array
+              description: 'Services with `costStatus: UNKNOWN` — what the unknown card counts.'
+              items: { type: string }
+            services:
+              type: array
+              items: { $ref: '#/components/schemas/CmsCostServiceRow' }
+            lastUpdated: { type: [string, 'null'], format: date-time }
+            freshness: { $ref: '#/components/schemas/CmsCostFreshness' }
+
+    CmsCostByBasis:
+      type: object
+      required: [ACTUAL, ESTIMATED, FIXED, MANUAL]
+      properties:
+        ACTUAL: { type: integer }
+        ESTIMATED: { type: integer }
+        FIXED: { type: integer }
+        MANUAL: { type: integer }
+
+    CmsCostCard:
+      type: object
+      required: [spendMicros, byBasis, currency, mixedCurrency, services]
+      properties:
+        spendMicros:
+          type: [integer, 'null']
+          description: Null when no cost row is in scope — unknown, not zero.
+        byBasis:
+          oneOf:
+            - $ref: '#/components/schemas/CmsCostByBasis'
+            - type: 'null'
+        currency: { type: [string, 'null'] }
+        mixedCurrency: { type: boolean }
+        services:
+          type: integer
+          description: How many services contributed a row.
+
+    CmsCostBudgetScope:
+      type: object
+      required: [kind, id]
+      properties:
+        kind: { type: string, enum: [TOTAL, PROVIDER, SERVICE] }
+        id:
+          type: [string, 'null']
+          description: Registry provider or service id; null for TOTAL.
+
+    CmsCostBudgetStatus:
+      type: object
+      required:
+        [
+          scope,
+          monthMicros,
+          usedMicros,
+          remainingMicros,
+          usedPct,
+          projectedMicros,
+          projectedPct,
+          state,
+          currency,
+        ]
+      description: COST-BE-020 (#379) — one budget's month, epic §32/§33.
+      properties:
+        scope: { $ref: '#/components/schemas/CmsCostBudgetScope' }
+        monthMicros: { type: integer }
+        usedMicros: { type: integer }
+        remainingMicros: { type: integer }
+        usedPct:
+          type: [number, 'null']
+          description: >
+            Two decimals. Null only when the budget is 0 and spend is positive
+            — the ratio is unbounded and JSON has no infinity.
+        projectedMicros:
+          type: [integer, 'null']
+          description: Null under three elapsed days or with no rows (epic §33).
+        projectedPct: { type: [number, 'null'] }
+        state: { type: string, enum: [ok, warning, exceeded, projected_exceed] }
+        currency: { type: string }
+
+    CmsCostCards:
+      type: object
+      required: [today, monthToDate, projected, budget, unknown, costOfMonitoring]
+      description: Epic §35 overview cards. Month-shaped whatever the window.
+      properties:
+        today:
+          allOf:
+            - $ref: '#/components/schemas/CmsCostCard'
+            - type: object
+              required: [day]
+              properties:
+                day: { type: string, format: date }
+        monthToDate:
+          allOf:
+            - $ref: '#/components/schemas/CmsCostCard'
+            - type: object
+              required: [month]
+              properties:
+                month: { type: string, example: '2026-09' }
+        projected:
+          type: object
+          required: [micros, month, elapsedDays, minElapsedDays, currency]
+          properties:
+            micros:
+              type: [integer, 'null']
+              description: MTD daily average × days in the month; null under `minElapsedDays`.
+            month: { type: string }
+            elapsedDays: { type: integer }
+            minElapsedDays: { type: integer }
+            currency: { type: [string, 'null'] }
+        budget:
+          type: object
+          required: [total, budgets]
+          properties:
+            total:
+              oneOf:
+                - $ref: '#/components/schemas/CmsCostBudgetStatus'
+                - type: 'null'
+              description: The TOTAL scope, null when none is set.
+            budgets:
+              type: array
+              items: { $ref: '#/components/schemas/CmsCostBudgetStatus' }
+        unknown:
+          type: object
+          required: [providerIds, serviceIds]
+          description: 'Providers and services with no cost source (`costStatus: UNKNOWN`).'
+          properties:
+            providerIds:
+              type: array
+              items: { type: string }
+            serviceIds:
+              type: array
+              items: { type: string }
+        costOfMonitoring:
+          allOf:
+            - $ref: '#/components/schemas/CmsCostCard'
+            - type: object
+              required: [serviceIds]
+              description: Epic §20/§21 — month-to-date spend of the registry's `internal` services.
+              properties:
+                serviceIds:
+                  type: array
+                  items: { type: string }
+
+    CmsCostOverview:
+      type: object
+      required:
+        [
+          environment,
+          ledgerEnabled,
+          window,
+          range,
+          month,
+          today,
+          generatedAt,
+          cards,
+          providerRows,
+          unattributed,
+        ]
+      properties:
+        environment: { type: string, example: dev }
+        ledgerEnabled:
+          type: boolean
+          description: False when `COST_LEDGER_ENABLED=false` — the in-process ledger writes nothing.
+        window: { $ref: '#/components/schemas/CmsCostWindow' }
+        range: { $ref: '#/components/schemas/CmsCostDateRange' }
+        month: { type: string, example: '2026-09' }
+        today: { type: string, format: date }
+        generatedAt: { type: string, format: date-time }
+        cards: { $ref: '#/components/schemas/CmsCostCards' }
+        providerRows:
+          type: array
+          description: One row per registry provider, registry order.
+          items: { $ref: '#/components/schemas/CmsCostProviderRow' }
+        unattributed:
+          type: object
+          required: [providerIds, serviceIds]
+          description: Ids in the tables the registry does not know. Money there is reported nowhere else.
+          properties:
+            providerIds:
+              type: array
+              items: { type: string }
+            serviceIds:
+              type: array
+              items: { type: string }
+
+    CmsCostTestRun:
+      type: object
+      required:
+        [
+          id,
+          name,
+          environment,
+          status,
+          startedAt,
+          endedAt,
+          baselineSnapshotAt,
+          finalSnapshotAt,
+          gitSha,
+          services,
+          budget,
+          notes,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        environment: { type: string }
+        status: { type: string, enum: [running, ok, over_budget, failed] }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: [string, 'null'], format: date-time }
+        baselineSnapshotAt: { type: string, format: date-time }
+        finalSnapshotAt: { type: [string, 'null'], format: date-time }
+        gitSha: { type: [string, 'null'] }
+        services:
+          type: [array, 'null']
+          description: Epic §30 — registry service ids the run declared relevant; null = all.
+          items: { type: string }
+        budget:
+          type: [object, 'null']
+          description: Epic §29 soft budget as declared (`maxProviderCalls`, `maxProviderUsage`, `maxEstimatedCostMicros`).
+          additionalProperties: true
+        notes: { type: [string, 'null'] }
+
+    CmsCostTestRunDelta:
+      type: object
+      required:
+        [
+          providerId,
+          serviceId,
+          operationId,
+          usageMetricId,
+          billingSkuId,
+          unit,
+          usageBefore,
+          usageAfter,
+          usageDelta,
+          estimatedCostDelta,
+          actualCostDelta,
+          currency,
+          basis,
+          confidence,
+        ]
+      properties:
+        providerId: { type: string }
+        serviceId: { type: string }
+        operationId: { type: [string, 'null'] }
+        usageMetricId: { type: string }
+        billingSkuId: { type: [string, 'null'] }
+        unit: { type: string }
+        usageBefore: { type: integer }
+        usageAfter: { type: integer }
+        usageDelta: { type: integer }
+        estimatedCostDelta:
+          type: [integer, 'null']
+          description: List price on the day the run finished; null when the price is unknown.
+        actualCostDelta:
+          type: [integer, 'null']
+          description: Null until an ACTUAL source exists.
+        currency: { type: string }
+        basis: { type: string, enum: [ESTIMATED, UNKNOWN] }
+        confidence: { type: string, enum: [MEDIUM, LOW] }
+
+    CmsCostTestRunDetail:
+      allOf:
+        - $ref: '#/components/schemas/CmsCostTestRun'
+        - type: object
+          required: [deltas, estimatedCostMicros, actualCostMicros, unpriced]
+          properties:
+            deltas:
+              type: array
+              items: { $ref: '#/components/schemas/CmsCostTestRunDelta' }
+            estimatedCostMicros:
+              type: [integer, 'null']
+              description: Sum of known estimated deltas; null when nothing was priceable or the run is open.
+            actualCostMicros: { type: [integer, 'null'] }
+            unpriced:
+              type: array
+              description: Billable meters whose price is unknown — the reason a total may be a floor.
+              items: { type: string }
 
     CmsCostLine:
       type: object

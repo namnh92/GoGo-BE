@@ -106,6 +106,41 @@ export function spend(rows: readonly CostRow[]): SpendBreakdown {
   };
 }
 
+/**
+ * #381 — the rows `spend()` counts, for callers that need to say *which*
+ * basis and confidence a number came from rather than only the number. Same
+ * precedence, same tie-break: one winner per usage key, every FIXED/MANUAL
+ * row. A shadowed estimate is not here; `spend().shadowedEstimatedMicros`
+ * reports it.
+ */
+export function winningRows(rows: readonly CostRow[]): CostRow[] {
+  const out: CostRow[] = [];
+  const usageGroups = new Map<string, CostRow[]>();
+  for (const r of rows) {
+    if (r.basis === 'FIXED' || r.basis === 'MANUAL') {
+      out.push(r);
+      continue;
+    }
+    const k = spendKey(r);
+    const g = usageGroups.get(k);
+    if (g) g.push(r);
+    else usageGroups.set(k, [r]);
+  }
+  const pick = (candidates: CostRow[]) =>
+    [...candidates].sort(
+      (a, b) =>
+        CONFIDENCE_RANK[b.confidence] - CONFIDENCE_RANK[a.confidence] ||
+        a.source.localeCompare(b.source),
+    )[0]!;
+  for (const group of usageGroups.values()) {
+    const actual = group.filter((r) => r.basis === 'ACTUAL');
+    const estimated = group.filter((r) => r.basis === 'ESTIMATED');
+    if (actual.length > 0) out.push(pick(actual));
+    else if (estimated.length > 0) out.push(pick(estimated));
+  }
+  return out;
+}
+
 export function daysInMonth(month: string): number {
   const [y, m] = month.split('-').map(Number) as [number, number];
   return new Date(Date.UTC(y, m, 0)).getUTCDate();

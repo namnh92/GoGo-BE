@@ -51,6 +51,8 @@ import { CMS_UPLOAD_PURPOSES, MAX_UPLOAD_BYTES } from '../../uploads/application
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsOpsService } from '../application/cms-ops.service';
 import { CmsObservabilityService } from '../application/cms-observability.service';
+import { CmsCostCenterService } from '../application/cms-cost-center.service';
+import { COST_WINDOWS } from '../../cost/application/cost-center.service';
 import { CmsOpsMetricsService } from '../application/cms-ops-metrics.service';
 import { OPS_PROVIDERS, OPS_WINDOWS } from '../domain/ops-metrics';
 import { CmsUsersService } from '../application/cms-users.service';
@@ -1614,6 +1616,30 @@ const opsProviderParam = z.object({
   provider: z.enum(OPS_PROVIDERS),
 });
 
+/**
+ * COST-BE-022 (#381) — the Cost API v2 input surface.
+ *
+ * `window` is an enum of day-shaped windows: the daily tables cannot answer
+ * `1h`, and a free cap is monthly, so `mtd` is the default the cards are
+ * built for. Ids are registry ids (`google`, `google.places`), validated by
+ * shape here and by existence in the service — an unknown id is a 404, not a
+ * 400, because the registry is data and the list of valid ids is not fixed
+ * at build time (epic §44.2).
+ */
+const costWindowQuery = z.object({
+  window: z.enum(COST_WINDOWS).default('mtd'),
+});
+const registryId = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[a-z0-9][a-z0-9_.-]*$/);
+const costProviderParam = z.object({ providerId: registryId });
+const costServiceParam = z.object({ providerId: registryId, serviceId: registryId });
+const testRunListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
 const searchAnalyticsQuery = z.object({
   days: z.coerce.number().int().min(1).max(90).default(7),
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -1709,6 +1735,7 @@ export class CmsOpsController {
     private readonly experimentsAdmin: ExperimentsAdminService,
     private readonly observability: CmsObservabilityService,
     private readonly opsMetrics: CmsOpsMetricsService,
+    private readonly costCenter: CmsCostCenterService,
   ) {}
 
   @Post('ranking-configs')
@@ -1827,10 +1854,74 @@ export class CmsOpsController {
     return this.observability.queueStats();
   }
 
+  /**
+   * COST-BE-022 (#381) — the Cost Center overview: the legacy #335 payload
+   * (kept whole, one release, for the deployed dashboard) plus the epic §35
+   * cards and registry-keyed `providerRows`. The two never share a key, so a
+   * client on either shape reads what it expects.
+   */
   @RequireRole('ops_admin', 'super_admin')
   @Get('ops/costs')
-  opsCosts() {
-    return this.observability.costs();
+  async opsCosts(
+    @Query(new ZodValidationPipe(costWindowQuery)) query: z.infer<typeof costWindowQuery>,
+  ) {
+    const [legacy, v2] = await Promise.all([
+      this.observability.costs(),
+      this.costCenter.overview(query.window),
+    ]);
+    return { ...legacy, ...v2 };
+  }
+
+  /**
+   * Epic §34 — extend the namespace, never `/costs/<provider>`. Static
+   * segments are declared before their parametric siblings; Fastify prefers
+   * them anyway, and the order makes that visible.
+   */
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/costs/providers')
+  async opsCostProviders(
+    @Query(new ZodValidationPipe(costWindowQuery)) query: z.infer<typeof costWindowQuery>,
+  ) {
+    return { window: query.window, providers: await this.costCenter.providers(query.window) };
+  }
+
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/costs/providers/:providerId')
+  async opsCostProvider(
+    @Param(new ZodValidationPipe(costProviderParam)) params: z.infer<typeof costProviderParam>,
+    @Query(new ZodValidationPipe(costWindowQuery)) query: z.infer<typeof costWindowQuery>,
+  ) {
+    return {
+      window: query.window,
+      provider: await this.costCenter.provider(params.providerId, query.window),
+    };
+  }
+
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/costs/providers/:providerId/services/:serviceId')
+  async opsCostService(
+    @Param(new ZodValidationPipe(costServiceParam)) params: z.infer<typeof costServiceParam>,
+    @Query(new ZodValidationPipe(costWindowQuery)) query: z.infer<typeof costWindowQuery>,
+  ) {
+    return {
+      window: query.window,
+      service: await this.costCenter.service(params.providerId, params.serviceId, query.window),
+    };
+  }
+
+  /** Epic §36 — the test-run report, newest first, for this deployment. */
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/costs/test-runs')
+  async opsCostTestRuns(
+    @Query(new ZodValidationPipe(testRunListQuery)) query: z.infer<typeof testRunListQuery>,
+  ) {
+    return { testRuns: await this.costCenter.testRuns(query.limit) };
+  }
+
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/costs/test-runs/:id')
+  async opsCostTestRun(@Param('id', Uuid) id: string) {
+    return { testRun: await this.costCenter.testRun(id) };
   }
 
   /**

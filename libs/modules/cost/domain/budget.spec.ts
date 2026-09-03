@@ -6,6 +6,7 @@ import {
   forecastMonthMicros,
   inScope,
   spend,
+  winningRows,
   type CostRow,
 } from './budget';
 
@@ -165,5 +166,61 @@ describe('costBudgetStatus (epic §32)', () => {
     expect(costBudgetStatus({ kind: 'TOTAL', id: null }, 0, 'USD', used(1), null).state).toBe(
       'exceeded',
     );
+  });
+});
+
+describe('winningRows — the rows spend() counts (#381)', () => {
+  it('returns the ACTUAL winner, drops the shadowed estimate, keeps every FIXED/MANUAL row', () => {
+    const rows = [
+      row({ amountMicros: 8_200_000 }),
+      row({
+        amountMicros: 8_310_000,
+        basis: 'ACTUAL',
+        confidence: 'HIGH',
+        source: 'gcp_billing_export',
+      }),
+      row({ day: '2026-09-03', amountMicros: 1_000_000 }),
+      row({
+        providerId: 'gogo',
+        serviceId: 'gogo.cost_observability',
+        operationId: null,
+        usageMetricId: null,
+        billingSkuId: null,
+        amountMicros: 10_000,
+        basis: 'FIXED',
+        confidence: 'HIGH',
+        source: 'monitoring_cost_model',
+      }),
+      row({
+        providerId: 'gogo',
+        serviceId: 'gogo.cost_observability',
+        operationId: null,
+        usageMetricId: null,
+        billingSkuId: null,
+        amountMicros: 10_000,
+        basis: 'FIXED',
+        confidence: 'HIGH',
+        source: 'another_model',
+      }),
+    ];
+    const winners = winningRows(rows);
+    expect(winners.map((r) => [r.basis, r.amountMicros])).toEqual([
+      ['FIXED', 10_000],
+      ['FIXED', 10_000],
+      ['ACTUAL', 8_310_000],
+      ['ESTIMATED', 1_000_000],
+    ]);
+    // The same rows, the same total: winningRows is spend()'s selection, not a second rule.
+    expect(winners.reduce((n, r) => n + r.amountMicros, 0)).toBe(spend(rows).micros);
+  });
+
+  it('among several rows of one basis takes the most confident, then the first source by name', () => {
+    const winners = winningRows([
+      row({ amountMicros: 1, confidence: 'LOW', source: 'b' }),
+      row({ amountMicros: 2, confidence: 'MEDIUM', source: 'z' }),
+      row({ amountMicros: 3, confidence: 'MEDIUM', source: 'a' }),
+    ]);
+    expect(winners).toHaveLength(1);
+    expect(winners[0]).toMatchObject({ amountMicros: 3, source: 'a' });
   });
 });

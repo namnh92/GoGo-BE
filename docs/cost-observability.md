@@ -94,7 +94,8 @@ costs counted once each. `forecastMonthMicros` = MTD ÷ elapsed days × days in
 month, `null` (never 0) under three elapsed days or with no rows. `costBudgetStatus`
 states: `ok` / `warning` (≥ 80 %) / `projected_exceed` / `exceeded`.
 `BudgetService.overview(month)` returns spend, forecast, every budget's status and
-a per-service split; the CMS API for it lands with the Cost API v2 (#381).
+a per-service split; the Cost API v2 (#381) reads it into `cards.projected` and
+`cards.budget`.
 
 ## Backfill and reconciliation
 
@@ -113,6 +114,56 @@ estimated vs actual with `variance = actual − estimated` and
 `variancePct = variance / actual` — `null` wherever there is no ACTUAL row (nothing is
 invented). `--mark` stamps `reconciled_at` on ESTIMATED/ACTUAL pairs that share a day
 and meter key; amounts never change.
+
+## Cost API v2 (#381, epic §34–§36)
+
+Registry-keyed, under the existing namespace — never `/costs/google`. All routes
+`@RequireRole('ops_admin', 'super_admin')`; `window` ∈ `today | 7d | 30d | mtd`
+(default `mtd`; the daily tables cannot answer `1h`):
+
+| Route                                                             | Returns                                                                                                                             |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/cms/ops/costs?window=`                                   | legacy #335 payload (deprecated fields, one release) **+** `cards`, `providerRows`, `range`, `month`, `generatedAt`, `unattributed` |
+| `GET /v1/cms/ops/costs/providers`                                 | one `ProviderCostRow` per registry provider, registry order, services nested                                                        |
+| `GET /v1/cms/ops/costs/providers/:providerId`                     | one provider row; unknown id → 404 `COST_PROVIDER_NOT_FOUND`                                                                        |
+| `GET /v1/cms/ops/costs/providers/:providerId/services/:serviceId` | service row + `operations[]` (meters per operation, unregistered labels flagged); wrong provider → 404                              |
+| `GET /v1/cms/ops/costs/test-runs?limit=`                          | `TestCostService.list` — newest runs first                                                                                          |
+| `GET /v1/cms/ops/costs/test-runs/:id`                             | `TestCostService.get` — run + deltas + `estimatedCostMicros` + `unpriced`; open run → totals `null`                                 |
+
+`CostCenterService` (`cost/application/cost-center.service.ts`) is a plain class over
+`CostRegistry` + `Db`; the Nest `CmsCostCenterService` builds it from config and turns
+`null` into 404. Row rules, all tested (`cost-center.service.spec.ts`,
+`cost-center.int.spec.ts`):
+
+- **Money** goes through `spend()` / `winningRows()`: `spendMicros` after §12
+  precedence, `estimatedMicros` (best estimate per key, shadowed or not),
+  `actualMicros`, `fixedMicros`, `manualMicros`, `shadowedEstimatedMicros`, `basis`
+  (`ACTUAL|ESTIMATED|FIXED|MANUAL|MIXED|UNKNOWN`), lowest `confidence`, `currency`,
+  `mixedCurrency`.
+- **`costStatus`**: `KNOWN` (a cost row exists) / `MEASURED_ZERO` (no cost row, no usage,
+  an `instrumented: true` operation, and a FRESH-or-STALE source covering the provider;
+  `spendMicros: 0`) / `UNKNOWN` (`spendMicros: null`, never 0 — the CMS renders "—",
+  "Chưa có nguồn chi phí").
+- **Usage lines** per meter: for one (day, meter) the most confident source wins
+  (ledger over `prometheus_backfill`), winners summed over the window. Two sources never
+  add. `meterId` is the registry id or `null` when unregistered.
+- **Freshness per row** from `cost_source_freshness`, recomputed against now: a source
+  covers a service when it names it or names only the provider; the row takes the worst
+  status (FRESH < STALE < UNKNOWN < UNAVAILABLE), newest `sourceAsOf`; no source →
+  `UNKNOWN`.
+- **`quota: null`** until a QUOTA collector exists.
+- **Cards** are month-shaped whatever the window: `today`, `monthToDate`, `projected`
+  (`BudgetService.overview`, `null` under three elapsed days), `budget` (TOTAL status +
+  every budget), `unknown` (providers/services with `costStatus: UNKNOWN`),
+  `costOfMonitoring` (MTD spend over registry services with `category: 'internal'` — no
+  id literal in generic code).
+- **§44.2**: a provider added to `COST_REGISTRY_DATA` is a row with no API/CMS change
+  (`cost-center.int.spec.ts` builds a registry with a fake `acme` and reads it back).
+  Ids the registry does not know are listed in `unattributed`, not dropped.
+
+Deprecated, kept one release: the legacy `providers[]` / `gaps[]` on `/cms/ops/costs`
+and `/cms/ops/providers/{provider}` (enum `places|routes|sheets`). CMS re-vendor is
+COST-CMS-009 (CMS#105).
 
 ## Ids
 
@@ -161,6 +212,7 @@ No migration, no CMS change, no budget-engine change. The `registry.spec.ts`
 ## Compatibility note
 
 `OPS_PROVIDERS` (`places | routes | sheets | maps_sdk`) is the CMS ops console's
-grouping and the OpenAPI enum. It is a presentation mapping over registry services
-(`maps_sdk` merges the two SDK services) kept for contract stability; it retires when
-the CMS cost API moves to registry ids (epic §34–§36, tracker #370).
+legacy grouping and the OpenAPI enum on the #335/#315 surfaces. It is a presentation
+mapping over registry services (`maps_sdk` merges the two SDK services) kept one
+release for the deployed dashboard; the Cost API v2 (#381) uses registry ids and
+`OPS_PROVIDERS` is no longer a source for it. It retires with COST-CMS-009.
