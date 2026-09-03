@@ -82,12 +82,36 @@ describe('cost registry — epic §5 inventory', () => {
     for (const o of COST_REGISTRY.operations()) expect(o.id).toMatch(/^[a-z][a-zA-Z0-9_.]*$/);
   });
 
-  it('declares only real capabilities, and an active provider declares at least one', () => {
+  it('declares only real capabilities: active ≥ one, planned none, manual exactly MANUAL_COST', () => {
     expect(() => assertCapabilitiesKnown(COST_REGISTRY_DATA)).not.toThrow();
     for (const p of COST_REGISTRY.providers()) {
       if (p.status === 'active') expect(p.capabilities.length, p.id).toBeGreaterThan(0);
-      if (p.status !== 'active') expect(p.capabilities, p.id).toEqual([]);
+      if (p.status === 'planned') expect(p.capabilities, p.id).toEqual([]);
+      if (p.status === 'manual') {
+        expect(p.capabilities, p.id).toEqual(['MANUAL_COST']);
+        for (const s of p.services) expect(s.capabilities, s.id).toEqual(['MANUAL_COST']);
+      }
     }
+  });
+
+  it('answers MANUAL_COST per service — manual providers wholesale, Play Console alone under Google (#382)', () => {
+    const manual = COST_REGISTRY.servicesWith('MANUAL_COST').map((s) => s.id);
+    expect(manual).toEqual([
+      'google.play_console',
+      'apple.developer_program',
+      'hosting.vps',
+      'registrar.domain',
+    ]);
+    expect(COST_REGISTRY.serviceHasCapability('google.play_console', 'MANUAL_COST')).toBe(true);
+    expect(COST_REGISTRY.serviceHasCapability('google.places', 'MANUAL_COST')).toBe(false);
+    expect(COST_REGISTRY.hasCapability('google', 'MANUAL_COST')).toBe(false);
+    expect(COST_REGISTRY.serviceHasCapability('hosting.vps', 'MANUAL_COST')).toBe(true);
+    expect(COST_REGISTRY.serviceHasCapability('nope.nothing', 'MANUAL_COST')).toBe(false);
+    expect(COST_REGISTRY.providersWith('MANUAL_COST').map((p) => p.id)).toEqual([
+      'apple',
+      'hosting',
+      'registrar',
+    ]);
   });
 });
 

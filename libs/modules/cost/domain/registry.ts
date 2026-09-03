@@ -320,9 +320,28 @@ export class CostRegistry {
     return this.providersById.get(providerId)?.capabilities.includes(capability) ?? false;
   }
 
+  /**
+   * A service has a capability when it declares it or its provider does — a
+   * provider-wide capability covers every service, a service-only one (Play
+   * Console under Google) covers just that service.
+   */
+  serviceHasCapability(serviceId: string, capability: Capability): boolean {
+    const service = this.servicesById.get(serviceId);
+    if (!service) return false;
+    return (
+      service.capabilities.includes(capability) ||
+      this.hasCapability(service.providerId, capability)
+    );
+  }
+
   /** Every provider that declares `capability`. Generic discovery, epic §6. */
   providersWith(capability: Capability): readonly ProviderDefinition[] {
     return this.data.providers.filter((p) => p.capabilities.includes(capability));
+  }
+
+  /** Every service that has `capability` (own or inherited), registry order. */
+  servicesWith(capability: Capability): readonly ServiceDefinition[] {
+    return this.services().filter((s) => this.serviceHasCapability(s.id, capability));
   }
 }
 
@@ -615,12 +634,13 @@ const GOOGLE: ProviderDefinition = {
       ],
     },
     {
-      // Epic §3: "Google Play Console" is a manual/fixed platform fee.
+      // Epic §3: "Google Play Console" is a manual/fixed platform fee — the
+      // one Google service a manual cost item may name (#382).
       id: google('play_console'),
       providerId: 'google',
       displayName: 'Play Console',
       category: 'platform_fee',
-      capabilities: [],
+      capabilities: ['MANUAL_COST'],
       operations: [],
     },
   ],
@@ -668,6 +688,12 @@ function planned(
   };
 }
 
+/**
+ * A provider that only ever costs what somebody types in (epic §27): the
+ * provider and each of its services declare `MANUAL_COST`, and nothing else,
+ * so the Cost Center's manual-item form finds them by asking the registry
+ * (`servicesWith('MANUAL_COST')`) and never by a status or id literal.
+ */
 function manual(
   id: string,
   displayName: string,
@@ -677,13 +703,13 @@ function manual(
     id,
     displayName,
     status: 'manual',
-    capabilities: [],
+    capabilities: ['MANUAL_COST'],
     services: services.map((s) => ({
       id: `${id}.${s.name}`,
       providerId: id,
       displayName: s.displayName,
       category: 'platform_fee',
-      capabilities: [],
+      capabilities: ['MANUAL_COST'],
       operations: [],
     })),
   };

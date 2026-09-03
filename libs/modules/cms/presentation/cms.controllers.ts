@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { CurrentActor, Public, RateLimit } from '../../identity/presentation/decorators';
@@ -53,6 +53,7 @@ import { CmsOpsService } from '../application/cms-ops.service';
 import { CmsObservabilityService } from '../application/cms-observability.service';
 import { CmsCostCenterService } from '../application/cms-cost-center.service';
 import { COST_WINDOWS } from '../../cost/application/cost-center.service';
+import { MANUAL_COST_PERIODS, isCalendarDay } from '../../cost/domain/manual-cost';
 import { CmsOpsMetricsService } from '../application/cms-ops-metrics.service';
 import { OPS_PROVIDERS, OPS_WINDOWS } from '../domain/ops-metrics';
 import { CmsUsersService } from '../application/cms-users.service';
@@ -1639,6 +1640,38 @@ const costServiceParam = z.object({ providerId: registryId, serviceId: registryI
 const testRunListQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
+/**
+ * COST-BE-023 (#382) — a manual cost item as the CMS sends it. Money is
+ * micros of `currency` per period (the fee, never a daily share); days are
+ * real calendar days. Whether the service may carry a manual cost is the
+ * registry's answer, given in the service as a field error — not an enum
+ * here, for the same reason as the ids above.
+ */
+const calendarDay = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine(isCalendarDay, { message: 'expected a real YYYY-MM-DD day' });
+const manualCostItemFields = {
+  providerId: registryId,
+  serviceId: registryId,
+  name: z.string().trim().min(1).max(120),
+  amountMicros: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  period: z.enum(MANUAL_COST_PERIODS),
+  effectiveFrom: calendarDay,
+  effectiveTo: calendarDay.nullable(),
+  note: z.string().trim().max(1000).nullable(),
+};
+const manualCostItemCreate = z.object({
+  ...manualCostItemFields,
+  currency: manualCostItemFields.currency.default('USD'),
+  effectiveTo: manualCostItemFields.effectiveTo.default(null),
+  note: manualCostItemFields.note.default(null),
+});
+const manualCostItemPatch = z
+  .object(manualCostItemFields)
+  .partial()
+  .refine((b) => Object.keys(b).length > 0, { message: 'nothing to change' });
 
 const searchAnalyticsQuery = z.object({
   days: z.coerce.number().int().min(1).max(90).default(7),
@@ -1922,6 +1955,52 @@ export class CmsOpsController {
   @Get('ops/costs/test-runs/:id')
   async opsCostTestRun(@Param('id', Uuid) id: string) {
     return { testRun: await this.costCenter.testRun(id) };
+  }
+
+  /**
+   * COST-BE-023 (#382) — epic §27, manual / fixed costs. The list carries
+   * `eligibleServices` — the registry's services with `MANUAL_COST` — so the
+   * form's provider/service picker is the registry, not a list in the CMS.
+   * Every write is audited (`cost.manual_item.*`) and rebuilds the item's
+   * MANUAL rows before it returns; `Idempotency-Key` replays a create.
+   */
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/costs/manual-items')
+  opsManualCostItems() {
+    return this.costCenter.manualItems();
+  }
+
+  @RequireRole('ops_admin', 'super_admin')
+  @Post('ops/costs/manual-items')
+  async opsCreateManualCostItem(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(manualCostItemCreate))
+    body: z.infer<typeof manualCostItemCreate>,
+  ) {
+    return { item: await this.costCenter.createManualItem(body, { adminId: actor.id }) };
+  }
+
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/costs/manual-items/:id')
+  async opsManualCostItem(@Param('id', Uuid) id: string) {
+    return { item: await this.costCenter.manualItem(id) };
+  }
+
+  @RequireRole('ops_admin', 'super_admin')
+  @Patch('ops/costs/manual-items/:id')
+  async opsUpdateManualCostItem(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Body(new ZodValidationPipe(manualCostItemPatch)) body: z.infer<typeof manualCostItemPatch>,
+  ) {
+    return { item: await this.costCenter.updateManualItem(id, body, { adminId: actor.id }) };
+  }
+
+  @RequireRole('ops_admin', 'super_admin')
+  @Delete('ops/costs/manual-items/:id')
+  async opsDeleteManualCostItem(@CurrentActor() actor: Actor, @Param('id', Uuid) id: string) {
+    await this.costCenter.removeManualItem(id, { adminId: actor.id });
+    return { deleted: true };
   }
 
   /**
