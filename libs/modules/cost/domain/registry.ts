@@ -818,6 +818,77 @@ const NEON: ProviderDefinition = {
   ],
 };
 
+/**
+ * COST-BE-027 (#386) — GitHub, whose Actions minutes are both metered and
+ * billed. One SKU; the OS decides the price, so the meter is minutes and the
+ * per-SKU split rides in the row's metadata.
+ */
+const GITHUB_SKUS: readonly BillingSkuDefinition[] = [
+  { id: 'actions.minutes', providerId: 'github', displayName: 'Actions — Minutes' },
+];
+
+const GITHUB_ACTIONS = 'github.actions';
+
+/**
+ * COST-BE-027 (#386) — AWS, the first provider read as an **actual bill**
+ * rather than measured and priced. Cost Explorer reports money per day per
+ * AWS service; there is no usage meter and no pricing rule, which is why
+ * `aws` declares `ACTUAL_COST_COLLECTOR` and neither `USAGE_COLLECTOR` nor
+ * `ESTIMATED_COST`. Both services keep their declared, uncollected meters:
+ * nothing writes them, so they stay non-billable (epic §44.8).
+ */
+const AWS: ProviderDefinition = {
+  id: 'aws',
+  displayName: 'AWS',
+  status: 'active',
+  capabilities: ['ACTUAL_COST_COLLECTOR'],
+  services: [
+    {
+      id: 'aws.aggregate_billing',
+      providerId: 'aws',
+      displayName: 'Aggregate billing',
+      category: 'billing',
+      capabilities: ['ACTUAL_COST_COLLECTOR'],
+      operations: [],
+      meters: [serviceMeter('aws.aggregate_billing', 'billed_usd_micros', 'usd_micros')],
+    },
+    {
+      id: 'aws.ssm',
+      providerId: 'aws',
+      displayName: 'Systems Manager',
+      category: 'secrets',
+      capabilities: ['ACTUAL_COST_COLLECTOR'],
+      operations: [],
+      meters: [serviceMeter('aws.ssm', 'api_requests', 'request')],
+    },
+  ],
+};
+
+/**
+ * GitHub is read three ways at once, from one endpoint: the billing usage
+ * report carries the day's minutes (USAGE_COLLECTOR), the pricing rule turns
+ * them into an estimate (ESTIMATED_COST), and the same lines carry GitHub's
+ * own `netAmount` (ACTUAL_COST_COLLECTOR). Epic §12 keeps the actual ahead of
+ * the estimate rather than adding them.
+ */
+const GITHUB: ProviderDefinition = {
+  id: 'github',
+  displayName: 'GitHub',
+  status: 'active',
+  capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST', 'ACTUAL_COST_COLLECTOR'],
+  services: [
+    {
+      id: GITHUB_ACTIONS,
+      providerId: 'github',
+      displayName: 'Actions',
+      category: 'ci',
+      capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST', 'ACTUAL_COST_COLLECTOR'],
+      operations: [],
+      meters: [billedServiceMeter(GITHUB_ACTIONS, 'minutes', 'minute', 'actions.minutes')],
+    },
+  ],
+};
+
 function serviceMeter(serviceId: string, metric: string, unit: MeterUnit): UsageMeterDefinition {
   return {
     id: `${serviceId}/${metric}`,
@@ -888,29 +959,14 @@ function manual(
 }
 
 export const COST_REGISTRY_DATA: RegistryData = {
-  billingSkus: [...GOOGLE_SKUS, ...CLOUDFLARE_SKUS, ...UPSTASH_SKUS, ...NEON_SKUS],
+  billingSkus: [...GOOGLE_SKUS, ...CLOUDFLARE_SKUS, ...UPSTASH_SKUS, ...NEON_SKUS, ...GITHUB_SKUS],
   providers: [
     GOOGLE,
     CLOUDFLARE,
     UPSTASH,
     NEON,
-    planned('aws', 'AWS', [
-      {
-        name: 'aggregate_billing',
-        displayName: 'Aggregate billing',
-        category: 'billing',
-        meters: [['billed_usd_micros', 'usd_micros']],
-      },
-      {
-        name: 'ssm',
-        displayName: 'Systems Manager',
-        category: 'secrets',
-        meters: [['api_requests', 'request']],
-      },
-    ]),
-    planned('github', 'GitHub', [
-      { name: 'actions', displayName: 'Actions', category: 'ci', meters: [['minutes', 'minute']] },
-    ]),
+    AWS,
+    GITHUB,
     {
       // Epic §21: the cost of tracking cost, as a first-class provider. Its
       // one FIXED_COST row per day is written by the collector scheduler from

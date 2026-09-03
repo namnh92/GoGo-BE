@@ -335,6 +335,9 @@ const UPSTASH_FETCHED =
 const UPSTASH_VERSION = 'upstash-2026-09-03-v1';
 const NEON_FETCHED = 'Neon pricing page, fetched 2026-09-03 (neon.com/pricing)';
 const NEON_VERSION = 'neon-2026-09-03-v1';
+const GITHUB_FETCHED =
+  'GitHub Actions billing page, fetched 2026-09-03 (docs.github.com/en/billing/managing-billing-for-your-products/about-billing-for-github-actions)';
+const GITHUB_VERSION = 'github-2026-09-03-v1';
 
 const UPSTASH_RULES: readonly PricingRule[] = [
   {
@@ -428,6 +431,48 @@ const UPSTASH_RULES: readonly PricingRule[] = [
     freeAllowance: { quantity: 5, unit: 'gb', period: 'MONTH', scope: 'PROJECT' },
     version: NEON_VERSION,
     sourceReference: `${NEON_FETCHED}: Free plan "5 GB per project per month" public network transfer; Launch and Scale "500 GB per project included" then "$0.10/GB" list. The meter is the period-to-date data_transfer_bytes delta from the project endpoint (the history endpoint does not list transfer).`,
+    reviewedAt: '2026-09-03',
+  },
+  /**
+   * GitHub Actions (#386). GoGo's five repositories are **private**, so their
+   * minutes are billed; public-repository minutes are free and never appear.
+   * The page fetched 2026-09-03 prices standard runners per minute by OS —
+   * Linux 2-core $0.006, Windows 2-core $0.010, macOS 3/4-core $0.062 — and
+   * gives the Free plan "2,000" included minutes a month across the account.
+   *
+   * One rule, priced at the Linux 2-core rate, because the meter is minutes
+   * and CI runs on `ubuntu-latest`; the per-SKU split of every row is in its
+   * `metadata.skus`, so a Windows or macOS job is visible rather than hidden
+   * behind a blended number. Should another OS become routine, the honest fix
+   * is a per-SKU meter and a rule each, not an averaged price here.
+   *
+   * **Deviation from the issue text:** #386 says "$0.008/phút Linux". The
+   * page says $0.006 and publishes no $0.008 rate; the page's figure is what
+   * is recorded. The allowance matches the issue at 2,000 minutes a month,
+   * scope ACCOUNT.
+   *
+   * The estimate is a ceiling on what is actually charged: GitHub applies the
+   * included minutes itself, and the ACTUAL row from `netAmount` (same
+   * collector) is what the Cost Center shows when both exist (epic §12).
+   */
+  {
+    id: 'github-actions.minutes-2026-09-01-v1',
+    providerId: 'github',
+    serviceId: 'github.actions',
+    operationId: null,
+    usageMetricId: 'github.actions/minutes',
+    billingSkuId: 'actions.minutes',
+    region: null,
+    platform: null,
+    effectiveFrom: '2026-09-01',
+    effectiveTo: null,
+    currency: 'USD',
+    pricingModel: 'PER_OPERATION',
+    unitPriceMicros: 6_000,
+    tiers: null,
+    freeAllowance: { quantity: 2_000, unit: 'minute', period: 'MONTH', scope: 'ACCOUNT' },
+    version: GITHUB_VERSION,
+    sourceReference: `${GITHUB_FETCHED}: "GitHub Free" includes "2,000" minutes/month for private repositories; standard runners "Linux 2-core (x64) $0.006", "Windows 2-core (x64) $0.010", "macOS 3-core or 4-core $0.062" per minute; "The use of standard GitHub-hosted runners is free: In public repositories". Priced at the Linux rate — CI runs on ubuntu-latest and the meter is minutes; per-SKU quantities are on each row's metadata. Issue #386's "$0.008/phút Linux" is not on the page.`,
     reviewedAt: '2026-09-03',
   },
 ];

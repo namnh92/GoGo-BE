@@ -334,12 +334,12 @@ describe('buildServiceRow / buildProviderRow', () => {
     expect(row.costStatus).toBe('MEASURED_ZERO');
     expect(row.spendMicros).toBe(0);
     // A planned provider with no source is unknown, and says so.
-    const github = COST_REGISTRY.provider('github')!;
-    expect(buildProviderRow(github, COST_REGISTRY, inputs())).toMatchObject({
+    const onesignal = COST_REGISTRY.provider('onesignal')!;
+    expect(buildProviderRow(onesignal, COST_REGISTRY, inputs())).toMatchObject({
       costStatus: 'UNKNOWN',
       spendMicros: null,
       status: 'planned',
-      unknownServices: ['github.actions'],
+      unknownServices: ['onesignal.push'],
     });
     // An active provider whose collector is unconfigured (#384) is unknown too — not zero.
     const upstash = COST_REGISTRY.provider('upstash')!;

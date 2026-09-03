@@ -321,10 +321,48 @@ describe('adding a provider (epic §40)', () => {
       'cloudflare',
       'upstash',
       'neon',
+      'github',
       'openai',
     ]);
     // The existing Google attribution is untouched by the addition.
     expect(registry.serviceForOperation('google.routeMatrix')?.id).toBe('google.routes');
+  });
+});
+
+describe('aws and github (#386)', () => {
+  it('aws is an actual-bill provider: no usage collector, no estimate, no billable meter', () => {
+    const aws = COST_REGISTRY.provider('aws')!;
+    expect(aws.status).toBe('active');
+    expect(aws.capabilities).toEqual(['ACTUAL_COST_COLLECTOR']);
+    expect(COST_REGISTRY.providersWith('ACTUAL_COST_COLLECTOR').map((p) => p.id)).toEqual([
+      'aws',
+      'github',
+    ]);
+    const meters = COST_REGISTRY.meters()
+      .filter((m) => m.serviceId.startsWith('aws.'))
+      .map((m) => [m.id, m.billingSkuId, m.unit, m.billable]);
+    expect(meters).toEqual([
+      ['aws.aggregate_billing/billed_usd_micros', null, 'usd_micros', false],
+      ['aws.ssm/api_requests', null, 'request', false],
+    ]);
+    // Nothing prices AWS: the money comes from Cost Explorer, not a rule.
+    expect(PRICING_RULES.filter((r) => r.providerId === 'aws')).toEqual([]);
+  });
+
+  it('github is metered, estimated and actual at once, with one billed minute meter', () => {
+    const github = COST_REGISTRY.provider('github')!;
+    expect(github.status).toBe('active');
+    expect(github.capabilities).toEqual([
+      'USAGE_COLLECTOR',
+      'ESTIMATED_COST',
+      'ACTUAL_COST_COLLECTOR',
+    ]);
+    const meters = COST_REGISTRY.meters()
+      .filter((m) => m.serviceId === 'github.actions')
+      .map((m) => [m.id, m.billingSkuId, m.unit, m.billable]);
+    expect(meters).toEqual([['github.actions/minutes', 'actions.minutes', 'minute', true]]);
+    expect(COST_REGISTRY.billingSku('actions.minutes')).toMatchObject({ providerId: 'github' });
+    expect(ruleInForce(PRICING_RULES, { billingSkuId: 'actions.minutes' }, TODAY)).not.toBeNull();
   });
 });
 
@@ -357,6 +395,7 @@ describe('cloudflare (#383)', () => {
       'cloudflare',
       'upstash',
       'neon',
+      'github',
     ]);
     const billed = COST_REGISTRY.meters()
       .filter((m) => m.serviceId.startsWith('cloudflare.') && m.billable)

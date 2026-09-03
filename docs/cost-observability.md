@@ -402,6 +402,125 @@ provider row reads freshness `UNKNOWN` / cost `UNKNOWN`.
   baseline read-back across runs and days, period rollover, freshness, failure,
   Free-plan pricing, Cost Center read-back).
 
+## AWS Cost Explorer + GitHub Actions collectors (#386, epic §41-P2, §20–§22, §26)
+
+Two collectors, one paid and one free, registered at worker boot only when
+their own credentials are present.
+
+| Collector           | Capability              | Service                 | Source                                         | Writes                                       |
+| ------------------- | ----------------------- | ----------------------- | ---------------------------------------------- | -------------------------------------------- |
+| `aws_cost_explorer` | `ACTUAL_COST_COLLECTOR` | `aws.aggregate_billing` | `GetCostAndUsage`, daily, grouped by `SERVICE` | `provider_cost_daily` `basis = ACTUAL`       |
+| `github_actions`    | `USAGE_COLLECTOR`       | `github.actions`        | billing usage report                           | `minutes` meter **and** an `ACTUAL` cost row |
+
+### AWS — the first collector that costs money
+
+`GetCostAndUsage` is **$0.01 per request** (epic §20). Everything about the
+collector is shaped by that:
+
+- `maxCallsPerDay: 1`, enforced by the scheduler against `cost_source_freshness`
+  — a table, so the cap survives a worker restart, which an in-process counter
+  would not. There is an integration test for exactly that.
+- `frequencyMs` 24h, `monitoringCost.model = 'PER_REQUEST'`,
+  `estimatedMonthlyMicros` 300,000 (~$0.30/month at ~30 calls). Under the epic's
+  $1-per-collector approval line, inside the $1 DEV budget, and visible in the
+  internal provider's "cost of tracking" row (`gogo.cost_observability`).
+- `essential: false`, so the budget guard can pause it. The scheduler already
+  refuses `essential` on anything that is not FREE, and there is a test for that.
+- Credentials are a **dedicated key pair** (`AWS_COST_EXPLORER_ACCESS_KEY_ID` /
+  `_SECRET_ACCESS_KEY`, IAM `ce:GetCostAndUsage` only). The ambient
+  `AWS_ACCESS_KEY_ID` pair is deliberately not a fallback: inheriting whatever
+  identity the worker runs under would make both the spend and the blast radius
+  accidental.
+
+**One call covers several days.** With `Granularity: DAILY` a single request
+returns one entry per day, so each run re-reads the last `lookbackDays` (7)
+days. That is not redundancy — Cost Explorer marks recent days
+`Estimated: true` and restates them, and a day read once would keep a figure
+AWS has since corrected. Re-reading costs nothing extra (the price is per
+request) and rows are replaced, not added.
+
+- `TimePeriod.End` is exclusive in the API; the port takes an inclusive `to`
+  and converts. Amounts arrive as decimal **strings** and are converted to
+  integer micros without going through a float.
+- **Service mapping is by the registry, not by a literal** (epic §44.3):
+  `awsServiceRoute` sends anything matching "systems manager"/"ssm" to
+  `aws.ssm` and everything else to `aws.aggregate_billing`, keeping the AWS
+  names in `metadata.awsServices`. Several AWS services merging into one
+  registry service are summed, and a row that hid which ones it summed would be
+  unauditable.
+- Confidence follows AWS's own flag: a day AWS may still restate is MEDIUM, a
+  settled day HIGH. The **basis stays ACTUAL** either way — it is the provider's
+  figure, not ours. (Minor deviation: the issue says HIGH unconditionally.)
+- After writing, the collector stamps `reconciled_at` on every ESTIMATED row
+  that now has an ACTUAL twin for the same day and meter key
+  (`ReconciliationService`, COST-BE-021, epic §26), for the months it wrote
+  into. It records that an estimate has been checked against a bill; it computes
+  no variance there.
+- `aws` is `active` with `ACTUAL_COST_COLLECTOR` **only** — no usage meter is
+  written and no pricing rule exists, because the money comes from the bill
+  rather than from usage × price.
+
+### GitHub — the issue's endpoint no longer exists
+
+`GET /users/{owner}/settings/billing/actions` was **shut down on 2025-09-26**
+when GitHub moved billing to the enhanced billing platform. The replacement is
+`GET /{users|organizations}/{account}/settings/billing/usage`, which returns
+line items instead of minute counters. It is strictly better here:
+
+- every item carries its own `date`, so the day's minutes are a **measured
+  daily figure** — the issue's "month-to-date counter differenced across runs"
+  is unnecessary and would be less accurate;
+- every item carries `netAmount`, GitHub's own money for the day, so the same
+  call yields an `ACTUAL` cost row beside the usage meter.
+
+- Yesterday and today are written each run, replace semantics, `source =
+'github_api'`. One report covers both days except across a month boundary,
+  where two are fetched.
+- Only items whose `product` is `actions` count; other products are named in
+  `metadata.otherProducts` and left to their own collectors. Minutes are summed
+  across SKUs (Linux, Windows, macOS) because the meter is minutes, with the
+  per-SKU split in `metadata.skus` — the OS decides the price, and one blended
+  figure would hide that. An Actions line reported in another unit is recorded
+  in `metadata.otherUnits`, never converted.
+- Today is MEDIUM (the report is final only once the day is over), yesterday
+  HIGH. A day the report does not mention gets **no row** — absent is not zero.
+- The ACTUAL row carries `usageMetricId: 'minutes'`, the **same meter key the
+  estimator writes**. Epic §12 groups precedence on (day, provider, service,
+  operation, meter, sku); an ACTUAL row that left the key null would not shadow
+  its own estimate and the Cost Center would add the two, doubling the spend.
+  There is an integration test asserting `basis: ACTUAL` and a single amount.
+- Pricing (`github-actions.minutes-2026-09-01-v1`, reviewed 2026-09-03):
+  `PER_OPERATION` at 6,000 micros/minute with 2,000 minutes a month free (scope
+  ACCOUNT). GoGo's five repositories are **private**, so their minutes are
+  billed; public-repository minutes are free and never appear. **Deviation from
+  the issue text:** #386 says "$0.008/phút Linux"; the page fetched 2026-09-03
+  says Linux 2-core $0.006 (Windows $0.010, macOS $0.062) and publishes no
+  $0.008 rate, so the page's figure is recorded. Priced at the Linux rate
+  because CI runs on `ubuntu-latest`; should another OS become routine the
+  honest fix is a per-SKU meter and a rule each, not an averaged price.
+- `github` is `active` with `USAGE_COLLECTOR` + `ESTIMATED_COST` +
+  `ACTUAL_COST_COLLECTOR` — all three from one endpoint.
+
+### Watch on the first live run (both inert until Infra#114)
+
+- `aws_cost_explorer` freshness row: `ACCESS_DENIED` (the IAM policy lacks
+  `ce:GetCostAndUsage`, or Cost Explorer is not enabled on the account),
+  `AUTH_FAILED` (key or clock skew — SigV4 signs the timestamp),
+  `DATA_UNAVAILABLE` (the window predates the account's Cost Explorer data).
+  Then check `calls_count` is 1 for the day and that `metadata.awsServices`
+  names services you recognise.
+- `github_actions` freshness row: `NOT_FOUND` is the interesting one — it is
+  what both a wrong account login **and** an account outside the enhanced
+  billing platform return; `FORBIDDEN` means the token lacks the billing
+  permission. Then check `metadata.skus` for a non-Linux SKU, which would make
+  the single-rate pricing rule an under-estimate.
+- Tests: `aws-cost-explorer.adapter.spec.ts`, `github-billing.adapter.spec.ts`
+  (documented bodies, SigV4 shape, error codes, env gates),
+  `aws.collector.spec.ts`, `github.collector.spec.ts` (routing, merging, day
+  rules, definitions), `cost-aws-github.int.spec.ts` (replace-upsert, the calls
+  cap across a restart, reconciliation variance, estimator/ACTUAL precedence,
+  the monitoring-cost row).
+
 ## Ids
 
 - **Provider** `google`, `cloudflare`, … — epic §5 list, immutable once persisted.
