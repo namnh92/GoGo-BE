@@ -55,7 +55,7 @@ const call = (
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   url: string,
   role?: string,
-  payload?: unknown,
+  payload?: object,
   headers: Record<string, string> = {},
 ) =>
   api().inject({
@@ -130,7 +130,7 @@ afterAll(async () => {
 describe('#382 — RBAC on every manual-cost route', () => {
   it('refuses an unauthenticated caller, an editor and a moderator on read and write alike', async () => {
     const id = randomUUID();
-    const attempts: ['GET' | 'POST' | 'PATCH' | 'DELETE', string, unknown?][] = [
+    const attempts: ['GET' | 'POST' | 'PATCH' | 'DELETE', string, object?][] = [
       ['GET', BASE],
       ['POST', BASE, monthlyItem],
       ['GET', `${BASE}/${id}`],
