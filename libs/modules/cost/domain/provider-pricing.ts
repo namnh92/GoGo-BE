@@ -238,14 +238,39 @@ export type CostGap = {
   detail: string;
 };
 
+/**
+ * COST-BE-028 (#387) — operations whose count arrives from a client rather
+ * than from this process. Read from the registry, so nothing here names a
+ * provider or a platform.
+ */
+const CLIENT_REPORTED_OPERATIONS = COST_REGISTRY.clientReportedOperations();
+
+export type CostGapOptions = {
+  /**
+   * Whether `POST /v1/telemetry/provider-usage` is accepting client-reported
+   * usage (`mobile_provider_usage.enabled`). While it is off, a client-reported
+   * operation is exactly as uncounted as it was before #387 and keeps saying
+   * so; while it is on, the units are measured and the only thing that can
+   * still be missing is the price.
+   */
+  clientTelemetryEnabled?: boolean;
+};
+
+/** Whether `operation` is counted at all, given the client-telemetry state. */
+function isInstrumented(row: PricingRow, options: CostGapOptions): boolean {
+  if (row.instrumented) return true;
+  return options.clientTelemetryEnabled === true && CLIENT_REPORTED_OPERATIONS.has(row.operation);
+}
+
 /** Gaps that exist regardless of traffic. */
-export function staticCostGaps(day: string = utcDay()): CostGap[] {
+export function staticCostGaps(day: string = utcDay(), options: CostGapOptions = {}): CostGap[] {
   return knownOperations(day)
-    .filter((row) => !row.instrumented || row.usdPer1000Micros === null)
-    .map((row) => ({
+    .map((row) => ({ row, instrumented: isInstrumented(row, options) }))
+    .filter(({ row, instrumented }) => !instrumented || row.usdPer1000Micros === null)
+    .map(({ row, instrumented }) => ({
       key: row.operation,
       provider: providerOf(row.operation),
-      kind: (!row.instrumented ? 'not_instrumented' : 'price_unknown') as CostGapKind,
+      kind: (!instrumented ? 'not_instrumented' : 'price_unknown') as CostGapKind,
       detail: row.source,
     }));
 }

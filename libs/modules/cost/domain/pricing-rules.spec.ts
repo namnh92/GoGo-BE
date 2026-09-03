@@ -192,9 +192,36 @@ describe('seed integrity', () => {
     }
   });
 
-  it('keeps the two known-unknowns unknown', () => {
-    for (const sku of ['routes.computeRouteMatrix', 'maps.dynamic.ios', 'maps.dynamic.android']) {
-      expect(ruleInForce(PRICING_RULES, { billingSkuId: sku }, TODAY)?.unitPriceMicros).toBeNull();
+  it('keeps the remaining known-unknown unknown', () => {
+    // Routes records a SKU and a free cap but no per-element list price. A 0
+    // here would say Routes is free; it is not.
+    expect(
+      ruleInForce(PRICING_RULES, { billingSkuId: 'routes.computeRouteMatrix' }, TODAY)
+        ?.unitPriceMicros,
+    ).toBeNull();
+  });
+
+  it('never re-prices the days the Maps SDK price was unknown (#387, §14)', () => {
+    for (const sku of ['maps.dynamic.ios', 'maps.dynamic.android']) {
+      // Before the price was verified the rule said "verified nothing"…
+      expect(
+        ruleInForce(PRICING_RULES, { billingSkuId: sku }, '2026-09-02')?.unitPriceMicros,
+      ).toBeNull();
+      // …and the new rule prices the days from the day it was checked, at the
+      // first paid Dynamic Maps tier, with the shared 10,000/month allowance.
+      const priced = ruleInForce(PRICING_RULES, { billingSkuId: sku }, '2026-09-03')!;
+      expect(priced.unitPriceMicros).toBe(7_000_000);
+      expect(priced.pricingModel).toBe('PER_1K_REQUESTS');
+      expect(priced.reviewedAt).toBe('2026-09-03');
+      expect(priced.freeAllowance).toMatchObject({
+        quantity: 10_000,
+        unit: 'map_load',
+        period: 'MONTH',
+        // One Google SKU (FAF4-3B2D-51B2) covers iOS, Android and the JS API,
+        // so the allowance is drawn from one counter. `SKU` scope here would
+        // hand each platform its own 10,000 and under-report the bill.
+        scope: 'PROJECT',
+      });
     }
   });
 });

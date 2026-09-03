@@ -935,6 +935,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/telemetry/provider-usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report client-measured provider usage (Maps SDK map loads)
+         * @description COST-BE-028 (#387), Cost Observability epic §18. A Maps SDK draws the map on the handset, so no request reaches the backend to count and the cost screen has always reported a MEASUREMENT GAP rather than a zero. This is the only way that number can exist: the client sends it.
+         *
+         *     The rows written are `source: mobile_sdk`, `confidence: LOW` — client reported, therefore a good estimate and a bad invoice. They never merge with, or sum against, rows from any other source.
+         *
+         *     **The payload carries no identity.** Provider, service, meter, a count, an instant, a platform and an app version. Unknown properties are **rejected**, not ignored, so a future client cannot quietly send a user id, a place id, coordinates, a URL, a session id or a tracking id into the cost tables.
+         *
+         *     Retryable: send `Idempotency-Key` and a replay returns the original response rather than counting the batch twice — these rows *add*.
+         *
+         *     Gated by the `mobile_provider_usage.enabled` flag, per platform. While it is off the request is accepted and **nothing is recorded**; `enabled: false` in the response is the signal to stop uploading. The Maps SDK operations keep reporting `not_instrumented` on the cost screen for exactly as long as that is true.
+         */
+        post: operations["reportProviderUsage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/place-submissions": {
         parameters: {
             query?: never;
@@ -7724,6 +7752,97 @@ export interface operations {
                 };
             };
             403: components["responses"]["Forbidden"];
+        };
+    };
+    reportProviderUsage: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description One uploader flush, not one map load. Every event in a batch must name the same `platform`. */
+                    events: {
+                        /**
+                         * @description Validated against the cost registry's client-reported services, not against this list — the enum documents today's values; the registry is what refuses tomorrow's typo.
+                         * @enum {string}
+                         */
+                        providerId: "google";
+                        /** @enum {string} */
+                        serviceId: "google.maps_sdk_ios" | "google.maps_sdk_android";
+                        /**
+                         * @description The meter's short metric, never a meter id.
+                         * @enum {string}
+                         */
+                        usageMetricId: "map_loads";
+                        /** @description Map loads measured, not events sent. Capped because this is a write into the cost ledger from an untrusted client: 100 × the 100-event batch is 10,000 loads, one month's free Dynamic Maps allowance, which is as far as one request may move the screen. */
+                        quantity: number;
+                        /**
+                         * Format: date-time
+                         * @description When the measurement was taken on the device. Events more than 3 days old, or more than 6 hours in the future, are discarded individually — a wrong handset clock must not write a row on a day that has not happened, and a closed day must not move under an operator who has already read it.
+                         */
+                        occurredAt: string;
+                        /** @enum {string} */
+                        platform: "ios" | "android";
+                        /** @description Semver, e.g. `1.4.2`. Recorded as the row's `metadata.appVersion` (last writer wins) so an operator can see which build is reporting. Never a metric label and never part of the row key: one series per release in the wild is unbounded cardinality. */
+                        appVersion: string;
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description Batch processed. Read `enabled` before trusting the counts. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description False means `mobile_provider_usage.enabled` is off for this platform and nothing was recorded. Stop uploading. */
+                        enabled: boolean;
+                        /** @description Events folded into rows. */
+                        accepted: number;
+                        /** @description Events refused */
+                        discarded: number;
+                        /** @description Which events were refused and why, in request order. */
+                        rejected: {
+                            /** @description Position in the submitted batch. */
+                            index: number;
+                            /** @enum {string} */
+                            reason: "unknown_service" | "not_client_reported" | "unknown_metric" | "stale_occurred_at" | "future_occurred_at";
+                        }[];
+                        /** @description Units recorded — map loads, not events. */
+                        quantity: number;
+                    };
+                };
+            };
+            /** @description `VALIDATION_FAILED` — the batch is malformed: an unknown property, a mixed-platform batch, an unregistered service or meter, a quantity out of range, more than 100 events. Nothing in the batch is recorded. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description `IDEMPOTENCY_KEY_REUSED` — the same `Idempotency-Key` arrived with a different batch. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
         };
     };
     cmsListPlaceSubmissions: {

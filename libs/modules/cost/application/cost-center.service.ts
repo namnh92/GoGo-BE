@@ -22,6 +22,7 @@ import type {
 } from '../domain/registry';
 import { utcDay } from '../domain/provider-pricing';
 import { BudgetService } from './budget.service';
+import { isClientTelemetryEnabledAnywhere } from './mobile-usage.service';
 
 /**
  * COST-BE-022 (#381) — epic §34 (API), §35 (rows and cards), §36 (generic
@@ -555,24 +556,39 @@ export class CostCenterService {
     return (this.options.now ?? (() => new Date()))();
   }
 
+  /**
+   * #387 — the registry as it reads right now.
+   *
+   * A client-reported operation (a Maps SDK map load) is instrumented exactly
+   * while `mobile_provider_usage.enabled` is accepting telemetry, and that is
+   * a runtime fact rather than a definition. Applying it once here keeps every
+   * row builder below asking the same question it always asked, with no
+   * knowledge of flags, platforms or providers.
+   */
+  private async currentRegistry(): Promise<CostRegistry> {
+    const enabled = await isClientTelemetryEnabledAnywhere(this.db, this.options.environment);
+    return this.registry.withClientTelemetry(enabled);
+  }
+
   async overview(window: CostWindow): Promise<CostOverview> {
     const now = this.now();
     const today = utcDay(now);
     const month = today.slice(0, 7);
     const range = windowRange(window, today);
-    const [monthOverview, windowInputs, monthCost] = await Promise.all([
+    const [monthOverview, windowInputs, monthCost, registry] = await Promise.all([
       this.budgets.overview(month),
       this.inputs(range, now),
       // The month's rows for the cards; the window's rows for the table. For
       // `mtd` they are the same rows read twice, which is cheaper than a
       // second code path.
       window === 'mtd' ? null : this.costRows(windowRange('mtd', today)),
+      this.currentRegistry(),
     ]);
     const monthRows = monthCost ?? windowInputs.costRows;
-    const providerRows = this.registry
+    const providerRows = registry
       .providers()
-      .map((p) => buildProviderRow(p, this.registry, windowInputs));
-    const internal = this.registry
+      .map((p) => buildProviderRow(p, registry, windowInputs));
+    const internal = registry
       .services()
       .filter((s) => s.category === 'internal')
       .map((s) => s.id);
@@ -614,17 +630,24 @@ export class CostCenterService {
 
   async providers(window: CostWindow): Promise<ProviderCostRow[]> {
     const now = this.now();
-    const input = await this.inputs(windowRange(window, utcDay(now)), now);
-    return this.registry.providers().map((p) => buildProviderRow(p, this.registry, input));
+    const [input, registry] = await Promise.all([
+      this.inputs(windowRange(window, utcDay(now)), now),
+      this.currentRegistry(),
+    ]);
+    return registry.providers().map((p) => buildProviderRow(p, registry, input));
   }
 
   /** `null` when the registry has no such provider. */
   async provider(providerId: string, window: CostWindow): Promise<ProviderCostRow | null> {
-    const provider = this.registry.provider(providerId);
-    if (provider === null) return null;
+    if (this.registry.provider(providerId) === null) return null;
     const now = this.now();
-    const input = await this.inputs(windowRange(window, utcDay(now)), now);
-    return buildProviderRow(provider, this.registry, input);
+    const [input, registry] = await Promise.all([
+      this.inputs(windowRange(window, utcDay(now)), now),
+      this.currentRegistry(),
+    ]);
+    const provider = registry.provider(providerId);
+    if (provider === null) return null;
+    return buildProviderRow(provider, registry, input);
   }
 
   /** `null` when the service is unknown or belongs to another provider. */
@@ -633,11 +656,15 @@ export class CostCenterService {
     serviceId: string,
     window: CostWindow,
   ): Promise<ServiceCostDetail | null> {
-    const service = this.registry.service(serviceId);
-    if (service === null || service.providerId !== providerId) return null;
+    if (this.registry.service(serviceId)?.providerId !== providerId) return null;
     const now = this.now();
-    const input = await this.inputs(windowRange(window, utcDay(now)), now);
-    return buildServiceDetail(service, this.registry, input);
+    const [input, registry] = await Promise.all([
+      this.inputs(windowRange(window, utcDay(now)), now),
+      this.currentRegistry(),
+    ]);
+    const service = registry.service(serviceId);
+    if (service === null || service.providerId !== providerId) return null;
+    return buildServiceDetail(service, registry, input);
   }
 
   private unattributed(input: RowInputs): CostOverview['unattributed'] {

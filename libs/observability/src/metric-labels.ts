@@ -61,6 +61,14 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   cost_collector_duration_seconds: ['collector'],
   // #369 — counted once per tick that had to pause paid collectors.
   cost_monitoring_over_budget_total: [],
+  // #387 — map loads a handset reported, because the Maps SDK renders there
+  // and no request reaches this process to count (epic §18). `service` is a
+  // registry service id, which is a literal in source and today has two
+  // values. Deliberately **not** labelled with the app version, the platform
+  // (the service id already says it) or anything from the event body: the
+  // series count must be bounded by the registry, not by how many builds are
+  // in the wild.
+  mobile_provider_usage_total: ['service'],
 
   // --- worker --------------------------------------------------------------
   // #340 — `job` is the registered job name (a literal in `apps/worker`),

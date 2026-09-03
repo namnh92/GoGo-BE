@@ -116,6 +116,19 @@ export type OperationDefinition = {
   displayName: string;
   /** False = this process emits no metric for it. Reported as a gap, never zero. */
   instrumented: boolean;
+  /**
+   * COST-BE-028 (#387), epic §18 — the count comes from a **client**, not from
+   * this process. A Maps SDK renders on the handset, so no request passes
+   * through here to count; the number can only arrive by telemetry.
+   *
+   * Such an operation is `instrumented` exactly while that ingest path is
+   * switched on, which is a runtime fact and therefore not stored here:
+   * `withClientTelemetry()` projects the registry for a given state. The
+   * static definition stays `instrumented: false`, so a reader that knows
+   * nothing about the flag keeps reporting the measurement gap rather than a
+   * zero.
+   */
+  clientReported?: boolean;
   usageMeters: readonly UsageMeterDefinition[];
 };
 
@@ -287,6 +300,45 @@ export class CostRegistry {
    */
   operationForBillingSku(skuId: string): string {
     return this.operationBySku.get(skuId)?.id ?? skuId;
+  }
+
+  /**
+   * COST-BE-028 (#387) — the operations whose count can only come from a
+   * client (epic §18). Data, not a list of provider names: a second
+   * client-reported service is picked up here without touching any reader.
+   */
+  clientReportedOperations(): ReadonlySet<string> {
+    return new Set(
+      [...this.operationsById.values()].filter((o) => o.clientReported === true).map((o) => o.id),
+    );
+  }
+
+  /**
+   * The registry as it reads while client telemetry is `enabled`.
+   *
+   * `instrumented` on a client-reported operation is not a property of the
+   * definition — it is a property of whether the ingest endpoint is switched
+   * on right now (`mobile_provider_usage.enabled`). Rather than let every
+   * reader remember that, the state is applied once and the rest of the code
+   * keeps asking the same question it always asked.
+   *
+   * Returns `this` when nothing would change, so the common path allocates
+   * nothing and identity comparisons still hold.
+   */
+  withClientTelemetry(enabled: boolean): CostRegistry {
+    if (!enabled) return this;
+    const clientReported = this.clientReportedOperations();
+    if (clientReported.size === 0) return this;
+    const providers = this.data.providers.map((provider) => ({
+      ...provider,
+      services: provider.services.map((service) => ({
+        ...service,
+        operations: service.operations.map((operation) =>
+          clientReported.has(operation.id) ? { ...operation, instrumented: true } : operation,
+        ),
+      })),
+    }));
+    return new CostRegistry({ ...this.data, providers });
   }
 
   /**
@@ -560,7 +612,10 @@ const GOOGLE: ProviderDefinition = {
       providerId: 'google',
       displayName: 'Maps SDK iOS',
       category: 'maps_sdk',
-      // Nothing collected: the SDK renders on the handset (epic §18).
+      // Nothing *collected*: the SDK renders on the handset (epic §18), so no
+      // scheduled read of Google can produce the number. #387 adds the other
+      // direction — the handset reports it — which is a client-reported
+      // operation, not a USAGE_COLLECTOR capability.
       capabilities: [],
       operationPrefixes: ['google.maps_sdk_ios'],
       operations: [
@@ -569,6 +624,7 @@ const GOOGLE: ProviderDefinition = {
           serviceId: MAPS_IOS,
           displayName: 'Dynamic map loads (iOS)',
           instrumented: false,
+          clientReported: true,
           usageMeters: [
             {
               id: 'google.maps_sdk_ios/map_loads',
@@ -596,6 +652,7 @@ const GOOGLE: ProviderDefinition = {
           serviceId: MAPS_ANDROID,
           displayName: 'Dynamic map loads (Android)',
           instrumented: false,
+          clientReported: true,
           usageMeters: [
             {
               id: 'google.maps_sdk_android/map_loads',

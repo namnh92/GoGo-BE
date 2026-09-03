@@ -138,6 +138,41 @@ describe('provider taxonomy', () => {
     // registry fixes it.
     expect(byKey['google.routeMatrix']).toBe('price_unknown');
   });
+
+  /**
+   * #387 — the gap the telemetry endpoint closes.
+   *
+   * `not_instrumented` is a claim about setup, and the setup changes at
+   * runtime: while `mobile_provider_usage.enabled` is accepting map loads,
+   * the SDK operations are counted, and the price has been verified, so there
+   * is nothing left to report. While it is off the gap stands, which is the
+   * truth — nothing is counting them.
+   */
+  it('drops the Maps SDK gap once client telemetry is counting the loads', () => {
+    const keys = (options?: { clientTelemetryEnabled: boolean }) =>
+      new Set(staticCostGaps(TODAY, options).map((g) => g.key));
+
+    expect(keys()).toContain('google.maps_sdk_ios');
+    expect(keys()).toContain('google.maps_sdk_android');
+
+    const counted = keys({ clientTelemetryEnabled: true });
+    expect(counted).not.toContain('google.maps_sdk_ios');
+    expect(counted).not.toContain('google.maps_sdk_android');
+    // …and nothing else moved: Routes is still counted and still unpriced.
+    expect(counted).toContain('google.routeMatrix');
+  });
+
+  /**
+   * The gap must not vanish retroactively. On a day the price was not yet
+   * verified, counting the units leaves `price_unknown` — units measured,
+   * money not — rather than nothing at all.
+   */
+  it('reports an unpriced day as price_unknown, never as no gap', () => {
+    const gaps = staticCostGaps('2026-09-02', { clientTelemetryEnabled: true });
+    const byKey = Object.fromEntries(gaps.map((g) => [g.key, g.kind]));
+    expect(byKey['google.maps_sdk_ios']).toBe('price_unknown');
+    expect(byKey['google.maps_sdk_android']).toBe('price_unknown');
+  });
 });
 
 /**

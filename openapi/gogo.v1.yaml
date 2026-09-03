@@ -123,6 +123,10 @@ tags:
     description: Itinerary versions, lock/regenerate, active date, check-ins.
   - name: me
     description: Profile, saved items, reviews, notifications, privacy.
+  - name: telemetry
+    description: >
+      Usage the backend cannot measure because it happens on the device —
+      client-reported provider meters (Cost Observability epic §18).
   - name: cms
     description: Staff-only endpoints — not used by the mobile app.
 
@@ -1641,6 +1645,175 @@ paths:
                   createdAt: { type: string, format: date-time }
                   decidedAt: { type: string, format: date-time }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /telemetry/provider-usage:
+    post:
+      operationId: reportProviderUsage
+      tags: [telemetry]
+      summary: Report client-measured provider usage (Maps SDK map loads)
+      description: >
+        COST-BE-028 (#387), Cost Observability epic §18. A Maps SDK draws the
+        map on the handset, so no request reaches the backend to count and the
+        cost screen has always reported a MEASUREMENT GAP rather than a zero.
+        This is the only way that number can exist: the client sends it.
+
+
+        The rows written are `source: mobile_sdk`, `confidence: LOW` — client
+        reported, therefore a good estimate and a bad invoice. They never merge
+        with, or sum against, rows from any other source.
+
+
+        **The payload carries no identity.** Provider, service, meter, a count,
+        an instant, a platform and an app version. Unknown properties are
+        **rejected**, not ignored, so a future client cannot quietly send a
+        user id, a place id, coordinates, a URL, a session id or a tracking id
+        into the cost tables.
+
+
+        Retryable: send `Idempotency-Key` and a replay returns the original
+        response rather than counting the batch twice — these rows *add*.
+
+
+        Gated by the `mobile_provider_usage.enabled` flag, per platform. While
+        it is off the request is accepted and **nothing is recorded**;
+        `enabled: false` in the response is the signal to stop uploading. The
+        Maps SDK operations keep reporting `not_instrumented` on the cost
+        screen for exactly as long as that is true.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [events]
+              properties:
+                events:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  description: >
+                    One uploader flush, not one map load. Every event in a
+                    batch must name the same `platform`.
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      [
+                        providerId,
+                        serviceId,
+                        usageMetricId,
+                        quantity,
+                        occurredAt,
+                        platform,
+                        appVersion,
+                      ]
+                    properties:
+                      providerId:
+                        type: string
+                        enum: [google]
+                        description: >
+                          Validated against the cost registry's client-reported
+                          services, not against this list — the enum documents
+                          today's values; the registry is what refuses tomorrow's
+                          typo.
+                      serviceId:
+                        type: string
+                        enum: [google.maps_sdk_ios, google.maps_sdk_android]
+                      usageMetricId:
+                        type: string
+                        enum: [map_loads]
+                        description: The meter's short metric, never a meter id.
+                      quantity:
+                        type: integer
+                        minimum: 1
+                        maximum: 100
+                        description: >
+                          Map loads measured, not events sent. Capped because
+                          this is a write into the cost ledger from an
+                          untrusted client: 100 × the 100-event batch is 10,000
+                          loads, one month's free Dynamic Maps allowance, which
+                          is as far as one request may move the screen.
+                      occurredAt:
+                        type: string
+                        format: date-time
+                        description: >
+                          When the measurement was taken on the device. Events
+                          more than 3 days old, or more than 6 hours in the
+                          future, are discarded individually — a wrong handset
+                          clock must not write a row on a day that has not
+                          happened, and a closed day must not move under an
+                          operator who has already read it.
+                      platform:
+                        type: string
+                        enum: [ios, android]
+                      appVersion:
+                        type: string
+                        description: >
+                          Semver, e.g. `1.4.2`. Recorded as the row's
+                          `metadata.appVersion` (last writer wins) so an
+                          operator can see which build is reporting. Never a
+                          metric label and never part of the row key: one
+                          series per release in the wild is unbounded
+                          cardinality.
+      responses:
+        '201':
+          description: Batch processed. Read `enabled` before trusting the counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled, accepted, discarded, rejected, quantity]
+                properties:
+                  enabled:
+                    type: boolean
+                    description: >
+                      False means `mobile_provider_usage.enabled` is off for
+                      this platform and nothing was recorded. Stop uploading.
+                  accepted: { type: integer, description: Events folded into rows. }
+                  discarded: { type: integer, description: Events refused, per event. }
+                  rejected:
+                    type: array
+                    description: Which events were refused and why, in request order.
+                    items:
+                      type: object
+                      required: [index, reason]
+                      properties:
+                        index: { type: integer, description: Position in the submitted batch. }
+                        reason:
+                          type: string
+                          enum:
+                            [
+                              unknown_service,
+                              not_client_reported,
+                              unknown_metric,
+                              stale_occurred_at,
+                              future_occurred_at,
+                            ]
+                  quantity:
+                    type: integer
+                    description: Units recorded — map loads, not events.
+        '400':
+          description: >
+            `VALIDATION_FAILED` — the batch is malformed: an unknown property,
+            a mixed-platform batch, an unregistered service or meter, a
+            quantity out of range, more than 100 events. Nothing in the batch
+            is recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: >
+            `IDEMPOTENCY_KEY_REUSED` — the same `Idempotency-Key` arrived with
+            a different batch.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /cms/place-submissions:
     get:

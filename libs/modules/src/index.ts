@@ -246,10 +246,37 @@ export {
   staticCostGaps,
   utcDay,
   type CostGap,
+  type CostGapOptions,
   type OpsProvider,
   type PricingRow,
 } from '../cost/domain/provider-pricing';
 export { CAPABILITIES, isCapability, type Capability } from '../cost/domain/capabilities';
+// Client-reported provider usage (COST-BE-028, #387)
+export { CostModule } from '../cost/presentation/cost.module';
+export {
+  MobileProviderUsageService,
+  isClientTelemetryEnabled,
+  isClientTelemetryEnabledAnywhere,
+  type MobileUsageIngestResult,
+  type MobileUsageOptions,
+} from '../cost/application/mobile-usage.service';
+export {
+  MOBILE_USAGE_CONFIDENCE,
+  MOBILE_USAGE_MAX_BACKDATE_DAYS,
+  MOBILE_USAGE_MAX_BATCH,
+  MOBILE_USAGE_MAX_FUTURE_SKEW_MS,
+  MOBILE_USAGE_PLATFORMS,
+  MOBILE_USAGE_REJECTIONS,
+  MOBILE_USAGE_SOURCE,
+  MOBILE_USAGE_STALE_AFTER_MS,
+  foldMobileUsage,
+  foldQuantity,
+  type ClientUsageEvent,
+  type MobileUsageFold,
+  type MobileUsagePlatform,
+  type MobileUsageRejection,
+  type MobileUsageRow,
+} from '../cost/domain/mobile-usage';
 export {
   COST_REGISTRY,
   COST_REGISTRY_DATA,

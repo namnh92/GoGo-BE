@@ -137,6 +137,20 @@ export const FEATURE_FLAGS = {
     description: 'Run the periodic Google Place ID liveness refresh (IDs-Only, billed at $0).',
     platformScoped: false,
   },
+  // #387 (COST-BE-028), epic §18. Default **off**, and platform-scoped: this
+  // opens a write path from an untrusted client into the cost ledger, and the
+  // two platforms do not become ready together — Android still needs its own
+  // Maps key (Mobile#127 / Infra#102), so iOS can be switched on first without
+  // pretending Android is being measured. While it is off the Maps SDK
+  // operations keep reporting `not_instrumented`, which is the truth: nothing
+  // is counting them.
+  'mobile_provider_usage.enabled': {
+    valueType: 'boolean',
+    defaultValue: false,
+    description:
+      'Accept client-reported provider usage (Maps SDK map loads) at POST /v1/telemetry/provider-usage.',
+    platformScoped: true,
+  },
 } as const satisfies Record<string, FlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAGS;

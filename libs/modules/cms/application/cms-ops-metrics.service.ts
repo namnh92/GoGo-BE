@@ -1,6 +1,9 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
+import type { Db } from '@gogo/database';
 import { METRICS_QUERY, MetricsQueryError, type MetricsQueryPort } from '@gogo/providers';
 import { APP_CONFIG } from '../../shared/config';
+import { DB } from '../../shared/tokens';
+import { isClientTelemetryEnabledAnywhere } from '../../cost/application/mobile-usage.service';
 import {
   PRICING_CURRENCY,
   PRICING_VERSION,
@@ -99,6 +102,14 @@ export class CmsOpsMetricsService {
   constructor(
     @Inject(APP_CONFIG) private readonly config: OpsMetricsConfig,
     @Optional() @Inject(METRICS_QUERY) private readonly metrics: MetricsQueryPort | null = null,
+    /**
+     * #387 — only to read `mobile_provider_usage.enabled`, which decides
+     * whether the Maps SDK operations are still a measurement gap. Optional so
+     * the unit specs keep constructing this with the two arguments they care
+     * about; absent, the flag reads as its default (off), which is the same
+     * answer the screen gave before client telemetry existed.
+     */
+    @Optional() @Inject(DB) private readonly db: Db | null = null,
   ) {}
 
   private get env(): string {
@@ -117,7 +128,7 @@ export class CmsOpsMetricsService {
       const trends = await this.trends(w);
       return {
         totals,
-        costModel: costModelFor(totals, day),
+        costModel: costModelFor(totals, day, await this.clientTelemetryEnabled()),
         latencySemantics: LATENCY_SEMANTICS,
         trends,
       };
@@ -131,7 +142,7 @@ export class CmsOpsMetricsService {
       const { providers, totals } = aggregate(await this.instantSamples(w), day);
       return {
         providers: providers.map(stripOperations),
-        costModel: costModelFor(totals, day),
+        costModel: costModelFor(totals, day, await this.clientTelemetryEnabled()),
         latencySemantics: LATENCY_SEMANTICS,
       };
     });
@@ -145,11 +156,17 @@ export class CmsOpsMetricsService {
       const found = providers.find((p) => p.provider === provider) ?? emptyBreakdown(provider);
       return {
         provider: found,
-        costModel: costModelFor(found, day),
+        costModel: costModelFor(found, day, await this.clientTelemetryEnabled()),
         latencySemantics: LATENCY_SEMANTICS,
         trends: await this.trends(w),
       };
     });
+  }
+
+  /** #387 — false without a connection, which is the pre-telemetry answer. */
+  private clientTelemetryEnabled(): Promise<boolean> {
+    if (this.db === null) return Promise.resolve(false);
+    return isClientTelemetryEnabledAnywhere(this.db, this.env);
   }
 
   // ── plumbing ─────────────────────────────────────────────────────────────
@@ -304,6 +321,7 @@ function costModelFor(
     'estimatedCost' | 'estimatedCostMicros' | 'costComplete' | 'unpricedOperations'
   > | null,
   day: string,
+  clientTelemetryEnabled = false,
 ) {
   return {
     kind: 'estimated' as const,
@@ -317,7 +335,7 @@ function costModelFor(
     freeCapApplied: false,
     costComplete: totals?.costComplete ?? false,
     unpricedOperations: totals?.unpricedOperations ?? [],
-    measurementGaps: staticCostGaps(day),
+    measurementGaps: staticCostGaps(day, { clientTelemetryEnabled }),
     note: 'Ước tính theo bảng giá niêm yết Google, chưa trừ hạn mức miễn phí. Không phải hóa đơn. Chi phí tháng đã trừ hạn mức miễn phí nằm ở /cms/ops/costs.',
   };
 }

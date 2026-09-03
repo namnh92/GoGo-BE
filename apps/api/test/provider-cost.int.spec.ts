@@ -10,6 +10,7 @@ import { MetricsRegistry, TeeMetrics } from '@gogo/observability';
 import { GooglePlacesAdapter, GoogleRoutesAdapter } from '@gogo/providers';
 import {
   DbUsageLedger,
+  PRICING_VERSION,
   ProviderBudgetService,
   ProviderUsageReportService,
   budgetLimitsFrom,
@@ -492,6 +493,8 @@ describe('cost report from the ledger', () => {
     const result = await report();
     expect(result.asOf).not.toBeNull();
     expect(Date.parse(result.asOf!)).toBeGreaterThan(0);
-    expect(result.pricingVersion).toBe('2026-09-01');
+    // The version tracks the newest rule in force, so it moves when a price
+    // is verified — #387 verified the Dynamic Maps list price.
+    expect(result.pricingVersion).toBe(PRICING_VERSION);
   });
 });

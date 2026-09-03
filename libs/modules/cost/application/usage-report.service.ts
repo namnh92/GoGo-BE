@@ -13,6 +13,7 @@ import {
   type CostGap,
   type OpsProvider,
 } from '../domain/provider-pricing';
+import { isClientTelemetryEnabledAnywhere } from './mobile-usage.service';
 
 /**
  * PR2 / COST-BE-002 (#335) — money, from the durable ledger.
@@ -97,7 +98,13 @@ export class ProviderUsageReportService {
    */
   async report(day: string = utcDay()): Promise<ProviderCostReport> {
     const monthStart = `${day.slice(0, 7)}-01`;
-    const rows = await this.usageRows(monthStart, day);
+    // #387 — whether the client-reported operations are being counted at all
+    // is a runtime fact, and the gap list must not claim they are uncounted
+    // while a phone is filling the ledger.
+    const [rows, clientTelemetryEnabled] = await Promise.all([
+      this.usageRows(monthStart, day),
+      this.clientTelemetryEnabled(),
+    ]);
 
     // Free cap is consumed per SKU, in date order. Operations that share a SKU
     // share the cap; today none do, but grouping by SKU is what makes that
@@ -135,7 +142,7 @@ export class ProviderUsageReportService {
       if (row.day === day) todayMicros.set(provider, (todayMicros.get(provider) ?? 0) + micros);
     }
 
-    const gaps = this.gapsFor(day, unpriced, seenProviders);
+    const gaps = this.gapsFor(day, unpriced, seenProviders, clientTelemetryEnabled);
     const unpricedProviders = new Set(
       [...unpriced].map((operation) => providerOf(operation)).filter((p): p is OpsProvider => !!p),
     );
@@ -182,8 +189,21 @@ export class ProviderUsageReportService {
    * usually a new adapter call somebody shipped without pricing it, and it
    * should surface on the ops screen the first day it runs.
    */
-  private gapsFor(day: string, unpriced: Set<string>, seen: Set<OpsProvider>): CostGap[] {
-    const gaps = staticCostGaps(day);
+  /**
+   * #387 — `not_instrumented` is a claim about setup, not about traffic, and
+   * the client-telemetry endpoint changes the setup at runtime.
+   */
+  private clientTelemetryEnabled(): Promise<boolean> {
+    return isClientTelemetryEnabledAnywhere(this.db, this.options.environment);
+  }
+
+  private gapsFor(
+    day: string,
+    unpriced: Set<string>,
+    seen: Set<OpsProvider>,
+    clientTelemetryEnabled: boolean,
+  ): CostGap[] {
+    const gaps = staticCostGaps(day, { clientTelemetryEnabled });
     const known = new Set(gaps.map((g) => g.key));
     for (const operation of unpriced) {
       if (known.has(operation)) continue;

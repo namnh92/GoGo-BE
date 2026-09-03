@@ -8,7 +8,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { schema } from '@gogo/database';
 import { MetricsRegistry, TeeMetrics } from '@gogo/observability';
 import { GooglePlacesAdapter, GoogleRoutesAdapter } from '@gogo/providers';
-import { CostEstimatorService, DbUsageLedger, ESTIMATOR_SOURCE, utcDay } from '@gogo/modules';
+import {
+  CostEstimatorService,
+  DbUsageLedger,
+  ESTIMATOR_SOURCE,
+  PRICING_VERSION,
+  utcDay,
+} from '@gogo/modules';
 
 /**
  * COST-BE-016 (#368) — the canonical usage-meter and cost tables, against a
@@ -289,7 +295,7 @@ describe('estimator → provider_cost_daily (epic §11, §25)', () => {
         amount_micros: 2_000_000,
         basis: 'ESTIMATED',
         source: ESTIMATOR_SOURCE,
-        pricing_version: '2026-09-01',
+        pricing_version: PRICING_VERSION,
         billable_quantity: 1_100,
       }),
     ]);

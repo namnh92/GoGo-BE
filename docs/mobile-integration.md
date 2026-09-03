@@ -114,3 +114,54 @@ in-app navigation (FR-PLAN-010).
 - **Realtime suggestion progress**: runs are synchronous today; SSE progress
   arrives with BE-BFF-010's async pipeline. Poll `…/suggestions/current`.
 - **Bulk import / Sheets**: CMS-side only (PI-BE-011..017), no mobile surface.
+
+## 9. Provider usage telemetry (APP-044, contract for GoGo-MobileApp#134)
+
+The backend cannot count a Maps SDK map load — the SDK draws on the handset,
+nothing reaches the API. `POST /v1/telemetry/provider-usage` is where the app
+reports it, so the cost screen stops showing a MEASUREMENT GAP (GoGo-BE#387,
+Cost Observability epic §18).
+
+```jsonc
+POST /v1/telemetry/provider-usage
+Authorization: Bearer <access token>      // a guest session is enough
+Idempotency-Key: <8–128 chars>            // retries replay, they do not re-count
+
+{ "events": [ {
+  "providerId":    "google",
+  "serviceId":     "google.maps_sdk_ios",   // or google.maps_sdk_android
+  "usageMetricId": "map_loads",
+  "quantity":      1,
+  "occurredAt":    "2026-09-03T09:59:00Z",
+  "platform":      "ios",                   // one platform per batch
+  "appVersion":    "1.4.2"
+} ] }
+```
+
+Rules the client has to honour, each with a reason:
+
+- **One event per `map-canvas` mount**, not per pan or zoom (epic §18). A deck
+  that emits per gesture is a bug, and it is also money.
+- **Batch, up to 100 events.** Flush every 60 seconds and on background. One
+  request is one flush.
+- **Send `Idempotency-Key` per flush, and re-send the identical body on retry.**
+  These rows _add_ server-side; the key is what makes a retry safe, and it keys
+  on the body as well, so a rebuilt batch with fresh timestamps is a new batch.
+- **Send nothing else.** Unknown properties are rejected with `400
+VALIDATION_FAILED` — no place id, no coordinates, no URL, no session or
+  tracking id, ever.
+- **Read the flag before emitting.** `mobile_provider_usage.enabled` is
+  platform-scoped; the response's `enabled: false` means nothing was recorded
+  and the uploader should stop rather than retry.
+- **Events older than 3 days, or more than 6 hours in the future, are
+  discarded** individually and reported in `rejected[]`. Hold events while
+  offline, but drop your own backlog past 3 days rather than sending it.
+
+Response:
+
+```jsonc
+{ "enabled": true, "accepted": 2, "discarded": 0, "rejected": [], "quantity": 10 }
+```
+
+`429` means the rate limit (12 requests/min per actor+IP, 5 per 10s) — back
+off, do not tighten the flush interval. `quantity` is capped at 100 per event.

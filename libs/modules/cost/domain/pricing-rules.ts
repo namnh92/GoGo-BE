@@ -193,6 +193,44 @@ export function ruleInForce(
 const FETCHED = 'Google Places/Routes pricing pages, fetched 2026-09-01 (plan §2.2, historical)';
 const GOOGLE_VERSION = 'google-2026-09-01-v1';
 
+/**
+ * COST-BE-028 (#387) — the day the Dynamic Maps list price was verified, and
+ * the version of the rules that carry it. A separate version from
+ * `GOOGLE_VERSION` because only this family changed: the Places and Routes
+ * rules were not re-reviewed and must not claim they were.
+ */
+const MAPS_VERIFIED = '2026-09-03';
+const MAPS_SDK_VERSION = 'google-maps-sdk-2026-09-03-v1';
+
+/**
+ * Google bills **one** Dynamic Maps SKU (`FAF4-3B2D-51B2`) across the Maps
+ * JavaScript API, the Android SDK and the iOS SDK, and its 10,000 free events
+ * a month are shared between them. GoGo's registry keeps iOS and Android
+ * apart, as the epic's §42.6 breakdown requires — so `scope: 'SKU'` here would
+ * hand each platform its own 10,000 and under-report the bill by up to $70 a
+ * month. `PROJECT` is the scope that matches what Google actually resets:
+ * `scopeKey` folds it to the provider, which is the one counter both
+ * platforms draw down.
+ */
+const DYNAMIC_MAPS_ALLOWANCE: FreeAllowance = {
+  quantity: 10_000,
+  unit: 'map_load',
+  period: 'MONTH',
+  scope: 'PROJECT',
+};
+
+/**
+ * Tiered above 100,000/month ($5.60, then $4.20, $2.10, $0.53). The first paid
+ * tier is the rule, exactly as the Places rules do it: the tiers are
+ * cumulative over a **month** and this estimator prices a **day** at a time,
+ * so a tiered rule would restart at tier one every morning and quietly
+ * over-charge. At GoGo's volume the first tier is the whole bill; if map loads
+ * ever pass 100k/month this needs a monthly-cumulative estimator, not a
+ * cleverer rule.
+ */
+const MAPS_SOURCE =
+  'Google Maps Platform pricing page (developers.google.com/maps/billing-and-pricing/pricing), fetched 2026-09-03. SKU "Dynamic Maps" FAF4-3B2D-51B2: 10,000 billable events/month free, then $7.00 per 1,000 for 10,001-100,000. One SKU covers the JS API, the Android SDK and the iOS SDK, so the free allowance is shared - see DYNAMIC_MAPS_ALLOWANCE. Units are client-reported (source `mobile_sdk`, confidence LOW), which is why the money below them is ESTIMATED and never ACTUAL.';
+
 function googleRule(
   input: Omit<
     PricingRule,
@@ -206,7 +244,7 @@ function googleRule(
     | 'reviewedAt'
     | 'tiers'
   > &
-    Partial<Pick<PricingRule, 'platform' | 'tiers'>>,
+    Partial<Pick<PricingRule, 'platform' | 'tiers' | 'effectiveTo' | 'version' | 'reviewedAt'>>,
 ): PricingRule {
   return {
     id: `google-${input.billingSkuId ?? input.operationId ?? input.usageMetricId}-${input.effectiveFrom}-v1`,
@@ -598,6 +636,9 @@ export const PRICING_RULES: readonly PricingRule[] = [
     freeAllowance: null,
     sourceReference: 'Sheets API is quota-limited, not billed per call. Known free.',
   }),
+  // The two rules that priced nothing, kept and closed rather than edited:
+  // history is never re-priced (§14). A day before `MAPS_VERIFIED` still reads
+  // as a measurement gap, because on that day it was one.
   googleRule({
     serviceId: 'google.maps_sdk_ios',
     operationId: 'google.maps_sdk_ios',
@@ -605,6 +646,7 @@ export const PRICING_RULES: readonly PricingRule[] = [
     billingSkuId: 'maps.dynamic.ios',
     platform: 'ios',
     effectiveFrom: '2026-09-01',
+    effectiveTo: MAPS_VERIFIED,
     pricingModel: 'PER_1K_REQUESTS',
     unitPriceMicros: null,
     freeAllowance: null,
@@ -618,11 +660,40 @@ export const PRICING_RULES: readonly PricingRule[] = [
     billingSkuId: 'maps.dynamic.android',
     platform: 'android',
     effectiveFrom: '2026-09-01',
+    effectiveTo: MAPS_VERIFIED,
     pricingModel: 'PER_1K_REQUESTS',
     unitPriceMicros: null,
     freeAllowance: null,
     sourceReference:
       'MEASUREMENT GAP. Same as iOS: client-side rendering, no server-side telemetry, no verified Dynamic Maps price. Never zero.',
+  }),
+  googleRule({
+    serviceId: 'google.maps_sdk_ios',
+    operationId: 'google.maps_sdk_ios',
+    usageMetricId: 'google.maps_sdk_ios/map_loads',
+    billingSkuId: 'maps.dynamic.ios',
+    platform: 'ios',
+    effectiveFrom: MAPS_VERIFIED,
+    pricingModel: 'PER_1K_REQUESTS',
+    unitPriceMicros: 7_000_000,
+    freeAllowance: DYNAMIC_MAPS_ALLOWANCE,
+    version: MAPS_SDK_VERSION,
+    reviewedAt: MAPS_VERIFIED,
+    sourceReference: MAPS_SOURCE,
+  }),
+  googleRule({
+    serviceId: 'google.maps_sdk_android',
+    operationId: 'google.maps_sdk_android',
+    usageMetricId: 'google.maps_sdk_android/map_loads',
+    billingSkuId: 'maps.dynamic.android',
+    platform: 'android',
+    effectiveFrom: MAPS_VERIFIED,
+    pricingModel: 'PER_1K_REQUESTS',
+    unitPriceMicros: 7_000_000,
+    freeAllowance: DYNAMIC_MAPS_ALLOWANCE,
+    version: MAPS_SDK_VERSION,
+    reviewedAt: MAPS_VERIFIED,
+    sourceReference: MAPS_SOURCE,
   }),
   ...CLOUDFLARE_RULES,
   ...UPSTASH_RULES,

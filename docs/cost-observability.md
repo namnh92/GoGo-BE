@@ -521,6 +521,146 @@ line items instead of minute counters. It is strictly better here:
   cap across a restart, reconciliation variance, estimator/ACTUAL precedence,
   the monitoring-cost row).
 
+## Maps SDK telemetry (#387, epic §18, §42.6)
+
+Gap G-07. A Maps SDK draws the map on the handset. No request reaches this
+process, so no adapter can count one, and `google.maps_sdk_ios` /
+`google.maps_sdk_android` have correctly reported a MEASUREMENT GAP — never a
+zero — since #367. The only way the number can exist is for the client to send
+it, which is what this adds.
+
+### The endpoint
+
+`POST /v1/telemetry/provider-usage` — authenticated (a guest session is
+enough), rate-limited `telemetry.provider_usage` 12/min with a 5-per-10s burst
+on `ip+actor`, `Idempotency-Key` honoured by the global interceptor.
+
+This is a write into the cost ledger from an untrusted client, so the bounds
+are the security control: ≤ 100 events per batch, `quantity` ≤ 100, which caps
+one request at 10,000 loads — a month's free allowance. Nothing written here
+can authorise spending: `provider_budget_daily` is the guard, it is written
+before a provider call, and it never reads this table (ADR-0012). The worst a
+dishonest client achieves is a wrong ESTIMATED number on an ops screen, which
+is why the source and the LOW confidence stay attached to it.
+
+```jsonc
+{
+  "events": [
+    {
+      // ≤ 100 per batch, one platform per batch
+      "providerId": "google",
+      "serviceId": "google.maps_sdk_ios", // registry service, client-reported
+      "usageMetricId": "map_loads", // the meter's short metric
+      "quantity": 1, // 1..1000 map loads, not events
+      "occurredAt": "2026-09-03T09:59:00Z",
+      "platform": "ios",
+      "appVersion": "1.4.2",
+    },
+  ],
+}
+```
+
+The request schema is **strict**: an unknown property is a `400
+VALIDATION_FAILED`, not a silently dropped field. Epic §18 lists what must
+never travel with a usage event — user id, place id, lat/lng, URL, tracking id,
+session id — and a schema that ignores unknown keys still logs them on the way
+in. `providerId` / `serviceId` / `usageMetricId` are validated against
+`COST_REGISTRY.clientReportedOperations()`, so registering a second
+client-reported service needs no change to the controller, the fold, or this
+paragraph's validation.
+
+Response — read `enabled` before trusting the counts:
+
+```jsonc
+{ "enabled": true, "accepted": 2, "discarded": 0, "rejected": [], "quantity": 10 }
+```
+
+`rejected` is per event (`{ index, reason }`) so one handset with a wrong clock
+does not lose the batch: `stale_occurred_at` (older than 3 days — the day is
+closed and a late arrival would move a number an operator already read),
+`future_occurred_at` (more than 6 hours ahead), `unknown_service`,
+`not_client_reported`, `unknown_metric`.
+
+### What it writes
+
+| Table                        | Row                                                                                                                           |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `provider_usage_meter_daily` | one per (day, meter), source **`mobile_sdk`**, confidence **`LOW`**, `metadata = { platform, appVersion }` (last writer wins) |
+| `cost_source_freshness`      | `mobile_sdk:<serviceId>`, `stale_after_s` 86 400 — per service, so iOS going quiet does not make Android look stale           |
+
+The upsert **adds**. A collector re-reads a provider's own running total and
+therefore replaces the day's row; a batch reports loads that happened since the
+last flush and that nobody will ever see again. Which is exactly why a replay
+must not re-run — `Idempotency-Key` replays the stored response instead.
+
+Metric: `mobile_provider_usage_total{service}`. The service id is a registry
+literal; the app version is deliberately not a label (one series per release in
+the wild is unbounded, #319).
+
+### The flag
+
+`mobile_provider_usage.enabled`, boolean, **platform-scoped**, default **off**.
+Off, a well-formed batch is accepted and nothing is recorded — the response
+carries `enabled: false`, which is the signal for the uploader to stop. Two
+platforms, because they do not become ready together: Android still needs its
+own Maps key (Mobile#127 / Infra#102), and switching iOS on must not claim
+Android is being measured.
+
+```sql
+insert into feature_flags (key, environment, platform, enabled)
+values ('mobile_provider_usage.enabled', 'dev', 'ios', true)
+on conflict (key, environment, platform) do update set enabled = true;
+```
+
+### `instrumented` became a runtime fact
+
+`OperationDefinition.clientReported` marks an operation whose count can only
+come from a client. Its static `instrumented` stays **false** — a reader that
+knows nothing about the flag keeps reporting the gap — and
+`COST_REGISTRY.withClientTelemetry(enabled)` projects the registry for the
+current state. Three readers apply it:
+
+- `CostCenterService` (v2 rows) — via `withClientTelemetry`.
+- `ProviderUsageReportService` (`/cms/ops/costs`) — via
+  `staticCostGaps(day, { clientTelemetryEnabled })`.
+- `CmsOpsMetricsService` (`measurementGaps`) — the same.
+
+"Any platform", not "every platform": `not_instrumented` means nobody is set up
+to count this at all. Whether a given platform's build has shipped its emitter
+is a rollout fact, and it shows as that service's freshness being `UNKNOWN`
+(nobody has reported) with `costStatus: UNKNOWN` — never as a zero.
+
+### Pricing (verified 2026-09-03)
+
+Google Maps Platform pricing page, SKU **Dynamic Maps `FAF4-3B2D-51B2`**:
+10,000 billable events a month free, then **$7.00 per 1,000** for
+10,001–100,000. The `null`-priced rules from #367 are **closed** at
+`2026-09-03`, not edited — history is never re-priced (§14) — and two new rules
+carry the price under version `google-maps-sdk-2026-09-03-v1`.
+
+Two decisions worth keeping in view:
+
+- **The free allowance is `scope: 'PROJECT'`, not `'SKU'`.** One Google SKU
+  covers the JS API, the iOS SDK and the Android SDK, so the 10,000 is shared.
+  `SKU` scope would hand each platform its own 10,000 and under-report the bill
+  by up to $70/month; `PROJECT` folds to the provider, which is the one counter
+  both platforms draw down.
+- **The rule is the first paid tier, not `TIERED`.** The tiers are cumulative
+  over a month and the estimator prices a day at a time, so a tiered rule would
+  restart at tier one every morning. Above 100k loads/month this needs a
+  monthly-cumulative estimator, not a cleverer rule.
+
+`PRICING_VERSION` moves to `2026-09-03` as a result — it is defined as the
+newest `effectiveFrom` in the rules.
+
+### Mobile counterpart
+
+The emitter is **APP-044 / GoGo-MobileApp#134**, not this task: emit one
+`provider_usage` event when `map-canvas` mounts, batch through the analytics
+uploader, send with an `Idempotency-Key`, read the flag before emitting. Until
+it ships, the endpoint is live and no handset reports — which reads as
+freshness `UNKNOWN`, correctly.
+
 ## Ids
 
 - **Provider** `google`, `cloudflare`, … — epic §5 list, immutable once persisted.
