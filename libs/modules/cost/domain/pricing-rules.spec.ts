@@ -238,6 +238,49 @@ describe('upstash rule (#384)', () => {
   });
 });
 
+describe('github actions rule (#386)', () => {
+  const rule = ruleInForce(PRICING_RULES, { billingSkuId: 'actions.minutes' }, TODAY)!;
+
+  it('prices minutes at the page’s Linux rate with the 2,000/month account allowance', () => {
+    expect(rule).toMatchObject({
+      providerId: 'github',
+      serviceId: 'github.actions',
+      operationId: null,
+      usageMetricId: 'github.actions/minutes',
+      pricingModel: 'PER_OPERATION',
+      unitPriceMicros: 6_000,
+      freeAllowance: { quantity: 2_000, unit: 'minute', period: 'MONTH', scope: 'ACCOUNT' },
+      effectiveFrom: '2026-09-01',
+      reviewedAt: '2026-09-03',
+    });
+    // 1,000 minutes list at $6.00 and fall inside the allowance.
+    expect(estimateMicros(rule, 1_000)).toEqual({
+      known: true,
+      listMicros: 6_000_000,
+      freeAdjustedMicros: 0,
+    });
+    // 3,000 in a month: 2,000 free, then 1,000 at $0.006 = $6.00.
+    expect(estimateMicros(rule, 3_000)).toEqual({
+      known: true,
+      listMicros: 18_000_000,
+      freeAdjustedMicros: 6_000_000,
+    });
+    // 500 more with 1,800 already used: 200 free, 300 billable = $1.80.
+    expect(estimateMicros(rule, 500, 1_800)).toEqual({
+      known: true,
+      listMicros: 3_000_000,
+      freeAdjustedMicros: 1_800_000,
+    });
+  });
+
+  it('says where the figure differs from the issue text, and keeps the other OS rates on record', () => {
+    expect(rule.sourceReference).toContain('docs.github.com');
+    expect(rule.sourceReference).toContain('$0.008/phút Linux');
+    expect(rule.sourceReference).toContain('$0.010');
+    expect(rule.sourceReference).toContain('$0.062');
+  });
+});
+
 describe('neon rules (#385)', () => {
   const rule = (sku: string) => ruleInForce(PRICING_RULES, { billingSkuId: sku }, TODAY)!;
 

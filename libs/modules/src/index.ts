@@ -360,6 +360,27 @@ export {
   type NeonStoredState,
 } from '../cost/application/neon.collector';
 export {
+  AWS_COST_EXPLORER_COLLECTOR_ID,
+  AWS_CE_REQUEST_MICROS,
+  AWS_SOURCE,
+  awsCostExplorerCollector,
+  awsCostSamples,
+  awsServiceRoute,
+  daysBefore,
+  monthsOf,
+  upsertCostSamples,
+  type AwsCollectorOptions,
+} from '../cost/application/aws.collector';
+export {
+  GITHUB_ACTIONS_COLLECTOR_ID,
+  GITHUB_SOURCE,
+  actionsSamples,
+  githubActionsCollector,
+  monthsFor,
+  type GitHubCollectorOptions,
+  type GitHubSampleContext,
+} from '../cost/application/github.collector';
+export {
   TestCostService,
   checkBudget,
   diffSnapshots,

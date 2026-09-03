@@ -21,6 +21,8 @@ import {
   cloudflareCollectors,
   upstashRedisCollector,
   neonPostgresCollector,
+  awsCostExplorerCollector,
+  githubActionsCollector,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -35,6 +37,8 @@ import {
   cloudflareAnalyticsFromEnv,
   upstashDeveloperApiFromEnv,
   neonApiFromEnv,
+  awsCostExplorerFromEnv,
+  githubBillingFromEnv,
 } from '@gogo/providers';
 import { AdvisoryLock, startPeriodic } from './periodic';
 import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
@@ -317,6 +321,39 @@ async function bootstrap(): Promise<void> {
     logger.info(
       { provider: 'neon', missing: 'NEON_API_KEY / NEON_PROJECT_ID' },
       'neon cost collector not registered — credentials absent',
+    );
+  }
+  // COST-BE-027 (#386): AWS Cost Explorer — the one collector that costs
+  // money ($0.01/request). Registered only with its own dedicated key, never
+  // an ambient AWS identity, so an unconfigured environment spends nothing;
+  // `maxCallsPerDay: 1` is enforced against the freshness table, so it holds
+  // across restarts.
+  const awsCostExplorer = awsCostExplorerFromEnv(process.env);
+  if (awsCostExplorer) {
+    collectors.register(awsCostExplorerCollector(db, awsCostExplorer, COST_REGISTRY));
+    logger.info(
+      { collectors: ['aws_cost_explorer'], monitoringCost: 'PER_REQUEST ~$0.30/month' },
+      'aws cost explorer collector registered — this collector is billed per request',
+    );
+  } else {
+    logger.info(
+      {
+        provider: 'aws',
+        missing: 'AWS_COST_EXPLORER_ACCESS_KEY_ID / AWS_COST_EXPLORER_SECRET_ACCESS_KEY',
+      },
+      'aws cost collector not registered — credentials absent',
+    );
+  }
+  // COST-BE-027 (#386): GitHub Actions minutes and cost from the enhanced
+  // billing usage report. Same gate as the free collectors.
+  const githubBilling = githubBillingFromEnv(process.env);
+  if (githubBilling) {
+    collectors.register(githubActionsCollector(db, githubBilling));
+    logger.info({ collectors: ['github_actions'] }, 'github cost collector registered');
+  } else {
+    logger.info(
+      { provider: 'github', missing: 'GITHUB_BILLING_TOKEN / GITHUB_BILLING_ACCOUNT' },
+      'github cost collector not registered — credentials absent',
     );
   }
   // COST-BE-023 (#382): manual / fixed costs are materialised into

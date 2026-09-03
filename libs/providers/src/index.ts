@@ -96,6 +96,35 @@ export {
   type NeonProjectQuery,
   type NeonUsagePort,
 } from './neon-api.adapter';
+export {
+  AWS_CE_DEFAULT_REGION,
+  AWS_CE_TARGET,
+  AwsCostExplorerClient,
+  AwsCostExplorerError,
+  awsCostExplorerFromEnv,
+  decimalToMicros,
+  foldCostAndUsage,
+  shiftDay,
+  type AwsCostExplorerConfig,
+  type AwsCostExplorerErrorCode,
+  type AwsCostExplorerPort,
+  type AwsCostQuery,
+  type AwsServiceCost,
+} from './aws-cost-explorer.adapter';
+export {
+  GITHUB_API_BASE,
+  GITHUB_API_VERSION,
+  GitHubBillingClient,
+  GitHubBillingError,
+  foldUsageReport,
+  githubBillingFromEnv,
+  type GitHubAccountKind,
+  type GitHubBillingConfig,
+  type GitHubBillingErrorCode,
+  type GitHubBillingPort,
+  type GitHubUsageItem,
+  type GitHubUsageQuery,
+} from './github-billing.adapter';
 export { KeywordFeedbackParser, foldVietnamese } from './keyword-feedback.adapter';
 export {
   PrometheusQueryAdapter,
