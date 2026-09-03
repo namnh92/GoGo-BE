@@ -466,12 +466,13 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
       costStatus: 'KNOWN',
     });
     expect(provider.freshness).toEqual({ status: 'UNKNOWN', sourceAsOf: null, sources: [] });
-    // A planned provider: no rows, no source, unknown — and present.
+    // An active provider whose collector has no credentials (#384): no rows,
+    // no source, unknown — and present.
     const { provider: upstash } = (
       await get('/v1/cms/ops/costs/providers/upstash', 'ops_admin')
     ).json();
     expect(upstash).toMatchObject({
-      status: 'planned',
+      status: 'active',
       costStatus: 'UNKNOWN',
       spendMicros: null,
       unknownServices: ['upstash.redis'],

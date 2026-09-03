@@ -15,8 +15,8 @@
  * - **No `billed` or `actual`.** Every money field is an estimate at list
  *   price, labelled `basis: 'ESTIMATED'`. GoGo cannot see the invoice, and a
  *   field named `actual` would be read as one.
- * - **No zero for an unmeasured thing.** Redis is measured by hand and Maps
- *   SDK is not measured at all; both carry `null` and a named reason. A `0`
+ * - **No zero for an unmeasured thing.** Redis is not measured per scenario and
+ *   Maps SDK is not measured at all; both carry `null` and a named reason. A `0`
  *   would claim the traffic did not happen.
  * - **No single latency number per run.** Latency is per scenario, because
  *   scenario B (ten text searches) and scenario E (a twenty-row bulk import)

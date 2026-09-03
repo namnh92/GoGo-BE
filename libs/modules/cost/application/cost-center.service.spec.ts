@@ -334,11 +334,19 @@ describe('buildServiceRow / buildProviderRow', () => {
     expect(row.costStatus).toBe('MEASURED_ZERO');
     expect(row.spendMicros).toBe(0);
     // A planned provider with no source is unknown, and says so.
+    const neon = COST_REGISTRY.provider('neon')!;
+    expect(buildProviderRow(neon, COST_REGISTRY, inputs())).toMatchObject({
+      costStatus: 'UNKNOWN',
+      spendMicros: null,
+      status: 'planned',
+      unknownServices: ['neon.postgres'],
+    });
+    // An active provider whose collector is unconfigured (#384) is unknown too — not zero.
     const upstash = COST_REGISTRY.provider('upstash')!;
     expect(buildProviderRow(upstash, COST_REGISTRY, inputs())).toMatchObject({
       costStatus: 'UNKNOWN',
       spendMicros: null,
-      status: 'planned',
+      status: 'active',
       unknownServices: ['upstash.redis'],
     });
   });

@@ -66,6 +66,21 @@ export {
   type CloudflareR2DayUsage,
   type CloudflareWorkersDayUsage,
 } from './cloudflare-analytics.adapter';
+export {
+  UPSTASH_API_BASE,
+  UpstashDeveloperApiClient,
+  UpstashDeveloperApiError,
+  foldPoints,
+  foldStats,
+  parseUpstashTime,
+  upstashDeveloperApiFromEnv,
+  type UpstashDeveloperApiConfig,
+  type UpstashDeveloperApiErrorCode,
+  type UpstashPoint,
+  type UpstashRedisStats,
+  type UpstashRedisStatsPort,
+  type UpstashStatsQuery,
+} from './upstash-developer-api.adapter';
 export { KeywordFeedbackParser, foldVietnamese } from './keyword-feedback.adapter';
 export {
   PrometheusQueryAdapter,

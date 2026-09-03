@@ -319,6 +319,7 @@ describe('adding a provider (epic §40)', () => {
     expect(registry.providersWith('USAGE_COLLECTOR').map((p) => p.id)).toEqual([
       'google',
       'cloudflare',
+      'upstash',
       'openai',
     ]);
     // The existing Google attribution is untouched by the addition.
@@ -334,6 +335,7 @@ describe('cloudflare (#383)', () => {
     expect(COST_REGISTRY.providersWith('USAGE_COLLECTOR').map((p) => p.id)).toEqual([
       'google',
       'cloudflare',
+      'upstash',
     ]);
     const billed = COST_REGISTRY.meters()
       .filter((m) => m.serviceId.startsWith('cloudflare.') && m.billable)
@@ -354,5 +356,23 @@ describe('cloudflare (#383)', () => {
       billingSkuId: null,
       unit: 'millisecond',
     });
+  });
+});
+
+describe('upstash (#384)', () => {
+  it('is active with USAGE_COLLECTOR + ESTIMATED_COST; commands is billed, the byte meters are not', () => {
+    const up = COST_REGISTRY.provider('upstash')!;
+    expect(up.status).toBe('active');
+    expect(up.capabilities).toEqual(['USAGE_COLLECTOR', 'ESTIMATED_COST']);
+    expect(COST_REGISTRY.serviceHasCapability('upstash.redis', 'USAGE_COLLECTOR')).toBe(true);
+    const meters = COST_REGISTRY.meters()
+      .filter((m) => m.serviceId === 'upstash.redis')
+      .map((m) => [m.id, m.billingSkuId, m.unit, m.billable]);
+    expect(meters).toEqual([
+      ['upstash.redis/commands', 'redis.commands', 'command', true],
+      ['upstash.redis/storage_bytes', null, 'byte', false],
+      ['upstash.redis/bandwidth_bytes', null, 'byte', false],
+    ]);
+    expect(COST_REGISTRY.billingSku('redis.commands')).toMatchObject({ providerId: 'upstash' });
   });
 });

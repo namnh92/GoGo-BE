@@ -33,8 +33,14 @@ Three more, for the same reason:
 - **No money field is an invoice.** Everything is `basis: ESTIMATED` at Google
   list price. GoGo cannot see the billing account, so free-cap arithmetic is an
   approximation and is labelled one.
-- **Redis is measured by hand.** Upstash's free tier exposes no per-command
-  API. `redis.commands` is `null` with the method written beside it.
+- **Redis is not measured per scenario.** `redis.commands` stays `null` with
+  the method written beside it. Since #384 the Developer API stats endpoint
+  (collector `upstash_redis`, `source='upstash_api'`) reports the database's
+  daily command total in `provider_usage_meter_daily` — a database-wide figure,
+  not a per-run delta. A per-scenario number is `daily_net_commands` read
+  before and after the run through that same endpoint, plus one MONITOR sample;
+  that is a hand step until the runner does it, and a number here would still
+  be invented.
 
 ## Two transports
 

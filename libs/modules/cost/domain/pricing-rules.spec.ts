@@ -199,6 +199,45 @@ describe('seed integrity', () => {
   });
 });
 
+describe('upstash rule (#384)', () => {
+  const rule = ruleInForce(PRICING_RULES, { billingSkuId: 'redis.commands' }, TODAY)!;
+
+  it('prices commands from the pricing page: $0.2 per 100K, 500K a month free', () => {
+    expect(rule).toMatchObject({
+      providerId: 'upstash',
+      serviceId: 'upstash.redis',
+      operationId: null,
+      usageMetricId: 'upstash.redis/commands',
+      pricingModel: 'PER_1K_REQUESTS',
+      unitPriceMicros: 2_000,
+      freeAllowance: { quantity: 500_000, unit: 'command', period: 'MONTH', scope: 'SKU' },
+      effectiveFrom: '2026-09-01',
+      reviewedAt: '2026-09-03',
+    });
+    // 100K commands list at $0.20; 600K in a month: 500K free, then $0.20.
+    expect(estimateMicros(rule, 100_000)).toEqual({
+      known: true,
+      listMicros: 200_000,
+      freeAdjustedMicros: 0,
+    });
+    expect(estimateMicros(rule, 600_000)).toEqual({
+      known: true,
+      listMicros: 1_200_000,
+      freeAdjustedMicros: 200_000,
+    });
+    expect(estimateMicros(rule, 100_000, 450_000)).toEqual({
+      known: true,
+      listMicros: 200_000,
+      freeAdjustedMicros: 100_000,
+    });
+  });
+
+  it('says where the figure differs from the issue text', () => {
+    expect(rule.sourceReference).toContain('upstash.com/pricing/redis');
+    expect(rule.sourceReference).toContain('10k commands/day');
+  });
+});
+
 describe('cloudflare rules (#383) and PER_GB_MONTH proration', () => {
   const rule = (sku: string) => ruleInForce(PRICING_RULES, { billingSkuId: sku }, TODAY)!;
 

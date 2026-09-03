@@ -336,6 +336,15 @@ export {
   type CloudflareCollectorOptions,
 } from '../cost/application/cloudflare.collector';
 export {
+  UPSTASH_REDIS_COLLECTOR_ID,
+  UPSTASH_SOURCE,
+  coveredByWindow,
+  redisSamples,
+  upstashRedisCollector,
+  type RedisSampleContext,
+  type UpstashCollectorOptions,
+} from '../cost/application/upstash.collector';
+export {
   TestCostService,
   checkBudget,
   diffSnapshots,

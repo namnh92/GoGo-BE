@@ -206,7 +206,7 @@ async function runScenario(scenario: Scenario, options: RunnerOptions): Promise<
     redis: {
       commands: null,
       method:
-        'measured by hand: Upstash console daily counter before/after the run, plus one MONITOR sample via redis-diag. The free tier exposes no per-command API, so a number here would be invented (plan §4).',
+        'not measured per scenario: the Developer API stats endpoint (collector upstash_redis, #384) reports a database-wide daily total, not a per-run delta. A per-run figure is daily_net_commands read before/after the run by hand, plus one MONITOR sample via redis-diag; a number here would be invented (plan §4).',
     },
   };
 }
@@ -263,7 +263,7 @@ async function duplicatePlaceRate(query: SqlRunner): Promise<number | null> {
 function standingLimitations(transport: BaselineTransport): string[] {
   const shared = [
     'Money is an ESTIMATE at Google list price, never an invoice. No field in this artifact is a billed amount.',
-    'Redis commands are measured by hand (Upstash console + one MONITOR sample) and are reported as null here rather than guessed.',
+    'Redis commands are reported as null rather than guessed: the Developer API daily total (collector upstash_redis, #384) is database-wide, and a per-scenario delta is a hand step (daily_net_commands before/after the run + one MONITOR sample).',
     'Maps SDK map loads are a MEASUREMENT GAP: the SDK renders on the handset and this process sees nothing. Never read the absence as zero.',
     'API latency is client-side wall clock from the runner. There is no server-side HTTP duration histogram in this codebase (metric-labels.ts has a provider histogram only), so the number includes the runner’s own overhead.',
     'google.routeMatrix has exact units and no verified per-element price, so its money columns are null by construction (price_unknown), not zero.',
