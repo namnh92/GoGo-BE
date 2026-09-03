@@ -3355,6 +3355,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/ops/costs/manual-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: Cost Center — manual / fixed cost items, and the services one may name
+         * @description COST-BE-023 (#382), epic §27. Items for this deployment (Apple Developer, a domain, a VPS…), each a fee per period over an effective range, entered by hand and never collected. Every item is materialised into `provider_cost_daily` as MANUAL rows — one per covered day, up to today — so it shows in the Cost API, budgets and forecast beside estimated and actual spend; per-test deltas never include it.
+         *
+         *     `eligibleServices` is the registry's list of services that declare `MANUAL_COST` (own or inherited): the form's provider/service picker, so a new manual provider appears here with no CMS change (§44.2).
+         */
+        get: operations["cmsOpsManualCostItems"];
+        put?: never;
+        /**
+         * Ops: Cost Center — add a manual cost item
+         * @description Audited as `cost.manual_item.created`; the item's MANUAL rows exist before the response. Refused with field errors (`COST_MANUAL_ITEM_INVALID`) when the service is not registered under the provider or does not declare `MANUAL_COST`, when `effectiveTo` precedes `effectiveFrom`, or when the currency is not an ISO 4217 code. Retryable: `Idempotency-Key` replays the created item instead of adding a second one.
+         */
+        post: operations["cmsOpsCreateManualCostItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/ops/costs/manual-items/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Ops: Cost Center — one manual cost item */
+        get: operations["cmsOpsManualCostItem"];
+        put?: never;
+        post?: never;
+        /**
+         * Ops: Cost Center — remove a manual cost item and its rows
+         * @description Audited as `cost.manual_item.deleted` with the item as it was. Every MANUAL row derived from it is gone before the response — a deleted subscription leaves no spend behind.
+         */
+        delete: operations["cmsOpsDeleteManualCostItem"];
+        options?: never;
+        head?: never;
+        /**
+         * Ops: Cost Center — change a manual cost item
+         * @description Partial. The merged item is validated as a whole, audited as `cost.manual_item.updated` with only the fields that changed, and its rows are rebuilt: a moved service, a new amount or a shortened range is reflected in `provider_cost_daily` before the response. An empty body is a 400.
+         */
+        patch: operations["cmsOpsUpdateManualCostItem"];
+        trace?: never;
+    };
     "/cms/ops/kpis": {
         parameters: {
             query?: never;
@@ -4087,6 +4140,78 @@ export interface components {
             actualCostMicros: number | null;
             /** @description Billable meters whose price is unknown — the reason a total may be a floor. */
             unpriced: string[];
+        };
+        /**
+         * @description How `amountMicros` recurs. MONTHLY is spread over the days of each month it covers, YEARLY over each year, ONE_TIME lands whole on `effectiveFrom`.
+         * @enum {string}
+         */
+        CmsManualCostPeriod: "ONE_TIME" | "MONTHLY" | "YEARLY";
+        /** @description COST-BE-023 (#382), epic §27 — a fee entered by hand. Money is micros of `currency` per period, never a daily share; the daily rows are derived (`provider_cost_daily`, basis MANUAL, confidence HIGH, source `manual_cost_items:<id>`). */
+        CmsManualCostItem: {
+            /** Format: uuid */
+            id: string;
+            environment: string;
+            /** @description Registry provider id. */
+            providerId: string;
+            /** @description Registry service id under `providerId`; must declare `MANUAL_COST`. */
+            serviceId: string;
+            name: string;
+            amountMicros: number;
+            currency: string;
+            period: components["schemas"]["CmsManualCostPeriod"];
+            /**
+             * Format: date
+             * @description Inclusive.
+             */
+            effectiveFrom: string;
+            /**
+             * Format: date
+             * @description Inclusive; null = open-ended. Ignored for ONE_TIME.
+             */
+            effectiveTo: string | null;
+            note: string | null;
+            /** Format: uuid */
+            createdBy: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            updatedBy: string | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CmsManualCostItemInput: {
+            providerId: string;
+            serviceId: string;
+            name: string;
+            amountMicros: number;
+            /** @default USD */
+            currency: string;
+            period: components["schemas"]["CmsManualCostPeriod"];
+            /** Format: date */
+            effectiveFrom: string;
+            /** Format: date */
+            effectiveTo?: string | null;
+            note?: string | null;
+        };
+        CmsManualCostItemPatch: {
+            providerId?: string;
+            serviceId?: string;
+            name?: string;
+            amountMicros?: number;
+            currency?: string;
+            period?: components["schemas"]["CmsManualCostPeriod"];
+            /** Format: date */
+            effectiveFrom?: string;
+            /** Format: date */
+            effectiveTo?: string | null;
+            note?: string | null;
+        };
+        /** @description A registry service that declares `MANUAL_COST`, own or inherited from its provider. */
+        CmsManualCostEligibleService: {
+            providerId: string;
+            providerDisplayName: string;
+            serviceId: string;
+            displayName: string;
         };
         CmsCostLine: {
             /**
@@ -12024,6 +12149,165 @@ export interface operations {
                 };
                 content?: never;
             };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsOpsManualCostItems: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Items and the services a manual item may name */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["CmsManualCostItem"][];
+                        eligibleServices: components["schemas"]["CmsManualCostEligibleService"][];
+                    };
+                };
+            };
+            /** @description Role may not read operational data */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cmsOpsCreateManualCostItem: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsManualCostItemInput"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        item: components["schemas"]["CmsManualCostItem"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    cmsOpsManualCostItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The item */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        item: components["schemas"]["CmsManualCostItem"];
+                    };
+                };
+            };
+            /** @description Not a UUID */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsOpsDeleteManualCostItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        deleted: true;
+                    };
+                };
+            };
+            /** @description Not a UUID */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsOpsUpdateManualCostItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsManualCostItemPatch"];
+            };
+        };
+        responses: {
+            /** @description The item after the change */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        item: components["schemas"]["CmsManualCostItem"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };

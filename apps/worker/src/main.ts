@@ -16,6 +16,7 @@ import {
   COST_REGISTRY,
   CollectorSchedulerService,
   ledgerFreshnessCollector,
+  ManualCostService,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -260,6 +261,15 @@ async function bootstrap(): Promise<void> {
       ? { monitoringBudgetMicros: COST_MONITORING_BUDGET_MICROS }
       : {}),
   }).register(ledgerFreshnessCollector(db));
+  // COST-BE-023 (#382): manual / fixed costs are materialised into
+  // `provider_cost_daily` on every CMS write, and once per UTC day here so
+  // today's share of a subscription appears without anyone touching the
+  // item. Free (one Postgres round trip per item), so it does not answer to
+  // `COST_COLLECTORS_ENABLED` — that flag gates collectors that call out.
+  const manualCosts = new ManualCostService(db, COST_REGISTRY, {
+    environment: process.env.APP_ENV ?? 'dev',
+  });
+  let manualCostsDay: string | null = null;
 
   const periodic = startPeriodic(
     [
@@ -341,6 +351,18 @@ async function bootstrap(): Promise<void> {
         name: 'gogo:worker:cost-collectors',
         schedule: { everyMs: COST_COLLECTOR_POLL_MS },
         run: async () => {
+          const today = new Date().toISOString().slice(0, 10);
+          if (manualCostsDay !== today) {
+            try {
+              const built = await manualCosts.materialise();
+              manualCostsDay = today;
+              if (built.rowsWritten > 0 || built.rowsDeleted > 0) {
+                logger.info(built, 'manual costs materialised');
+              }
+            } catch (err) {
+              logger.error({ err }, 'manual cost materialisation failed');
+            }
+          }
           if (!COST_COLLECTORS_ENABLED) return;
           const report = await collectors.tick();
           await collectors.writeMonitoringCostRow();

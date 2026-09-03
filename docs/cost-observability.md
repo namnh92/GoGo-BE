@@ -25,9 +25,10 @@ and how to add a provider without touching generic code.
 | Test-run cost records — `cost_test_runs` + `cost_test_run_deltas` (0040), `TestCostService.start/finish/fail`, soft budgets, service scoping; baseline runner writes a row beside its frozen JSON                                                                                                   | `application/test-cost.service.ts`; `scripts/cost-baseline/runner.ts` `testCost` hook                           | §28–§30, §43, §44.17   |
 | Monthly budgets + forecast — `cost_budgets` (0041), `spend()` precedence ACTUAL > ESTIMATED (never summed; FIXED/MANUAL separate), `forecastMonthMicros` = MTD average × days (null < 3 days), `BudgetService.overview`                                                                             | `domain/budget.ts`, `application/budget.service.ts`                                                             | §12, §32, §33          |
 | Backfill from Prometheus (`increase()` per UTC day → `provider_usage_meter_daily` source `prometheus_backfill`, LOW, floored; ≤ 62 days; idempotent; audited `cost.backfill`) + reconciliation (estimated vs actual per service, variance null without an actual; `reconciled_at` on matched pairs) | `application/prometheus-backfill.service.ts`, `application/reconciliation.service.ts`; CLI `pnpm cost:backfill` | §10, §25, §26          |
+| Manual / fixed costs — `manual_cost_items` (0042), CMS CRUD with audit `cost.manual_item.*`, materialised into `provider_cost_daily` as MANUAL rows (one per covered day ≤ today, source `manual_cost_items:<id>`); `MANUAL_COST` capability decides which services may carry one                   | `domain/manual-cost.ts`, `application/manual-cost.service.ts`; worker job `gogo:worker:cost-collectors` (daily) | §27, §44.18            |
 
 Not yet built (see #370): non-Google collectors (each registers a `CollectorDefinition`),
-manual costs, ACTUAL cost collectors, the ops API reading `provider_cost_daily` and `cost_source_freshness`.
+ACTUAL cost collectors, Maps SDK telemetry, alerts.
 
 ## Tables (migration 0038)
 
@@ -165,6 +166,50 @@ Deprecated, kept one release: the legacy `providers[]` / `gaps[]` on `/cms/ops/c
 and `/cms/ops/providers/{provider}` (enum `places|routes|sheets`). CMS re-vendor is
 COST-CMS-009 (CMS#105).
 
+## Manual costs (migration 0042, #382, epic §27)
+
+`manual_cost_items` is the record an operator edits: a fee under a registry
+provider + service, `amountMicros` of `currency` **per period** (`ONE_TIME |
+MONTHLY | YEARLY`), an inclusive `effectiveFrom`/`effectiveTo` (null = open-ended),
+a note. `environment` mirrors `cost_budgets`. Nothing reports spend from this table:
+`ManualCostService.materialise()` rebuilds the item's rows in `provider_cost_daily`
+— `basis = MANUAL`, `confidence = HIGH`, `source = manual_cost_items:<id>` (one
+source per item, because two domains under `registrar.domain` are two costs and the
+table's key has no other column to tell them apart), `metadata` naming the item —
+one row per covered day, **never past today** (a month-to-date that already held
+the rest of the month would not be month-to-date). MONTHLY spreads the fee over the
+days of each month it covers, YEARLY over each year, ONE_TIME lands whole on
+`effectiveFrom`; rounding drift is at most half a micro per day. Rows an item no
+longer covers (moved service, shortened range, deleted item) are deleted in the same
+pass, so the operation is idempotent and `updated_at` moves only when an amount,
+currency or metadata actually changed.
+
+When it runs: after every CMS write (the response already reflects the change), and
+once per UTC day in `gogo:worker:cost-collectors` so today's share appears by itself
+— free, so it ignores `COST_COLLECTORS_ENABLED`. Every reader then sees a
+subscription the way it sees an invoice: `spend()` counts MANUAL once beside
+ACTUAL/ESTIMATED, budgets and the forecast include it, the Cost API reports it as
+`manualMicros` / `basis: MANUAL`. Per-test deltas are usage deltas and never include
+it (epic §27, "excluded by default").
+
+Who may carry one is the registry's answer: `serviceHasCapability(id, 'MANUAL_COST')`
+— `apple.*`, `hosting.*`, `registrar.*` (provider-wide) and `google.play_console`
+(service-only; `google` itself does not declare it, so `google.places` is refused).
+`servicesWith('MANUAL_COST')` is what the CMS form lists (`eligibleServices`): a new
+manual provider in `COST_REGISTRY_DATA` appears with no code change.
+
+| Route (all `ops_admin` / `super_admin`)     | Does                                                                                                  |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `GET /v1/cms/ops/costs/manual-items`        | `{ items, eligibleServices }`                                                                         |
+| `POST /v1/cms/ops/costs/manual-items`       | create → 201 `{ item }`; `Idempotency-Key` replays; audited `cost.manual_item.created`                |
+| `GET /v1/cms/ops/costs/manual-items/:id`    | one item; unknown → 404 `COST_MANUAL_ITEM_NOT_FOUND`                                                  |
+| `PATCH /v1/cms/ops/costs/manual-items/:id`  | partial; merged item validated whole; audited `cost.manual_item.updated` with the changed fields only |
+| `DELETE /v1/cms/ops/costs/manual-items/:id` | `{ deleted: true }`; rows gone before the response; audited `cost.manual_item.deleted`                |
+
+A refused write is a 400 `COST_MANUAL_ITEM_INVALID` with one field error
+(`unknown_provider`, `unknown_service`, `manual_cost_not_supported`,
+`invalid_range`, `invalid_currency`, …). CMS counterpart: COST-CMS-010 (CMS#106).
+
 ## Ids
 
 - **Provider** `google`, `cloudflare`, … — epic §5 list, immutable once persisted.
@@ -176,6 +221,9 @@ COST-CMS-009 (CMS#105).
 - **Billing SKU** — GoGo's stable key for the provider's SKU: `places.details.enterprise`,
   `routes.computeRouteMatrix`. The Routes id is also the metric label the adapter
   emits; do not rename it.
+- **Cost source** — who wrote a `provider_cost_daily` row: `estimator`,
+  `monitoring_cost_model`, `gcp_billing_export`…, and the family
+  `manual_cost_items:<item uuid>` (`isManualCostSource`).
 
 Operation, SKU and unit are three things (epic §4): one Routes call is one
 `calls` request and N `billable_elements`; only the second is priced.

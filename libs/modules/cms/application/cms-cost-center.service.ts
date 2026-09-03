@@ -8,10 +8,19 @@ import {
   type ServiceCostDetail,
 } from '../../cost/application/cost-center.service';
 import {
+  ManualCostError,
+  ManualCostService,
+  type EligibleManualService,
+  type ManualCostActor,
+  type ManualCostItemInput,
+  type ManualCostItemPatch,
+} from '../../cost/application/manual-cost.service';
+import {
   TestCostService,
   type TestRunDetail,
   type TestRunRecord,
 } from '../../cost/application/test-cost.service';
+import type { ManualCostItem } from '../../cost/domain/manual-cost';
 import { COST_REGISTRY } from '../../cost/domain/registry';
 import { AppError } from '../../shared/app-error';
 import { APP_CONFIG } from '../../shared/config';
@@ -89,5 +98,60 @@ export class CmsCostCenterService {
     const run = await new TestCostService(this.db).get(id);
     if (run === null) throw AppError.notFound('COST_TEST_RUN_NOT_FOUND', `No test run ${id}`);
     return run;
+  }
+
+  // ── manual costs (#382, epic §27) ──────────────────────────────────────────
+
+  private manual(): ManualCostService {
+    return new ManualCostService(this.db, COST_REGISTRY, { environment: this.environment });
+  }
+
+  async manualItems(): Promise<{
+    items: ManualCostItem[];
+    eligibleServices: EligibleManualService[];
+  }> {
+    const svc = this.manual();
+    return { items: await svc.list(), eligibleServices: svc.eligibleServices() };
+  }
+
+  async manualItem(id: string): Promise<ManualCostItem> {
+    const item = await this.manual().get(id);
+    if (item === null)
+      throw AppError.notFound('COST_MANUAL_ITEM_NOT_FOUND', `No manual item ${id}`);
+    return item;
+  }
+
+  createManualItem(input: ManualCostItemInput, actor: ManualCostActor): Promise<ManualCostItem> {
+    return refused(() => this.manual().create(input, actor));
+  }
+
+  async updateManualItem(
+    id: string,
+    patch: ManualCostItemPatch,
+    actor: ManualCostActor,
+  ): Promise<ManualCostItem> {
+    const item = await refused(() => this.manual().update(id, patch, actor));
+    if (item === null)
+      throw AppError.notFound('COST_MANUAL_ITEM_NOT_FOUND', `No manual item ${id}`);
+    return item;
+  }
+
+  async removeManualItem(id: string, actor: ManualCostActor): Promise<void> {
+    const removed = await this.manual().remove(id, actor);
+    if (!removed) throw AppError.notFound('COST_MANUAL_ITEM_NOT_FOUND', `No manual item ${id}`);
+  }
+}
+
+/** A refused manual-cost write is a 400 naming the field, not a 500. */
+async function refused<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof ManualCostError) {
+      throw AppError.badRequest('COST_MANUAL_ITEM_INVALID', err.message, [
+        { field: err.field, code: err.code, message: err.message },
+      ]);
+    }
+    throw err;
   }
 }

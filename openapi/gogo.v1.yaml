@@ -5824,6 +5824,145 @@ paths:
         '403': { description: Role may not read operational data }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /cms/ops/costs/manual-items:
+    get:
+      operationId: cmsOpsManualCostItems
+      tags: [cms]
+      summary: 'Ops: Cost Center — manual / fixed cost items, and the services one may name'
+      description: >
+        COST-BE-023 (#382), epic §27. Items for this deployment (Apple
+        Developer, a domain, a VPS…), each a fee per period over an effective
+        range, entered by hand and never collected. Every item is
+        materialised into `provider_cost_daily` as MANUAL rows — one per
+        covered day, up to today — so it shows in the Cost API, budgets and
+        forecast beside estimated and actual spend; per-test deltas never
+        include it.
+
+
+        `eligibleServices` is the registry's list of services that declare
+        `MANUAL_COST` (own or inherited): the form's provider/service picker,
+        so a new manual provider appears here with no CMS change (§44.2).
+      responses:
+        '200':
+          description: Items and the services a manual item may name
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, eligibleServices]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/CmsManualCostItem' }
+                  eligibleServices:
+                    type: array
+                    items: { $ref: '#/components/schemas/CmsManualCostEligibleService' }
+        '403': { description: Role may not read operational data }
+    post:
+      operationId: cmsOpsCreateManualCostItem
+      tags: [cms]
+      summary: 'Ops: Cost Center — add a manual cost item'
+      description: >
+        Audited as `cost.manual_item.created`; the item's MANUAL rows exist
+        before the response. Refused with field errors
+        (`COST_MANUAL_ITEM_INVALID`) when the service is not registered
+        under the provider or does not declare `MANUAL_COST`, when
+        `effectiveTo` precedes `effectiveFrom`, or when the currency is not
+        an ISO 4217 code. Retryable: `Idempotency-Key` replays the created
+        item instead of adding a second one.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsManualCostItemInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [item]
+                properties:
+                  item: { $ref: '#/components/schemas/CmsManualCostItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /cms/ops/costs/manual-items/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: cmsOpsManualCostItem
+      tags: [cms]
+      summary: 'Ops: Cost Center — one manual cost item'
+      responses:
+        '200':
+          description: The item
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [item]
+                properties:
+                  item: { $ref: '#/components/schemas/CmsManualCostItem' }
+        '400': { description: Not a UUID }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: cmsOpsUpdateManualCostItem
+      tags: [cms]
+      summary: 'Ops: Cost Center — change a manual cost item'
+      description: >
+        Partial. The merged item is validated as a whole, audited as
+        `cost.manual_item.updated` with only the fields that changed, and its
+        rows are rebuilt: a moved service, a new amount or a shortened range
+        is reflected in `provider_cost_daily` before the response. An empty
+        body is a 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsManualCostItemPatch' }
+      responses:
+        '200':
+          description: The item after the change
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [item]
+                properties:
+                  item: { $ref: '#/components/schemas/CmsManualCostItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: cmsOpsDeleteManualCostItem
+      tags: [cms]
+      summary: 'Ops: Cost Center — remove a manual cost item and its rows'
+      description: >
+        Audited as `cost.manual_item.deleted` with the item as it was. Every
+        MANUAL row derived from it is gone before the response — a deleted
+        subscription leaves no spend behind.
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: { type: boolean, enum: [true] }
+        '400': { description: Not a UUID }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /cms/ops/kpis:
     get:
       operationId: cmsOpsKpis
@@ -7152,6 +7291,99 @@ components:
               type: array
               description: Billable meters whose price is unknown — the reason a total may be a floor.
               items: { type: string }
+
+    CmsManualCostPeriod:
+      type: string
+      enum: [ONE_TIME, MONTHLY, YEARLY]
+      description: >
+        How `amountMicros` recurs. MONTHLY is spread over the days of each
+        month it covers, YEARLY over each year, ONE_TIME lands whole on
+        `effectiveFrom`.
+
+    CmsManualCostItem:
+      type: object
+      description: >
+        COST-BE-023 (#382), epic §27 — a fee entered by hand. Money is micros
+        of `currency` per period, never a daily share; the daily rows are
+        derived (`provider_cost_daily`, basis MANUAL, confidence HIGH, source
+        `manual_cost_items:<id>`).
+      required:
+        [
+          id,
+          environment,
+          providerId,
+          serviceId,
+          name,
+          amountMicros,
+          currency,
+          period,
+          effectiveFrom,
+          effectiveTo,
+          note,
+          createdBy,
+          createdAt,
+          updatedBy,
+          updatedAt,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        environment: { type: string }
+        providerId: { type: string, description: Registry provider id. }
+        serviceId:
+          type: string
+          description: Registry service id under `providerId`; must declare `MANUAL_COST`.
+        name: { type: string, maxLength: 120 }
+        amountMicros: { type: integer, minimum: 0 }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        period: { $ref: '#/components/schemas/CmsManualCostPeriod' }
+        effectiveFrom: { type: string, format: date, description: Inclusive. }
+        effectiveTo:
+          type: [string, 'null']
+          format: date
+          description: Inclusive; null = open-ended. Ignored for ONE_TIME.
+        note: { type: [string, 'null'], maxLength: 1000 }
+        createdBy: { type: [string, 'null'], format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedBy: { type: [string, 'null'], format: uuid }
+        updatedAt: { type: string, format: date-time }
+
+    CmsManualCostItemInput:
+      type: object
+      required: [providerId, serviceId, name, amountMicros, period, effectiveFrom]
+      properties:
+        providerId: { type: string }
+        serviceId: { type: string }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        amountMicros: { type: integer, minimum: 0 }
+        currency: { type: string, pattern: '^[A-Z]{3}$', default: USD }
+        period: { $ref: '#/components/schemas/CmsManualCostPeriod' }
+        effectiveFrom: { type: string, format: date }
+        effectiveTo: { type: [string, 'null'], format: date }
+        note: { type: [string, 'null'], maxLength: 1000 }
+
+    CmsManualCostItemPatch:
+      type: object
+      minProperties: 1
+      properties:
+        providerId: { type: string }
+        serviceId: { type: string }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        amountMicros: { type: integer, minimum: 0 }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        period: { $ref: '#/components/schemas/CmsManualCostPeriod' }
+        effectiveFrom: { type: string, format: date }
+        effectiveTo: { type: [string, 'null'], format: date }
+        note: { type: [string, 'null'], maxLength: 1000 }
+
+    CmsManualCostEligibleService:
+      type: object
+      description: A registry service that declares `MANUAL_COST`, own or inherited from its provider.
+      required: [providerId, providerDisplayName, serviceId, displayName]
+      properties:
+        providerId: { type: string }
+        providerDisplayName: { type: string }
+        serviceId: { type: string }
+        displayName: { type: string }
 
     CmsCostLine:
       type: object

@@ -404,3 +404,33 @@ export {
   type UsageLine,
   type UsageRow,
 } from '../cost/application/cost-center.service';
+export {
+  MANUAL_COST_PERIODS,
+  MANUAL_COST_SOURCE,
+  MANUAL_COST_SOURCE_PREFIX,
+  addDays,
+  coveredRange,
+  dailyShareMicros,
+  daysInYear,
+  eachDay,
+  isCalendarDay,
+  isManualCostSource,
+  manualCostSource,
+  materialiseItem,
+  planManualCosts,
+  type DayRange,
+  type ManualCostItem,
+  type ManualCostItemFacts,
+  type ManualCostPeriod,
+  type ManualCostPlan,
+  type ManualCostRowPlan,
+} from '../cost/domain/manual-cost';
+export {
+  ManualCostError,
+  ManualCostService,
+  type EligibleManualService,
+  type ManualCostActor,
+  type ManualCostItemInput,
+  type ManualCostItemPatch,
+  type MaterialiseResult,
+} from '../cost/application/manual-cost.service';

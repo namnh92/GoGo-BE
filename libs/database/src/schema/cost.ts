@@ -315,3 +315,36 @@ export const costBudgets = pgTable(
     uniqueIndex('cost_budgets_key').on(t.environment, t.scopeKind, sql`coalesce(${t.scopeId}, '')`),
   ],
 );
+
+/**
+ * COST-BE-023 (#382) — epic §27, a fee somebody typed in: Apple Developer,
+ * a domain, a VPS, Play Console. Not usage, not collected; materialised into
+ * `provider_cost_daily` as MANUAL rows (source `manual_cost_items:<id>`), one
+ * per covered day up to today, so every reader sees it beside estimated and
+ * actual spend with no special case. The item is the record an operator
+ * edits and the audit log follows; the rows are derived and rebuilt.
+ */
+export const manualCostItems = pgTable(
+  'manual_cost_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    environment: text('environment').notNull(),
+    providerId: text('provider_id').notNull(),
+    serviceId: text('service_id').notNull(),
+    name: text('name').notNull(),
+    /** Micros of `currency` per period — the fee, never a daily share. */
+    amountMicros: bigint('amount_micros', { mode: 'number' }).notNull(),
+    currency: text('currency').notNull().default('USD'),
+    /** ONE_TIME | MONTHLY | YEARLY — check constraint in the migration. */
+    period: text('period').notNull(),
+    effectiveFrom: date('effective_from').notNull(),
+    /** Inclusive; null = open-ended. Meaningless for ONE_TIME. */
+    effectiveTo: date('effective_to'),
+    note: text('note'),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: uuid('updated_by'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('manual_cost_items_env_service_idx').on(t.environment, t.providerId, t.serviceId)],
+);
