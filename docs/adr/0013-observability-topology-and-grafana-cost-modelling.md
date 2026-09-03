@@ -13,7 +13,7 @@
 GoGo-BE#389 asks for a **Grafana Cloud usage collector**: read
 `grafana.metrics` → `active_series` and ledger it against the hosted free
 tier's 10,000-series allowance. It is sequenced first among the P1 providers
-*because the credential already exists* — `observability/grafana-read-token`
+_because the credential already exists_ — `observability/grafana-read-token`
 was provisioned by INF-054, and `scripts/ops/check-quotas.sh` already probes
 the series count with it.
 
@@ -59,7 +59,7 @@ Prometheus holding 40,000 series does not bill anyone for the extra 30,000; it
 uses more of a VPS whose cost is a flat monthly subscription that does not move
 when the series count does.
 
-Metering the second as if it were the first produces a number that *looks*
+Metering the second as if it were the first produces a number that _looks_
 measured, sits on the cost screen next to real money, and is not money at all.
 Epic §44.6 (`unknown != zero`) and §44.15 (paid-collector cost budgeted and
 measurable) both exist to stop exactly that class of error, and §24 already
@@ -78,8 +78,8 @@ history.**
    Wrong in the other direction. Observability does cost something — a share of
    the VPS, or a Cloud Pro subscription — and a cost board that omits a line is
    read as that line costing nothing.
-3. **Decide the cost *modelling* now for both topologies, and defer the
-   *storage backend* choice with named triggers.** The modelling question is
+3. **Decide the cost _modelling_ now for both topologies, and defer the
+   _storage backend_ choice with named triggers.** The modelling question is
    answerable today and unblocks the queue; the storage question is not
    urgent, has no forcing function, and would be answered badly under time
    pressure.
@@ -96,7 +96,7 @@ three P1 providers in that issue (OneSignal, Tenjin, Sentry) are unaffected —
 they were already waiting on credentials, and none of them depends on where
 Grafana runs.
 
-This holds *regardless* of which topology wins. Under Cloud, a free-tier series
+This holds _regardless_ of which topology wins. Under Cloud, a free-tier series
 count is a quota probe, and `scripts/ops/check-quotas.sh` already performs it
 without a ledger; a ledgered daily series count would add a row that prices at
 $0 forever until the day the plan changes, at which point the price — not the
@@ -111,10 +111,10 @@ allowance, and no external invoice.
 
 Its cost is recorded in exactly one of two places, both of which already exist:
 
-| Cost | Where it goes | Why |
-| --- | --- | --- |
-| The VPS the stack runs on | **`hosting.vps`** — `manual` provider, MANUAL/FIXED rows via the manual-cost items API (#382, epic §27) | Epic §3 "Manual / fixed-cost only". The subscription is flat; it does not move with series count, scrape interval, or dashboard traffic |
-| Running the Cost Center's own collectors | **`gogo.cost_observability`** — internal `FIXED_COST` service, written by the collector scheduler from each collector's declared `monitoringCost` (#369, epic §20–§22) | This is the cost of *tracking* cost, which the epic already models as a first-class provider with its own budget (DEV ≤ $1/month, early prod ≤ $5/month) |
+| Cost                                     | Where it goes                                                                                                                                                          | Why                                                                                                                                                      |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The VPS the stack runs on                | **`hosting.vps`** — `manual` provider, MANUAL/FIXED rows via the manual-cost items API (#382, epic §27)                                                                | Epic §3 "Manual / fixed-cost only". The subscription is flat; it does not move with series count, scrape interval, or dashboard traffic                  |
+| Running the Cost Center's own collectors | **`gogo.cost_observability`** — internal `FIXED_COST` service, written by the collector scheduler from each collector's declared `monitoringCost` (#369, epic §20–§22) | This is the cost of _tracking_ cost, which the epic already models as a first-class provider with its own budget (DEV ≤ $1/month, early prod ≤ $5/month) |
 
 Neither of these is a usage collector, and neither requires a new table,
 migration, capability, or registry provider. **The modelling for self-hosted
@@ -158,7 +158,7 @@ the reason this decision can be deferred safely.
 
 Until the topology is decided, the `grafana` provider stays exactly as it is:
 `status: 'planned'`, capabilities empty, no collector, no pricing rule. It is
-*declared* so the cost board shows "chưa nối" rather than silently omitting
+_declared_ so the cost board shows "chưa nối" rather than silently omitting
 observability — option 2's failure mode.
 
 - **If Cloud stays:** `grafana` may later gain `ACTUAL_COST_COLLECTOR` or a
