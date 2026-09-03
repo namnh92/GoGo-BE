@@ -320,10 +320,30 @@ describe('adding a provider (epic §40)', () => {
       'google',
       'cloudflare',
       'upstash',
+      'neon',
       'openai',
     ]);
     // The existing Google attribution is untouched by the addition.
     expect(registry.serviceForOperation('google.routeMatrix')?.id).toBe('google.routes');
+  });
+});
+
+describe('neon (#385)', () => {
+  it('is active with USAGE_COLLECTOR + ESTIMATED_COST; three billed meters, two collected-only', () => {
+    const neon = COST_REGISTRY.provider('neon')!;
+    expect(neon.status).toBe('active');
+    expect(neon.capabilities).toEqual(['USAGE_COLLECTOR', 'ESTIMATED_COST']);
+    const meters = COST_REGISTRY.meters()
+      .filter((m) => m.serviceId === 'neon.postgres')
+      .map((m) => [m.id, m.billingSkuId, m.unit, m.billable]);
+    expect(meters).toEqual([
+      ['neon.postgres/compute_hours', 'postgres.compute', 'compute_hour', true],
+      ['neon.postgres/storage_gb_month', 'postgres.storage', 'gb_month', true],
+      ['neon.postgres/data_transfer_gb', 'postgres.data_transfer', 'gb', true],
+      ['neon.postgres/written_data_gb', null, 'gb', false],
+      ['neon.postgres/storage_bytes', null, 'byte', false],
+    ]);
+    expect(COST_REGISTRY.billingSku('postgres.compute')).toMatchObject({ providerId: 'neon' });
   });
 });
 
@@ -336,6 +356,7 @@ describe('cloudflare (#383)', () => {
       'google',
       'cloudflare',
       'upstash',
+      'neon',
     ]);
     const billed = COST_REGISTRY.meters()
       .filter((m) => m.serviceId.startsWith('cloudflare.') && m.billable)

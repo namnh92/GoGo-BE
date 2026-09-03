@@ -764,6 +764,60 @@ const UPSTASH: ProviderDefinition = {
   ],
 };
 
+/**
+ * COST-BE-026 (#385) — Neon, the third provider with a collector. Ids are
+ * GoGo's; display names follow the pricing page (fetched 2026-09-03).
+ */
+const NEON_SKUS: readonly BillingSkuDefinition[] = [
+  { id: 'postgres.compute', providerId: 'neon', displayName: 'Postgres — Compute (CU-hours)' },
+  { id: 'postgres.storage', providerId: 'neon', displayName: 'Postgres — Storage (GB-month)' },
+  {
+    id: 'postgres.data_transfer',
+    providerId: 'neon',
+    displayName: 'Postgres — Public network transfer',
+  },
+];
+
+const NEON_POSTGRES = 'neon.postgres';
+
+/**
+ * One service, service-level meters only: the Neon API collector
+ * (`neon_api`, #385) reads the project's totals — daily from the history
+ * endpoint on usage-based plans, as period-to-date deltas from the project
+ * endpoint on the Free plan `gogo-dev` is on.
+ *
+ * `compute_hours` (CU-hours), `storage_gb_month` (day's peak decimal GB,
+ * prorated like R2) and `data_transfer_gb` are billed on usage-based plans and
+ * capped on Free (100 CU-hours, 0.5 GB, 5 GB per project per month).
+ * `written_data_gb` is collected and non-billable — Neon's page prices no
+ * written-data line on today's plans. `storage_bytes` is the exact gauge the
+ * GB-month row is rounded from, kept because a whole-GB meter says nothing
+ * useful about a 0.5 GB allowance.
+ */
+const NEON: ProviderDefinition = {
+  id: 'neon',
+  displayName: 'Neon',
+  status: 'active',
+  capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
+  services: [
+    {
+      id: NEON_POSTGRES,
+      providerId: 'neon',
+      displayName: 'Postgres',
+      category: 'database',
+      capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
+      operations: [],
+      meters: [
+        billedServiceMeter(NEON_POSTGRES, 'compute_hours', 'compute_hour', 'postgres.compute'),
+        billedServiceMeter(NEON_POSTGRES, 'storage_gb_month', 'gb_month', 'postgres.storage'),
+        billedServiceMeter(NEON_POSTGRES, 'data_transfer_gb', 'gb', 'postgres.data_transfer'),
+        serviceMeter(NEON_POSTGRES, 'written_data_gb', 'gb'),
+        serviceMeter(NEON_POSTGRES, 'storage_bytes', 'byte'),
+      ],
+    },
+  ],
+};
+
 function serviceMeter(serviceId: string, metric: string, unit: MeterUnit): UsageMeterDefinition {
   return {
     id: `${serviceId}/${metric}`,
@@ -834,23 +888,12 @@ function manual(
 }
 
 export const COST_REGISTRY_DATA: RegistryData = {
-  billingSkus: [...GOOGLE_SKUS, ...CLOUDFLARE_SKUS, ...UPSTASH_SKUS],
+  billingSkus: [...GOOGLE_SKUS, ...CLOUDFLARE_SKUS, ...UPSTASH_SKUS, ...NEON_SKUS],
   providers: [
     GOOGLE,
     CLOUDFLARE,
     UPSTASH,
-    planned('neon', 'Neon', [
-      {
-        name: 'postgres',
-        displayName: 'Postgres',
-        category: 'database',
-        meters: [
-          ['compute_hours', 'compute_hour'],
-          ['storage_gb_month', 'gb_month'],
-          ['data_transfer_gb', 'gb'],
-        ],
-      },
-    ]),
+    NEON,
     planned('aws', 'AWS', [
       {
         name: 'aggregate_billing',

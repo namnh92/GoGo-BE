@@ -81,6 +81,21 @@ export {
   type UpstashRedisStatsPort,
   type UpstashStatsQuery,
 } from './upstash-developer-api.adapter';
+export {
+  NEON_API_BASE,
+  NeonApiClient,
+  NeonApiError,
+  foldConsumptionHistory,
+  foldProject,
+  neonApiFromEnv,
+  type NeonApiConfig,
+  type NeonApiErrorCode,
+  type NeonConsumptionDay,
+  type NeonHistoryQuery,
+  type NeonProjectConsumption,
+  type NeonProjectQuery,
+  type NeonUsagePort,
+} from './neon-api.adapter';
 export { KeywordFeedbackParser, foldVietnamese } from './keyword-feedback.adapter';
 export {
   PrometheusQueryAdapter,

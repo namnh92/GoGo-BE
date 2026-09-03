@@ -27,7 +27,7 @@ describe('cost adapter registry (epic §7)', () => {
       }),
     ).toThrow(AdapterRegistryError);
     // A planned provider declares nothing yet.
-    expect(() => registry.registerUsageCollector(collector('neon', 'neon.postgres'))).toThrow(
+    expect(() => registry.registerUsageCollector(collector('github', 'github.actions'))).toThrow(
       /does not declare USAGE_COLLECTOR/,
     );
   });
