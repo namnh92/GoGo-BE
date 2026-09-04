@@ -9,8 +9,8 @@
 > chạy trên VPS cloud: nó chạy trên một máy riêng tại `192.168.68.68` trong LAN, và stack
 > observability nằm trên máy thứ hai tại `192.168.68.168`.
 >
-> Nguyên tắc bên trên **không** bị bãi bỏ. ADR-0004 nói *DEV không phải máy của lập trình
-> viên*, và một máy LAN chuyên dụng thoả mãn điều đó y như một host cloud. Cái đã cũ chỉ là
+> Nguyên tắc bên trên **không** bị bãi bỏ. ADR-0004 nói _DEV không phải máy của lập trình
+> viên_, và một máy LAN chuyên dụng thoả mãn điều đó y như một host cloud. Cái đã cũ chỉ là
 > giả định ngầm rằng "từ xa" phải nghĩa là "cloud". Neon, Upstash và R2 không đổi.
 >
 > Hai hệ quả thực tế: developer ngoài LAN vẫn tới API qua Cloudflare Tunnel (họ chưa bao giờ
@@ -399,7 +399,7 @@ media presign → #81/#70, push → #193 OneSignal adapter) + smoke test từng 
 - Grafana/OTel stack **làm câu chuyện alerting** — Better Stack + Sentry + CMS
   KPIs đủ quan sát MVP; OTel endpoint đã chừa slot
   (`OTEL_EXPORTER_OTLP_ENDPOINT`) bật sau. Vẫn đúng sau ADR-0007: có một
-  Prometheus/Grafana tự host để *chứa mẫu và xem biểu đồ*, nhưng **không có
+  Prometheus/Grafana tự host để _chứa mẫu và xem biểu đồ_, nhưng **không có
   alert rule nào** — cái gì gọi người vẫn là Better Stack + healthchecks.io +
   Sentry (ADR-0006 §D3, ADR-0007 giữ nguyên).
 - Load balancer/multi-instance — Redis rate-limit store đã sẵn sàng cho ngày
