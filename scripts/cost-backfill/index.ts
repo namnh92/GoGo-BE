@@ -1,6 +1,9 @@
 // Static, not `await import()` — see scripts/cost-baseline/index.ts for why.
 import { closeDb, createDb } from '../../libs/database/src/client';
-import { PrometheusQueryAdapter } from '../../libs/providers/src/prometheus-query.adapter';
+import {
+  PrometheusQueryAdapter,
+  resolveMetricsQueryConfig,
+} from '../../libs/providers/src/prometheus-query.adapter';
 import { PrometheusBackfillService } from '../../libs/cost-observability/application/prometheus-backfill.service';
 import { ReconciliationService } from '../../libs/cost-observability/application/reconciliation.service';
 // #388 — the package declares what it needs written; the composer supplies the
@@ -20,8 +23,11 @@ import { writeAudit } from '../../libs/modules/shared/audit';
  * audited. Reconcile prints estimated vs actual per service for a month;
  * `--mark` stamps `reconciled_at` on matched pairs (never changes an amount).
  *
- * Environment: DATABASE_URL, GRAFANA_PROM_URL, GRAFANA_PROM_USER,
- * GRAFANA_READ_TOKEN (the same read-only credential the API uses).
+ * Environment: DATABASE_URL, plus whatever names the metrics store — the same
+ * resolution the API uses (`resolveMetricsQueryConfig`), so a backfill can
+ * never read a different store than the console does. After ADR-0007 that is
+ * PROMETHEUS_REMOTE_WRITE_URL; through the rollback window the Grafana Cloud
+ * triple still works unchanged.
  */
 
 type Args = Record<string, string | boolean>;
@@ -46,7 +52,9 @@ function parseArgs(argv: string[]): Args {
 const USAGE = `pnpm cost:backfill --env <dev|staging|prod> --from YYYY-MM-DD --to YYYY-MM-DD
 pnpm cost:backfill --env <env> --reconcile YYYY-MM [--mark]
 
-Environment: DATABASE_URL, GRAFANA_PROM_URL, GRAFANA_PROM_USER, GRAFANA_READ_TOKEN`;
+Environment: DATABASE_URL, and a metrics store — PROMETHEUS_REMOTE_WRITE_URL
+(or METRICS_QUERY_URL), or the legacy GRAFANA_PROM_URL + GRAFANA_PROM_USER +
+GRAFANA_READ_TOKEN.`;
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH = /^\d{4}-\d{2}$/;
@@ -85,15 +93,11 @@ async function main(): Promise<void> {
     const to = typeof args.to === 'string' ? args.to : from;
     if (!DAY.test(from) || !DAY.test(to))
       throw new Error(`--from/--to expect YYYY-MM-DD\n${USAGE}`);
-    const url = process.env.GRAFANA_PROM_URL;
-    const username = process.env.GRAFANA_PROM_USER;
-    const token = process.env.GRAFANA_READ_TOKEN;
-    if (!url || !username || !token) {
-      throw new Error(
-        'GRAFANA_PROM_URL, GRAFANA_PROM_USER and GRAFANA_READ_TOKEN are required for a backfill',
-      );
+    const metricsQuery = resolveMetricsQueryConfig(process.env);
+    if (metricsQuery === null) {
+      throw new Error(`a metrics store is required for a backfill\n${USAGE}`);
     }
-    const metrics = new PrometheusQueryAdapter({ url, username, token });
+    const metrics = new PrometheusQueryAdapter(metricsQuery);
     const result = await new PrometheusBackfillService(db, metrics, writeAudit).run({
       environment: env,
       from,

@@ -129,5 +129,7 @@ export { KeywordFeedbackParser, foldVietnamese } from './keyword-feedback.adapte
 export {
   PrometheusQueryAdapter,
   promApiBase,
+  resolveMetricsQueryConfig,
+  type MetricsQueryEnv,
   type PrometheusQueryConfig,
 } from './prometheus-query.adapter';

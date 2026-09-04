@@ -5,9 +5,9 @@
 // reads one of them reads half the system — and the half it would miss is the
 // one running bulk import, which is where most Google spend happens (#318).
 //
-// Stateless by design. The WAL below is a send buffer, not a store: Grafana
-// Cloud holds the data, and losing this container loses at most the few
-// minutes it had not yet shipped. Nothing here is a database to back up.
+// Stateless by design. The WAL below is a send buffer, not a store: Prometheus
+// holds the data, and losing this container loses at most the few minutes it
+// had not yet shipped. Nothing here is a database to back up.
 //
 // No credential appears in this file. Everything sensitive arrives as an
 // environment variable from the env file GoGo-Infra renders out of SSM.
@@ -47,10 +47,10 @@ prometheus.scrape "gogo" {
 	scrape_interval = "60s"
 	scrape_timeout  = "10s"
 
-	forward_to = [prometheus.remote_write.grafana.receiver]
+	forward_to = [prometheus.remote_write.local_prometheus.receiver]
 }
 
-prometheus.remote_write "grafana" {
+prometheus.remote_write "local_prometheus" {
 	// One stack holds every environment, separated by this label — which is why
 	// it must never be omitted. Two environments writing the same series with no
 	// `env` would silently add dev traffic to a production graph.
@@ -59,18 +59,25 @@ prometheus.remote_write "grafana" {
 	}
 
 	endpoint {
-		url = sys.env("GRAFANA_PROM_URL")
+		url = sys.env("PROMETHEUS_REMOTE_WRITE_URL")
 
+		// GoGo-Infra INF-066 put basic auth on the receiver, because ADR-0007
+		// §E8 asks whether PROD would refuse a configuration before DEV accepts
+		// it, and PROD refuses an unauthenticated remote-write endpoint.
+		//
+		// Sent unconditionally. A Prometheus with no `--web.config.file`
+		// ignores the header, and one that has it answers 401 to an empty
+		// credential — which is the loud failure, not the quiet one. Nothing
+		// sensitive is in this file; both values arrive from the env file
+		// GoGo-Infra renders out of SSM.
 		basic_auth {
-			username = sys.env("GRAFANA_PROM_USER")
-			password = sys.env("GRAFANA_WRITE_TOKEN")
+			username = sys.env("PROMETHEUS_BASIC_AUTH_USER")
+			password = sys.env("PROMETHEUS_BASIC_AUTH_PASSWORD")
 		}
 
-		// The token is scoped `metrics:write` and cannot read a series back, so
-		// the worst a leak does is spend quota (GoGo-Infra docs/secrets.md).
 		queue_config {
-			// A Grafana Cloud blip must not lose the window it happened in — that
-			// is the window someone will want to look at.
+			// A network blip must not lose the window it happened in — that is
+			// the window someone will want to look at.
 			retry_on_http_429 = true
 			max_backoff       = "5m"
 		}

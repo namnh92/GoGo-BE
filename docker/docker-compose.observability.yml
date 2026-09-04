@@ -1,14 +1,14 @@
 # The metrics collector (INF-054 / #326).
 #
 # An overlay, not part of docker-compose.prod.yml, because its presence is a
-# decision rather than a property of the host: before the Grafana Cloud
-# credentials are in SSM there is nowhere to write, and a collector
+# decision rather than a property of the host: before the Prometheus
+# remote-write endpoint exists there is nowhere to write, and a collector
 # restart-looping against an empty endpoint is noise that reads as a fault.
 # Observability must never be able to look like an outage.
 #
 # GoGo-Infra adds `-f docker/docker-compose.observability.yml` only when
-# `GRAFANA_PROM_URL` is present in the env file it rendered, so the container
-# and the credential arrive together or neither does.
+# `PROMETHEUS_REMOTE_WRITE_URL` is present in the env file it rendered, so the
+# container and the endpoint arrive together or neither does.
 #
 # Deploy is the same command with one more file:
 #   ENV_FILE=.env.dev docker compose -f docker/docker-compose.prod.yml \
@@ -28,12 +28,24 @@ services:
       - /etc/alloy/config.alloy
     volumes:
       - ./alloy:/etc/alloy:ro
-      # The remote_write WAL. A send buffer, not a store — Grafana Cloud holds
+      # The remote_write WAL. A send buffer, not a store — Prometheus holds
       # the data. Named so a `docker compose down -v` is understood to cost a
       # few minutes of unshipped samples and nothing else.
       - alloy_wal:/var/lib/alloy/data
     env_file:
       - ../${ENV_FILE:-.env.prod}
+    # No `environment:` override blanking the Grafana variables. An earlier
+    # draft emptied them here, which reads as "the collector no longer holds
+    # Cloud credentials" while doing almost nothing: this file only shapes the
+    # Alloy container, and the API container reads the same env file and still
+    # receives every one of them. Half a removal that reads as a whole one is
+    # worse than none, because it stops anyone looking for the real one.
+    #
+    # The collector already cannot use them — `config.alloy` names
+    # `PROMETHEUS_REMOTE_WRITE_URL` and nothing else, so an unused variable in
+    # its environment is inert. Actually withdrawing the credentials is a
+    # deploy-time action on SSM, and ADR-0007 §E7 says when: last, after the
+    # shared end-to-end gate passes, never as a side effect of a compose file.
     # No `ports:`. Alloy's own UI binds to loopback inside the container and
     # reaches no further; the two things it scrapes are on this network, and
     # the one thing it writes to is outbound.
