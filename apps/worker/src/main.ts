@@ -23,6 +23,7 @@ import {
   neonPostgresCollector,
   awsCostExplorerCollector,
   githubActionsCollector,
+  writeAudit,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -363,6 +364,10 @@ async function bootstrap(): Promise<void> {
   // `COST_COLLECTORS_ENABLED` — that flag gates collectors that call out.
   const manualCosts = new ManualCostService(db, COST_REGISTRY, {
     environment: process.env.APP_ENV ?? 'dev',
+    // #388 — the audit writer is supplied by the composer; here the worker has
+    // no request context, so the row carries no request id or IP, exactly as
+    // before the port existed.
+    audit: writeAudit,
   });
   let manualCostsDay: string | null = null;
 

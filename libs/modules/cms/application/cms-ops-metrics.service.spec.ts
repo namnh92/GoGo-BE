@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PRICING_VERSION } from '@gogo/cost-observability';
 import { MetricsQueryError, type MetricsQueryPort, type PromSample } from '@gogo/providers';
 import { CmsOpsMetricsService } from './cms-ops-metrics.service';
-import { PRICING_VERSION } from '../../cost/domain/provider-pricing';
 
 /**
  * #315 — the envelope, the cache and the failure behaviour.

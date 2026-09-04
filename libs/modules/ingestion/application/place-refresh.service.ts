@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm';
+import { type BudgetLimits, type ProviderBudgetService } from '@gogo/cost-observability';
 import type { Db } from '@gogo/database';
 import type { MetricsPort } from '@gogo/observability';
 import {
@@ -10,10 +11,6 @@ import {
 } from '@gogo/providers';
 import { writeAudit } from '../../shared/audit';
 import { flagEnvironmentOf, resolveFlag, type FlagEnvironment } from '../../shared/feature-flags';
-import type {
-  BudgetLimits,
-  ProviderBudgetService,
-} from '../../cost/application/provider-budget.service';
 import {
   classifyLiveness,
   scheduleFor,

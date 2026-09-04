@@ -12,6 +12,7 @@ import {
   CostEstimatorService,
   PrometheusBackfillService,
   ReconciliationService,
+  writeAudit,
 } from '@gogo/modules';
 
 /**
@@ -91,7 +92,7 @@ describe('PrometheusBackfillService (epic §25)', () => {
         costUnits: [s({ sku: 'routes.computeRouteMatrix' }, 14)],
       },
     });
-    const backfill = new PrometheusBackfillService(db as never, metrics);
+    const backfill = new PrometheusBackfillService(db as never, metrics, writeAudit);
     const first = await backfill.run({ environment: ENV, from: '2026-09-01', to: '2026-09-03' });
     expect(first).toMatchObject({ days: 3, rowsWritten: 6, emptyDays: ['2026-09-03'] });
 
@@ -146,7 +147,7 @@ describe('PrometheusBackfillService (epic §25)', () => {
       insert into provider_cost_daily (day, environment, provider_id, service_id, billing_sku_id, amount_micros, currency, basis, confidence, source)
       values ('2026-09-01', ${ENV}, 'google', 'google.places', 'places.details.enterprise', 8_310_000, 'USD', 'ACTUAL', 'HIGH', 'gcp_billing_export')
     `);
-    const backfill = new PrometheusBackfillService(db as never, fakeMetrics({}));
+    const backfill = new PrometheusBackfillService(db as never, fakeMetrics({}), writeAudit);
     await expect(
       backfill.run({ environment: ENV, from: '2026-01-01', to: '2026-12-31' }),
     ).rejects.toThrow(/62-day bound/);

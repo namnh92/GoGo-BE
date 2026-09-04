@@ -1,9 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
-import {
-  ProviderUsageReportService,
-  type ProviderCostReport,
-} from '../../cost/application/usage-report.service';
+import { CostQueryService, type ProviderCostReport } from '@gogo/cost-observability';
 import IORedis from 'ioredis';
 import { breakerSnapshots, type QueueStats } from '@gogo/providers';
 import { type Db } from '@gogo/database';
@@ -251,32 +248,14 @@ export class CmsObservabilityService {
   /**
    * Cost and quota.
    *
-   * Until #335 this returned an empty list unconditionally, and the comment
-   * here explained why that was the honest answer: no billing API, and an
-   * in-process SKU counter that resets on deploy cannot answer "today" or
-   * "month to date". Both halves of that are now fixed —
-   * `provider_usage_daily` survives deploys, and
-   * `libs/modules/cost/domain/provider-pricing.ts` holds a list price — so the
-   * endpoint reports money.
-   *
-   * What has *not* changed is the rule the empty list was protecting:
-   *
-   * - Nothing here is called `billed`. `basis: 'estimated'` on every line, and
-   *   the free-cap arithmetic is an approximation of a per-billing-account cap
-   *   that GoGo cannot see, labelled `confidence: 'MEDIUM'`.
-   * - A provider whose price is unverified (Routes, per matrix element) is
-   *   **absent from the money list** and present in `gaps` — a floor with a
-   *   currency symbol is still a claim, and that one would be false.
-   * - A provider nothing measures (the Maps SDK, which renders on the handset)
-   *   is in `gaps` as `not_instrumented`. Never a zero.
-   * - With the ledger off, `sourcesConfigured` is false and the list is empty,
-   *   exactly as before.
-   *
-   * A zero that comes back *with* the ledger on is now a real measured zero:
-   * the operations are instrumented and made no calls this month.
+   * The report is composed by `CostQueryService` in `@gogo/cost-observability`
+   * (#388, epic §39). How a cost report is assembled — which environment it
+   * reads, whether the ledger is on, what "unknown" means — is not a
+   * back-office concern; the CMS is one caller of it. The semantics live with
+   * that service.
    */
   costs(): Promise<ProviderCostReport> {
-    return new ProviderUsageReportService(this.db, {
+    return new CostQueryService(this.db, {
       environment: this.config.APP_ENV ?? 'dev',
       ledgerEnabled: this.config.COST_LEDGER_ENABLED ?? false,
     }).report();

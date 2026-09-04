@@ -23,7 +23,7 @@ import {
   pricingFor,
   providerOf,
   staticCostGaps,
-} from '../../libs/modules/cost/domain/provider-pricing';
+} from '../../libs/cost-observability/pricing/provider-pricing';
 import type { OperationRow } from './artifact';
 import type { UsageCounts } from './ledger';
 import { countBy, type MetricsSnapshot } from './metrics-text';

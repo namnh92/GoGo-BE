@@ -34,7 +34,7 @@ import {
   PRICING_CURRENCY,
   PRICING_VERSION,
   staticCostGaps,
-} from '../../libs/modules/cost/domain/provider-pricing';
+} from '../../libs/cost-observability/pricing/provider-pricing';
 import { percentile, type HttpTarget } from './http-target';
 import { SCENARIOS, type BaselineActors, type Fixtures, type Scenario } from './scenarios';
 

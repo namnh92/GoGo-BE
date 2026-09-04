@@ -27,7 +27,7 @@ import type {
   CostGap,
   OpsProvider,
   PricingUnit,
-} from '../../libs/modules/cost/domain/provider-pricing';
+} from '../../libs/cost-observability/pricing/provider-pricing';
 
 export const BASELINE_SCHEMA_VERSION = 1;
 

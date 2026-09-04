@@ -1,30 +1,27 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { type Db } from '@gogo/database';
 import {
+  COST_REGISTRY,
   CostCenterService,
-  type CostOverview,
-  type CostWindow,
-  type ProviderCostRow,
-  type ServiceCostDetail,
-} from '../../cost/application/cost-center.service';
-import {
   ManualCostError,
   ManualCostService,
+  TestCostService,
+  type CostOverview,
+  type CostWindow,
   type EligibleManualService,
   type ManualCostActor,
+  type ManualCostItem,
   type ManualCostItemInput,
   type ManualCostItemPatch,
-} from '../../cost/application/manual-cost.service';
-import {
-  TestCostService,
+  type ProviderCostRow,
+  type ServiceCostDetail,
   type TestRunDetail,
   type TestRunRecord,
-} from '../../cost/application/test-cost.service';
-import type { ManualCostItem } from '../../cost/domain/manual-cost';
-import { COST_REGISTRY } from '../../cost/domain/registry';
+} from '@gogo/cost-observability';
+import { type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { APP_CONFIG } from '../../shared/config';
 import { DB } from '../../shared/tokens';
+import { writeAudit } from '../../shared/audit';
 
 type CostCenterConfig = {
   /** #335 — which deployment's rows are ours. */
@@ -103,7 +100,13 @@ export class CmsCostCenterService {
   // ── manual costs (#382, epic §27) ──────────────────────────────────────────
 
   private manual(): ManualCostService {
-    return new ManualCostService(this.db, COST_REGISTRY, { environment: this.environment });
+    return new ManualCostService(this.db, COST_REGISTRY, {
+      environment: this.environment,
+      // #388 — the package declares what it needs written; `@gogo/modules`
+      // supplies the writer that fills request id and admin IP from the
+      // request context.
+      audit: writeAudit,
+    });
   }
 
   async manualItems(): Promise<{

@@ -1,14 +1,14 @@
 import type { PromSample } from '@gogo/providers';
 import {
-  OPS_PROVIDERS,
   listCostMicros,
   microsToMinorUnits,
   operationForSku,
+  OPS_PROVIDERS,
   pricingFor,
   providerOf,
   utcDay,
   type OpsProvider,
-} from '../../cost/domain/provider-pricing';
+} from '@gogo/cost-observability';
 
 /**
  * BE-CMS-P2 (#315) — the product-level shape of the ops metrics view, and
