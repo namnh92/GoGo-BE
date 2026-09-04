@@ -108,6 +108,8 @@ export type MetricsQueryEnv = {
   METRICS_QUERY_USERNAME?: string | undefined;
   METRICS_QUERY_TOKEN?: string | undefined;
   PROMETHEUS_REMOTE_WRITE_URL?: string | undefined;
+  PROMETHEUS_BASIC_AUTH_USER?: string | undefined;
+  PROMETHEUS_BASIC_AUTH_PASSWORD?: string | undefined;
   GRAFANA_PROM_URL?: string | undefined;
   GRAFANA_PROM_USER?: string | undefined;
   GRAFANA_READ_TOKEN?: string | undefined;
@@ -152,10 +154,16 @@ export function resolveMetricsQueryConfig(env: MetricsQueryEnv): PrometheusQuery
     };
   }
   if (env.PROMETHEUS_REMOTE_WRITE_URL) {
+    // The collector's own credential, because it is the same store and
+    // Prometheus' basic auth has no per-user authorization to separate a
+    // reader from a writer — a second credential would name the same access
+    // rather than a smaller one. GoGo-Infra INF-066 records that as a
+    // deliberate DEV difference; `METRICS_QUERY_*` still overrides it for a
+    // deployment that can scope the two apart.
     return {
       url: env.PROMETHEUS_REMOTE_WRITE_URL,
-      username: env.METRICS_QUERY_USERNAME || undefined,
-      token: env.METRICS_QUERY_TOKEN || undefined,
+      username: env.METRICS_QUERY_USERNAME || env.PROMETHEUS_BASIC_AUTH_USER || undefined,
+      token: env.METRICS_QUERY_TOKEN || env.PROMETHEUS_BASIC_AUTH_PASSWORD || undefined,
     };
   }
   // The legacy path keeps its old gate exactly: Grafana Cloud rejects an

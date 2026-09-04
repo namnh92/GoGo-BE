@@ -235,6 +235,16 @@ const envSchema = z
      */
     PROMETHEUS_REMOTE_WRITE_URL: z.string().default(''),
     /**
+     * The store's basic-auth credential, presented by the collector when it
+     * writes and by this process when it reads. One pair, not two: Prometheus'
+     * basic auth admits or refuses a user and cannot scope a reader away from
+     * writing, so a second credential would be another name for the same
+     * access. GoGo-Infra INF-066 records that as a deliberate DEV difference
+     * and names its mitigation — the port admits one source address.
+     */
+    PROMETHEUS_BASIC_AUTH_USER: z.string().default(''),
+    PROMETHEUS_BASIC_AUTH_PASSWORD: z.string().default(''),
+    /**
      * #315, ADR-0007 §E7 — reading the time-series store back, for the CMS ops
      * dashboard.
      *

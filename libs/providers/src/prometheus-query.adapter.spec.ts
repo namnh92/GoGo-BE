@@ -107,6 +107,37 @@ describe('resolveMetricsQueryConfig', () => {
     ).toBeNull();
   });
 
+  it('reads with the collector\'s credential, since it is the same store', () => {
+    // Prometheus basic auth admits or refuses a user; it cannot scope a reader
+    // away from writing. A second credential would be another name for the
+    // same access, so the read path presents the one the store has.
+    expect(
+      resolveMetricsQueryConfig({
+        PROMETHEUS_REMOTE_WRITE_URL: 'http://192.168.68.168:9090/api/v1/write',
+        PROMETHEUS_BASIC_AUTH_USER: 'gogo-obs',
+        PROMETHEUS_BASIC_AUTH_PASSWORD: 'not-a-real-value',
+      }),
+    ).toEqual({
+      url: 'http://192.168.68.168:9090/api/v1/write',
+      username: 'gogo-obs',
+      token: 'not-a-real-value',
+    });
+  });
+
+  it('lets METRICS_QUERY_* override the collector credential', () => {
+    // For a deployment that *can* scope a reader apart — a proxy in front, a
+    // different store. The override is explicit, never inferred.
+    expect(
+      resolveMetricsQueryConfig({
+        PROMETHEUS_REMOTE_WRITE_URL: 'http://192.168.68.168:9090',
+        PROMETHEUS_BASIC_AUTH_USER: 'writer',
+        PROMETHEUS_BASIC_AUTH_PASSWORD: 'writer-secret',
+        METRICS_QUERY_USERNAME: 'reader',
+        METRICS_QUERY_TOKEN: 'reader-secret',
+      })?.username,
+    ).toBe('reader');
+  });
+
   it('lets an explicit query URL override both, credentials optional', () => {
     expect(
       resolveMetricsQueryConfig({
