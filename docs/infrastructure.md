@@ -5,6 +5,22 @@
 > PostgreSQL ở Neon, Redis ở Upstash, object storage ở R2 — và Mobile/CMS trỏ vào dev API được
 > host. Xem `GoGo-Remote-First-Multi-Environment-Infrastructure-Spec.md` và README.
 >
+> **Topology DEV đổi 2026-09-04** (GoGo-Infra ADR-0007 / INF-064, INF-065). DEV BE không còn
+> chạy trên VPS cloud: nó chạy trên một máy riêng tại `192.168.68.68` trong LAN, và stack
+> observability nằm trên máy thứ hai tại `192.168.68.168`.
+>
+> Nguyên tắc bên trên **không** bị bãi bỏ. ADR-0004 nói _DEV không phải máy của lập trình
+> viên_, và một máy LAN chuyên dụng thoả mãn điều đó y như một host cloud. Cái đã cũ chỉ là
+> giả định ngầm rằng "từ xa" phải nghĩa là "cloud". Neon, Upstash và R2 không đổi.
+>
+> Hai hệ quả thực tế: developer ngoài LAN vẫn tới API qua Cloudflare Tunnel (họ chưa bao giờ
+> có địa chỉ của host), còn CI thì không tới được — runner do GitHub host không route được tới
+> địa chỉ RFC1918, nên deploy đi qua chính tunnel đó với Cloudflare Access đứng trước
+> (GoGo-Infra INF-068).
+>
+> Chữ "VPS" còn lại trong file này vì đổi tên một workflow là đổi tên lịch sử của nó. Đọc là
+> "host DEV".
+>
 > **Postgres và Redis trong compose là chuyển tiếp**, không phải kiến trúc mục tiêu. Chúng nằm
 > ở `docker/docker-compose.self-hosted.yml`. Edge cũng tách: `docker-compose.edge-caddy.yml` cho
 > host mở được cổng, `docker-compose.edge-tunnel.yml` cho host không (DEV). Host nào thuộc loại
@@ -290,21 +306,39 @@ là sự cố gây ra bởi chính thứ lẽ ra để quan sát sự cố.
 
 ```
 api    /v1/metrics      ─┐
-                          ├─▶ Alloy ──remote_write──▶ Grafana Cloud
-worker :9101/metrics     ─┘   (compose overlay, stateless)
+                          ├─▶ Alloy ──remote_write──▶ Prometheus tự host
+worker :9101/metrics     ─┘   (compose overlay, stateless)     192.168.68.168:9090
 ```
 
 `docker/docker-compose.observability.yml` + `docker/alloy/config.alloy`. Là
 **overlay**, không nằm trong `docker-compose.prod.yml`: sự có mặt của nó là một
-quyết định chứ không phải thuộc tính của host. Chưa có credential Grafana thì
+quyết định chứ không phải thuộc tính của host. Chưa có endpoint để ghi thì
 không có chỗ để ghi, và một container restart-loop vào endpoint rỗng là tiếng
-ồn đọc như sự cố. GoGo-Infra chỉ thêm `-f` khi `GRAFANA_PROM_URL` có trong env
-đã render — container và credential đến cùng nhau hoặc không cái nào đến.
+ồn đọc như sự cố. GoGo-Infra chỉ thêm `-f` khi `PROMETHEUS_REMOTE_WRITE_URL` có
+trong env đã render — container và endpoint đến cùng nhau hoặc không cái nào đến.
+
+> **Đổi 2026-09-04** (ADR-0007 §E1/§E7, BE-SRE-P8 #404). Kho mẫu của DEV chuyển từ Grafana
+> Cloud sang Prometheus tự host tại `192.168.68.168`. Cổng gate đổi từ `GRAFANA_PROM_URL` sang
+> `PROMETHEUS_REMOTE_WRITE_URL`, ở **cả hai** chỗ GoGo-Infra kiểm tra.
+>
+> Đường ghi và đường đọc cắt sang **cùng lúc**. Alloy ghi vào `.168` trong khi API vẫn đọc
+> Grafana Cloud là trạng thái bị cấm: màn monitoring của CMS báo khoẻ mà không có số — đúng
+> kiểu hỏng mà `unknown != zero` sinh ra để chặn. `resolveMetricsQueryConfig` cưỡng chế điều
+> đó: API đọc ở nơi collector ghi, trừ khi `METRICS_QUERY_URL` cố ý ghi đè.
+>
+> Prometheus tự host **có basic auth**: PROD sẽ từ chối một remote-write receiver không xác
+> thực, và §E8 nói "chỉ là DEV" không phải lý do được chấp nhận. Một credential dùng cho cả
+> đọc lẫn ghi — basic auth của Prometheus không phân quyền theo user được — ghi lại là khác
+> biệt DEV có chủ ý (GoGo-Infra INF-066/INF-067).
+>
+> Credential Grafana Cloud **còn hiệu lực** suốt cửa sổ rollback và chỉ thu hồi sau cùng.
 
 - Không credential nào trong file cấu hình; tất cả qua biến môi trường.
 - Alloy không publish cổng nào; UI nội bộ bind loopback trong container.
-- WAL của `remote_write` là **buffer gửi**, không phải kho lưu. Grafana Cloud
-  giữ dữ liệu; mất container mất vài phút mẫu chưa gửi, không có gì để backup.
+- WAL của `remote_write` là **buffer gửi**, không phải kho lưu. Prometheus giữ
+  dữ liệu; mất container mất vài phút mẫu chưa gửi, không có gì để backup.
+  Trên host `.168` thì ngược lại: TSDB ở đó là **state DEV bền**, có backup, và
+  `docker compose down -v` là thao tác phá huỷ (ADR-0007 §E8).
 - Nhãn ngoài `env` là bắt buộc: một stack chứa mọi môi trường, thiếu nhãn này
   là traffic dev cộng âm thầm vào biểu đồ production.
 
@@ -362,7 +396,11 @@ media presign → #81/#70, push → #193 OneSignal adapter) + smoke test từng 
 
 - Managed Postgres/Redis ngay từ đầu — chưa cần PITR khi chưa có user thật.
 - Kubernetes/Fly/Railway — compose 1 máy đơn giản hơn, đủ SLO MVP.
-- Grafana/OTel stack — Better Stack + Sentry + CMS KPIs đủ quan sát MVP;
-  OTel endpoint đã chừa slot (`OTEL_EXPORTER_OTLP_ENDPOINT`) bật sau.
+- Grafana/OTel stack **làm câu chuyện alerting** — Better Stack + Sentry + CMS
+  KPIs đủ quan sát MVP; OTel endpoint đã chừa slot
+  (`OTEL_EXPORTER_OTLP_ENDPOINT`) bật sau. Vẫn đúng sau ADR-0007: có một
+  Prometheus/Grafana tự host để _chứa mẫu và xem biểu đồ_, nhưng **không có
+  alert rule nào** — cái gì gọi người vẫn là Better Stack + healthchecks.io +
+  Sentry (ADR-0006 §D3, ADR-0007 giữ nguyên).
 - Load balancer/multi-instance — Redis rate-limit store đã sẵn sàng cho ngày
   scale ngang, nhưng chưa trả tiền cho nó hôm nay.
