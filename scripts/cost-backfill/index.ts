@@ -1,6 +1,9 @@
 // Static, not `await import()` — see scripts/cost-baseline/index.ts for why.
 import { closeDb, createDb } from '../../libs/database/src/client';
-import { PrometheusQueryAdapter, resolveMetricsQueryConfig } from '../../libs/providers/src/prometheus-query.adapter';
+import {
+  PrometheusQueryAdapter,
+  resolveMetricsQueryConfig,
+} from '../../libs/providers/src/prometheus-query.adapter';
 import { PrometheusBackfillService } from '../../libs/cost-observability/application/prometheus-backfill.service';
 import { ReconciliationService } from '../../libs/cost-observability/application/reconciliation.service';
 // #388 — the package declares what it needs written; the composer supplies the

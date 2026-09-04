@@ -107,7 +107,7 @@ describe('resolveMetricsQueryConfig', () => {
     ).toBeNull();
   });
 
-  it('reads with the collector\'s credential, since it is the same store', () => {
+  it("reads with the collector's credential, since it is the same store", () => {
     // Prometheus basic auth admits or refuses a user; it cannot scope a reader
     // away from writing. A second credential would be another name for the
     // same access, so the read path presents the one the store has.
