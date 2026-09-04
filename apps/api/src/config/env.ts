@@ -223,26 +223,60 @@ const envSchema = z
      */
     METRICS_TOKEN: z.string().default(''),
     /**
-     * #315 — reading the time-series store back, for the CMS ops dashboard.
+     * ADR-0007 §E1 — where the collector writes. Present means a
+     * Prometheus-compatible remote-write endpoint exists, which is also what
+     * makes GoGo-Infra add the Alloy overlay: the container and the endpoint
+     * arrive together or neither does.
      *
-     * The URL stored in SSM is the collector's *write* endpoint; the query API
-     * is derived from it, so one parameter cannot disagree with another.
+     * The API reads it too, and that is deliberate. §E7 forbids the collector
+     * writing to one store while the API queries another, so the read path
+     * follows this variable unless `METRICS_QUERY_URL` deliberately overrides
+     * it — see `resolveMetricsQueryConfig`.
+     */
+    PROMETHEUS_REMOTE_WRITE_URL: z.string().default(''),
+    /**
+     * #315, ADR-0007 §E7 — reading the time-series store back, for the CMS ops
+     * dashboard.
+     *
+     * Normally unset: the store the collector writes to is the store the API
+     * reads. Set it only where the two genuinely differ (a read replica, a
+     * proxy), because setting it is the one way to reach the split-brain state
+     * §E7 exists to forbid.
+     *
+     * Authentication is optional and both parts move together. A Prometheus
+     * reachable only from the BE host on a LAN has none; Grafana Cloud
+     * requires it. Either credential is server-to-server only: it must never
+     * reach a browser, a CMS bundle or any `VITE_`/`EXPO_PUBLIC_` variable.
+     */
+    METRICS_QUERY_URL: z.string().default(''),
+    METRICS_QUERY_USERNAME: z.string().default(''),
+    METRICS_QUERY_TOKEN: z.string().default(''),
+    /**
+     * The legacy Grafana Cloud read path. Kept working unchanged for the whole
+     * rollback window — ADR-0007 §E7 revokes these credentials **last**, after
+     * end-to-end verification, and not before. Lowest precedence: the two
+     * variables above win when either is set.
      *
      * `GRAFANA_READ_TOKEN` is scoped `metrics:read` and is a different
-     * credential from the collector's `metrics:write` — verified against the
-     * live stack in both directions. It is server-to-server only: it must
-     * never reach a browser, a CMS bundle or any `VITE_`/`EXPO_PUBLIC_`
-     * variable. Empty binds no query port, and the ops endpoints answer
-     * `backend.status: "unavailable"` rather than failing.
+     * credential from the collector's `metrics:write`. All three empty binds
+     * no query port, and the ops endpoints answer `backend.status:
+     * "unavailable"` rather than failing.
      */
     GRAFANA_PROM_URL: z.string().default(''),
     GRAFANA_PROM_USER: z.string().default(''),
     GRAFANA_READ_TOKEN: z.string().default(''),
     /**
-     * How much history the store actually holds. Grafana Cloud Free keeps 14
-     * days, so a 30-day request is answered with 14 and says it was cut —
-     * extrapolating the missing sixteen would be inventing data.
+     * How much history the store actually holds, so a 30-day request is
+     * answered with what exists and says it was cut — extrapolating the
+     * missing days would be inventing data.
+     *
+     * Unset falls back to `GRAFANA_RETENTION_DAYS`, whose 14-day default is
+     * Grafana Cloud Free's. The self-hosted store's retention is set in
+     * `observability/local-grafana` and is a different number, so after
+     * cutover this must be set or the console reports a window the store does
+     * not have.
      */
+    METRICS_RETENTION_DAYS: z.coerce.number().int().positive().optional(),
     GRAFANA_RETENTION_DAYS: z.coerce.number().int().positive().default(14),
     /**
      * #335 — the durable provider usage ledger.

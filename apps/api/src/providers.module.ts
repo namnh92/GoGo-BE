@@ -27,6 +27,7 @@ import {
   UnconfiguredPlaceProvider,
   placeProviderStatus,
   warnFakedProviders,
+  resolveMetricsQueryConfig,
 } from '@gogo/providers';
 import {
   LogMetrics,
@@ -162,17 +163,16 @@ import { APP_CONFIG, type AppConfig } from './config/env';
        * screen must never do is show a number nobody measured. The service
        * reports `backend.status: "unavailable"` instead.
        *
-       * `metrics:read`, never the collector's `metrics:write` token.
+       * Which store, and whether it is authenticated, is
+       * `resolveMetricsQueryConfig`'s single decision — ADR-0007 §E7 makes the
+       * read path follow the write path so the two cannot drift apart in a
+       * deploy. Read-only credentials only, never the collector's write token.
        */
       provide: METRICS_QUERY,
-      useFactory: (config: AppConfig) =>
-        config.GRAFANA_PROM_URL && config.GRAFANA_PROM_USER && config.GRAFANA_READ_TOKEN
-          ? new PrometheusQueryAdapter({
-              url: config.GRAFANA_PROM_URL,
-              username: config.GRAFANA_PROM_USER,
-              token: config.GRAFANA_READ_TOKEN,
-            })
-          : null,
+      useFactory: (config: AppConfig) => {
+        const metricsQuery = resolveMetricsQueryConfig(config);
+        return metricsQuery === null ? null : new PrometheusQueryAdapter(metricsQuery);
+      },
       inject: [APP_CONFIG],
     },
     { provide: PUSH_PROVIDER, useClass: FakePush },

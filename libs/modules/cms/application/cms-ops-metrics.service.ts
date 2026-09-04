@@ -50,6 +50,15 @@ import {
 
 type OpsMetricsConfig = {
   APP_ENV?: string | undefined;
+  /**
+   * How much history the store holds. `METRICS_RETENTION_DAYS` is the neutral
+   * name and wins; `GRAFANA_RETENTION_DAYS` is the legacy one and stays
+   * readable through ADR-0007's rollback window. The default is Grafana Cloud
+   * Free's 14 days, which the self-hosted store does not share — after cutover
+   * the value must be set, or the console offers a window the store cannot
+   * answer.
+   */
+  METRICS_RETENTION_DAYS?: number | undefined;
   GRAFANA_RETENTION_DAYS?: number | undefined;
 };
 
@@ -106,7 +115,11 @@ export class CmsOpsMetricsService {
   }
 
   private get retentionDays(): number {
-    return this.config.GRAFANA_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS;
+    return (
+      this.config.METRICS_RETENTION_DAYS ??
+      this.config.GRAFANA_RETENTION_DAYS ??
+      DEFAULT_RETENTION_DAYS
+    );
   }
 
   async summary(window: OpsWindow) {
