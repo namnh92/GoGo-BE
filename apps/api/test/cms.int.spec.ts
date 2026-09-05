@@ -533,7 +533,8 @@ describe('CMS ops observability (BE-CMS-G8 #247)', () => {
     expect(body.providers.map((p: { key: string }) => p.key)).not.toContain('maps_sdk');
     const gaps: { key: string; kind: string }[] = body.gaps;
     expect(gaps.find((g) => g.key === 'google.maps_sdk_android')?.kind).toBe('not_instrumented');
-    expect(gaps.find((g) => g.key === 'google.routeMatrix')?.kind).toBe('price_unknown');
+    // Routes has a verified price since COST-BE-031 (#410); it is no longer a gap.
+    expect(gaps.find((g) => g.key === 'google.routeMatrix')).toBeUndefined();
   });
 
   it('is closed to editors and moderators', async () => {

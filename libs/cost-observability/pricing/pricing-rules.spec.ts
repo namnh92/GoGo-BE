@@ -9,7 +9,9 @@ import {
 import { PRICING_VERSION } from './provider-pricing';
 import { COST_REGISTRY } from '../domain/registry';
 
-const TODAY = '2026-09-03';
+// Bumped with each review date the seed carries: the seed-integrity test
+// refuses a `reviewedAt` in the future of this constant.
+const TODAY = '2026-09-05';
 
 const base: PricingRule = {
   id: 'test-rule',
@@ -193,9 +195,70 @@ describe('seed integrity', () => {
   });
 
   it('keeps the two known-unknowns unknown', () => {
-    for (const sku of ['routes.computeRouteMatrix', 'maps.dynamic.ios', 'maps.dynamic.android']) {
+    for (const sku of ['maps.dynamic.ios', 'maps.dynamic.android']) {
       expect(ruleInForce(PRICING_RULES, { billingSkuId: sku }, TODAY)?.unitPriceMicros).toBeNull();
     }
+  });
+});
+
+describe('routes v2 rule (#410, COST-BE-031)', () => {
+  const rule = ruleInForce(PRICING_RULES, { billingSkuId: 'routes.computeRouteMatrix' }, TODAY)!;
+
+  it('is the verified Essentials first paid tier, per 1,000 matrix elements', () => {
+    expect(rule.id).toBe('google-routes.computeRouteMatrix-2026-09-01-v2');
+    expect(rule.pricingModel).toBe('PER_1K_REQUESTS');
+    expect(rule.unitPriceMicros).toBe(5_000_000);
+    expect(rule.tiers).toBeNull();
+    expect(rule.freeAllowance).toEqual({
+      quantity: 10_000,
+      unit: 'matrix_element',
+      period: 'MONTH',
+      scope: 'SKU',
+    });
+    expect(rule.effectiveFrom).toBe('2026-09-01');
+    expect(rule.effectiveTo).toBeNull();
+    expect(rule.reviewedAt).toBe('2026-09-05');
+    // The registry meter it prices is the element meter, never the request one.
+    expect(COST_REGISTRY.meter(rule.usageMetricId!)?.unit).toBe('matrix_element');
+  });
+
+  it('is exactly one rule in force — v1 (price null) is gone, not shadowing', () => {
+    const inForce = PRICING_RULES.filter(
+      (r) =>
+        r.billingSkuId === 'routes.computeRouteMatrix' &&
+        r.effectiveFrom <= TODAY &&
+        (r.effectiveTo === null || TODAY < r.effectiveTo),
+    );
+    expect(inForce.map((r) => r.id)).toEqual(['google-routes.computeRouteMatrix-2026-09-01-v2']);
+  });
+
+  it('charges nothing under the 10k cap and $5 per 1,000 above it', () => {
+    expect(estimateMicros(rule, 4_000)).toEqual({
+      known: true,
+      listMicros: 20_000_000,
+      freeAdjustedMicros: 0,
+    });
+    // 12,000 in one day: 10,000 free, 2,000 billable.
+    expect(estimateMicros(rule, 12_000)).toEqual({
+      known: true,
+      listMicros: 60_000_000,
+      freeAdjustedMicros: 10_000_000,
+    });
+    // Cap already consumed earlier in the month: every element is billable.
+    expect(estimateMicros(rule, 2_000, 10_000)).toEqual({
+      known: true,
+      listMicros: 10_000_000,
+      freeAdjustedMicros: 10_000_000,
+    });
+  });
+
+  it('says in its source that it is the first paid tier only', () => {
+    // The engine has no cumulative monthly volume tiers; the rule must not
+    // claim exactness past Google's first band, and a reader must be able to
+    // see that on the rule itself.
+    expect(rule.sourceReference).toMatch(/first paid tier/);
+    expect(rule.sourceReference).toMatch(/ceiling/);
+    expect(rule.sourceReference).toMatch(/TRAFFIC_UNAWARE/);
   });
 });
 

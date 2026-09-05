@@ -330,13 +330,13 @@ describe('hard budget reservation', () => {
 
   it('refuses an operation whose price nobody has verified', async () => {
     const service = new ProviderBudgetService(db as never);
-    // Routes bills per matrix element and no per-element figure is in the
-    // registry. A ceiling in dollars cannot bound an unknown price, so the
-    // answer is no — not "assume free".
+    // The Maps SDK rows carry a rule with no verified price. A ceiling in
+    // dollars cannot bound an unknown price, so the answer is no — not
+    // "assume free". (Routes was this case until COST-BE-031 priced it.)
     expect(
       await service.reserve(
-        { scope: 'google.places.refresh', operation: 'google.routeMatrix', calls: 1, units: 10 },
-        { ...limits, maxUnitsByOperation: { 'google.routeMatrix': 100 } },
+        { scope: 'google.places.refresh', operation: 'google.maps_sdk_ios', calls: 1, units: 10 },
+        { ...limits, maxUnitsByOperation: { 'google.maps_sdk_ios': 100 } },
       ),
     ).toEqual({ ok: false, reason: 'price_unknown' });
   });
@@ -446,14 +446,15 @@ describe('cost report from the ledger', () => {
     expect(places?.billableUnitsMonthToDate).toBe(0);
   });
 
-  it('never reports an unpriced provider as free', async () => {
+  it('prices Routes per matrix element inside its monthly cap, and no longer lists it as a gap', async () => {
     await seed('google.routeMatrix', 400);
     const result = await report();
-    // Units measured exactly, money unknown. The provider is absent from the
-    // money list and named in `gaps` — a floor with a currency symbol beside
-    // it would be a false claim.
-    expect(result.providers.map((p) => p.key)).not.toContain('routes');
-    expect(result.gaps.find((g) => g.key === 'google.routeMatrix')?.kind).toBe('price_unknown');
+    // COST-BE-031 (#410): $5.00 per 1,000 elements after 10,000 free a month.
+    // 400 elements are inside the cap — a measured $0, stated with its units,
+    // not an absence.
+    const routes = result.providers.find((p) => p.key === 'routes');
+    expect(routes).toMatchObject({ monthToDateMicros: 0, billableUnitsMonthToDate: 400 });
+    expect(result.gaps.find((g) => g.key === 'google.routeMatrix')).toBeUndefined();
   });
 
   it('never reports the uninstrumented Maps SDK as zero', async () => {

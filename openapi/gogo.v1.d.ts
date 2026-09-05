@@ -3233,10 +3233,12 @@ export interface paths {
          *       `confidence: MEDIUM`.
          *
          *     - **A provider whose price is unverified is absent from the money list
-         *       and present in `gaps`.** Routes bills per matrix element and no
-         *       per-element list price has been verified: its units are exact, its
-         *       money is unknown, and a floor with a currency symbol beside it would
-         *       be a false claim.
+         *       and present in `gaps`.** An operation whose units are counted but
+         *       whose list price is `null` is reported as `price_unknown`, never as
+         *       $0. (Routes was the standing example until COST-BE-031 verified its
+         *       Essentials price — $5.00 per 1,000 matrix elements after the 10,000
+         *       monthly cap; today the list holds only Maps SDK, which is not
+         *       instrumented at all.)
          *
          *     - **A provider nothing measures is in `gaps`, never at zero.** The Maps
          *       SDK renders on the handset; the backend sees no map load.

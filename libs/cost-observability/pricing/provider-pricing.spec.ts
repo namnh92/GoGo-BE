@@ -28,14 +28,26 @@ describe('pricing registry', () => {
     expect(pricingFor('google.somethingNew', TODAY)).toBeNull();
   });
 
-  it('returns null — not zero — for an operation whose price is unverified', () => {
-    // Routes bills per matrix element; the plan captured no per-element list
-    // price. The units are exact and the money is unknown, and unknown is the
-    // one thing a dashboard must not print as $0.
+  it('prices Routes per matrix element at the verified Essentials rate (#410)', () => {
+    // Routes bills per matrix element. COST-BE-031 verified the first paid
+    // tier ($5.00 / 1,000 after 10,000 free a month); the compat row carries
+    // it per thousand and the free cap per month.
     const row = pricingFor('google.routeMatrix', TODAY);
     expect(row?.googleSku).toBe('Routes API — Compute Route Matrix Essentials');
+    expect(row?.unit).toBe('element');
+    expect(row?.usdPer1000Micros).toBe(5_000_000);
+    expect(row?.freePerMonth).toBe(10_000);
+    expect(listCostMicros('google.routeMatrix', TODAY, 500)).toBe(2_500_000);
+  });
+
+  it('returns null — not zero — for an operation whose price is unverified', () => {
+    // The Maps SDK rows keep a rule with a null price: the SDK renders on the
+    // handset, nothing here counts a map load, and unknown is the one thing a
+    // dashboard must not print as $0.
+    const row = pricingFor('google.maps_sdk_ios', TODAY);
+    expect(row?.googleSku).toBe('Maps SDK for iOS — Dynamic Maps');
     expect(row?.usdPer1000Micros).toBeNull();
-    expect(listCostMicros('google.routeMatrix', TODAY, 500)).toBeNull();
+    expect(listCostMicros('google.maps_sdk_ios', TODAY, 500)).toBeNull();
   });
 
   it('keeps a measured zero at zero', () => {
@@ -106,7 +118,16 @@ describe('free-cap arithmetic (reporting only)', () => {
   });
 
   it('stays null where the price is unknown, cap or no cap', () => {
-    expect(freeCapAdjustedCostMicros('google.routeMatrix', TODAY, 50_000, 0)).toBeNull();
+    expect(freeCapAdjustedCostMicros('google.maps_sdk_ios', TODAY, 50_000, 0)).toBeNull();
+  });
+
+  it('applies the Routes cap per month, then $5 per 1,000 elements', () => {
+    // 50,000 elements with the month untouched: 10,000 free, 40,000 billable.
+    expect(freeCapAdjustedCostMicros('google.routeMatrix', TODAY, 50_000, 0)).toBe(200_000_000);
+    // Cap already spent: every element bills.
+    expect(freeCapAdjustedCostMicros('google.routeMatrix', TODAY, 50_000, 10_000)).toBe(
+      250_000_000,
+    );
   });
 });
 
@@ -134,9 +155,10 @@ describe('provider taxonomy', () => {
     // fixes it.
     expect(byKey['google.maps_sdk_ios']).toBe('not_instrumented');
     expect(byKey['google.maps_sdk_android']).toBe('not_instrumented');
-    // Routes is counted exactly and priced not at all: a number in the
-    // registry fixes it.
-    expect(byKey['google.routeMatrix']).toBe('price_unknown');
+    // Routes is counted exactly and, since #410, priced: it is no longer a
+    // gap of either kind.
+    expect(byKey['google.routeMatrix']).toBeUndefined();
+    expect(Object.keys(byKey).sort()).toEqual(['google.maps_sdk_android', 'google.maps_sdk_ios']);
   });
 });
 

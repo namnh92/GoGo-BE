@@ -548,21 +548,56 @@ export const PRICING_RULES: readonly PricingRule[] = [
     freeAllowance: monthlySku(10_000, 'request'),
     sourceReference: `${FETCHED}. Area autocomplete only (\`AREA_AUTOCOMPLETE\`); billed per request.`,
   }),
-  googleRule({
+  /**
+   * COST-BE-031 (#410) — Routes, Compute Route Matrix **Essentials**, priced.
+   *
+   * v1 (`…-2026-09-01-v1`) recorded the SKU and the free cap with
+   * `unitPriceMicros: null`. No day was ever priced with it — the estimator
+   * reported the SKU as `unpriced` and no ESTIMATED row exists for it in any
+   * environment — so it is replaced in place rather than closed with an
+   * `effectiveTo`; the "history is never re-priced" rule has no history here.
+   *
+   * Tier proof (`google-routes.adapter.ts`): the body is `origins` (one),
+   * `destinations`, `travelMode: 'DRIVE'`; no `routingPreference` (Google
+   * defaults to TRAFFIC_UNAWARE), no `extraComputations`, `routeModifiers`,
+   * `departureTime` or TWO_WHEELER, and the field mask is the Essentials set.
+   * `TRAFFIC_AWARE` would move the request to Pro (5,000 free, $10 / 1,000);
+   * ADR-0007 records leaving it unset. The adapter increments the cost meter
+   * by `destinations.length`, so the meter equals the billed quantity.
+   *
+   * ENGINE LIMIT, deliberate: Google bills cumulative monthly volume bands
+   * ($5.00 → $4.00 → $3.00 → $1.50 → $0.38 per 1,000). `estimateMicros`
+   * applies `TIERED` per row and restarts every day, and the compat view
+   * projects TIERED to `null`, so this rule carries the FIRST PAID TIER only.
+   * It is exact while month-to-date elements stay ≤ 100,000 and a **ceiling**
+   * above that; a consumer must not present it as exact past the first band.
+   * Cumulative tier support is its own change (epic §13).
+   */
+  {
+    id: 'google-routes.computeRouteMatrix-2026-09-01-v2',
+    providerId: 'google',
     serviceId: 'google.routes',
     operationId: 'google.routeMatrix',
     usageMetricId: 'google.routeMatrix/billable_elements',
     billingSkuId: 'routes.computeRouteMatrix',
+    region: null,
+    platform: null,
     effectiveFrom: '2026-09-01',
+    effectiveTo: null,
+    currency: 'USD',
     // Per 1,000 matrix elements — the model name says "requests" because the
-    // epic's list does; the meter's unit says what is counted.
+    // epic's list does; the meter's unit (`matrix_element`) says what is counted.
     pricingModel: 'PER_1K_REQUESTS',
-    // UNKNOWN, deliberately: the source records the SKU and the free cap and
-    // no per-element figure. 0 would say Routes is free; it is not.
-    unitPriceMicros: null,
+    // $5.00 per 1,000 elements: the first paid tier (10,001–100,000 / month).
+    unitPriceMicros: 5_000_000,
+    tiers: null,
+    // Essentials free cap — 10,000 elements per SKU per billing account per month.
     freeAllowance: monthlySku(10_000, 'matrix_element'),
-    sourceReference: `${FETCHED} records the SKU and the free cap but no per-element list price. UNKNOWN until one is verified — units are measured exactly, the money is not. Billed per matrix element, which is why the adapter increments by \`destinations.length\` and not by one.`,
-  }),
+    version: 'google-routes-2026-09-05-v2',
+    sourceReference:
+      'Google Maps Platform pricing — Routes API, Compute Route Matrix Essentials (developers.google.com/maps/billing-and-pricing/pricing, page updated 2026-09-01; billing rules developers.google.com/maps/documentation/routes/usage-and-billing), verified 2026-09-05: billable unit = element returned, elements = origins × destinations; free usage cap 10,000 elements/month; first paid tier $5.00 / 1,000; later volume tiers $4.00 / $3.00 / $1.50 / $0.38 per 1,000 are NOT modelled — exact only through the first paid tier (≤ 100,000 elements month-to-date), a ceiling above it. Essentials because the adapter sends no routingPreference (TRAFFIC_UNAWARE), travelMode DRIVE, no extraComputations / routeModifiers / departureTime, Essentials-only field mask; TRAFFIC_AWARE would be Pro (5,000 free, $10 / 1,000). Billed per matrix element, which is why the adapter increments by destinations.length and not by one.',
+    reviewedAt: '2026-09-05',
+  },
   googleRule({
     serviceId: 'google.places',
     operationId: 'google.expand',

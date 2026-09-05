@@ -250,7 +250,8 @@ describe('#315 — nothing about the store reaches the caller', () => {
     expect(summary.costModel.freeCapApplied).toBe(false);
     const gaps: { key: string; kind: string }[] = summary.costModel.measurementGaps;
     expect(gaps.find((g) => g.key === 'google.maps_sdk_ios')?.kind).toBe('not_instrumented');
-    expect(gaps.find((g) => g.key === 'google.routeMatrix')?.kind).toBe('price_unknown');
+    // Routes has a verified price since COST-BE-031 (#410); it is no longer a gap.
+    expect(gaps.find((g) => g.key === 'google.routeMatrix')).toBeUndefined();
   });
 });
 

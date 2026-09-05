@@ -255,31 +255,51 @@ describe('estimator → provider_cost_daily (epic §11, §25)', () => {
     quantity: number,
     over: Partial<{ day: string; source: string }> = {},
   ) {
-    const isRoutes = sku === 'routes.computeRouteMatrix';
+    // Three shapes: Routes (elements), the Maps SDK (map loads, price still
+    // unverified), and Places Details (the default).
+    const shape =
+      sku === 'routes.computeRouteMatrix'
+        ? {
+            service: 'google.routes',
+            operation: 'google.routeMatrix',
+            metric: 'billable_elements',
+            unit: 'matrix_element',
+          }
+        : sku === 'maps.dynamic.ios'
+          ? {
+              service: 'google.maps_sdk_ios',
+              operation: 'google.maps_sdk_ios',
+              metric: 'map_loads',
+              unit: 'map_load',
+            }
+          : {
+              service: 'google.places',
+              operation: 'google.details.quality',
+              metric: 'requests',
+              unit: 'request',
+            };
     await db.execute(sql`
       insert into provider_usage_meter_daily
         (day, environment, provider_id, service_id, operation_id, usage_metric_id, billing_sku_id,
          quantity, unit, source, confidence)
-      values (${over.day ?? TODAY}::date, ${ENV}, 'google',
-              ${isRoutes ? 'google.routes' : 'google.places'},
-              ${isRoutes ? 'google.routeMatrix' : 'google.details.quality'},
-              ${isRoutes ? 'billable_elements' : 'requests'}, ${sku},
-              ${quantity}, ${isRoutes ? 'matrix_element' : 'request'}, ${over.source ?? 'ledger'}, 'HIGH')
+      values (${over.day ?? TODAY}::date, ${ENV}, 'google', ${shape.service}, ${shape.operation},
+              ${shape.metric}, ${sku}, ${quantity}, ${shape.unit}, ${over.source ?? 'ledger'}, 'HIGH')
     `);
   }
 
   it('writes ESTIMATED rows for priced SKUs, none for unknown prices, and is idempotent', async () => {
     await seedUsage('places.details.enterprise', 1_100);
     await seedUsage('routes.computeRouteMatrix', 50);
+    await seedUsage('maps.dynamic.ios', 7);
     const estimator = new CostEstimatorService(db as never, { environment: ENV });
     const range = { from: `${TODAY.slice(0, 7)}-01`, to: TODAY };
 
     const first = await estimator.recompute(range);
-    expect(first.rowsWritten).toBe(1);
-    expect(first.unpriced).toEqual([{ billingSkuId: 'routes.computeRouteMatrix', day: TODAY }]);
+    expect(first.rowsWritten).toBe(2);
+    expect(first.unpriced).toEqual([{ billingSkuId: 'maps.dynamic.ios', day: TODAY }]);
 
     const second = await estimator.recompute(range);
-    expect(second).toMatchObject({ rowsWritten: 1, rowsDeleted: 1 });
+    expect(second).toMatchObject({ rowsWritten: 2, rowsDeleted: 2 });
 
     const rows = await costRows();
     expect(rows).toEqual([
@@ -291,6 +311,16 @@ describe('estimator → provider_cost_daily (epic §11, §25)', () => {
         source: ESTIMATOR_SOURCE,
         pricing_version: '2026-09-01',
         billable_quantity: 1_100,
+      }),
+      expect.objectContaining({
+        billing_sku_id: 'routes.computeRouteMatrix',
+        // 50 matrix elements inside the 10,000/month cap → a $0 row, not an
+        // absent one (COST-BE-031, #410).
+        amount_micros: 0,
+        basis: 'ESTIMATED',
+        source: ESTIMATOR_SOURCE,
+        pricing_version: '2026-09-01',
+        billable_quantity: 50,
       }),
     ]);
   });

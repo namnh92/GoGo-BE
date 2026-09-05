@@ -129,17 +129,27 @@ describe('PrometheusBackfillService (epic §25)', () => {
     });
 
     // The estimator prices the backfilled source on its own: 1,100 Enterprise
-    // Details, 1,000 free → 100 × $20/1k = $2.00; Routes stays unpriced.
+    // Details, 1,000 free → 100 × $20/1k = $2.00; Routes 25 + 14 elements sit
+    // inside the 10,000/month cap → two $0 rows (COST-BE-031, #410).
     const est = new CostEstimatorService(db as never, { environment: ENV });
     const result = await est.recompute({ from: '2026-09-01', to: '2026-09-02' });
-    expect(result.rowsWritten).toBe(1);
-    const cost = await db.execute(
-      sql`select amount_micros, basis, source, metadata from provider_cost_daily where environment = ${ENV}`,
-    );
-    expect(Number((cost.rows[0] as { amount_micros: number }).amount_micros)).toBe(2_000_000);
-    expect((cost.rows[0] as { metadata: { usageSource: string } }).metadata.usageSource).toBe(
-      BACKFILL_SOURCE,
-    );
+    expect(result.rowsWritten).toBe(3);
+    expect(result.unpriced).toEqual([]);
+    const cost = await db.execute(sql`
+      select billing_sku_id, amount_micros, basis, source, metadata from provider_cost_daily
+      where environment = ${ENV} order by billing_sku_id, day
+    `);
+    expect(
+      cost.rows.map((r) => [
+        (r as { billing_sku_id: string }).billing_sku_id,
+        Number((r as { amount_micros: number }).amount_micros),
+        (r as { metadata: { usageSource: string } }).metadata.usageSource,
+      ]),
+    ).toEqual([
+      ['places.details.enterprise', 2_000_000, BACKFILL_SOURCE],
+      ['routes.computeRouteMatrix', 0, BACKFILL_SOURCE],
+      ['routes.computeRouteMatrix', 0, BACKFILL_SOURCE],
+    ]);
   });
 
   it('refuses a range past the bound and never touches cost rows', async () => {
