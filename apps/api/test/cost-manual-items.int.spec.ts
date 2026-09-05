@@ -11,7 +11,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import {
   COST_REGISTRY,
-  daysInMonth,
+  addMonths,
   ManualCostService,
   manualCostSource,
   writeAudit,
@@ -21,10 +21,11 @@ import {
  * COST-BE-023 (#382) — manual / fixed costs against a real Postgres and the
  * booted app: the permission gate on every route, the registry as the only
  * judge of what may carry a manual cost, and the acceptance the issue
- * states — a MONTHLY item becomes MANUAL rows for the month, a changed
- * amount changes the rows, a deleted item leaves none, and every write has
- * an audit row with a diff. Then the same rows read back through the Cost
- * API as `manualMicros`, which is the point of materialising at all.
+ * states — a MONTHLY item becomes a MANUAL row on its billing day
+ * (COST-BE-034 / ADR-0015: a charge, not a daily share), a changed amount
+ * changes the row, a deleted item leaves none, and every write has an audit
+ * row with a diff. Then the same rows read back through the Cost API as
+ * `manualMicros`, which is the point of materialising at all.
  */
 
 let container: StartedPostgreSqlContainer;
@@ -42,6 +43,8 @@ const TODAY = new Date().toISOString().slice(0, 10);
 const MONTH = TODAY.slice(0, 7);
 const MONTH_START = `${MONTH}-01`;
 const DAY_OF_MONTH = Number(TODAY.slice(8, 10));
+/** The next 1st-of-month charge as of today: today itself on the 1st, else next month. */
+const NEXT_FIRST = DAY_OF_MONTH === 1 ? MONTH_START : `${addMonths(MONTH, 1)}-01`;
 const BASE = '/v1/cms/ops/costs/manual-items';
 
 async function createAdmin(role: 'editor' | 'moderator' | 'ops_admin' | 'super_admin') {
@@ -76,7 +79,8 @@ type Row = { day: string; provider_id: string; service_id: string; amount_micros
 async function manualRows(): Promise<Row[]> {
   const { rows } = await db.execute(sql`
     select to_char(day, 'YYYY-MM-DD') as day, provider_id, service_id, amount_micros::text as amount_micros,
-           basis, confidence, source, currency, metadata
+           basis, confidence, source, currency, cost_kind, billing_cadence,
+           period_amount_micros::text as period_amount_micros, metadata
     from provider_cost_daily
     where environment = ${ENV} and basis = 'MANUAL'
     order by day, source
@@ -225,11 +229,10 @@ describe('#382 — the registry decides who may carry a manual cost (epic §6, �
   });
 });
 
-describe('#382 — lifecycle: create → rows, change → rows change, delete → rows gone, all audited', () => {
+describe('#382 — lifecycle: create → row, change → row changes, delete → row gone, all audited', () => {
   let itemId = '';
-  const dailyShare = Math.round(30_000_000 / daysInMonth(MONTH));
 
-  it('creates a MONTHLY item and materialises one MANUAL row per day of the month so far', async () => {
+  it('creates a MONTHLY item and materialises one MANUAL row on its billing day, at the full fee', async () => {
     const res = await call('POST', BASE, 'ops_admin', monthlyItem, {
       'idempotency-key': 'manual-item-create-0001',
     });
@@ -244,27 +247,41 @@ describe('#382 — lifecycle: create → rows, change → rows change, delete �
       amountMicros: 30_000_000,
       currency: 'USD',
       period: 'MONTHLY',
+      // ADR-0015: the classification every cost source carries, and the next billing day.
+      costKind: 'RECURRING',
+      billingCadence: 'MONTHLY',
+      nextChargeDay: NEXT_FIRST,
       effectiveFrom: MONTH_START,
       effectiveTo: null,
       note: null,
     });
     expect(item.createdBy).toMatch(/^[0-9a-f-]{36}$/);
 
+    // One row, on the 1st, for the whole fee — not a share per elapsed day.
     const rows = await manualRows();
-    expect(rows).toHaveLength(DAY_OF_MONTH);
+    expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       day: MONTH_START,
       provider_id: 'apple',
       service_id: 'apple.developer_program',
-      amount_micros: String(dailyShare),
+      amount_micros: '30000000',
       basis: 'MANUAL',
       confidence: 'HIGH',
       currency: 'USD',
       source: manualCostSource(itemId),
+      cost_kind: 'RECURRING',
+      billing_cadence: 'MONTHLY',
+      period_amount_micros: '30000000',
     });
-    expect(rows.at(-1)?.day).toBe(TODAY);
     expect((rows[0] as unknown as { metadata: { itemId: string; name: string } }).metadata).toEqual(
-      expect.objectContaining({ itemId, name: 'Apple Developer Program', period: 'MONTHLY' }),
+      expect.objectContaining({
+        itemId,
+        name: 'Apple Developer Program',
+        period: 'MONTHLY',
+        costKind: 'RECURRING',
+        billingCadence: 'MONTHLY',
+        chargeDay: MONTH_START,
+      }),
     );
     // Nothing past today: a month-to-date is month-to-date.
     expect(rows.every((r) => r.day <= TODAY)).toBe(true);
@@ -278,14 +295,14 @@ describe('#382 — lifecycle: create → rows, change → rows change, delete �
     expect(again.json().item.id).toBe(itemId);
     const list = await call('GET', BASE, 'ops_admin');
     expect(list.json().items).toHaveLength(1);
-    expect((await manualRows()).length).toBe(DAY_OF_MONTH);
+    expect((await manualRows()).length).toBe(1);
   });
 
-  it('reads back through the Cost API as manualMicros / basis MANUAL on the provider and service rows', async () => {
+  it('reads back through the Cost API as manualMicros / basis MANUAL, and as a landed recurring charge in the forecast', async () => {
     const res = await call('GET', '/v1/cms/ops/costs/providers/apple?window=mtd', 'ops_admin');
     expect(res.statusCode).toBe(200);
     const provider = res.json().provider;
-    const expected = dailyShare * DAY_OF_MONTH;
+    const expected = 30_000_000;
     expect(provider).toMatchObject({
       providerId: 'apple',
       status: 'active',
@@ -309,8 +326,21 @@ describe('#382 — lifecycle: create → rows, change → rows change, delete �
       basis: 'MANUAL',
     });
     const overview = await call('GET', '/v1/cms/ops/costs?window=today', 'ops_admin');
-    expect(overview.json().cards.today.byBasis.MANUAL).toBe(dailyShare);
-    expect(overview.json().cards.monthToDate.byBasis.MANUAL).toBe(expected);
+    const { cards } = overview.json();
+    // The fee landed on the 1st: today's card carries it only on the 1st.
+    expect(cards.today.byBasis?.MANUAL ?? 0).toBe(DAY_OF_MONTH === 1 ? expected : 0);
+    expect(cards.monthToDate.byBasis.MANUAL).toBe(expected);
+    expect(cards.monthToDate.byKind).toEqual({ USAGE: 0, RECURRING: expected, ONE_TIME: 0 });
+    // ADR-0015: landed in full, nothing scheduled, a monthly run-rate input,
+    // and never multiplied by the days of the month.
+    expect(cards.forecast.recurring).toEqual({
+      landedMicros: expected,
+      scheduledMicros: 0,
+      committedMicros: expected,
+    });
+    expect(cards.forecast.scheduled).toEqual([]);
+    expect(cards.forecast.runRate.recurringMonthlyMicros).toBe(expected);
+    expect(cards.forecast.cash.floorMicros).toBe(expected);
   });
 
   it('changes the amount and every row follows; the audit diff names only what changed', async () => {
@@ -321,10 +351,8 @@ describe('#382 — lifecycle: create → rows, change → rows change, delete �
     expect(res.statusCode).toBe(200);
     expect(res.json().item).toMatchObject({ amountMicros: 60_000_000, note: 'renewed' });
     const rows = await manualRows();
-    expect(rows).toHaveLength(DAY_OF_MONTH);
-    expect(new Set(rows.map((r) => r.amount_micros))).toEqual(
-      new Set([String(Math.round(60_000_000 / daysInMonth(MONTH)))]),
-    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ amount_micros: '60000000', period_amount_micros: '60000000' });
     const trail = await audits();
     expect(trail.map((a) => a.action)).toEqual([
       'cost.manual_item.created',
@@ -346,7 +374,7 @@ describe('#382 — lifecycle: create → rows, change → rows change, delete �
     expect((await call('PATCH', `${BASE}/${itemId}`, 'ops_admin', {})).statusCode).toBe(400);
   });
 
-  it('moves the item to another service and shortens its range: old rows go, only the covered days stay', async () => {
+  it('moves the item to another service and shortens its range: the old row goes, the billed day stays', async () => {
     const res = await call('PATCH', `${BASE}/${itemId}`, 'ops_admin', {
       providerId: 'hosting',
       serviceId: 'hosting.vps',
@@ -412,13 +440,20 @@ describe('#382 — periods and idempotent rebuilds (service level, frozen clock)
     });
   const rowsOf = async () => {
     const { rows } = await db.execute(sql`
-      select to_char(day, 'YYYY-MM-DD') as day, source, amount_micros::text as amount_micros
+      select to_char(day, 'YYYY-MM-DD') as day, source, amount_micros::text as amount_micros,
+             cost_kind, billing_cadence
       from provider_cost_daily where environment = ${SVC_ENV} order by day, source
     `);
-    return rows as unknown as { day: string; source: string; amount_micros: string }[];
+    return rows as unknown as {
+      day: string;
+      source: string;
+      amount_micros: string;
+      cost_kind: string;
+      billing_cadence: string | null;
+    }[];
   };
 
-  it('YEARLY spreads over the year, ONE_TIME lands once, a future item has no rows yet, and a rebuild is a no-op', async () => {
+  it('YEARLY lands once a year, ONE_TIME once, a future item has no rows yet, and a rebuild is a no-op', async () => {
     const jan10 = svc('2026-01-10T09:00:00Z');
     const yearly = await jan10.create(
       {
@@ -455,14 +490,28 @@ describe('#382 — periods and idempotent rebuilds (service level, frozen clock)
       { adminId: null },
     );
     const rows = await rowsOf();
-    expect(rows.filter((r) => r.source === manualCostSource(yearly.id))).toHaveLength(10);
-    expect(rows.filter((r) => r.source === manualCostSource(yearly.id))[0]?.amount_micros).toBe(
-      '100000',
-    );
-    expect(rows.filter((r) => r.source === manualCostSource(once.id))).toEqual([
-      { day: '2026-01-05', source: manualCostSource(once.id), amount_micros: '5000000' },
+    // The annual fee is one row on its renewal date, whole — not 1/365 a day.
+    expect(rows.filter((r) => r.source === manualCostSource(yearly.id))).toEqual([
+      {
+        day: '2026-01-01',
+        source: manualCostSource(yearly.id),
+        amount_micros: '36500000',
+        cost_kind: 'RECURRING',
+        billing_cadence: 'ANNUAL',
+      },
     ]);
-    expect(rows).toHaveLength(11);
+    expect(rows.filter((r) => r.source === manualCostSource(once.id))).toEqual([
+      {
+        day: '2026-01-05',
+        source: manualCostSource(once.id),
+        amount_micros: '5000000',
+        cost_kind: 'ONE_TIME',
+        billing_cadence: null,
+      },
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(yearly.nextChargeDay).toBe('2027-01-01');
+    expect(once.nextChargeDay).toBeNull();
 
     // Nothing changed → nothing written, nothing deleted.
     expect(await jan10.materialise()).toMatchObject({
@@ -472,21 +521,21 @@ describe('#382 — periods and idempotent rebuilds (service level, frozen clock)
       rowsWritten: 0,
       rowsDeleted: 0,
     });
-    // The clock moves: the worker's daily pass adds the new days (Jan 11 →
-    // Feb 2 = 23 for the yearly item), and the February item starts (2).
+    // The clock moves: the worker's daily pass lands the February VPS fee
+    // (Feb 1) and nothing else — the annual fee's next date is 2027.
     expect(await svc('2026-02-02T09:00:00Z').materialise()).toMatchObject({
-      rowsWritten: 23 + 2,
+      rowsWritten: 1,
       rowsDeleted: 0,
     });
-    // Ending the yearly item early drops the rows past its end.
+    // Moving the yearly anchor drops the old billing-day row and lands the new one.
     await svc('2026-02-02T09:00:00Z').update(
       yearly.id,
-      { effectiveTo: '2026-01-03' },
+      { effectiveFrom: '2026-01-15' },
       { adminId: null },
     );
-    expect((await rowsOf()).filter((r) => r.source === manualCostSource(yearly.id))).toHaveLength(
-      3,
-    );
+    expect(
+      (await rowsOf()).filter((r) => r.source === manualCostSource(yearly.id)).map((r) => r.day),
+    ).toEqual(['2026-01-15']);
     // An orphaned row (item gone from the table by other means) is swept.
     await db.execute(sql`delete from manual_cost_items where id = ${once.id}`);
     expect(await svc('2026-02-02T09:00:00Z').materialise()).toMatchObject({ rowsDeleted: 1 });

@@ -8,6 +8,7 @@ import {
   type FreeAllowance,
   type PricingRule,
 } from '../pricing/pricing-rules';
+import type { BillingCadence, CostKind } from '../domain/budget';
 
 /**
  * COST-BE-016 (#368) — the generic estimator (epic §7 `CostEstimator`, §11,
@@ -62,10 +63,42 @@ export type EstimatedCostRow = {
   amountMicros: number;
   currency: string;
   pricingVersion: string;
+  /**
+   * ADR-0015 — how the priced SKU is billed. Everything priced per unit is
+   * USAGE; a `FIXED_MONTHLY` / `FIXED_ANNUAL` rule is a subscription and
+   * its row says so, with the period's charge, so no forecast averages it.
+   */
+  costKind: CostKind;
+  billingCadence: BillingCadence | null;
+  periodAmountMicros: number | null;
   /** Which usage source this estimate was priced from. */
   usageSource: string;
   metadata: { listMicros: number; allowancePriorQuantity: number; ruleId: string };
 };
+
+/** The row classification a pricing rule implies (ADR-0015). */
+export function classifyRule(rule: Pick<PricingRule, 'pricingModel' | 'unitPriceMicros'>): {
+  costKind: CostKind;
+  billingCadence: BillingCadence | null;
+  periodAmountMicros: number | null;
+} {
+  switch (rule.pricingModel) {
+    case 'FIXED_MONTHLY':
+      return {
+        costKind: 'RECURRING',
+        billingCadence: 'MONTHLY',
+        periodAmountMicros: rule.unitPriceMicros,
+      };
+    case 'FIXED_ANNUAL':
+      return {
+        costKind: 'RECURRING',
+        billingCadence: 'ANNUAL',
+        periodAmountMicros: rule.unitPriceMicros,
+      };
+    default:
+      return { costKind: 'USAGE', billingCadence: null, periodAmountMicros: null };
+  }
+}
 
 export type EstimatePlan = {
   rows: EstimatedCostRow[];
@@ -159,6 +192,7 @@ export function planEstimates(
       amountMicros: estimate.freeAdjustedMicros,
       currency: rule.currency,
       pricingVersion,
+      ...classifyRule(rule),
       usageSource: row.source,
       metadata: { listMicros: estimate.listMicros, allowancePriorQuantity: prior, ruleId: rule.id },
     });
@@ -235,13 +269,13 @@ export class CostEstimatorService {
       if (plan.rows.length === 0) return;
       const values = plan.rows.map(
         (r) =>
-          sql`(${r.day}::date, ${env}, ${r.providerId}, ${r.serviceId}, ${r.operationId}, ${r.usageMetricId}, ${r.billingSkuId}, ${r.billableQuantity}, ${r.billableUnit}, ${r.amountMicros}, ${r.currency}, 'ESTIMATED', 'MEDIUM', ${ESTIMATOR_SOURCE}, ${r.pricingVersion}, now(), ${JSON.stringify({ ...r.metadata, usageSource: r.usageSource })}::jsonb)`,
+          sql`(${r.day}::date, ${env}, ${r.providerId}, ${r.serviceId}, ${r.operationId}, ${r.usageMetricId}, ${r.billingSkuId}, ${r.billableQuantity}, ${r.billableUnit}, ${r.amountMicros}, ${r.currency}, 'ESTIMATED', 'MEDIUM', ${ESTIMATOR_SOURCE}, ${r.costKind}, ${r.billingCadence}, ${r.periodAmountMicros}, ${r.pricingVersion}, now(), ${JSON.stringify({ ...r.metadata, usageSource: r.usageSource })}::jsonb)`,
       );
       await tx.execute(sql`
         insert into provider_cost_daily
           (day, environment, provider_id, service_id, operation_id, usage_metric_id, billing_sku_id,
            billable_quantity, billable_unit, amount_micros, currency, basis, confidence, source,
-           pricing_version, collected_at, metadata)
+           cost_kind, billing_cadence, period_amount_micros, pricing_version, collected_at, metadata)
         values ${sql.join(values, sql`, `)}
       `);
     });

@@ -330,11 +330,11 @@ describe('estimator → provider_cost_daily (epic §11, §25)', () => {
     await db.execute(sql`
       insert into provider_cost_daily
         (day, environment, provider_id, service_id, billing_sku_id, amount_micros, currency,
-         basis, confidence, source)
+         basis, confidence, source, cost_kind)
       values (${TODAY}::date, ${ENV}, 'google', 'google.places', 'places.details.enterprise',
-              8_310_000, 'USD', 'ACTUAL', 'HIGH', 'gcp_billing_export'),
+              8_310_000, 'USD', 'ACTUAL', 'HIGH', 'gcp_billing_export', 'USAGE'),
              (${TODAY}::date, ${ENV}, 'google', 'google.places', 'places.details.enterprise',
-              1, 'USD', 'ESTIMATED', 'LOW', 'prometheus_backfill')
+              1, 'USD', 'ESTIMATED', 'LOW', 'prometheus_backfill', 'USAGE')
     `);
     const estimator = new CostEstimatorService(db as never, { environment: ENV });
     await estimator.recompute({ from: TODAY, to: TODAY });

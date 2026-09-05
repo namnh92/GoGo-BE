@@ -173,6 +173,8 @@ export function awsCostSamples(
       basis: 'ACTUAL' as const,
       confidence: b.estimated ? ('MEDIUM' as const) : ('HIGH' as const),
       source: AWS_SOURCE,
+      // Cost Explorer's UnblendedCost is metered spend per day (ADR-0015).
+      costKind: 'USAGE' as const,
       sourceAsOf: ctx.now,
       metadata: {
         metric: 'UnblendedCost',

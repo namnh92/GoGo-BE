@@ -3222,7 +3222,7 @@ export interface paths {
          * Ops: Cost Center overview — cards, registry-keyed provider rows, legacy #335 lines
          * @description Backed by `provider_usage_daily` since #335 — a per-day, per-environment record of what each provider operation actually did, priced against a versioned list price. It survives deploys, which is what lets it answer "today" and "month to date"; the in-process counter it replaced could not.
          *
-         *     **COST-BE-022 (#381)** adds the epic §35 Cost Center on top of that payload: `cards` (today, month-to-date, projected month, budget, unknown providers/services, cost of monitoring) and `providerRows` — one row per provider in the cost registry with its services nested, each carrying usage meters, estimated / actual / fixed / manual money after epic §12 precedence (ACTUAL beats ESTIMATED for the same spend and the two are never added), a basis, a confidence, a `costStatus`, and per-row freshness from `cost_source_freshness`. An unknown cost is `spendMicros: null` with `costStatus: UNKNOWN`, never 0; a `0` appears only as `MEASURED_ZERO` — an instrumented service under a FRESH or STALE source that counted nothing. A provider added to the registry appears as a row with no API or CMS change (epic §44.2).
+         *     **COST-BE-022 (#381)** adds the epic §35 Cost Center on top of that payload: `cards` (today, month-to-date, the ADR-0015 forecast — month actual / end-of-month cash / normalised run-rate — budget, unknown providers/services, cost of monitoring) and `providerRows` — one row per provider in the cost registry with its services nested, each carrying usage meters, estimated / actual / fixed / manual money after epic §12 precedence (ACTUAL beats ESTIMATED for the same spend and the two are never added), a basis, a confidence, a `costStatus`, and per-row freshness from `cost_source_freshness`. An unknown cost is `spendMicros: null` with `costStatus: UNKNOWN`, never 0; a `0` appears only as `MEASURED_ZERO` — an instrumented service under a FRESH or STALE source that counted nothing. A provider added to the registry appears as a row with no API or CMS change (epic §44.2).
          *
          *     The legacy fields keep their #335 rules, one release, for the deployed dashboard (re-vendor is COST-CMS-009) and are deprecated:
          *
@@ -3366,7 +3366,7 @@ export interface paths {
         };
         /**
          * Ops: Cost Center — manual / fixed cost items, and the services one may name
-         * @description COST-BE-023 (#382), epic §27. Items for this deployment (Apple Developer, a domain, a VPS…), each a fee per period over an effective range, entered by hand and never collected. Every item is materialised into `provider_cost_daily` as MANUAL rows — one per covered day, up to today — so it shows in the Cost API, budgets and forecast beside estimated and actual spend; per-test deltas never include it.
+         * @description COST-BE-023 (#382), epic §27. Items for this deployment (Apple Developer, a domain, a VPS…), each a fee per period over an effective range, entered by hand and never collected. Every item is materialised into `provider_cost_daily` as MANUAL rows — one per billing day at the full fee, up to today (COST-BE-034, ADR-0015) — so it shows in the Cost API and budgets beside estimated and actual spend, and what it still bills this month is the forecast's schedule; per-test deltas never include it.
          *
          *     `eligibleServices` is the registry's list of services that declare `MANUAL_COST` (own or inherited): the form's provider/service picker, so a new manual provider appears here with no CMS change (§44.2).
          */
@@ -4065,6 +4065,8 @@ export interface components {
             /** @description Null when no cost row is in scope — unknown, not zero. */
             spendMicros: number | null;
             byBasis: components["schemas"]["CmsCostByBasis"] | null;
+            /** @description The same money by how it is billed (ADR-0015); null with `spendMicros`. */
+            byKind: components["schemas"]["CmsCostByKind"] | null;
             currency: string | null;
             mixedCurrency: boolean;
             /** @description How many services contributed a row. */
@@ -4076,7 +4078,7 @@ export interface components {
             /** @description Registry provider or service id; null for TOTAL. */
             id: string | null;
         };
-        /** @description COST-BE-020 (#379) — one budget's month, epic §32/§33. */
+        /** @description COST-BE-020 (#379) — one budget's month, epic §32/§33 as amended by COST-BE-034 (ADR-0015): the projection is the scope's end-of-month cash forecast, never an extrapolation of the month so far. */
         CmsCostBudgetStatus: {
             scope: components["schemas"]["CmsCostBudgetScope"];
             monthMicros: number;
@@ -4084,14 +4086,110 @@ export interface components {
             remainingMicros: number;
             /** @description Two decimals. Null only when the budget is 0 and spend is positive — the ratio is unbounded and JSON has no infinity. */
             usedPct: number | null;
-            /** @description Null under three elapsed days or with no rows (epic §33). */
+            /** @description End-of-month cash forecast for the scope: usage projection + recurring charges billed this month + one-offs. Null while the usage half cannot be projected (`CmsCostForecast.usage.reason`). */
             projectedMicros: number | null;
             projectedPct: number | null;
+            /** @description The known part of the projection — recurring + one-time charges of the month. A floor above the budget is `projected_exceed` even while `projectedMicros` is null. */
+            projectedFloorMicros: number;
+            /** @description Normalised monthly run-rate for the scope (annual fees ÷ 12, one-offs excluded). */
+            runRateMicros: number | null;
             /** @enum {string} */
             state: "ok" | "warning" | "exceeded" | "projected_exceed";
             currency: string;
         };
-        /** @description Epic §35 overview cards. Month-shaped whatever the window. */
+        /**
+         * @description COST-BE-034 (#415, ADR-0015) — how a charge is billed. USAGE is usage × price and the only kind a forecast may extrapolate from the elapsed period; RECURRING is a subscription with a `CmsBillingCadence`; ONE_TIME is paid once, counted once, never a run-rate input.
+         * @enum {string}
+         */
+        CmsCostKind: "USAGE" | "RECURRING" | "ONE_TIME";
+        /** @enum {string} */
+        CmsBillingCadence: "MONTHLY" | "ANNUAL";
+        CmsCostByKind: {
+            USAGE: number;
+            RECURRING: number;
+            ONE_TIME: number;
+        };
+        /** @description A charge of the month that has not landed yet. */
+        CmsCostScheduledCharge: {
+            /** @description The row source it will land under (`manual_cost_items:<id>`, `<source>|<provider>|<service>`). */
+            key: string;
+            providerId: string;
+            serviceId: string;
+            /** @description The manual item's name; null for a model. */
+            name: string | null;
+            /** @enum {string} */
+            kind: "RECURRING" | "ONE_TIME";
+            cadence: components["schemas"]["CmsBillingCadence"] | null;
+            /**
+             * Format: date
+             * @description The billing date; null for a model that accrues across the month with no single day.
+             */
+            day: string | null;
+            amountMicros: number;
+            currency: string;
+        };
+        /** @description COST-BE-034 (#415, ADR-0015) — epic §33 rebuilt on billing semantics. Three numbers kept apart: `actual` (recognised so far this month), `cash` (what the month's invoices will total: the USAGE projection + every RECURRING charge billed in the month + every ONE_TIME charge of the month) and `runRate` (a normalised month: the USAGE projection + active MONTHLY fees + active ANNUAL fees ÷ 12, one-offs excluded). Only `usage.projectedMicros` is extrapolated from the elapsed period; an annual fee is in `cash` only in its renewal month and in `runRate` always, as a twelfth. Nothing here is derived from the MTD total. */
+        CmsCostForecast: {
+            /** @example 2026-09 */
+            month: string;
+            /** Format: date */
+            today: string;
+            elapsedDays: number;
+            daysInMonth: number;
+            /** @description Below this many elapsed days the usage half is null. */
+            minElapsedDays: number;
+            /** @description Recognised so far this month, after epic §12 precedence. */
+            actual: {
+                micros: number;
+                byKind: components["schemas"]["CmsCostByKind"];
+            };
+            usage: {
+                mtdMicros: number;
+                /** @description USAGE month-to-date ÷ elapsed days × days in month; null with a `reason`. */
+                projectedMicros: number | null;
+                /**
+                 * @description Why `projectedMicros` is null — or `NOT_APPLICABLE` when nothing in scope produces usage and the usage half is a known 0 (a manual-only provider).
+                 * @enum {string|null}
+                 */
+                reason: "INSUFFICIENT_HISTORY" | "NO_USAGE_ROWS" | "NOT_APPLICABLE" | null;
+            };
+            recurring: {
+                landedMicros: number;
+                /** @description Still to be billed this month, from the schedule — never from an average. */
+                scheduledMicros: number;
+                /** @description Landed + scheduled. */
+                committedMicros: number;
+            };
+            oneTime: {
+                landedMicros: number;
+                scheduledMicros: number;
+            };
+            /** @description Charges of this month that have not landed yet, soonest first. */
+            scheduled: components["schemas"]["CmsCostScheduledCharge"][];
+            /** @description End-of-month cash forecast. */
+            cash: {
+                /** @description `usage.projectedMicros + recurring.committedMicros + oneTime`; null while the usage half is. */
+                micros: number | null;
+                /** @description The known part — recurring committed + one-time. Always a number. */
+                floorMicros: number;
+                /** @description True when `micros` is null because the usage half cannot be projected yet. */
+                partial: boolean;
+            };
+            /** @description Normalised monthly run-rate. */
+            runRate: {
+                micros: number | null;
+                usageMicros: number | null;
+                recurringMonthlyMicros: number;
+                /** @description Active ANNUAL fees ÷ 12 — shown as run-rate, never added to cash. */
+                annualEquivalentMicros: number;
+                /** @description What the month's one-offs would have added had they been treated as run-rate. Informational. */
+                oneTimeExcludedMicros: number;
+            };
+            currency: string | null;
+            /** @description More than one currency across rows and schedule — the totals are null, the parts still listed. */
+            mixedCurrency: boolean;
+        };
+        /** @description Epic §35 overview cards. Month-shaped whatever the window. `projected` (MTD daily average × days) was replaced by `forecast` in COST-BE-034. */
         CmsCostCards: {
             today: components["schemas"]["CmsCostCard"] & {
                 /** Format: date */
@@ -4101,14 +4199,7 @@ export interface components {
                 /** @example 2026-09 */
                 month: string;
             };
-            projected: {
-                /** @description MTD daily average × days in the month; null under `minElapsedDays`. */
-                micros: number | null;
-                month: string;
-                elapsedDays: number;
-                minElapsedDays: number;
-                currency: string | null;
-            };
+            forecast: components["schemas"]["CmsCostForecast"];
             budget: {
                 /** @description The TOTAL scope, null when none is set. */
                 total: components["schemas"]["CmsCostBudgetStatus"] | null;
@@ -4198,11 +4289,11 @@ export interface components {
             unpriced: string[];
         };
         /**
-         * @description How `amountMicros` recurs. MONTHLY is spread over the days of each month it covers, YEARLY over each year, ONE_TIME lands whole on `effectiveFrom`.
+         * @description How `amountMicros` recurs — the operator's word for the row classification (`costKind` / `billingCadence`, ADR-0015). MONTHLY bills on the anchor day of each month (the day-of-month of `effectiveFrom`, clamped to shorter months), YEARLY on the renewal date each year (Feb 29 → Feb 28), ONE_TIME once on `effectiveFrom`. Nothing is spread over days.
          * @enum {string}
          */
         CmsManualCostPeriod: "ONE_TIME" | "MONTHLY" | "YEARLY";
-        /** @description COST-BE-023 (#382), epic §27 — a fee entered by hand. Money is micros of `currency` per period, never a daily share; the daily rows are derived (`provider_cost_daily`, basis MANUAL, confidence HIGH, source `manual_cost_items:<id>`). */
+        /** @description COST-BE-023 (#382), epic §27 — a fee entered by hand. Money is micros of `currency` per period, never a daily share; the rows are derived (`provider_cost_daily`, basis MANUAL, confidence HIGH, source `manual_cost_items:<id>`), one per billing day at the full amount (COST-BE-034, ADR-0015). */
         CmsManualCostItem: {
             /** Format: uuid */
             id: string;
@@ -4216,8 +4307,15 @@ export interface components {
             currency: string;
             period: components["schemas"]["CmsManualCostPeriod"];
             /**
+             * @description Derived from `period` — the classification every cost source carries (ADR-0015).
+             * @enum {string}
+             */
+            costKind: "RECURRING" | "ONE_TIME";
+            /** @description MONTHLY for a MONTHLY period, ANNUAL for YEARLY, null for ONE_TIME. */
+            billingCadence: components["schemas"]["CmsBillingCadence"] | null;
+            /**
              * Format: date
-             * @description Inclusive.
+             * @description Inclusive. Also the billing anchor — its day-of-month (MONTHLY) or month-day (YEARLY).
              */
             effectiveFrom: string;
             /**
@@ -4225,6 +4323,11 @@ export interface components {
              * @description Inclusive; null = open-ended. Ignored for ONE_TIME.
              */
             effectiveTo: string | null;
+            /**
+             * Format: date
+             * @description The first billing day on or after today; null when no charge is ahead.
+             */
+            nextChargeDay: string | null;
             note: string | null;
             /** Format: uuid */
             createdBy: string | null;

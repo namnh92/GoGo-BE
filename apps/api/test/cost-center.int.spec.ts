@@ -78,16 +78,21 @@ async function cost(over: {
   confidence?: string;
   source?: string;
 }) {
+  // ADR-0015: a row says how it is billed. Usage for the priced bases, the
+  // monitoring model as a monthly commitment, a hand-typed row as a one-off.
+  const basis = over.basis ?? 'ESTIMATED';
+  const kind = basis === 'FIXED' ? 'RECURRING' : basis === 'MANUAL' ? 'ONE_TIME' : 'USAGE';
   await db.execute(sql`
     insert into provider_cost_daily
       (day, environment, provider_id, service_id, operation_id, usage_metric_id, billing_sku_id,
-       amount_micros, currency, basis, confidence, source)
+       amount_micros, currency, basis, confidence, source, cost_kind, billing_cadence, period_amount_micros)
     values (${TODAY}::date, ${ENV}, ${over.provider ?? 'google'}, ${over.service ?? 'google.places'},
             ${over.operation === undefined ? 'google.details.quality' : over.operation},
             ${over.metric === undefined ? 'requests' : over.metric},
             ${over.sku === undefined ? 'places.details.enterprise' : over.sku},
-            ${over.amount}, 'USD', ${over.basis ?? 'ESTIMATED'}, ${over.confidence ?? 'MEDIUM'},
-            ${over.source ?? 'estimator'})
+            ${over.amount}, 'USD', ${basis}, ${over.confidence ?? 'MEDIUM'},
+            ${over.source ?? 'estimator'}, ${kind}, ${kind === 'RECURRING' ? 'MONTHLY' : null},
+            ${kind === 'RECURRING' ? over.amount : null})
   `);
 }
 
@@ -304,22 +309,65 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
     expect(body.unattributed).toEqual({ providerIds: [], serviceIds: [] });
   });
 
-  it('cards: today and MTD after precedence, projected per §33, budget, unknown, cost of monitoring', async () => {
+  it('cards: today and MTD after precedence, the ADR-0015 forecast, budget, unknown, cost of monitoring', async () => {
     const { cards } = (await get('/v1/cms/ops/costs', 'ops_admin')).json();
     // Places actual 8.31 (estimate 8.20 shadowed, never added) + monitoring 0.01.
     expect(cards.monthToDate).toMatchObject({
       spendMicros: 8_320_000,
       byBasis: { ACTUAL: 8_310_000, ESTIMATED: 0, FIXED: 10_000, MANUAL: 0 },
+      byKind: { USAGE: 8_310_000, RECURRING: 10_000, ONE_TIME: 0 },
       currency: 'USD',
       mixedCurrency: false,
       services: 2,
       month: MONTH,
     });
     expect(cards.today).toMatchObject({ spendMicros: 8_320_000, day: TODAY });
-    expect(cards.projected.month).toBe(MONTH);
-    expect(cards.projected.minElapsedDays).toBe(3);
-    if (cards.projected.elapsedDays < 3) expect(cards.projected.micros).toBeNull();
-    else expect(cards.projected.micros).toBeGreaterThan(0);
+    expect(cards.projected).toBeUndefined();
+    const { forecast } = cards;
+    expect(forecast.month).toBe(MONTH);
+    expect(forecast.today).toBe(TODAY);
+    expect(forecast.minElapsedDays).toBe(3);
+    expect(forecast.actual).toEqual({
+      micros: 8_320_000,
+      byKind: { USAGE: 8_310_000, RECURRING: 10_000, ONE_TIME: 0 },
+    });
+    // The monitoring row declares its month (0.01, seeded as its own period
+    // amount) — landed in full, nothing scheduled, never averaged.
+    expect(forecast.recurring).toEqual({
+      landedMicros: 10_000,
+      scheduledMicros: 0,
+      committedMicros: 10_000,
+    });
+    expect(forecast.oneTime).toEqual({ landedMicros: 0, scheduledMicros: 0 });
+    expect(forecast.cash.floorMicros).toBe(10_000);
+    if (forecast.elapsedDays < 3) {
+      expect(forecast.usage).toMatchObject({
+        projectedMicros: null,
+        reason: 'INSUFFICIENT_HISTORY',
+      });
+      expect(forecast.cash).toMatchObject({ micros: null, partial: true });
+      expect(forecast.runRate.micros).toBeNull();
+    } else {
+      const projectedUsage = Math.ceil((8_310_000 / forecast.elapsedDays) * forecast.daysInMonth);
+      expect(forecast.usage).toEqual({
+        mtdMicros: 8_310_000,
+        projectedMicros: projectedUsage,
+        reason: null,
+      });
+      expect(forecast.cash).toEqual({
+        micros: projectedUsage + 10_000,
+        floorMicros: 10_000,
+        partial: false,
+      });
+      expect(forecast.runRate).toMatchObject({
+        micros: projectedUsage + 10_000,
+        usageMicros: projectedUsage,
+        recurringMonthlyMicros: 10_000,
+        annualEquivalentMicros: 0,
+        oneTimeExcludedMicros: 0,
+      });
+    }
+    expect(forecast.scheduled).toEqual([]);
     expect(cards.budget.total).toMatchObject({
       scope: { kind: 'TOTAL', id: null },
       monthMicros: 1_000_000_000,

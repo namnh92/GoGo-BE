@@ -154,8 +154,8 @@ describe('PrometheusBackfillService (epic §25)', () => {
 
   it('refuses a range past the bound and never touches cost rows', async () => {
     await db.execute(sql`
-      insert into provider_cost_daily (day, environment, provider_id, service_id, billing_sku_id, amount_micros, currency, basis, confidence, source)
-      values ('2026-09-01', ${ENV}, 'google', 'google.places', 'places.details.enterprise', 8_310_000, 'USD', 'ACTUAL', 'HIGH', 'gcp_billing_export')
+      insert into provider_cost_daily (day, environment, provider_id, service_id, billing_sku_id, amount_micros, currency, basis, confidence, source, cost_kind)
+      values ('2026-09-01', ${ENV}, 'google', 'google.places', 'places.details.enterprise', 8_310_000, 'USD', 'ACTUAL', 'HIGH', 'gcp_billing_export', 'USAGE')
     `);
     const backfill = new PrometheusBackfillService(db as never, fakeMetrics({}), writeAudit);
     await expect(
@@ -181,8 +181,8 @@ describe('ReconciliationService (epic §26)', () => {
       service = 'google.places',
     ) =>
       db.execute(sql`
-        insert into provider_cost_daily (day, environment, provider_id, service_id, operation_id, usage_metric_id, billing_sku_id, amount_micros, currency, basis, confidence, source)
-        values (${day}::date, ${ENV}, 'google', ${service}, ${sku === null ? null : 'google.details.quality'}, ${sku === null ? null : 'requests'}, ${sku}, ${amount}, 'USD', ${basis}, ${basis === 'ACTUAL' ? 'HIGH' : 'MEDIUM'}, ${source})
+        insert into provider_cost_daily (day, environment, provider_id, service_id, operation_id, usage_metric_id, billing_sku_id, amount_micros, currency, basis, confidence, source, cost_kind)
+        values (${day}::date, ${ENV}, 'google', ${service}, ${sku === null ? null : 'google.details.quality'}, ${sku === null ? null : 'requests'}, ${sku}, ${amount}, 'USD', ${basis}, ${basis === 'ACTUAL' ? 'HIGH' : 'MEDIUM'}, ${source}, 'USAGE')
       `);
     await ins('2026-09-01', 'places.details.enterprise', 8_200_000, 'ESTIMATED', 'estimator');
     await ins('2026-09-01', 'places.details.enterprise', 8_310_000, 'ACTUAL', 'gcp_billing_export');

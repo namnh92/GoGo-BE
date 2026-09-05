@@ -376,15 +376,22 @@ export class CollectorSchedulerService {
       overBudget: m.overBudget,
       collectors: this.enabledCollectors().map((c) => c.id),
     });
+    // ADR-0015: the model declares a monthly amount, so its rows are RECURRING
+    // MONTHLY with that amount as the period's charge; the forecast reads
+    // what is still to come from `period_amount_micros`, not from an average
+    // of the daily shares so far.
     await this.db.execute(sql`
       insert into provider_cost_daily
         (day, environment, provider_id, service_id, amount_micros, currency, basis, confidence, source,
-         collected_at, metadata)
+         cost_kind, billing_cadence, period_amount_micros, collected_at, metadata)
       values (${day}::date, ${this.options.environment}, 'gogo', 'gogo.cost_observability', ${daily}, ${m.currency},
-              'FIXED', ${m.unknown.length > 0 ? 'LOW' : 'HIGH'}, 'monitoring_cost_model', now(), ${metadata}::jsonb)
+              'FIXED', ${m.unknown.length > 0 ? 'LOW' : 'HIGH'}, 'monitoring_cost_model',
+              'RECURRING', 'MONTHLY', ${m.knownMonthlyMicros}, now(), ${metadata}::jsonb)
       on conflict (day, environment, provider_id, service_id, coalesce(operation_id, ''),
                    coalesce(usage_metric_id, ''), coalesce(billing_sku_id, ''), source, basis)
       do update set amount_micros = excluded.amount_micros, confidence = excluded.confidence,
+                    cost_kind = excluded.cost_kind, billing_cadence = excluded.billing_cadence,
+                    period_amount_micros = excluded.period_amount_micros,
                     metadata = excluded.metadata, collected_at = now(), updated_at = now()
     `);
   }

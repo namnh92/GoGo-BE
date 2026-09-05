@@ -72,15 +72,24 @@ export type CostDataFacts = {
   sourceStatus: FreshnessStatus | null;
   /** Days (`YYYY-MM-DD`) of the cost rows behind the row — MANUAL basis apart from the rest. */
   rowDays: { manual: readonly string[]; automatic: readonly string[] };
+  /**
+   * ADR-0015 — the billing days, up to and including today, of the manual
+   * items in scope: what the materialiser is expected to have written. A
+   * MANUAL row is a charge on its billing day, not a daily share, so "a row
+   * for today" says nothing; "a row for every day that was due" does.
+   */
+  expectedManualDays: readonly string[];
   today: string;
 };
 
 /**
  * - NONE: nothing to be current → `null`.
- * - MANUAL: judged by the materialised rows alone — a collector's health says
- *   nothing about a fee. A row for today → FRESH; older rows only → STALE
- *   (the item expired, or materialisation stopped); no rows → `null`: nothing
- *   was entered, and that is not a failure.
+ * - MANUAL: judged by the materialised rows against the items' schedule — a
+ *   collector's health says nothing about a fee. Every billing day due so far
+ *   has its row → FRESH; a due day with no row → STALE (materialisation
+ *   lagging); rows with nothing due (a moved anchor, a pre-0043 daily share
+ *   not yet swept) → STALE; nothing due and no rows → `null`: nothing was
+ *   entered, or nothing has been billed yet, and neither is a failure.
  * - AUTO: the §23 sources when any cover the row — FRESH and STALE as they
  *   are; UNAVAILABLE → ERROR (a collection was attempted and failed);
  *   UNKNOWN → UNKNOWN (nothing was ever attempted — not a failure, and never
@@ -94,7 +103,7 @@ export function costDataFreshness(facts: CostDataFacts): CostDataFreshness | nul
     case 'NONE':
       return null;
     case 'MANUAL':
-      return byRows(facts.rowDays.manual, facts.today);
+      return bySchedule(facts.rowDays.manual, facts.expectedManualDays);
     case 'AUTO': {
       if (facts.sourceStatus !== null) {
         return facts.sourceStatus === 'UNAVAILABLE' ? 'ERROR' : facts.sourceStatus;
@@ -107,4 +116,13 @@ export function costDataFreshness(facts: CostDataFacts): CostDataFreshness | nul
 function byRows(days: readonly string[], today: string): CostDataFreshness | null {
   if (days.length === 0) return null;
   return days.includes(today) ? 'FRESH' : 'STALE';
+}
+
+function bySchedule(
+  rowDays: readonly string[],
+  expected: readonly string[],
+): CostDataFreshness | null {
+  if (expected.length === 0) return rowDays.length === 0 ? null : 'STALE';
+  const have = new Set(rowDays);
+  return expected.every((d) => have.has(d)) ? 'FRESH' : 'STALE';
 }

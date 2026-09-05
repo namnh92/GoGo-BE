@@ -4,7 +4,9 @@ import type { CostAuditWriter } from '../ports/audit.port';
 import {
   MANUAL_COST_PERIODS,
   MANUAL_COST_SOURCE_PREFIX,
+  classifyPeriod,
   isCalendarDay,
+  nextChargeDay,
   planManualCosts,
   type ManualCostItem,
   type ManualCostPeriod,
@@ -16,7 +18,9 @@ import type { CostRegistry } from '../domain/registry';
  * COST-BE-023 (#382) — epic §27 over two tables: `manual_cost_items` (the
  * record an operator edits, audited) and `provider_cost_daily` (the MANUAL
  * rows derived from it, rebuilt on every change and once a day by the
- * worker so today's share appears without anyone touching the item).
+ * worker so a charge that falls due today lands without anyone touching
+ * the item). Since COST-BE-034 (ADR-0015) a row is a charge on its billing
+ * day, classified `costKind` / `billingCadence`, never a daily share.
  *
  * The registry decides what may carry a manual cost — a service that has
  * `MANUAL_COST`, own or inherited — and this class asks it; no provider id
@@ -107,7 +111,8 @@ export class ManualCostService {
       where environment = ${this.options.environment}
       order by provider_id, service_id, name, created_at
     `);
-    return (rows as unknown as RawItem[]).map(toItem);
+    const today = utcDay(this.now());
+    return (rows as unknown as RawItem[]).map((r) => toItem(r, today));
   }
 
   async get(id: string): Promise<ManualCostItem | null> {
@@ -116,7 +121,7 @@ export class ManualCostService {
       where environment = ${this.options.environment} and id = ${id}
     `);
     const row = rows[0] as RawItem | undefined;
-    return row ? toItem(row) : null;
+    return row ? toItem(row, utcDay(this.now())) : null;
   }
 
   /**
@@ -144,7 +149,7 @@ export class ManualCostService {
               ${facts.effectiveTo}::date, ${facts.note}, ${actor.adminId}, ${actor.adminId})
       returning ${COLUMNS}
     `);
-    const item = toItem(rows[0] as unknown as RawItem);
+    const item = toItem(rows[0] as unknown as RawItem, utcDay(this.now()));
     await this.options.audit(this.db, {
       actorType: actor.adminId ? 'admin' : 'system',
       actorId: actor.adminId,
@@ -195,7 +200,7 @@ export class ManualCostService {
       where environment = ${this.options.environment} and id = ${id}
       returning ${COLUMNS}
     `);
-    const item = toItem(rows[0] as unknown as RawItem);
+    const item = toItem(rows[0] as unknown as RawItem, utcDay(this.now()));
     await this.options.audit(this.db, {
       actorType: actor.adminId ? 'admin' : 'system',
       actorId: actor.adminId,
@@ -229,9 +234,10 @@ export class ManualCostService {
 
   /**
    * Rebuild this environment's MANUAL rows from its items as of `now`:
-   * upsert every planned (day, item) row — touching `updated_at` only when
-   * the amount, currency or metadata actually differ — then delete rows an
-   * item no longer covers (moved service, shortened range, ended) and rows
+   * upsert every planned (charge day, item) row — touching `updated_at`
+   * only when the amount, currency, classification or metadata actually
+   * differ — then delete rows an item no longer bills (moved service, moved
+   * anchor, shortened range, ended, or a pre-ADR-0015 daily share) and rows
    * of items that no longer exist. Idempotent; safe to run every tick.
    */
   async materialise(now: Date = this.now()): Promise<MaterialiseResult> {
@@ -250,27 +256,36 @@ export class ManualCostService {
             itemId: item.id,
             name: item.name,
             period: item.period,
+            costKind: r.costKind,
+            billingCadence: r.billingCadence,
+            chargeDay: r.day,
             amountMicros: item.amountMicros,
             effectiveFrom: item.effectiveFrom,
             effectiveTo: item.effectiveTo,
           });
           return sql`(${r.day}::date, ${env}, ${r.providerId}, ${r.serviceId}, ${r.amountMicros}, ${r.currency},
-                      'MANUAL', 'HIGH', ${r.source}, ${item.updatedAt}::timestamptz, ${metadata}::jsonb)`;
+                      'MANUAL', 'HIGH', ${r.source}, ${r.costKind}, ${r.billingCadence}, ${r.periodAmountMicros},
+                      ${item.updatedAt}::timestamptz, ${metadata}::jsonb)`;
         }),
         sql`, `,
       );
       const { rows } = await this.db.execute(sql`
         insert into provider_cost_daily
           (day, environment, provider_id, service_id, amount_micros, currency, basis, confidence,
-           source, source_as_of, metadata)
+           source, cost_kind, billing_cadence, period_amount_micros, source_as_of, metadata)
         values ${values}
         on conflict (day, environment, provider_id, service_id, coalesce(operation_id, ''),
                      coalesce(usage_metric_id, ''), coalesce(billing_sku_id, ''), source, basis)
         do update set amount_micros = excluded.amount_micros, currency = excluded.currency,
+                      cost_kind = excluded.cost_kind, billing_cadence = excluded.billing_cadence,
+                      period_amount_micros = excluded.period_amount_micros,
                       metadata = excluded.metadata, source_as_of = excluded.source_as_of,
                       collected_at = now(), updated_at = now()
-        where (provider_cost_daily.amount_micros, provider_cost_daily.currency, provider_cost_daily.metadata)
-              is distinct from (excluded.amount_micros, excluded.currency, excluded.metadata)
+        where (provider_cost_daily.amount_micros, provider_cost_daily.currency, provider_cost_daily.cost_kind,
+               provider_cost_daily.billing_cadence, provider_cost_daily.period_amount_micros,
+               provider_cost_daily.metadata)
+              is distinct from (excluded.amount_micros, excluded.currency, excluded.cost_kind,
+                                excluded.billing_cadence, excluded.period_amount_micros, excluded.metadata)
         returning 1
       `);
       rowsWritten += rows.length;
@@ -278,7 +293,7 @@ export class ManualCostService {
     let rowsDeleted = 0;
     for (const k of plan.keep) {
       const { rows } =
-        k.range === null
+        k.days.length === 0
           ? await this.db.execute(sql`
               delete from provider_cost_daily
               where environment = ${env} and source = ${k.source}
@@ -288,7 +303,10 @@ export class ManualCostService {
               delete from provider_cost_daily
               where environment = ${env} and source = ${k.source}
                 and not (provider_id = ${k.providerId} and service_id = ${k.serviceId}
-                         and day between ${k.range.from}::date and ${k.range.to}::date)
+                         and day in (${sql.join(
+                           k.days.map((d) => sql`${d}::date`),
+                           sql`, `,
+                         )}))
               returning 1
             `);
       rowsDeleted += rows.length;
@@ -443,7 +461,12 @@ type RawItem = {
   updated_at: Date | string;
 };
 
-function toItem(r: RawItem): ManualCostItem {
+function toItem(r: RawItem, today: string): ManualCostItem {
+  const facts = {
+    period: r.period,
+    effectiveFrom: r.effective_from,
+    effectiveTo: r.effective_to,
+  };
   return {
     id: r.id,
     environment: r.environment,
@@ -453,8 +476,10 @@ function toItem(r: RawItem): ManualCostItem {
     amountMicros: Number(r.amount_micros),
     currency: r.currency.trim(),
     period: r.period,
+    ...classifyPeriod(r.period),
     effectiveFrom: r.effective_from,
     effectiveTo: r.effective_to,
+    nextChargeDay: nextChargeDay(facts, today),
     note: r.note,
     createdBy: r.created_by,
     createdAt: new Date(r.created_at).toISOString(),

@@ -54,6 +54,9 @@ const row = (over: Partial<CostRow>): CostRow => ({
   basis: 'ESTIMATED',
   confidence: 'MEDIUM',
   source: 'estimator',
+  costKind: 'USAGE',
+  billingCadence: null,
+  periodAmountMicros: null,
   ...over,
 });
 

@@ -282,8 +282,8 @@ describe('AWS Cost Explorer → ACTUAL rows (epic §26, §41-P2)', () => {
     // An estimate already on record for the same day and meter key.
     await db.execute(sql`
       insert into provider_cost_daily
-        (day, environment, provider_id, service_id, amount_micros, currency, basis, confidence, source)
-      values ('2026-09-02'::date, ${ENV}, 'aws', 'aws.ssm', 100_000, 'USD', 'ESTIMATED', 'MEDIUM', 'estimator')
+        (day, environment, provider_id, service_id, amount_micros, currency, basis, confidence, source, cost_kind)
+      values ('2026-09-02'::date, ${ENV}, 'aws', 'aws.ssm', 100_000, 'USD', 'ESTIMATED', 'MEDIUM', 'estimator', 'USAGE')
     `);
     await awsScheduler({ costsByService: async () => [awsCost()] }).tick();
 
