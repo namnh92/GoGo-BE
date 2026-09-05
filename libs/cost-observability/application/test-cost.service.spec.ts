@@ -60,7 +60,22 @@ describe('diffSnapshots (epic §28, §43)', () => {
     ]);
   });
 
-  it('keeps an unknown price unknown — Routes elements are counted, not priced', () => {
+  it('keeps an unknown price unknown — Maps SDK loads are counted, not priced', () => {
+    const after = [
+      m({
+        serviceId: 'google.maps_sdk_ios',
+        operationId: 'google.maps_sdk_ios',
+        usageMetricId: 'map_loads',
+        billingSkuId: 'maps.dynamic.ios',
+        unit: 'map_load',
+        quantity: 14,
+      }),
+    ];
+    const [d] = diffSnapshots([], after, DAY);
+    expect(d).toMatchObject({ usageDelta: 14, estimatedCostDelta: null, basis: 'UNKNOWN' });
+  });
+
+  it('prices Routes elements at list on the day once the price is verified (#410)', () => {
     const after = [
       m({
         serviceId: 'google.routes',
@@ -72,7 +87,9 @@ describe('diffSnapshots (epic §28, §43)', () => {
       }),
     ];
     const [d] = diffSnapshots([], after, DAY);
-    expect(d).toMatchObject({ usageDelta: 14, estimatedCostDelta: null, basis: 'UNKNOWN' });
+    // 14 × $5.00 / 1,000 = 70,000 micros at list; the free cap is not applied
+    // on this surface (§28 — a per-run delta, not a month).
+    expect(d).toMatchObject({ usageDelta: 14, estimatedCostDelta: 70_000, basis: 'ESTIMATED' });
   });
 
   it('scopes to the declared services (§30) and needs no provider names in code (§44.17)', () => {
@@ -146,11 +163,15 @@ describe('checkBudget (epic §29 — soft)', () => {
   });
 
   it('does not count unknown prices toward the cost budget', () => {
+    // Maps SDK: a billed meter whose rule carries no verified price, so the
+    // delta's cost is null and null is not a number the budget can exceed.
     const deltas = [
       d({
-        usageMetricId: 'billable_elements',
-        billingSkuId: 'routes.computeRouteMatrix',
-        unit: 'matrix_element',
+        serviceId: 'google.maps_sdk_ios',
+        operationId: 'google.maps_sdk_ios',
+        usageMetricId: 'map_loads',
+        billingSkuId: 'maps.dynamic.ios',
+        unit: 'map_load',
         usageDelta: 10_000,
       }),
     ];

@@ -29,6 +29,26 @@ describe('#336 operationRows', () => {
   });
 
   it('leaves an unknown price null and says why — never zero', () => {
+    // An operation the pricing registry does not know: units exact, money
+    // absent, and the gap names the reason.
+    const [row] = operationRows({
+      usage: [
+        {
+          operation: 'google.somethingNew',
+          callsAttempted: 2,
+          callsSucceeded: 2,
+          billableUnits: 25,
+        },
+      ],
+      metrics: null,
+      day: DAY,
+    });
+    expect(row!.billableUnits).toBe(25);
+    expect(row!.estimatedCostMicros).toBeNull();
+    expect(row!.gap).toBe('price_unknown');
+  });
+
+  it('prices Routes per matrix element at list, free cap applied separately (#410)', () => {
     const [row] = operationRows({
       usage: [
         {
@@ -42,8 +62,10 @@ describe('#336 operationRows', () => {
       day: DAY,
     });
     expect(row!.billableUnits).toBe(25);
-    expect(row!.estimatedCostMicros).toBeNull();
-    expect(row!.gap).toBe('price_unknown');
+    // 25 × $5.00 / 1,000 at list; all 25 inside the 10,000/month cap.
+    expect(row!.estimatedCostMicros).toBe(125_000);
+    expect(row!.estimatedCostAfterFreeCapMicros).toBe(0);
+    expect(row!.gap).toBeNull();
   });
 
   it('classifies an uninstrumented operation apart from an unpriced one', () => {

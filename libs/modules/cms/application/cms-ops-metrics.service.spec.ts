@@ -251,13 +251,20 @@ describe('self-describing semantics', () => {
   });
 
   /**
-   * Routes bills per matrix element and no per-element list price has been
-   * verified. Its units are exact; its money is unknown, and unknown is not 0.
+   * Routes bills per matrix element. Until COST-BE-031 (#410) no per-element
+   * list price had been verified and it sat in the gaps as `price_unknown`;
+   * with the Essentials price recorded it is priced like Places, and the only
+   * standing gaps are the two uninstrumented Maps SDK rows.
    */
-  it('reports an unverified price as unknown, not as free', async () => {
+  it('no longer reports Routes as a gap once its price is verified', async () => {
     const { port } = stubPort();
     const res = await new CmsOpsMetricsService(config, port).providers('24h');
-    const gap = res.costModel.measurementGaps.find((g) => g.key === 'google.routeMatrix');
-    expect(gap?.kind).toBe('price_unknown');
+    expect(
+      res.costModel.measurementGaps.find((g) => g.key === 'google.routeMatrix'),
+    ).toBeUndefined();
+    expect(res.costModel.measurementGaps.map((g) => g.key).sort()).toEqual([
+      'google.maps_sdk_android',
+      'google.maps_sdk_ios',
+    ]);
   });
 });

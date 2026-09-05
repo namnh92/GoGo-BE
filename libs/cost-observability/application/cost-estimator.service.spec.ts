@@ -67,6 +67,26 @@ describe('planEstimates — pricing usage meters (epic §11, §13, §15)', () =>
   });
 
   it('writes no row for a SKU whose price is unknown, and names it', () => {
+    // Maps SDK: a rule exists, its price is null (the SDK renders on the
+    // handset and nothing verified a Dynamic Maps price). Unknown, not zero.
+    const plan = planEstimates(
+      [
+        usage({
+          serviceId: 'google.maps_sdk_ios',
+          operationId: 'google.maps_sdk_ios',
+          usageMetricId: 'map_loads',
+          billingSkuId: 'maps.dynamic.ios',
+          unit: 'map_load',
+          quantity: 50,
+        }),
+      ],
+      RANGE,
+    );
+    expect(plan.rows).toEqual([]);
+    expect(plan.unpriced).toEqual([{ billingSkuId: 'maps.dynamic.ios', day: '2026-09-02' }]);
+  });
+
+  it('prices Routes elements against the 10k monthly cap at $5 per 1,000 (#410)', () => {
     const plan = planEstimates(
       [
         usage({
@@ -75,15 +95,26 @@ describe('planEstimates — pricing usage meters (epic §11, §13, §15)', () =>
           usageMetricId: 'billable_elements',
           billingSkuId: 'routes.computeRouteMatrix',
           unit: 'matrix_element',
-          quantity: 50,
+          quantity: 12_000,
         }),
       ],
       RANGE,
     );
-    expect(plan.rows).toEqual([]);
-    expect(plan.unpriced).toEqual([
-      { billingSkuId: 'routes.computeRouteMatrix', day: '2026-09-02' },
-    ]);
+    expect(plan.unpriced).toEqual([]);
+    expect(plan.rows).toHaveLength(1);
+    expect(plan.rows[0]).toMatchObject({
+      billingSkuId: 'routes.computeRouteMatrix',
+      billableQuantity: 12_000,
+      billableUnit: 'matrix_element',
+      // 10,000 free, 2,000 × $5 / 1,000.
+      amountMicros: 10_000_000,
+      currency: 'USD',
+      metadata: {
+        listMicros: 60_000_000,
+        allowancePriorQuantity: 0,
+        ruleId: 'google-routes.computeRouteMatrix-2026-09-01-v2',
+      },
+    });
   });
 
   it('writes no row for a SKU with no rule at all', () => {

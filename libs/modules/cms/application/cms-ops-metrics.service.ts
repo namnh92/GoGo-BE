@@ -304,9 +304,10 @@ export class CmsOpsMetricsService {
  * - `confidence: 'MEDIUM'` because Prometheus `increase()` extrapolates at the
  *   window edges, and because the count it extrapolates is itself capped at 14
  *   days of retention.
- * - `costComplete: false` wherever an operation has no verified price. Routes
- *   bills per matrix element and the plan captured no per-element figure, so
- *   its units are exact and its money is unknown — reported as unknown.
+ * - `costComplete: false` wherever an operation has no verified price: units
+ *   exact, money unknown, reported as unknown. (Routes was that case until
+ *   COST-BE-031 verified the Compute Route Matrix Essentials price; the Maps
+ *   SDK rows still are, and they are also uninstrumented.)
  * - `measurementGaps` names what is not counted at all. The Maps SDK renders
  *   on the handset; this process sees no map load, so its cost is a
  *   MEASUREMENT GAP and never a zero.

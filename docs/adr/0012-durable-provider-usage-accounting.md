@@ -166,6 +166,10 @@ or disconnect.
   `not_instrumented` (`google.maps_sdk_ios`, `google.maps_sdk_android` — the
   SDK renders on the handset). `maps_sdk` is a listed provider precisely so
   the console can say "chưa đo" against a name.
+  _Note 2026-09-05 (COST-BE-031, #410):_ the Routes example is historical — the
+  Compute Route Matrix Essentials price was verified and recorded ($5.00 per
+  1,000 elements after the 10,000/month cap, first paid tier only). The rule
+  itself is unchanged: unknown is still never zero.
 - The pricing registry is the audit of operation labels, kept true by a test
   that scans the adapters: every operation an adapter emits must have a row.
 - `google.expand` is instrumented for the first time. It is free — an
