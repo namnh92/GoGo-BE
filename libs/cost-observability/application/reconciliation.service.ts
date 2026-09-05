@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
+import { COST_ROW_COLUMNS, toCostRow, type RawCost } from './budget.service';
 import type { CostRow } from '../domain/budget';
 
 /**
@@ -137,39 +138,12 @@ export class ReconciliationService {
   private async rows(month: string): Promise<CostRow[]> {
     const from = `${month}-01`;
     const { rows } = await this.db.execute(sql`
-      select to_char(day, 'YYYY-MM-DD') as day, provider_id, service_id, operation_id, usage_metric_id,
-             billing_sku_id, amount_micros, currency, basis, confidence, source
+      select ${COST_ROW_COLUMNS}
       from provider_cost_daily
       where environment = ${this.options.environment}
         and day >= ${from}::date and day < (${from}::date + interval '1 month')
         and basis in ('ESTIMATED', 'ACTUAL')
     `);
-    return (
-      rows as unknown as {
-        day: string;
-        provider_id: string;
-        service_id: string;
-        operation_id: string | null;
-        usage_metric_id: string | null;
-        billing_sku_id: string | null;
-        amount_micros: number | string;
-        currency: string;
-        basis: CostRow['basis'];
-        confidence: CostRow['confidence'];
-        source: string;
-      }[]
-    ).map((r) => ({
-      day: r.day,
-      providerId: r.provider_id,
-      serviceId: r.service_id,
-      operationId: r.operation_id,
-      usageMetricId: r.usage_metric_id,
-      billingSkuId: r.billing_sku_id,
-      amountMicros: Number(r.amount_micros),
-      currency: r.currency.trim(),
-      basis: r.basis,
-      confidence: r.confidence,
-      source: r.source,
-    }));
+    return (rows as unknown as RawCost[]).map(toCostRow);
   }
 }

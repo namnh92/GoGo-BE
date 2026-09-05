@@ -170,6 +170,8 @@ export function actionsSamples(
             basis: 'ACTUAL',
             confidence,
             source: GITHUB_SOURCE,
+            // Minutes × price: metered, so USAGE (ADR-0015).
+            costKind: 'USAGE',
             sourceAsOf: ctx.now,
             metadata: {
               ...common,

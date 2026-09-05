@@ -1,15 +1,15 @@
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import {
-  elapsedDays,
-  FORECAST_MIN_ELAPSED_DAYS,
   spend,
   winningRows,
   type Confidence,
   type CostBasis,
   type CostBudgetStatus,
+  type CostKind,
   type CostRow,
 } from '../domain/budget';
+import type { MonthForecast } from '../domain/forecast';
 import type { Capability } from '../domain/capabilities';
 import {
   costDataFreshness,
@@ -33,7 +33,8 @@ import type {
   ServiceDefinition,
 } from '../domain/registry';
 import { utcDay } from '../pricing/provider-pricing';
-import { BudgetService } from './budget.service';
+import { BudgetService, readManualItemFacts, toCostRow, type RawCost } from './budget.service';
+import { chargeDays, type ManualCostItemFacts } from '../domain/manual-cost';
 import { refuseAudit } from '../ports/audit.port';
 
 /**
@@ -383,6 +384,10 @@ export type RowInputs = {
   costRows: readonly CostRowWithMeta[];
   usageRows: readonly UsageRow[];
   freshness: readonly FreshnessSourceRow[];
+  /** ADR-0015 — the manual items, whose billing schedule says what MANUAL rows are due. */
+  manualItems: readonly ManualCostItemFacts[];
+  /** The days the rows were read for; what is due is judged inside it. */
+  range: DateRange;
   now: Date;
 };
 
@@ -399,10 +404,20 @@ function costSource(
   kind: CostSource['kind'],
   freshness: RowFreshness,
   costRows: readonly CostRow[],
+  manualItems: readonly ManualCostItemFacts[],
+  range: DateRange,
   now: Date,
 ): CostSource {
+  const today = utcDay(now);
   const days = (predicate: (r: CostRow) => boolean) => [
     ...new Set(costRows.filter(predicate).map((r) => r.day)),
+  ];
+  // ADR-0015: a manual row is a charge on its billing day. What should be
+  // there is every billing day due so far inside the window the rows were
+  // read for — never "a row for today".
+  const to = range.to < today ? range.to : today;
+  const expectedManualDays = [
+    ...new Set(manualItems.flatMap((item) => chargeDays(item, { from: range.from, to }))),
   ];
   return {
     kind,
@@ -413,7 +428,8 @@ function costSource(
         manual: days((r) => r.basis === 'MANUAL'),
         automatic: days((r) => r.basis !== 'MANUAL'),
       },
-      today: utcDay(now),
+      expectedManualDays,
+      today,
     }),
   };
 }
@@ -447,7 +463,14 @@ export function buildServiceRow(
     capabilities: service.capabilities,
     instrumented,
     runtime,
-    cost: costSource(kind, freshness, costRows, input.now),
+    cost: costSource(
+      kind,
+      freshness,
+      costRows,
+      input.manualItems.filter((i) => i.serviceId === service.id),
+      input.range,
+      input.now,
+    ),
     ...moneyFacts(costRows, measuredZero),
     usage,
     quota: null,
@@ -515,7 +538,14 @@ export function buildProviderRow(
     status: provider.status,
     capabilities: provider.capabilities,
     runtime: providerRuntime(provider),
-    cost: costSource(providerCostSourceKind(provider), freshness, costRows, input.now),
+    cost: costSource(
+      providerCostSourceKind(provider),
+      freshness,
+      costRows,
+      input.manualItems.filter((i) => i.providerId === provider.id),
+      input.range,
+      input.now,
+    ),
     billingTimezone: provider.billingTimezone ?? null,
     ...moneyFacts(costRows, measuredZero),
     unknownServices: services.filter((s) => s.costStatus === 'UNKNOWN').map((s) => s.serviceId),
@@ -531,6 +561,8 @@ export type CostCard = {
   /** `null` when no cost row is in scope — unknown, not zero. */
   spendMicros: number | null;
   byBasis: Record<CostBasis, number> | null;
+  /** The same money by how it is billed (ADR-0015); `null` with `spendMicros`. */
+  byKind: Record<CostKind, number> | null;
   currency: string | null;
   mixedCurrency: boolean;
   /** How many services contributed a row. */
@@ -539,12 +571,20 @@ export type CostCard = {
 
 export function costCard(rows: readonly CostRow[]): CostCard {
   if (rows.length === 0) {
-    return { spendMicros: null, byBasis: null, currency: null, mixedCurrency: false, services: 0 };
+    return {
+      spendMicros: null,
+      byBasis: null,
+      byKind: null,
+      currency: null,
+      mixedCurrency: false,
+      services: 0,
+    };
   }
   const s = spend(rows);
   return {
     spendMicros: s.micros,
     byBasis: s.byBasis,
+    byKind: s.byKind,
     currency: s.currency,
     mixedCurrency: s.mixedCurrency,
     services: new Set(rows.map((r) => r.serviceId)).size,
@@ -554,14 +594,12 @@ export function costCard(rows: readonly CostRow[]): CostCard {
 export type CostCards = {
   today: CostCard & { day: string };
   monthToDate: CostCard & { month: string };
-  projected: {
-    micros: number | null;
-    month: string;
-    elapsedDays: number;
-    /** Below this many elapsed days the forecast is `null` (epic §33). */
-    minElapsedDays: number;
-    currency: string | null;
-  };
+  /**
+   * ADR-0015 — three numbers kept apart: `forecast.actual` (recognised so
+   * far), `forecast.cash` (end-of-month cash), `forecast.runRate`
+   * (normalised monthly). Replaces the MTD-extrapolated `projected` card.
+   */
+  forecast: MonthForecast;
   budget: {
     /** The TOTAL scope's status, `null` when no TOTAL budget is set. */
     total: CostBudgetStatus | null;
@@ -650,13 +688,7 @@ export class CostCenterService {
       cards: {
         today: { ...costCard(monthRows.filter((r) => r.day === today)), day: today },
         monthToDate: { ...costCard(monthRows), month },
-        projected: {
-          micros: monthOverview.forecastMicros,
-          month,
-          elapsedDays: elapsedDays(month, today),
-          minElapsedDays: FORECAST_MIN_ELAPSED_DAYS,
-          currency: monthOverview.spend.currency,
-        },
+        forecast: monthOverview.forecast,
         budget: { total, budgets: monthOverview.budgets },
         unknown: {
           providerIds: providerRows
@@ -713,34 +745,26 @@ export class CostCenterService {
   }
 
   private async inputs(range: DateRange, now: Date): Promise<RowInputs> {
-    const [costRows, usageRows, freshness] = await Promise.all([
+    const [costRows, usageRows, freshness, manualItems] = await Promise.all([
       this.costRows(range),
       this.usageRows(range),
       this.freshnessRows(),
+      readManualItemFacts(this.db, this.options.environment),
     ]);
-    return { costRows, usageRows, freshness, now };
+    return { costRows, usageRows, freshness, manualItems, range, now };
   }
 
   private async costRows(range: DateRange): Promise<CostRowWithMeta[]> {
     const { rows } = await this.db.execute(sql`
       select to_char(day, 'YYYY-MM-DD') as day, provider_id, service_id, operation_id, usage_metric_id,
-             billing_sku_id, amount_micros, currency, basis, confidence, source, updated_at
+             billing_sku_id, amount_micros, currency, basis, confidence, source,
+             cost_kind, billing_cadence, period_amount_micros, updated_at
       from provider_cost_daily
       where environment = ${this.options.environment}
         and day >= ${range.from}::date and day <= ${range.to}::date
     `);
-    return (rows as unknown as RawCost[]).map((r) => ({
-      day: r.day,
-      providerId: r.provider_id,
-      serviceId: r.service_id,
-      operationId: r.operation_id,
-      usageMetricId: r.usage_metric_id,
-      billingSkuId: r.billing_sku_id,
-      amountMicros: Number(r.amount_micros),
-      currency: r.currency,
-      basis: r.basis,
-      confidence: r.confidence,
-      source: r.source,
+    return (rows as unknown as (RawCost & { updated_at: Date | string })[]).map((r) => ({
+      ...toCostRow(r),
       updatedAt: new Date(r.updated_at).toISOString(),
     }));
   }
@@ -788,21 +812,6 @@ export class CostCenterService {
     }));
   }
 }
-
-type RawCost = {
-  day: string;
-  provider_id: string;
-  service_id: string;
-  operation_id: string | null;
-  usage_metric_id: string | null;
-  billing_sku_id: string | null;
-  amount_micros: number | string;
-  currency: string;
-  basis: CostBasis;
-  confidence: Confidence;
-  source: string;
-  updated_at: Date | string;
-};
 
 type RawUsage = {
   day: string;

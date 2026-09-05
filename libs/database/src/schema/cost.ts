@@ -173,6 +173,22 @@ export const providerCostDaily = pgTable(
     basis: text('basis').notNull(),
     confidence: text('confidence').notNull(),
     source: text('source').notNull(),
+    /**
+     * COST-BE-034 (#415, ADR-0015) — what kind of charge the row is:
+     * USAGE (usage × price; the only kind a forecast may extrapolate),
+     * RECURRING (a subscription; `billingCadence` says how often) or
+     * ONE_TIME (paid once, counted once, never a run-rate input). Check
+     * constraints in migration 0043.
+     */
+    costKind: text('cost_kind').notNull(),
+    /** MONTHLY | ANNUAL — present exactly when `costKind` is RECURRING. */
+    billingCadence: text('billing_cadence'),
+    /**
+     * The full charge of the period a RECURRING row belongs to (the monthly
+     * fee, the annual fee) — what is still to come this period is read from
+     * this, never extrapolated from the rows so far. Required for RECURRING.
+     */
+    periodAmountMicros: bigint('period_amount_micros', { mode: 'number' }),
     pricingVersion: text('pricing_version'),
     sourceAsOf: timestamp('source_as_of', { withTimezone: true }),
     collectedAt: timestamp('collected_at', { withTimezone: true }).notNull().defaultNow(),
@@ -194,6 +210,7 @@ export const providerCostDaily = pgTable(
       t.basis,
     ),
     index('provider_cost_daily_env_day_idx').on(t.environment, t.day),
+    index('provider_cost_daily_env_kind_day_idx').on(t.environment, t.costKind, t.day),
   ],
 );
 

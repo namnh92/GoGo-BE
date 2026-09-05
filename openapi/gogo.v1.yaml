@@ -5583,7 +5583,8 @@ paths:
 
 
         **COST-BE-022 (#381)** adds the epic §35 Cost Center on top of that
-        payload: `cards` (today, month-to-date, projected month, budget,
+        payload: `cards` (today, month-to-date, the ADR-0015 forecast —
+        month actual / end-of-month cash / normalised run-rate — budget,
         unknown providers/services, cost of monitoring) and `providerRows` —
         one row per provider in the cost registry with its services nested,
         each carrying usage meters, estimated / actual / fixed / manual money
@@ -5836,9 +5837,10 @@ paths:
         Developer, a domain, a VPS…), each a fee per period over an effective
         range, entered by hand and never collected. Every item is
         materialised into `provider_cost_daily` as MANUAL rows — one per
-        covered day, up to today — so it shows in the Cost API, budgets and
-        forecast beside estimated and actual spend; per-test deltas never
-        include it.
+        billing day at the full fee, up to today (COST-BE-034, ADR-0015) —
+        so it shows in the Cost API and budgets beside estimated and actual
+        spend, and what it still bills this month is the forecast's
+        schedule; per-test deltas never include it.
 
 
         `eligibleServices` is the registry's list of services that declare
@@ -7153,7 +7155,7 @@ components:
 
     CmsCostCard:
       type: object
-      required: [spendMicros, byBasis, currency, mixedCurrency, services]
+      required: [spendMicros, byBasis, byKind, currency, mixedCurrency, services]
       properties:
         spendMicros:
           type: [integer, 'null']
@@ -7162,6 +7164,11 @@ components:
           oneOf:
             - $ref: '#/components/schemas/CmsCostByBasis'
             - type: 'null'
+        byKind:
+          oneOf:
+            - $ref: '#/components/schemas/CmsCostByKind'
+            - type: 'null'
+          description: The same money by how it is billed (ADR-0015); null with `spendMicros`.
         currency: { type: [string, 'null'] }
         mixedCurrency: { type: boolean }
         services:
@@ -7188,10 +7195,15 @@ components:
           usedPct,
           projectedMicros,
           projectedPct,
+          projectedFloorMicros,
+          runRateMicros,
           state,
           currency,
         ]
-      description: COST-BE-020 (#379) — one budget's month, epic §32/§33.
+      description: >
+        COST-BE-020 (#379) — one budget's month, epic §32/§33 as amended by
+        COST-BE-034 (ADR-0015): the projection is the scope's end-of-month
+        cash forecast, never an extrapolation of the month so far.
       properties:
         scope: { $ref: '#/components/schemas/CmsCostBudgetScope' }
         monthMicros: { type: integer }
@@ -7204,15 +7216,191 @@ components:
             — the ratio is unbounded and JSON has no infinity.
         projectedMicros:
           type: [integer, 'null']
-          description: Null under three elapsed days or with no rows (epic §33).
+          description: >
+            End-of-month cash forecast for the scope: usage projection +
+            recurring charges billed this month + one-offs. Null while the
+            usage half cannot be projected (`CmsCostForecast.usage.reason`).
         projectedPct: { type: [number, 'null'] }
+        projectedFloorMicros:
+          type: integer
+          description: >
+            The known part of the projection — recurring + one-time charges
+            of the month. A floor above the budget is `projected_exceed`
+            even while `projectedMicros` is null.
+        runRateMicros:
+          type: [integer, 'null']
+          description: Normalised monthly run-rate for the scope (annual fees ÷ 12, one-offs excluded).
         state: { type: string, enum: [ok, warning, exceeded, projected_exceed] }
         currency: { type: string }
 
+    CmsCostKind:
+      type: string
+      enum: [USAGE, RECURRING, ONE_TIME]
+      description: >
+        COST-BE-034 (#415, ADR-0015) — how a charge is billed. USAGE is usage ×
+        price and the only kind a forecast may extrapolate from the elapsed
+        period; RECURRING is a subscription with a `CmsBillingCadence`;
+        ONE_TIME is paid once, counted once, never a run-rate input.
+
+    CmsBillingCadence:
+      type: string
+      enum: [MONTHLY, ANNUAL]
+
+    CmsCostByKind:
+      type: object
+      required: [USAGE, RECURRING, ONE_TIME]
+      properties:
+        USAGE: { type: integer }
+        RECURRING: { type: integer }
+        ONE_TIME: { type: integer }
+
+    CmsCostScheduledCharge:
+      type: object
+      required: [key, providerId, serviceId, name, kind, cadence, day, amountMicros, currency]
+      description: A charge of the month that has not landed yet.
+      properties:
+        key:
+          type: string
+          description: The row source it will land under (`manual_cost_items:<id>`, `<source>|<provider>|<service>`).
+        providerId: { type: string }
+        serviceId: { type: string }
+        name: { type: [string, 'null'], description: The manual item's name; null for a model. }
+        kind: { type: string, enum: [RECURRING, ONE_TIME] }
+        cadence:
+          oneOf:
+            - $ref: '#/components/schemas/CmsBillingCadence'
+            - type: 'null'
+        day:
+          type: [string, 'null']
+          format: date
+          description: The billing date; null for a model that accrues across the month with no single day.
+        amountMicros: { type: integer }
+        currency: { type: string }
+
+    CmsCostForecast:
+      type: object
+      required:
+        [
+          month,
+          today,
+          elapsedDays,
+          daysInMonth,
+          minElapsedDays,
+          actual,
+          usage,
+          recurring,
+          oneTime,
+          scheduled,
+          cash,
+          runRate,
+          currency,
+          mixedCurrency,
+        ]
+      description: >
+        COST-BE-034 (#415, ADR-0015) — epic §33 rebuilt on billing semantics.
+        Three numbers kept apart: `actual` (recognised so far this month),
+        `cash` (what the month's invoices will total: the USAGE projection +
+        every RECURRING charge billed in the month + every ONE_TIME charge of
+        the month) and `runRate` (a normalised month: the USAGE projection +
+        active MONTHLY fees + active ANNUAL fees ÷ 12, one-offs excluded). Only
+        `usage.projectedMicros` is extrapolated from the elapsed period; an
+        annual fee is in `cash` only in its renewal month and in `runRate`
+        always, as a twelfth. Nothing here is derived from the MTD total.
+      properties:
+        month: { type: string, example: '2026-09' }
+        today: { type: string, format: date }
+        elapsedDays: { type: integer }
+        daysInMonth: { type: integer }
+        minElapsedDays:
+          type: integer
+          description: Below this many elapsed days the usage half is null.
+        actual:
+          type: object
+          required: [micros, byKind]
+          description: Recognised so far this month, after epic §12 precedence.
+          properties:
+            micros: { type: integer }
+            byKind: { $ref: '#/components/schemas/CmsCostByKind' }
+        usage:
+          type: object
+          required: [mtdMicros, projectedMicros, reason]
+          properties:
+            mtdMicros: { type: integer }
+            projectedMicros:
+              type: [integer, 'null']
+              description: USAGE month-to-date ÷ elapsed days × days in month; null with a `reason`.
+            reason:
+              type: [string, 'null']
+              enum: [INSUFFICIENT_HISTORY, NO_USAGE_ROWS, NOT_APPLICABLE, null]
+              description: >
+                Why `projectedMicros` is null — or `NOT_APPLICABLE` when
+                nothing in scope produces usage and the usage half is a
+                known 0 (a manual-only provider).
+        recurring:
+          type: object
+          required: [landedMicros, scheduledMicros, committedMicros]
+          properties:
+            landedMicros: { type: integer }
+            scheduledMicros:
+              type: integer
+              description: Still to be billed this month, from the schedule — never from an average.
+            committedMicros: { type: integer, description: Landed + scheduled. }
+        oneTime:
+          type: object
+          required: [landedMicros, scheduledMicros]
+          properties:
+            landedMicros: { type: integer }
+            scheduledMicros: { type: integer }
+        scheduled:
+          type: array
+          description: Charges of this month that have not landed yet, soonest first.
+          items: { $ref: '#/components/schemas/CmsCostScheduledCharge' }
+        cash:
+          type: object
+          required: [micros, floorMicros, partial]
+          description: End-of-month cash forecast.
+          properties:
+            micros:
+              type: [integer, 'null']
+              description: '`usage.projectedMicros + recurring.committedMicros + oneTime`; null while the usage half is.'
+            floorMicros:
+              type: integer
+              description: The known part — recurring committed + one-time. Always a number.
+            partial:
+              type: boolean
+              description: True when `micros` is null because the usage half cannot be projected yet.
+        runRate:
+          type: object
+          required:
+            [
+              micros,
+              usageMicros,
+              recurringMonthlyMicros,
+              annualEquivalentMicros,
+              oneTimeExcludedMicros,
+            ]
+          description: Normalised monthly run-rate.
+          properties:
+            micros: { type: [integer, 'null'] }
+            usageMicros: { type: [integer, 'null'] }
+            recurringMonthlyMicros: { type: integer }
+            annualEquivalentMicros:
+              type: integer
+              description: Active ANNUAL fees ÷ 12 — shown as run-rate, never added to cash.
+            oneTimeExcludedMicros:
+              type: integer
+              description: What the month's one-offs would have added had they been treated as run-rate. Informational.
+        currency: { type: [string, 'null'] }
+        mixedCurrency:
+          type: boolean
+          description: More than one currency across rows and schedule — the totals are null, the parts still listed.
+
     CmsCostCards:
       type: object
-      required: [today, monthToDate, projected, budget, unknown, costOfMonitoring]
-      description: Epic §35 overview cards. Month-shaped whatever the window.
+      required: [today, monthToDate, forecast, budget, unknown, costOfMonitoring]
+      description: >
+        Epic §35 overview cards. Month-shaped whatever the window. `projected`
+        (MTD daily average × days) was replaced by `forecast` in COST-BE-034.
       properties:
         today:
           allOf:
@@ -7228,17 +7416,7 @@ components:
               required: [month]
               properties:
                 month: { type: string, example: '2026-09' }
-        projected:
-          type: object
-          required: [micros, month, elapsedDays, minElapsedDays, currency]
-          properties:
-            micros:
-              type: [integer, 'null']
-              description: MTD daily average × days in the month; null under `minElapsedDays`.
-            month: { type: string }
-            elapsedDays: { type: integer }
-            minElapsedDays: { type: integer }
-            currency: { type: [string, 'null'] }
+        forecast: { $ref: '#/components/schemas/CmsCostForecast' }
         budget:
           type: object
           required: [total, budgets]
@@ -7413,17 +7591,21 @@ components:
       type: string
       enum: [ONE_TIME, MONTHLY, YEARLY]
       description: >
-        How `amountMicros` recurs. MONTHLY is spread over the days of each
-        month it covers, YEARLY over each year, ONE_TIME lands whole on
-        `effectiveFrom`.
+        How `amountMicros` recurs — the operator's word for the row
+        classification (`costKind` / `billingCadence`, ADR-0015). MONTHLY
+        bills on the anchor day of each month (the day-of-month of
+        `effectiveFrom`, clamped to shorter months), YEARLY on the renewal
+        date each year (Feb 29 → Feb 28), ONE_TIME once on `effectiveFrom`.
+        Nothing is spread over days.
 
     CmsManualCostItem:
       type: object
       description: >
         COST-BE-023 (#382), epic §27 — a fee entered by hand. Money is micros
-        of `currency` per period, never a daily share; the daily rows are
-        derived (`provider_cost_daily`, basis MANUAL, confidence HIGH, source
-        `manual_cost_items:<id>`).
+        of `currency` per period, never a daily share; the rows are derived
+        (`provider_cost_daily`, basis MANUAL, confidence HIGH, source
+        `manual_cost_items:<id>`), one per billing day at the full amount
+        (COST-BE-034, ADR-0015).
       required:
         [
           id,
@@ -7434,8 +7616,11 @@ components:
           amountMicros,
           currency,
           period,
+          costKind,
+          billingCadence,
           effectiveFrom,
           effectiveTo,
+          nextChargeDay,
           note,
           createdBy,
           createdAt,
@@ -7453,11 +7638,27 @@ components:
         amountMicros: { type: integer, minimum: 0 }
         currency: { type: string, pattern: '^[A-Z]{3}$' }
         period: { $ref: '#/components/schemas/CmsManualCostPeriod' }
-        effectiveFrom: { type: string, format: date, description: Inclusive. }
+        costKind:
+          type: string
+          enum: [RECURRING, ONE_TIME]
+          description: Derived from `period` — the classification every cost source carries (ADR-0015).
+        billingCadence:
+          oneOf:
+            - $ref: '#/components/schemas/CmsBillingCadence'
+            - type: 'null'
+          description: MONTHLY for a MONTHLY period, ANNUAL for YEARLY, null for ONE_TIME.
+        effectiveFrom:
+          type: string
+          format: date
+          description: Inclusive. Also the billing anchor — its day-of-month (MONTHLY) or month-day (YEARLY).
         effectiveTo:
           type: [string, 'null']
           format: date
           description: Inclusive; null = open-ended. Ignored for ONE_TIME.
+        nextChargeDay:
+          type: [string, 'null']
+          format: date
+          description: The first billing day on or after today; null when no charge is ahead.
         note: { type: [string, 'null'], maxLength: 1000 }
         createdBy: { type: [string, 'null'], format: uuid }
         createdAt: { type: string, format: date-time }

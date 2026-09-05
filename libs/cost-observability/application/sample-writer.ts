@@ -60,13 +60,13 @@ export async function upsertCostSamples(db: Db, samples: readonly CostSample[]):
   if (samples.length === 0) return 0;
   const values = samples.map(
     (s) =>
-      sql`(${s.day}::date, ${s.environment}, ${s.providerId}, ${s.serviceId}, ${s.operationId}, ${s.usageMetricId}, ${s.billingSkuId}, ${s.billableQuantity}, ${s.billableUnit}, ${s.amountMicros}, ${s.currency}, ${s.basis}, ${s.confidence}, ${s.source}, ${s.sourceAsOf?.toISOString() ?? null}, now(), ${JSON.stringify(s.metadata ?? {})}::jsonb, now())`,
+      sql`(${s.day}::date, ${s.environment}, ${s.providerId}, ${s.serviceId}, ${s.operationId}, ${s.usageMetricId}, ${s.billingSkuId}, ${s.billableQuantity}, ${s.billableUnit}, ${s.amountMicros}, ${s.currency}, ${s.basis}, ${s.confidence}, ${s.source}, ${s.costKind}, ${s.costKind === 'RECURRING' ? (s.billingCadence ?? 'MONTHLY') : null}, ${s.costKind === 'RECURRING' ? (s.periodAmountMicros ?? s.amountMicros) : null}, ${s.sourceAsOf?.toISOString() ?? null}, now(), ${JSON.stringify(s.metadata ?? {})}::jsonb, now())`,
   );
   await db.execute(sql`
     insert into provider_cost_daily
       (day, environment, provider_id, service_id, operation_id, usage_metric_id, billing_sku_id,
        billable_quantity, billable_unit, amount_micros, currency, basis, confidence, source,
-       source_as_of, collected_at, metadata, updated_at)
+       cost_kind, billing_cadence, period_amount_micros, source_as_of, collected_at, metadata, updated_at)
     values ${sql.join(values, sql`, `)}
     on conflict (day, environment, provider_id, service_id, coalesce(operation_id, ''),
                  coalesce(usage_metric_id, ''), coalesce(billing_sku_id, ''), source, basis)
@@ -76,6 +76,9 @@ export async function upsertCostSamples(db: Db, samples: readonly CostSample[]):
       amount_micros     = excluded.amount_micros,
       currency          = excluded.currency,
       confidence        = excluded.confidence,
+      cost_kind         = excluded.cost_kind,
+      billing_cadence   = excluded.billing_cadence,
+      period_amount_micros = excluded.period_amount_micros,
       source_as_of      = excluded.source_as_of,
       metadata          = excluded.metadata,
       collected_at      = now(),

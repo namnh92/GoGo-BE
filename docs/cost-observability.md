@@ -6,26 +6,27 @@ and how to add a provider without touching generic code.
 
 ## Pieces
 
-| Piece                                                                                                                                                                                                                                                                                               | File                                                                                                            | Epic §                 |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| Definitions registry — providers, services, operations, usage meters, billing SKUs                                                                                                                                                                                                                  | `domain/registry.ts`                                                                                            | §5, §4                 |
-| Capability model                                                                                                                                                                                                                                                                                    | `domain/capabilities.ts`                                                                                        | §6                     |
-| Pricing rules — versioned, per SKU/meter, pricing models, free allowances                                                                                                                                                                                                                           | `domain/pricing-rules.ts`                                                                                       | §13–§15                |
-| Compatibility view (`PROVIDER_PRICING`, `providerOf`, `listCostMicros`…) used by the ops API, budget guard and baseline runner                                                                                                                                                                      | `domain/provider-pricing.ts`                                                                                    | —                      |
-| Ports: `UsageCollector`, `ActualCostCollector`, `CostEstimator`, `QuotaCollector`, `FixedCostProvider`                                                                                                                                                                                              | `ports/collectors.port.ts`                                                                                      | §7                     |
-| Adapter registry — what is wired in this process, checked against declared capabilities                                                                                                                                                                                                             | `ports/adapter-registry.ts`                                                                                     | §7                     |
-| Usage ledger (metrics port → `provider_usage_daily` **and** `provider_usage_meter_daily`, one transaction)                                                                                                                                                                                          | `application/usage-ledger.ts`                                                                                   | §10, §24               |
-| Budget reservation guard (`provider_budget_daily`)                                                                                                                                                                                                                                                  | `application/provider-budget.service.ts`                                                                        | §32 (daily guard)      |
-| Estimated-cost report for the CMS ops surface                                                                                                                                                                                                                                                       | `application/usage-report.service.ts`                                                                           | §35 (partial)          |
-| Generic estimator (meter rows × pricing rules → `provider_cost_daily` ESTIMATED; idempotent, bounded, never touches ACTUAL)                                                                                                                                                                         | `application/cost-estimator.service.ts`; worker job `gogo:worker:cost-estimate`                                 | §7, §11, §13, §15, §25 |
-| Freshness model (`FRESH/STALE/UNAVAILABLE/UNKNOWN`, derived from facts against `now`; bounded backoff)                                                                                                                                                                                              | `domain/freshness.ts`; table `cost_source_freshness` (0039)                                                     | §23, §22               |
-| Collector definitions — frequency, timeout, retry, `maxCallsPerDay`, environments, **declared monitoring cost**                                                                                                                                                                                     | `domain/collector.ts`                                                                                           | §19, §20               |
-| Collector scheduler — due check, timeout, isolation per collector, freshness upsert, monitoring-budget pause, cost-of-cost row under `gogo.cost_observability`                                                                                                                                      | `application/collector-scheduler.service.ts`; worker job `gogo:worker:cost-collectors`                          | §19–§22, §38           |
-| First collector: `ledger` (FREE, essential) — reports the ledger's freshness, `sourceAsOf` = newest ledger write                                                                                                                                                                                    | `application/ledger-freshness.collector.ts`                                                                     | §23                    |
-| Test-run cost records — `cost_test_runs` + `cost_test_run_deltas` (0040), `TestCostService.start/finish/fail`, soft budgets, service scoping; baseline runner writes a row beside its frozen JSON                                                                                                   | `application/test-cost.service.ts`; `scripts/cost-baseline/runner.ts` `testCost` hook                           | §28–§30, §43, §44.17   |
-| Monthly budgets + forecast — `cost_budgets` (0041), `spend()` precedence ACTUAL > ESTIMATED (never summed; FIXED/MANUAL separate), `forecastMonthMicros` = MTD average × days (null < 3 days), `BudgetService.overview`                                                                             | `domain/budget.ts`, `application/budget.service.ts`                                                             | §12, §32, §33          |
-| Backfill from Prometheus (`increase()` per UTC day → `provider_usage_meter_daily` source `prometheus_backfill`, LOW, floored; ≤ 62 days; idempotent; audited `cost.backfill`) + reconciliation (estimated vs actual per service, variance null without an actual; `reconciled_at` on matched pairs) | `application/prometheus-backfill.service.ts`, `application/reconciliation.service.ts`; CLI `pnpm cost:backfill` | §10, §25, §26          |
-| Manual / fixed costs — `manual_cost_items` (0042), CMS CRUD with audit `cost.manual_item.*`, materialised into `provider_cost_daily` as MANUAL rows (one per covered day ≤ today, source `manual_cost_items:<id>`); `MANUAL_COST` capability decides which services may carry one                   | `domain/manual-cost.ts`, `application/manual-cost.service.ts`; worker job `gogo:worker:cost-collectors` (daily) | §27, §44.18            |
+| Piece                                                                                                                                                                                                                                                                                                            | File                                                                                                            | Epic §                 |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| Definitions registry — providers, services, operations, usage meters, billing SKUs                                                                                                                                                                                                                               | `domain/registry.ts`                                                                                            | §5, §4                 |
+| Capability model                                                                                                                                                                                                                                                                                                 | `domain/capabilities.ts`                                                                                        | §6                     |
+| Pricing rules — versioned, per SKU/meter, pricing models, free allowances                                                                                                                                                                                                                                        | `domain/pricing-rules.ts`                                                                                       | §13–§15                |
+| Compatibility view (`PROVIDER_PRICING`, `providerOf`, `listCostMicros`…) used by the ops API, budget guard and baseline runner                                                                                                                                                                                   | `domain/provider-pricing.ts`                                                                                    | —                      |
+| Ports: `UsageCollector`, `ActualCostCollector`, `CostEstimator`, `QuotaCollector`, `FixedCostProvider`                                                                                                                                                                                                           | `ports/collectors.port.ts`                                                                                      | §7                     |
+| Adapter registry — what is wired in this process, checked against declared capabilities                                                                                                                                                                                                                          | `ports/adapter-registry.ts`                                                                                     | §7                     |
+| Usage ledger (metrics port → `provider_usage_daily` **and** `provider_usage_meter_daily`, one transaction)                                                                                                                                                                                                       | `application/usage-ledger.ts`                                                                                   | §10, §24               |
+| Budget reservation guard (`provider_budget_daily`)                                                                                                                                                                                                                                                               | `application/provider-budget.service.ts`                                                                        | §32 (daily guard)      |
+| Estimated-cost report for the CMS ops surface                                                                                                                                                                                                                                                                    | `application/usage-report.service.ts`                                                                           | §35 (partial)          |
+| Generic estimator (meter rows × pricing rules → `provider_cost_daily` ESTIMATED; idempotent, bounded, never touches ACTUAL)                                                                                                                                                                                      | `application/cost-estimator.service.ts`; worker job `gogo:worker:cost-estimate`                                 | §7, §11, §13, §15, §25 |
+| Freshness model (`FRESH/STALE/UNAVAILABLE/UNKNOWN`, derived from facts against `now`; bounded backoff)                                                                                                                                                                                                           | `domain/freshness.ts`; table `cost_source_freshness` (0039)                                                     | §23, §22               |
+| Collector definitions — frequency, timeout, retry, `maxCallsPerDay`, environments, **declared monitoring cost**                                                                                                                                                                                                  | `domain/collector.ts`                                                                                           | §19, §20               |
+| Collector scheduler — due check, timeout, isolation per collector, freshness upsert, monitoring-budget pause, cost-of-cost row under `gogo.cost_observability`                                                                                                                                                   | `application/collector-scheduler.service.ts`; worker job `gogo:worker:cost-collectors`                          | §19–§22, §38           |
+| First collector: `ledger` (FREE, essential) — reports the ledger's freshness, `sourceAsOf` = newest ledger write                                                                                                                                                                                                 | `application/ledger-freshness.collector.ts`                                                                     | §23                    |
+| Test-run cost records — `cost_test_runs` + `cost_test_run_deltas` (0040), `TestCostService.start/finish/fail`, soft budgets, service scoping; baseline runner writes a row beside its frozen JSON                                                                                                                | `application/test-cost.service.ts`; `scripts/cost-baseline/runner.ts` `testCost` hook                           | §28–§30, §43, §44.17   |
+| Monthly budgets + forecast — `cost_budgets` (0041), `spend()` precedence ACTUAL > ESTIMATED (never summed; FIXED/MANUAL separate), `BudgetService.overview`                                                                                                                                                      | `domain/budget.ts`, `application/budget.service.ts`                                                             | §12, §32, §33          |
+| Forecast on billing semantics (0043, ADR-0015) — `cost_kind` / `billing_cadence` / `period_amount_micros` on every cost row; `monthForecast` = month actual, end-of-month cash (usage projection + recurring billed this month + one-offs), normalised run-rate (annual ÷ 12, no one-offs)                       | `domain/forecast.ts`, `domain/budget.ts` (`usageProjectionMicros`), migration 0043                              | §33 (amended), §27     |
+| Backfill from Prometheus (`increase()` per UTC day → `provider_usage_meter_daily` source `prometheus_backfill`, LOW, floored; ≤ 62 days; idempotent; audited `cost.backfill`) + reconciliation (estimated vs actual per service, variance null without an actual; `reconciled_at` on matched pairs)              | `application/prometheus-backfill.service.ts`, `application/reconciliation.service.ts`; CLI `pnpm cost:backfill` | §10, §25, §26          |
+| Manual / fixed costs — `manual_cost_items` (0042), CMS CRUD with audit `cost.manual_item.*`, materialised into `provider_cost_daily` as MANUAL rows (one per **billing day** ≤ today at the full fee since 0043, source `manual_cost_items:<id>`); `MANUAL_COST` capability decides which services may carry one | `domain/manual-cost.ts`, `application/manual-cost.service.ts`; worker job `gogo:worker:cost-collectors` (daily) | §27, §44.18            |
 
 Not yet built (see #370): non-Google collectors (each registers a `CollectorDefinition`),
 ACTUAL cost collectors, Maps SDK telemetry, alerts.
@@ -91,12 +92,52 @@ reported against, never enforced: `provider_budget_daily` remains the hard guard
 meter key, ACTUAL beats ESTIMATED and the two are never added (the shadowed
 estimate is kept as `shadowedEstimatedMicros` for reconciliation); among several
 rows of the winning basis the most confident wins; FIXED and MANUAL are separate
-costs counted once each. `forecastMonthMicros` = MTD ÷ elapsed days × days in
-month, `null` (never 0) under three elapsed days or with no rows. `costBudgetStatus`
-states: `ok` / `warning` (≥ 80 %) / `projected_exceed` / `exceeded`.
-`BudgetService.overview(month)` returns spend, forecast, every budget's status and
-a per-service split; the Cost API v2 (#381) reads it into `cards.projected` and
-`cards.budget`.
+costs counted once each. The result is also split `byKind` (below).
+`costBudgetStatus` states: `ok` / `warning` (≥ 80 %) / `projected_exceed` /
+`exceeded`, projected against the scope's **end-of-month cash forecast** (a
+committed floor above the budget is `projected_exceed` even while the usage half
+cannot be projected). `BudgetService.overview(month)` returns spend, the forecast,
+every budget's status and a per-service split; the Cost API v2 (#381) reads it
+into `cards.forecast` and `cards.budget`.
+
+## Forecast on billing semantics (migration 0043, #415, ADR-0015)
+
+Epic §33 as amended: **nothing is derived from the month-to-date total.** Every
+`provider_cost_daily` row carries `cost_kind` (`USAGE | RECURRING | ONE_TIME`, NOT
+NULL, no default — a writer must say how a charge is billed), `billing_cadence`
+(`MONTHLY | ANNUAL`, present exactly when RECURRING) and `period_amount_micros`
+(the period's full charge, required when RECURRING), under check constraints.
+Producers: the estimator stamps USAGE (RECURRING for a `FIXED_MONTHLY` /
+`FIXED_ANNUAL` rule, `classifyRule`), the AWS / GitHub collectors USAGE, the
+monitoring cost model RECURRING MONTHLY with `knownMonthlyMicros` as the period
+amount, the manual-cost materialiser from the item's period (`classifyPeriod`).
+`upsertCostSamples` defaults a RECURRING sample's cadence to MONTHLY and its period
+amount to the sample amount when a collector omits them.
+
+`monthForecast()` (`domain/forecast.ts`, pure) takes the month's rows and the
+manual items' **schedule** (`manualSchedule`: the charges billed in the month and
+the recurring items active in it) and returns three numbers kept apart:
+
+| Number    | Formula                                                                               |
+| --------- | ------------------------------------------------------------------------------------- |
+| `actual`  | `spend()` over the month's rows, by kind                                              |
+| `cash`    | `usage.projectedMicros` + `recurring.committedMicros` + one-time (landed + scheduled) |
+| `runRate` | `usage.projectedMicros` + active MONTHLY fees + active ANNUAL fees ÷ 12               |
+
+`usage.projectedMicros` = USAGE MTD ÷ elapsed days × days in month
+(`usageProjectionMicros`), `null` under three elapsed days
+(`INSUFFICIENT_HISTORY`) or with no usage rows (`NO_USAGE_ROWS`); a scope nothing
+in which can produce usage (`BudgetService.usageExpected`, from the registry) has
+a known zero usage half (`NOT_APPLICABLE`). While the usage half is null, `cash.micros`
+is null, `cash.partial` is true and `cash.floorMicros` (recurring committed +
+one-time) is the honest floor. `recurring.scheduledMicros` is, per commitment,
+`max(0, period amount − landed)`: for a manual item the commitment is its charge
+in the schedule; for a recurring source with no item (the monitoring model) it is
+the latest row's `period_amount_micros`. A manual row whose item bills nothing
+this month (a moved anchor, a pre-0043 daily share) counts as landed only.
+`scheduled[]` lists what has not landed, soonest first. One-time charges never
+enter the run-rate; an annual fee enters `cash` only in its renewal month and the
+run-rate always, as a twelfth. Mixed currencies null the totals and keep the parts.
 
 ## Backfill and reconciliation
 
@@ -182,27 +223,34 @@ COST-CMS-009 (CMS#105).
 
 `manual_cost_items` is the record an operator edits: a fee under a registry
 provider + service, `amountMicros` of `currency` **per period** (`ONE_TIME |
-MONTHLY | YEARLY`), an inclusive `effectiveFrom`/`effectiveTo` (null = open-ended),
+MONTHLY | YEARLY` — the operator's word for `costKind` / `billingCadence`,
+`classifyPeriod`), an inclusive `effectiveFrom`/`effectiveTo` (null = open-ended),
 a note. `environment` mirrors `cost_budgets`. Nothing reports spend from this table:
 `ManualCostService.materialise()` rebuilds the item's rows in `provider_cost_daily`
 — `basis = MANUAL`, `confidence = HIGH`, `source = manual_cost_items:<id>` (one
 source per item, because two domains under `registrar.domain` are two costs and the
-table's key has no other column to tell them apart), `metadata` naming the item —
-one row per covered day, **never past today** (a month-to-date that already held
-the rest of the month would not be month-to-date). MONTHLY spreads the fee over the
-days of each month it covers, YEARLY over each year, ONE_TIME lands whole on
-`effectiveFrom`; rounding drift is at most half a micro per day. Rows an item no
-longer covers (moved service, shortened range, deleted item) are deleted in the same
-pass, so the operation is idempotent and `updated_at` moves only when an amount,
-currency or metadata actually changed.
+table's key has no other column to tell them apart), `cost_kind` /
+`billing_cadence` / `period_amount_micros` from the period, `metadata` naming the
+item and its `chargeDay` — **one row per billing day at the full amount**
+(ADR-0015), **never past today**. A MONTHLY item bills on the day-of-month of
+`effectiveFrom` each month (clamped to shorter months, `anchorDayInMonth`), a
+YEARLY item on its month-day each year (Feb 29 → Feb 28), a ONE_TIME item once
+(`chargeDays`). Nothing is spread per day: a daily share of an annual fee would put
+money into a month that never invoices it. Rows on any other day, or under another
+service (moved anchor, moved service, shortened range, deleted item, a pre-0043
+daily share), are deleted in the same pass, so the operation is idempotent and
+`updated_at` moves only when an amount, currency, classification or metadata
+actually changed. The item DTO also carries `nextChargeDay` (`nextChargeDay()`,
+the first billing day on or after today).
 
 When it runs: after every CMS write (the response already reflects the change), and
-once per UTC day in `gogo:worker:cost-collectors` so today's share appears by itself
-— free, so it ignores `COST_COLLECTORS_ENABLED`. Every reader then sees a
-subscription the way it sees an invoice: `spend()` counts MANUAL once beside
-ACTUAL/ESTIMATED, budgets and the forecast include it, the Cost API reports it as
-`manualMicros` / `basis: MANUAL`. Per-test deltas are usage deltas and never include
-it (epic §27, "excluded by default").
+once per UTC day in `gogo:worker:cost-collectors` so a charge that falls due today
+lands by itself — free, so it ignores `COST_COLLECTORS_ENABLED`. Every reader then
+sees a subscription the way it sees an invoice: `spend()` counts MANUAL once beside
+ACTUAL/ESTIMATED and budgets include it, the Cost API reports it as `manualMicros`
+/ `basis: MANUAL`, and what the item still bills this month is the forecast's
+schedule (`manualSchedule`). Per-test deltas are usage deltas and never include it
+(epic §27, "excluded by default").
 
 Who may carry one is the registry's answer: `serviceHasCapability(id, 'MANUAL_COST')`
 — `apple.*`, `hosting.*`, `registrar.*` (provider-wide) and `google.play_console`

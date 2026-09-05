@@ -50,13 +50,25 @@ describe('cost data freshness — observed (ADR-0014)', () => {
 
   it('NONE has nothing to be current', () => {
     expect(
-      costDataFreshness({ kind: 'NONE', sourceStatus: 'FRESH', rowDays: none, today }),
+      costDataFreshness({
+        kind: 'NONE',
+        sourceStatus: 'FRESH',
+        rowDays: none,
+        expectedManualDays: [],
+        today,
+      }),
     ).toBeNull();
   });
 
   it('AUTO with a covering source: FRESH and STALE as they are, UNAVAILABLE is ERROR, never-attempted is UNKNOWN', () => {
     const auto = (sourceStatus: 'FRESH' | 'STALE' | 'UNAVAILABLE' | 'UNKNOWN') =>
-      costDataFreshness({ kind: 'AUTO', sourceStatus, rowDays: none, today });
+      costDataFreshness({
+        kind: 'AUTO',
+        sourceStatus,
+        rowDays: none,
+        expectedManualDays: [],
+        today,
+      });
     expect(auto('FRESH')).toBe('FRESH');
     expect(auto('STALE')).toBe('STALE');
     // Attempted and failed: the only way to ERROR.
@@ -71,6 +83,7 @@ describe('cost data freshness — observed (ADR-0014)', () => {
         kind: 'AUTO',
         sourceStatus: null,
         rowDays: { manual, automatic },
+        expectedManualDays: [],
         today,
       });
     expect(auto([today])).toBe('FRESH');
@@ -79,16 +92,22 @@ describe('cost data freshness — observed (ADR-0014)', () => {
     expect(auto([], [today])).toBe('UNKNOWN');
   });
 
-  it('MANUAL reads the materialised rows only: today FRESH, older STALE, nothing entered null — a source never decides', () => {
-    const manual = (days: string[]) =>
+  it('MANUAL reads the materialised rows against the billing schedule — a source never decides (ADR-0015)', () => {
+    const manual = (days: string[], expected: string[]) =>
       costDataFreshness({
         kind: 'MANUAL',
         sourceStatus: 'UNAVAILABLE',
         rowDays: { manual: days, automatic: [today] },
+        expectedManualDays: expected,
         today,
       });
-    expect(manual([today])).toBe('FRESH');
-    expect(manual(['2026-08-31'])).toBe('STALE');
-    expect(manual([])).toBeNull();
+    // A monthly fee billed on the 1st: its row is there, nothing is due today → FRESH.
+    expect(manual(['2026-09-01'], ['2026-09-01'])).toBe('FRESH');
+    // Due on the 1st and on the 8th, only the 1st landed → the materialiser is behind.
+    expect(manual(['2026-09-01'], ['2026-09-01', '2026-09-08'])).toBe('STALE');
+    // Rows with nothing due: a moved anchor or a pre-0043 daily share not yet swept.
+    expect(manual(['2026-08-31'], [])).toBe('STALE');
+    // Nothing entered, or nothing billed yet.
+    expect(manual([], [])).toBeNull();
   });
 });

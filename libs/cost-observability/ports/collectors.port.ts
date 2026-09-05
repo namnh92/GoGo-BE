@@ -21,6 +21,10 @@ export type Confidence = 'HIGH' | 'MEDIUM' | 'LOW';
 /** Epic §11 basis. `ESTIMATED` is produced by the estimator, never collected. */
 export type CostBasis = 'ACTUAL' | 'ESTIMATED' | 'FIXED' | 'MANUAL';
 
+/** ADR-0015 — how a charge is billed; see `domain/budget.ts`. */
+export type CostKind = 'USAGE' | 'RECURRING' | 'ONE_TIME';
+export type BillingCadence = 'MONTHLY' | 'ANNUAL';
+
 export type CollectContext = {
   /** `dev` | `staging` | `prod`. */
   environment: string;
@@ -67,6 +71,15 @@ export type CostSample = {
   basis: Exclude<CostBasis, 'ESTIMATED'>;
   confidence: Confidence;
   source: string;
+  /**
+   * ADR-0015 — a collector says how what it read is billed. A metered
+   * invoice line is USAGE; a plan fee is RECURRING with its cadence and the
+   * period's full charge; a registration is ONE_TIME. Nothing downstream
+   * guesses from the basis.
+   */
+  costKind: CostKind;
+  billingCadence?: BillingCadence | null;
+  periodAmountMicros?: number | null;
   sourceAsOf: Date | null;
   metadata?: Record<string, unknown>;
 };

@@ -30,6 +30,9 @@ const cost = (over: Partial<CostRowWithMeta> = {}): CostRowWithMeta => ({
   basis: 'ESTIMATED',
   confidence: 'MEDIUM',
   source: 'estimator',
+  costKind: 'USAGE',
+  billingCadence: null,
+  periodAmountMicros: null,
   updatedAt: '2026-09-09T10:00:00.000Z',
   ...over,
 });
@@ -65,6 +68,8 @@ const inputs = (over: Partial<RowInputs> = {}): RowInputs => ({
   costRows: [],
   usageRows: [],
   freshness: [],
+  manualItems: [],
+  range: { from: '2026-09-01', to: '2026-09-10' },
   now: NOW,
   ...over,
 });
@@ -375,6 +380,64 @@ describe('buildServiceRow / buildProviderRow', () => {
     ]);
   });
 
+  it('ADR-0015 — a manual service is FRESH when every billing day due has its row, STALE when the materialiser lags', () => {
+    const apple = COST_REGISTRY.provider('apple')!;
+    const developer = COST_REGISTRY.service('apple.developer_program')!;
+    const item = {
+      id: '11111111-1111-4111-8111-111111111111',
+      providerId: 'apple',
+      serviceId: 'apple.developer_program',
+      name: 'Apple Developer',
+      amountMicros: 30_000_000,
+      currency: 'USD',
+      period: 'MONTHLY' as const,
+      effectiveFrom: '2026-09-01',
+      effectiveTo: null,
+    };
+    const charge = (day: string) =>
+      cost({
+        day,
+        providerId: 'apple',
+        serviceId: 'apple.developer_program',
+        operationId: null,
+        usageMetricId: null,
+        billingSkuId: null,
+        amountMicros: 30_000_000,
+        basis: 'MANUAL',
+        confidence: 'HIGH',
+        source: 'manual_cost_items:11111111-1111-4111-8111-111111111111',
+        costKind: 'RECURRING',
+        billingCadence: 'MONTHLY',
+        periodAmountMicros: 30_000_000,
+      });
+    // Billed on the 1st, read on the 10th: the row is there and nothing is due today.
+    const fresh = buildServiceRow(
+      developer,
+      COST_REGISTRY,
+      inputs({ costRows: [charge('2026-09-01')], manualItems: [item] }),
+    );
+    expect(fresh.cost).toEqual({ kind: 'MANUAL', freshness: 'FRESH' });
+    expect(
+      buildProviderRow(
+        apple,
+        COST_REGISTRY,
+        inputs({ costRows: [charge('2026-09-01')], manualItems: [item] }),
+      ).cost,
+    ).toEqual({ kind: 'MANUAL', freshness: 'FRESH' });
+    // The item exists, its billing day passed, no row yet: the materialiser is behind.
+    expect(buildServiceRow(developer, COST_REGISTRY, inputs({ manualItems: [item] })).cost).toEqual(
+      {
+        kind: 'MANUAL',
+        freshness: 'STALE',
+      },
+    );
+    // Nothing entered: nothing to be current.
+    expect(buildServiceRow(developer, COST_REGISTRY, inputs()).cost).toEqual({
+      kind: 'MANUAL',
+      freshness: null,
+    });
+  });
+
   it('epic §44.2 — a provider added to the registry data appears as a row with no code change', () => {
     const acme = {
       id: 'acme',
@@ -530,8 +593,19 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     });
   });
 
-  it('MANUAL freshness ignores collectors and reads the materialised rows: today FRESH, older STALE, nothing entered null', () => {
+  it('MANUAL freshness ignores collectors and reads the materialised rows against the billing schedule (ADR-0015)', () => {
     const apple = provider('apple');
+    const item = (effectiveFrom: string) => ({
+      id: '11111111-1111-4111-8111-111111111111',
+      providerId: 'apple',
+      serviceId: 'apple.developer_program',
+      name: 'Apple Developer',
+      amountMicros: 30_000_000,
+      currency: 'USD',
+      period: 'MONTHLY' as const,
+      effectiveFrom,
+      effectiveTo: null,
+    });
     const manual = (day: string) =>
       cost({
         providerId: 'apple',
@@ -541,13 +615,26 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
         billingSkuId: null,
         basis: 'MANUAL',
         confidence: 'HIGH',
-        source: 'manual_cost_items:1',
+        source: 'manual_cost_items:11111111-1111-4111-8111-111111111111',
+        costKind: 'RECURRING',
+        billingCadence: 'MONTHLY',
+        periodAmountMicros: 30_000_000,
         day,
       });
+    // Billed on the 1st, read on the 10th: the row is there; nothing is due today.
     expect(
-      buildProviderRow(apple, registry, inputs({ costRows: [manual('2026-09-10')] })).cost
-        .freshness,
+      buildProviderRow(
+        apple,
+        registry,
+        inputs({ costRows: [manual('2026-09-01')], manualItems: [item('2026-09-01')] }),
+      ).cost.freshness,
     ).toBe('FRESH');
+    // Due on the 1st, no row: the materialiser is behind.
+    expect(
+      buildProviderRow(apple, registry, inputs({ manualItems: [item('2026-09-01')] })).cost
+        .freshness,
+    ).toBe('STALE');
+    // A row nothing is due for (a moved anchor, a pre-0043 daily share): stale until swept.
     expect(
       buildProviderRow(apple, registry, inputs({ costRows: [manual('2026-09-01')] })).cost
         .freshness,
@@ -605,6 +692,7 @@ describe('costCard', () => {
     expect(costCard([])).toEqual({
       spendMicros: null,
       byBasis: null,
+      byKind: null,
       currency: null,
       mixedCurrency: false,
       services: 0,
@@ -612,5 +700,6 @@ describe('costCard', () => {
     const c = costCard([cost(), cost({ serviceId: 'google.routes', amountMicros: 5 })]);
     expect(c.spendMicros).toBe(1_000_005);
     expect(c.services).toBe(2);
+    expect(c.byKind).toEqual({ USAGE: 1_000_005, RECURRING: 0, ONE_TIME: 0 });
   });
 });
