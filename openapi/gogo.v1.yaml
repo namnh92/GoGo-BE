@@ -6926,6 +6926,95 @@ components:
           description: More than one billing currency in scope — the number cannot be summed honestly.
         costStatus: { $ref: '#/components/schemas/CmsCostStatus' }
 
+    CmsRuntimeSurface:
+      type: string
+      enum: [in_process, client_sdk, none]
+      description: >
+        ADR-0014. Whether anything of GoGo's calls the service at runtime — the
+        precondition for request-level telemetry. `in_process`: this API/worker
+        process calls it. `client_sdk`: a GoGo client calls it directly (the Maps
+        SDKs). `none`: nothing calls it on a request path — a bill, a CI runner, a
+        fee, a provider nothing is wired to yet. Declared in the registry, never
+        inferred from cost capabilities.
+
+    CmsRuntimeCoverage:
+      type: string
+      enum: [FULL, PARTIAL, NOT_INSTRUMENTED, N/A]
+      description: >
+        ADR-0014. How much of a runtime surface GoGo measures (calls, latency,
+        errors), from the registry alone. `FULL`: every operation emits a metric.
+        `PARTIAL`: some do. `NOT_INSTRUMENTED`: a surface exists and nothing on it
+        emits — the one state worth attention. `N/A`: no runtime surface at all —
+        not a gap and not a zero. Independent of registry status, cost source and
+        cost freshness.
+
+    CmsOperationCount:
+      type: object
+      required: [instrumented, total]
+      properties:
+        instrumented: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 0 }
+
+    CmsServiceRuntime:
+      type: object
+      required: [surface, coverage, operations]
+      properties:
+        surface: { $ref: '#/components/schemas/CmsRuntimeSurface' }
+        coverage: { $ref: '#/components/schemas/CmsRuntimeCoverage' }
+        operations:
+          allOf:
+            - $ref: '#/components/schemas/CmsOperationCount'
+          description: '`total: 0` with a surface is NOT_INSTRUMENTED: nothing registered to measure yet.'
+
+    CmsProviderRuntime:
+      type: object
+      required: [coverage, services, operations]
+      properties:
+        coverage: { $ref: '#/components/schemas/CmsRuntimeCoverage' }
+        services:
+          type: object
+          description: Services with a runtime surface, by their own coverage. N/A services are not counted.
+          required: [full, partial, notInstrumented]
+          properties:
+            full: { type: integer, minimum: 0 }
+            partial: { type: integer, minimum: 0 }
+            notInstrumented: { type: integer, minimum: 0 }
+        operations:
+          allOf:
+            - $ref: '#/components/schemas/CmsOperationCount'
+          description: Over the same services.
+
+    CmsCostSourceKind:
+      type: string
+      enum: [AUTO, MANUAL, NONE]
+      description: >
+        ADR-0014. Declared: how money for the row gets into the ledger. `AUTO`:
+        collected or written by code (USAGE_COLLECTOR, ACTUAL_COST_COLLECTOR,
+        FIXED_COST). `MANUAL`: the manual-item form is the only way in
+        (MANUAL_COST). `NONE`: no way in. Never a registry status.
+
+    CmsCostDataFreshness:
+      type: string
+      enum: [FRESH, STALE, ERROR]
+      description: >
+        ADR-0014. Observed: whether the row's money is current. For AUTO, the
+        epic §23 roll-up over covering sources (UNAVAILABLE and UNKNOWN both read
+        ERROR — a source that promised to deliver has nothing usable; the
+        per-source detail stays in `freshness.sources`), or the cost rows when no
+        source covers the row (today FRESH, older STALE, none ERROR). For MANUAL,
+        the materialised rows alone (today FRESH, older STALE).
+
+    CmsCostSource:
+      type: object
+      required: [kind, freshness]
+      properties:
+        kind: { $ref: '#/components/schemas/CmsCostSourceKind' }
+        freshness:
+          oneOf:
+            - $ref: '#/components/schemas/CmsCostDataFreshness'
+            - type: 'null'
+          description: Null when there is nothing to be current — kind NONE, or MANUAL with nothing entered yet.
+
     CmsCostServiceRow:
       allOf:
         - $ref: '#/components/schemas/CmsCostMoney'
@@ -6938,6 +7027,8 @@ components:
               category,
               capabilities,
               instrumented,
+              runtime,
+              cost,
               usage,
               quota,
               lastUpdated,
@@ -6953,7 +7044,15 @@ components:
               items: { type: string }
             instrumented:
               type: boolean
-              description: At least one operation emits a metric. False renders as "chưa đo", never as zero.
+              description: '`runtime.coverage` is FULL or PARTIAL. Kept for readers of the first contract; false renders as "chưa đo", never as zero.'
+            runtime:
+              allOf:
+                - $ref: '#/components/schemas/CmsServiceRuntime'
+              description: ADR-0014 — what is measured, from the registry alone.
+            cost:
+              allOf:
+                - $ref: '#/components/schemas/CmsCostSource'
+              description: ADR-0014 — how money gets in and whether it is current. Independent of `runtime`.
             usage:
               type: array
               items: { $ref: '#/components/schemas/CmsCostUsageLine' }
@@ -7000,6 +7099,8 @@ components:
               displayName,
               status,
               capabilities,
+              runtime,
+              cost,
               billingTimezone,
               unknownServices,
               services,
@@ -7011,11 +7112,23 @@ components:
             displayName: { type: string }
             status:
               type: string
-              enum: [active, planned, manual]
-              description: Registry status. `planned` renders as "chưa nối".
+              enum: [active, planned]
+              description: >
+                Integration lifecycle only (ADR-0014): `active` has at least one
+                capability implemented, `planned` is named and not wired — renders as
+                "chưa nối". Never a cost or telemetry fact; the former `manual` value
+                is retired, manual-only providers are `active` with `cost.kind: MANUAL`.
             capabilities:
               type: array
               items: { type: string }
+            runtime:
+              allOf:
+                - $ref: '#/components/schemas/CmsProviderRuntime'
+              description: ADR-0014 — coverage over every service with a runtime surface, with counts for the drill-down; `services[].runtime` says which.
+            cost:
+              allOf:
+                - $ref: '#/components/schemas/CmsCostSource'
+              description: ADR-0014 — how money gets in and whether it is current. Independent of `runtime` and of `status`.
             billingTimezone: { type: [string, 'null'] }
             unknownServices:
               type: array

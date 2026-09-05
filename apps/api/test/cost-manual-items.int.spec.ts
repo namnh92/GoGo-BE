@@ -288,8 +288,11 @@ describe('#382 — lifecycle: create → rows, change → rows change, delete �
     const expected = dailyShare * DAY_OF_MONTH;
     expect(provider).toMatchObject({
       providerId: 'apple',
-      status: 'manual',
+      status: 'active',
       capabilities: ['MANUAL_COST'],
+      // ADR-0014: a fee is MANUAL and, materialised through today, FRESH; it has no runtime.
+      cost: { kind: 'MANUAL', freshness: 'FRESH' },
+      runtime: { coverage: 'N/A' },
       spendMicros: expected,
       manualMicros: expected,
       estimatedMicros: null,

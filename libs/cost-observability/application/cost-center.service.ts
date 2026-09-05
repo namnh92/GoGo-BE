@@ -11,7 +11,19 @@ import {
   type CostRow,
 } from '../domain/budget';
 import type { Capability } from '../domain/capabilities';
+import {
+  costDataFreshness,
+  providerCostSourceKind,
+  serviceCostSourceKind,
+  type CostSource,
+} from '../domain/cost-source';
 import { freshnessStatus, type FreshnessStatus } from '../domain/freshness';
+import {
+  providerRuntime,
+  serviceRuntime,
+  type ProviderRuntime,
+  type ServiceRuntime,
+} from '../domain/runtime-coverage';
 import type {
   CostRegistry,
   OperationDefinition,
@@ -324,8 +336,12 @@ export type ServiceCostRow = MoneyFacts & {
   displayName: string;
   category: ServiceCategory;
   capabilities: readonly Capability[];
-  /** At least one operation emits a metric. False = a gap, never a zero. */
+  /** `runtime.coverage` is FULL or PARTIAL. Kept for readers of the first contract; false = a gap, never a zero. */
   instrumented: boolean;
+  /** ADR-0014 — what is measured, from the registry alone. */
+  runtime: ServiceRuntime;
+  /** ADR-0014 — how money gets in, and whether it is current. Independent of `runtime`. */
+  cost: CostSource;
   usage: UsageLine[];
   /** No QUOTA collector exists yet (epic §6); `null` until one does. */
   quota: null;
@@ -348,8 +364,13 @@ export type ServiceCostDetail = ServiceCostRow & { operations: OperationUsage[] 
 export type ProviderCostRow = MoneyFacts & {
   providerId: string;
   displayName: string;
+  /** Integration lifecycle only — never a cost or telemetry fact (ADR-0014). */
   status: ProviderStatus;
   capabilities: readonly Capability[];
+  /** ADR-0014 — coverage over every service with a runtime surface, with counts for the drill-down. */
+  runtime: ProviderRuntime;
+  /** ADR-0014 — how money gets in, and whether it is current. Independent of `runtime`. */
+  cost: CostSource;
   billingTimezone: string | null;
   /** Services with `costStatus: UNKNOWN` — what the "unknown" card counts. */
   unknownServices: string[];
@@ -368,6 +389,35 @@ export type RowInputs = {
 const newest = (values: readonly string[]): string | null =>
   values.length === 0 ? null : [...values].sort().at(-1)!;
 
+/**
+ * ADR-0014 — the cost dimension of a row. `rowFreshness` answers UNKNOWN both
+ * for "no source covers this" and for "a source that never ran", and only the
+ * second is a source's status; the first is passed as `null` so the rows can
+ * decide instead.
+ */
+function costSource(
+  kind: CostSource['kind'],
+  freshness: RowFreshness,
+  costRows: readonly CostRow[],
+  now: Date,
+): CostSource {
+  const days = (predicate: (r: CostRow) => boolean) => [
+    ...new Set(costRows.filter(predicate).map((r) => r.day)),
+  ];
+  return {
+    kind,
+    freshness: costDataFreshness({
+      kind,
+      sourceStatus: freshness.sources.length > 0 ? freshness.status : null,
+      rowDays: {
+        manual: days((r) => r.basis === 'MANUAL'),
+        automatic: days((r) => r.basis !== 'MANUAL'),
+      },
+      today: utcDay(now),
+    }),
+  };
+}
+
 export function buildServiceRow(
   service: ServiceDefinition,
   registry: CostRegistry,
@@ -380,12 +430,15 @@ export function buildServiceRow(
     sourcesForService(input.freshness, service.providerId, service.id),
     input.now,
   );
-  const instrumented = service.operations.some((o) => o.instrumented);
+  const runtime = serviceRuntime(service);
+  const instrumented = runtime.coverage === 'FULL' || runtime.coverage === 'PARTIAL';
   const measuredZero =
     costRows.length === 0 &&
     !usage.some((l) => l.quantity > 0) &&
     instrumented &&
     (freshness.status === 'FRESH' || freshness.status === 'STALE');
+  const provider = registry.provider(service.providerId);
+  const kind = serviceCostSourceKind(service, provider ?? { capabilities: [] });
   return {
     serviceId: service.id,
     providerId: service.providerId,
@@ -393,6 +446,8 @@ export function buildServiceRow(
     category: service.category,
     capabilities: service.capabilities,
     instrumented,
+    runtime,
+    cost: costSource(kind, freshness, costRows, input.now),
     ...moneyFacts(costRows, measuredZero),
     usage,
     quota: null,
@@ -459,6 +514,8 @@ export function buildProviderRow(
     displayName: provider.displayName,
     status: provider.status,
     capabilities: provider.capabilities,
+    runtime: providerRuntime(provider),
+    cost: costSource(providerCostSourceKind(provider), freshness, costRows, input.now),
     billingTimezone: provider.billingTimezone ?? null,
     ...moneyFacts(costRows, measuredZero),
     unknownServices: services.filter((s) => s.costStatus === 'UNKNOWN').map((s) => s.serviceId),

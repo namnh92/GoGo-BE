@@ -82,15 +82,54 @@ describe('cost registry — epic §5 inventory', () => {
     for (const o of COST_REGISTRY.operations()) expect(o.id).toMatch(/^[a-z][a-zA-Z0-9_.]*$/);
   });
 
-  it('declares only real capabilities: active ≥ one, planned none, manual exactly MANUAL_COST', () => {
+  it('declares only real capabilities: active ≥ one, planned none; a status is never a cost fact (ADR-0014)', () => {
     expect(() => assertCapabilitiesKnown(COST_REGISTRY_DATA)).not.toThrow();
     for (const p of COST_REGISTRY.providers()) {
+      expect(['active', 'planned'], p.id).toContain(p.status);
       if (p.status === 'active') expect(p.capabilities.length, p.id).toBeGreaterThan(0);
       if (p.status === 'planned') expect(p.capabilities, p.id).toEqual([]);
-      if (p.status === 'manual') {
-        expect(p.capabilities, p.id).toEqual(['MANUAL_COST']);
-        for (const s of p.services) expect(s.capabilities, s.id).toEqual(['MANUAL_COST']);
+    }
+    // Manual-only providers are integrated (the form exists), so they are
+    // active; what makes them manual is the capability, and only that.
+    for (const id of ['apple', 'hosting', 'registrar']) {
+      const p = COST_REGISTRY.provider(id)!;
+      expect(p.status, id).toBe('active');
+      expect(p.capabilities, id).toEqual(['MANUAL_COST']);
+      for (const s of p.services) {
+        expect(s.capabilities, s.id).toEqual(['MANUAL_COST']);
+        expect(s.runtime, s.id).toBe('none');
       }
+    }
+  });
+
+  it('declares a runtime surface per service, independent of how its cost arrives (ADR-0014)', () => {
+    const surface = (id: string) => COST_REGISTRY.service(id)!.runtime;
+    for (const id of [
+      'google.places',
+      'google.routes',
+      'google.sheets',
+      'cloudflare.r2',
+      'upstash.redis',
+      'neon.postgres',
+    ]) {
+      expect(surface(id), id).toBe('in_process');
+    }
+    for (const id of ['google.maps_sdk_ios', 'google.maps_sdk_android']) {
+      expect(surface(id), id).toBe('client_sdk');
+    }
+    // Collected or billed, and never called from here.
+    for (const id of [
+      'github.actions',
+      'aws.aggregate_billing',
+      'aws.ssm',
+      'cloudflare.workers',
+      'gogo.cost_observability',
+      'google.play_console',
+    ]) {
+      expect(surface(id), id).toBe('none');
+    }
+    for (const p of COST_REGISTRY.providers().filter((p) => p.status === 'planned')) {
+      for (const s of p.services) expect(s.runtime, s.id).toBe('none');
     }
   });
 
@@ -202,6 +241,7 @@ describe('cost registry — invariants at construction', () => {
             providerId: 'x',
             displayName: 'Svc',
             category: 'internal',
+            runtime: 'in_process',
             capabilities: [],
             operations: [
               {
@@ -230,6 +270,12 @@ describe('cost registry — invariants at construction', () => {
 
   it('accepts a well-formed registry', () => {
     expect(() => new CostRegistry(minimal())).not.toThrow();
+  });
+
+  it('refuses an instrumented operation on a service that declares no runtime', () => {
+    const data = minimal();
+    (data.providers[0]!.services[0] as { runtime: string }).runtime = 'none';
+    expect(() => new CostRegistry(data)).toThrow(/declares no runtime/);
   });
 
   it('refuses a service filed under the wrong provider', () => {
@@ -287,6 +333,7 @@ describe('adding a provider (epic §40)', () => {
               providerId: 'openai',
               displayName: 'Responses',
               category: 'internal',
+              runtime: 'in_process',
               capabilities: ['USAGE_COLLECTOR'],
               operationPrefixes: ['openai.'],
               operations: [

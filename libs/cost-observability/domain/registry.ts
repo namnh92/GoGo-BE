@@ -21,13 +21,36 @@ import { CAPABILITIES, type Capability } from './capabilities';
  * literal.
  */
 
+/**
+ * Integration lifecycle only. How a provider's cost gets in (a collector, a
+ * hand-typed item, nothing) is a capability, read through `costSourceKind`;
+ * whether its runtime is measured is `runtime` on each service, read through
+ * `providerRuntime`. Neither is a status, and a status never encodes them —
+ * the old `manual` value did, and ADR-0014 retired it.
+ */
 export type ProviderStatus =
   /** Integrated: at least one capability is implemented. */
   | 'active'
   /** Named in the epic inventory, no integration yet. Visible as "chưa nối". */
-  | 'planned'
-  /** Fixed/manual spend only; never collected automatically. */
-  | 'manual';
+  | 'planned';
+
+/**
+ * Whether anything of GoGo's calls the service at runtime — the precondition
+ * for request-level telemetry (calls, latency, errors), and a fact about the
+ * deployment rather than about cost.
+ *
+ * - `in_process`: this API/worker process calls it (Places, Redis, Postgres…).
+ * - `client_sdk`: a GoGo client calls it directly (the Maps SDKs); telemetry
+ *   can only arrive through an ingestion endpoint.
+ * - `none`: nobody calls it on a request path — a bill, a CI runner, a fee,
+ *   or a provider nothing is wired to yet. Runtime coverage is N/A, not a gap.
+ *
+ * Declared, never inferred: a service with a cost collector and no runtime
+ * (GitHub Actions) and one with a runtime and no cost collector are both
+ * real, and inferring one dimension from the other is the confusion
+ * ADR-0014 exists to end.
+ */
+export type RuntimeSurface = 'in_process' | 'client_sdk' | 'none';
 
 export type ServiceCategory =
   | 'maps'
@@ -91,6 +114,8 @@ export type ServiceDefinition = {
   providerId: string;
   displayName: string;
   category: ServiceCategory;
+  /** See `RuntimeSurface`. Coverage is computed from this and `operations[].instrumented`. */
+  runtime: RuntimeSurface;
   capabilities: readonly Capability[];
   operations: readonly OperationDefinition[];
   /**
@@ -207,6 +232,11 @@ export class CostRegistry {
           }
           if (this.operationsById.has(operation.id)) {
             throw new RegistryError(`duplicate operation ${operation.id}`);
+          }
+          if (service.runtime === 'none' && operation.instrumented) {
+            throw new RegistryError(
+              `operation ${operation.id} is instrumented on ${service.id}, which declares no runtime`,
+            );
           }
           this.operationsById.set(operation.id, operation);
           for (const meter of operation.usageMeters) this.addMeter(meter, service.id, operation.id);
@@ -456,6 +486,7 @@ const GOOGLE: ProviderDefinition = {
       providerId: 'google',
       displayName: 'Places',
       category: 'maps',
+      runtime: 'in_process',
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST', 'BUDGET', 'TEST_RUN_DELTA'],
       // Backstop: an unregistered `google.*` label lands here rather than
       // vanishing. Every other Google service registers a longer prefix.
@@ -522,6 +553,7 @@ const GOOGLE: ProviderDefinition = {
       providerId: 'google',
       displayName: 'Routes',
       category: 'routing',
+      runtime: 'in_process',
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST', 'TEST_RUN_DELTA'],
       operationPrefixes: ['google.routeMatrix', 'routes.'],
       operations: [
@@ -560,6 +592,8 @@ const GOOGLE: ProviderDefinition = {
       providerId: 'google',
       displayName: 'Maps SDK iOS',
       category: 'maps_sdk',
+      // The handset loads the map; this process never sees a call (#387).
+      runtime: 'client_sdk',
       // Nothing collected: the SDK renders on the handset (epic §18).
       capabilities: [],
       operationPrefixes: ['google.maps_sdk_ios'],
@@ -588,6 +622,7 @@ const GOOGLE: ProviderDefinition = {
       providerId: 'google',
       displayName: 'Maps SDK Android',
       category: 'maps_sdk',
+      runtime: 'client_sdk',
       capabilities: [],
       operationPrefixes: ['google.maps_sdk_android'],
       operations: [
@@ -615,6 +650,7 @@ const GOOGLE: ProviderDefinition = {
       providerId: 'google',
       displayName: 'Sheets',
       category: 'spreadsheet',
+      runtime: 'in_process',
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
       operationPrefixes: ['google.sheets.'],
       operations: [
@@ -641,6 +677,7 @@ const GOOGLE: ProviderDefinition = {
       providerId: 'google',
       displayName: 'Play Console',
       category: 'platform_fee',
+      runtime: 'none',
       capabilities: ['MANUAL_COST'],
       operations: [],
     },
@@ -697,6 +734,8 @@ const CLOUDFLARE: ProviderDefinition = {
       providerId: 'cloudflare',
       displayName: 'R2',
       category: 'object_storage',
+      // The S3 client in `r2-storage.adapter.ts`; unmeasured until #414.
+      runtime: 'in_process',
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
       operations: [],
       meters: [
@@ -711,6 +750,8 @@ const CLOUDFLARE: ProviderDefinition = {
       providerId: 'cloudflare',
       displayName: 'Workers',
       category: 'edge_compute',
+      // Nothing in this process calls a Worker; its runtime is Cloudflare's to report.
+      runtime: 'none',
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
       operations: [],
       meters: [
@@ -753,6 +794,8 @@ const UPSTASH: ProviderDefinition = {
       providerId: 'upstash',
       displayName: 'Redis',
       category: 'cache',
+      // Rate-limit store and room event bus; unmeasured until #414.
+      runtime: 'in_process',
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
       operations: [],
       meters: [
@@ -805,6 +848,8 @@ const NEON: ProviderDefinition = {
       providerId: 'neon',
       displayName: 'Postgres',
       category: 'database',
+      // The connection pool; unmeasured until #414.
+      runtime: 'in_process',
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
       operations: [],
       meters: [
@@ -848,6 +893,7 @@ const AWS: ProviderDefinition = {
       providerId: 'aws',
       displayName: 'Aggregate billing',
       category: 'billing',
+      runtime: 'none',
       capabilities: ['ACTUAL_COST_COLLECTOR'],
       operations: [],
       meters: [serviceMeter('aws.aggregate_billing', 'billed_usd_micros', 'usd_micros')],
@@ -857,6 +903,8 @@ const AWS: ProviderDefinition = {
       providerId: 'aws',
       displayName: 'Systems Manager',
       category: 'secrets',
+      // Secrets are read at deploy time, not on a request path.
+      runtime: 'none',
       capabilities: ['ACTUAL_COST_COLLECTOR'],
       operations: [],
       meters: [serviceMeter('aws.ssm', 'api_requests', 'request')],
@@ -882,6 +930,7 @@ const GITHUB: ProviderDefinition = {
       providerId: 'github',
       displayName: 'Actions',
       category: 'ci',
+      runtime: 'none',
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST', 'ACTUAL_COST_COLLECTOR'],
       operations: [],
       meters: [billedServiceMeter(GITHUB_ACTIONS, 'minutes', 'minute', 'actions.minutes')],
@@ -924,6 +973,7 @@ function planned(
       providerId: id,
       displayName: s.displayName,
       category: s.category,
+      runtime: 'none',
       capabilities: [],
       operations: [],
       meters: s.meters.map(([metric, unit]) => serviceMeter(`${id}.${s.name}`, metric, unit)),
@@ -935,7 +985,8 @@ function planned(
  * A provider that only ever costs what somebody types in (epic §27): the
  * provider and each of its services declare `MANUAL_COST`, and nothing else,
  * so the Cost Center's manual-item form finds them by asking the registry
- * (`servicesWith('MANUAL_COST')`) and never by a status or id literal.
+ * (`servicesWith('MANUAL_COST')`) and never by a status or id literal. No
+ * runtime either: a fee has no request path.
  */
 function manual(
   id: string,
@@ -945,13 +996,16 @@ function manual(
   return {
     id,
     displayName,
-    status: 'manual',
+    // Integrated — the manual-item form (#382) is the implementation of
+    // MANUAL_COST. "How the money gets in" is the capability, not the status.
+    status: 'active',
     capabilities: ['MANUAL_COST'],
     services: services.map((s) => ({
       id: `${id}.${s.name}`,
       providerId: id,
       displayName: s.displayName,
       category: 'platform_fee',
+      runtime: 'none',
       capabilities: ['MANUAL_COST'],
       operations: [],
     })),
@@ -981,6 +1035,7 @@ export const COST_REGISTRY_DATA: RegistryData = {
           providerId: 'gogo',
           displayName: 'Cost observability',
           category: 'internal',
+          runtime: 'none',
           capabilities: ['FIXED_COST'],
           operations: [],
           meters: [
