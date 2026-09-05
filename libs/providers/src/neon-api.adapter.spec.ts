@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  type NeonApiConfig,
   NEON_API_BASE,
   NeonApiClient,
   NeonApiError,
@@ -50,9 +51,12 @@ const HISTORY = {
   pagination: { cursor: '' },
 };
 
+const ORG = 'org-test-18693493';
+
 const PROJECT_BODY = {
   project: {
     id: PROJECT,
+    org_id: ORG,
     name: 'gogo-dev',
     consumption_period_start: '2026-09-01T00:00:00Z',
     consumption_period_end: '2026-10-01T00:00:00Z',
@@ -83,8 +87,14 @@ function fetchWith(
   return { fetchImpl, calls };
 }
 
-const client = (fetchImpl: typeof fetch) =>
-  new NeonApiClient({ apiKey: 'napi_secret', projectId: PROJECT }, fetchImpl);
+// `orgId` given, so a canned single response is the history answer and not a
+// project read; the org resolution path has its own tests below.
+const client = (fetchImpl: typeof fetch, over: { orgId?: string | null } = {}) => {
+  const config: NeonApiConfig = { apiKey: 'napi_secret', projectId: PROJECT };
+  // `null` = leave the org unconfigured so the client must resolve it.
+  if (over.orgId !== null) config.orgId = over.orgId ?? ORG;
+  return new NeonApiClient(config, fetchImpl);
+};
 
 const WINDOW = { from: new Date('2026-09-02T00:00:00Z'), to: new Date('2026-09-03T06:00:00Z') };
 
@@ -209,6 +219,7 @@ describe('NeonApiClient', () => {
     const url = new URL(calls[0]!.url);
     expect(`${url.origin}${url.pathname}`).toBe(`${NEON_API_BASE}/consumption_history/projects`);
     expect(Object.fromEntries(url.searchParams)).toEqual({
+      org_id: ORG,
       from: '2026-09-02T00:00:00.000Z',
       to: '2026-09-03T06:00:00.000Z',
       granularity: 'daily',
@@ -216,6 +227,65 @@ describe('NeonApiClient', () => {
       limit: '100',
     });
     expect(calls[0]!.init.headers).toMatchObject({ Authorization: 'Bearer napi_secret' });
+  });
+
+  it('#411 — reads org_id from the project once when not configured, then reuses it', async () => {
+    const calls: Call[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const path = new URL(String(url)).pathname;
+      const body = path.endsWith(`/projects/${PROJECT}`) ? PROJECT_BODY : HISTORY;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const c = client(fetchImpl, { orgId: null });
+    await c.consumptionHistory(WINDOW);
+    await c.consumptionHistory(WINDOW);
+    const paths = calls.map((call) => new URL(call.url).pathname);
+    expect(paths).toEqual([
+      `/api/v2/projects/${PROJECT}`,
+      '/api/v2/consumption_history/projects',
+      '/api/v2/consumption_history/projects',
+    ]);
+    for (const call of calls.slice(1)) {
+      expect(new URL(call.url).searchParams.get('org_id')).toBe(ORG);
+    }
+  });
+
+  it('#411 — a project() read fills the org before any history call', async () => {
+    const calls: Call[] = [];
+    const { fetchImpl } = fetchWith(
+      [
+        { status: 200, body: PROJECT_BODY },
+        { status: 200, body: HISTORY },
+      ],
+      calls,
+    );
+    const c = client(fetchImpl, { orgId: null });
+    await c.project();
+    await c.consumptionHistory(WINDOW);
+    expect(calls).toHaveLength(2);
+    expect(new URL(calls[1]!.url).searchParams.get('org_id')).toBe(ORG);
+  });
+
+  it('#411 — a project without an org_id is BAD_RESPONSE, never a request without one', async () => {
+    const { project, ...rest } = PROJECT_BODY.project as Record<string, unknown> & {
+      project?: never;
+    };
+    void project;
+    const noOrg = {
+      project: Object.fromEntries(Object.entries(rest).filter(([k]) => k !== 'org_id')),
+    };
+    const { fetchImpl, calls } = fetchWith({ status: 200, body: noOrg });
+    await expect(
+      client(fetchImpl, { orgId: null }).consumptionHistory(WINDOW),
+    ).rejects.toMatchObject({
+      code: 'BAD_RESPONSE',
+    });
+    expect(calls).toHaveLength(1);
+    expect(new URL(calls[0]!.url).pathname).toBe(`/api/v2/projects/${PROJECT}`);
   });
 
   it('follows the pagination cursor until it stops', async () => {
