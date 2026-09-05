@@ -12,6 +12,12 @@ RUN apk add --no-cache python3 make g++ libc6-compat
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/worker/package.json apps/worker/package.json
+# Every workspace package's manifest, or `pnpm install` never links that
+# package's dependencies. libs/cost-observability was split out in #403 without
+# a line here; the image built, the tests passed, and the API crash-looped on
+# the first DEV deploy with `Cannot find module 'drizzle-orm'` from inside it.
+# The list below is the workspace — adding a package means adding a line.
+COPY libs/cost-observability/package.json libs/cost-observability/package.json
 COPY libs/database/package.json libs/database/package.json
 COPY libs/modules/package.json libs/modules/package.json
 COPY libs/observability/package.json libs/observability/package.json
