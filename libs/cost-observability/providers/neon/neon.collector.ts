@@ -12,8 +12,10 @@ import { previousDay, upsertUsageSamples } from '../../application/sample-writer
  * Two sources, chosen by what the project's plan allows:
  *
  * 1. **Consumption history** (`GET /consumption_history/projects`, daily) —
- *    the issue's source, one entry per UTC day. Available on Launch, Scale,
- *    Agent and Enterprise. Yesterday and today are **replaced** on every run
+ *    the issue's source, one entry per UTC day. Scale plans and above only
+ *    (live DEV 2026-09-05: Free and Launch answer 403 "included with Scale
+ *    plans and above"; the request also needs `org_id`, which the adapter
+ *    resolves — #411). Yesterday and today are **replaced** on every run
  *    (`source = 'neon_api'`): the endpoint reports the day's total, and
  *    yesterday is re-read because the last run of a day happens before
  *    midnight. A day the answer does not carry gets **no row** — absent is

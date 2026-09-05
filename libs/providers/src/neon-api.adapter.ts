@@ -4,13 +4,16 @@
  * Two read-only endpoints on `console.neon.tech/api/v2`, Bearer API key
  * (docs fetched 2026-09-03, `api-docs.neon.tech`):
  *
- * - `GET /consumption_history/projects?project_ids=…&granularity=daily` — one
- *   consumption entry per UTC day (`timeframe_start`/`timeframe_end`) with
- *   `active_time_seconds`, `compute_time_seconds`, `written_data_bytes`,
+ * - `GET /consumption_history/projects?org_id=…&project_ids=…&granularity=daily`
+ *   — one consumption entry per UTC day (`timeframe_start`/`timeframe_end`)
+ *   with `active_time_seconds`, `compute_time_seconds`, `written_data_bytes`,
  *   `synthetic_storage_size_bytes` and, when asked, `data_storage_bytes_hour`.
- *   **Launch, Scale, Agent and Enterprise plans only** — the Free plan gets a
- *   403 ("not available"), which this adapter reports as `PLAN_NOT_SUPPORTED`
- *   so the collector can fall back rather than fail.
+ *   **`org_id` is mandatory** (#411, live DEV 2026-09-05: without it the API
+ *   answers 400 "org_id is required"); it is read once from `GET /projects/{id}`
+ *   (`project.org_id`) and cached, or given in the config. **Scale plans and
+ *   above only** — Free and Launch get a 403 ("included with Scale plans and
+ *   above"), which this adapter reports as `PLAN_NOT_SUPPORTED` so the
+ *   collector can fall back rather than fail.
  * - `GET /projects/{id}` — every plan. Carries the same counters as
  *   **period-to-date totals** since `consumption_period_start` (they reset at
  *   the billing period), plus `data_transfer_bytes` (which the history
@@ -28,6 +31,12 @@ export type NeonApiConfig = {
   apiKey: string;
   /** The project's id (console → project settings → id), not its name. */
   projectId: string;
+  /**
+   * The organisation the project belongs to (`project.org_id`). Optional:
+   * when absent it is read from `GET /projects/{id}` the first time the
+   * history endpoint needs it and cached for the client's lifetime.
+   */
+  orgId?: string;
   /** Override for tests; `NEON_API_BASE` otherwise. */
   endpoint?: string;
 };
@@ -236,6 +245,8 @@ export function foldProject(body: unknown): NeonProjectConsumption {
 export class NeonApiClient implements NeonUsagePort {
   private readonly base: string;
   private readonly authorization: string;
+  /** `project.org_id`, from the config or the first project read. */
+  private orgId: string | null;
 
   constructor(
     private readonly config: NeonApiConfig,
@@ -249,16 +260,20 @@ export class NeonApiClient implements NeonUsagePort {
     }
     this.base = (config.endpoint ?? NEON_API_BASE).replace(/\/+$/, '');
     this.authorization = `Bearer ${config.apiKey}`;
+    const orgId = config.orgId?.trim();
+    this.orgId = orgId ? orgId : null;
   }
 
   async consumptionHistory(query: NeonHistoryQuery): Promise<NeonConsumptionDay[]> {
     if (!(query.from < query.to)) {
       throw new NeonApiError('INVALID_ARGUMENT', 'history window must be from < to');
     }
+    const orgId = await this.resolveOrgId(query.signal);
     const days: NeonConsumptionDay[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < MAX_PAGES; page += 1) {
       const params = new URLSearchParams({
+        org_id: orgId,
         from: query.from.toISOString(),
         to: query.to.toISOString(),
         granularity: 'daily',
@@ -283,7 +298,34 @@ export class NeonApiClient implements NeonUsagePort {
       query.signal,
       { forbidden: 'AUTH_FAILED' },
     );
+    this.rememberOrgId(body);
     return foldProject(body);
+  }
+
+  /**
+   * #411 — the history endpoint refuses a request without `org_id`. The
+   * project body carries it, so the first history call pays one project read
+   * and every later one reuses the answer; a `project()` call made earlier
+   * already filled it. A project without an `org_id` is a body this adapter
+   * does not understand, reported as such rather than retried without.
+   */
+  private async resolveOrgId(signal: AbortSignal | undefined): Promise<string> {
+    if (this.orgId !== null) return this.orgId;
+    const body = await this.get(`/projects/${encodeURIComponent(this.config.projectId)}`, signal, {
+      forbidden: 'AUTH_FAILED',
+    });
+    this.rememberOrgId(body);
+    if (this.orgId === null) {
+      throw new NeonApiError('BAD_RESPONSE', 'neon api: project without an org_id');
+    }
+    return this.orgId;
+  }
+
+  private rememberOrgId(body: unknown): void {
+    if (this.orgId !== null) return;
+    const project = (body as { project?: { org_id?: unknown } } | null)?.project;
+    const orgId = project?.org_id;
+    if (typeof orgId === 'string' && orgId !== '') this.orgId = orgId;
   }
 
   private async get(
