@@ -3987,13 +3987,13 @@ export interface components {
          */
         CmsCostSourceKind: "AUTO" | "MANUAL" | "NONE";
         /**
-         * @description ADR-0014. Observed: whether the row's money is current. For AUTO, the epic §23 roll-up over covering sources (UNAVAILABLE and UNKNOWN both read ERROR — a source that promised to deliver has nothing usable; the per-source detail stays in `freshness.sources`), or the cost rows when no source covers the row (today FRESH, older STALE, none ERROR). For MANUAL, the materialised rows alone (today FRESH, older STALE).
+         * @description ADR-0014. Observed: whether the row's money is current. For AUTO, the epic §23 roll-up over covering sources — FRESH and STALE as they are, UNAVAILABLE reads ERROR (a collection was attempted and failed), a never-attempted source reads UNKNOWN (not a failure); the per-source detail stays in `freshness.sources`. With no covering source the cost rows decide (today FRESH, older STALE, none UNKNOWN). For MANUAL, the materialised rows alone (today FRESH, older STALE). ERROR is reserved for an attempt that failed.
          * @enum {string}
          */
-        CmsCostDataFreshness: "FRESH" | "STALE" | "ERROR";
+        CmsCostDataFreshness: "FRESH" | "STALE" | "ERROR" | "UNKNOWN";
         CmsCostSource: {
             kind: components["schemas"]["CmsCostSourceKind"];
-            /** @description Null when there is nothing to be current — kind NONE, or MANUAL with nothing entered yet. */
+            /** @description Null when there is nothing to be current — kind NONE, or MANUAL with nothing entered yet. UNKNOWN is different — an automatic source exists and has never been observed. */
             freshness: components["schemas"]["CmsCostDataFreshness"] | null;
         };
         CmsCostServiceRow: components["schemas"]["CmsCostMoney"] & {

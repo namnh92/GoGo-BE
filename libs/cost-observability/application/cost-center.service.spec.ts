@@ -439,9 +439,9 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
       services: { full: 3, partial: 0, notInstrumented: 2 },
       operations: { instrumented: 10, total: 12 },
     });
-    // No cost row and no source in this input: the cost dimension says so on
-    // its own, and the runtime dimension above did not move.
-    expect(row.cost).toEqual({ kind: 'AUTO', freshness: 'ERROR' });
+    // No cost row and no source in this input: never observed, said on its
+    // own — and the runtime dimension above did not move.
+    expect(row.cost).toEqual({ kind: 'AUTO', freshness: 'UNKNOWN' });
     expect(row.status).toBe('active');
   });
 
@@ -470,7 +470,7 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     expect(github.cost.kind).toBe('AUTO');
   });
 
-  it('AUTO freshness follows the §23 sources: FRESH and STALE as they are, UNAVAILABLE and never-ran both ERROR', () => {
+  it('AUTO freshness follows the §23 sources: FRESH and STALE as they are, UNAVAILABLE is ERROR, never-ran is UNKNOWN', () => {
     const google = provider('google');
     expect(
       buildProviderRow(google, registry, inputs({ freshness: [fresh()] })).cost.freshness,
@@ -495,10 +495,10 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
         registry,
         inputs({ freshness: [fresh({ lastSuccessfulAt: null, lastAttemptAt: null })] }),
       ).cost.freshness,
-    ).toBe('ERROR');
+    ).toBe('UNKNOWN');
   });
 
-  it('AUTO with no covering source is judged by its rows: a FIXED row today is FRESH, yesterday STALE, none ERROR', () => {
+  it('AUTO with no covering source is judged by its rows: a FIXED row today is FRESH, yesterday STALE, none UNKNOWN', () => {
     const gogo = provider('gogo');
     const fixed = (day: string) =>
       cost({
@@ -526,7 +526,7 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     });
     expect(buildProviderRow(gogo, registry, inputs()).cost).toEqual({
       kind: 'AUTO',
-      freshness: 'ERROR',
+      freshness: 'UNKNOWN',
     });
   });
 

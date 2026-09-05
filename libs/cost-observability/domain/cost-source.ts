@@ -14,12 +14,16 @@ import type { FreshnessStatus } from './freshness';
 export const COST_SOURCE_KINDS = ['AUTO', 'MANUAL', 'NONE'] as const;
 export type CostSourceKind = (typeof COST_SOURCE_KINDS)[number];
 
-export const COST_DATA_FRESHNESSES = ['FRESH', 'STALE', 'ERROR'] as const;
+export const COST_DATA_FRESHNESSES = ['FRESH', 'STALE', 'ERROR', 'UNKNOWN'] as const;
 export type CostDataFreshness = (typeof COST_DATA_FRESHNESSES)[number];
 
 export type CostSource = {
   kind: CostSourceKind;
-  /** `null` when there is nothing to be current: kind NONE, or MANUAL with nothing entered yet. */
+  /**
+   * `null` when there is nothing to be current: kind NONE, or MANUAL with
+   * nothing entered yet. `UNKNOWN` is different: an automatic source exists
+   * and has never been observed.
+   */
   freshness: CostDataFreshness | null;
 };
 
@@ -78,12 +82,12 @@ export type CostDataFacts = {
  *   (the item expired, or materialisation stopped); no rows → `null`: nothing
  *   was entered, and that is not a failure.
  * - AUTO: the §23 sources when any cover the row — FRESH and STALE as they
- *   are; UNAVAILABLE and UNKNOWN both → ERROR, because a source that promised
- *   to deliver and has nothing usable on record is the operator's problem
- *   whether it failed or never ran (the per-source detail stays on the row
- *   for the drill-down). With no covering source — a FIXED row the scheduler
+ *   are; UNAVAILABLE → ERROR (a collection was attempted and failed);
+ *   UNKNOWN → UNKNOWN (nothing was ever attempted — not a failure, and never
+ *   reported as one). With no covering source — a FIXED row the scheduler
  *   writes, a collector not registered in this process — the rows decide:
- *   today → FRESH, older → STALE, none → ERROR.
+ *   today → FRESH, older → STALE, none → UNKNOWN. ERROR is reserved for an
+ *   attempt that failed; a source nobody has observed yet is UNKNOWN.
  */
 export function costDataFreshness(facts: CostDataFacts): CostDataFreshness | null {
   switch (facts.kind) {
@@ -93,11 +97,9 @@ export function costDataFreshness(facts: CostDataFacts): CostDataFreshness | nul
       return byRows(facts.rowDays.manual, facts.today);
     case 'AUTO': {
       if (facts.sourceStatus !== null) {
-        return facts.sourceStatus === 'FRESH' || facts.sourceStatus === 'STALE'
-          ? facts.sourceStatus
-          : 'ERROR';
+        return facts.sourceStatus === 'UNAVAILABLE' ? 'ERROR' : facts.sourceStatus;
       }
-      return byRows(facts.rowDays.automatic, facts.today) ?? 'ERROR';
+      return byRows(facts.rowDays.automatic, facts.today) ?? 'UNKNOWN';
     }
   }
 }

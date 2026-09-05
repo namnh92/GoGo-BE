@@ -54,13 +54,15 @@ describe('cost data freshness — observed (ADR-0014)', () => {
     ).toBeNull();
   });
 
-  it('AUTO with a covering source: FRESH and STALE as they are, UNAVAILABLE and UNKNOWN both ERROR', () => {
+  it('AUTO with a covering source: FRESH and STALE as they are, UNAVAILABLE is ERROR, never-attempted is UNKNOWN', () => {
     const auto = (sourceStatus: 'FRESH' | 'STALE' | 'UNAVAILABLE' | 'UNKNOWN') =>
       costDataFreshness({ kind: 'AUTO', sourceStatus, rowDays: none, today });
     expect(auto('FRESH')).toBe('FRESH');
     expect(auto('STALE')).toBe('STALE');
+    // Attempted and failed: the only way to ERROR.
     expect(auto('UNAVAILABLE')).toBe('ERROR');
-    expect(auto('UNKNOWN')).toBe('ERROR');
+    // Never attempted: not a failure, and never reported as one.
+    expect(auto('UNKNOWN')).toBe('UNKNOWN');
   });
 
   it('AUTO with no covering source is judged by its automatic rows, and MANUAL rows do not count for it', () => {
@@ -73,8 +75,8 @@ describe('cost data freshness — observed (ADR-0014)', () => {
       });
     expect(auto([today])).toBe('FRESH');
     expect(auto(['2026-09-01', '2026-09-09'])).toBe('STALE');
-    expect(auto([])).toBe('ERROR');
-    expect(auto([], [today])).toBe('ERROR');
+    expect(auto([])).toBe('UNKNOWN');
+    expect(auto([], [today])).toBe('UNKNOWN');
   });
 
   it('MANUAL reads the materialised rows only: today FRESH, older STALE, nothing entered null — a source never decides', () => {

@@ -426,11 +426,12 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
     expect(play.runtime.coverage).toBe('N/A');
     expect(play.cost).toEqual({ kind: 'MANUAL', freshness: null });
     // Upstash: this process calls Redis and measures nothing (#414); its
-    // collector has no credentials here, so an AUTO source with nothing is ERROR.
+    // collector has no credentials here and has never run — UNKNOWN, not an
+    // error, because nothing was attempted.
     expect(byId['upstash']).toMatchObject({
       status: 'active',
       runtime: { coverage: 'NOT_INSTRUMENTED', services: { notInstrumented: 1 } },
-      cost: { kind: 'AUTO', freshness: 'ERROR' },
+      cost: { kind: 'AUTO', freshness: 'UNKNOWN' },
     });
     // A fee: active (the form exists), no runtime, manual, nothing entered.
     expect(byId['apple']).toMatchObject({

@@ -65,12 +65,12 @@ applies the same separation to what the console _shows_.
 Every provider row and service row of the Cost API v2 (`/v1/cms/ops/costs*`)
 carries four fields that never derive from one another:
 
-| Dimension           | Field              | Values                                       | Computed from                                                                                                                                                                                                                                                                                                   |
-| ------------------- | ------------------ | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Registry status     | `status`           | `active`, `planned`                          | `ProviderDefinition.status`. Integration lifecycle only. `manual` is retired; manual-only providers are `active` because the manual-item form (#382) _is_ their implementation.                                                                                                                                 |
-| Runtime coverage    | `runtime.coverage` | `FULL`, `PARTIAL`, `NOT_INSTRUMENTED`, `N/A` | A new `ServiceDefinition.runtime` surface (`in_process`, `client_sdk`, `none`) and `OperationDefinition.instrumented`. Nothing else.                                                                                                                                                                            |
-| Cost source         | `cost.kind`        | `AUTO`, `MANUAL`, `NONE`                     | Capabilities: `USAGE_COLLECTOR` / `ACTUAL_COST_COLLECTOR` / `FIXED_COST` → `AUTO`; `MANUAL_COST` → `MANUAL`; else `NONE`. A service's own declarations win over what it inherits.                                                                                                                               |
-| Cost-data freshness | `cost.freshness`   | `FRESH`, `STALE`, `ERROR`, `null`            | `AUTO`: the epic §23 roll-up over covering sources — `UNAVAILABLE` and `UNKNOWN` both read `ERROR`; with no covering source, the cost rows decide (today → `FRESH`, older → `STALE`, none → `ERROR`). `MANUAL`: the materialised rows alone (today → `FRESH`, older → `STALE`, none → `null`). `NONE` → `null`. |
+| Dimension           | Field              | Values                                       | Computed from                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------- | ------------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Registry status     | `status`           | `active`, `planned`                          | `ProviderDefinition.status`. Integration lifecycle only. `manual` is retired; manual-only providers are `active` because the manual-item form (#382) _is_ their implementation.                                                                                                                                                                                                                                                                                                                  |
+| Runtime coverage    | `runtime.coverage` | `FULL`, `PARTIAL`, `NOT_INSTRUMENTED`, `N/A` | A new `ServiceDefinition.runtime` surface (`in_process`, `client_sdk`, `none`) and `OperationDefinition.instrumented`. Nothing else.                                                                                                                                                                                                                                                                                                                                                             |
+| Cost source         | `cost.kind`        | `AUTO`, `MANUAL`, `NONE`                     | Capabilities: `USAGE_COLLECTOR` / `ACTUAL_COST_COLLECTOR` / `FIXED_COST` → `AUTO`; `MANUAL_COST` → `MANUAL`; else `NONE`. A service's own declarations win over what it inherits.                                                                                                                                                                                                                                                                                                                |
+| Cost-data freshness | `cost.freshness`   | `FRESH`, `STALE`, `ERROR`, `UNKNOWN`, `null` | `AUTO`: the epic §23 roll-up over covering sources — `FRESH` and `STALE` as they are, `UNAVAILABLE` → `ERROR` (an attempted collection failed), never attempted → `UNKNOWN`; with no covering source, the cost rows decide (today → `FRESH`, older → `STALE`, none → `UNKNOWN`). `MANUAL`: the materialised rows alone (today → `FRESH`, older → `STALE`, none → `null`). `NONE` → `null`. **`ERROR` is reserved for an attempt that failed; never-observed data is `UNKNOWN`, never an error.** |
 
 Runtime coverage rules, per service: `none` surface → `N/A`; a surface with no
 instrumented operation (including none registered) → `NOT_INSTRUMENTED`; all
@@ -91,6 +91,12 @@ The per-source §23 detail (`freshness.sources[]`, four statuses) stays on the
 row untouched: `cost.freshness` is the operator's roll-up, not a replacement
 for the audit trail.
 
+Owner review 2026-09-05: the first draft folded a never-attempted source into
+`ERROR` on the argument that an operator should look at it either way. Rejected —
+an inert collector waiting on a credential has not failed, and reporting it as
+a failure would make `ERROR` mean two things. `UNKNOWN` was added to the
+roll-up instead, keeping the §23 word for the §23 fact.
+
 Two registry invariants back this: a service with `runtime: 'none'` may not
 declare an instrumented operation, and `status` accepts only the two
 lifecycle values.
@@ -101,6 +107,8 @@ lifecycle values.
   nothing (`telemetryState()` and its capability allowlist are deleted).
   `NO_TELEMETRY` disappears; `planned` shows as `N/A` at runtime with `NONE`
   for cost, which is what it is.
+- The five inert collectors (credentials pending) read `AUTO` + `UNKNOWN`,
+  not `ERROR`; `ERROR` appears only once a run has actually failed.
 - GoGo-BE#414 becomes a data change on the registry (add the operations, flip
   `instrumented`) plus the metrics; the row semantics do not move.
 - `status: manual` is a **breaking removal** on the Cost API v2 contract. The

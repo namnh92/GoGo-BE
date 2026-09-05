@@ -167,8 +167,9 @@ Registry-keyed, under the existing namespace — never `/costs/google`. All rout
   declared `runtime` surface `in_process | client_sdk | none` and its operations'
   `instrumented`, with `services` / `operations` counts on the provider and `surface`
   on the service), `cost.kind` (`AUTO | MANUAL | NONE` from capabilities) and
-  `cost.freshness` (`FRESH | STALE | ERROR | null` — the §23 roll-up for AUTO, with
-  UNAVAILABLE/UNKNOWN both `ERROR`; the materialised rows for MANUAL). Google today is
+  `cost.freshness` (`FRESH | STALE | ERROR | UNKNOWN | null` — the §23 roll-up for
+  AUTO, UNAVAILABLE → `ERROR`, never attempted → `UNKNOWN`; the materialised rows for
+  MANUAL). `ERROR` is reserved for an attempt that failed. Google today is
   `PARTIAL` (3 of 5 runtime services measured); Redis/Postgres/R2 are
   `NOT_INSTRUMENTED` until #414. Pure functions: `domain/runtime-coverage.ts`,
   `domain/cost-source.ts`.
