@@ -60,7 +60,7 @@ afterEach(async () => {
 });
 
 describe('TestCostService (epic §28–§30)', () => {
-  it('start → traffic → finish yields per-meter deltas, Routes as two meters, unknown price as null', async () => {
+  it('start → traffic → finish yields per-meter deltas, Routes as two meters, an unbilled meter as null', async () => {
     await ledgerWrite('google.details.quality', 5, 5); // pre-existing usage
     const svc = new TestCostService(db as never);
     const id = await svc.start('bulk-import-smoke', {
@@ -89,11 +89,13 @@ describe('TestCostService (epic §28–§30)', () => {
     ).toEqual([
       ['google.details.quality', 'calls', 3, null, 'UNKNOWN'],
       ['google.details.quality', 'requests', 2, 40_000, 'ESTIMATED'],
-      ['google.routeMatrix', 'billable_elements', 14, null, 'UNKNOWN'],
+      // 14 matrix elements × $5.00 / 1,000 at list (COST-BE-031, #410).
+      ['google.routeMatrix', 'billable_elements', 14, 70_000, 'ESTIMATED'],
+      // `calls` is not billed: no SKU, no price, never a zero.
       ['google.routeMatrix', 'calls', 1, null, 'UNKNOWN'],
     ]);
-    expect(result.estimatedCostMicros).toBe(40_000);
-    expect(result.unpriced).toEqual(['google.routes/billable_elements']);
+    expect(result.estimatedCostMicros).toBe(110_000);
+    expect(result.unpriced).toEqual([]);
 
     const rows = await db.execute(sql`
       select usage_metric_id, usage_before, usage_after, usage_delta from cost_test_run_deltas
