@@ -51,18 +51,29 @@ describe('providerRuntime', () => {
   });
 
   it('a provider this process calls and never measures is NOT_INSTRUMENTED, not N/A', () => {
+    // The shape Upstash and Neon had before #414: a surface, nothing registered on it.
+    const unmeasured = {
+      services: [
+        { id: 'x.cache', runtime: 'in_process' as const, operations: [] },
+        { id: 'x.edge', runtime: 'none' as const, operations: [] },
+      ],
+    };
+    expect(providerRuntime(unmeasured)).toEqual({
+      coverage: 'NOT_INSTRUMENTED',
+      services: { full: 0, partial: 0, notInstrumented: 1 },
+      operations: { instrumented: 0, total: 0 },
+    });
+  });
+
+  it('an infrastructure provider measured on every declared operation is FULL (#414)', () => {
     for (const id of ['upstash', 'neon']) {
-      expect(providerRuntime(COST_REGISTRY.provider(id)!), id).toEqual({
-        coverage: 'NOT_INSTRUMENTED',
-        services: { full: 0, partial: 0, notInstrumented: 1 },
-        operations: { instrumented: 0, total: 0 },
+      expect(providerRuntime(COST_REGISTRY.provider(id)!), id).toMatchObject({
+        coverage: 'FULL',
+        services: { full: 1, partial: 0, notInstrumented: 0 },
       });
     }
-    // Cloudflare: R2 is called, Workers are not — one surfaced service, unmeasured.
-    expect(providerRuntime(COST_REGISTRY.provider('cloudflare')!)).toMatchObject({
-      coverage: 'NOT_INSTRUMENTED',
-      services: { notInstrumented: 1 },
-    });
+    // Cloudflare: R2 is only signed for here, Workers run at the edge — no surface.
+    expect(providerRuntime(COST_REGISTRY.provider('cloudflare')!).coverage).toBe('N/A');
   });
 
   it('a provider with no runtime surface anywhere is N/A: bills, CI, fees, planned', () => {

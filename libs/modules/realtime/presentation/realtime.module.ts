@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import IORedis from 'ioredis';
+import { NoopMetrics, RUNTIME_METRICS, type MetricsPort } from '@gogo/observability';
 import { APP_CONFIG } from '../../shared/config';
 import { ROOM_EVENT_BUS } from '../application/room-event-bus';
 import { InMemoryRoomEventBus } from '../infrastructure/in-memory-room-event-bus';
@@ -18,7 +19,7 @@ type RealtimeConfig = { NODE_ENV: string; REDIS_URL?: string };
   providers: [
     {
       provide: ROOM_EVENT_BUS,
-      useFactory: (config: RealtimeConfig) => {
+      useFactory: (config: RealtimeConfig, metrics?: MetricsPort) => {
         if (!config.REDIS_URL || config.NODE_ENV === 'test') return new InMemoryRoomEventBus();
         // Two connections: ioredis refuses ordinary commands on a connection
         // that is in subscriber mode, and publishing needs both.
@@ -27,9 +28,10 @@ type RealtimeConfig = { NODE_ENV: string; REDIS_URL?: string };
         const subscriber = new IORedis(config.REDIS_URL, options);
         commands.on('error', () => undefined);
         subscriber.on('error', () => undefined);
-        return new RedisRoomEventBus(commands, subscriber);
+        return new RedisRoomEventBus(commands, subscriber, metrics ?? new NoopMetrics());
       },
-      inject: [APP_CONFIG],
+      // #414 — optional: the registry sink exists in the API, not in every test module.
+      inject: [APP_CONFIG, { token: RUNTIME_METRICS, optional: true }],
     },
   ],
   exports: [ROOM_EVENT_BUS],

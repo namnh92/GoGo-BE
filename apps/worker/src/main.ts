@@ -24,6 +24,7 @@ import {
   awsCostExplorerCollector,
   githubActionsCollector,
   writeAudit,
+  NEON_POSTGRES_OPERATIONS,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -141,7 +142,6 @@ async function bootstrap(): Promise<void> {
     throw new Error('DATABASE_URL is required');
   }
 
-  const { db, pool } = createDb(databaseUrl);
   // The container id under compose, the machine name elsewhere. Stable for the
   // life of the process, which is what makes one row per process work.
   const WORKER_ID = process.env.HOSTNAME || os.hostname();
@@ -150,6 +150,12 @@ async function bootstrap(): Promise<void> {
   // registry below is the only place its provider, cost and row counters can
   // be scraped from.
   const { metrics: baseMetrics, registry } = createWorkerMetrics(logger);
+  // #414 — every statement timed as `neon.postgres.query`, into the registry
+  // only (a log line per statement is not a metric). Built after the registry
+  // for that reason, and before the ledger, which needs the pool.
+  const { db, pool } = createDb(databaseUrl, {
+    runtime: { metrics: registry, operation: NEON_POSTGRES_OPERATIONS.query },
+  });
   /**
    * #335 — the worker's half of durable usage accounting.
    *

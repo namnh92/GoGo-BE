@@ -211,8 +211,9 @@ Registry-keyed, under the existing namespace — never `/costs/google`. All rout
   `cost.freshness` (`FRESH | STALE | ERROR | UNKNOWN | null` — the §23 roll-up for
   AUTO, UNAVAILABLE → `ERROR`, never attempted → `UNKNOWN`; the materialised rows for
   MANUAL). `ERROR` is reserved for an attempt that failed. Google today is
-  `PARTIAL` (3 of 5 runtime services measured); Redis/Postgres/R2 are
-  `NOT_INSTRUMENTED` until #414. Pure functions: `domain/runtime-coverage.ts`,
+  `PARTIAL` (3 of 5 runtime services measured); Upstash Redis and Neon Postgres
+  are `FULL` (#414, below); Cloudflare is `N/A` — R2 is only _signed for_ in this
+  process and Workers run at the edge. Pure functions: `domain/runtime-coverage.ts`,
   `domain/cost-source.ts`.
 - **No money on `/monitoring` (ADR-0014 amendment 2026-09-05, #420).**
   `/cms/ops/summary|providers|providers/{provider}` state no amount: `costModel`,
@@ -223,6 +224,20 @@ Registry-keyed, under the existing namespace — never `/costs/google`. All rout
   CMS links to that `/costs` row where the estimate used to be. `/cms/ops/costs`
   is the only surface for actual, estimated, forecast, free-tier and manual
   money. The legacy `gaps[]` on `/cms/ops/costs` (Cost API v1) is untouched.
+- **Infrastructure runtime telemetry (#414).** The Redis stores (rate limit,
+  session revocation, room event bus) and every Postgres statement emit
+  `provider_requests_total{provider, service, operation, status}` and
+  `provider_request_duration_seconds{…}` through `meterRuntimeCall` /
+  `createDb({ runtime })`. The three ids are the registry's — declared once in
+  `domain/runtime-operations.ts`, used by the registry (`instrumented: true`) and
+  by the adapters — so a `/monitoring` row and a Prometheus series name the same
+  operation; `status` is `ok | error`. They go to the `RUNTIME_METRICS` sink (the
+  Prometheus registry alone, never the log sink: a metric per statement is a
+  series, not a log line) and never to the usage ledger — runtime telemetry is
+  not a cost meter (§8); Upstash's command count and Neon's compute hours stay the
+  collectors' to read. Not measured, on purpose: the `/health` Redis ping and the
+  CMS queue-stats probe (ops paths, not request paths) and R2 (no request leaves
+  the process).
 
 Deprecated, kept one release: the legacy `providers[]` / `gaps[]` on `/cms/ops/costs`
 and `/cms/ops/providers/{provider}` (enum `places|routes|sheets`). CMS re-vendor is

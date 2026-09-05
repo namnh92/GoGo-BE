@@ -32,6 +32,7 @@ import {
 import {
   LogMetrics,
   METRICS,
+  RUNTIME_METRICS,
   MetricsRegistry,
   TeeMetrics,
   createLogger,
@@ -96,6 +97,16 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       // to run, and any aggregator can count and alert on them.
       provide: METRICS_REGISTRY,
       useFactory: () => new MetricsRegistry(),
+    },
+    {
+      // #414 — per-request infrastructure telemetry goes to the Prometheus
+      // registry only. Not METRICS_BASE: that tees into LogMetrics, and a log
+      // line per SQL statement is the API's log volume doubled for a number
+      // the registry already holds. Not METRICS: the usage ledger is a cost
+      // meter, and runtime telemetry is not one (epic §8).
+      provide: RUNTIME_METRICS,
+      useFactory: (registry: MetricsRegistry) => registry,
+      inject: [METRICS_REGISTRY],
     },
     {
       // Both: the log line stays the record any aggregator can read, and the

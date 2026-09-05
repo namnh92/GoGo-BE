@@ -82,3 +82,12 @@ function clean(labels: MetricLabels): MetricLabels {
 }
 
 export const METRICS = Symbol('METRICS');
+
+/**
+ * #414 — the sink for per-request infrastructure telemetry (Redis, Postgres).
+ * Bound to the Prometheus registry alone, never to the log sink: a metric per
+ * statement is a series, not a log line, and `LogMetrics` writes one line per
+ * emission. Optional wherever it is injected — a process with no registry
+ * (tests, scripts) measures nothing and changes nothing.
+ */
+export const RUNTIME_METRICS = Symbol('RUNTIME_METRICS');
