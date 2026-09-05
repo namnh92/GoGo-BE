@@ -387,6 +387,7 @@ describe('buildServiceRow / buildProviderRow', () => {
           providerId: 'acme',
           displayName: 'Widgets',
           category: 'edge_compute' as const,
+          runtime: 'none' as const,
           capabilities: [],
           operations: [],
         },
@@ -423,6 +424,179 @@ describe('buildServiceRow / buildProviderRow', () => {
       costStatus: 'KNOWN',
     });
     expect(row.services[0]).toMatchObject({ serviceId: 'acme.widgets', spendMicros: 42 });
+  });
+});
+
+describe('ADR-0014 — the four dimensions on a row are independent', () => {
+  const registry = COST_REGISTRY;
+  const provider = (id: string) => registry.provider(id)!;
+  const service = (id: string) => registry.service(id)!;
+
+  it('Google is PARTIAL — three runtime services measured, the two Maps SDKs not — whatever its cost says', () => {
+    const row = buildProviderRow(provider('google'), registry, inputs());
+    expect(row.runtime).toEqual({
+      coverage: 'PARTIAL',
+      services: { full: 3, partial: 0, notInstrumented: 2 },
+      operations: { instrumented: 10, total: 12 },
+    });
+    // No cost row and no source in this input: never observed, said on its
+    // own — and the runtime dimension above did not move.
+    expect(row.cost).toEqual({ kind: 'AUTO', freshness: 'UNKNOWN' });
+    expect(row.status).toBe('active');
+  });
+
+  it('a collector-only provider is NOT_INSTRUMENTED at runtime and AUTO for cost; a fee is N/A and MANUAL; planned is N/A and NONE', () => {
+    const upstash = buildProviderRow(provider('upstash'), registry, inputs());
+    expect(upstash.runtime).toEqual({
+      coverage: 'NOT_INSTRUMENTED',
+      services: { full: 0, partial: 0, notInstrumented: 1 },
+      operations: { instrumented: 0, total: 0 },
+    });
+    expect(upstash.cost.kind).toBe('AUTO');
+
+    const apple = buildProviderRow(provider('apple'), registry, inputs());
+    expect(apple.status).toBe('active');
+    expect(apple.runtime.coverage).toBe('N/A');
+    expect(apple.cost).toEqual({ kind: 'MANUAL', freshness: null });
+
+    const onesignal = buildProviderRow(provider('onesignal'), registry, inputs());
+    expect(onesignal.status).toBe('planned');
+    expect(onesignal.runtime.coverage).toBe('N/A');
+    expect(onesignal.cost).toEqual({ kind: 'NONE', freshness: null });
+
+    // Nothing calls GitHub Actions from here, and its bill still arrives by code.
+    const github = buildProviderRow(provider('github'), registry, inputs());
+    expect(github.runtime.coverage).toBe('N/A');
+    expect(github.cost.kind).toBe('AUTO');
+  });
+
+  it('AUTO freshness follows the §23 sources: FRESH and STALE as they are, UNAVAILABLE is ERROR, never-ran is UNKNOWN', () => {
+    const google = provider('google');
+    expect(
+      buildProviderRow(google, registry, inputs({ freshness: [fresh()] })).cost.freshness,
+    ).toBe('FRESH');
+    expect(
+      buildProviderRow(
+        google,
+        registry,
+        inputs({ freshness: [fresh({ lastSuccessfulAt: new Date('2026-09-01T00:00:00Z') })] }),
+      ).cost.freshness,
+    ).toBe('STALE');
+    expect(
+      buildProviderRow(
+        google,
+        registry,
+        inputs({ freshness: [fresh({ lastSuccessfulAt: null, consecutiveFailures: 3 })] }),
+      ).cost.freshness,
+    ).toBe('ERROR');
+    expect(
+      buildProviderRow(
+        google,
+        registry,
+        inputs({ freshness: [fresh({ lastSuccessfulAt: null, lastAttemptAt: null })] }),
+      ).cost.freshness,
+    ).toBe('UNKNOWN');
+  });
+
+  it('AUTO with no covering source is judged by its rows: a FIXED row today is FRESH, yesterday STALE, none UNKNOWN', () => {
+    const gogo = provider('gogo');
+    const fixed = (day: string) =>
+      cost({
+        providerId: 'gogo',
+        serviceId: 'gogo.cost_observability',
+        operationId: null,
+        usageMetricId: null,
+        billingSkuId: null,
+        basis: 'FIXED',
+        confidence: 'HIGH',
+        source: 'monitoring_cost_model',
+        day,
+      });
+    expect(
+      buildProviderRow(gogo, registry, inputs({ costRows: [fixed('2026-09-10')] })).cost,
+    ).toEqual({
+      kind: 'AUTO',
+      freshness: 'FRESH',
+    });
+    expect(
+      buildProviderRow(gogo, registry, inputs({ costRows: [fixed('2026-09-09')] })).cost,
+    ).toEqual({
+      kind: 'AUTO',
+      freshness: 'STALE',
+    });
+    expect(buildProviderRow(gogo, registry, inputs()).cost).toEqual({
+      kind: 'AUTO',
+      freshness: 'UNKNOWN',
+    });
+  });
+
+  it('MANUAL freshness ignores collectors and reads the materialised rows: today FRESH, older STALE, nothing entered null', () => {
+    const apple = provider('apple');
+    const manual = (day: string) =>
+      cost({
+        providerId: 'apple',
+        serviceId: 'apple.developer_program',
+        operationId: null,
+        usageMetricId: null,
+        billingSkuId: null,
+        basis: 'MANUAL',
+        confidence: 'HIGH',
+        source: 'manual_cost_items:1',
+        day,
+      });
+    expect(
+      buildProviderRow(apple, registry, inputs({ costRows: [manual('2026-09-10')] })).cost
+        .freshness,
+    ).toBe('FRESH');
+    expect(
+      buildProviderRow(apple, registry, inputs({ costRows: [manual('2026-09-01')] })).cost
+        .freshness,
+    ).toBe('STALE');
+    // A stray freshness row under the provider changes nothing for a fee.
+    expect(
+      buildProviderRow(
+        apple,
+        registry,
+        inputs({
+          freshness: [fresh({ providerId: 'apple', sourceId: 'x', lastSuccessfulAt: null })],
+        }),
+      ).cost,
+    ).toEqual({ kind: 'MANUAL', freshness: null });
+  });
+
+  it('service rows carry their own surface and kind: Play Console is MANUAL under an AUTO Google; a Maps SDK inherits AUTO and is NOT_INSTRUMENTED', () => {
+    const play = buildServiceRow(service('google.play_console'), registry, inputs());
+    expect(play.runtime).toEqual({
+      surface: 'none',
+      coverage: 'N/A',
+      operations: { instrumented: 0, total: 0 },
+    });
+    expect(play.cost).toEqual({ kind: 'MANUAL', freshness: null });
+
+    const sdk = buildServiceRow(
+      service('google.maps_sdk_ios'),
+      registry,
+      inputs({ freshness: [fresh()] }),
+    );
+    expect(sdk.runtime).toEqual({
+      surface: 'client_sdk',
+      coverage: 'NOT_INSTRUMENTED',
+      operations: { instrumented: 0, total: 1 },
+    });
+    expect(sdk.instrumented).toBe(false);
+    expect(sdk.cost).toEqual({ kind: 'AUTO', freshness: 'FRESH' });
+
+    const places = buildServiceRow(
+      service('google.places'),
+      registry,
+      inputs({ freshness: [fresh()] }),
+    );
+    expect(places.runtime).toEqual({
+      surface: 'in_process',
+      coverage: 'FULL',
+      operations: { instrumented: 7, total: 7 },
+    });
+    expect(places.instrumented).toBe(true);
   });
 });
 

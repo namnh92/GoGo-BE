@@ -3950,6 +3950,52 @@ export interface components {
             mixedCurrency: boolean;
             costStatus: components["schemas"]["CmsCostStatus"];
         };
+        /**
+         * @description ADR-0014. Whether anything of GoGo's calls the service at runtime — the precondition for request-level telemetry. `in_process`: this API/worker process calls it. `client_sdk`: a GoGo client calls it directly (the Maps SDKs). `none`: nothing calls it on a request path — a bill, a CI runner, a fee, a provider nothing is wired to yet. Declared in the registry, never inferred from cost capabilities.
+         * @enum {string}
+         */
+        CmsRuntimeSurface: "in_process" | "client_sdk" | "none";
+        /**
+         * @description ADR-0014. How much of a runtime surface GoGo measures (calls, latency, errors), from the registry alone. `FULL`: every operation emits a metric. `PARTIAL`: some do. `NOT_INSTRUMENTED`: a surface exists and nothing on it emits — the one state worth attention. `N/A`: no runtime surface at all — not a gap and not a zero. Independent of registry status, cost source and cost freshness.
+         * @enum {string}
+         */
+        CmsRuntimeCoverage: "FULL" | "PARTIAL" | "NOT_INSTRUMENTED" | "N/A";
+        CmsOperationCount: {
+            instrumented: number;
+            total: number;
+        };
+        CmsServiceRuntime: {
+            surface: components["schemas"]["CmsRuntimeSurface"];
+            coverage: components["schemas"]["CmsRuntimeCoverage"];
+            /** @description `total: 0` with a surface is NOT_INSTRUMENTED: nothing registered to measure yet. */
+            operations: components["schemas"]["CmsOperationCount"];
+        };
+        CmsProviderRuntime: {
+            coverage: components["schemas"]["CmsRuntimeCoverage"];
+            /** @description Services with a runtime surface, by their own coverage. N/A services are not counted. */
+            services: {
+                full: number;
+                partial: number;
+                notInstrumented: number;
+            };
+            /** @description Over the same services. */
+            operations: components["schemas"]["CmsOperationCount"];
+        };
+        /**
+         * @description ADR-0014. Declared: how money for the row gets into the ledger. `AUTO`: collected or written by code (USAGE_COLLECTOR, ACTUAL_COST_COLLECTOR, FIXED_COST). `MANUAL`: the manual-item form is the only way in (MANUAL_COST). `NONE`: no way in. Never a registry status.
+         * @enum {string}
+         */
+        CmsCostSourceKind: "AUTO" | "MANUAL" | "NONE";
+        /**
+         * @description ADR-0014. Observed: whether the row's money is current. For AUTO, the epic §23 roll-up over covering sources — FRESH and STALE as they are, UNAVAILABLE reads ERROR (a collection was attempted and failed), a never-attempted source reads UNKNOWN (not a failure); the per-source detail stays in `freshness.sources`. With no covering source the cost rows decide (today FRESH, older STALE, none UNKNOWN). For MANUAL, the materialised rows alone (today FRESH, older STALE). ERROR is reserved for an attempt that failed.
+         * @enum {string}
+         */
+        CmsCostDataFreshness: "FRESH" | "STALE" | "ERROR" | "UNKNOWN";
+        CmsCostSource: {
+            kind: components["schemas"]["CmsCostSourceKind"];
+            /** @description Null when there is nothing to be current — kind NONE, or MANUAL with nothing entered yet. UNKNOWN is different — an automatic source exists and has never been observed. */
+            freshness: components["schemas"]["CmsCostDataFreshness"] | null;
+        };
         CmsCostServiceRow: components["schemas"]["CmsCostMoney"] & {
             /** @example google.places */
             serviceId: string;
@@ -3959,8 +4005,12 @@ export interface components {
             /** @example maps */
             category: string;
             capabilities: string[];
-            /** @description At least one operation emits a metric. False renders as "chưa đo", never as zero. */
+            /** @description `runtime.coverage` is FULL or PARTIAL. Kept for readers of the first contract; false renders as "chưa đo", never as zero. */
             instrumented: boolean;
+            /** @description ADR-0014 — what is measured, from the registry alone. */
+            runtime: components["schemas"]["CmsServiceRuntime"];
+            /** @description ADR-0014 — how money gets in and whether it is current. Independent of `runtime`. */
+            cost: components["schemas"]["CmsCostSource"];
             usage: components["schemas"]["CmsCostUsageLine"][];
             /** @description No QUOTA collector exists yet (epic §6); null until one does. */
             quota: null;
@@ -3988,11 +4038,15 @@ export interface components {
             providerId: string;
             displayName: string;
             /**
-             * @description Registry status. `planned` renders as "chưa nối".
+             * @description Integration lifecycle only (ADR-0014): `active` has at least one capability implemented, `planned` is named and not wired — renders as "chưa nối". Never a cost or telemetry fact; the former `manual` value is retired, manual-only providers are `active` with `cost.kind: MANUAL`.
              * @enum {string}
              */
-            status: "active" | "planned" | "manual";
+            status: "active" | "planned";
             capabilities: string[];
+            /** @description ADR-0014 — coverage over every service with a runtime surface, with counts for the drill-down; `services[].runtime` says which. */
+            runtime: components["schemas"]["CmsProviderRuntime"];
+            /** @description ADR-0014 — how money gets in and whether it is current. Independent of `runtime` and of `status`. */
+            cost: components["schemas"]["CmsCostSource"];
             billingTimezone: string | null;
             /** @description Services with `costStatus: UNKNOWN` — what the unknown card counts. */
             unknownServices: string[];

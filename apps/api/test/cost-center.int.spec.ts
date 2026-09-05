@@ -391,6 +391,65 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
     expect(typeof places.lastUpdated).toBe('string');
   });
 
+  it('ADR-0014 — registry status, runtime coverage, cost source and cost freshness are four fields, not one', async () => {
+    const body = (await get('/v1/cms/ops/costs/providers', 'ops_admin')).json();
+    const byId = Object.fromEntries(
+      body.providers.map((p: { providerId: string }) => [p.providerId, p]),
+    );
+    // Google: active; three of five runtime services measured; the ledger is
+    // AUTO and the stale Sheets probe makes the cost data STALE.
+    expect(byId['google']).toMatchObject({
+      status: 'active',
+      runtime: {
+        coverage: 'PARTIAL',
+        services: { full: 3, partial: 0, notInstrumented: 2 },
+        operations: { instrumented: 10, total: 12 },
+      },
+      cost: { kind: 'AUTO', freshness: 'STALE' },
+    });
+    const places = byId['google'].services.find(
+      (s: { serviceId: string }) => s.serviceId === 'google.places',
+    );
+    expect(places.runtime).toEqual({
+      surface: 'in_process',
+      coverage: 'FULL',
+      operations: { instrumented: 7, total: 7 },
+    });
+    expect(places.cost).toEqual({ kind: 'AUTO', freshness: 'FRESH' });
+    const sdk = byId['google'].services.find(
+      (s: { serviceId: string }) => s.serviceId === 'google.maps_sdk_ios',
+    );
+    expect(sdk.runtime).toMatchObject({ surface: 'client_sdk', coverage: 'NOT_INSTRUMENTED' });
+    const play = byId['google'].services.find(
+      (s: { serviceId: string }) => s.serviceId === 'google.play_console',
+    );
+    expect(play.runtime.coverage).toBe('N/A');
+    expect(play.cost).toEqual({ kind: 'MANUAL', freshness: null });
+    // Upstash: this process calls Redis and measures nothing (#414); its
+    // collector has no credentials here and has never run — UNKNOWN, not an
+    // error, because nothing was attempted.
+    expect(byId['upstash']).toMatchObject({
+      status: 'active',
+      runtime: { coverage: 'NOT_INSTRUMENTED', services: { notInstrumented: 1 } },
+      cost: { kind: 'AUTO', freshness: 'UNKNOWN' },
+    });
+    // A fee: active (the form exists), no runtime, manual, nothing entered.
+    expect(byId['apple']).toMatchObject({
+      status: 'active',
+      runtime: { coverage: 'N/A' },
+      cost: { kind: 'MANUAL', freshness: null },
+    });
+    // Planned: nothing wired, nothing to measure, no way for money in.
+    expect(byId['onesignal']).toMatchObject({
+      status: 'planned',
+      runtime: { coverage: 'N/A' },
+      cost: { kind: 'NONE', freshness: null },
+    });
+    for (const p of body.providers) {
+      expect(['active', 'planned'], p.providerId).toContain(p.status);
+    }
+  });
+
   it('a service with usage and no price is UNKNOWN (null, not 0) and still shows its meters', async () => {
     const body = (
       await get('/v1/cms/ops/costs/providers/google/services/google.routes', 'ops_admin')
@@ -467,6 +526,9 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
       costStatus: 'KNOWN',
     });
     expect(provider.freshness).toEqual({ status: 'UNKNOWN', sourceAsOf: null, sources: [] });
+    // No collector row, but the scheduler wrote today's FIXED row: AUTO and FRESH.
+    expect(provider.cost).toEqual({ kind: 'AUTO', freshness: 'FRESH' });
+    expect(provider.runtime.coverage).toBe('N/A');
     // An active provider whose collector has no credentials (#384): no rows,
     // no source, unknown — and present.
     const { provider: upstash } = (
@@ -539,6 +601,7 @@ describe('#381 — epic §44.2: a provider added to the registry appears with no
           providerId: 'acme',
           displayName: 'Widgets',
           category: 'edge_compute' as const,
+          runtime: 'none' as const,
           capabilities: [],
           operations: [],
         },

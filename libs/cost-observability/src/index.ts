@@ -81,10 +81,31 @@ export {
   type ProviderDefinition,
   type ProviderStatus,
   type RegistryData,
+  type RuntimeSurface,
   type ServiceCategory,
   type ServiceDefinition,
   type UsageMeterDefinition,
 } from '../domain/registry';
+export {
+  RUNTIME_COVERAGES,
+  providerRuntime,
+  serviceRuntime,
+  type OperationCount,
+  type ProviderRuntime,
+  type RuntimeCoverage,
+  type ServiceRuntime,
+} from '../domain/runtime-coverage';
+export {
+  COST_DATA_FRESHNESSES,
+  COST_SOURCE_KINDS,
+  costDataFreshness,
+  providerCostSourceKind,
+  serviceCostSourceKind,
+  type CostDataFacts,
+  type CostDataFreshness,
+  type CostSource,
+  type CostSourceKind,
+} from '../domain/cost-source';
 export {
   PRICING_MODELS,
   PRICING_RULES,

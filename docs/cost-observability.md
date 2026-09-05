@@ -161,6 +161,18 @@ Registry-keyed, under the existing namespace — never `/costs/google`. All rout
 - **§44.2**: a provider added to `COST_REGISTRY_DATA` is a row with no API/CMS change
   (`cost-center.int.spec.ts` builds a registry with a fake `acme` and reads it back).
   Ids the registry does not know are listed in `unattributed`, not dropped.
+- **Four dimensions per row (ADR-0014, #416)**, never derived from one another:
+  `status` (`active | planned` — integration lifecycle only; `manual` is retired),
+  `runtime` (`coverage` `FULL | PARTIAL | NOT_INSTRUMENTED | N/A` from each service's
+  declared `runtime` surface `in_process | client_sdk | none` and its operations'
+  `instrumented`, with `services` / `operations` counts on the provider and `surface`
+  on the service), `cost.kind` (`AUTO | MANUAL | NONE` from capabilities) and
+  `cost.freshness` (`FRESH | STALE | ERROR | UNKNOWN | null` — the §23 roll-up for
+  AUTO, UNAVAILABLE → `ERROR`, never attempted → `UNKNOWN`; the materialised rows for
+  MANUAL). `ERROR` is reserved for an attempt that failed. Google today is
+  `PARTIAL` (3 of 5 runtime services measured); Redis/Postgres/R2 are
+  `NOT_INSTRUMENTED` until #414. Pure functions: `domain/runtime-coverage.ts`,
+  `domain/cost-source.ts`.
 
 Deprecated, kept one release: the legacy `providers[]` / `gaps[]` on `/cms/ops/costs`
 and `/cms/ops/providers/{provider}` (enum `places|routes|sheets`). CMS re-vendor is
