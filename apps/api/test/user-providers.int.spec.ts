@@ -370,7 +370,13 @@ describe('outbox dispatcher (BE-BFF-010)', () => {
       .where(eq(schema.notifications.userId, userId));
     expect(notifications).toHaveLength(1);
     expect(notifications[0]!.kind).toBe('plan_ready');
+    // #193: one provider call per event, addressed by user id — never by the
+    // device token registered above — and keyed by the event for provider-side
+    // dedupe.
     expect(push.sent).toHaveLength(1);
+    expect(push.sent[0]!.userIds).toEqual([userId]);
+    expect(push.sent[0]!.data).toMatchObject({ kind: 'plan_ready', roomId: room!.id });
+    expect(push.sent[0]!.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
 
     const inbox = await api().inject({
       method: 'GET',
@@ -623,16 +629,16 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
     expect(published!.publishedAt).not.toBeNull();
   });
 
-  it('one dead device token does not fail the event for everyone else', async () => {
-    const { userId, roomId } = await roomWithHost('outbox-badtoken@gogo.id.vn');
-    await db
-      .insert(schema.deviceTokens)
-      .values({ userId, platform: 'ios', token: `dead-${Date.now()}` });
+  it('a permanent provider refusal does not block the event: the in-app row is the durable half', async () => {
+    const { userId, roomId } = await roomWithHost('outbox-refused@gogo.id.vn');
     const event = await queueEvent(roomId);
 
     const rejecting = {
-      send: async () => {
-        throw new Error('token rejected');
+      sendToUser: async () => {
+        throw new Error('payload rejected');
+      },
+      sendToUsers: async () => {
+        throw new Error('payload rejected');
       },
     };
     await new OutboxDispatcher(db as never, rejecting as never).dispatchBatch();
@@ -641,13 +647,87 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
       .select()
       .from(schema.outboxEvents)
       .where(eq(schema.outboxEvents.id, event.id));
-    // Published: the in-app notification is the durable half, and retrying
-    // would re-push to every token that already received it.
+    // Published: retrying a refused payload returns the same refusal, and the
+    // in-app notification already exists.
     expect(row!.publishedAt).not.toBeNull();
     const notifications = await db
       .select()
       .from(schema.notifications)
       .where(eq(schema.notifications.userId, userId));
     expect(notifications).toHaveLength(1);
+  });
+
+  it('a provider answer with nobody subscribed is counted as no target, never as sent (#193 review)', async () => {
+    const { userId, roomId } = await roomWithHost('outbox-notarget@gogo.id.vn');
+    await queueEvent(roomId);
+    const push = new FakePush();
+    push.unknownUserIds.add(userId);
+    const counted: [string, Record<string, string> | undefined, number | undefined][] = [];
+    const metrics = {
+      increment: (name: string, labels?: Record<string, string>, by?: number) => {
+        counted.push([name, labels, by]);
+      },
+    };
+    await new OutboxDispatcher(db as never, push, metrics).dispatchBatch();
+
+    expect(push.sent).toHaveLength(1);
+    const names = counted.map(([name]) => name);
+    expect(names).toContain('push_delivery_no_target_total');
+    expect(names).toContain('push_delivery_unknown_user_total');
+    expect(names).not.toContain('push_delivery_sent_total');
+    expect(names).not.toContain('push_delivery_failed_total');
+    // The inbox row still exists: the person sees it when they next sign in.
+    const rows = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, userId));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('a transient provider outage backs the event off and retries it (#193)', async () => {
+    const { userId, roomId } = await roomWithHost('outbox-outage@gogo.id.vn');
+    const event = await queueEvent(roomId);
+
+    const push = new FakePush();
+    push.unavailable = true;
+    const dispatcher = new OutboxDispatcher(db as never, push);
+    await dispatcher.dispatchBatch();
+
+    const [afterOutage] = await db
+      .select()
+      .from(schema.outboxEvents)
+      .where(eq(schema.outboxEvents.id, event.id));
+    // Not published, due later: the provider may be back by then.
+    expect(afterOutage!.publishedAt).toBeNull();
+    expect(afterOutage!.attempts).toBe(1);
+    expect(afterOutage!.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
+    // The in-app row was written before the send and is not written twice.
+    const before = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, userId));
+    expect(before).toHaveLength(1);
+
+    // Provider recovers; make the event due and run again.
+    push.unavailable = false;
+    await db
+      .update(schema.outboxEvents)
+      .set({ nextAttemptAt: null })
+      .where(eq(schema.outboxEvents.id, event.id));
+    await dispatcher.dispatchBatch();
+
+    const [recovered] = await db
+      .select()
+      .from(schema.outboxEvents)
+      .where(eq(schema.outboxEvents.id, event.id));
+    expect(recovered!.publishedAt).not.toBeNull();
+    expect(push.sent).toHaveLength(1);
+    // Same provider key as the first attempt would have carried: a replay.
+    expect(push.sent[0]!.idempotencyKey).toBe(event.id);
+    const after = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, userId));
+    expect(after).toHaveLength(1);
   });
 });

@@ -49,6 +49,62 @@ export type CampaignListQuery = {
   cursor?: string | undefined;
 };
 
+/**
+ * Everything that reaches a phone, or decides who it reaches. `name` is absent
+ * on purpose: it is the editorial label in the CMS list and no recipient ever
+ * sees it, so renaming a delivered campaign stays allowed.
+ */
+const DELIVERED_IMMUTABLE_FIELDS = [
+  'title',
+  'body',
+  'imageKey',
+  'ctaLabel',
+  'audienceType',
+  'audienceFilter',
+  'destinationType',
+  'destinationValue',
+] as const;
+
+/** Key order must not read as a change, so objects compare by sorted keys. */
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(',')}}`;
+}
+
+/** Which of the immutable-after-delivery fields this patch would actually change. */
+function changedDeliveredFields(
+  before: CampaignRow,
+  merged: {
+    title: string;
+    body: string;
+    imageKey?: string | undefined;
+    ctaLabel?: string | undefined;
+    audienceType: CampaignAudience;
+    /** Whatever the caller merged; compared structurally, never indexed. */
+    audienceFilter: unknown;
+    destinationType: CampaignDestination;
+    destinationValue?: string | undefined;
+  },
+): string[] {
+  const current: Record<(typeof DELIVERED_IMMUTABLE_FIELDS)[number], unknown> = {
+    title: before.title,
+    body: before.body,
+    imageKey: before.image_key ?? undefined,
+    ctaLabel: before.cta_label ?? undefined,
+    audienceType: before.audience_type,
+    audienceFilter: before.audience_filter,
+    destinationType: before.destination_type,
+    destinationValue: before.destination_value ?? undefined,
+  };
+  return DELIVERED_IMMUTABLE_FIELDS.filter(
+    (field) => stableJson(current[field]) !== stableJson(merged[field]),
+  );
+}
+
 type CampaignRow = {
   id: string;
   name: string;
@@ -68,6 +124,7 @@ type CampaignRow = {
   sent_count: number;
   failed_count: number;
   last_error: string | null;
+  dispatch_key: string | null;
   test_send_requested_at: Date | string | null;
   test_send_completed_at: Date | string | null;
   created_by_admin_id: string;
@@ -174,6 +231,31 @@ export class CampaignsService {
       imageKey: patch.imageKey ?? before.image_key ?? undefined,
       ctaLabel: patch.ctaLabel ?? before.cta_label ?? undefined,
     };
+    // Review finding R3: a campaign that has delivered to anyone can no longer
+    // have its message changed.
+    //
+    // `failed` and `cancelled` are editable, and a failed campaign is resumed
+    // under its existing dispatch key so the recipients it already reached are
+    // skipped. Editing the copy in that state would send the new text to the
+    // remainder only — half an audience holding one message, half another, with
+    // nothing recording the split. Cancelling first does not help either: that
+    // mints a fresh key, so the already-delivered recipients receive a second,
+    // different message.
+    //
+    // Neither is a thing an operator can undo, so the edit is refused and the
+    // new message becomes a new campaign. What stays allowed is the editorial
+    // `name` (it never reaches a phone) and a retry of the unchanged campaign.
+    const changed = changedDeliveredFields(before, merged);
+    if (changed.length > 0) {
+      const delivered = await this.deliveredRecipients(id);
+      if (delivered > 0) {
+        throw AppError.conflict(
+          'CAMPAIGN_ALREADY_DELIVERED',
+          `This campaign has already been delivered to ${delivered} recipient(s), so ${changed.join(', ')} can no longer be changed. Retry it as it stands, or create a new campaign for the new message.`,
+        );
+      }
+    }
+
     const validated = await this.validate(merged);
 
     await this.db
@@ -227,7 +309,13 @@ export class CampaignsService {
     });
 
     const scheduledAt = sendAt ?? new Date();
-    const dispatchKey = randomUUID();
+    // Review fix (#193): a campaign that *failed* mid-send is resumed, not
+    // re-sent. Keeping its dispatch key keeps every recipient's dedupe key, so
+    // the worker skips the ones whose row says the push went through and
+    // retries the rest. Only a deliberate re-send — cancel, then schedule
+    // again, which nulls the key — mints a new one and reaches everyone anew.
+    const dispatchKey =
+      before.status === 'failed' && before.dispatch_key ? before.dispatch_key : randomUUID();
     await this.db
       .update(schema.notificationCampaigns)
       .set({
@@ -471,6 +559,24 @@ export class CampaignsService {
       createdAt: toIso(row.created_at),
       updatedAt: toIso(row.updated_at),
     };
+  }
+
+  /**
+   * How many people this campaign has actually put a push on a phone for —
+   * across every dispatch of it, not just the current one, because a recipient
+   * reached under an earlier dispatch key holds that message just the same.
+   *
+   * Admin-frequency: one count on an edit, never on a send path.
+   */
+  private async deliveredRecipients(id: string): Promise<number> {
+    const { rows } = await this.db.execute(sql`
+      select count(*)::int as delivered
+      from notifications
+      where kind = 'campaign'
+        and payload->>'campaignId' = ${id}
+        and push_sent_at is not null
+    `);
+    return Number((rows[0] as { delivered: number }).delivered);
   }
 
   private async requireRow(id: string): Promise<CampaignRow> {

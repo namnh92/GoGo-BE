@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ONESIGNAL_APP_ID_PATTERN } from '@gogo/providers';
 
 /**
  * FND-006: config validation — the process must fail fast on invalid config.
@@ -204,6 +205,25 @@ const envSchema = z
     GOOGLE_SHEETS_API_KEY: z.string().default(''),
     /** Routes API, behind FLAG_ROUTES_API. */
     GOOGLE_ROUTES_API_KEY: z.string().default(''),
+    /**
+     * NTF-BE-002 (#193) — which push provider this process is meant to run.
+     *
+     * Same rule as `PLACE_PROVIDER_MODE`: unset follows the build (a deployed
+     * environment means `onesignal`; a workstation and the test suite mean
+     * `fake`), and the presence of a credential never decides. DEV, staging and
+     * production therefore run identical code and differ only in the values
+     * GoGo-Infra renders for them. In `onesignal` mode a missing value binds a
+     * provider that refuses and says so at boot — never the fake.
+     */
+    PUSH_PROVIDER_MODE: z.enum(['onesignal', 'fake']).optional(),
+    /** Public OneSignal app id (UUID). Also the `iss` of identity JWTs (#199). */
+    ONESIGNAL_APP_ID: z.string().default(''),
+    /**
+     * OneSignal App API key — the `Authorization: Key …` credential the worker
+     * sends with. SSM `onesignal/rest-api-key`; server-side only, and no
+     * substitute for the identity signing key (#199), which is a different key.
+     */
+    ONESIGNAL_REST_API_KEY: z.string().default(''),
     R2_ACCOUNT_ID: z.string().default(''),
     R2_ACCESS_KEY_ID: z.string().default(''),
     R2_SECRET_ACCESS_KEY: z.string().default(''),
@@ -410,6 +430,17 @@ const envSchema = z
           message: 'COOKIE_SECURE must be true in production',
         });
       }
+    }
+
+    // #193 — an app id that is not a UUID is a paste error, and a paste error
+    // that boots is one that fails at send time, in the worker, as a 400 nobody
+    // is watching for. Empty is allowed (fake mode, or unconfigured-and-loud).
+    if (env.ONESIGNAL_APP_ID && !ONESIGNAL_APP_ID_PATTERN.test(env.ONESIGNAL_APP_ID)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ONESIGNAL_APP_ID'],
+        message: 'ONESIGNAL_APP_ID must be the OneSignal app UUID',
+      });
     }
 
     // #62 / ADR-0010 — half-configured single sign-on is worse than none. A

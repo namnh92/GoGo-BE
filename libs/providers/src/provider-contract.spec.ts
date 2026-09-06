@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { FakePlaceProvider, FakeSheets } from './fake.adapters';
+import { FakePlaceProvider, FakePush, FakeSheets } from './fake.adapters';
+import { OneSignalPushAdapter } from './onesignal-push.adapter';
 import { GooglePlacesAdapter } from './google-places.adapter';
 import { GoogleSheetsAdapter } from './google-sheets.adapter';
 import {
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   SheetAccessError,
+  type NotificationProviderPort,
   type PlaceProviderPort,
   type SheetsPort,
 } from './ports';
@@ -124,5 +126,55 @@ describe('SheetsPort contract', () => {
     sheets.denied.clear();
     sheets.quotaExhausted = true;
     await expect(sheets.listTabs('book-1')).rejects.toBeInstanceOf(ProviderQuotaExceededError);
+  });
+});
+
+describe('NotificationProviderPort contract (#193)', () => {
+  const shapeOf = (adapter: NotificationProviderPort) =>
+    ['sendToUser', 'sendToUsers'].every((m) => typeof (adapter as never)[m] === 'function');
+
+  it('fake and real adapter expose the same user-targeted surface — no device tokens', () => {
+    expect(shapeOf(new FakePush())).toBe(true);
+    expect(
+      shapeOf(
+        new OneSignalPushAdapter({
+          appId: '0f2c7a10-4e2b-4a7c-9b1d-3e5f6a7b8c9d',
+          restApiKey: 'unused-in-this-test',
+        }),
+      ),
+    ).toBe(true);
+    // The legacy token-based method is gone from both, so a caller cannot
+    // quietly keep routing through `device_tokens` (spec §26).
+    expect((new FakePush() as unknown as { send?: unknown }).send).toBeUndefined();
+  });
+
+  it('the fake records one call per send and reports unknown ids like the provider does', async () => {
+    const push = new FakePush();
+    push.unknownUserIds.add('ghost');
+    const result = await push.sendToUsers(['u1', 'ghost'], {
+      headings: { en: 'GoGo' },
+      contents: { en: 'plan_ready' },
+      data: { kind: 'plan_ready' },
+    });
+    expect(result.unknownUserIds).toEqual(['ghost']);
+    expect(result.providerMessageId).not.toBeNull();
+    expect(result.providerMessageIds).toEqual([result.providerMessageId]);
+    expect(result.emptyResponses).toBe(0);
+    expect(push.sent).toHaveLength(1);
+    expect(push.sent[0]!.userIds).toEqual(['u1', 'ghost']);
+    // Nobody subscribed → the provider creates no message; the fake says so too.
+    const nobody = await push.sendToUsers(['ghost'], {
+      headings: { en: 'GoGo' },
+      contents: { en: 'plan_ready' },
+    });
+    expect(nobody).toMatchObject({
+      providerMessageId: null,
+      providerMessageIds: [],
+      emptyResponses: 1,
+    });
+    push.unavailable = true;
+    await expect(
+      push.sendToUser('u1', { headings: { en: 'x' }, contents: { en: 'y' } }),
+    ).rejects.toBeInstanceOf(ProviderUnavailableError);
   });
 });

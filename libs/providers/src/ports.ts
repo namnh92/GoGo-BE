@@ -202,11 +202,70 @@ export interface AreaAutocompletePort {
   suggest(query: string, sessionToken: string): Promise<AreaPrediction[]>;
 }
 
-export interface PushPort {
-  send(
-    deviceToken: string,
-    payload: { title: string; body: string; data?: Record<string, string> },
-  ): Promise<void>;
+/**
+ * NTF-BE-002 (#193) — user-targeted push.
+ *
+ * The provider owns device subscriptions; GoGo addresses a *person* by
+ * `users.id` (the provider's `external_id` alias) and never holds an APNs or
+ * FCM token (OneSignal spec §26). The interface therefore speaks in user ids,
+ * not device tokens — a port that took tokens would make the token registry
+ * the thing the pipeline depends on, which is exactly the registry the spec
+ * says not to build.
+ *
+ * Business modules never import a provider client; they hand a
+ * `UserNotification` to whatever is bound behind `PUSH_PROVIDER`.
+ */
+export type PushLocale = 'vi' | 'en';
+
+export type UserNotification = {
+  /** Lock-screen copy per locale. `en` is the provider's required fallback. */
+  headings: Partial<Record<PushLocale, string>> & { en: string };
+  contents: Partial<Record<PushLocale, string>> & { en: string };
+  /**
+   * Routing facts only — ids, a kind, a route. Never tokens, PII or private
+   * content: this is rendered on a lock screen (spec §40). Provider cap 2 KB.
+   */
+  data?: Record<string, string>;
+  /**
+   * Provider-side dedupe key, an RFC 9562 UUID. A retry that presents the same
+   * key is a replay, not a second send — which is what lets the outbox retry a
+   * transient failure without a duplicate landing on a phone. Derive it from
+   * the event that caused the send (`idempotencyKeyFrom`), never generate it
+   * per attempt.
+   */
+  idempotencyKey?: string;
+};
+
+export type PushSendResult = {
+  /** First provider message id, or null when no request created a message. */
+  providerMessageId: string | null;
+  /**
+   * Every message the provider created — one per request that had at least
+   * one subscribed target. A send that spans several requests can be partly
+   * accepted; callers count this, not `providerMessageId`, as "sent".
+   */
+  providerMessageIds: string[];
+  /**
+   * Requests the provider accepted (HTTP 200) with nothing to deliver — no
+   * subscription for any target in that request. Not a failure and not a send:
+   * OneSignal answers `id: ""` here, and a counter that called it a send would
+   * hide every missing subscription behind a green number.
+   */
+  emptyResponses: number;
+  /** Ids the provider does not know — never logged in, or logged out since. */
+  unknownUserIds: string[];
+};
+
+export interface NotificationProviderPort {
+  sendToUser(userId: string, notification: UserNotification): Promise<PushSendResult>;
+  /**
+   * One provider call for the whole set (chunked by the adapter above the
+   * provider's limit). Throws `ProviderUnavailableError` after the resilience
+   * wrapper gives up on a transient fault, `ProviderConfigurationError` for a
+   * refused credential, `ProviderInvalidRequestError` for a payload the
+   * provider rejects on its merits. Callers retry only the first.
+   */
+  sendToUsers(userIds: readonly string[], notification: UserNotification): Promise<PushSendResult>;
 }
 
 /**

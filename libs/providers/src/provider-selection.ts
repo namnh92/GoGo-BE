@@ -33,6 +33,8 @@ export type ProviderKeys = {
   FLAG_ROUTES_API: boolean;
   /** #279 — resolved place-provider mode, when the caller knows it. */
   PLACE_PROVIDER_MODE?: PlaceProviderMode;
+  /** #193 — resolved push-provider mode, when the caller knows it. */
+  PUSH_PROVIDER_MODE?: PushProviderMode;
 };
 
 /**
@@ -92,6 +94,17 @@ export function placeProviderStatus(input: {
 
 export function fakedProviders(keys: ProviderKeys): FakedProvider[] {
   const faked: FakedProvider[] = [];
+
+  // #193: same shape as the place provider. In `onesignal` mode a missing key
+  // binds `UnconfiguredPushProvider`, reported by `pushProviderStatus` as
+  // not-ready; only the deliberate fake is "pretending".
+  if (keys.PUSH_PROVIDER_MODE === 'fake') {
+    faked.push({
+      port: 'PUSH_PROVIDER',
+      envVar: 'ONESIGNAL_REST_API_KEY',
+      effect: 'push sends are recorded in memory and reach no device',
+    });
+  }
 
   // One variable per port, because one key per Google API. There used to be a
   // fallback chain here, and a chain means a warning has to explain which of
@@ -156,4 +169,57 @@ export function warnFakedProviders(
     );
   }
   return faked;
+}
+
+/**
+ * NTF-BE-002 (#193) — which push provider this process is meant to be running.
+ *
+ * Same rule as `resolvePlaceProviderMode`, for the same reason: DEV is
+ * mini-production and runs the production build, so a deployed environment is
+ * on OneSignal unless it says otherwise; a laptop and the test suite are on the
+ * fake unless they say otherwise. Presence of a credential never decides.
+ */
+export type PushProviderMode = 'onesignal' | 'fake';
+
+export function resolvePushProviderMode(input: {
+  PUSH_PROVIDER_MODE?: PushProviderMode | undefined;
+  NODE_ENV: string;
+}): PushProviderMode {
+  if (input.PUSH_PROVIDER_MODE) return input.PUSH_PROVIDER_MODE;
+  return input.NODE_ENV === 'production' ? 'onesignal' : 'fake';
+}
+
+/** OneSignal app ids are UUIDs; anything else is a paste error, not a config. */
+export const ONESIGNAL_APP_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export type PushProviderStatus = {
+  mode: PushProviderMode;
+  /** What was actually constructed. */
+  provider: 'onesignal' | 'fake' | 'unconfigured';
+  ready: boolean;
+  reason?: 'MISSING_CREDENTIAL' | 'INVALID_APP_ID';
+};
+
+/**
+ * `ready: false` is not fatal at boot (spec §48): push is an asynchronous
+ * dependency, and a worker refusing to start over it would also stop imports
+ * and privacy jobs. It is a degraded state that has to be visible — the boot
+ * log names it, and every send fails with a counted configuration fault.
+ */
+export function pushProviderStatus(input: {
+  PUSH_PROVIDER_MODE?: PushProviderMode | undefined;
+  NODE_ENV: string;
+  ONESIGNAL_APP_ID: string;
+  ONESIGNAL_REST_API_KEY: string;
+}): PushProviderStatus {
+  const mode = resolvePushProviderMode(input);
+  if (mode === 'fake') return { mode, provider: 'fake', ready: true };
+  if (!input.ONESIGNAL_APP_ID || !input.ONESIGNAL_REST_API_KEY) {
+    return { mode, provider: 'unconfigured', ready: false, reason: 'MISSING_CREDENTIAL' };
+  }
+  if (!ONESIGNAL_APP_ID_PATTERN.test(input.ONESIGNAL_APP_ID)) {
+    return { mode, provider: 'unconfigured', ready: false, reason: 'INVALID_APP_ID' };
+  }
+  return { mode, provider: 'onesignal', ready: true };
 }

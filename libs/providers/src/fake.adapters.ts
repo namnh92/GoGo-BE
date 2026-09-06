@@ -4,13 +4,15 @@ import type {
   AreaPrediction,
   PlaceDescriptionTier,
   PlaceFetchTier,
+  NotificationProviderPort,
   PlaceProviderPort,
   ProviderPlaceIdentity,
-  PushPort,
+  PushSendResult,
   ResolvedProviderPlace,
   SheetTab,
   SheetsPort,
   StoragePort,
+  UserNotification,
 } from './ports';
 
 /**
@@ -161,10 +163,53 @@ export class FakeAreaAutocomplete implements AreaAutocompletePort {
   }
 }
 
-export class FakePush implements PushPort {
-  readonly sent: { deviceToken: string; title: string; body: string }[] = [];
-  async send(deviceToken: string, payload: { title: string; body: string }): Promise<void> {
-    this.sent.push({ deviceToken, title: payload.title, body: payload.body });
+/**
+ * NTF-BE-002 (#193) — in-memory stand-in for the user-targeted push port.
+ *
+ * One entry per provider call: a send to five people is one entry carrying
+ * five ids, exactly the shape the real adapter puts on the wire. Tests that
+ * want "how many people were pushed" flatten `userIds`.
+ */
+export class FakePush implements NotificationProviderPort {
+  readonly sent: {
+    userIds: string[];
+    title: string;
+    body: string;
+    data?: Record<string, string>;
+    idempotencyKey?: string;
+  }[] = [];
+  /** Ids the fake reports back as unknown to the provider (never logged in). */
+  readonly unknownUserIds = new Set<string>();
+  /** Set to simulate the resilience wrapper giving up on a transient outage. */
+  unavailable = false;
+
+  sendToUser(userId: string, notification: UserNotification): Promise<PushSendResult> {
+    return this.sendToUsers([userId], notification);
+  }
+
+  async sendToUsers(
+    userIds: readonly string[],
+    notification: UserNotification,
+  ): Promise<PushSendResult> {
+    if (this.unavailable) throw new ProviderUnavailableError('fake.push', 'simulated outage');
+    const ids = [...userIds];
+    this.sent.push({
+      userIds: ids,
+      title: notification.headings.en,
+      body: notification.contents.en,
+      ...(notification.data ? { data: notification.data } : {}),
+      ...(notification.idempotencyKey ? { idempotencyKey: notification.idempotencyKey } : {}),
+    });
+    const unknown = ids.filter((id) => this.unknownUserIds.has(id));
+    // Like the provider: a request whose every target is unknown creates no
+    // message — an empty response, not a send.
+    const id = unknown.length === ids.length ? null : `fake-${this.sent.length}`;
+    return {
+      providerMessageId: id,
+      providerMessageIds: id ? [id] : [],
+      emptyResponses: id ? 0 : 1,
+      unknownUserIds: unknown,
+    };
   }
 }
 

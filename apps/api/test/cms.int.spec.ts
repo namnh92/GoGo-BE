@@ -3167,10 +3167,21 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
   const suffix = () => Math.random().toString(36).slice(2, 8);
 
   /** Counts every push, so a double send is visible rather than inferred. */
+  // #193: user-targeted, like the real provider — one entry per recipient.
   class CountingPush {
-    readonly sent: { token: string; title: string }[] = [];
-    async send(token: string, payload: { title: string; body: string }) {
-      this.sent.push({ token, title: payload.title });
+    readonly sent: { userId: string; title: string }[] = [];
+    async sendToUser(userId: string, payload: { headings: { en: string } }) {
+      return this.sendToUsers([userId], payload);
+    }
+    async sendToUsers(userIds: readonly string[], payload: { headings: { en: string } }) {
+      for (const userId of userIds) this.sent.push({ userId, title: payload.headings.en });
+      const id = `fake-${this.sent.length}`;
+      return {
+        providerMessageId: id,
+        providerMessageIds: [id],
+        emptyResponses: 0,
+        unknownUserIds: [],
+      };
     }
   }
 
@@ -3232,7 +3243,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     return id;
   }
 
-  it('claims a due campaign, sends once per device, and records what it did', async () => {
+  it('claims a due campaign, sends once per recipient, and records what it did', async () => {
     const id = await scheduledCampaign();
     const push = new CountingPush();
     const handled = await (await dispatcher(push)).dispatchDue();
@@ -3248,7 +3259,9 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     expect(row!.recipientCount).toBeGreaterThanOrEqual(1);
     expect(row!.sentCount).toBeGreaterThanOrEqual(1);
 
-    // One notification per recipient, one push per device of that recipient.
+    // One notification per recipient and one push per recipient — addressed by
+    // user id, however many devices they hold (#193, spec §26). The two device
+    // tokens registered above are not consulted on this path.
     const rows = await db
       .select()
       .from(schema.notifications)
@@ -3257,9 +3270,9 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     expect(forThis).toHaveLength(1);
     expect(forThis[0]!.kind).toBe('campaign');
     expect(forThis[0]!.dedupeKey).toMatch(/^campaign:/);
-    expect(push.sent.filter((s) => s.title === 'Ưu đãi cuối tuần').length).toBeGreaterThanOrEqual(
-      2,
-    );
+    expect(
+      push.sent.filter((s) => s.userId === userWithTwoDevices && s.title === 'Ưu đãi cuối tuần'),
+    ).toHaveLength(1);
   });
 
   it('a second run sends nothing: the dedupe key is the record of "already sent"', async () => {
@@ -3332,17 +3345,342 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     );
   });
 
+  it('a send that fails half-way resumes on reschedule: nobody pushed twice, nobody left out (#193 review)', async () => {
+    const id = await scheduledCampaign();
+
+    // First run: the provider dies on the second recipient.
+    const firstRun = new CountingPush();
+    let calls = 0;
+    const flaky = {
+      sent: firstRun.sent,
+      async sendToUser(userId: string, payload: { headings: { en: string } }) {
+        calls += 1;
+        if (calls === 2) throw new Error('provider unavailable');
+        return firstRun.sendToUsers([userId], payload);
+      },
+      async sendToUsers(ids: readonly string[], payload: { headings: { en: string } }) {
+        return firstRun.sendToUsers(ids, payload);
+      },
+    };
+    await (await dispatcher(flaky as never)).dispatchDue();
+    const [failed] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(failed!.status).toBe('failed');
+    expect(firstRun.sent).toHaveLength(1);
+    const delivered = firstRun.sent[0]!.userId;
+    const keyBefore = failed!.dispatchKey;
+    expect(keyBefore).not.toBeNull();
+
+    // The operator reschedules through the API — the advertised recovery.
+    const rescheduled = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/campaigns/${id}/schedule`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(rescheduled.statusCode).toBe(201);
+    const [again] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    // A resumed send keeps its dispatch identity; only cancel-then-schedule mints a new one.
+    expect(again!.dispatchKey).toBe(keyBefore);
+
+    const secondRun = new CountingPush();
+    await (await dispatcher(secondRun)).dispatchDue();
+    const [done] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(done!.status).toBe('sent');
+
+    // Nobody twice — in particular not the recipient the first run reached.
+    const everyone = [...firstRun.sent, ...secondRun.sent].map((s) => s.userId);
+    expect(new Set(everyone).size).toBe(everyone.length);
+    expect(secondRun.sent.map((s) => s.userId)).not.toContain(delivered);
+
+    // Nobody left out: one inbox row per resolved recipient, every row marked delivered.
+    const { rows } = await db.execute(sql`
+      select user_id, push_sent_at, push_message_id
+      from notifications
+      where kind = 'campaign' and payload->>'campaignId' = ${id}
+    `);
+    expect(rows).toHaveLength(done!.recipientCount!);
+    expect(everyone).toHaveLength(rows.length);
+    for (const row of rows as { push_sent_at: Date | null; push_message_id: string | null }[]) {
+      expect(row.push_sent_at).not.toBeNull();
+      expect(row.push_message_id).not.toBeNull();
+    }
+    expect(done!.sentCount).toBe(rows.length);
+    expect(done!.failedCount).toBe(0);
+  });
+
+  it('a delivered campaign refuses edits to copy, audience and destination (R3)', async () => {
+    const id = await scheduledCampaign();
+    const push = new CountingPush();
+    await (await dispatcher(push)).dispatchDue();
+    expect(push.sent.length).toBeGreaterThan(0);
+    const [sent] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(sent!.status).toBe('sent');
+
+    // `sent` is not editable at all, so put it in a state that is — the exact
+    // shape the finding describes: a campaign that reached some people and is
+    // now editable again.
+    await db
+      .update(schema.notificationCampaigns)
+      .set({ status: 'failed' })
+      .where(eq(schema.notificationCampaigns.id, id));
+
+    const edits: [string, Record<string, unknown>][] = [
+      ['copy', { title: 'Tiêu đề mới' }],
+      ['body', { body: 'Nội dung mới' }],
+      ['audience', { audienceType: 'couple' }],
+      ['destination', { destinationType: 'saved' }],
+    ];
+    for (const [label, payload] of edits) {
+      const res = await api().inject({
+        method: 'PATCH',
+        url: `/v1/cms/campaigns/${id}`,
+        remoteAddress: ip(),
+        headers: auth(ops.token),
+        payload,
+      });
+      expect(res.statusCode, label).toBe(409);
+      expect(res.json().code, label).toBe('CAMPAIGN_ALREADY_DELIVERED');
+    }
+
+    // Nothing was written by the refused edits.
+    const [unchanged] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(unchanged!.title).toBe(sent!.title);
+    expect(unchanged!.body).toBe(sent!.body);
+    expect(unchanged!.audienceType).toBe(sent!.audienceType);
+    expect(unchanged!.destinationType).toBe(sent!.destinationType);
+  });
+
+  it('a delivered campaign still accepts an editorial rename and a no-op patch (R3)', async () => {
+    const id = await scheduledCampaign();
+    await (await dispatcher(new CountingPush())).dispatchDue();
+    await db
+      .update(schema.notificationCampaigns)
+      .set({ status: 'failed' })
+      .where(eq(schema.notificationCampaigns.id, id));
+    const [before] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+
+    // The name never reaches a phone.
+    const renamed = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/campaigns/${id}`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { name: `Đổi tên ${suffix()}` },
+    });
+    expect(renamed.statusCode).toBe(200);
+
+    // Re-sending the same values is not a change, so it is not refused.
+    const noop = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/campaigns/${id}`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {
+        title: before!.title,
+        body: before!.body,
+        audienceType: before!.audienceType,
+        destinationType: before!.destinationType,
+      },
+    });
+    expect(noop.statusCode).toBe(200);
+  });
+
+  it('a campaign that delivered to nobody is still fully editable (R3)', async () => {
+    const id = await scheduledCampaign();
+    // Provider refuses everyone: rows exist, none marked delivered.
+    const refusing = {
+      async sendToUser() {
+        return {
+          providerMessageId: null,
+          providerMessageIds: [],
+          emptyResponses: 1,
+          unknownUserIds: [],
+        };
+      },
+      async sendToUsers() {
+        return {
+          providerMessageId: null,
+          providerMessageIds: [],
+          emptyResponses: 1,
+          unknownUserIds: [],
+        };
+      },
+    };
+    await (await dispatcher(refusing as never)).dispatchDue();
+    const { rows: delivered } = await db.execute(sql`
+      select count(*)::int as n from notifications
+      where kind = 'campaign' and payload->>'campaignId' = ${id} and push_sent_at is not null
+    `);
+    expect((delivered[0] as { n: number }).n).toBe(0);
+
+    await db
+      .update(schema.notificationCampaigns)
+      .set({ status: 'failed' })
+      .where(eq(schema.notificationCampaigns.id, id));
+    const edited = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/campaigns/${id}`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { title: 'Vẫn sửa được' },
+    });
+    expect(edited.statusCode).toBe(200);
+    expect(edited.json().title).toBe('Vẫn sửa được');
+  });
+
+  /**
+   * R4, recorded rather than changed: what actually happens to a recipient the
+   * provider had no subscription for. These tests assert today's behaviour so a
+   * future product decision is a deliberate edit here, not a silent drift.
+   */
+  it('a completed campaign is terminal, so its no-target recipients are final (R4)', async () => {
+    const id = await scheduledCampaign();
+    // Everyone resolves, nobody is subscribed: rows exist, none delivered.
+    const noTarget = {
+      async sendToUser() {
+        return {
+          providerMessageId: null,
+          providerMessageIds: [],
+          emptyResponses: 1,
+          unknownUserIds: [],
+        };
+      },
+      async sendToUsers() {
+        return {
+          providerMessageId: null,
+          providerMessageIds: [],
+          emptyResponses: 1,
+          unknownUserIds: [],
+        };
+      },
+    };
+    await (await dispatcher(noTarget as never)).dispatchDue();
+
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    // It completes rather than failing: the provider answered, it just had
+    // nobody to deliver to.
+    expect(row!.status).toBe('sent');
+    expect(row!.failedCount).toBeGreaterThan(0);
+    expect(row!.sentCount).toBe(0);
+
+    const { rows: owed } = await db.execute(sql`
+      select count(*)::int as n from notifications
+      where kind = 'campaign' and payload->>'campaignId' = ${id} and push_sent_at is null
+    `);
+    expect((owed[0] as { n: number }).n).toBe(row!.failedCount);
+
+    // And `sent` has no outgoing transition, so neither door reopens: the
+    // count above is final and nothing retries those recipients.
+    for (const action of ['schedule', 'cancel']) {
+      const res = await api().inject({
+        method: 'POST',
+        url: `/v1/cms/campaigns/${id}/${action}`,
+        remoteAddress: ip(),
+        headers: auth(ops.token),
+        payload: {},
+      });
+      expect(res.statusCode, action).toBe(409);
+      expect(res.json().code, action).toBe('INVALID_STATUS_TRANSITION');
+    }
+  });
+
+  it('a failed campaign does retry its no-target recipients on an unchanged retry (R4)', async () => {
+    const id = await scheduledCampaign();
+    // First run: recipient 1 has no subscription, then the provider dies.
+    let calls = 0;
+    const firstRun = new CountingPush();
+    const flaky = {
+      sent: firstRun.sent,
+      async sendToUser(userId: string, payload: { headings: { en: string } }) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            providerMessageId: null,
+            providerMessageIds: [],
+            emptyResponses: 1,
+            unknownUserIds: [],
+          };
+        }
+        if (calls === 2) throw new Error('provider unavailable');
+        return firstRun.sendToUsers([userId], payload);
+      },
+      async sendToUsers(ids: readonly string[], payload: { headings: { en: string } }) {
+        return firstRun.sendToUsers(ids, payload);
+      },
+    };
+    await (await dispatcher(flaky as never)).dispatchDue();
+    const [failed] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(failed!.status).toBe('failed');
+
+    // Unchanged retry — permitted by the R3 rule, and resumed on the same key.
+    const rescheduled = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/campaigns/${id}/schedule`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(rescheduled.statusCode).toBe(201);
+
+    const secondRun = new CountingPush();
+    await (await dispatcher(secondRun)).dispatchDue();
+
+    // The no-target recipient is attempted again: its row carries no
+    // push_sent_at, which is the same thing "never delivered" means for a
+    // recipient the outage never reached. That is the difference from the
+    // completed case above — the retry exists only because `failed` reopens.
+    const [done] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(done!.status).toBe('sent');
+    expect(secondRun.sent.length).toBeGreaterThan(0);
+    const { rows: delivered } = await db.execute(sql`
+      select count(*)::int as n from notifications
+      where kind = 'campaign' and payload->>'campaignId' = ${id} and push_sent_at is not null
+    `);
+    expect((delivered[0] as { n: number }).n).toBe(done!.sentCount);
+  });
+
   it('a provider outage fails the campaign visibly instead of leaving it sending', async () => {
     const id = await scheduledCampaign();
     const exploding = {
       sent: [],
-      async send() {
+      async sendToUser() {
+        throw new Error('provider unavailable');
+      },
+      async sendToUsers() {
         throw new Error('provider unavailable');
       },
     };
     const { CampaignDispatcher } = await import('@gogo/modules');
-    // A per-device push failure is caught by design, so the outage simulated
-    // here is the one that is not: resolving the audience.
+    // The outage simulated here is in resolving the audience; a provider error
+    // takes the same path (see the next test).
     const literalText = (query: unknown): string =>
       ((query as { queryChunks?: { value?: string[] }[] }).queryChunks ?? [])
         .map((chunk) => (Array.isArray(chunk?.value) ? chunk.value.join('') : ''))

@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
-import type { PushPort } from '@gogo/providers';
+import { idempotencyKeyFrom, type NotificationProviderPort } from '@gogo/providers';
 import {
   campaignDedupeKey,
   type CampaignAudience,
@@ -40,7 +40,7 @@ const RECIPIENT_BATCH = 500;
 export class CampaignDispatcher {
   constructor(
     private readonly db: Db,
-    private readonly push: PushPort,
+    private readonly push: NotificationProviderPort,
     private readonly metrics?: { increment(name: string, labels?: Record<string, string>): void },
   ) {}
 
@@ -108,8 +108,10 @@ export class CampaignDispatcher {
           const delivered = await this.deliver(campaign, recipient.id, {
             dedupeKey: campaignDedupeKey(campaign.dispatch_key, recipient.id),
           });
-          if (delivered === 'sent') sent += 1;
-          else if (delivered === 'failed') failed += 1;
+          // `already_sent` is a push an earlier run of this same dispatch got
+          // through before an outage; it counts toward the campaign's total.
+          if (delivered === 'sent' || delivered === 'already_sent') sent += 1;
+          else if (delivered === 'no_target') failed += 1;
         }
         await this.db.execute(sql`
           update notification_campaigns
@@ -144,16 +146,20 @@ export class CampaignDispatcher {
   /**
    * One recipient.
    *
-   * The notification row is inserted first with `on conflict do nothing`: if it
-   * is already there, this recipient was handled by an earlier run and the push
-   * is skipped. That ordering is what makes a retry safe — the row is the
-   * record of "already sent", and it exists before the provider is called.
+   * Two facts, two columns. The notification row (inbox) is inserted first with
+   * `on conflict do nothing`; `push_sent_at` on that row is the delivery fact
+   * and is written only after the provider created a message. So a re-run of
+   * the same dispatch — after a crash, or after an outage failed the campaign
+   * and an operator rescheduled it — skips recipients whose row says the push
+   * went through and retries the ones whose row says it did not. Before this
+   * split the row alone meant "sent", and an outage half-way left the hit
+   * recipient owed forever while a reschedule pushed everyone else twice.
    */
   private async deliver(
     campaign: DueCampaign,
     userId: string,
     options: { dedupeKey: string },
-  ): Promise<'sent' | 'skipped' | 'failed'> {
+  ): Promise<'sent' | 'already_sent' | 'no_target'> {
     const payload = {
       campaignId: campaign.id,
       title: campaign.title,
@@ -162,37 +168,57 @@ export class CampaignDispatcher {
       ...(campaign.destination_value ? { destination: campaign.destination_value } : {}),
     };
 
-    const { rows: inserted } = await this.db.execute(sql`
+    await this.db.execute(sql`
       insert into notifications (user_id, kind, payload, dedupe_key)
       values (${userId}::uuid, 'campaign', ${JSON.stringify(payload)}::jsonb, ${options.dedupeKey})
       on conflict (dedupe_key) where dedupe_key is not null do nothing
-      returning id
     `);
-    if (inserted.length === 0) return 'skipped';
-
-    const { rows: devices } = await this.db.execute(sql`
-      select token from device_tokens where user_id = ${userId}::uuid
+    const { rows } = await this.db.execute(sql`
+      select id, push_sent_at from notifications where dedupe_key = ${options.dedupeKey}
     `);
+    const row = rows[0] as { id: string; push_sent_at: Date | string | null } | undefined;
+    if (!row) throw new Error('notification row missing after insert');
+    if (row.push_sent_at !== null) return 'already_sent';
 
-    let anyDelivered = false;
-    for (const device of devices as { token: string }[]) {
-      try {
-        await this.push.send(device.token, {
-          title: campaign.title,
-          body: campaign.body,
-          data: {
-            campaignId: campaign.id,
-            destinationType: campaign.destination_type,
-            ...(campaign.destination_value ? { destination: campaign.destination_value } : {}),
-          },
-        });
-        anyDelivered = true;
-      } catch {
-        // One dead token does not fail the recipient: another device may work,
-        // and a whole campaign must not stop on a stale registration.
-      }
-    }
-    return anyDelivered ? 'sent' : 'failed';
+    // #193: addressed by user id; the provider owns the device list. A thrown
+    // provider error propagates to `send`, which marks the campaign `failed`
+    // with the reason kept — a refused credential or an outage is something an
+    // operator re-schedules from, not something to burn through 500 recipients
+    // discovering. The row above stays without push_sent_at, which is exactly
+    // what the reschedule retries.
+    const result = await this.push.sendToUser(userId, {
+      headings: { en: campaign.title },
+      contents: { en: campaign.body },
+      data: {
+        campaignId: campaign.id,
+        destinationType: campaign.destination_type,
+        ...(campaign.destination_value ? { destination: campaign.destination_value } : {}),
+      },
+      // The dedupe key already identifies this recipient of this dispatch; the
+      // provider gets the same identity, so even a crash between the send and
+      // the update below is a replay at the provider, not a second push.
+      idempotencyKey: idempotencyKeyFrom(options.dedupeKey),
+    });
+    // A message id is a delivery the provider accepted. None means no
+    // subscription for this person right now — recorded in failed_count, as an
+    // account with no registered device was before.
+    //
+    // "Left retryable" is only half true, and the half that is not is worth
+    // stating (review finding R4). The row keeps `push_sent_at` null, so any
+    // later run of this dispatch does attempt it again — but a campaign that
+    // reaches the end of its recipient list finishes `sent`, and `sent` has no
+    // outgoing transition, so no later run happens. In practice: a no-target
+    // recipient is retried when an outage failed the campaign and an operator
+    // retries it, and never when the campaign completed. Both paths are
+    // asserted in `cms.int.spec.ts`. Changing that is a product decision about
+    // what an unsubscribed recipient means, not a dispatcher fix.
+    if (result.providerMessageId === null) return 'no_target';
+    await this.db.execute(sql`
+      update notifications
+      set push_sent_at = now(), push_message_id = ${result.providerMessageId}
+      where id = ${row.id}::uuid
+    `);
+    return 'sent';
   }
 
   /**
@@ -217,11 +243,18 @@ export class CampaignDispatcher {
     `);
 
     for (const row of rows as (DueCampaign & { test_send_user_id: string })[]) {
-      await this.deliver(row, row.test_send_user_id, {
-        // Unique per request, so a composer can preview a campaign as many
-        // times as they need without the dedupe key silencing the second one.
-        dedupeKey: `campaign_test:${row.id}:${row.test_send_user_id}:${Date.now()}`,
-      });
+      try {
+        await this.deliver(row, row.test_send_user_id, {
+          // Unique per request, so a composer can preview a campaign as many
+          // times as they need without the dedupe key silencing the second one.
+          dedupeKey: `campaign_test:${row.id}:${row.test_send_user_id}:${Date.now()}`,
+        });
+      } catch {
+        // A test send is a preview, not a send: a provider fault here is
+        // counted and the row already says the request was handled, so the
+        // composer's next attempt is not silenced by a stuck one.
+        this.metrics?.increment('campaign_dispatched_total', { result: 'test_failed' });
+      }
     }
     return rows.length;
   }

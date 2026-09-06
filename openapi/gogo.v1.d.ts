@@ -869,7 +869,11 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Register a push device token (BE-BFF-010) */
+        /**
+         * Register a push device token (BE-BFF-010) — deprecated
+         * @deprecated
+         * @description NTF-BE-002 (#193): push is addressed by user id through the provider's external_id alias; GoGo keeps no APNs/FCM token registry and nothing on the delivery path reads this table any more. The route still accepts a token so an older client does not break, but registering one has no effect on delivery. Clients bind identity through the provider SDK login (NTF-APP-004) instead. Removal is a separate, announced change.
+         */
         put: operations["registerDeviceToken"];
         post?: never;
         delete?: never;
@@ -2599,6 +2603,8 @@ export interface paths {
         /**
          * Ops: edit a campaign that has not been sent
          * @description Editable only in `draft`, `cancelled` or `failed`. Editing a scheduled campaign would silently change what is about to go out — unschedule it first, which is a deliberate, audited act.
+         *
+         *     Once the campaign has delivered to anyone, the fields that reach a phone — `title`, `body`, `imageKey`, `ctaLabel`, audience and destination — are frozen and answer 409 `CAMPAIGN_ALREADY_DELIVERED`, whatever the status: changing them would leave half the audience on one message and half on another, or send a second, different message to people already reached. The editorial `name` stays editable, a patch that repeats the current values is not a change, and the unchanged campaign can still be retried. New copy is a new campaign.
          */
         patch: operations["cmsUpdateCampaign"];
         trace?: never;
@@ -11299,12 +11305,14 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
-            /** @description Not in an editable state (`CAMPAIGN_NOT_EDITABLE`) */
+            /** @description Not in an editable state (`CAMPAIGN_NOT_EDITABLE`), or already delivered to at least one recipient and the patch changes a field that reaches a phone (`CAMPAIGN_ALREADY_DELIVERED`). */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };
