@@ -2,18 +2,62 @@
   "baseThroughIdx": 43,
   "states": {
     "push": {
-      "tag": "0045_notification-push-delivery",
-      "when": 1789084800000,
-      "file": "push/0045_notification-push-delivery.sql",
-      "origin": "GoGo-BE feature/GOGO-193-onesignal-provider @ dd074b9",
-      "sameContentAs": "0044_notification-push-delivery.sql"
+      "description": "The push chain alone, before the two provider chains were combined.",
+      "migrations": [
+        {
+          "idx": 44,
+          "tag": "0045_notification-push-delivery",
+          "when": 1789084800000,
+          "file": "push/0045_notification-push-delivery.sql",
+          "sameContentAs": "0048_notification-push-delivery.sql"
+        }
+      ]
     },
     "link": {
-      "tag": "0044_share-links",
-      "when": 1788998400000,
-      "file": "link/0044_share-links.sql",
-      "origin": "GoGo-BE feature/GOGO-206-acquisition-link-provider @ b8ae7ec",
-      "sameContentAs": null
+      "description": "The link chain alone, before the combination. Pre-idempotency: bare CREATE TYPE.",
+      "migrations": [
+        {
+          "idx": 44,
+          "tag": "0044_share-links",
+          "when": 1788998400000,
+          "file": "link/0044_share-links.sql",
+          "sameContentAs": null
+        }
+      ]
+    },
+    "provider": {
+      "description": "Both provider migrations, at the 0044/0045 numbering they carried before the CMS chain took precedence. Same statements, same `when`, different file names \u2014 so the content is read from the combined tree rather than duplicated.",
+      "migrations": [
+        {
+          "idx": 44,
+          "tag": "0044_notification-push-delivery",
+          "when": 1789084800000,
+          "fromCombined": "0048_notification-push-delivery.sql"
+        },
+        {
+          "idx": 45,
+          "tag": "0045_share-links",
+          "when": 1789171200000,
+          "fromCombined": "0049_share-links.sql"
+        }
+      ]
+    },
+    "cms": {
+      "description": "A database that ran the CMS Place Editor chain (#432/#434) and not this one \u2014 the order of record. Those migrations are on develop, so the state reads them from the combined tree rather than duplicating an epic this branch does not own.",
+      "migrations": [
+        {
+          "idx": 46,
+          "tag": "0046_place-editor-contracts",
+          "when": 1788675980330,
+          "fromCombined": "0046_place-editor-contracts.sql"
+        },
+        {
+          "idx": 47,
+          "tag": "0047_cms-place-media",
+          "when": 1788675981330,
+          "fromCombined": "0047_cms-place-media.sql"
+        }
+      ]
     }
   }
 }
