@@ -3949,7 +3949,7 @@ export interface components {
          */
         CmsCostSourceKind: "AUTO" | "MANUAL" | "NONE";
         /**
-         * @description ADR-0014. Observed: whether the row's money is current. For AUTO, the epic §23 roll-up over covering sources — FRESH and STALE as they are, UNAVAILABLE reads ERROR (a collection was attempted and failed), a never-attempted source reads UNKNOWN (not a failure); the per-source detail stays in `freshness.sources`. With no covering source the cost rows decide (today FRESH, older STALE, none UNKNOWN). For MANUAL, the materialised rows alone (today FRESH, older STALE). ERROR is reserved for an attempt that failed.
+         * @description ADR-0014. Observed: whether the row's money is current. For AUTO, the epic §23 roll-up over covering sources — FRESH and STALE as they are, UNAVAILABLE reads ERROR (a collection was attempted and failed), a never-attempted source reads UNKNOWN (not a failure); the per-source detail stays in `freshness.sources`. With no covering source the cost rows decide (today FRESH, older STALE, none UNKNOWN). For MANUAL, the item schedule matched by source and charge day (complete or nothing due FRESH, missing or unexpected charges STALE; no item and no rows null). ERROR is reserved for an attempt that failed.
          * @enum {string}
          */
         CmsCostDataFreshness: "FRESH" | "STALE" | "ERROR" | "UNKNOWN";
@@ -3957,6 +3957,33 @@ export interface components {
             kind: components["schemas"]["CmsCostSourceKind"];
             /** @description Null when there is nothing to be current — kind NONE, or MANUAL with nothing entered yet. UNKNOWN is different — an automatic source exists and has never been observed. */
             freshness: components["schemas"]["CmsCostDataFreshness"] | null;
+        };
+        CmsManualBillingItem: {
+            /** Format: uuid */
+            id: string;
+            providerId: string;
+            serviceId: string;
+            name?: string;
+            amountMicros: number;
+            currency: string;
+            /** @enum {string} */
+            period: "ONE_TIME" | "MONTHLY" | "YEARLY";
+            /** Format: date */
+            effectiveFrom: string;
+            /** Format: date */
+            effectiveTo: string | null;
+            /** @enum {string} */
+            basis: "MANUAL";
+            /** @enum {string} */
+            costKind: "ONE_TIME" | "RECURRING";
+            /** @enum {string|null} */
+            billingCadence: "MONTHLY" | "ANNUAL" | null;
+            /** @description Full recurring charge in currency micros; null for one-time items. */
+            periodAmountMicros: number | null;
+            /** Format: date */
+            nextChargeDay: string | null;
+            /** @description Active annual amount divided by 12 and rounded to micros, or active monthly amount. Zero for one-time or inactive items. Never cash spend. */
+            normalizedMonthlyRunRateMicros: number;
         };
         CmsCostServiceRow: components["schemas"]["CmsCostMoney"] & {
             /** @example google.places */
@@ -3971,6 +3998,8 @@ export interface components {
             instrumented: boolean;
             /** @description ADR-0014 — what is measured, from the registry alone. */
             runtime: components["schemas"]["CmsServiceRuntime"];
+            /** @description Persisted manual billing facts; retained even when no charge is due in the selected window. */
+            billingItems: components["schemas"]["CmsManualBillingItem"][];
             /** @description ADR-0014 — how money gets in and whether it is current. Independent of `runtime`. */
             cost: components["schemas"]["CmsCostSource"];
             usage: components["schemas"]["CmsCostUsageLine"][];
@@ -4007,6 +4036,8 @@ export interface components {
             capabilities: string[];
             /** @description ADR-0014 — coverage over every service with a runtime surface, with counts for the drill-down; `services[].runtime` says which. */
             runtime: components["schemas"]["CmsProviderRuntime"];
+            /** @description Persisted manual billing facts; retained even when no charge is due in the selected window. */
+            billingItems: components["schemas"]["CmsManualBillingItem"][];
             /** @description ADR-0014 — how money gets in and whether it is current. Independent of `runtime` and of `status`. */
             cost: components["schemas"]["CmsCostSource"];
             billingTimezone: string | null;

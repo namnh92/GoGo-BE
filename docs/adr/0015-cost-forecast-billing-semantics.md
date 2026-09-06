@@ -137,3 +137,43 @@ runRate }`; `CmsCostBudgetStatus` gains `projectedFloorMicros` and
   columns; readers on the previous release ignore the columns, and the
   previous materialiser rebuilds daily shares on its first pass. The CMS
   must be rolled back with it (its zod contract requires `cards.forecast`).
+
+## Non-due manual costs: read-model correction
+
+A missing charge in the selected window does not mean the subscription is
+missing. Provider and service rows expose `billingItems` directly from the
+same environment's `manual_cost_items`, including amount, classification,
+cadence, next charge date and normalized monthly run-rate. Each item retains
+its own currency and identity; amounts are never reconstructed from a daily
+allocation or guessed from a provider name. Active annual run-rate is the
+stored annual amount divided by 12 (rounded to micros); one-time and inactive
+items contribute zero run-rate.
+
+A manual-only scope with persisted items and no charge due in the selected
+window returns `KNOWN`, `MANUAL`, and zero spend/manual cash. No item remains
+unknown; a missing due charge remains unknown/stale. Automatic scopes retain
+their existing unknown/measurement behavior. Persisted items can establish a
+MANUAL source when a registry declaration is absent; they never override an
+automatic declaration. Freshness matches source identity and billing day, so
+two items renewing together require two materialized charges. A known schedule
+with no charge due and no ledger rows is FRESH.
+
+Migration 0043 is unchanged: it classifies existing rows, without deleting or
+editing authoritative manual items. The worker's first daily collector task
+rebuilds manual charges even with automatic collectors disabled. The manual
+sweep removes obsolete allocations and orphan-derived rows only. The estimator
+rebuild deletes only its ESTIMATED source. No data migration or CMS re-entry is
+needed for intact manual items.
+
+Verification: `cost-manual-annual-regression.int.spec.ts` migrates a synthetic
+0042 snapshot containing three annual items and daily allocations through
+0043, verifies classification, rebuilds twice, and reads provider/service
+responses with zero September cash and retained annual run-rate. It also
+checks environment isolation. These fixtures are not a copy of DEV data.
+
+Rollout: deploy the BE read-model/contract change; the existing worker rebuild
+remains sufficient. Verify DEV's stored items and the returned `billingItems`
+before asserting live recovery. If items themselves are absent, investigate
+existing audit/backup evidence; do not invent amounts or billing anchors.
+Rollback the BE change to restore the previous response behavior; no database
+rollback or recurring-item edits are necessary.
