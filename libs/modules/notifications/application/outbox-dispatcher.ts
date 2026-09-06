@@ -169,7 +169,23 @@ export class OutboxDispatcher {
         // rather than a second push (30-day window).
         idempotencyKey: event.id,
       });
-      this.metrics?.increment('push_delivery_sent_total', { kind: mapping.kind });
+      // Review fix (#193): "sent" is a message the provider created. A 200
+      // with no message id means nobody in the request was subscribed — counted
+      // apart, so a fleet of never-logged-in users cannot look like delivery.
+      if (result.providerMessageIds.length > 0) {
+        this.metrics?.increment(
+          'push_delivery_sent_total',
+          { kind: mapping.kind },
+          result.providerMessageIds.length,
+        );
+      }
+      if (result.emptyResponses > 0) {
+        this.metrics?.increment(
+          'push_delivery_no_target_total',
+          { kind: mapping.kind },
+          result.emptyResponses,
+        );
+      }
       if (result.unknownUserIds.length > 0) {
         this.metrics?.increment(
           'push_delivery_unknown_user_total',

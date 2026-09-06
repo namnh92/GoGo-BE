@@ -237,8 +237,21 @@ export type UserNotification = {
 };
 
 export type PushSendResult = {
-  /** Provider message id, or null when the provider accepted nothing to deliver. */
+  /** First provider message id, or null when no request created a message. */
   providerMessageId: string | null;
+  /**
+   * Every message the provider created — one per request that had at least
+   * one subscribed target. A send that spans several requests can be partly
+   * accepted; callers count this, not `providerMessageId`, as "sent".
+   */
+  providerMessageIds: string[];
+  /**
+   * Requests the provider accepted (HTTP 200) with nothing to deliver — no
+   * subscription for any target in that request. Not a failure and not a send:
+   * OneSignal answers `id: ""` here, and a counter that called it a send would
+   * hide every missing subscription behind a green number.
+   */
+  emptyResponses: number;
   /** Ids the provider does not know — never logged in, or logged out since. */
   unknownUserIds: string[];
 };

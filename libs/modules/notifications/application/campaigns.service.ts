@@ -68,6 +68,7 @@ type CampaignRow = {
   sent_count: number;
   failed_count: number;
   last_error: string | null;
+  dispatch_key: string | null;
   test_send_requested_at: Date | string | null;
   test_send_completed_at: Date | string | null;
   created_by_admin_id: string;
@@ -227,7 +228,13 @@ export class CampaignsService {
     });
 
     const scheduledAt = sendAt ?? new Date();
-    const dispatchKey = randomUUID();
+    // Review fix (#193): a campaign that *failed* mid-send is resumed, not
+    // re-sent. Keeping its dispatch key keeps every recipient's dedupe key, so
+    // the worker skips the ones whose row says the push went through and
+    // retries the rest. Only a deliberate re-send — cancel, then schedule
+    // again, which nulls the key — mints a new one and reaches everyone anew.
+    const dispatchKey =
+      before.status === 'failed' && before.dispatch_key ? before.dispatch_key : randomUUID();
     await this.db
       .update(schema.notificationCampaigns)
       .set({

@@ -201,8 +201,13 @@ export class FakePush implements NotificationProviderPort {
       ...(notification.idempotencyKey ? { idempotencyKey: notification.idempotencyKey } : {}),
     });
     const unknown = ids.filter((id) => this.unknownUserIds.has(id));
+    // Like the provider: a request whose every target is unknown creates no
+    // message — an empty response, not a send.
+    const id = unknown.length === ids.length ? null : `fake-${this.sent.length}`;
     return {
-      providerMessageId: unknown.length === ids.length ? null : `fake-${this.sent.length}`,
+      providerMessageId: id,
+      providerMessageIds: id ? [id] : [],
+      emptyResponses: id ? 0 : 1,
       unknownUserIds: unknown,
     };
   }

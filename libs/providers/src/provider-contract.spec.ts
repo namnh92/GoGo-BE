@@ -158,8 +158,20 @@ describe('NotificationProviderPort contract (#193)', () => {
     });
     expect(result.unknownUserIds).toEqual(['ghost']);
     expect(result.providerMessageId).not.toBeNull();
+    expect(result.providerMessageIds).toEqual([result.providerMessageId]);
+    expect(result.emptyResponses).toBe(0);
     expect(push.sent).toHaveLength(1);
     expect(push.sent[0]!.userIds).toEqual(['u1', 'ghost']);
+    // Nobody subscribed → the provider creates no message; the fake says so too.
+    const nobody = await push.sendToUsers(['ghost'], {
+      headings: { en: 'GoGo' },
+      contents: { en: 'plan_ready' },
+    });
+    expect(nobody).toMatchObject({
+      providerMessageId: null,
+      providerMessageIds: [],
+      emptyResponses: 1,
+    });
     push.unavailable = true;
     await expect(
       push.sendToUser('u1', { headings: { en: 'x' }, contents: { en: 'y' } }),

@@ -156,6 +156,10 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // outbox retry (`outbox_event_retry_total`) and on the `onesignal.push`
   // breaker.
   push_delivery_sent_total: ['kind'],
+  // A request the provider accepted with nobody subscribed in it (HTTP 200,
+  // no message id). Not a send and not a failure; counted apart so missing
+  // subscriptions are visible rather than folded into `sent`.
+  push_delivery_no_target_total: ['kind'],
   push_delivery_unknown_user_total: ['kind'],
   push_delivery_failed_total: ['kind'],
   // #193 — the OneSignal adapter itself. `status` is an HTTP code or the

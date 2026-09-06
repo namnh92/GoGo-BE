@@ -3175,7 +3175,13 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     }
     async sendToUsers(userIds: readonly string[], payload: { headings: { en: string } }) {
       for (const userId of userIds) this.sent.push({ userId, title: payload.headings.en });
-      return { providerMessageId: `fake-${this.sent.length}`, unknownUserIds: [] };
+      const id = `fake-${this.sent.length}`;
+      return {
+        providerMessageId: id,
+        providerMessageIds: [id],
+        emptyResponses: 0,
+        unknownUserIds: [],
+      };
     }
   }
 
@@ -3337,6 +3343,79 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     expect(rows.filter((n) => (n.payload as { campaignId?: string }).campaignId === id)).toEqual(
       [],
     );
+  });
+
+  it('a send that fails half-way resumes on reschedule: nobody pushed twice, nobody left out (#193 review)', async () => {
+    const id = await scheduledCampaign();
+
+    // First run: the provider dies on the second recipient.
+    const firstRun = new CountingPush();
+    let calls = 0;
+    const flaky = {
+      sent: firstRun.sent,
+      async sendToUser(userId: string, payload: { headings: { en: string } }) {
+        calls += 1;
+        if (calls === 2) throw new Error('provider unavailable');
+        return firstRun.sendToUsers([userId], payload);
+      },
+      async sendToUsers(ids: readonly string[], payload: { headings: { en: string } }) {
+        return firstRun.sendToUsers(ids, payload);
+      },
+    };
+    await (await dispatcher(flaky as never)).dispatchDue();
+    const [failed] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(failed!.status).toBe('failed');
+    expect(firstRun.sent).toHaveLength(1);
+    const delivered = firstRun.sent[0]!.userId;
+    const keyBefore = failed!.dispatchKey;
+    expect(keyBefore).not.toBeNull();
+
+    // The operator reschedules through the API — the advertised recovery.
+    const rescheduled = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/campaigns/${id}/schedule`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(rescheduled.statusCode).toBe(201);
+    const [again] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    // A resumed send keeps its dispatch identity; only cancel-then-schedule mints a new one.
+    expect(again!.dispatchKey).toBe(keyBefore);
+
+    const secondRun = new CountingPush();
+    await (await dispatcher(secondRun)).dispatchDue();
+    const [done] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(done!.status).toBe('sent');
+
+    // Nobody twice — in particular not the recipient the first run reached.
+    const everyone = [...firstRun.sent, ...secondRun.sent].map((s) => s.userId);
+    expect(new Set(everyone).size).toBe(everyone.length);
+    expect(secondRun.sent.map((s) => s.userId)).not.toContain(delivered);
+
+    // Nobody left out: one inbox row per resolved recipient, every row marked delivered.
+    const { rows } = await db.execute(sql`
+      select user_id, push_sent_at, push_message_id
+      from notifications
+      where kind = 'campaign' and payload->>'campaignId' = ${id}
+    `);
+    expect(rows).toHaveLength(done!.recipientCount!);
+    expect(everyone).toHaveLength(rows.length);
+    for (const row of rows as { push_sent_at: Date | null; push_message_id: string | null }[]) {
+      expect(row.push_sent_at).not.toBeNull();
+      expect(row.push_message_id).not.toBeNull();
+    }
+    expect(done!.sentCount).toBe(rows.length);
+    expect(done!.failedCount).toBe(0);
   });
 
   it('a provider outage fails the campaign visibly instead of leaving it sending', async () => {

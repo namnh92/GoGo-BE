@@ -128,6 +128,15 @@ export const notifications = pgTable(
      */
     dedupeKey: text('dedupe_key'),
     readAt: timestamp('read_at', { withTimezone: true }),
+    /**
+     * #193 — the delivery fact, separate from the inbox fact. Set when the
+     * provider created a message for this recipient; null means a push is
+     * still owed (never attempted, or the attempt failed before the provider
+     * accepted it). The campaign dispatcher retries rows without it and skips
+     * rows with it, which is what makes a reschedule after an outage safe.
+     */
+    pushSentAt: timestamp('push_sent_at', { withTimezone: true }),
+    pushMessageId: text('push_message_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

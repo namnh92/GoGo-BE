@@ -90,6 +90,23 @@ key>`, `include_aliases.external_id`, `target_channel: push`, chunked at 2,000
   by GoGo-Infra into the runtime env; `ONESIGNAL_APP_ID` is public. Neither is
   logged; the adapter never interpolates the key into an error or a metric.
 
+### Review amendments (2026-09-06)
+
+- **Delivery progress is its own fact.** `notifications.push_sent_at` /
+  `push_message_id` (migration 0045) record that the provider created a
+  message for that recipient. The campaign dispatcher inserts the inbox row,
+  then skips recipients whose row is marked delivered and sends to the rest.
+  Rescheduling a campaign that _failed_ mid-send keeps its `dispatch_key`, so
+  the retry reaches only the recipients still owed a push; cancel-then-schedule
+  still mints a new key and is the deliberate re-send. Before this, a reschedule
+  after an outage pushed everyone who had already been reached a second time and
+  never retried the recipient the outage hit.
+- **"Sent" means a message was created.** `PushSendResult` now carries every
+  provider message id and the number of requests the provider accepted with
+  nobody subscribed (`id: ""`). The outbox counts `push_delivery_sent_total` per
+  created message and `push_delivery_no_target_total` per empty response; a
+  chunked send can be partly accepted and is counted as such.
+
 ## Consequences
 
 - Real delivery is one deploy away in every environment that holds the two

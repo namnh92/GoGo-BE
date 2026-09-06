@@ -87,7 +87,14 @@ export class OneSignalPushAdapter implements NotificationProviderPort {
     notification: UserNotification,
   ): Promise<PushSendResult> {
     const unique = [...new Set(userIds)].filter((id) => id.length > 0);
-    if (unique.length === 0) return { providerMessageId: null, unknownUserIds: [] };
+    if (unique.length === 0) {
+      return {
+        providerMessageId: null,
+        providerMessageIds: [],
+        emptyResponses: 0,
+        unknownUserIds: [],
+      };
+    }
 
     const results: PushSendResult[] = [];
     for (let offset = 0; offset < unique.length; offset += ONESIGNAL_MAX_ALIASES_PER_REQUEST) {
@@ -104,8 +111,11 @@ export class OneSignalPushAdapter implements NotificationProviderPort {
               );
       results.push(await this.create(chunk, notification, key));
     }
+    const providerMessageIds = results.flatMap((r) => r.providerMessageIds);
     return {
-      providerMessageId: results.map((r) => r.providerMessageId).find((id) => id !== null) ?? null,
+      providerMessageId: providerMessageIds[0] ?? null,
+      providerMessageIds,
+      emptyResponses: results.reduce((n, r) => n + r.emptyResponses, 0),
       unknownUserIds: results.flatMap((r) => r.unknownUserIds),
     };
   }
@@ -169,12 +179,20 @@ export class OneSignalPushAdapter implements NotificationProviderPort {
       }
 
       const json = (await response.json()) as OneSignalCreateResponse;
+      // `id: ""` with `errors: ["All included players are not subscribed"]` is
+      // the documented "accepted, nobody to deliver to" answer — HTTP 200, no
+      // message. It is reported as an empty response, never as a send.
       const id = typeof json.id === 'string' && json.id.length > 0 ? json.id : null;
       const unknownUserIds =
         json.errors && !Array.isArray(json.errors)
           ? (json.errors.invalid_aliases?.external_id ?? [])
           : [];
-      return { providerMessageId: id, unknownUserIds };
+      return {
+        providerMessageId: id,
+        providerMessageIds: id ? [id] : [],
+        emptyResponses: id ? 0 : 1,
+        unknownUserIds,
+      };
     });
   }
 }

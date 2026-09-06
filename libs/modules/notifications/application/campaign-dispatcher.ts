@@ -108,8 +108,10 @@ export class CampaignDispatcher {
           const delivered = await this.deliver(campaign, recipient.id, {
             dedupeKey: campaignDedupeKey(campaign.dispatch_key, recipient.id),
           });
-          if (delivered === 'sent') sent += 1;
-          else if (delivered === 'failed') failed += 1;
+          // `already_sent` is a push an earlier run of this same dispatch got
+          // through before an outage; it counts toward the campaign's total.
+          if (delivered === 'sent' || delivered === 'already_sent') sent += 1;
+          else if (delivered === 'no_target') failed += 1;
         }
         await this.db.execute(sql`
           update notification_campaigns
@@ -144,16 +146,20 @@ export class CampaignDispatcher {
   /**
    * One recipient.
    *
-   * The notification row is inserted first with `on conflict do nothing`: if it
-   * is already there, this recipient was handled by an earlier run and the push
-   * is skipped. That ordering is what makes a retry safe — the row is the
-   * record of "already sent", and it exists before the provider is called.
+   * Two facts, two columns. The notification row (inbox) is inserted first with
+   * `on conflict do nothing`; `push_sent_at` on that row is the delivery fact
+   * and is written only after the provider created a message. So a re-run of
+   * the same dispatch — after a crash, or after an outage failed the campaign
+   * and an operator rescheduled it — skips recipients whose row says the push
+   * went through and retries the ones whose row says it did not. Before this
+   * split the row alone meant "sent", and an outage half-way left the hit
+   * recipient owed forever while a reschedule pushed everyone else twice.
    */
   private async deliver(
     campaign: DueCampaign,
     userId: string,
     options: { dedupeKey: string },
-  ): Promise<'sent' | 'skipped' | 'failed'> {
+  ): Promise<'sent' | 'already_sent' | 'no_target'> {
     const payload = {
       campaignId: campaign.id,
       title: campaign.title,
@@ -162,19 +168,24 @@ export class CampaignDispatcher {
       ...(campaign.destination_value ? { destination: campaign.destination_value } : {}),
     };
 
-    const { rows: inserted } = await this.db.execute(sql`
+    await this.db.execute(sql`
       insert into notifications (user_id, kind, payload, dedupe_key)
       values (${userId}::uuid, 'campaign', ${JSON.stringify(payload)}::jsonb, ${options.dedupeKey})
       on conflict (dedupe_key) where dedupe_key is not null do nothing
-      returning id
     `);
-    if (inserted.length === 0) return 'skipped';
+    const { rows } = await this.db.execute(sql`
+      select id, push_sent_at from notifications where dedupe_key = ${options.dedupeKey}
+    `);
+    const row = rows[0] as { id: string; push_sent_at: Date | string | null } | undefined;
+    if (!row) throw new Error('notification row missing after insert');
+    if (row.push_sent_at !== null) return 'already_sent';
 
     // #193: addressed by user id; the provider owns the device list. A thrown
     // provider error propagates to `send`, which marks the campaign `failed`
     // with the reason kept — a refused credential or an outage is something an
     // operator re-schedules from, not something to burn through 500 recipients
-    // discovering.
+    // discovering. The row above stays without push_sent_at, which is exactly
+    // what the reschedule retries.
     const result = await this.push.sendToUser(userId, {
       headings: { en: campaign.title },
       contents: { en: campaign.body },
@@ -184,13 +195,20 @@ export class CampaignDispatcher {
         ...(campaign.destination_value ? { destination: campaign.destination_value } : {}),
       },
       // The dedupe key already identifies this recipient of this dispatch; the
-      // provider gets the same identity, so a crash-and-rerun cannot double-send.
+      // provider gets the same identity, so even a crash between the send and
+      // the update below is a replay at the provider, not a second push.
       idempotencyKey: idempotencyKeyFrom(options.dedupeKey),
     });
-    // `sent` is what the provider accepted for delivery. A null id means it had
-    // no subscription for this person — recorded as failed, as an account with
-    // no registered device was before.
-    return result.providerMessageId === null ? 'failed' : 'sent';
+    // A message id is a delivery the provider accepted. None means no
+    // subscription for this person right now — recorded in failed_count, as an
+    // account with no registered device was before, and left retryable.
+    if (result.providerMessageId === null) return 'no_target';
+    await this.db.execute(sql`
+      update notifications
+      set push_sent_at = now(), push_message_id = ${result.providerMessageId}
+      where id = ${row.id}::uuid
+    `);
+    return 'sent';
   }
 
   /**

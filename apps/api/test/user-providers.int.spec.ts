@@ -657,6 +657,33 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
     expect(notifications).toHaveLength(1);
   });
 
+  it('a provider answer with nobody subscribed is counted as no target, never as sent (#193 review)', async () => {
+    const { userId, roomId } = await roomWithHost('outbox-notarget@gogo.id.vn');
+    await queueEvent(roomId);
+    const push = new FakePush();
+    push.unknownUserIds.add(userId);
+    const counted: [string, Record<string, string> | undefined, number | undefined][] = [];
+    const metrics = {
+      increment: (name: string, labels?: Record<string, string>, by?: number) => {
+        counted.push([name, labels, by]);
+      },
+    };
+    await new OutboxDispatcher(db as never, push, metrics).dispatchBatch();
+
+    expect(push.sent).toHaveLength(1);
+    const names = counted.map(([name]) => name);
+    expect(names).toContain('push_delivery_no_target_total');
+    expect(names).toContain('push_delivery_unknown_user_total');
+    expect(names).not.toContain('push_delivery_sent_total');
+    expect(names).not.toContain('push_delivery_failed_total');
+    // The inbox row still exists: the person sees it when they next sign in.
+    const rows = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, userId));
+    expect(rows).toHaveLength(1);
+  });
+
   it('a transient provider outage backs the event off and retries it (#193)', async () => {
     const { userId, roomId } = await roomWithHost('outbox-outage@gogo.id.vn');
     const event = await queueEvent(roomId);

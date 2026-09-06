@@ -44,7 +44,12 @@ describe('OneSignalPushAdapter', () => {
 
     const result = await adapter.sendToUsers(['u1', 'u2', 'u1'], note);
 
-    expect(result).toEqual({ providerMessageId: 'msg-1', unknownUserIds: [] });
+    expect(result).toEqual({
+      providerMessageId: 'msg-1',
+      providerMessageIds: ['msg-1'],
+      emptyResponses: 0,
+      unknownUserIds: [],
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://api.onesignal.com/notifications?c=push');
@@ -72,17 +77,21 @@ describe('OneSignalPushAdapter', () => {
     const adapter = new OneSignalPushAdapter(config, undefined, fetchImpl as never);
     await expect(adapter.sendToUsers(['u1', 'u2'], note)).resolves.toEqual({
       providerMessageId: 'msg-2',
+      providerMessageIds: ['msg-2'],
+      emptyResponses: 0,
       unknownUserIds: ['u2'],
     });
   });
 
-  it('a send nobody was subscribed for is accepted with no message id', async () => {
+  it('a 200 with no message id is an empty response, not a send (review finding 4)', async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(200, { id: '', errors: ['All included players are not subscribed'] }),
     );
     const adapter = new OneSignalPushAdapter(config, undefined, fetchImpl as never);
     await expect(adapter.sendToUser('u1', note)).resolves.toEqual({
       providerMessageId: null,
+      providerMessageIds: [],
+      emptyResponses: 1,
       unknownUserIds: [],
     });
   });
@@ -92,9 +101,32 @@ describe('OneSignalPushAdapter', () => {
     const adapter = new OneSignalPushAdapter(config, undefined, fetchImpl as never);
     await expect(adapter.sendToUsers([], note)).resolves.toEqual({
       providerMessageId: null,
+      providerMessageIds: [],
+      emptyResponses: 0,
       unknownUserIds: [],
     });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('a partly accepted chunked send reports each created message and each empty chunk', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { id: 'msg-a' }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, { id: '', errors: ['All included players are not subscribed'] }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { id: 'msg-c' }));
+    const adapter = new OneSignalPushAdapter(config, undefined, fetchImpl as never);
+    const ids = Array.from(
+      { length: ONESIGNAL_MAX_ALIASES_PER_REQUEST * 2 + 1 },
+      (_, i) => `u${i}`,
+    );
+    await expect(adapter.sendToUsers(ids, note)).resolves.toEqual({
+      providerMessageId: 'msg-a',
+      providerMessageIds: ['msg-a', 'msg-c'],
+      emptyResponses: 1,
+      unknownUserIds: [],
+    });
   });
 
   it('chunks above the provider limit with a distinct idempotency key per chunk', async () => {
