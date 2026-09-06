@@ -70,3 +70,17 @@ export type CloudflareAccessConfig = {
   /** The Access application's audience tag — its id, not its hostname. */
   CF_ACCESS_AUD: string;
 };
+
+/**
+ * NTF-BE-008 (#199) — what signs the OneSignal identity JWT.
+ *
+ * The key is the ES256 private key OneSignal issues for Identity Verification;
+ * empty means this environment cannot issue identities and the endpoint says
+ * so with 503. Identical in every environment: the value differs, the code and
+ * the check do not.
+ */
+export type PushIdentityConfig = {
+  ONESIGNAL_APP_ID: string;
+  ONESIGNAL_IDENTITY_VERIFICATION_KEY: string;
+  ONESIGNAL_IDENTITY_TOKEN_TTL_SECONDS: number;
+};

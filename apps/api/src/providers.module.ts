@@ -298,6 +298,16 @@ export class ProvidersModule implements OnModuleInit, OnApplicationShutdown {
     };
     if (push.ready) logger.info(pushLine, 'push provider ready');
     else logger.error(pushLine, 'push provider NOT ready — every push send will be refused');
+    // #199 — whether this environment can bind a device to a user at all. The
+    // key was validated by `loadEnv`; here only its presence is reported.
+    if (this.config.ONESIGNAL_IDENTITY_VERIFICATION_KEY) {
+      logger.info({ port: 'PUSH_IDENTITY', ready: true }, 'push identity signing configured');
+    } else {
+      logger.warn(
+        { port: 'PUSH_IDENTITY', ready: false, reason: 'MISSING_SIGNING_KEY' },
+        'push identity signing NOT configured — GET /v1/notifications/identity answers 503',
+      );
+    }
     // #279 — the ops signal. Always emitted, ready or not: "which provider is
     // this process on" is the first question every one of these incidents has
     // started with, and it was never written down anywhere. Carries the mode

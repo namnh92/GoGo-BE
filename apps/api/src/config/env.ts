@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ONESIGNAL_APP_ID_PATTERN } from '@gogo/providers';
+import { parseIdentitySigningKey } from '@gogo/modules';
 
 /**
  * FND-006: config validation — the process must fail fast on invalid config.
@@ -224,6 +225,19 @@ const envSchema = z
      * substitute for the identity signing key (#199), which is a different key.
      */
     ONESIGNAL_REST_API_KEY: z.string().default(''),
+    /**
+     * NTF-BE-008 (#199) — the ES256 private key OneSignal issues for Identity
+     * Verification (dashboard: Settings → Keys & IDs → Identity Verification).
+     * PEM, either with `\n`-escaped newlines or base64-encoded, so it survives
+     * a one-line env file. SSM `onesignal/identity-verification-key`.
+     *
+     * Empty means the identity endpoint answers 503 in this environment —
+     * unavailable, never permissive. Set but not an EC P-256 key refuses boot:
+     * a wrong key signs tokens the provider rejects on every phone.
+     */
+    ONESIGNAL_IDENTITY_VERIFICATION_KEY: z.string().default(''),
+    /** Spec §14: one hour at most; the client refreshes. */
+    ONESIGNAL_IDENTITY_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(3_600),
     R2_ACCOUNT_ID: z.string().default(''),
     R2_ACCESS_KEY_ID: z.string().default(''),
     R2_SECRET_ACCESS_KEY: z.string().default(''),
@@ -440,6 +454,17 @@ const envSchema = z
         code: z.ZodIssueCode.custom,
         path: ['ONESIGNAL_APP_ID'],
         message: 'ONESIGNAL_APP_ID must be the OneSignal app UUID',
+      });
+    }
+
+    // #199 — fail at boot, not on the first phone that asks for an identity.
+    try {
+      parseIdentitySigningKey(env.ONESIGNAL_IDENTITY_VERIFICATION_KEY);
+    } catch (err) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ONESIGNAL_IDENTITY_VERIFICATION_KEY'],
+        message: err instanceof Error ? err.message : 'invalid identity signing key',
       });
     }
 
