@@ -1,5 +1,10 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
+import {
+  ACQUISITION_LINK_PROVIDER,
+  NoAcquisitionLinkProvider,
+  type AcquisitionLinkPort,
+} from '@gogo/providers';
 import type { Actor } from '../../identity/domain/actor';
 import { TokenService } from '../../identity/application/token.service';
 import { RoomsService } from '../../rooms/application/rooms.service';
@@ -16,6 +21,9 @@ import {
   type ShareLinkType,
 } from '../domain/share-link';
 import { ShareLinksRepository, type ShareLinkRow } from '../infrastructure/share-links.repository';
+
+/** String building today; the bound is for the day an adapter makes a call. */
+const ATTRIBUTION_TIMEOUT_MS = 2_000;
 
 export type CreateShareLinkInput = {
   type: ShareLinkType;
@@ -60,6 +68,9 @@ export class ShareLinksService {
     private readonly tokens: TokenService,
     @Inject(APP_CONFIG) private readonly config: ShareLinksConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+    @Optional()
+    @Inject(ACQUISITION_LINK_PROVIDER)
+    private readonly acquisition: AcquisitionLinkPort = new NoAcquisitionLinkProvider(),
   ) {}
 
   async create(actor: Actor, input: CreateShareLinkInput): Promise<ShareLinkCreated> {
@@ -113,13 +124,19 @@ export class ShareLinksService {
         throw AppError.badRequest('SHARE_LINK_TYPE_UNSUPPORTED', 'Unsupported link type');
     }
 
+    const url = canonicalShareUrl(this.config.SHARE_LINK_BASE_URL, slug);
+    // Review finding 1: the vendor URL embeds the canonical link, which embeds
+    // the slug — for a ROOM_INVITE the join credential the row keeps hashed.
+    // Only *which vendor* is recorded; the URL is rebuilt on every resolve from
+    // the slug the caller presents.
+    const provider = await this.attributionProvider(url, input);
     const row = await this.repo.insert({
       slugHash: this.tokens.hashOpaqueToken(slug),
       type: input.type,
       targetId: input.entityId,
       ...(inviteId ? { inviteId } : {}),
       createdByUserId: actor.id,
-      provider: 'NONE',
+      provider,
       ...(input.source ? { source: input.source } : {}),
       ...(input.medium ? { medium: input.medium } : {}),
       ...(input.campaign ? { campaign: input.campaign } : {}),
@@ -128,10 +145,77 @@ export class ShareLinksService {
     this.metrics.increment('share_link_created_total', { type: input.type });
     return {
       id: row.id,
-      url: canonicalShareUrl(this.config.SHARE_LINK_BASE_URL, slug),
+      url,
       type: input.type,
       expiresAt: expiresAt ? expiresAt.toISOString() : null,
     };
+  }
+
+  /**
+   * LNK-BE-003 (#206): attribution never blocks a share link (FR-LINK-006). The
+   * vendor receives the canonical URL and bounded campaign words — no token,
+   * no id, no personal data — and a vendor error or timeout leaves the link
+   * minted with `provider: NONE`. Nothing the vendor returns is stored.
+   */
+  private async attributionProvider(
+    canonicalUrl: string,
+    input: Pick<CreateShareLinkInput, 'campaign' | 'source' | 'medium'>,
+  ): Promise<ShareLinkProvider> {
+    try {
+      const trackingUrl = await this.composeTrackingUrl(canonicalUrl, input);
+      if (!trackingUrl) {
+        this.metrics.increment('share_link_attribution_total', { result: 'none' });
+        return 'NONE';
+      }
+      this.metrics.increment('share_link_attribution_total', { result: 'attached' });
+      return 'TENJIN';
+    } catch {
+      this.metrics.increment('share_link_attribution_total', { result: 'fallback' });
+      return 'NONE';
+    }
+  }
+
+  /**
+   * The vendor click URL for one resolve, built from the slug the caller just
+   * presented. Bounded so a hung vendor cannot hold the request (string
+   * building today; the bound is for the day an adapter makes a call).
+   */
+  private composeTrackingUrl(
+    canonicalUrl: string,
+    meta: {
+      campaign?: string | null | undefined;
+      source?: string | null | undefined;
+      medium?: string | null | undefined;
+    },
+  ): Promise<string | null> {
+    return Promise.race([
+      this.acquisition.createTrackingUrl({
+        canonicalUrl,
+        ...(meta.campaign ? { campaign: meta.campaign } : {}),
+        ...(meta.source ? { source: meta.source } : {}),
+        ...(meta.medium ? { medium: meta.medium } : {}),
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('attribution timed out')), ATTRIBUTION_TIMEOUT_MS),
+      ),
+    ]);
+  }
+
+  /**
+   * Resolve-time attribution. Only a link minted with a vendor gets one, and
+   * only while this environment can still compose it; any failure is the
+   * canonical link alone (FR-LINK-006), never an error.
+   */
+  private async trackingUrlFor(row: ShareLinkRow, slug: string): Promise<string | null> {
+    if (row.provider === 'NONE' || !this.config.SHARE_LINK_BASE_URL) return null;
+    try {
+      return await this.composeTrackingUrl(
+        canonicalShareUrl(this.config.SHARE_LINK_BASE_URL, slug),
+        row,
+      );
+    } catch {
+      return null;
+    }
   }
 
   /** Public. 404 for a slug nobody minted, 410 for one that no longer opens. */
@@ -146,14 +230,15 @@ export class ShareLinksService {
       throw AppError.gone('SHARE_LINK_GONE', 'Link expired or revoked');
     }
     this.metrics.increment('share_link_resolved_total', { type: row.type, result: 'ok' });
+    // Composed here from the presented slug — never read from the row, which
+    // deliberately holds no URL that would embed it (review finding 1).
+    const trackingUrl = await this.trackingUrlFor(row, slug);
     return {
       type: row.type,
       target: shareLinkTarget(row.type, row.targetId, slug),
       expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
-      provider: row.provider,
-      // Composed per resolve by LNK-BE-003; never read from the row, which
-      // deliberately does not hold a URL that would embed the slug.
-      trackingUrl: null,
+      provider: trackingUrl ? row.provider : 'NONE',
+      trackingUrl,
       source: row.source,
       campaign: row.campaign,
     };

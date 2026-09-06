@@ -16,12 +16,18 @@ export {
   type BreakerSnapshot,
 } from './resilience';
 export {
+  FakeAcquisitionLinkProvider,
   FakeAreaAutocomplete,
   FakePlaceProvider,
   FakePush,
   FakeSheets,
   FakeStorage,
 } from './fake.adapters';
+export {
+  NoAcquisitionLinkProvider,
+  TENJIN_DEEPLINK_PARAM,
+  TenjinAcquisitionLinkProvider,
+} from './tenjin-acquisition-link.adapter';
 export {
   CLIENT_REJECT_STATUSES,
   googleFailure,

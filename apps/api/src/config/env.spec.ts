@@ -92,4 +92,22 @@ describe('loadEnv (FND-006 fail-fast config)', () => {
       expect(() => loadEnv({ ...base, SHARE_LINK_BASE_URL: bad })).toThrow(/SHARE_LINK_BASE_URL/);
     }
   });
+
+  it('validates the Tenjin tracking template like the adapter does (#206)', () => {
+    const ok = loadEnv({
+      ...base,
+      TENJIN_TRACKING_URL_TEMPLATE: 'https://track.tenjin.com/v0/click/AbCdEf12',
+    });
+    expect(ok.TENJIN_TRACKING_URL_TEMPLATE).toBe('https://track.tenjin.com/v0/click/AbCdEf12');
+    expect(loadEnv(base).TENJIN_TRACKING_URL_TEMPLATE).toBe('');
+    for (const bad of [
+      'track.tenjin.com/v0/click/x',
+      'http://track.tenjin.com/v0/click/x',
+      'https://track.tenjin.com/v0/click/x?deeplink_url=https%3A%2F%2Fx',
+    ]) {
+      expect(() => loadEnv({ ...base, TENJIN_TRACKING_URL_TEMPLATE: bad })).toThrow(
+        /TENJIN_TRACKING_URL_TEMPLATE/,
+      );
+    }
+  });
 });

@@ -538,3 +538,27 @@ export type QueueStats = {
   /** Consumers currently connected. Zero on a queue with work is the alarm. */
   workers: number | null;
 };
+
+/**
+ * LNK-BE-003 (#206) — attribution for a canonical share link.
+ *
+ * The vendor's click URL is *routing*, never the shared URL: the canonical
+ * link is what people copy, and it stays valid when the vendor is down, swapped
+ * or gone (FR-LINK-003/006). Adapters build a URL and nothing more — no
+ * authenticated call, no token, no personal data in the payload; the input is
+ * the canonical URL plus bounded campaign vocabulary.
+ */
+export type AcquisitionLinkInput = {
+  /** `https://<share-host>/l/{slug}` — the deferred deep-link target. */
+  canonicalUrl: string;
+  campaign?: string | undefined;
+  source?: string | undefined;
+  medium?: string | undefined;
+};
+
+export interface AcquisitionLinkPort {
+  /** The vendor click URL, or null when this environment attaches no attribution. */
+  createTrackingUrl(input: AcquisitionLinkInput): Promise<string | null>;
+}
+
+export const ACQUISITION_LINK_PROVIDER = Symbol('ACQUISITION_LINK_PROVIDER');
