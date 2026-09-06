@@ -44,4 +44,17 @@ describe('loadEnv (FND-006 fail-fast config)', () => {
     const env = loadEnv({ ...base, CORS_ORIGINS: 'https://a.example, https://b.example' });
     expect(env.CORS_ORIGINS).toEqual(['https://a.example', 'https://b.example']);
   });
+
+  it('accepts push provider config and rejects an app id that is not a UUID (#193)', () => {
+    const env = loadEnv({
+      ...base,
+      ONESIGNAL_APP_ID: '0f2c7a10-4e2b-4a7c-9b1d-3e5f6a7b8c9d',
+      ONESIGNAL_REST_API_KEY: 'k',
+      PUSH_PROVIDER_MODE: 'onesignal',
+    });
+    expect(env.PUSH_PROVIDER_MODE).toBe('onesignal');
+    expect(loadEnv(base).PUSH_PROVIDER_MODE).toBeUndefined();
+    expect(() => loadEnv({ ...base, ONESIGNAL_APP_ID: 'gogo-dev' })).toThrow(/ONESIGNAL_APP_ID/);
+    expect(() => loadEnv({ ...base, PUSH_PROVIDER_MODE: 'apns' })).toThrow(/PUSH_PROVIDER_MODE/);
+  });
 });

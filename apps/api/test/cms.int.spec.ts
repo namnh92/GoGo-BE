@@ -3167,10 +3167,15 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
   const suffix = () => Math.random().toString(36).slice(2, 8);
 
   /** Counts every push, so a double send is visible rather than inferred. */
+  // #193: user-targeted, like the real provider — one entry per recipient.
   class CountingPush {
-    readonly sent: { token: string; title: string }[] = [];
-    async send(token: string, payload: { title: string; body: string }) {
-      this.sent.push({ token, title: payload.title });
+    readonly sent: { userId: string; title: string }[] = [];
+    async sendToUser(userId: string, payload: { headings: { en: string } }) {
+      return this.sendToUsers([userId], payload);
+    }
+    async sendToUsers(userIds: readonly string[], payload: { headings: { en: string } }) {
+      for (const userId of userIds) this.sent.push({ userId, title: payload.headings.en });
+      return { providerMessageId: `fake-${this.sent.length}`, unknownUserIds: [] };
     }
   }
 
@@ -3232,7 +3237,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     return id;
   }
 
-  it('claims a due campaign, sends once per device, and records what it did', async () => {
+  it('claims a due campaign, sends once per recipient, and records what it did', async () => {
     const id = await scheduledCampaign();
     const push = new CountingPush();
     const handled = await (await dispatcher(push)).dispatchDue();
@@ -3248,7 +3253,9 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     expect(row!.recipientCount).toBeGreaterThanOrEqual(1);
     expect(row!.sentCount).toBeGreaterThanOrEqual(1);
 
-    // One notification per recipient, one push per device of that recipient.
+    // One notification per recipient and one push per recipient — addressed by
+    // user id, however many devices they hold (#193, spec §26). The two device
+    // tokens registered above are not consulted on this path.
     const rows = await db
       .select()
       .from(schema.notifications)
@@ -3257,9 +3264,9 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     expect(forThis).toHaveLength(1);
     expect(forThis[0]!.kind).toBe('campaign');
     expect(forThis[0]!.dedupeKey).toMatch(/^campaign:/);
-    expect(push.sent.filter((s) => s.title === 'Ưu đãi cuối tuần').length).toBeGreaterThanOrEqual(
-      2,
-    );
+    expect(
+      push.sent.filter((s) => s.userId === userWithTwoDevices && s.title === 'Ưu đãi cuối tuần'),
+    ).toHaveLength(1);
   });
 
   it('a second run sends nothing: the dedupe key is the record of "already sent"', async () => {
@@ -3336,13 +3343,16 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     const id = await scheduledCampaign();
     const exploding = {
       sent: [],
-      async send() {
+      async sendToUser() {
+        throw new Error('provider unavailable');
+      },
+      async sendToUsers() {
         throw new Error('provider unavailable');
       },
     };
     const { CampaignDispatcher } = await import('@gogo/modules');
-    // A per-device push failure is caught by design, so the outage simulated
-    // here is the one that is not: resolving the audience.
+    // The outage simulated here is in resolving the audience; a provider error
+    // takes the same path (see the next test).
     const literalText = (query: unknown): string =>
       ((query as { queryChunks?: { value?: string[] }[] }).queryChunks ?? [])
         .map((chunk) => (Array.isArray(chunk?.value) ? chunk.value.join('') : ''))

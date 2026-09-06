@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   fakedProviders,
+  pushProviderStatus,
+  resolvePushProviderMode,
   placeProviderStatus,
   resolvePlaceProviderMode,
   warnFakedProviders,
@@ -163,5 +165,65 @@ describe('#279 — place provider mode is decided before anyone looks at a secre
     });
 
     expect(JSON.stringify(status)).not.toContain('AIza');
+  });
+});
+
+describe('pushProviderStatus (#193)', () => {
+  const creds = {
+    ONESIGNAL_APP_ID: '0f2c7a10-4e2b-4a7c-9b1d-3e5f6a7b8c9d',
+    ONESIGNAL_REST_API_KEY: 'os_v2_app_key',
+  };
+
+  it('a deployed build is on OneSignal unless told otherwise; a laptop is on the fake', () => {
+    expect(resolvePushProviderMode({ NODE_ENV: 'production' })).toBe('onesignal');
+    expect(resolvePushProviderMode({ NODE_ENV: 'development' })).toBe('fake');
+    expect(resolvePushProviderMode({ NODE_ENV: 'test' })).toBe('fake');
+    expect(resolvePushProviderMode({ NODE_ENV: 'production', PUSH_PROVIDER_MODE: 'fake' })).toBe(
+      'fake',
+    );
+    expect(
+      resolvePushProviderMode({ NODE_ENV: 'development', PUSH_PROVIDER_MODE: 'onesignal' }),
+    ).toBe('onesignal');
+  });
+
+  it('is identical for every deployed environment: the value decides, not the name', () => {
+    for (const env of ['dev', 'staging', 'prod']) {
+      void env; // APP_ENV is deliberately not an input here.
+      expect(pushProviderStatus({ NODE_ENV: 'production', ...creds })).toEqual({
+        mode: 'onesignal',
+        provider: 'onesignal',
+        ready: true,
+      });
+    }
+  });
+
+  it('a missing credential in onesignal mode binds the refusing provider, never the fake', () => {
+    expect(
+      pushProviderStatus({ NODE_ENV: 'production', ...creds, ONESIGNAL_REST_API_KEY: '' }),
+    ).toEqual({
+      mode: 'onesignal',
+      provider: 'unconfigured',
+      ready: false,
+      reason: 'MISSING_CREDENTIAL',
+    });
+    expect(pushProviderStatus({ NODE_ENV: 'production', ...creds, ONESIGNAL_APP_ID: '' })).toEqual({
+      mode: 'onesignal',
+      provider: 'unconfigured',
+      ready: false,
+      reason: 'MISSING_CREDENTIAL',
+    });
+  });
+
+  it('an app id that is not a UUID is a paste error, not a configuration', () => {
+    expect(
+      pushProviderStatus({ NODE_ENV: 'production', ...creds, ONESIGNAL_APP_ID: 'gogo-dev' }),
+    ).toMatchObject({ provider: 'unconfigured', ready: false, reason: 'INVALID_APP_ID' });
+  });
+
+  it('fake mode is reported as pretending; onesignal mode without a key is not', () => {
+    expect(fakedProviders({ ...HEALTHY, PUSH_PROVIDER_MODE: 'fake' }).map((f) => f.port)).toEqual([
+      'PUSH_PROVIDER',
+    ]);
+    expect(fakedProviders({ ...HEALTHY, PUSH_PROVIDER_MODE: 'onesignal' })).toEqual([]);
   });
 });

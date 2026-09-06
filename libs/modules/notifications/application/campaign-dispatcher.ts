@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
-import type { PushPort } from '@gogo/providers';
+import { idempotencyKeyFrom, type NotificationProviderPort } from '@gogo/providers';
 import {
   campaignDedupeKey,
   type CampaignAudience,
@@ -40,7 +40,7 @@ const RECIPIENT_BATCH = 500;
 export class CampaignDispatcher {
   constructor(
     private readonly db: Db,
-    private readonly push: PushPort,
+    private readonly push: NotificationProviderPort,
     private readonly metrics?: { increment(name: string, labels?: Record<string, string>): void },
   ) {}
 
@@ -170,29 +170,27 @@ export class CampaignDispatcher {
     `);
     if (inserted.length === 0) return 'skipped';
 
-    const { rows: devices } = await this.db.execute(sql`
-      select token from device_tokens where user_id = ${userId}::uuid
-    `);
-
-    let anyDelivered = false;
-    for (const device of devices as { token: string }[]) {
-      try {
-        await this.push.send(device.token, {
-          title: campaign.title,
-          body: campaign.body,
-          data: {
-            campaignId: campaign.id,
-            destinationType: campaign.destination_type,
-            ...(campaign.destination_value ? { destination: campaign.destination_value } : {}),
-          },
-        });
-        anyDelivered = true;
-      } catch {
-        // One dead token does not fail the recipient: another device may work,
-        // and a whole campaign must not stop on a stale registration.
-      }
-    }
-    return anyDelivered ? 'sent' : 'failed';
+    // #193: addressed by user id; the provider owns the device list. A thrown
+    // provider error propagates to `send`, which marks the campaign `failed`
+    // with the reason kept — a refused credential or an outage is something an
+    // operator re-schedules from, not something to burn through 500 recipients
+    // discovering.
+    const result = await this.push.sendToUser(userId, {
+      headings: { en: campaign.title },
+      contents: { en: campaign.body },
+      data: {
+        campaignId: campaign.id,
+        destinationType: campaign.destination_type,
+        ...(campaign.destination_value ? { destination: campaign.destination_value } : {}),
+      },
+      // The dedupe key already identifies this recipient of this dispatch; the
+      // provider gets the same identity, so a crash-and-rerun cannot double-send.
+      idempotencyKey: idempotencyKeyFrom(options.dedupeKey),
+    });
+    // `sent` is what the provider accepted for delivery. A null id means it had
+    // no subscription for this person — recorded as failed, as an account with
+    // no registered device was before.
+    return result.providerMessageId === null ? 'failed' : 'sent';
   }
 
   /**
@@ -217,11 +215,18 @@ export class CampaignDispatcher {
     `);
 
     for (const row of rows as (DueCampaign & { test_send_user_id: string })[]) {
-      await this.deliver(row, row.test_send_user_id, {
-        // Unique per request, so a composer can preview a campaign as many
-        // times as they need without the dedupe key silencing the second one.
-        dedupeKey: `campaign_test:${row.id}:${row.test_send_user_id}:${Date.now()}`,
-      });
+      try {
+        await this.deliver(row, row.test_send_user_id, {
+          // Unique per request, so a composer can preview a campaign as many
+          // times as they need without the dedupe key silencing the second one.
+          dedupeKey: `campaign_test:${row.id}:${row.test_send_user_id}:${Date.now()}`,
+        });
+      } catch {
+        // A test send is a preview, not a send: a provider fault here is
+        // counted and the row already says the request was handled, so the
+        // composer's next attempt is not silenced by a stuck one.
+        this.metrics?.increment('campaign_dispatched_total', { result: 'test_failed' });
+      }
     }
     return rows.length;
   }

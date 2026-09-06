@@ -869,7 +869,11 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Register a push device token (BE-BFF-010) */
+        /**
+         * Register a push device token (BE-BFF-010) — deprecated
+         * @deprecated
+         * @description NTF-BE-002 (#193): push is addressed by user id through the provider's external_id alias; GoGo keeps no APNs/FCM token registry and nothing on the delivery path reads this table any more. The route still accepts a token so an older client does not break, but registering one has no effect on delivery. Clients bind identity through the provider SDK login (NTF-APP-004) instead. Removal is a separate, announced change.
+         */
         put: operations["registerDeviceToken"];
         post?: never;
         delete?: never;

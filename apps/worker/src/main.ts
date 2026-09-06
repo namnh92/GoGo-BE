@@ -41,6 +41,9 @@ import {
   neonApiFromEnv,
   awsCostExplorerFromEnv,
   githubBillingFromEnv,
+  OneSignalPushAdapter,
+  UnconfiguredPushProvider,
+  pushProviderStatus,
 } from '@gogo/providers';
 import { AdvisoryLock, startPeriodic } from './periodic';
 import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
@@ -180,8 +183,38 @@ async function bootstrap(): Promise<void> {
     token: process.env.METRICS_TOKEN,
     logger,
   });
-  // Real push provider lands with credentials (GoGo-BE#60); fake logs sends.
-  const push = new FakePush();
+  // #193: the worker is where sends happen, and it decides from its own copy
+  // of the env exactly as the API does — a worker quietly on the fake while the
+  // API reports OneSignal would send nothing and say nothing.
+  const pushStatus = pushProviderStatus({
+    ...(process.env.PUSH_PROVIDER_MODE === 'onesignal' || process.env.PUSH_PROVIDER_MODE === 'fake'
+      ? { PUSH_PROVIDER_MODE: process.env.PUSH_PROVIDER_MODE }
+      : {}),
+    NODE_ENV: process.env.NODE_ENV ?? 'development',
+    ONESIGNAL_APP_ID: process.env.ONESIGNAL_APP_ID ?? '',
+    ONESIGNAL_REST_API_KEY: process.env.ONESIGNAL_REST_API_KEY ?? '',
+  });
+  const pushLine = {
+    port: 'PUSH_PROVIDER',
+    mode: pushStatus.mode,
+    provider: pushStatus.provider,
+    ready: pushStatus.ready,
+    ...(pushStatus.reason ? { reason: pushStatus.reason } : {}),
+  };
+  if (pushStatus.ready) logger.info(pushLine, 'push provider ready');
+  else logger.error(pushLine, 'push provider NOT ready — every push send will be refused');
+  const push =
+    pushStatus.provider === 'onesignal'
+      ? new OneSignalPushAdapter(
+          {
+            appId: process.env.ONESIGNAL_APP_ID ?? '',
+            restApiKey: process.env.ONESIGNAL_REST_API_KEY ?? '',
+          },
+          metrics,
+        )
+      : pushStatus.provider === 'unconfigured'
+        ? new UnconfiguredPushProvider()
+        : new FakePush();
   const dispatcher = new OutboxDispatcher(db, push, metrics);
   // BE-CMS-G4e (#226): campaigns are sent here, never from a request. Same
   // tick as the outbox rather than a schedule of their own.
@@ -216,6 +249,7 @@ async function bootstrap(): Promise<void> {
       // a warn here is what an operator sees when only the worker is restarted.
       FLAG_ROUTES_API: process.env.FLAG_ROUTES_API === 'true',
       PLACE_PROVIDER_MODE: placeStatus.mode,
+      PUSH_PROVIDER_MODE: pushStatus.mode,
     },
     (meta, message) => logger.warn(meta, message),
   );

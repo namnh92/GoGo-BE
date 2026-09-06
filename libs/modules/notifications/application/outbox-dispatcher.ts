@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
-import type { PushPort } from '@gogo/providers';
+import { ProviderUnavailableError, type NotificationProviderPort } from '@gogo/providers';
 
 type NotificationKind = (typeof schema.notifications.$inferSelect)['kind'];
 
@@ -35,15 +35,18 @@ export const MAX_DELIVERY_ATTEMPTS = 6;
 /**
  * Outbox consumer: at-least-once, so fan-out has to be repeatable rather than
  * merely rare. Every notification carries the event id as a dedupe key, which
- * makes a redelivery a no-op instead of a duplicate in someone's inbox.
+ * makes a redelivery a no-op instead of a duplicate in someone's inbox, and
+ * every push carries it as the provider's idempotency key for the same reason.
  *
  * Plain class — the worker process wires it without Nest.
  */
 export class OutboxDispatcher {
   constructor(
     private readonly db: Db,
-    private readonly push: PushPort,
-    private readonly metrics?: { increment(name: string, labels?: Record<string, string>): void },
+    private readonly push: NotificationProviderPort,
+    private readonly metrics?: {
+      increment(name: string, labels?: Record<string, string>, by?: number): void;
+    },
   ) {}
 
   /** Process one batch. Returns number of events handled. */
@@ -132,7 +135,7 @@ export class OutboxDispatcher {
           eq(schema.notificationPreferences.kind, mapping.kind),
         ),
       );
-    const optedOutInApp = new Set(
+    const optedOutOfPush = new Set(
       prefs.filter((p) => p.channel === 'push' && !p.enabled).map((p) => p.userId),
     );
 
@@ -147,28 +150,42 @@ export class OutboxDispatcher {
         })
         // Redelivery must not put the same notification in an inbox twice.
         .onConflictDoNothing();
-      if (optedOutInApp.has(userId)) continue;
-      const tokens = await this.db
-        .select()
-        .from(schema.deviceTokens)
-        .where(eq(schema.deviceTokens.userId, userId));
-      for (const t of tokens) {
-        try {
-          // Copy is composed client-side from kind + payload; push carries the
-          // routing facts only.
-          await this.push.send(t.token, {
-            title: 'GoGo',
-            body: mapping.kind,
-            data: { kind: mapping.kind, roomId },
-          });
-        } catch (err) {
-          // One dead device token must not fail the whole event: retrying the
-          // fan-out would re-push to every *other* token that already got it,
-          // and the in-app notification is the durable half regardless.
-          this.metrics?.increment('push_delivery_failed_total', { kind: mapping.kind });
-          void err;
-        }
+    }
+
+    // #193: one provider call for the whole event, addressed by user id. The
+    // provider owns the device list (spec §26), so there is no per-token loop
+    // and no `device_tokens` read on this path any more.
+    const recipients = userIds.filter((id) => !optedOutOfPush.has(id));
+    if (recipients.length === 0) return;
+    try {
+      const result = await this.push.sendToUsers(recipients, {
+        // Placeholder copy until the template layer lands (NTF-BE-005, #196):
+        // the payload contract below is what clients route on. Nothing on the
+        // lock screen may carry private content — ids and a kind only.
+        headings: { en: 'GoGo' },
+        contents: { en: mapping.kind },
+        data: { kind: mapping.kind, roomId, eventType: event.eventType },
+        // The event id, so a retry of this fan-out is a replay at the provider
+        // rather than a second push (30-day window).
+        idempotencyKey: event.id,
+      });
+      this.metrics?.increment('push_delivery_sent_total', { kind: mapping.kind });
+      if (result.unknownUserIds.length > 0) {
+        this.metrics?.increment(
+          'push_delivery_unknown_user_total',
+          { kind: mapping.kind },
+          result.unknownUserIds.length,
+        );
       }
+    } catch (err) {
+      // Transient (the resilience wrapper gave up): let the outbox back off and
+      // try the event again. The notification rows above are idempotent and the
+      // provider key makes the re-send a replay, so the retry is safe.
+      if (err instanceof ProviderUnavailableError) throw err;
+      // Permanent (refused credential, rejected payload): retrying produces the
+      // same answer. Count it, keep the in-app notification as the durable
+      // half, and let the event publish.
+      this.metrics?.increment('push_delivery_failed_total', { kind: mapping.kind });
     }
   }
 }

@@ -17,6 +17,7 @@ import {
   GoogleSheetsAdapter,
   HaversineTravelTime,
   METRICS_QUERY,
+  OneSignalPushAdapter,
   PLACE_PROVIDER,
   PrometheusQueryAdapter,
   PUSH_PROVIDER,
@@ -25,7 +26,9 @@ import {
   STORAGE_PROVIDER,
   TRAVEL_TIME_PROVIDER,
   UnconfiguredPlaceProvider,
+  UnconfiguredPushProvider,
   placeProviderStatus,
+  pushProviderStatus,
   warnFakedProviders,
   resolveMetricsQueryConfig,
 } from '@gogo/providers';
@@ -48,8 +51,8 @@ import { APP_CONFIG, type AppConfig } from './config/env';
 /**
  * BE-BFF-011 — port binding. Real adapters only when credentials exist;
  * otherwise deterministic fakes so every environment boots and every flow
- * has a fallback. (R2/push real adapters land when credentials are issued —
- * tracked on GoGo-BE#60.)
+ * has a fallback. (R2 real adapter lands when credentials are issued —
+ * tracked on GoGo-BE#60. Push is OneSignal, #193.)
  */
 @Global()
 @Module({
@@ -194,7 +197,23 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       },
       inject: [APP_CONFIG],
     },
-    { provide: PUSH_PROVIDER, useClass: FakePush },
+    {
+      // #193: the mode decides, not the presence of a secret — `onesignal`
+      // with no key binds a provider that refuses and is reported not-ready at
+      // boot, never the fake. The API holds this binding for parity with the
+      // worker (which is where sends actually happen) and for the ops signal.
+      provide: PUSH_PROVIDER,
+      useFactory: (config: AppConfig, metrics: MetricsPort) => {
+        const status = pushProviderStatus(config);
+        if (status.provider === 'fake') return new FakePush();
+        if (status.provider === 'unconfigured') return new UnconfiguredPushProvider();
+        return new OneSignalPushAdapter(
+          { appId: config.ONESIGNAL_APP_ID, restApiKey: config.ONESIGNAL_REST_API_KEY },
+          metrics,
+        );
+      },
+      inject: [APP_CONFIG, METRICS],
+    },
     {
       // Real R2 the moment credentials exist; the fake keeps every other
       // environment able to run the whole upload flow without them.
@@ -264,9 +283,21 @@ export class ProvidersModule implements OnModuleInit, OnApplicationShutdown {
     this.usageLedger.start();
     const logger = createLogger({ level: this.config.LOG_LEVEL, name: 'gogo-api' });
     const status = placeProviderStatus(this.config);
-    warnFakedProviders({ ...this.config, PLACE_PROVIDER_MODE: status.mode }, (meta, message) =>
-      logger.warn(meta, message),
+    const push = pushProviderStatus(this.config);
+    warnFakedProviders(
+      { ...this.config, PLACE_PROVIDER_MODE: status.mode, PUSH_PROVIDER_MODE: push.mode },
+      (meta, message) => logger.warn(meta, message),
     );
+    // #193 — same signal for push. Mode and reason only; the key never appears.
+    const pushLine = {
+      port: 'PUSH_PROVIDER',
+      mode: push.mode,
+      provider: push.provider,
+      ready: push.ready,
+      ...(push.reason ? { reason: push.reason } : {}),
+    };
+    if (push.ready) logger.info(pushLine, 'push provider ready');
+    else logger.error(pushLine, 'push provider NOT ready — every push send will be refused');
     // #279 — the ops signal. Always emitted, ready or not: "which provider is
     // this process on" is the first question every one of these incidents has
     // started with, and it was never written down anywhere. Carries the mode
