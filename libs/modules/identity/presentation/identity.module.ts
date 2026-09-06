@@ -24,6 +24,12 @@ import {
   InMemoryRateLimitStore,
   RATE_LIMIT_STORE,
 } from './rate-limit.service';
+import {
+  RATE_LIMIT_REDIS,
+  RateLimitRedisWarmup,
+  createRateLimitRedis,
+  type RateLimitRedis,
+} from './rate-limit-redis';
 import { FallbackRateLimitStore, RedisRateLimitStore } from './redis-rate-limit.store';
 import { SessionsController } from './sessions.controller';
 
@@ -93,26 +99,26 @@ import { SessionsController } from './sessions.controller';
     SessionRevocationService,
     AuthService,
     {
+      // #424 — one client, built here and connected at bootstrap by
+      // RateLimitRedisWarmup, so the first hit after boot is not the thing
+      // that opens the socket. `null` = no Redis for this environment.
+      provide: RATE_LIMIT_REDIS,
+      useFactory: (config: IdentityConfig & { REDIS_URL?: string }): RateLimitRedis | null =>
+        !config.REDIS_URL || config.NODE_ENV === 'test'
+          ? null
+          : createRateLimitRedis(config.REDIS_URL),
+      inject: [APP_CONFIG],
+    },
+    RateLimitRedisWarmup,
+    {
       // Redis-backed limits when configured (multi-instance correct); the
       // wrapper fails open to the per-process store on Redis outage.
       provide: RATE_LIMIT_STORE,
-      useFactory: (config: IdentityConfig & { REDIS_URL?: string }, metrics?: MetricsPort) => {
-        if (!config.REDIS_URL || config.NODE_ENV === 'test') {
-          return new InMemoryRateLimitStore();
-        }
-        const redis = new IORedis(config.REDIS_URL, {
-          lazyConnect: true,
-          maxRetriesPerRequest: 1,
-          enableOfflineQueue: false,
-        });
-        redis.on('error', () => {
-          /* handled by fallback wrapper per hit */
-        });
-        return new FallbackRateLimitStore(
-          new RedisRateLimitStore(redis, metrics ?? new NoopMetrics()),
-        );
-      },
-      inject: [APP_CONFIG, { token: RUNTIME_METRICS, optional: true }],
+      useFactory: (redis: RateLimitRedis | null, metrics?: MetricsPort) =>
+        redis
+          ? new FallbackRateLimitStore(new RedisRateLimitStore(redis, metrics ?? new NoopMetrics()))
+          : new InMemoryRateLimitStore(),
+      inject: [RATE_LIMIT_REDIS, { token: RUNTIME_METRICS, optional: true }],
     },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: RateLimitGuard },
