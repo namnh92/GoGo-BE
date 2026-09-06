@@ -205,6 +205,10 @@ import { APP_CONFIG, type AppConfig } from './config/env';
   ],
   exports: [
     METRICS_REGISTRY,
+    // #422 — a global module shares only what it exports. Provided-but-not-
+    // exported, the optional injections in DatabaseModule / IdentityModule /
+    // RealtimeBusModule resolved to `undefined` and the API emitted nothing.
+    RUNTIME_METRICS,
     COST_USAGE_LEDGER,
     METRICS_QUERY,
     PLACE_PROVIDER,
