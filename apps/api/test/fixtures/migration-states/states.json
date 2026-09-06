@@ -1,0 +1,19 @@
+{
+  "baseThroughIdx": 43,
+  "states": {
+    "push": {
+      "tag": "0045_notification-push-delivery",
+      "when": 1789084800000,
+      "file": "push/0045_notification-push-delivery.sql",
+      "origin": "GoGo-BE feature/GOGO-193-onesignal-provider @ dd074b9",
+      "sameContentAs": "0044_notification-push-delivery.sql"
+    },
+    "link": {
+      "tag": "0044_share-links",
+      "when": 1788998400000,
+      "file": "link/0044_share-links.sql",
+      "origin": "GoGo-BE feature/GOGO-206-acquisition-link-provider @ b8ae7ec",
+      "sameContentAs": null
+    }
+  }
+}
