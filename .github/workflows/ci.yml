@@ -61,6 +61,19 @@ jobs:
         run: |
           git show "origin/${{ github.base_ref }}:openapi/gogo.v1.yaml" > .oasdiff-base.yaml \
             || cp openapi/gogo.v1.yaml .oasdiff-base.yaml
+      # GoGo-BE#449: consumers vendor this file and compare their copy against the
+      # version it declares, so a changed contract under an unchanged version tells
+      # them nothing moved. oasdiff catches breaking changes; this catches silent
+      # ones.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Contract version gate
+        run: pnpm api:version .oasdiff-base.yaml openapi/gogo.v1.yaml
+
       - name: Breaking-change gate
         uses: oasdiff/oasdiff-action/breaking@v0.0.21
         with:

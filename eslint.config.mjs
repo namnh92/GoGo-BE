@@ -29,6 +29,8 @@ export default tseslint.config(
             'scripts/check-package-boundaries.ts',
             'scripts/build-artifacts.ts',
             'scripts/artifacts.spec.ts',
+            'scripts/check-openapi-version.ts',
+            'scripts/check-openapi-version.spec.ts',
           ],
         },
       },
