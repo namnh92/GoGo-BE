@@ -151,7 +151,9 @@ export class ShareLinksService {
       target: shareLinkTarget(row.type, row.targetId, slug),
       expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
       provider: row.provider,
-      trackingUrl: row.providerTrackingUrl,
+      // Composed per resolve by LNK-BE-003; never read from the row, which
+      // deliberately does not hold a URL that would embed the slug.
+      trackingUrl: null,
       source: row.source,
       campaign: row.campaign,
     };

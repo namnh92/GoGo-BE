@@ -17,7 +17,6 @@ export class ShareLinksRepository {
     inviteId?: string;
     createdByUserId: string;
     provider: ShareLinkProvider;
-    providerTrackingUrl?: string | null;
     source?: string;
     medium?: string;
     campaign?: string;
@@ -32,7 +31,6 @@ export class ShareLinksRepository {
         inviteId: input.inviteId ?? null,
         createdByUserId: input.createdByUserId,
         provider: input.provider,
-        providerTrackingUrl: input.providerTrackingUrl ?? null,
         source: input.source ?? null,
         medium: input.medium ?? null,
         campaign: input.campaign ?? null,

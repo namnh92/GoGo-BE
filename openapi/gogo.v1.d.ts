@@ -4839,7 +4839,7 @@ export interface components {
             provider: "NONE" | "TENJIN";
             /**
              * Format: uri
-             * @description The vendor click URL with the canonical link as deferred target, or null. Routing only — never the shared URL.
+             * @description The vendor click URL with the canonical link as deferred target, or null. Routing only — never the shared URL. Composed per resolve from the slug presented; it is not stored, because it embeds the slug (for a room invite, the join credential).
              */
             trackingUrl: string | null;
             source: string | null;
@@ -8727,7 +8727,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };

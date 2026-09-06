@@ -1,5 +1,5 @@
-export { createLogger, REDACT_PATHS } from './logger';
-export type { AppLogger } from './logger';
+export { createLogger, REDACT_PATHS, redactUrl, requestSerializer } from './logger';
+export type { AppLogger, LogDestination } from './logger';
 export { LogMetrics, NoopMetrics, METRICS, RUNTIME_METRICS } from './metrics';
 export type { MetricsPort, MetricLabels } from './metrics';
 export { MetricsRegistry, TeeMetrics, type Sample } from './registry';

@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { eq } from 'drizzle-orm';
 import path from 'node:path';
+import { Writable } from 'node:stream';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -22,6 +23,16 @@ let container: StartedPostgreSqlContainer;
 let pool: Pool;
 let db: ReturnType<typeof drizzle<typeof schema>>;
 let app: NestFastifyApplication;
+/** Every line the API logger wrote during this file — what a log reader would see. */
+const logLines: string[] = [];
+const logSink = new Writable({
+  write(chunk, _encoding, callback) {
+    logLines.push(chunk.toString());
+    callback();
+  },
+});
+/** Every slug minted here, so the log assertion at the end can name them all. */
+const mintedSlugs: string[] = [];
 
 function api() {
   return app.getHttpAdapter().getInstance();
@@ -73,6 +84,7 @@ async function mint(token: string, payload: Record<string, unknown>) {
 function slugOf(url: string): string {
   const match = new RegExp(`^${SHARE_HOST}/l/([A-Za-z0-9_-]{22})$`).exec(url);
   expect(match, `canonical URL shape: ${url}`).not.toBeNull();
+  mintedSlugs.push(match![1]!);
   return match![1]!;
 }
 
@@ -97,7 +109,7 @@ beforeAll(async () => {
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
 
   const { createApp } = await import('../src/main.js');
-  app = await createApp();
+  app = await createApp({ logDestination: logSink });
   await app.init();
   await api().ready();
 }, 180_000);
@@ -314,5 +326,21 @@ describe('PLAN and PLACE share links', () => {
       payload: { type: 'PLACE', entityId: '00000000-0000-4000-8000-000000000002' },
     });
     expect(unauthenticated.statusCode).toBe(401);
+  });
+});
+
+describe('request logs (review finding 2)', () => {
+  it('never wrote a slug — resolve, revoke, 404, 410 and 400 paths alike', async () => {
+    // One more of each failure shape, so the assertion covers them explicitly.
+    expect((await resolve('Af82XcAf82XcAf82XcAf82')).statusCode).toBe(404);
+    expect((await resolve('bad!')).statusCode).toBe(400);
+    expect(mintedSlugs.length).toBeGreaterThanOrEqual(4);
+
+    const out = logLines.join('');
+    expect(out).toContain('"url":"/v1/share-links/[redacted]"');
+    // The request logger did run for these routes; the slug is what is missing.
+    expect(out).toContain('incoming request');
+    for (const slug of mintedSlugs) expect(out).not.toContain(slug);
+    expect(out).not.toContain('Af82XcAf82XcAf82XcAf82');
   });
 });

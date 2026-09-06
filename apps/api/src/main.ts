@@ -4,7 +4,7 @@ import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
-import { createLogger } from '@gogo/observability';
+import { createLogger, type LogDestination } from '@gogo/observability';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
@@ -24,7 +24,9 @@ function parseTrustProxy(value: string): boolean | number | string[] {
     .filter(Boolean);
 }
 
-export async function createApp(): Promise<NestFastifyApplication> {
+export async function createApp(
+  options: { logDestination?: LogDestination } = {},
+): Promise<NestFastifyApplication> {
   const config = loadEnv();
   if (config.SENTRY_DSN) {
     // Error monitoring (FND-007). captureException elsewhere is a safe no-op
@@ -35,6 +37,7 @@ export async function createApp(): Promise<NestFastifyApplication> {
     level: config.LOG_LEVEL,
     name: 'gogo-api',
     pretty: config.NODE_ENV === 'development',
+    ...(options.logDestination ? { destination: options.logDestination } : {}),
   });
 
   const adapter = new FastifyAdapter({
