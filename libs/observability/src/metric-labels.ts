@@ -146,6 +146,12 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   suggestion_run_latency_seconds: ['variant', 'weights_version'],
   suggestion_run_over_budget_total: ['variant'],
 
+  // --- share links (#205) --------------------------------------------------
+  // `type` is the share_link_type enum (plus the literal `unknown` on a slug
+  // nobody minted); `result` is ok / not_found / gone.
+  share_link_created_total: ['type'],
+  share_link_resolved_total: ['type', 'result'],
+
   // --- notifications -------------------------------------------------------
   campaign_dispatched_total: ['result'],
   // #193 — one provider call per event; `kind` is the notification kind enum.

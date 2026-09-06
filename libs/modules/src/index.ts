@@ -74,6 +74,16 @@ export {
   type PushIdentityToken,
 } from '../notifications/application/push-identity.service';
 
+// Share links (LNK-BE-002)
+export { ShareLinksModule } from '../links/presentation/share-links.module';
+export { ShareLinksService } from '../links/application/share-links.service';
+export {
+  SHARE_LINK_TYPES,
+  SHARE_SLUG_PATTERN,
+  newShareSlug,
+  type ShareLinkType,
+} from '../links/domain/share-link';
+
 // Place import + areas (BE-BFF-013/016)
 export { PlaceImportService } from '../places/application/place-import.service';
 

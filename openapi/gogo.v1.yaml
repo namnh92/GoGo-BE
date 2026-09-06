@@ -113,6 +113,8 @@ tags:
     description: Register, login, refresh rotation, guest sessions.
   - name: rooms
     description: Room lifecycle, constraints, invites, members, seed places.
+  - name: links
+    description: Canonical share links `https://<share-host>/l/{slug}` — mint, edge resolve, revoke.
   - name: preferences
     description: Private per-member preferences and the taxonomy that drives them.
   - name: places
@@ -2198,9 +2200,116 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503':
           description: No identity signing key in this environment (`PUSH_IDENTITY_UNAVAILABLE`)
+  /share-links:
+    post:
+      operationId: createShareLink
+      tags: [links]
+      summary: Mint a canonical share link for a room invite, plan or place (LNK-BE-002)
+      description: >
+        Returns `https://<share-host>/l/{slug}` — a random 128-bit slug and
+        nothing else in the URL (FR-LINK-001). The sharer's right to point at
+        the entity is checked here: room host for `ROOM_INVITE` (the slug then
+        doubles as the invite code, joined with `POST /rooms/join`), room member
+        for `PLAN`, any signed-in user for a published `PLACE`. `COLLECTION` and
+        `REFERRAL` are reserved and answer 400 `SHARE_LINK_TYPE_UNSUPPORTED`.
+        Guests cannot mint. 503 `SHARE_LINKS_UNAVAILABLE` (not retryable) when
+        the environment has no share host configured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, entityId]
+              properties:
+                type: { $ref: '#/components/schemas/ShareLinkType' }
+                entityId:
+                  type: string
+                  format: uuid
+                  description: rooms.id for ROOM_INVITE, plans.id for PLAN, places.id for PLACE.
+                source: { type: string, pattern: '^[a-z0-9_]{1,40}$' }
+                medium: { type: string, pattern: '^[a-z0-9_]{1,40}$' }
+                campaign: { type: string, pattern: '^[a-z0-9_]{1,40}$' }
+      responses:
+        '201':
+          description: Link minted; the URL is the only thing the client shares
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShareLinkCreated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: No share host configured in this environment (`SHARE_LINKS_UNAVAILABLE`)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /share-links/{slug}:
+    get:
+      operationId: resolveShareLink
+      tags: [links]
+      summary: Edge resolve — what a slug points at (LNK-BE-002)
+      description: >
+        Called by the share-link Worker on every click and by the app for a
+        deferred link. Public: the slug is the credential. Answers the target's
+        type and id only — the client authorises through the entity's own
+        endpoint afterwards (FR-LINK-002). 404 for a slug nobody minted, 410 the
+        moment a link is revoked, expired, or its invite is spent. Edge caching
+        follows FR-LINK-005 (room invite ≤ 30 s, others ≤ 300 s).
+      security: []
+      parameters:
+        - {
+            name: slug,
+            in: path,
+            required: true,
+            schema: { type: string, pattern: '^[A-Za-z0-9_-]{6,64}$' },
+          }
+      responses:
+        '200':
+          description: Resolution facts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShareLinkResolution' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          description: Link revoked, expired, or its invite no longer usable (`SHARE_LINK_GONE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    delete:
+      operationId: revokeShareLink
+      tags: [links]
+      summary: Revoke a share link immediately (LNK-BE-002)
+      description: >
+        Creator, or the host of the room a ROOM_INVITE / PLAN link points into.
+        A ROOM_INVITE revoke also revokes the invite in the same transaction.
+        Idempotent.
+      parameters:
+        - {
+            name: slug,
+            in: path,
+            required: true,
+            schema: { type: string, pattern: '^[A-Za-z0-9_-]{6,64}$' },
+          }
+      responses:
+        '200':
+          description: '{ revoked: true }'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: boolean, enum: [true] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /me/notification-preferences:
     get:
@@ -8428,6 +8537,52 @@ components:
           type: string
           format: date-time
           description: Refresh before this instant.
+    ShareLinkType:
+      type: string
+      enum: [ROOM_INVITE, PLAN, PLACE, COLLECTION, REFERRAL]
+      description: COLLECTION and REFERRAL are reserved contract; not issued yet.
+    ShareLinkCreated:
+      type: object
+      required: [id, url, type, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        url:
+          type: string
+          format: uri
+          description: The canonical link — the only URL a client shares.
+        type: { $ref: '#/components/schemas/ShareLinkType' }
+        expiresAt:
+          type: [string, 'null']
+          format: date-time
+          description: ROOM_INVITE follows the invite's expiry; other types do not expire.
+    ShareLinkResolution:
+      type: object
+      required: [type, target, expiresAt, provider, trackingUrl, source, campaign]
+      properties:
+        type: { $ref: '#/components/schemas/ShareLinkType' }
+        target:
+          type: object
+          description: >
+            Exactly one key, by type — ROOM_INVITE `inviteCode` (join with it),
+            PLAN `planId`, PLACE `placeId`, COLLECTION `collectionId`,
+            REFERRAL `code`. Never a user id.
+          properties:
+            inviteCode: { type: string }
+            planId: { type: string, format: uuid }
+            placeId: { type: string, format: uuid }
+            collectionId: { type: string }
+            code: { type: string }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        provider:
+          type: string
+          enum: [NONE, TENJIN]
+          description: Attribution vendor this link was minted with; NONE when none was configured or it failed.
+        trackingUrl:
+          type: [string, 'null']
+          format: uri
+          description: The vendor click URL with the canonical link as deferred target, or null. Routing only — never the shared URL.
+        source: { type: [string, 'null'] }
+        campaign: { type: [string, 'null'] }
     Notification:
       type: object
       description: Facts only — compose the display string client-side from `kind` + `payload`.
