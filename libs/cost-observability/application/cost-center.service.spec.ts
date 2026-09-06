@@ -720,3 +720,117 @@ describe('costCard', () => {
     expect(c.byKind).toEqual({ USAGE: 1_000_005, RECURRING: 0, ONE_TIME: 0 });
   });
 });
+
+describe('annual manual sources survive a non-due window', () => {
+  const item = (providerId = 'apple', serviceId = 'apple.developer_program') => ({
+    id: '11111111-1111-4111-8111-111111111111',
+    providerId,
+    serviceId,
+    name: 'Annual subscription',
+    amountMicros: 120_000_000,
+    currency: 'USD',
+    period: 'YEARLY' as const,
+    effectiveFrom: '2026-01-15',
+    effectiveTo: null,
+  });
+
+  it.each([
+    ['apple', 'apple.developer_program'],
+    ['hosting', 'hosting.vps'],
+    ['registrar', 'registrar.domain'],
+  ])(
+    '%s retains billing facts with zero September cash after the sweep',
+    (providerId, serviceId) => {
+      const source = item(providerId, serviceId);
+      const input = inputs({ manualItems: [source] });
+      const provider = buildProviderRow(COST_REGISTRY.provider(providerId)!, COST_REGISTRY, input);
+      const detail = buildServiceDetail(COST_REGISTRY.service(serviceId)!, COST_REGISTRY, input);
+      for (const row of [provider, provider.services[0]!, detail]) {
+        expect(row).toMatchObject({
+          cost: { kind: 'MANUAL', freshness: 'FRESH' },
+          basis: 'MANUAL',
+          costStatus: 'KNOWN',
+          spendMicros: 0,
+          manualMicros: 0,
+          currency: 'USD',
+          billingItems: [
+            {
+              ...source,
+              basis: 'MANUAL',
+              costKind: 'RECURRING',
+              billingCadence: 'ANNUAL',
+              periodAmountMicros: 120_000_000,
+              nextChargeDay: '2027-01-15',
+              normalizedMonthlyRunRateMicros: 10_000_000,
+            },
+          ],
+        });
+      }
+      expect(provider.unknownServices).toEqual([]);
+    },
+  );
+
+  it('does not invent zero for a missing item or a missing due charge', () => {
+    const service = COST_REGISTRY.service('apple.developer_program')!;
+    expect(buildServiceRow(service, COST_REGISTRY, inputs()).costStatus).toBe('UNKNOWN');
+    const due = { ...item(), effectiveFrom: '2026-09-01' };
+    expect(buildServiceRow(service, COST_REGISTRY, inputs({ manualItems: [due] }))).toMatchObject({
+      costStatus: 'UNKNOWN',
+      spendMicros: null,
+      cost: { kind: 'MANUAL', freshness: 'STALE' },
+    });
+  });
+
+  it('a persisted item resolves a missing declaration without overriding an automatic source', () => {
+    const service = { ...COST_REGISTRY.service('apple.developer_program')!, capabilities: [] };
+    const provider = { ...COST_REGISTRY.provider('apple')!, capabilities: [], services: [service] };
+    const registry = new CostRegistry({ ...COST_REGISTRY_DATA, providers: [provider] });
+    expect(buildProviderRow(provider, registry, inputs({ manualItems: [item()] })).cost.kind).toBe(
+      'MANUAL',
+    );
+    expect(buildServiceRow(service, registry, inputs({ manualItems: [item()] })).cost.kind).toBe(
+      'MANUAL',
+    );
+    const google = buildProviderRow(
+      COST_REGISTRY.provider('google')!,
+      COST_REGISTRY,
+      inputs({ manualItems: [item('google', 'google.play_console')] }),
+    );
+    expect(google.cost.kind).toBe('AUTO');
+    expect(google.spendMicros).toBeNull();
+  });
+
+  it('matches individual subscriptions when two charges share a billing date', () => {
+    const first = { ...item(), effectiveFrom: '2026-09-01' };
+    const second = { ...first, id: '22222222-2222-4222-8222-222222222222' };
+    const row = cost({
+      providerId: first.providerId,
+      serviceId: first.serviceId,
+      day: first.effectiveFrom,
+      basis: 'MANUAL',
+      source: `manual_cost_items:${first.id}`,
+    });
+    expect(
+      buildServiceRow(
+        COST_REGISTRY.service(first.serviceId)!,
+        COST_REGISTRY,
+        inputs({ manualItems: [first, second], costRows: [row] }),
+      ).cost.freshness,
+    ).toBe('STALE');
+  });
+
+  it('retains ended and future billing facts without adding an inactive run-rate', () => {
+    for (const source of [
+      { ...item(), effectiveTo: '2026-08-31' },
+      { ...item(), effectiveFrom: '2027-01-15' },
+    ]) {
+      const row = buildServiceRow(
+        COST_REGISTRY.service(source.serviceId)!,
+        COST_REGISTRY,
+        inputs({ manualItems: [source] }),
+      );
+      expect(row.billingItems[0]?.normalizedMonthlyRunRateMicros).toBe(0);
+      expect(row.spendMicros).toBe(0);
+    }
+  });
+});

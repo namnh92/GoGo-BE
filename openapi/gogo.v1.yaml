@@ -6923,7 +6923,7 @@ components:
         never-attempted source reads UNKNOWN (not a failure); the per-source
         detail stays in `freshness.sources`. With no covering source the cost
         rows decide (today FRESH, older STALE, none UNKNOWN). For MANUAL, the
-        materialised rows alone (today FRESH, older STALE). ERROR is reserved
+        item schedule matched by source and charge day (complete or nothing due FRESH, missing or unexpected charges STALE; no item and no rows null). ERROR is reserved
         for an attempt that failed.
 
     CmsCostSource:
@@ -6936,6 +6936,46 @@ components:
             - $ref: '#/components/schemas/CmsCostDataFreshness'
             - type: 'null'
           description: Null when there is nothing to be current — kind NONE, or MANUAL with nothing entered yet. UNKNOWN is different — an automatic source exists and has never been observed.
+
+    CmsManualBillingItem:
+      type: object
+      required:
+        [
+          id,
+          providerId,
+          serviceId,
+          amountMicros,
+          currency,
+          period,
+          effectiveFrom,
+          effectiveTo,
+          basis,
+          costKind,
+          billingCadence,
+          periodAmountMicros,
+          nextChargeDay,
+          normalizedMonthlyRunRateMicros,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        providerId: { type: string }
+        serviceId: { type: string }
+        name: { type: string }
+        amountMicros: { type: integer }
+        currency: { type: string }
+        period: { type: string, enum: [ONE_TIME, MONTHLY, YEARLY] }
+        effectiveFrom: { type: string, format: date }
+        effectiveTo: { type: [string, 'null'], format: date }
+        basis: { type: string, enum: [MANUAL] }
+        costKind: { type: string, enum: [ONE_TIME, RECURRING] }
+        billingCadence: { type: [string, 'null'], enum: [MONTHLY, ANNUAL, null] }
+        periodAmountMicros:
+          type: [integer, 'null']
+          description: Full recurring charge in currency micros; null for one-time items.
+        nextChargeDay: { type: [string, 'null'], format: date }
+        normalizedMonthlyRunRateMicros:
+          type: integer
+          description: Active annual amount divided by 12 and rounded to micros, or active monthly amount. Zero for one-time or inactive items. Never cash spend.
 
     CmsCostServiceRow:
       allOf:
@@ -6951,6 +6991,7 @@ components:
               instrumented,
               runtime,
               cost,
+              billingItems,
               usage,
               quota,
               lastUpdated,
@@ -6971,6 +7012,10 @@ components:
               allOf:
                 - $ref: '#/components/schemas/CmsServiceRuntime'
               description: ADR-0014 — what is measured, from the registry alone.
+            billingItems:
+              type: array
+              description: Persisted manual billing facts; retained even when no charge is due in the selected window.
+              items: { $ref: '#/components/schemas/CmsManualBillingItem' }
             cost:
               allOf:
                 - $ref: '#/components/schemas/CmsCostSource'
@@ -7023,6 +7068,7 @@ components:
               capabilities,
               runtime,
               cost,
+              billingItems,
               billingTimezone,
               unknownServices,
               services,
@@ -7047,6 +7093,10 @@ components:
               allOf:
                 - $ref: '#/components/schemas/CmsProviderRuntime'
               description: ADR-0014 — coverage over every service with a runtime surface, with counts for the drill-down; `services[].runtime` says which.
+            billingItems:
+              type: array
+              description: Persisted manual billing facts; retained even when no charge is due in the selected window.
+              items: { $ref: '#/components/schemas/CmsManualBillingItem' }
             cost:
               allOf:
                 - $ref: '#/components/schemas/CmsCostSource'

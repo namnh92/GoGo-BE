@@ -34,7 +34,14 @@ import type {
 } from '../domain/registry';
 import { utcDay } from '../pricing/provider-pricing';
 import { BudgetService, readManualItemFacts, toCostRow, type RawCost } from './budget.service';
-import { chargeDays, type ManualCostItemFacts } from '../domain/manual-cost';
+import {
+  chargeDays,
+  classifyPeriod,
+  nextChargeDay,
+  activeInMonth,
+  manualCostSource,
+  type ManualCostItemFacts,
+} from '../domain/manual-cost';
 import { refuseAudit } from '../ports/audit.port';
 
 /**
@@ -49,7 +56,8 @@ import { refuseAudit } from '../ports/audit.port';
  *
  * Three claims a row can make about money, and they are kept apart:
  *
- * - `KNOWN`: at least one cost row in the window. `spendMicros` is a number.
+ * - `KNOWN`: a cost row, or a persisted manual-only schedule with nothing
+ *   due in the window. `spendMicros` is a number (zero for the latter).
  * - `MEASURED_ZERO`: no cost row and no usage, but the service has an
  *   instrumented operation and a source covering the provider is FRESH or
  *   STALE — someone was counting, and counted nothing. `spendMicros` is 0.
@@ -331,7 +339,61 @@ export function moneyFacts(rows: readonly CostRow[], measuredZero: boolean): Mon
 
 export type CostRowWithMeta = CostRow & { updatedAt: string };
 
+/** Persisted billing facts, independent of whether a charge lands in the selected window. */
+export type ManualBillingItem = ManualCostItemFacts & {
+  basis: 'MANUAL';
+  costKind: ReturnType<typeof classifyPeriod>['costKind'];
+  billingCadence: ReturnType<typeof classifyPeriod>['billingCadence'];
+  periodAmountMicros: number | null;
+  nextChargeDay: string | null;
+  normalizedMonthlyRunRateMicros: number;
+};
+
+function billingItems(items: readonly ManualCostItemFacts[], today: string): ManualBillingItem[] {
+  return items.map((item) => ({
+    ...item,
+    basis: 'MANUAL',
+    ...classifyPeriod(item.period),
+    periodAmountMicros: item.period === 'ONE_TIME' ? null : item.amountMicros,
+    nextChargeDay: nextChargeDay(item, today),
+    normalizedMonthlyRunRateMicros: activeInMonth(item, today.slice(0, 7))
+      ? Math.round(item.amountMicros / (item.period === 'YEARLY' ? 12 : 1))
+      : 0,
+  }));
+}
+
+/** A known schedule with no charge due is evidence of zero cash, not missing data.
+ * Never apply this to an automatic/mixed scope, or to missing due charges.
+ */
+function scheduledMoney(
+  rows: readonly CostRow[],
+  measuredZero: boolean,
+  kind: CostSource['kind'],
+  items: readonly ManualCostItemFacts[],
+  range: DateRange,
+): MoneyFacts {
+  if (
+    rows.length > 0 ||
+    kind !== 'MANUAL' ||
+    items.length === 0 ||
+    items.some((i) => chargeDays(i, range).length > 0)
+  )
+    return moneyFacts(rows, measuredZero);
+  const currencies = new Set(items.map((i) => i.currency));
+  return {
+    ...UNKNOWN_MONEY,
+    spendMicros: 0,
+    manualMicros: 0,
+    basis: 'MANUAL',
+    confidence: 'HIGH',
+    costStatus: 'KNOWN',
+    currency: currencies.size === 1 ? [...currencies][0]! : null,
+    mixedCurrency: currencies.size > 1,
+  };
+}
+
 export type ServiceCostRow = MoneyFacts & {
+  billingItems: ManualBillingItem[];
   serviceId: string;
   providerId: string;
   displayName: string;
@@ -363,6 +425,7 @@ export type OperationUsage = {
 export type ServiceCostDetail = ServiceCostRow & { operations: OperationUsage[] };
 
 export type ProviderCostRow = MoneyFacts & {
+  billingItems: ManualBillingItem[];
   providerId: string;
   displayName: string;
   /** Integration lifecycle only — never a cost or telemetry fact (ADR-0014). */
@@ -419,6 +482,26 @@ function costSource(
   const expectedManualDays = [
     ...new Set(manualItems.flatMap((item) => chargeDays(item, { from: range.from, to }))),
   ];
+  // Match item identity as well as day: two subscriptions may renew together.
+  if (kind === 'MANUAL' && manualItems.length > 0) {
+    const expected = new Set(
+      manualItems.flatMap((item) =>
+        chargeDays(item, { from: range.from, to }).map(
+          (day) => `${manualCostSource(item.id)}|${day}`,
+        ),
+      ),
+    );
+    const have = new Set(
+      costRows.filter((r) => r.basis === 'MANUAL').map((r) => `${r.source}|${r.day}`),
+    );
+    return {
+      kind,
+      freshness:
+        [...expected].every((key) => have.has(key)) && [...have].every((key) => expected.has(key))
+          ? 'FRESH'
+          : 'STALE',
+    };
+  }
   return {
     kind,
     freshness: costDataFreshness({
@@ -454,7 +537,11 @@ export function buildServiceRow(
     instrumented &&
     (freshness.status === 'FRESH' || freshness.status === 'STALE');
   const provider = registry.provider(service.providerId);
-  const kind = serviceCostSourceKind(service, provider ?? { capabilities: [] });
+  const manualItems = input.manualItems.filter(
+    (i) => i.providerId === service.providerId && i.serviceId === service.id,
+  );
+  const declaredKind = serviceCostSourceKind(service, provider ?? { capabilities: [] });
+  const kind = declaredKind === 'NONE' && manualItems.length > 0 ? 'MANUAL' : declaredKind;
   return {
     serviceId: service.id,
     providerId: service.providerId,
@@ -463,15 +550,9 @@ export function buildServiceRow(
     capabilities: service.capabilities,
     instrumented,
     runtime,
-    cost: costSource(
-      kind,
-      freshness,
-      costRows,
-      input.manualItems.filter((i) => i.serviceId === service.id),
-      input.range,
-      input.now,
-    ),
-    ...moneyFacts(costRows, measuredZero),
+    cost: costSource(kind, freshness, costRows, manualItems, input.range, input.now),
+    ...scheduledMoney(costRows, measuredZero, kind, manualItems, input.range),
+    billingItems: billingItems(manualItems, utcDay(input.now)),
     usage,
     quota: null,
     lastUpdated: newest([...costRows, ...usageRows].map((r) => r.updatedAt)),
@@ -527,6 +608,9 @@ export function buildProviderRow(
     input.freshness.filter((s) => s.providerId === provider.id),
     input.now,
   );
+  const manualItems = input.manualItems.filter((i) => i.providerId === provider.id);
+  const declaredKind = providerCostSourceKind(provider);
+  const kind = declaredKind === 'NONE' && manualItems.length > 0 ? 'MANUAL' : declaredKind;
   const measured = services.filter((s) => s.instrumented);
   const measuredZero =
     costRows.length === 0 &&
@@ -538,16 +622,10 @@ export function buildProviderRow(
     status: provider.status,
     capabilities: provider.capabilities,
     runtime: providerRuntime(provider),
-    cost: costSource(
-      providerCostSourceKind(provider),
-      freshness,
-      costRows,
-      input.manualItems.filter((i) => i.providerId === provider.id),
-      input.range,
-      input.now,
-    ),
+    cost: costSource(kind, freshness, costRows, manualItems, input.range, input.now),
     billingTimezone: provider.billingTimezone ?? null,
-    ...moneyFacts(costRows, measuredZero),
+    ...scheduledMoney(costRows, measuredZero, kind, manualItems, input.range),
+    billingItems: billingItems(manualItems, utcDay(input.now)),
     unknownServices: services.filter((s) => s.costStatus === 'UNKNOWN').map((s) => s.serviceId),
     services,
     lastUpdated: newest([...costRows, ...usageRows].map((r) => r.updatedAt)),
