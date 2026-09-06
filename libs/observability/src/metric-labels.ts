@@ -50,8 +50,9 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // #414 — runtime telemetry for the infrastructure this process calls
   // (Redis, Postgres). `provider` / `service` / `operation` are registry ids
   // declared in `@gogo/cost-observability` — literals from a closed list,
-  // never a key, a channel, a table or a command's arguments. `status` is
-  // `ok | error`: these are not HTTP calls and carry no code.
+  // never a key, a channel, a table or a command's arguments. `status` is a
+  // closed set — `ok | error` on the request path, `ok | unavailable | timeout`
+  // for a bootstrap connect (#427): these are not HTTP calls and carry no code.
   provider_requests_total: ['provider', 'service', 'operation', 'status'],
   provider_request_duration_seconds: ['provider', 'service', 'operation', 'status'],
   // #335 — the durable usage ledger's own health. Two values, from the flush

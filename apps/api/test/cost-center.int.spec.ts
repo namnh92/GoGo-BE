@@ -462,6 +462,8 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
       surface: 'in_process',
       coverage: 'FULL',
       operations: { instrumented: 7, total: 7 },
+      // #427: only a service with a boot-time operation reports a connection.
+      connection: null,
     });
     expect(places.cost).toEqual({ kind: 'AUTO', freshness: 'FRESH' });
     const sdk = byId['google'].services.find(
@@ -481,7 +483,7 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
       runtime: {
         coverage: 'FULL',
         services: { full: 1 },
-        operations: { instrumented: 5, total: 5 },
+        operations: { instrumented: 6, total: 6 },
       },
       cost: { kind: 'AUTO', freshness: 'UNKNOWN' },
     });

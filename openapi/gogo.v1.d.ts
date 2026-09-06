@@ -3931,6 +3931,19 @@ export interface components {
             coverage: components["schemas"]["CmsRuntimeCoverage"];
             /** @description `total: 0` with a surface is NOT_INSTRUMENTED: nothing registered to measure yet. */
             operations: components["schemas"]["CmsOperationCount"];
+            /** @description COST-BE-038 (#427) — how the serving API process's one boot-time connect for this service ended (`upstash.redis.rate_limit.connect`). Null when the service declares no boot-time operation or this process recorded none. A failure is fail-open, not an outage: it moves neither `coverage` nor the provider's `status`, and the console renders it as a warning. */
+            connection?: components["schemas"]["CmsRuntimeConnection"] | null;
+        };
+        CmsRuntimeConnection: {
+            /** @example upstash.redis.rate_limit.connect */
+            operation: string;
+            /**
+             * @description `ok` — connected before the first request. `unavailable` — refused; `timeout` — still connecting when the 2 s budget ran out. Both leave the client reconnecting and rate limits failing open to memory.
+             * @enum {string}
+             */
+            status: "ok" | "unavailable" | "timeout";
+            /** Format: date-time */
+            observedAt: string;
         };
         CmsProviderRuntime: {
             coverage: components["schemas"]["CmsRuntimeCoverage"];

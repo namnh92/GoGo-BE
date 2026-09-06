@@ -239,7 +239,12 @@ Registry-keyed, under the existing namespace — never `/costs/google`. All rout
   CMS queue-stats probe (ops paths, not request paths) and R2 (no request leaves
   the process). The rate-limit client is connected at bootstrap (#424,
   `RateLimitRedisWarmup`, bounded 2 s, fail-open) so the first hit after a boot is
-  measured `ok`; readiness still gates on the database alone.
+  measured `ok`; readiness still gates on the database alone. The warm-up itself is
+  the bootstrap operation `upstash.redis.rate_limit.connect` (#427): one record per
+  process boot with `status` `ok | unavailable | timeout`, and the process keeps its
+  last outcome (`RuntimeStateStore`, token `RUNTIME_STATE`) so the Cost API service
+  row carries `runtime.connection` for the `/monitoring` drill-down — a failure is
+  a warning there (fail-open), never a service outage, and moves no coverage.
 
 Deprecated, kept one release: the legacy `providers[]` / `gaps[]` on `/cms/ops/costs`
 and `/cms/ops/providers/{provider}` (enum `places|routes|sheets`). CMS re-vendor is

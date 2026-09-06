@@ -1,4 +1,14 @@
 import { Inject, Injectable, Logger, Optional, type OnApplicationBootstrap } from '@nestjs/common';
+import { UPSTASH_REDIS_OPERATIONS } from '@gogo/cost-observability';
+import {
+  NoopMetrics,
+  recordRuntimeCall,
+  RUNTIME_METRICS,
+  RUNTIME_STATE,
+  type MetricsPort,
+  type RuntimeCallStatus,
+  type RuntimeStateStore,
+} from '@gogo/observability';
 import IORedis from 'ioredis';
 import type { RedisLike } from './redis-rate-limit.store';
 
@@ -41,6 +51,11 @@ export function createRateLimitRedis(url: string): IORedis {
 
 export type WarmupOutcome = 'ready' | 'already' | 'unavailable' | 'timeout';
 
+/** #427 — how the one boot attempt is recorded: a ready connection is `ok`, whoever opened it. */
+export function warmupStatus(outcome: WarmupOutcome): RuntimeCallStatus {
+  return outcome === 'ready' || outcome === 'already' ? 'ok' : outcome;
+}
+
 /**
  * Connect, bounded, never throwing. `ready` when the connection came up in
  * time, `already` when it was up, `unavailable` when Redis refused or the
@@ -72,12 +87,20 @@ export class RateLimitRedisWarmup implements OnApplicationBootstrap {
 
   constructor(
     @Optional() @Inject(RATE_LIMIT_REDIS) private readonly redis: RateLimitRedis | null = null,
+    /** #427 — one `upstash.redis.rate_limit.connect` record per boot, on the runtime series. */
+    @Optional() @Inject(RUNTIME_METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+    /** #427 — this process's last outcome, for the Cost API's `runtime.connection`. */
+    @Optional() @Inject(RUNTIME_STATE) private readonly state: RuntimeStateStore | null = null,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
     if (!this.redis) return;
+    const started = Date.now();
     const outcome = await warmRateLimitRedis(this.redis);
-    if (outcome === 'ready' || outcome === 'already') {
+    const status = warmupStatus(outcome);
+    recordRuntimeCall(this.metrics, UPSTASH_REDIS_OPERATIONS.rateLimitConnect, status, started);
+    this.state?.record(UPSTASH_REDIS_OPERATIONS.rateLimitConnect, status);
+    if (status === 'ok') {
       this.logger.log('rate-limit Redis connected before the first request');
       return;
     }

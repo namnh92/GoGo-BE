@@ -1,6 +1,11 @@
-import { MetricsRegistry } from '@gogo/observability';
+import { MetricsRegistry, RuntimeStateStore } from '@gogo/observability';
 import { describe, expect, it } from 'vitest';
-import { RateLimitRedisWarmup, warmRateLimitRedis, type RateLimitRedis } from './rate-limit-redis';
+import {
+  RateLimitRedisWarmup,
+  warmRateLimitRedis,
+  warmupStatus,
+  type RateLimitRedis,
+} from './rate-limit-redis';
 import { FallbackRateLimitStore, RedisRateLimitStore } from './redis-rate-limit.store';
 
 /**
@@ -90,5 +95,48 @@ describe('rate-limit Redis warm-up (#424)', () => {
 
   it('no Redis configured: the bootstrap hook is a no-op', async () => {
     await expect(new RateLimitRedisWarmup(null).onApplicationBootstrap()).resolves.toBeUndefined();
+  });
+});
+
+describe('rate-limit Redis warm-up telemetry (#427)', () => {
+  const CONNECT = 'provider_requests_total{operation="upstash.redis.rate_limit.connect"';
+
+  it('records one ok connect per boot, on the runtime series and in the process state', async () => {
+    const registry = new MetricsRegistry();
+    const state = new RuntimeStateStore();
+    await new RateLimitRedisWarmup(fakeRedis(), registry, state).onApplicationBootstrap();
+    const out = registry.render();
+    expect(out).toContain(`${CONNECT},provider="upstash",service="upstash.redis",status="ok"} 1`);
+    expect(out).toMatch(
+      /provider_request_duration_seconds_count\{operation="upstash\.redis\.rate_limit\.connect"/,
+    );
+    // The request-path series is untouched: no hit happened.
+    expect(out).not.toContain('rate_limit.hit');
+    expect(state.get('upstash.redis.rate_limit.connect')).toMatchObject({ status: 'ok' });
+  });
+
+  it('records unavailable when Redis refuses — a warning, never a thrown boot', async () => {
+    const registry = new MetricsRegistry();
+    const state = new RuntimeStateStore();
+    await new RateLimitRedisWarmup(fakeRedis('refused'), registry, state).onApplicationBootstrap();
+    expect(registry.render()).toContain(
+      `${CONNECT},provider="upstash",service="upstash.redis",status="unavailable"} 1`,
+    );
+    expect(state.get('upstash.redis.rate_limit.connect')).toMatchObject({ status: 'unavailable' });
+  });
+
+  it('maps outcomes onto the closed status set', () => {
+    expect(warmupStatus('ready')).toBe('ok');
+    expect(warmupStatus('already')).toBe('ok');
+    expect(warmupStatus('unavailable')).toBe('unavailable');
+    expect(warmupStatus('timeout')).toBe('timeout');
+  });
+
+  it('with no Redis configured, records nothing', async () => {
+    const registry = new MetricsRegistry();
+    const state = new RuntimeStateStore();
+    await new RateLimitRedisWarmup(null, registry, state).onApplicationBootstrap();
+    expect(registry.render().trim()).toBe('');
+    expect(state.snapshot()).toEqual([]);
   });
 });

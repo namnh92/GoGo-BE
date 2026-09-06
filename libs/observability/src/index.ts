@@ -6,4 +6,6 @@ export { MetricsRegistry, TeeMetrics, type Sample } from './registry';
 export { ALERTED_METRICS, type AlertedMetric } from './alerted-metrics';
 export { METRIC_LABELS, TIMED_LABEL, type MetricName } from './metric-labels';
 export { meterRuntimeCall, recordRuntimeCall } from './runtime-telemetry';
+export { RUNTIME_STATE, RuntimeStateStore } from './runtime-state';
+export type { RuntimeState, RuntimeStateReader } from './runtime-state';
 export type { RuntimeOperation, RuntimeCallStatus } from './runtime-telemetry';

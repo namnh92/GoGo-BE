@@ -513,7 +513,7 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     expect(upstash.runtime).toEqual({
       coverage: 'FULL',
       services: { full: 1, partial: 0, notInstrumented: 0 },
-      operations: { instrumented: 5, total: 5 },
+      operations: { instrumented: 6, total: 6 },
     });
     expect(upstash.cost.kind).toBe('AUTO');
 
@@ -548,6 +548,38 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     const github = buildProviderRow(provider('github'), registry, inputs());
     expect(github.runtime.coverage).toBe('N/A');
     expect(github.cost.kind).toBe('AUTO');
+  });
+
+  it('reports the boot-time connection on the service that declares one, from the process state (#427)', () => {
+    const upstash = COST_REGISTRY.service('upstash.redis')!;
+    const withState = buildServiceRow(
+      upstash,
+      registry,
+      inputs({
+        runtimeState: {
+          get: (operation: string) => ({
+            operation,
+            status: 'timeout' as const,
+            observedAt: '2026-09-10T00:00:01.000Z',
+          }),
+        },
+      }),
+    );
+    expect(withState.runtime.connection).toEqual({
+      operation: 'upstash.redis.rate_limit.connect',
+      status: 'timeout',
+      observedAt: '2026-09-10T00:00:01.000Z',
+    });
+    // A failed connect is fail-open: coverage and the row's other facts do not move.
+    expect(withState.runtime.coverage).toBe('FULL');
+    // No state (a worker, a test module): null, not a guess.
+    expect(buildServiceRow(upstash, registry, inputs()).runtime.connection).toBeNull();
+    // A service with no bootstrap operation never reports one.
+    const places = COST_REGISTRY.service('google.places')!;
+    expect(
+      buildServiceRow(places, registry, inputs({ runtimeState: { get: () => null } })).runtime
+        .connection,
+    ).toBeNull();
   });
 
   it('AUTO freshness follows the §23 sources: FRESH and STALE as they are, UNAVAILABLE is ERROR, never-ran is UNKNOWN', () => {
@@ -674,6 +706,7 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
       surface: 'none',
       coverage: 'N/A',
       operations: { instrumented: 0, total: 0 },
+      connection: null,
     });
     expect(play.cost).toEqual({ kind: 'MANUAL', freshness: null });
 
@@ -686,6 +719,7 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
       surface: 'client_sdk',
       coverage: 'NOT_INSTRUMENTED',
       operations: { instrumented: 0, total: 1 },
+      connection: null,
     });
     expect(sdk.instrumented).toBe(false);
     expect(sdk.cost).toEqual({ kind: 'AUTO', freshness: 'FRESH' });
@@ -699,6 +733,7 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
       surface: 'in_process',
       coverage: 'FULL',
       operations: { instrumented: 7, total: 7 },
+      connection: null,
     });
     expect(places.instrumented).toBe(true);
   });

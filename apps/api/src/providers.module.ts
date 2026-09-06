@@ -33,6 +33,8 @@ import {
   LogMetrics,
   METRICS,
   RUNTIME_METRICS,
+  RUNTIME_STATE,
+  RuntimeStateStore,
   MetricsRegistry,
   TeeMetrics,
   createLogger,
@@ -107,6 +109,12 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       provide: RUNTIME_METRICS,
       useFactory: (registry: MetricsRegistry) => registry,
       inject: [METRICS_REGISTRY],
+    },
+    {
+      // #427 — this process's boot-time outcomes (the rate-limit Redis
+      // warm-up), read by the Cost Center for `runtime.connection`.
+      provide: RUNTIME_STATE,
+      useFactory: () => new RuntimeStateStore(),
     },
     {
       // Both: the log line stays the record any aggregator can read, and the
@@ -205,6 +213,7 @@ import { APP_CONFIG, type AppConfig } from './config/env';
   ],
   exports: [
     METRICS_REGISTRY,
+    RUNTIME_STATE,
     // #422 — a global module shares only what it exports. Provided-but-not-
     // exported, the optional injections in DatabaseModule / IdentityModule /
     // RealtimeBusModule resolved to `undefined` and the API emitted nothing.

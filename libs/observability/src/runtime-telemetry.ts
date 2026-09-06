@@ -26,7 +26,13 @@ export type RuntimeOperation = {
   operation: string;
 };
 
-export type RuntimeCallStatus = 'ok' | 'error';
+/**
+ * A closed set. Request-path operations record `ok | error`; a bootstrap
+ * operation (#427, `upstash.redis.rate_limit.connect`) records how its one
+ * attempt ended: `ok`, `unavailable` (refused) or `timeout` (still connecting
+ * when the budget ran out). Never a message, never a code.
+ */
+export type RuntimeCallStatus = 'ok' | 'error' | 'unavailable' | 'timeout';
 
 /** One finished call: a count and a duration, on the same labels. */
 export function recordRuntimeCall(
