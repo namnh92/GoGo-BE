@@ -214,6 +214,15 @@ Registry-keyed, under the existing namespace — never `/costs/google`. All rout
   `PARTIAL` (3 of 5 runtime services measured); Redis/Postgres/R2 are
   `NOT_INSTRUMENTED` until #414. Pure functions: `domain/runtime-coverage.ts`,
   `domain/cost-source.ts`.
+- **No money on `/monitoring` (ADR-0014 amendment 2026-09-05, #420).**
+  `/cms/ops/summary|providers|providers/{provider}` state no amount: `costModel`,
+  `estimatedCost*`, `costComplete`, `unpricedOperations` and `measurementGaps` are
+  gone and the ops domain no longer reads the price list to make a number (it
+  still names the SKU behind `billableUnits`). Each provider / operation row
+  carries `costCenter { providerId, serviceId | null }` — registry ids — and the
+  CMS links to that `/costs` row where the estimate used to be. `/cms/ops/costs`
+  is the only surface for actual, estimated, forecast, free-tier and manual
+  money. The legacy `gaps[]` on `/cms/ops/costs` (Cost API v1) is untouched.
 
 Deprecated, kept one release: the legacy `providers[]` / `gaps[]` on `/cms/ops/costs`
 and `/cms/ops/providers/{provider}` (enum `places|routes|sheets`). CMS re-vendor is

@@ -1,10 +1,5 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import {
-  PRICING_CURRENCY,
-  PRICING_VERSION,
-  staticCostGaps,
-  utcDay,
-} from '@gogo/cost-observability';
+import { costCenterRefFor, utcDay } from '@gogo/cost-observability';
 import { METRICS_QUERY, MetricsQueryError, type MetricsQueryPort } from '@gogo/providers';
 import { APP_CONFIG } from '../../shared/config';
 import {
@@ -18,7 +13,6 @@ import {
   resolveWindow,
   type OpsProvider,
   type OpsSamples,
-  type OpsTotals,
   type OpsWindow,
   type ProviderBreakdown,
   type ResolvedWindow,
@@ -130,7 +124,6 @@ export class CmsOpsMetricsService {
       const trends = await this.trends(w);
       return {
         totals,
-        costModel: costModelFor(totals, day),
         latencySemantics: LATENCY_SEMANTICS,
         trends,
       };
@@ -141,10 +134,9 @@ export class CmsOpsMetricsService {
     const w = resolveWindow(window, this.retentionDays);
     return this.serve(`providers|${window}`, w, async () => {
       const day = utcDay();
-      const { providers, totals } = aggregate(await this.instantSamples(w), day);
+      const { providers } = aggregate(await this.instantSamples(w), day);
       return {
         providers: providers.map(stripOperations),
-        costModel: costModelFor(totals, day),
         latencySemantics: LATENCY_SEMANTICS,
       };
     });
@@ -158,7 +150,6 @@ export class CmsOpsMetricsService {
       const found = providers.find((p) => p.provider === provider) ?? emptyBreakdown(provider);
       return {
         provider: found,
-        costModel: costModelFor(found, day),
         latencySemantics: LATENCY_SEMANTICS,
         trends: await this.trends(w),
       };
@@ -286,55 +277,14 @@ export class CmsOpsMetricsService {
 }
 
 /**
- * What the cost number is, stated in the payload rather than in a comment
- * nobody reading the JSON will see.
- *
- * Until #335 this said `units_only` and `estimatedCost: null`, because no
- * price existed anywhere in the system and a currency figure would have been a
- * guess wearing a currency symbol. There is now a price list
- * (`libs/modules/cost/domain/provider-pricing.ts`, Google list prices fetched
- * 2026-09-01), so the number can be stated — with every qualification it needs
- * attached to it rather than assumed:
- *
- * - `basis: 'ESTIMATED'` and no field named `billed`, `actual` or `invoice`.
- *   This is arithmetic over our own counters, not a bill.
- * - **List price, no free-tier deduction, on this surface.** A free cap is
- *   monthly; these windows are 1h–30d. Month-to-date spend with the cap
- *   applied comes from the durable ledger on `/cms/ops/costs`.
- * - `confidence: 'MEDIUM'` because Prometheus `increase()` extrapolates at the
- *   window edges, and because the count it extrapolates is itself capped at 14
- *   days of retention.
- * - `costComplete: false` wherever an operation has no verified price: units
- *   exact, money unknown, reported as unknown. (Routes was that case until
- *   COST-BE-031 verified the Compute Route Matrix Essentials price; the Maps
- *   SDK rows still are, and they are also uninstrumented.)
- * - `measurementGaps` names what is not counted at all. The Maps SDK renders
- *   on the handset; this process sees no map load, so its cost is a
- *   MEASUREMENT GAP and never a zero.
+ * COST-BE-035 (#420), ADR-0014 amendment — this surface states no amount.
+ * `/monitoring` used to price its own counters at list price with no free
+ * tier while `/costs` read the durable ledger with the cap applied, and the
+ * two could not agree for one service on one day. Runtime facts stay
+ * (calls, rates, latency, billable units); every row carries `costCenter`,
+ * the registry ids of the `/costs` row where the money is. One calculation,
+ * one store — `/cms/ops/costs`.
  */
-function costModelFor(
-  totals: Pick<
-    OpsTotals,
-    'estimatedCost' | 'estimatedCostMicros' | 'costComplete' | 'unpricedOperations'
-  > | null,
-  day: string,
-) {
-  return {
-    kind: 'estimated' as const,
-    estimatedCost: totals?.estimatedCost ?? null,
-    estimatedCostMicros: totals?.estimatedCostMicros ?? null,
-    currency: PRICING_CURRENCY,
-    basis: 'ESTIMATED' as const,
-    confidence: 'MEDIUM' as const,
-    pricingVersion: PRICING_VERSION,
-    /** False on this surface, always. Said out loud rather than implied. */
-    freeCapApplied: false,
-    costComplete: totals?.costComplete ?? false,
-    unpricedOperations: totals?.unpricedOperations ?? [],
-    measurementGaps: staticCostGaps(day),
-    note: 'Ước tính theo bảng giá niêm yết Google, chưa trừ hạn mức miễn phí. Không phải hóa đơn. Chi phí tháng đã trừ hạn mức miễn phí nằm ở /cms/ops/costs.',
-  };
-}
 
 /** Self-describing latency semantics, so a reader need not guess. */
 const LATENCY_SEMANTICS = {
@@ -362,10 +312,7 @@ function emptyBreakdown(provider: OpsProvider): ProviderBreakdown {
     successRate: null,
     latency: { p50: null, p95: null, p99: null },
     billableUnits: null,
-    estimatedCostMicros: null,
-    estimatedCost: null,
-    costComplete: false,
-    unpricedOperations: [],
+    costCenter: costCenterRefFor(provider),
     operations: [],
   };
 }
@@ -384,7 +331,6 @@ function emptyPayload<T>(): T {
     providers: OPS_PROVIDERS.map(emptyBreakdown).map(stripOperations),
     provider: null,
     trends: null,
-    costModel: costModelFor(null, utcDay()),
     latencySemantics: LATENCY_SEMANTICS,
   } as unknown as T;
 }

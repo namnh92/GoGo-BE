@@ -223,6 +223,31 @@ export function providerOf(method: string): OpsProvider | null {
 }
 
 /**
+ * COST-BE-035 (#420) — where the money for a console group lives. The ops
+ * surface states no amount (owner decision 2026-09-05: `/costs` is the one
+ * financial surface); it points instead. `serviceId` is the one registry
+ * service behind the group, or `null` when the group spans several (the two
+ * Maps SDKs) and the link has to land on the provider.
+ */
+export type CostCenterRef = { providerId: string; serviceId: string | null };
+
+export function costCenterRefFor(provider: OpsProvider): CostCenterRef {
+  const serviceIds = Object.entries(OPS_GROUP_BY_SERVICE)
+    .filter(([, group]) => group === provider)
+    .map(([serviceId]) => serviceId);
+  const providerId = COST_REGISTRY.service(serviceIds[0]!)?.providerId ?? 'google';
+  return { providerId, serviceId: serviceIds.length === 1 ? serviceIds[0]! : null };
+}
+
+/** The same pointer for one operation: the service that owns it, or the group's when none does. */
+export function costCenterRefForOperation(method: string): CostCenterRef {
+  const service = COST_REGISTRY.serviceForOperation(operationForSku(method));
+  if (service) return { providerId: service.providerId, serviceId: service.id };
+  const group = providerOf(method);
+  return group ? costCenterRefFor(group) : { providerId: 'google', serviceId: null };
+}
+
+/**
  * Why a number is missing. Two different absences, never merged.
  *
  * - `not_instrumented` — nobody counted it.

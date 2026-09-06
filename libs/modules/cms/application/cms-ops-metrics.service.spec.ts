@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PRICING_VERSION } from '@gogo/cost-observability';
 import { MetricsQueryError, type MetricsQueryPort, type PromSample } from '@gogo/providers';
 import { CmsOpsMetricsService } from './cms-ops-metrics.service';
 
@@ -214,57 +213,53 @@ describe('self-describing semantics', () => {
   });
 
   /**
-   * #335 replaced `units_only` with a real estimate. The rule the old
-   * assertion protected is unchanged and is what this still checks: an
-   * estimate may never present itself as a bill.
+   * COST-BE-035 (#420), ADR-0014 amendment — this surface states no amount.
+   * Not "an estimate labelled as an estimate": no money at all, because two
+   * calculations of one cost (list price here, ledger with the free tier on
+   * `/cms/ops/costs`) could not agree and a reader had no way to pick one.
    */
-  it('states an estimate as an estimate, and never as a bill', async () => {
+  it('carries no money field at all — runtime facts and a pointer only', async () => {
     const { port } = stubPort();
-    const res = await new CmsOpsMetricsService(config, port).summary('24h');
-    expect(res.costModel.kind).toBe('estimated');
-    expect(res.costModel.basis).toBe('ESTIMATED');
-    expect(res.costModel.currency).toBe('USD');
-    expect(res.costModel.pricingVersion).toBe(PRICING_VERSION);
-    // The free cap is monthly and this window is not. Said in the payload
-    // rather than left for a reader to assume.
-    expect(res.costModel.freeCapApplied).toBe(false);
-    const keys = JSON.stringify(res);
-    for (const forbidden of ['actualSpend', 'billedAmount', 'invoiceCost', 'billed']) {
-      expect(keys).not.toContain(forbidden);
+    for (const res of [
+      await new CmsOpsMetricsService(config, port).summary('24h'),
+      await new CmsOpsMetricsService(config, port).providers('24h'),
+      await new CmsOpsMetricsService(config, port).provider('places', '24h'),
+    ]) {
+      const keys = JSON.stringify(res);
+      for (const forbidden of [
+        'costModel',
+        'estimatedCost',
+        'estimatedCostMicros',
+        'costComplete',
+        'unpricedOperations',
+        'measurementGaps',
+        'pricingVersion',
+        'freeCapApplied',
+        'actualSpend',
+        'billedAmount',
+        'invoiceCost',
+        'billed',
+      ]) {
+        expect(keys, forbidden).not.toContain(forbidden);
+      }
     }
   });
 
-  /**
-   * The Maps SDK renders on the handset and this process sees no map load.
-   * Absent from the payload it would read as zero cost, which is the one
-   * claim the plan's rejected list names outright.
-   */
-  it('names the Maps SDK as a measurement gap rather than omitting it', async () => {
+  it('points every row at its Cost Center row by registry id', async () => {
     const { port } = stubPort();
-    const res = await new CmsOpsMetricsService(config, port).summary('24h');
-    const gaps = res.costModel.measurementGaps.map((g) => g.key);
-    expect(gaps).toContain('google.maps_sdk_ios');
-    expect(gaps).toContain('google.maps_sdk_android');
-    for (const gap of res.costModel.measurementGaps) {
-      if (gap.key.startsWith('google.maps_sdk_')) expect(gap.kind).toBe('not_instrumented');
+    const rows = await new CmsOpsMetricsService(config, port).providers('24h');
+    const byGroup = Object.fromEntries(rows.providers.map((p) => [p.provider, p.costCenter]));
+    expect(byGroup['places']).toEqual({ providerId: 'google', serviceId: 'google.places' });
+    expect(byGroup['routes']).toEqual({ providerId: 'google', serviceId: 'google.routes' });
+    expect(byGroup['sheets']).toEqual({ providerId: 'google', serviceId: 'google.sheets' });
+    // Two SDKs behind one console group: the link lands on the provider.
+    expect(byGroup['maps_sdk']).toEqual({ providerId: 'google', serviceId: null });
+    const detail = await new CmsOpsMetricsService(config, port).provider('places', '24h');
+    for (const op of detail.provider!.operations) {
+      expect(op.costCenter, op.method).toEqual({
+        providerId: 'google',
+        serviceId: 'google.places',
+      });
     }
-  });
-
-  /**
-   * Routes bills per matrix element. Until COST-BE-031 (#410) no per-element
-   * list price had been verified and it sat in the gaps as `price_unknown`;
-   * with the Essentials price recorded it is priced like Places, and the only
-   * standing gaps are the two uninstrumented Maps SDK rows.
-   */
-  it('no longer reports Routes as a gap once its price is verified', async () => {
-    const { port } = stubPort();
-    const res = await new CmsOpsMetricsService(config, port).providers('24h');
-    expect(
-      res.costModel.measurementGaps.find((g) => g.key === 'google.routeMatrix'),
-    ).toBeUndefined();
-    expect(res.costModel.measurementGaps.map((g) => g.key).sort()).toEqual([
-      'google.maps_sdk_android',
-      'google.maps_sdk_ios',
-    ]);
   });
 });

@@ -232,26 +232,30 @@ describe('#315 — nothing about the store reaches the caller', () => {
   });
 
   /**
-   * #335 gave this surface a price list, so it now states an amount. The rule
-   * the old `units_only` assertion protected is unchanged and is what this
-   * still checks: an estimate must not present itself as a bill, and the
-   * things nobody measured must be named rather than folded into a zero.
+   * COST-BE-035 (#420), ADR-0014 amendment: this surface states no amount at
+   * all. Runtime facts and a pointer to the Cost Center row, nothing priced.
    */
-  it('states an estimate as an estimate, and names what it could not price', async () => {
-    const body = JSON.stringify((await get(ROUTES[0]!, 'ops_admin')).json());
-    for (const forbidden of ['actualSpend', 'billedAmount', 'invoiceCost']) {
-      expect(body).not.toContain(forbidden);
+  it('states no amount and points each row at its Cost Center row', async () => {
+    for (const route of ROUTES) {
+      const body = JSON.stringify((await get(route, 'ops_admin')).json());
+      for (const forbidden of [
+        'costModel',
+        'estimatedCost',
+        'costComplete',
+        'unpricedOperations',
+        'measurementGaps',
+        'actualSpend',
+        'billedAmount',
+        'invoiceCost',
+      ]) {
+        expect(body, `${route} ${forbidden}`).not.toContain(forbidden);
+      }
     }
-    const summary = (await get(ROUTES[0]!, 'ops_admin')).json();
-    expect(summary.costModel.kind).toBe('estimated');
-    expect(summary.costModel.basis).toBe('ESTIMATED');
-    expect(summary.costModel.currency).toBe('USD');
-    // A free cap is monthly; these windows are not. Said in the payload.
-    expect(summary.costModel.freeCapApplied).toBe(false);
-    const gaps: { key: string; kind: string }[] = summary.costModel.measurementGaps;
-    expect(gaps.find((g) => g.key === 'google.maps_sdk_ios')?.kind).toBe('not_instrumented');
-    // Routes has a verified price since COST-BE-031 (#410); it is no longer a gap.
-    expect(gaps.find((g) => g.key === 'google.routeMatrix')).toBeUndefined();
+    const providers = (await get(ROUTES[1]!, 'ops_admin')).json();
+    const places = providers.providers.find((p: { provider: string }) => p.provider === 'places');
+    expect(places.costCenter).toEqual({ providerId: 'google', serviceId: 'google.places' });
+    const sdk = providers.providers.find((p: { provider: string }) => p.provider === 'maps_sdk');
+    expect(sdk.costCenter).toEqual({ providerId: 'google', serviceId: null });
   });
 });
 

@@ -128,3 +128,31 @@ which no longer exists.
 
 Roll back: revert both PRs together. The registry data change is additive and
 the tables are untouched, so there is no data migration to reverse.
+
+## Amendment 2026-09-05 — no money on `/monitoring` (COST-BE-035 / COST-CMS-014)
+
+Owner decision, after the two figures were seen side by side: `/monitoring`
+printed 0.25 USD for Google Places (24h, list price, no free tier, from a
+Prometheus `increase()`) while `/costs` printed 0.00 USD for the same service
+and day (durable ledger, month to date, free tier applied). Two calculations
+of one cost, from two stores, with two conventions, cannot agree — and a
+reader with both open has no way to know which to believe.
+
+**Decision.** `/monitoring` is the runtime surface and states no amount.
+`/cms/ops/summary`, `/cms/ops/providers` and `/cms/ops/providers/{provider}`
+drop `costModel`, `estimatedCost`, `estimatedCostMicros`, `costComplete`,
+`unpricedOperations` and `measurementGaps`; the ops domain no longer reads the
+price list to make a number. Runtime facts stay: calls, success / failure /
+rejected rates, latency percentiles and **billable units** (`billableUnits`,
+`googleSku` — a count and a SKU name, not a price). Each provider and
+operation row carries `costCenter: { providerId, serviceId | null }` — registry
+ids — and the CMS renders a link to that row on `/costs` where the column used
+to show an estimate. `/costs` (Cost API v2) is the only surface for actual
+cost, estimates, forecast, billing semantics, free-tier treatment and manual
+charges (ADR-0015). One cost calculation, one store.
+
+**Compatibility.** The CMS contract already treated the estimate fields as
+optional; `costModel` was required. The CMS change (COST-CMS-014) removes it
+and reads `costCenter` as optional, so it tolerates both payload shapes; the BE
+change is a removal. Deploy the CMS first, then the BE. The legacy
+`gaps[]` on `/cms/ops/costs` (Cost API v1, deprecated) is untouched.

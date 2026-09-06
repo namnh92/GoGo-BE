@@ -6011,7 +6011,7 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/CmsOpsEnvelope'
                   - type: object
-                    required: [totals, trends, costModel, latencySemantics]
+                    required: [totals, trends, latencySemantics]
                     properties:
                       totals:
                         oneOf:
@@ -6025,7 +6025,6 @@ paths:
                         oneOf:
                           - $ref: '#/components/schemas/CmsOpsTrends'
                           - type: 'null'
-                      costModel: { $ref: '#/components/schemas/CmsOpsCostModel' }
                       latencySemantics:
                         $ref: '#/components/schemas/CmsOpsLatencySemantics'
         '403': { description: Role may not read operational data }
@@ -6050,12 +6049,11 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/CmsOpsEnvelope'
                   - type: object
-                    required: [providers, costModel, latencySemantics]
+                    required: [providers, latencySemantics]
                     properties:
                       providers:
                         type: array
                         items: { $ref: '#/components/schemas/CmsOpsProvider' }
-                      costModel: { $ref: '#/components/schemas/CmsOpsCostModel' }
                       latencySemantics:
                         $ref: '#/components/schemas/CmsOpsLatencySemantics'
         '403': { description: Role may not read operational data }
@@ -6094,7 +6092,7 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/CmsOpsEnvelope'
                   - type: object
-                    required: [provider, costModel, latencySemantics]
+                    required: [provider, latencySemantics]
                     properties:
                       provider:
                         oneOf:
@@ -6104,7 +6102,6 @@ paths:
                         oneOf:
                           - $ref: '#/components/schemas/CmsOpsTrends'
                           - type: 'null'
-                      costModel: { $ref: '#/components/schemas/CmsOpsCostModel' }
                       latencySemantics:
                         $ref: '#/components/schemas/CmsOpsLatencySemantics'
         '403': { description: Role may not read operational data }
@@ -6492,81 +6489,20 @@ components:
             The excluded mass is reported separately as `rejectedLatency`.
         p99MinSamples: { type: integer }
 
-    CmsOpsCostModel:
+    CmsOpsCostCenterRef:
       type: object
-      required:
-        [
-          kind,
-          estimatedCost,
-          estimatedCostMicros,
-          currency,
-          basis,
-          confidence,
-          pricingVersion,
-          freeCapApplied,
-          costComplete,
-          unpricedOperations,
-          measurementGaps,
-          note,
-        ]
+      required: [providerId, serviceId]
       description: >
-        What the cost number is, in the payload rather than in a comment
-        nobody reading the JSON will see.
-
-
-        Before #335 this was `units_only` with `estimatedCost: null`, because
-        no price existed anywhere in the system. There is now a versioned list
-        price, so the number is stated — with every qualification attached to
-        it rather than assumed.
+        COST-BE-035 (#420), ADR-0014 amendment — where the money for this row
+        lives. The ops surface states no amount: it used to price its own
+        counters at list price with no free tier while `/cms/ops/costs` read
+        the durable ledger with the cap applied, and the two could not agree
+        for one service on one day. Registry ids, so the console can link to
+        the Cost Center row; `serviceId` is null where the console group spans
+        several services (the two Maps SDKs) and the link lands on the provider.
       properties:
-        kind: { type: string, enum: [estimated] }
-        estimatedCost:
-          type: [integer, 'null']
-          description: >
-            Integer USD minor units (cents). Null where nothing under the
-            group has a verified price — an absence, never a zero. Rounded so a
-            real charge under one cent reports as one cent rather than as
-            nothing; `estimatedCostMicros` carries the exact figure.
-        estimatedCostMicros:
-          type: [integer, 'null']
-          description: USD micros. The exact value the minor-unit figure is rounded from.
-        currency: { type: [string, 'null'], example: USD }
-        basis:
-          type: string
-          enum: [ESTIMATED]
-          description: >
-            Arithmetic over our own counters against a list price. Not an
-            invoice. No field here is named `billed`, `actualSpend` or
-            `invoiceCost`, because none of them would be true.
-        confidence: { type: string, enum: [MEDIUM] }
-        pricingVersion:
-          type: string
-          description: Which price list produced the number.
-          example: '2026-09-01'
-        freeCapApplied:
-          type: boolean
-          description: >
-            False on this surface, always. A free cap is monthly and these
-            windows are 1h–30d, so subtracting a monthly allowance from an hour
-            of traffic would understate by an arbitrary amount. Month-to-date
-            spend with the cap applied is on `/cms/ops/costs`.
-        costComplete:
-          type: boolean
-          description: >
-            False when at least one operation in the group has no verified list
-            price. The sum is then a floor, not a total, and the reader is told
-            which.
-        unpricedOperations:
-          type: array
-          items: { type: string }
-          description: The operations whose units are counted but whose price is unknown.
-        measurementGaps:
-          type: array
-          items: { $ref: '#/components/schemas/CmsOpsCostGap' }
-          description: >
-            What has no number, and why. Two different absences, never merged
-            into one.
-        note: { type: string }
+        providerId: { type: string, example: google }
+        serviceId: { type: [string, 'null'], example: google.places }
 
     CmsOpsCostGap:
       type: object
@@ -6600,10 +6536,6 @@ components:
           latency,
           rejectedLatency,
           billableUnits,
-          estimatedCost,
-          estimatedCostMicros,
-          costComplete,
-          unpricedOperations,
         ]
       properties:
         providerRequests: { type: integer }
@@ -6629,11 +6561,11 @@ components:
           properties:
             p50: { type: [number, 'null'] }
             p95: { type: [number, 'null'] }
-        billableUnits: { type: integer }
-        estimatedCost: { type: [integer, 'null'] }
-        estimatedCostMicros: { type: [integer, 'null'] }
-        costComplete: { type: boolean }
-        unpricedOperations: { type: array, items: { type: string } }
+        billableUnits:
+          type: integer
+          description: >
+            Measured SKU units — a count, never a price. The money for any of
+            them is on `/cms/ops/costs`; see `CmsOpsCostCenterRef`.
 
     CmsOpsProvider:
       type: object
@@ -6648,10 +6580,7 @@ components:
           successRate,
           latency,
           billableUnits,
-          estimatedCost,
-          estimatedCostMicros,
-          costComplete,
-          unpricedOperations,
+          costCenter,
         ]
       properties:
         provider:
@@ -6681,12 +6610,7 @@ components:
             Null where the provider has no SKU counter. Sheets is quota-limited
             rather than billed per call, so it is null and must never render as
             0, which reads as "free".
-        estimatedCost:
-          type: [integer, 'null']
-          description: USD minor units at list price. Null where nothing here has a verified price.
-        estimatedCostMicros: { type: [integer, 'null'] }
-        costComplete: { type: boolean }
-        unpricedOperations: { type: array, items: { type: string } }
+        costCenter: { $ref: '#/components/schemas/CmsOpsCostCenterRef' }
 
     CmsOpsProviderDetail:
       allOf:
@@ -6711,8 +6635,7 @@ components:
           latency,
           billableUnits,
           googleSku,
-          estimatedCost,
-          estimatedCostMicros,
+          costCenter,
         ]
       properties:
         method:
@@ -6734,12 +6657,7 @@ components:
           type: [string, 'null']
           description: Null where the call is not a billed Google SKU (Sheets, short-link expansion).
           example: Places API (New) — Place Details Enterprise
-        estimatedCost: { type: [integer, 'null'] }
-        estimatedCostMicros:
-          type: [integer, 'null']
-          description: >
-            USD micros at list price. Null when the units are unknown **or**
-            the price is — both are absences, and neither is a zero.
+        costCenter: { $ref: '#/components/schemas/CmsOpsCostCenterRef' }
 
     CmsOpsTrends:
       type: object
