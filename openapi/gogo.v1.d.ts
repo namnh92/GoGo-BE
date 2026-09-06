@@ -1992,6 +1992,76 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/places/{placeId}/media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Editor: attach an authorized upload key to a place
+         * @description Bytes do not pass through here. Ask `POST /cms/uploads` for a presigned PUT with purpose `place_image`, PUT the file to storage, then hand the key to this route.
+         *
+         *     The key must be **this actor's**, for **that purpose**, unexpired and unclaimed. An unknown, expired, foreign or already-attached key is refused identically, so a caller learns only that their key is unusable — never whether somebody else's exists. The photo lands `pending`: the person who uploads is not automatically the person who decides it may be published.
+         */
+        post: operations["cmsAttachPlaceMedia"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/places/{placeId}/media/attachable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Editor: staff uploads this actor may still attach to the place
+         * @description Never consumer purposes. A member's `checkin_photo` is their picture of their evening and does not become catalog art because an editor can see a list — so this returns only the caller's own `place_image` keys that are pending and unexpired, or already on this place.
+         *
+         *     The `/attachable` suffix keeps it off `:mediaId`; Nest matches in declaration order.
+         */
+        get: operations["cmsListAttachableMedia"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/places/{placeId}/media/{mediaId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Editor: detach a photo from the place
+         * @description Detach is not delete. The `place_media` row goes; the object in storage and its `media_uploads` row stay, because the same key may be referenced by another place after a merge and because removing a photo from one place is not a request to destroy a file. Only when nothing else references the key does the upload return to `pending`, for the existing sweeper to reclaim on its own schedule.
+         */
+        delete: operations["cmsDetachPlaceMedia"];
+        options?: never;
+        head?: never;
+        /**
+         * Editor: reorder, caption, choose cover, decide moderation
+         * @description A moderation decision carries a reason and the person who made it: a rejection with no recorded reason is not auditable, and the next editor cannot tell "blurry" from "somebody's face". `moderationReason` is required whenever `moderation` changes.
+         *
+         *     Rejecting a photo clears `isCover`. Consumers filter on `approved`, so a rejected cover would leave the place with no lead image and nothing on screen saying why.
+         */
+        patch: operations["cmsUpdatePlaceMedia"];
+        trace?: never;
+    };
     "/cms/places/{id}/prices": {
         parameters: {
             query?: never;
@@ -5156,6 +5226,28 @@ export interface components {
              */
             planId?: string;
         };
+        CmsPlaceMedia: {
+            /** Format: uuid */
+            id: string;
+            storageKey: string;
+            /** @description Null when media hosting is not configured in this environment. The console could previously list a key and never show the picture, and deciding on a photo without seeing it is not moderation (#191). */
+            url?: string | null;
+            width?: number | null;
+            height?: number | null;
+            sortOrder: number;
+            /** @description `pending`, `approved` or `rejected`. Left unconstrained for the same reason as `hours[].source`: `CmsPlaceDetail.media` already returned this property as an open string, and narrowing a response property reads as breaking to the compatibility gate even when the value set has never been anything else. Requests do constrain it — see `cmsUpdatePlaceMedia`. */
+            moderation: string;
+            moderationReason?: string | null;
+            caption?: string | null;
+            /** @description Provider terms survive an editor touching the list (FR-INGEST-014). */
+            attribution?: string | null;
+            /** @description At most one per place. */
+            isCover: boolean;
+            /** @enum {string} */
+            sourceType: "editorial" | "provider" | "community" | "google_derived";
+            /** Format: date-time */
+            createdAt?: string | null;
+        };
         CmsPlaceDetail: {
             /** Format: uuid */
             id: string;
@@ -5252,15 +5344,8 @@ export interface components {
                 /** Format: date-time */
                 fetchedAt?: string | null;
             }[];
-            media: {
-                /** Format: uuid */
-                id: string;
-                storageKey: string;
-                width?: number | null;
-                height?: number | null;
-                sortOrder: number;
-                moderation: string;
-            }[];
+            /** @description Cover first, then the editor's order. */
+            media: components["schemas"]["CmsPlaceMedia"][];
             /** Format: date-time */
             freshnessCheckedAt?: string | null;
             /** Format: date-time */
@@ -9900,6 +9985,139 @@ export interface operations {
             409: components["responses"]["Conflict"];
         };
     };
+    cmsAttachPlaceMedia: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                placeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    storageKey: string;
+                    caption?: string | null;
+                    /** @description Provider terms travel with a provider photo (FR-INGEST-014). */
+                    attribution?: string | null;
+                    isCover?: boolean;
+                    width?: number | null;
+                    height?: number | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Attached */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsPlaceMedia"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    cmsListAttachableMedia: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                placeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Attachable uploads */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: {
+                            /** Format: uuid */
+                            id: string;
+                            storageKey: string;
+                            contentType: string;
+                            contentLength: number;
+                            status: string;
+                            attachedHere: boolean;
+                            url?: string | null;
+                            /** Format: date-time */
+                            createdAt: string;
+                        }[];
+                    };
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsDetachPlaceMedia: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                placeId: string;
+                mediaId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Detached */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsUpdatePlaceMedia: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                placeId: string;
+                mediaId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    sortOrder?: number;
+                    /** @enum {string} */
+                    moderation?: "pending" | "approved" | "rejected";
+                    moderationReason?: string;
+                    caption?: string | null;
+                    attribution?: string | null;
+                    /** @description One per place; setting it clears the previous cover. */
+                    isCover?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsPlaceMedia"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
     cmsAddPlacePrice: {
         parameters: {
             query?: never;
@@ -11238,9 +11456,11 @@ export interface operations {
                 "application/json": {
                     /**
                      * @description Staff-only purposes. Deliberately disjoint from the consumer set, so a phone cannot authorize a banner image and an editor's key is not accepted by the check-in flow.
+                     *
+                     *     `place_image` (#191) is the catalog-photo purpose, and is deliberately not the consumer `place_photo`: the same kind of picture, a different kind of claim. Merging them would let the console attach a key a member uploaded for their own check-in.
                      * @enum {string}
                      */
-                    purpose: "banner_image" | "campaign_image";
+                    purpose: "banner_image" | "campaign_image" | "place_image";
                     /** @enum {string} */
                     contentType: "image/jpeg" | "image/png" | "image/webp" | "image/heic";
                     /** @description Declared up front, so an oversized file is refused before a URL exists. */

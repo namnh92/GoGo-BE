@@ -303,7 +303,9 @@ export class SearchRepository {
         select m.id, m.storage_key, m.width, m.height, m.uploaded_by_user_id
         from place_media m
         where m.place_id = p.id and m.moderation = 'approved'
-        order by m.sort_order, m.created_at
+        -- #191: the cover is what an editor chose to represent the place, so
+        -- it leads even when another approved photo sorts earlier.
+        order by m.is_cover desc, m.sort_order, m.created_at
         limit 1
       ) pm on true
       cross join lateral (select ${sortValue} as sort_value) sv
@@ -360,8 +362,10 @@ export class SearchRepository {
             'id', m.id, 'storageKey', m.storage_key,
             'width', m.width, 'height', m.height,
             'source', case when m.uploaded_by_user_id is null then 'manual' else 'community' end,
-            'moderation', m.moderation)
-            order by m.sort_order, m.created_at)
+            'moderation', m.moderation,
+            'caption', m.caption, 'attribution', m.attribution,
+            'isCover', m.is_cover)
+            order by m.is_cover desc, m.sort_order, m.created_at)
           from place_media m
           where m.place_id = p.id and m.moderation = 'approved') as media
       from places p

@@ -316,6 +316,13 @@
       "when": 1788675980330,
       "tag": "0046_place-editor-contracts",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1788675981330,
+      "tag": "0047_cms-place-media",
+      "breakpoints": true
     }
   ]
 }

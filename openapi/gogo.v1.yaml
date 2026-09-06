@@ -3642,6 +3642,164 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /cms/places/{placeId}/media:
+    post:
+      operationId: cmsAttachPlaceMedia
+      tags: [cms]
+      summary: 'Editor: attach an authorized upload key to a place'
+      description: >
+        Bytes do not pass through here. Ask `POST /cms/uploads` for a presigned
+        PUT with purpose `place_image`, PUT the file to storage, then hand the
+        key to this route.
+
+
+        The key must be **this actor's**, for **that purpose**, unexpired and
+        unclaimed. An unknown, expired, foreign or already-attached key is
+        refused identically, so a caller learns only that their key is unusable
+        — never whether somebody else's exists. The photo lands `pending`: the
+        person who uploads is not automatically the person who decides it may be
+        published.
+      parameters:
+        - { name: placeId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [storageKey]
+              properties:
+                storageKey: { type: string, maxLength: 400 }
+                caption: { type: [string, 'null'], maxLength: 300 }
+                attribution:
+                  type: [string, 'null']
+                  maxLength: 300
+                  description: Provider terms travel with a provider photo (FR-INGEST-014).
+                isCover: { type: boolean }
+                width: { type: [integer, 'null'] }
+                height: { type: [integer, 'null'] }
+      responses:
+        '201':
+          description: Attached
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsPlaceMedia' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /cms/places/{placeId}/media/attachable:
+    get:
+      operationId: cmsListAttachableMedia
+      tags: [cms]
+      summary: 'Editor: staff uploads this actor may still attach to the place'
+      description: >
+        Never consumer purposes. A member's `checkin_photo` is their picture of
+        their evening and does not become catalog art because an editor can see
+        a list — so this returns only the caller's own `place_image` keys that
+        are pending and unexpired, or already on this place.
+
+
+        The `/attachable` suffix keeps it off `:mediaId`; Nest matches in
+        declaration order.
+      parameters:
+        - { name: placeId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Attachable uploads
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        [
+                          id,
+                          storageKey,
+                          contentType,
+                          contentLength,
+                          status,
+                          attachedHere,
+                          createdAt,
+                        ]
+                      properties:
+                        id: { type: string, format: uuid }
+                        storageKey: { type: string }
+                        contentType: { type: string }
+                        contentLength: { type: integer }
+                        status: { type: string }
+                        attachedHere: { type: boolean }
+                        url: { type: [string, 'null'] }
+                        createdAt: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/places/{placeId}/media/{mediaId}:
+    patch:
+      operationId: cmsUpdatePlaceMedia
+      tags: [cms]
+      summary: 'Editor: reorder, caption, choose cover, decide moderation'
+      description: >
+        A moderation decision carries a reason and the person who made it: a
+        rejection with no recorded reason is not auditable, and the next editor
+        cannot tell "blurry" from "somebody's face". `moderationReason` is
+        required whenever `moderation` changes.
+
+
+        Rejecting a photo clears `isCover`. Consumers filter on `approved`, so a
+        rejected cover would leave the place with no lead image and nothing on
+        screen saying why.
+      parameters:
+        - { name: placeId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: mediaId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                sortOrder: { type: integer, minimum: 0, maximum: 999 }
+                moderation: { type: string, enum: [pending, approved, rejected] }
+                moderationReason: { type: string, minLength: 3, maxLength: 500 }
+                caption: { type: [string, 'null'], maxLength: 300 }
+                attribution: { type: [string, 'null'], maxLength: 300 }
+                isCover:
+                  {
+                    type: boolean,
+                    description: 'One per place; setting it clears the previous cover.',
+                  }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsPlaceMedia' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: cmsDetachPlaceMedia
+      tags: [cms]
+      summary: 'Editor: detach a photo from the place'
+      description: >
+        Detach is not delete. The `place_media` row goes; the object in storage
+        and its `media_uploads` row stay, because the same key may be referenced
+        by another place after a merge and because removing a photo from one
+        place is not a request to destroy a file. Only when nothing else
+        references the key does the upload return to `pending`, for the existing
+        sweeper to reclaim on its own schedule.
+      parameters:
+        - { name: placeId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: mediaId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Detached }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /cms/places/{id}/prices:
     post:
       operationId: cmsAddPlacePrice
@@ -4844,11 +5002,20 @@ paths:
               properties:
                 purpose:
                   type: string
-                  enum: [banner_image, campaign_image]
+                  enum: [banner_image, campaign_image, place_image]
                   description: >
                     Staff-only purposes. Deliberately disjoint from the consumer
                     set, so a phone cannot authorize a banner image and an
                     editor's key is not accepted by the check-in flow.
+
+
+                    `place_image` (#191) is the catalog-photo purpose, and is
+                    deliberately not the consumer `place_photo`: the same kind
+                    of picture, a different kind of claim. Merging them would
+                    let the console attach a key a member uploaded for their own
+                    check-in.
+                  x-purposes:
+                    place_image: Attach with `POST /cms/places/{placeId}/media`.
                 contentType:
                   type: string
                   enum: [image/jpeg, image/png, image/webp, image/heic]
@@ -8897,6 +9064,39 @@ components:
           type: string
           format: uuid
           description: The room's current plan, when one exists.
+    CmsPlaceMedia:
+      type: object
+      required: [id, storageKey, sortOrder, moderation, isCover, sourceType]
+      properties:
+        id: { type: string, format: uuid }
+        storageKey: { type: string }
+        url:
+          type: [string, 'null']
+          description: >
+            Null when media hosting is not configured in this environment. The
+            console could previously list a key and never show the picture, and
+            deciding on a photo without seeing it is not moderation (#191).
+        width: { type: [integer, 'null'] }
+        height: { type: [integer, 'null'] }
+        sortOrder: { type: integer }
+        moderation:
+          type: string
+          description: >
+            `pending`, `approved` or `rejected`. Left unconstrained for the same
+            reason as `hours[].source`: `CmsPlaceDetail.media` already returned
+            this property as an open string, and narrowing a response property
+            reads as breaking to the compatibility gate even when the value set
+            has never been anything else. Requests do constrain it — see
+            `cmsUpdatePlaceMedia`.
+        moderationReason: { type: [string, 'null'] }
+        caption: { type: [string, 'null'] }
+        attribution:
+          type: [string, 'null']
+          description: Provider terms survive an editor touching the list (FR-INGEST-014).
+        isCover: { type: boolean, description: At most one per place. }
+        sourceType: { type: string, enum: [editorial, provider, community, google_derived] }
+        createdAt: { type: [string, 'null'], format: date-time }
+
     CmsPlaceDetail:
       type: object
       required:
@@ -9047,16 +9247,8 @@ components:
               fetchedAt: { type: [string, 'null'], format: date-time }
         media:
           type: array
-          items:
-            type: object
-            required: [id, storageKey, sortOrder, moderation]
-            properties:
-              id: { type: string, format: uuid }
-              storageKey: { type: string }
-              width: { type: [integer, 'null'] }
-              height: { type: [integer, 'null'] }
-              sortOrder: { type: integer }
-              moderation: { type: string }
+          description: Cover first, then the editor's order.
+          items: { $ref: '#/components/schemas/CmsPlaceMedia' }
         freshnessCheckedAt: { type: [string, 'null'], format: date-time }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
