@@ -46,7 +46,10 @@ describe('PreferencesController', () => {
     const declared = declaredSuccessCodes('completeMyPreferences');
     expect(declared).toEqual(['200']);
 
-    const explicit = Reflect.getMetadata(HTTP_CODE_METADATA, PreferencesController.prototype.completeMine);
+    const explicit = Reflect.getMetadata(
+      HTTP_CODE_METADATA,
+      PreferencesController.prototype.completeMine,
+    );
     // Nest's default for @Post is 201, so the decorator has to be present.
     expect(explicit).toBe(Number(declared[0]));
   });
