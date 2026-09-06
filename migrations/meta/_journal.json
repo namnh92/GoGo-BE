@@ -330,6 +330,13 @@
       "when": 1789084800000,
       "tag": "0048_notification-push-delivery",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1789171200000,
+      "tag": "0049_share-links",
+      "breakpoints": true
     }
   ]
 }
