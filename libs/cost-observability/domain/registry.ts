@@ -1,4 +1,6 @@
+import type { RuntimeOperation } from '@gogo/observability';
 import { CAPABILITIES, type Capability } from './capabilities';
+import { NEON_POSTGRES_OPERATIONS, UPSTASH_REDIS_OPERATIONS } from './runtime-operations';
 
 /**
  * COST-BE-015 (#367) — epic §5, the one canonical registry.
@@ -386,6 +388,20 @@ const google = (service: string) => `google.${service}`;
  * two are the epic §4 distinction in miniature: a 429 is a call that happened
  * and cost nothing.
  */
+/**
+ * #414 — an infrastructure operation: measured at runtime, metered by nobody
+ * here. `id` is the label value the adapter emits, so the two cannot drift.
+ */
+function runtimeOperation(op: RuntimeOperation, displayName: string): OperationDefinition {
+  return {
+    id: op.operation,
+    serviceId: op.service,
+    displayName,
+    instrumented: true,
+    usageMeters: [],
+  };
+}
+
 function callMeters(
   operationId: string,
   serviceId: string,
@@ -734,8 +750,12 @@ const CLOUDFLARE: ProviderDefinition = {
       providerId: 'cloudflare',
       displayName: 'R2',
       category: 'object_storage',
-      // The S3 client in `r2-storage.adapter.ts`; unmeasured until #414.
-      runtime: 'in_process',
+      // #414 — `r2-storage.adapter.ts` only *signs* an upload URL (SigV4, in
+      // memory); the bytes go from the client straight to R2 and no request
+      // leaves this process. Nothing here to time, so no runtime — the same
+      // reading as Workers. If a server-side GET/HEAD/DELETE ever lands, this
+      // becomes `in_process` with that operation declared, not a coverage rule.
+      runtime: 'none',
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
       operations: [],
       meters: [
@@ -794,10 +814,25 @@ const UPSTASH: ProviderDefinition = {
       providerId: 'upstash',
       displayName: 'Redis',
       category: 'cache',
-      // Rate-limit store and room event bus; unmeasured until #414.
+      // #414 — rate-limit store, session revocation and the room event bus,
+      // each timed as one operation (see `runtime-operations.ts`). No usage
+      // meter on any of them: the command count Upstash bills is the
+      // collector's to read, not this process's to count (epic §8).
       runtime: 'in_process',
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
-      operations: [],
+      operations: [
+        runtimeOperation(UPSTASH_REDIS_OPERATIONS.rateLimitHit, 'Rate limit hit (INCR/EXPIRE)'),
+        runtimeOperation(UPSTASH_REDIS_OPERATIONS.sessionRevoke, 'Session revoke (SET EX)'),
+        runtimeOperation(UPSTASH_REDIS_OPERATIONS.sessionIsRevoked, 'Session revoked? (GET)'),
+        runtimeOperation(
+          UPSTASH_REDIS_OPERATIONS.roomEventsPublish,
+          'Room event publish (ZADD/PUBLISH)',
+        ),
+        runtimeOperation(
+          UPSTASH_REDIS_OPERATIONS.roomEventsSubscribe,
+          'Room event subscribe (ZRANGEBYSCORE/SUBSCRIBE)',
+        ),
+      ],
       meters: [
         billedServiceMeter(UPSTASH_REDIS, 'commands', 'command', 'redis.commands'),
         serviceMeter(UPSTASH_REDIS, 'storage_bytes', 'byte'),
@@ -848,10 +883,12 @@ const NEON: ProviderDefinition = {
       providerId: 'neon',
       displayName: 'Postgres',
       category: 'database',
-      // The connection pool; unmeasured until #414.
+      // #414 — every statement the pool runs, timed from the checked-out
+      // client (`@gogo/database` `createDb({ runtime })`). Compute hours are
+      // Neon's meter, read by its collector; this is how long our queries take.
       runtime: 'in_process',
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
-      operations: [],
+      operations: [runtimeOperation(NEON_POSTGRES_OPERATIONS.query, 'Query')],
       meters: [
         billedServiceMeter(NEON_POSTGRES, 'compute_hours', 'compute_hour', 'postgres.compute'),
         billedServiceMeter(NEON_POSTGRES, 'storage_gb_month', 'gb_month', 'postgres.storage'),

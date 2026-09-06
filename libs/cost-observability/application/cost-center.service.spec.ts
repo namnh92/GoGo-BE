@@ -508,14 +508,31 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     expect(row.status).toBe('active');
   });
 
-  it('a collector-only provider is NOT_INSTRUMENTED at runtime and AUTO for cost; a fee is N/A and MANUAL; planned is N/A and NONE', () => {
+  it('an infrastructure provider this process calls is FULL at runtime (#414) and AUTO for cost; one it only signs for has no runtime; a fee is N/A and MANUAL; planned is N/A and NONE', () => {
     const upstash = buildProviderRow(provider('upstash'), registry, inputs());
     expect(upstash.runtime).toEqual({
-      coverage: 'NOT_INSTRUMENTED',
-      services: { full: 0, partial: 0, notInstrumented: 1 },
-      operations: { instrumented: 0, total: 0 },
+      coverage: 'FULL',
+      services: { full: 1, partial: 0, notInstrumented: 0 },
+      operations: { instrumented: 5, total: 5 },
     });
     expect(upstash.cost.kind).toBe('AUTO');
+
+    const neon = buildProviderRow(provider('neon'), registry, inputs());
+    expect(neon.runtime).toEqual({
+      coverage: 'FULL',
+      services: { full: 1, partial: 0, notInstrumented: 0 },
+      operations: { instrumented: 1, total: 1 },
+    });
+
+    // R2 is only ever *signed for* here — the upload goes from the client to
+    // the bucket — and Workers run at the edge: no runtime surface on either.
+    const cloudflare = buildProviderRow(provider('cloudflare'), registry, inputs());
+    expect(cloudflare.runtime).toEqual({
+      coverage: 'N/A',
+      services: { full: 0, partial: 0, notInstrumented: 0 },
+      operations: { instrumented: 0, total: 0 },
+    });
+    expect(cloudflare.cost.kind).toBe('AUTO');
 
     const apple = buildProviderRow(provider('apple'), registry, inputs());
     expect(apple.status).toBe('active');

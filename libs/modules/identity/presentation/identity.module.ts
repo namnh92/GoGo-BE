@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import IORedis from 'ioredis';
 import { randomBytes } from 'node:crypto';
+import { NoopMetrics, RUNTIME_METRICS, type MetricsPort } from '@gogo/observability';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { AuthService, AUTH_OPTIONS, type AuthOptions } from '../application/auth.service';
 import {
@@ -65,7 +66,7 @@ import { SessionsController } from './sessions.controller';
     {
       // Denylist of revoked session ids, kept for one access-token lifetime.
       provide: REVOCATION_STORE,
-      useFactory: (config: IdentityConfig & { REDIS_URL?: string }) => {
+      useFactory: (config: IdentityConfig & { REDIS_URL?: string }, metrics?: MetricsPort) => {
         if (!config.REDIS_URL || config.NODE_ENV === 'test') return new InMemoryRevocationStore();
         const redis = new IORedis(config.REDIS_URL, {
           lazyConnect: true,
@@ -76,10 +77,13 @@ import { SessionsController } from './sessions.controller';
         // Fallback keeps this instance correct through a Redis blip; the cache
         // in front of it keeps an ordinary request off Redis altogether.
         return new CachedRevocationStore(
-          new FallbackRevocationStore(new RedisRevocationStore(redis)),
+          new FallbackRevocationStore(
+            new RedisRevocationStore(redis, metrics ?? new NoopMetrics()),
+          ),
         );
       },
-      inject: [APP_CONFIG],
+      // #414 — optional: the registry sink exists in the API, not in every test module.
+      inject: [APP_CONFIG, { token: RUNTIME_METRICS, optional: true }],
     },
     {
       // Per process by design — see BASELINE_RATE_LIMIT_STORE.
@@ -92,7 +96,7 @@ import { SessionsController } from './sessions.controller';
       // Redis-backed limits when configured (multi-instance correct); the
       // wrapper fails open to the per-process store on Redis outage.
       provide: RATE_LIMIT_STORE,
-      useFactory: (config: IdentityConfig & { REDIS_URL?: string }) => {
+      useFactory: (config: IdentityConfig & { REDIS_URL?: string }, metrics?: MetricsPort) => {
         if (!config.REDIS_URL || config.NODE_ENV === 'test') {
           return new InMemoryRateLimitStore();
         }
@@ -104,9 +108,11 @@ import { SessionsController } from './sessions.controller';
         redis.on('error', () => {
           /* handled by fallback wrapper per hit */
         });
-        return new FallbackRateLimitStore(new RedisRateLimitStore(redis));
+        return new FallbackRateLimitStore(
+          new RedisRateLimitStore(redis, metrics ?? new NoopMetrics()),
+        );
       },
-      inject: [APP_CONFIG],
+      inject: [APP_CONFIG, { token: RUNTIME_METRICS, optional: true }],
     },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: RateLimitGuard },

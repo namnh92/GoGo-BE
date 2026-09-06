@@ -90,6 +90,11 @@ export {
   type UsageMeterDefinition,
 } from '../domain/registry';
 export {
+  NEON_POSTGRES_OPERATIONS,
+  RUNTIME_OPERATIONS,
+  UPSTASH_REDIS_OPERATIONS,
+} from '../domain/runtime-operations';
+export {
   RUNTIME_COVERAGES,
   providerRuntime,
   serviceRuntime,

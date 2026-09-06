@@ -1,4 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { UPSTASH_REDIS_OPERATIONS } from '@gogo/cost-observability';
+import { meterRuntimeCall, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import type { RedisLike } from '../presentation/redis-rate-limit.store';
 
 export const REVOCATION_STORE = Symbol('REVOCATION_STORE');
@@ -15,18 +17,26 @@ export interface RevocationStore {
  * one access-token lifetime, which is all the time a leaked token has left.
  */
 export class RedisRevocationStore implements RevocationStore {
-  constructor(private readonly redis: RedisLike & { setex?: unknown; exists?: unknown }) {}
+  constructor(
+    private readonly redis: RedisLike & { setex?: unknown; exists?: unknown },
+    /** #414 — each method is one runtime call; the cache in front decides how often. */
+    private readonly metrics: MetricsPort = new NoopMetrics(),
+  ) {}
 
-  async revoke(sessionId: string, ttlSeconds: number): Promise<void> {
-    const r = this.redis as unknown as {
-      set(k: string, v: string, mode: string, ttl: number): Promise<unknown>;
-    };
-    await r.set(`revoked:${sessionId}`, '1', 'EX', Math.max(1, ttlSeconds));
+  revoke(sessionId: string, ttlSeconds: number): Promise<void> {
+    return meterRuntimeCall(this.metrics, UPSTASH_REDIS_OPERATIONS.sessionRevoke, async () => {
+      const r = this.redis as unknown as {
+        set(k: string, v: string, mode: string, ttl: number): Promise<unknown>;
+      };
+      await r.set(`revoked:${sessionId}`, '1', 'EX', Math.max(1, ttlSeconds));
+    });
   }
 
-  async isRevoked(sessionId: string): Promise<boolean> {
-    const r = this.redis as unknown as { get(k: string): Promise<string | null> };
-    return (await r.get(`revoked:${sessionId}`)) !== null;
+  isRevoked(sessionId: string): Promise<boolean> {
+    return meterRuntimeCall(this.metrics, UPSTASH_REDIS_OPERATIONS.sessionIsRevoked, async () => {
+      const r = this.redis as unknown as { get(k: string): Promise<string | null> };
+      return (await r.get(`revoked:${sessionId}`)) !== null;
+    });
   }
 }
 

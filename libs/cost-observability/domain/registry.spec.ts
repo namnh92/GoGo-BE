@@ -8,6 +8,7 @@ import {
   assertCapabilitiesKnown,
   type RegistryData,
 } from './registry';
+import { RUNTIME_OPERATIONS } from './runtime-operations';
 
 const TODAY = '2026-09-03';
 
@@ -108,7 +109,6 @@ describe('cost registry — epic §5 inventory', () => {
       'google.places',
       'google.routes',
       'google.sheets',
-      'cloudflare.r2',
       'upstash.redis',
       'neon.postgres',
     ]) {
@@ -117,11 +117,14 @@ describe('cost registry — epic §5 inventory', () => {
     for (const id of ['google.maps_sdk_ios', 'google.maps_sdk_android']) {
       expect(surface(id), id).toBe('client_sdk');
     }
-    // Collected or billed, and never called from here.
+    // Collected or billed, and never called from here. R2 is on this list
+    // since #414: the adapter signs an upload URL and the bytes go from the
+    // client to the bucket — no request leaves the process.
     for (const id of [
       'github.actions',
       'aws.aggregate_billing',
       'aws.ssm',
+      'cloudflare.r2',
       'cloudflare.workers',
       'gogo.cost_observability',
       'google.play_console',
@@ -270,6 +273,29 @@ describe('cost registry — invariants at construction', () => {
 
   it('accepts a well-formed registry', () => {
     expect(() => new CostRegistry(minimal())).not.toThrow();
+  });
+
+  it('declares every infrastructure runtime operation this process emits, instrumented, on its own service (#414)', () => {
+    for (const op of RUNTIME_OPERATIONS) {
+      const declared = COST_REGISTRY.operation(op.operation);
+      expect(declared, op.operation).not.toBeNull();
+      expect(declared!.serviceId, op.operation).toBe(op.service);
+      expect(declared!.instrumented, op.operation).toBe(true);
+      // Runtime telemetry is not a cost meter (§8): nothing here is metered.
+      expect(declared!.usageMeters, op.operation).toEqual([]);
+      expect(COST_REGISTRY.service(op.service)!.providerId, op.operation).toBe(op.provider);
+    }
+    // And nothing in-process outside Google is left with a surface and no operation.
+    for (const p of COST_REGISTRY.providers()) {
+      for (const s of p.services) {
+        if (s.runtime === 'in_process' && p.id !== 'google') {
+          expect(
+            s.operations.some((o) => o.instrumented),
+            s.id,
+          ).toBe(true);
+        }
+      }
+    }
   });
 
   it('refuses an instrumented operation on a service that declares no runtime', () => {

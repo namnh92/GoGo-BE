@@ -473,13 +473,24 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
     );
     expect(play.runtime.coverage).toBe('N/A');
     expect(play.cost).toEqual({ kind: 'MANUAL', freshness: null });
-    // Upstash: this process calls Redis and measures nothing (#414); its
+    // Upstash: this process calls Redis and measures every call (#414); its
     // collector has no credentials here and has never run — UNKNOWN, not an
-    // error, because nothing was attempted.
+    // error, because nothing was attempted. Runtime and cost stay independent.
     expect(byId['upstash']).toMatchObject({
       status: 'active',
-      runtime: { coverage: 'NOT_INSTRUMENTED', services: { notInstrumented: 1 } },
+      runtime: {
+        coverage: 'FULL',
+        services: { full: 1 },
+        operations: { instrumented: 5, total: 5 },
+      },
       cost: { kind: 'AUTO', freshness: 'UNKNOWN' },
+    });
+    // Cloudflare: R2 is only signed for here and Workers run at the edge —
+    // nothing in this process to measure, so no runtime at all.
+    expect(byId['cloudflare']).toMatchObject({
+      status: 'active',
+      runtime: { coverage: 'N/A' },
+      cost: { kind: 'AUTO' },
     });
     // A fee: active (the form exists), no runtime, manual, nothing entered.
     expect(byId['apple']).toMatchObject({

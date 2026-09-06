@@ -1,3 +1,5 @@
+import { UPSTASH_REDIS_OPERATIONS } from '@gogo/cost-observability';
+import { meterRuntimeCall, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import {
   REPLAY_BUFFER_SIZE,
   type RoomEventBus,
@@ -55,26 +57,40 @@ export class RedisRoomEventBus implements RoomEventBus {
   constructor(
     private readonly commands: RedisPubSubLike,
     private readonly subscriber: RedisPubSubLike,
+    /** #414 — publish and subscribe are each one runtime call, commands and all. */
+    private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
-  async publish(input: PublishInput): Promise<SequencedRoomEvent> {
-    const event = buildEvent(input);
-    const seq = await this.commands.incr(seqKeyOf(input.roomId));
-    await this.commands.expire(seqKeyOf(input.roomId), SEQ_TTL_SECONDS);
+  publish(input: PublishInput): Promise<SequencedRoomEvent> {
+    return meterRuntimeCall(this.metrics, UPSTASH_REDIS_OPERATIONS.roomEventsPublish, async () => {
+      const event = buildEvent(input);
+      const seq = await this.commands.incr(seqKeyOf(input.roomId));
+      await this.commands.expire(seqKeyOf(input.roomId), SEQ_TTL_SECONDS);
 
-    const sequenced: SequencedRoomEvent = { seq, event };
-    const message = JSON.stringify(sequenced);
+      const sequenced: SequencedRoomEvent = { seq, event };
+      const message = JSON.stringify(sequenced);
 
-    const bufferKey = bufferKeyOf(input.roomId);
-    await this.commands.zadd(bufferKey, seq, message);
-    await this.commands.zremrangebyrank(bufferKey, 0, -(REPLAY_BUFFER_SIZE + 1));
-    await this.commands.expire(bufferKey, BUFFER_TTL_SECONDS);
+      const bufferKey = bufferKeyOf(input.roomId);
+      await this.commands.zadd(bufferKey, seq, message);
+      await this.commands.zremrangebyrank(bufferKey, 0, -(REPLAY_BUFFER_SIZE + 1));
+      await this.commands.expire(bufferKey, BUFFER_TTL_SECONDS);
 
-    await this.commands.publish(channelOf(input.roomId), message);
-    return sequenced;
+      await this.commands.publish(channelOf(input.roomId), message);
+      return sequenced;
+    });
   }
 
-  async subscribe(
+  subscribe(
+    roomId: string,
+    afterSeq: number | null,
+    listener: (event: SequencedRoomEvent) => void,
+  ): Promise<Subscription> {
+    return meterRuntimeCall(this.metrics, UPSTASH_REDIS_OPERATIONS.roomEventsSubscribe, () =>
+      this.attach(roomId, afterSeq, listener),
+    );
+  }
+
+  private async attach(
     roomId: string,
     afterSeq: number | null,
     listener: (event: SequencedRoomEvent) => void,

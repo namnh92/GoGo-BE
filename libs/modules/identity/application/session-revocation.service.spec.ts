@@ -1,5 +1,11 @@
+import { MetricsRegistry } from '@gogo/observability';
 import { describe, expect, it, vi } from 'vitest';
-import { CachedRevocationStore, type RevocationStore } from './session-revocation.service';
+import {
+  CachedRevocationStore,
+  FallbackRevocationStore,
+  RedisRevocationStore,
+  type RevocationStore,
+} from './session-revocation.service';
 
 function inner(revoked: Set<string> = new Set()) {
   const store: RevocationStore & { reads: number } = {
@@ -72,5 +78,51 @@ describe('CachedRevocationStore', () => {
     expect(await cached.isRevoked('bad')).toBe(true);
     expect(await cached.isRevoked('good')).toBe(false);
     expect(spy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('RedisRevocationStore runtime telemetry (#414)', () => {
+  function fakeRedis(fail = false) {
+    const values = new Map<string, string>();
+    return {
+      async incr() {
+        return 1;
+      },
+      async expire() {
+        return 1;
+      },
+      async set(k: string, v: string) {
+        if (fail) throw new Error('ECONNRESET');
+        values.set(k, v);
+      },
+      async get(k: string) {
+        if (fail) throw new Error('ECONNRESET');
+        return values.get(k) ?? null;
+      },
+    };
+  }
+
+  it('revoke and isRevoked are each one ok call, labelled by operation and never by session id', async () => {
+    const registry = new MetricsRegistry();
+    const store = new RedisRevocationStore(fakeRedis(), registry);
+    await store.revoke('sess-42', 60);
+    expect(await store.isRevoked('sess-42')).toBe(true);
+    expect(await store.isRevoked('sess-43')).toBe(false);
+    const out = registry.render();
+    expect(out).toContain(
+      'operation="upstash.redis.session.revoke",provider="upstash",service="upstash.redis",status="ok"} 1',
+    );
+    expect(out).toContain(
+      'operation="upstash.redis.session.is_revoked",provider="upstash",service="upstash.redis",status="ok"} 2',
+    );
+    expect(out).not.toContain('sess-4');
+  });
+
+  it('a Redis failure is recorded as error and still surfaces to the fail-open wrapper', async () => {
+    const registry = new MetricsRegistry();
+    const store = new FallbackRevocationStore(new RedisRevocationStore(fakeRedis(true), registry));
+    await store.revoke('sess-1', 60);
+    expect(await store.isRevoked('sess-1')).toBe(true);
+    expect(registry.render()).toContain('status="error"');
   });
 });

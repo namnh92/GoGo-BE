@@ -1,3 +1,5 @@
+import { UPSTASH_REDIS_OPERATIONS } from '@gogo/cost-observability';
+import { meterRuntimeCall, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { InMemoryRateLimitStore, type RateLimitStore } from './rate-limit.service';
 
 /** Structural slice of ioredis we use — keeps client versions decoupled. */
@@ -12,15 +14,21 @@ export type RedisLike = {
  * INCR + EXPIRE-on-first-hit keeps it one round trip in the common case.
  */
 export class RedisRateLimitStore implements RateLimitStore {
-  constructor(private readonly redis: RedisLike) {}
+  constructor(
+    private readonly redis: RedisLike,
+    /** #414 — one runtime call per hit, whether it took one round trip or two. */
+    private readonly metrics: MetricsPort = new NoopMetrics(),
+  ) {}
 
-  async hit(key: string, windowSeconds: number): Promise<number> {
-    const bucket = `rl:${key}`;
-    const count = await this.redis.incr(bucket);
-    if (count === 1) {
-      await this.redis.expire(bucket, windowSeconds);
-    }
-    return count;
+  hit(key: string, windowSeconds: number): Promise<number> {
+    return meterRuntimeCall(this.metrics, UPSTASH_REDIS_OPERATIONS.rateLimitHit, async () => {
+      const bucket = `rl:${key}`;
+      const count = await this.redis.incr(bucket);
+      if (count === 1) {
+        await this.redis.expire(bucket, windowSeconds);
+      }
+      return count;
+    });
   }
 }
 

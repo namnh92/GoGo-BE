@@ -47,6 +47,13 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   places_provider_rejected_total: ['method', 'canonical_status'],
   // One per billable SKU, which is one per adapter operation.
   places_provider_cost_units: ['sku'],
+  // #414 — runtime telemetry for the infrastructure this process calls
+  // (Redis, Postgres). `provider` / `service` / `operation` are registry ids
+  // declared in `@gogo/cost-observability` — literals from a closed list,
+  // never a key, a channel, a table or a command's arguments. `status` is
+  // `ok | error`: these are not HTTP calls and carry no code.
+  provider_requests_total: ['provider', 'service', 'operation', 'status'],
+  provider_request_duration_seconds: ['provider', 'service', 'operation', 'status'],
   // #335 — the durable usage ledger's own health. Two values, from the flush
   // path itself: a rising `error` rate means `provider_usage_daily` is behind
   // and the cost screen is under-reporting, which is the one failure mode a
