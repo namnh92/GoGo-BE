@@ -337,6 +337,13 @@
       "when": 1789171200000,
       "tag": "0049_share-links",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1789257600000,
+      "tag": "0050_cms-single-super-admin",
+      "breakpoints": true
     }
   ]
 }

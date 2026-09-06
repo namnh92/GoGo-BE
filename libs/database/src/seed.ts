@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema';
+import { isProductionAppEnv } from './seed-admin-config';
 
 /**
  * FND-008 (data part): seeded demo data matching the mockup flows — taxonomy,
@@ -281,6 +282,16 @@ const DEMO_PLACES: DemoPlace[] = [
 ];
 
 async function main(): Promise<void> {
+  // Demo places in a production catalogue are indistinguishable from real ones
+  // a week later, so production seeding is opt-in per invocation. GoGo-Infra's
+  // seed-vps.sh asks the same question; the guard lives here too because the
+  // deploy script is not the only way to run this file, and a guard that only
+  // exists in the caller is a guard anyone can walk around.
+  const appEnv = process.env.APP_ENV ?? 'dev';
+  if (isProductionAppEnv(appEnv) && process.env.SEED_CONFIRM !== appEnv) {
+    throw new Error(`refusing to seed demo data into ${appEnv} without SEED_CONFIRM=${appEnv}`);
+  }
+
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error('DATABASE_URL is required');
   const pool = new Pool({ connectionString: url, max: 1 });
@@ -409,39 +420,10 @@ async function main(): Promise<void> {
     }
   }
 
-  // Dev-only CMS bootstrap admin — production admins are created by a
-  // super admin through the API and must enroll MFA.
-  //
-  // Guarded on APP_ENV, not NODE_ENV. NODE_ENV is the build mode and every
-  // deployed environment sets it to `production`, including DEV — so this used
-  // to skip on the one environment that needs it, leaving no way to sign in to
-  // the CMS at all. APP_ENV names the environment: dev, staging, prod.
-  //
-  // Unset means a workstation, which is also not production.
-  const appEnv = process.env.APP_ENV ?? 'dev';
-  if (appEnv !== 'prod' && appEnv !== 'production') {
-    const { default: argon2 } = await import('argon2');
-
-    // Overridable rather than hardcoded. The default is a convenience for a
-    // shared DEV environment that already sits behind Cloudflare Access, and it
-    // is weak on purpose — but it lives in version control, and the APP_ENV
-    // guard above is the only thing keeping it out of production. An
-    // environment that wants different credentials should not need a code
-    // change to get them.
-    const email = process.env.SEED_ADMIN_EMAIL ?? 'admin@gogo.id.vn';
-    const password = process.env.SEED_ADMIN_PASSWORD ?? '123456';
-
-    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
-    await db
-      .insert(schema.adminUsers)
-      .values({
-        email,
-        passwordHash,
-        displayName: 'Dev Super Admin',
-        role: 'super_admin',
-      })
-      .onConflictDoNothing();
-  }
+  // No CMS admin is created here. Bootstrapping one is `seed-admin.ts`, run
+  // deliberately with credentials from SSM — see GoGo-Infra
+  // docs/cms-bootstrap-ssm.md. Keeping it out of this file is what lets the
+  // shared runtime env file stay free of a super admin password.
 
   await pool.end();
   // eslint-disable-next-line no-console

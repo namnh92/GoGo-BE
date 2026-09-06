@@ -183,6 +183,19 @@ async function tableExists(db: Awaited<ReturnType<typeof database>>, table: stri
 const PUSH_WHEN = 1789084800000;
 const LINKS_WHEN = 1789171200000;
 
+/**
+ * This epic's two migrations, in the order they must stay in. Everything below
+ * finds them by tag: they were the journal's last two entries when they landed
+ * and will not stay that way, and a test that pins "the last two rows" turns
+ * every later migration in this repository into a failure here.
+ */
+const EPIC_TAGS = ['0048_notification-push-delivery', '0049_share-links'] as const;
+
+/** Positions of `tags` in journal order, so adjacency can be asserted. */
+function indicesOf(journal: { entries: JournalEntry[] }, tags: readonly string[]): number[] {
+  return tags.map((tag) => journal.entries.findIndex((e) => e.tag === tag));
+}
+
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgis/postgis:16-3.4')
     .withDatabase('gogo_migration_base')
@@ -199,8 +212,13 @@ describe('migration ordering across both epics', () => {
     const journal = journalOf(combinedMigrations);
     const whens = journal.entries.map((e) => e.when);
     expect(whens).toEqual([...whens].sort((a, b) => a - b));
-    const tail = journal.entries.slice(-2).map((e) => e.tag);
-    expect(tail).toEqual(['0048_notification-push-delivery', '0049_share-links']);
+    // Located by tag, not by `slice(-2)`. These two are this epic's migrations
+    // wherever they end up in the journal, and what matters is that they are
+    // adjacent and in this order. Pinning them to the *last* two rows would
+    // make the next unrelated migration, whatever it is, fail here.
+    const [push, links] = indicesOf(journal, EPIC_TAGS);
+    expect(push).toBeGreaterThanOrEqual(0);
+    expect(links).toBe(push! + 1);
   });
 
   it('sits above the CMS chain, which is what makes CMS-first work', () => {
@@ -208,10 +226,11 @@ describe('migration ordering across both epics', () => {
     // here to tidy the numbering, a CMS-only database stops receiving these
     // two migrations and nothing else in the suite notices.
     const journal = journalOf(combinedMigrations);
-    const mine = journal.entries.slice(-2);
-    expect(mine.map((e) => e.tag)).toEqual(['0048_notification-push-delivery', '0049_share-links']);
+    const mine = EPIC_TAGS.map((tag) => journal.entries.find((e) => e.tag === tag)!);
+    expect(mine.map((e) => e?.tag)).toEqual([...EPIC_TAGS]);
     expect(mine.map((e) => e.when)).toEqual([PUSH_WHEN, LINKS_WHEN]);
-    // Next free indices above the CMS chain's, which is already on develop.
+    // The indices these two took when they landed, above the CMS chain's. Later
+    // migrations take later ones; that is not this test's business.
     expect(mine.map((e) => e.idx)).toEqual([48, 49]);
 
     const cms = journal.entries.filter(

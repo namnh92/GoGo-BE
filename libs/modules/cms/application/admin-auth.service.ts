@@ -571,7 +571,13 @@ export class AdminAuthService {
     await this.revocations.revokeMany(rows.map((r) => r.id));
   }
 
-  /** Super-admin creates staff accounts (CMS-001 RBAC bootstrap). */
+  /**
+   * Super-admin creates staff accounts (CMS-001 RBAC bootstrap).
+   *
+   * Every CMS account except the `super_admin` itself is created here. The
+   * `super_admin` is bootstrapped once from SSM (ADR-0018) and cannot be
+   * created through the console at all.
+   */
   async createAdmin(input: {
     email: string;
     password: string;
@@ -579,6 +585,7 @@ export class AdminAuthService {
     role: AdminRole;
     createdBy: string;
   }) {
+    AdminAuthService.assertRoleAssignable(input.role);
     const passwordHash = await this.passwords.hash(input.password);
     const [row] = await this.db
       .insert(schema.adminUsers)
@@ -612,25 +619,50 @@ export class AdminAuthService {
    * would leak all three the first time someone added a field.
    */
   /**
-   * #248 — the last `super_admin` is load-bearing. Demoting or suspending it
-   * leaves a console nobody can administer: role changes, account creation and
-   * ranking approval are all `super_admin`, so recovery means an engineer with
-   * database access. Counted inside the caller's transaction so two concurrent
-   * demotions cannot each see the other's subject still in place.
+   * ADR-0018 — at most one `super_admin` before an environment is bootstrapped,
+   * exactly one after, and this service cannot mint a second one at any point.
+   *
+   * That account is bootstrapped once, from credentials an operator reads out
+   * of SSM, and everything else in the console is created and managed by it.
+   * A second holder of the role would double the blast radius of a compromise
+   * for no gain the role model needs: `ops_admin` covers every delegable
+   * operation, and the one thing it does not cover — changing who holds which
+   * role — is the thing that must stay singular.
+   *
+   * Refused rather than silently downgraded. Handing back a working account
+   * with less privilege than was asked for means finding out later, from the
+   * thing it could not do.
+   *
+   * The database refuses it too (`admin_users_single_super_admin`). This check
+   * exists so the refusal has a code and a message instead of a constraint
+   * violation, not because it is the only one.
    */
-  private static async assertNotLastSuperAdmin(
-    tx: DbLike,
-    subject: { id: string; role: AdminRole; status: AdminStatus },
-  ): Promise<void> {
-    if (subject.role !== 'super_admin' || subject.status !== 'active') return;
-    const result = await tx.execute(
-      sql`select count(*)::int as n from admin_users
-          where role = 'super_admin' and status = 'active' and id <> ${subject.id}`,
-    );
-    if ((result.rows[0] as { n: number }).n === 0) {
+  private static assertRoleAssignable(role: AdminRole | undefined): void {
+    if (role === 'super_admin') {
+      throw AppError.conflict(
+        'SUPER_ADMIN_SINGLETON',
+        'An environment has exactly one super_admin; a second cannot be created or promoted',
+      );
+    }
+  }
+
+  /**
+   * #248, kept under ADR-0018 — the single `super_admin` is load-bearing.
+   * Demoting or suspending it leaves a console nobody can administer: role
+   * changes, account creation and ranking approval are all `super_admin`, and
+   * there is by construction no second one to fall back to. Recovery would mean
+   * an engineer with database access.
+   *
+   * Its **credentials** are another matter and are deliberately not frozen: the
+   * account rotates its password through the ordinary account-management flow,
+   * which audits the change and revokes the sessions it invalidates. Freezing
+   * the row is about who holds the role, not about how long a password lives.
+   */
+  private static assertRoleSurvives(subject: { role: AdminRole }, next: AdminRole | undefined) {
+    if (subject.role === 'super_admin' && next !== undefined && next !== 'super_admin') {
       throw AppError.conflict(
         'LAST_SUPER_ADMIN',
-        'This is the only active super_admin; promote another one first',
+        'The super_admin role cannot be given up; an environment has exactly one',
       );
     }
   }
@@ -663,11 +695,10 @@ export class AdminAuthService {
     if (input.role && input.id === input.actorId) {
       throw AppError.forbidden('SELF_ROLE_CHANGE', 'Another super_admin must change your role');
     }
+    AdminAuthService.assertRoleAssignable(input.role);
     return this.db.transaction(async (tx) => {
       const before = await this.loadAdmin(tx, input.id);
-      if (input.role && input.role !== before.role) {
-        await AdminAuthService.assertNotLastSuperAdmin(tx, before);
-      }
+      AdminAuthService.assertRoleSurvives(before, input.role);
 
       const [after] = await tx
         .update(schema.adminUsers)
@@ -719,8 +750,13 @@ export class AdminAuthService {
     }
     return this.db.transaction(async (tx) => {
       const before = await this.loadAdmin(tx, input.id);
-      if (input.status === 'suspended') {
-        await AdminAuthService.assertNotLastSuperAdmin(tx, before);
+      if (input.status === 'suspended' && before.role === 'super_admin') {
+        // Suspending it is demotion by another name: the console would be left
+        // with nobody who can change a role or create an account.
+        throw AppError.conflict(
+          'LAST_SUPER_ADMIN',
+          'The super_admin cannot be suspended; an environment has exactly one',
+        );
       }
 
       const [after] = await tx
@@ -799,6 +835,19 @@ export class AdminAuthService {
    * The current password is required even when a reset is outstanding: it is
    * what proves the person typing is the one the temporary password was
    * handed to, and without it a leaked session id would be enough.
+   *
+   * This is also how the `super_admin` rotates the password it was bootstrapped
+   * with (ADR-0018). Rotation is an authenticated, audited act that revokes the
+   * sessions it invalidates — editing the SSM parameter is none of those things
+   * and changes nothing about how this account signs in.
+   *
+   * **The initiating session survives; every other session of the account is
+   * revoked.** Both halves are deliberate: the person rotating authenticated a
+   * moment ago and is still working, so signing them out of the tab they used
+   * would make a routine rotation read as a failure — while a rotation is also
+   * how someone answers a suspected compromise, which is worth nothing if the
+   * other sessions live on. `resetAdminPassword` keeps none, because there the
+   * actor is someone else and control of the account is already in doubt.
    */
   async changeOwnPassword(input: {
     adminId: string;

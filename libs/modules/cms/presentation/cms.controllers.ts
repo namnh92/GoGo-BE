@@ -105,9 +105,21 @@ const adminListQuery = z.object({
  * a reviewer is actually asking.
  */
 const reasonSchema = z.string().trim().min(3).max(500);
+/**
+ * ADR-0018 — an environment has exactly one `super_admin`, so the console
+ * cannot hand that role out. The enum still carries all four values, and the
+ * refusal is `AdminAuthService`'s 409 `SUPER_ADMIN_SINGLETON`.
+ *
+ * Narrowing it here would be the tidier contract and is a **breaking** change:
+ * GoGo-CMS renders these options from the same four-value enum today and would
+ * start sending a value the schema rejects. It narrows once the console stops
+ * offering the role (GoGo-CMS#142), not before — the breaking-change gate is
+ * there to make that sequence deliberate rather than incidental.
+ */
+const assignableAdminRole = z.enum(['editor', 'moderator', 'ops_admin', 'super_admin']);
 const updateAdminSchema = z
   .object({
-    role: z.enum(['editor', 'moderator', 'ops_admin', 'super_admin']).optional(),
+    role: assignableAdminRole.optional(),
     displayName: z.string().trim().min(1).max(50).optional(),
     reason: reasonSchema,
   })
@@ -125,7 +137,7 @@ const createAdminSchema = z.object({
   email: z.string().email(),
   password: z.string().min(12).max(128),
   displayName: z.string().trim().min(1).max(50),
-  role: z.enum(['editor', 'moderator', 'ops_admin', 'super_admin']),
+  role: assignableAdminRole,
 });
 
 @Controller('cms/auth')
@@ -243,6 +255,10 @@ export class CmsAuthController {
     return this.auth.confirmTotp(actor.id, body.code);
   }
 
+  /**
+   * Every CMS account except the `super_admin` is created here. That one is
+   * bootstrapped from SSM (ADR-0018) and `role` cannot name it.
+   */
   @RequireRole('super_admin')
   @Post('admins')
   createAdmin(

@@ -134,7 +134,41 @@ DATABASE_URL=postgres://gogo:gogo@localhost:5433/gogo pnpm db:migrate
 Đây là chế độ gỡ lỗi, không phải cách phát triển mặc định. Chạy nó nghĩa là bạn đang làm việc
 trên một database khác với cả team, và không có gì nhắc bạn điều đó.
 
-Dev CMS login (seed): `admin@gogo.local` / `gogo-dev-admin-password`.
+### Tài khoản CMS đầu tiên
+
+Không có credentials nào trong repo này. Email và mật khẩu bootstrap nằm trong AWS SSM
+(`/gogo/<env>/backend/cms/seed-admin-{email,password}`, SecureString) và GoGo-Infra sở hữu chúng —
+xem `GoGo-Infra/docs/cms-bootstrap-ssm.md`.
+
+`pnpm db:seed` **không** tạo admin. Bootstrap là lệnh riêng, chạy có chủ đích:
+
+```bash
+cd ../GoGo-Infra && ./scripts/secrets/pull.sh dev --seed --out ../GoGo-BE/.env.seed
+cd ../GoGo-BE   && node --env-file=.env.seed --import tsx libs/database/src/seed-admin.ts
+shred -u .env.seed 2>/dev/null || rm -P .env.seed
+```
+
+Lệnh này idempotent theo nghĩa mạnh: tài khoản đã tồn tại thì giữ nguyên, kể cả password hash.
+
+**Database là nguồn xác thực, SSM chỉ giữ credentials bootstrap** (ADR-0018). Mật khẩu sống trong
+`admin_users.password_hash` dưới dạng Argon2id; giá trị trong SSM là thứ để gõ lần đăng nhập đầu
+tiên, sau đó hai bên không còn liên quan. Sửa parameter **không** đổi được cách tài khoản đăng nhập.
+Rotate mật khẩu đi qua account management của CMS (`POST /v1/cms/auth/change-password`) — có xác
+thực, có audit log, và **giữ lại session đang thực hiện, thu hồi mọi session khác** của tài khoản
+đó. Người đang rotate vừa xác thực xong và vẫn đang làm việc; còn rotate cũng là cách xử lý nghi
+ngờ lộ mật khẩu, nên các session khác phải chết.
+`POST /v1/cms/auth/admins/{id}/reset-password` thì không giữ session nào — ở đó actor là người
+khác và quyền kiểm soát tài khoản đang bị nghi ngờ.
+
+**Trước bootstrap: nhiều nhất một `super_admin`. Sau bootstrap: đúng một.** Database chỉ cưỡng chế
+được cận trên (unique index) — một environment chưa bootstrap hợp lệ khi có 0 tài khoản, và
+constraint từ chối bảng rỗng sẽ từ chối luôn migration tạo ra nó. Cận dưới do bootstrap tạo tài
+khoản và do không đường nào hạ cấp/đình chỉ được nó; chuyển trạng thái xảy ra một lần, một chiều.
+Bootstrap tạo tài khoản đó và từ chối tạo tài khoản thứ hai; API trả `409 SUPER_ADMIN_SINGLETON` khi tạo mới hoặc thăng cấp vào role này và
+`409 LAST_SUPER_ADMIN` khi hạ cấp hay đình chỉ tài khoản đang giữ nó; database có unique index
+riêng (`admin_users_single_super_admin`). Enum trong request vẫn liệt kê `super_admin` — thu hẹp nó
+là breaking change, chờ console bỏ lựa chọn đó trước (GoGo-CMS#142). Mọi tài khoản CMS còn lại do
+`super_admin` tạo và quản lý. Production vẫn bắt buộc SSO/MFA như trước.
 
 ## Git
 

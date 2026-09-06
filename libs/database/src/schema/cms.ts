@@ -60,7 +60,25 @@ export const adminUsers = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('admin_users_email_unique').on(t.email)],
+  (t) => [
+    uniqueIndex('admin_users_email_unique').on(t.email),
+    /**
+     * ADR-0018 — **at most one** `super_admin`, enforced here and not only in
+     * the service. The API refuses to create or grant the role, but the API has
+     * never been the only writer to this table: the bootstrap command writes to
+     * it, and a psql session always can.
+     *
+     * At most one is the whole of what an index can say. The invariant has two
+     * phases: *at most one* before the environment is bootstrapped — none is a
+     * legitimate state, and a constraint refusing an empty table would refuse
+     * the migration that creates it — and *exactly one* after, which is held by
+     * bootstrap creating the account and by every mutation path refusing to
+     * demote or suspend it. The transition is one-way.
+     */
+    uniqueIndex('admin_users_single_super_admin')
+      .on(t.role)
+      .where(sql`${t.role} = 'super_admin'`),
+  ],
 );
 
 /**
