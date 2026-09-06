@@ -93,14 +93,16 @@ describe('scrape endpoint', () => {
 
 describe('#414 runtime telemetry reaches the scrape (COST-BE-036, #422)', () => {
   it('counts a Postgres statement made by the API process as neon.postgres.query', async () => {
-    // /v1/health runs `select 1` through the pool DatabaseModule builds. The
+    // `/v1/health/ready` runs `select 1` through the pool DatabaseModule builds. The
     // pool takes its sink from RUNTIME_METRICS, which ProvidersModule must
     // *export*: provided but not exported, the optional injection resolves to
     // `undefined`, the pool is unmetered, and the series never exists — which
     // is exactly how DEV shipped #419 silent on the API side (#422). Booting
     // the whole app is what makes this test see the wiring, not the class.
-    const health = await api().inject({ method: 'GET', url: '/v1/health' });
-    expect([200, 503]).toContain(health.statusCode);
+    // `/v1/health` is liveness and touches nothing; `/ready` is the probe
+    // that runs `select 1` (and skips Redis under NODE_ENV=test).
+    const ready = await api().inject({ method: 'GET', url: '/v1/health/ready' });
+    expect(ready.statusCode).toBe(200);
     const body = (await scrape()).body;
     expect(body).toMatch(
       /^provider_requests_total\{operation="neon\.postgres\.query",provider="neon",service="neon\.postgres",status="ok"\} [1-9]/m,
