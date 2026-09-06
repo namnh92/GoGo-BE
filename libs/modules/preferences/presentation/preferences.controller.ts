@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Put } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import type { Actor } from '../../identity/domain/actor';
@@ -36,7 +36,12 @@ export class PreferencesController {
     });
   }
 
+  // 200, not Nest's default 201 for POST: the OpenAPI contract declares 200 and
+  // the generated clients type the response off that, so a 201 here is a
+  // response shape no consumer has a branch for. Completing is also not a
+  // creation — it flips a flag on a row that already exists.
   @Post('complete')
+  @HttpCode(200)
   completeMine(@CurrentActor() actor: Actor, @Param('roomId', UuidPipe) roomId: string) {
     return this.preferences.completeMine(actor, roomId);
   }

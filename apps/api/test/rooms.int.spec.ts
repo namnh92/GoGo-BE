@@ -612,6 +612,9 @@ describe('preferences (BE-BFF-005, FR-PREF-003/005)', () => {
       remoteAddress: ip(),
       headers: auth(hostToken),
     });
+    // The status code is contract, not detail: the generated clients type the
+    // response off the declared 200 (GoGo-BE#448).
+    expect(hostDone.statusCode).toBe(200);
     expect(hostDone.json().roomReadyForMatching).toBe(false);
     const guestDone = await api().inject({
       method: 'POST',
@@ -619,6 +622,7 @@ describe('preferences (BE-BFF-005, FR-PREF-003/005)', () => {
       remoteAddress: ip(),
       headers: auth(guestToken),
     });
+    expect(guestDone.statusCode).toBe(200);
     expect(guestDone.json().roomReadyForMatching).toBe(true);
 
     const after = await api().inject({
