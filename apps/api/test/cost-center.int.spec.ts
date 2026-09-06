@@ -9,6 +9,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import type { RuntimeStateStore } from '@gogo/observability';
 import {
   BudgetService,
   COST_REGISTRY,
@@ -508,6 +509,69 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
     });
     for (const p of body.providers) {
       expect(['active', 'planned'], p.providerId).toContain(p.status);
+    }
+  });
+
+  /**
+   * COST-BE-039 (#430). The verification of #428 on DEV found this hole: with
+   * the warm-up a no-op under `NODE_ENV=test`, nothing is ever recorded, so
+   * `runtime.connection` is `null` whether the store was injected or not —
+   * and the suite stayed green either way. That is the shape of #422, where
+   * `RUNTIME_METRICS` was provided but not exported and the API emitted
+   * nothing while CI passed.
+   *
+   * So this test writes into the store the container actually holds and then
+   * reads the HTTP payload. `CmsCostCenterService` lives in another module: if
+   * `RUNTIME_STATE` stops being exported from `ProvidersModule`, its optional
+   * injection resolves to `null`, the field comes back `null`, and this fails.
+   */
+  it('#427 — a recorded boot outcome reaches the payload, and a failed one moves nothing else', async () => {
+    const { RUNTIME_STATE } = await import('@gogo/observability');
+    const state = app.get<RuntimeStateStore>(RUNTIME_STATE);
+    const connect = {
+      provider: 'upstash',
+      service: 'upstash.redis',
+      operation: 'upstash.redis.rate_limit.connect',
+    };
+
+    const before = (await get('/v1/cms/ops/costs/providers/upstash', 'ops_admin')).json();
+    const redisBefore = before.provider.services.find(
+      (s: { serviceId: string }) => s.serviceId === 'upstash.redis',
+    );
+    // Nothing recorded yet in this process: an absence, stated as null.
+    expect(redisBefore.runtime.connection).toBeNull();
+
+    state.record(connect, 'ok', new Date('2026-09-06T05:31:53.000Z'));
+    const ok = (await get('/v1/cms/ops/costs/providers/upstash', 'ops_admin')).json();
+    const redisOk = ok.provider.services.find(
+      (s: { serviceId: string }) => s.serviceId === 'upstash.redis',
+    );
+    expect(redisOk.runtime.connection).toEqual({
+      operation: 'upstash.redis.rate_limit.connect',
+      status: 'ok',
+      observedAt: '2026-09-06T05:31:53.000Z',
+    });
+
+    // A failed warm-up is fail-open: it is reported, and it moves nothing else
+    // on the row — not the registry status, not the coverage, not the money.
+    state.record(connect, 'timeout', new Date('2026-09-06T06:00:00.000Z'));
+    const failed = (await get('/v1/cms/ops/costs/providers/upstash', 'ops_admin')).json();
+    const redisFailed = failed.provider.services.find(
+      (s: { serviceId: string }) => s.serviceId === 'upstash.redis',
+    );
+    expect(redisFailed.runtime.connection).toMatchObject({ status: 'timeout' });
+    expect(failed.provider.status).toBe(ok.provider.status);
+    expect(failed.provider.runtime.coverage).toBe(ok.provider.runtime.coverage);
+    expect(redisFailed.runtime.coverage).toBe(redisOk.runtime.coverage);
+    expect(redisFailed.spendMicros).toBe(redisOk.spendMicros);
+    // The connect is telemetry, never a charge: no money field appears for it.
+    expect(JSON.stringify(redisFailed.runtime.connection)).not.toMatch(/micros|cost|price/i);
+
+    // A service with no bootstrap operation never reports a connection, even
+    // while one is recorded for another service.
+    const google = (await get('/v1/cms/ops/costs/providers/google', 'ops_admin')).json();
+    for (const s of google.provider.services) {
+      expect(s.runtime.connection, s.serviceId).toBeNull();
     }
   });
 
