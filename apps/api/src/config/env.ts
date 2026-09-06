@@ -270,6 +270,11 @@ const envSchema = z
      * and the share-link limit keys on the connecting address exactly as it
      * did before. Per environment, never shared between them — a token that
      * works in DEV and PROD lets DEV's edge speak for PROD's.
+     *
+     * Rendered from SSM `share-link/worker-auth-token`. The Worker gets the
+     * same value put on it at deploy time; it never passes through Terraform.
+     * Provisioning, rotation and rollback: GoGo-Infra
+     * `docs/share-link-edge-auth.md` (INF-070).
      */
     SHARE_LINK_EDGE_AUTH_TOKEN: z.string().default(''),
     R2_ACCOUNT_ID: z.string().default(''),
