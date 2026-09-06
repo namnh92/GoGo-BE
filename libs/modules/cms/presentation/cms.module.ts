@@ -9,6 +9,7 @@ import { AdminAuthService } from '../application/admin-auth.service';
 import { CloudflareAccessService } from '../application/cf-access.service';
 import { CmsAuditService } from '../application/cms-audit.service';
 import { CmsCatalogService } from '../application/cms-catalog.service';
+import { CmsPlaceMediaService } from '../application/cms-place-media.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsUploadsService } from '../application/cms-uploads.service';
 import { BannersService } from '../application/banners.service';
@@ -39,6 +40,7 @@ import {
   CmsContentController,
   CmsModerationController,
   CmsOpsController,
+  CmsPlaceMediaController,
   CmsPlanTemplatesController,
   CmsRecommendationsController,
   CmsSafetyRulesController,
@@ -59,6 +61,7 @@ import {
     CmsContentController,
     CmsModerationController,
     CmsOpsController,
+    CmsPlaceMediaController,
     CmsPlanTemplatesController,
     CmsRecommendationsController,
     CmsSafetyRulesController,
@@ -73,6 +76,7 @@ import {
     CmsAuditService,
     CmsCatalogService,
     CmsContentService,
+    CmsPlaceMediaService,
     CmsUploadsService,
     CmsObservabilityService,
     CmsCostCenterService,

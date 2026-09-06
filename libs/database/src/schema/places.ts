@@ -318,6 +318,18 @@ export const travelLegs = pgTable(
   ],
 );
 
+/**
+ * BE-CMS-PE-001 (#425) — who a value came from. Declared here rather than
+ * beside `place_field_provenance` because `place_media.source_type` (#191) uses
+ * the same vocabulary and is defined first.
+ */
+export const fieldSourceType = pgEnum('field_source_type', [
+  'editorial',
+  'provider',
+  'community',
+  'google_derived',
+]);
+
 export const moderationStatus = pgEnum('moderation_status', ['pending', 'approved', 'rejected']);
 
 export const placeMedia = pgTable(
@@ -335,9 +347,34 @@ export const placeMedia = pgTable(
     uploadedByUserId: uuid('uploaded_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
+    /** BE-CMS-M1 (#191) — editorial text under the image. */
+    caption: text('caption'),
+    /**
+     * Provider terms travel with a provider photo (FR-INGEST-014). Losing it
+     * the moment an editor reorders the list is the failure this prevents.
+     */
+    attribution: text('attribution'),
+    /** One per place — enforced by a partial unique index, not by convention. */
+    isCover: boolean('is_cover').notNull().default(false),
+    /** Same vocabulary as `place_field_provenance`: who the image came from. */
+    sourceType: fieldSourceType('source_type').notNull().default('editorial'),
+    /** A moderation decision with no recorded reason is not auditable. */
+    moderationReason: text('moderation_reason'),
+    moderatedBy: uuid('moderated_by'),
+    moderatedAt: timestamp('moderated_at', { withTimezone: true }),
+    /**
+     * The `media_uploads` row this key came from, so a detach can tell
+     * "still referenced elsewhere" from "orphaned".
+     */
+    mediaUploadId: uuid('media_upload_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('place_media_place_idx').on(t.placeId)],
+  (t) => [
+    index('place_media_place_idx').on(t.placeId),
+    uniqueIndex('place_media_cover_unique')
+      .on(t.placeId)
+      .where(sql`${t.isCover}`),
+  ],
 );
 
 /**
@@ -360,17 +397,10 @@ export const placeMedia = pgTable(
  * is the reference, and it is in `actor_id`).
  *
  * Per GOGO_PRODUCT_DATA_ARCHITECTURE.md an editor re-typing what Google shows
- * does not make the value GoGo-owned — the CMS records `google_derived` for a
- * value applied from a provider preview, and that is a distinct source type
- * from `editorial` precisely so the difference survives.
+ * does not make the value GoGo-owned — `google_derived` is reserved for a
+ * value applied from a provider preview, and is a distinct source type from
+ * `editorial` precisely so the difference survives.
  */
-export const fieldSourceType = pgEnum('field_source_type', [
-  'editorial',
-  'provider',
-  'community',
-  'google_derived',
-]);
-
 export const placeFieldProvenance = pgTable(
   'place_field_provenance',
   {

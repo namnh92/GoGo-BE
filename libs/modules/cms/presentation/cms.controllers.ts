@@ -16,6 +16,7 @@ import {
   type PlaceEditInput,
 } from '../application/cms-catalog.service';
 import { HOURS_ENTRY_KINDS } from '../domain/place-hours';
+import { CmsPlaceMediaService } from '../application/cms-place-media.service';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsUploadsService } from '../application/cms-uploads.service';
 import {
@@ -797,6 +798,88 @@ export class CmsCatalogController {
     @Body(new ZodValidationPipe(mergeSchema)) body: { duplicateId: string },
   ) {
     return this.catalog.mergePlaces(actor.id, id, body.duplicateId);
+  }
+}
+
+// ------------------------------------------------------------------ media
+
+const mediaAttachSchema = z.object({
+  storageKey: z.string().trim().min(1).max(400),
+  caption: z.string().trim().max(300).nullable().optional(),
+  attribution: z.string().trim().max(300).nullable().optional(),
+  isCover: z.boolean().optional(),
+  width: z.number().int().positive().max(20000).nullable().optional(),
+  height: z.number().int().positive().max(20000).nullable().optional(),
+});
+
+const mediaPatchSchema = z
+  .object({
+    sortOrder: z.number().int().min(0).max(999).optional(),
+    moderation: z.enum(['pending', 'approved', 'rejected']).optional(),
+    /** Required when `moderation` changes — enforced in the service. */
+    moderationReason: z.string().trim().min(3).max(500).optional(),
+    caption: z.string().trim().max(300).nullable().optional(),
+    attribution: z.string().trim().max(300).nullable().optional(),
+    isCover: z.boolean().optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, {
+    message: 'Không có thay đổi nào',
+  });
+
+/**
+ * BE-CMS-M1 (#191) — place photos, editable at last.
+ *
+ * `@RequireRole('editor')` like the rest of the catalog: this is catalog
+ * editing, not moderation of user content, so `moderator` and `ops_admin` are
+ * refused the writes and the read stays rank-based like every other catalog
+ * read.
+ *
+ * Bytes do not pass through here. An editor asks `POST /cms/uploads` for a
+ * presigned PUT with purpose `place_image`, PUTs the file to storage, and then
+ * hands the key to `POST /cms/places/{id}/media`. Splitting it that way is what
+ * keeps the API off the upload path and lets a failed attach leave nothing
+ * behind.
+ */
+@RequireRole('editor')
+@Controller('cms/places/:placeId/media')
+export class CmsPlaceMediaController {
+  constructor(private readonly media: CmsPlaceMediaService) {}
+
+  /**
+   * Declared before `:mediaId` routes for the usual reason — Nest matches in
+   * declaration order, and `:mediaId` would otherwise swallow `/attachable`.
+   */
+  @Get('attachable')
+  attachable(@CurrentActor() actor: Actor, @Param('placeId', Uuid) placeId: string) {
+    return this.media.attachable(actor, placeId);
+  }
+
+  @Post()
+  attach(
+    @CurrentActor() actor: Actor,
+    @Param('placeId', Uuid) placeId: string,
+    @Body(new ZodValidationPipe(mediaAttachSchema)) body: z.infer<typeof mediaAttachSchema>,
+  ) {
+    return this.media.attach(actor, placeId, body);
+  }
+
+  @Patch(':mediaId')
+  update(
+    @CurrentActor() actor: Actor,
+    @Param('placeId', Uuid) placeId: string,
+    @Param('mediaId', Uuid) mediaId: string,
+    @Body(new ZodValidationPipe(mediaPatchSchema)) body: z.infer<typeof mediaPatchSchema>,
+  ) {
+    return this.media.update(actor, placeId, mediaId, body);
+  }
+
+  @Delete(':mediaId')
+  detach(
+    @CurrentActor() actor: Actor,
+    @Param('placeId', Uuid) placeId: string,
+    @Param('mediaId', Uuid) mediaId: string,
+  ) {
+    return this.media.detach(actor, placeId, mediaId);
   }
 }
 

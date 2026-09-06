@@ -24,7 +24,19 @@ export const UPLOAD_PURPOSES = ['checkin_photo', 'bill_photo', 'place_photo'] as
  * must not be handed a key the check-in flow would accept. Each controller
  * validates against its own list, so the split is enforced at the door.
  */
-export const CMS_UPLOAD_PURPOSES = ['banner_image', 'campaign_image'] as const;
+export const CMS_UPLOAD_PURPOSES = ['banner_image', 'campaign_image', 'place_image'] as const;
+
+/**
+ * BE-CMS-M1 (#191) — `place_image` is a staff purpose, deliberately not the
+ * consumer `place_photo`.
+ *
+ * They are the same kind of picture and a different kind of claim. A
+ * `place_photo` key is bound to the phone that took it and arrives through
+ * moderation as somebody's contribution; an editor attaching a catalog image is
+ * making an editorial decision on GoGo's behalf. Merging them would let the CMS
+ * attach a key a member uploaded for their own check-in, which is the one thing
+ * #191 says the admin path must not do.
+ */
 
 export type UploadPurpose = (typeof UPLOAD_PURPOSES)[number] | (typeof CMS_UPLOAD_PURPOSES)[number];
 

@@ -4,7 +4,7 @@ import { schema, type Db } from '@gogo/database';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { AppError } from '../../shared/app-error';
 import { invalidateTravelOnMove } from '../../shared/place-relocation';
-import { APP_CONFIG, type ProvenanceConfig } from '../../shared/config';
+import { APP_CONFIG, type MediaConfig, type ProvenanceConfig } from '../../shared/config';
 import { GOOGLE_PROVIDER, googleProvenanceRows } from '../../shared/google-provenance';
 import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
@@ -202,6 +202,12 @@ type PlaceMediaRow = {
   height: number | null;
   sort_order: number;
   moderation: string;
+  moderation_reason: string | null;
+  caption: string | null;
+  attribution: string | null;
+  is_cover: boolean;
+  source_type: string;
+  created_at: Date | string;
 };
 
 type PlaceProvenanceRow = {
@@ -311,12 +317,25 @@ export function decodePlaceCursor(cursor: string): { value: string; id: string }
 export class CmsCatalogService {
   constructor(
     @Inject(DB) private readonly db: Db,
-    @Optional() @Inject(APP_CONFIG) private readonly config?: ProvenanceConfig,
+    @Optional()
+    @Inject(APP_CONFIG)
+    private readonly config?: ProvenanceConfig & Partial<MediaConfig>,
   ) {}
 
   /** Default on: off is the state that serves ingestion places unattributed. */
   private get unifiedProvenance(): boolean {
     return this.config?.PROVENANCE_UNIFIED_READS ?? true;
+  }
+
+  /**
+   * #191 — where a media object is readable, or null when media hosting is not
+   * configured in this environment. Mirrors `CmsPlaceMediaService.readUrl`; an
+   * honest null beats a URL that would 404, and the console can tell the two
+   * apart.
+   */
+  private mediaUrl(key: string): string | null {
+    const base = this.config?.MEDIA_PUBLIC_BASE_URL?.replace(/\/$/, '');
+    return base ? `${base}/${key.replace(/^\//, '')}` : null;
   }
 
   private async audit(adminId: string, action: string, resourceId: string, diff?: unknown) {
@@ -484,9 +503,12 @@ export class CmsCatalogService {
         order by src.fetched_at desc nulls last
       `),
       this.db.execute(sql`
-        select id, storage_key, width, height, sort_order, moderation
+        select id, storage_key, width, height, sort_order, moderation,
+               moderation_reason, caption, attribution, is_cover, source_type,
+               created_at
         from place_media where place_id = ${placeId}::uuid
-        order by sort_order, created_at
+        -- #191: the cover leads, then the editor's order.
+        order by is_cover desc, sort_order, created_at
       `),
       this.db.execute(sql`
         select round(avg(rating)::numeric, 2) as rating, count(*)::int as count
@@ -572,10 +594,25 @@ export class CmsCatalogService {
         return {
           id: r.id,
           storageKey: r.storage_key,
+          /**
+           * #191 — the console could list a key and never show the picture.
+           * Deciding on a photo without seeing it is not moderation. Null when
+           * media hosting is not configured here, which the console renders as
+           * "not available in this environment" rather than a broken image.
+           */
+          url: this.mediaUrl(r.storage_key),
           width: r.width,
           height: r.height,
           sortOrder: r.sort_order,
           moderation: r.moderation,
+          moderationReason: r.moderation_reason,
+          caption: r.caption,
+          // FR-INGEST-014: a provider photo keeps its terms even after an
+          // editor has reordered the list it sits in.
+          attribution: r.attribution,
+          isCover: r.is_cover,
+          sourceType: r.source_type,
+          createdAt: toIso(r.created_at),
         };
       }),
       /**
