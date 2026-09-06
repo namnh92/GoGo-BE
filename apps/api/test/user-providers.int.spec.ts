@@ -4,6 +4,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { eq, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
+import { generateKeyPairSync, verify as verifySignature } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
@@ -23,6 +24,8 @@ let db: ReturnType<typeof drizzle<typeof schema>>;
 let app: NestFastifyApplication;
 let fakePlaces: FakePlaceProvider;
 let fakeAreas: FakeAreaAutocomplete;
+const IDENTITY_APP_ID = '0f2c7a10-4e2b-4a7c-9b1d-3e5f6a7b8c9d';
+const identityKeys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 
 function api() {
   return app.getHttpAdapter().getInstance();
@@ -51,6 +54,13 @@ beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
   process.env.GOOGLE_PLACES_API_KEY = ''; // force fakes
+  // #199: a throwaway ES256 key pair generated for this run — the provider's
+  // key never leaves SSM, and the assertions only need the public half.
+  process.env.ONESIGNAL_APP_ID = IDENTITY_APP_ID;
+  process.env.ONESIGNAL_IDENTITY_VERIFICATION_KEY = identityKeys.privateKey
+    .export({ type: 'pkcs8', format: 'pem' })
+    .toString()
+    .replace(/\n/g, '\\n');
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
   // The container is stopped in afterAll; an idle client erroring as the
@@ -431,6 +441,86 @@ describe('outbox dispatcher (BE-BFF-010)', () => {
       .where(eq(schema.notifications.userId, userId));
     expect(notifications).toHaveLength(1); // in-app kept
     expect(push.sent).toHaveLength(0); // push suppressed
+  });
+});
+
+describe('push identity token (NTF-BE-008, #199)', () => {
+  it('issues an ES256 JWT for the session user; a userId in the request changes nothing', async () => {
+    const { token, userId } = await register('identity@gogo.id.vn');
+    const res = await api().inject({
+      method: 'GET',
+      // Somebody else's id in the query is not read.
+      url: '/v1/notifications/identity?userId=00000000-0000-4000-8000-000000000999',
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { externalId: string; token: string; expiresAt: string };
+    expect(body.externalId).toBe(userId);
+
+    // Verified with the public half through node:crypto, the way the provider
+    // would: ES256 is ECDSA P-256 over SHA-256 with an IEEE P1363 signature.
+    const [headerB64, payloadB64, signatureB64] = body.token.split('.') as [string, string, string];
+    expect(JSON.parse(Buffer.from(headerB64, 'base64url').toString())).toEqual({
+      alg: 'ES256',
+      typ: 'JWT',
+    });
+    expect(
+      verifySignature(
+        'sha256',
+        Buffer.from(`${headerB64}.${payloadB64}`),
+        { key: identityKeys.publicKey, dsaEncoding: 'ieee-p1363' },
+        Buffer.from(signatureB64, 'base64url'),
+      ),
+    ).toBe(true);
+    const claims = JSON.parse(Buffer.from(payloadB64, 'base64url').toString()) as {
+      iss: string;
+      iat: number;
+      exp: number;
+      identity: { external_id: string };
+    };
+    expect(claims.iss).toBe(IDENTITY_APP_ID);
+    expect(claims.identity.external_id).toBe(userId);
+    expect(claims.exp - claims.iat).toBeLessThanOrEqual(3_600);
+    expect(new Date(body.expiresAt).getTime()).toBe(claims.exp * 1_000);
+    // The response header set carries no token either.
+    expect(JSON.stringify(res.headers)).not.toContain(body.token);
+  });
+
+  it('a guest has no push identity', async () => {
+    const { userId } = await register('identity-host@gogo.id.vn');
+    const roomCode = `ID${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    await db.insert(schema.rooms).values({
+      code: roomCode,
+      type: 'group',
+      decisionMode: 'vote',
+      hostUserId: userId,
+      status: 'collecting',
+    });
+    const guest = await api().inject({
+      method: 'POST',
+      url: '/v1/sessions/guest',
+      remoteAddress: ip(),
+      payload: { roomCode, displayName: 'Khách' },
+    });
+    expect(guest.statusCode).toBe(201);
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/notifications/identity',
+      remoteAddress: ip(),
+      headers: auth(guest.json().accessToken as string),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe('USER_ONLY');
+  });
+
+  it('requires authentication', async () => {
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/notifications/identity',
+      remoteAddress: ip(),
+    });
+    expect(res.statusCode).toBe(401);
   });
 });
 

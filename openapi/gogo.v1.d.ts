@@ -1256,6 +1256,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/notifications/identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Short-lived OneSignal identity JWT for the signed-in user (NTF-BE-008)
+         * @description ES256 JWT with `iss` = the OneSignal app id and `identity.external_id` = the authenticated user's id, lifetime ≤ 1 hour. The user id always comes from the session — nothing in the request can choose it. Guests have no push identity (403 `USER_ONLY`). When this environment holds no identity signing key the endpoint answers 503 `PUSH_IDENTITY_UNAVAILABLE`, `retryable: false`. The client passes the token to the provider SDK login and requests a new one before `expiresAt` or when the SDK reports it invalid; the token is never logged on either side.
+         */
+        get: operations["getPushIdentityToken"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/notification-preferences": {
         parameters: {
             query?: never;
@@ -4719,6 +4739,20 @@ export interface components {
             targetId?: string;
             /** Format: date-time */
             savedAt?: string;
+        };
+        PushIdentityToken: {
+            /**
+             * Format: uuid
+             * @description The user id the SDK logs in with (`external_id`).
+             */
+            externalId: string;
+            /** @description ES256 JWT for the provider SDK. Opaque to the client; never persist or log it. */
+            token: string;
+            /**
+             * Format: date-time
+             * @description Refresh before this instant.
+             */
+            expiresAt: string;
         };
         /** @description Facts only — compose the display string client-side from `kind` + `payload`. */
         Notification: {
@@ -8573,6 +8607,38 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getPushIdentityToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Identity token for the current user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushIdentityToken"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            /** @description No identity signing key in this environment (`PUSH_IDENTITY_UNAVAILABLE`) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };

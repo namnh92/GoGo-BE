@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { loadEnv } from './env';
 
@@ -56,5 +57,23 @@ describe('loadEnv (FND-006 fail-fast config)', () => {
     expect(loadEnv(base).PUSH_PROVIDER_MODE).toBeUndefined();
     expect(() => loadEnv({ ...base, ONESIGNAL_APP_ID: 'gogo-dev' })).toThrow(/ONESIGNAL_APP_ID/);
     expect(() => loadEnv({ ...base, PUSH_PROVIDER_MODE: 'apns' })).toThrow(/PUSH_PROVIDER_MODE/);
+  });
+
+  it('validates the identity signing key at boot and caps its TTL (#199)', () => {
+    const pem = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({
+      type: 'pkcs8',
+      format: 'pem',
+    }) as string;
+    expect(
+      loadEnv({ ...base, ONESIGNAL_IDENTITY_VERIFICATION_KEY: pem })
+        .ONESIGNAL_IDENTITY_TOKEN_TTL_SECONDS,
+    ).toBe(3_600);
+    expect(loadEnv(base).ONESIGNAL_IDENTITY_VERIFICATION_KEY).toBe('');
+    expect(() =>
+      loadEnv({ ...base, ONESIGNAL_IDENTITY_VERIFICATION_KEY: 'os_v2_app_key' }),
+    ).toThrow(/ONESIGNAL_IDENTITY_VERIFICATION_KEY/);
+    expect(() => loadEnv({ ...base, ONESIGNAL_IDENTITY_TOKEN_TTL_SECONDS: '7200' })).toThrow(
+      /ONESIGNAL_IDENTITY_TOKEN_TTL_SECONDS/,
+    );
   });
 });

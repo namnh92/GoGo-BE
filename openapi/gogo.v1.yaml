@@ -2173,6 +2173,35 @@ paths:
         '201':
           description: '{ read: true }'
 
+  /notifications/identity:
+    get:
+      operationId: getPushIdentityToken
+      tags: [me]
+      summary: Short-lived OneSignal identity JWT for the signed-in user (NTF-BE-008)
+      description: >
+        ES256 JWT with `iss` = the OneSignal app id and `identity.external_id` =
+        the authenticated user's id, lifetime ≤ 1 hour. The user id always comes
+        from the session — nothing in the request can choose it. Guests have no
+        push identity (403 `USER_ONLY`). When this environment holds no identity
+        signing key the endpoint answers 503 `PUSH_IDENTITY_UNAVAILABLE`,
+        `retryable: false`. The client passes the token to the provider SDK
+        login and requests a new one before `expiresAt` or when the SDK reports
+        it invalid; the token is never logged on either side.
+      responses:
+        '200':
+          description: Identity token for the current user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PushIdentityToken' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: No identity signing key in this environment (`PUSH_IDENTITY_UNAVAILABLE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /me/notification-preferences:
     get:
       operationId: getNotificationPreferences
@@ -8384,6 +8413,21 @@ components:
         targetType: { type: string, enum: [place, plan] }
         targetId: { type: string, format: uuid }
         savedAt: { type: string, format: date-time }
+    PushIdentityToken:
+      type: object
+      required: [externalId, token, expiresAt]
+      properties:
+        externalId:
+          type: string
+          format: uuid
+          description: The user id the SDK logs in with (`external_id`).
+        token:
+          type: string
+          description: ES256 JWT for the provider SDK. Opaque to the client; never persist or log it.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Refresh before this instant.
     Notification:
       type: object
       description: Facts only — compose the display string client-side from `kind` + `payload`.

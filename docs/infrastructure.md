@@ -200,6 +200,7 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `push_delivery_failed_total`                     | `kind`                                       | provider từ chối vĩnh viễn (credential/payload); lỗi tạm thời đi qua outbox retry                                                                                                        |
 | `push_provider_requests_total`                   | `status`                                     | mỗi request tới OneSignal; `status` là HTTP code hoặc `network`                                                                                                                          |
 | `push_provider_request_duration_seconds`         | `status`                                     | độ trễ request OneSignal                                                                                                                                                                 |
+| `push_identity_tokens_total`                     | `result`                                     | identity JWT cấp cho SDK (#199): `issued` / `unavailable` (môi trường chưa có khóa ký)                                                                                                   |
 
 Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 

@@ -166,6 +166,9 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // literal `network`.
   push_provider_requests_total: ['status'],
   push_provider_request_duration_seconds: ['status'],
+  // #199 — identity JWTs. `result` is `issued` or `unavailable` (no signing key
+  // in this environment). Never the token, never the user.
+  push_identity_tokens_total: ['result'],
 };
 
 /**

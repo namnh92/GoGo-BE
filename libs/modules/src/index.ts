@@ -67,6 +67,12 @@ export {
   RETRY_BACKOFF_SECONDS,
 } from '../notifications/application/outbox-dispatcher';
 export { CampaignDispatcher } from '../notifications/application/campaign-dispatcher';
+export {
+  IDENTITY_TOKEN_MAX_TTL_SECONDS,
+  PushIdentityService,
+  parseIdentitySigningKey,
+  type PushIdentityToken,
+} from '../notifications/application/push-identity.service';
 
 // Place import + areas (BE-BFF-013/016)
 export { PlaceImportService } from '../places/application/place-import.service';
