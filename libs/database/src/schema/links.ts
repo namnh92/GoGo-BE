@@ -13,7 +13,8 @@ import { roomInvites } from './rooms';
  * the plaintext is returned once, at creation.
  *
  * Provider-agnostic on purpose (FR-LINK-003): switching attribution vendors
- * touches `provider` and `provider_tracking_url`, never the slug or the target.
+ * touches `provider` and the environment's template, never the slug or the
+ * target.
  */
 export const shareLinkType = pgEnum('share_link_type', [
   'ROOM_INVITE',
@@ -50,13 +51,14 @@ export const shareLinks = pgTable(
     createdByUserId: uuid('created_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
-    provider: shareLinkProvider('provider').notNull().default('NONE'),
     /**
-     * The attribution vendor's click URL with the canonical link as its deferred
-     * target. Lives here and nowhere else (spec §6) — never on a room, plan,
-     * place or notification.
+     * Which attribution vendor was attached at mint time. The vendor's click URL
+     * is **not** stored: it embeds the canonical link, and the canonical link
+     * embeds the slug — for a ROOM_INVITE that is the join credential, hashed
+     * one column over. The URL is composed at resolve time from the slug the
+     * caller presents and the environment's template (LNK-BE-003).
      */
-    providerTrackingUrl: text('provider_tracking_url'),
+    provider: shareLinkProvider('provider').notNull().default('NONE'),
     /** UTM-style facts the sharer's surface supplied; bounded vocabularies. */
     source: text('source'),
     medium: text('medium'),
