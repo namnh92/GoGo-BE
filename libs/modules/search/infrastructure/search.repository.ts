@@ -83,6 +83,8 @@ export type SearchRow = {
 export type HoursRow = {
   place_id: string;
   day_of_week: number;
+  /** #425 — `closed` and `open_24h` rows carry 0/0 minutes and are not spans. */
+  entry_kind: 'interval' | 'closed' | 'open_24h';
   open_minute: number;
   close_minute: number;
   is_overnight: boolean;
@@ -209,13 +211,19 @@ export class SearchRepository {
     if (f.openAt) {
       const { dow, minute } = vnDayMinute(f.openAt);
       const prevDow = (dow + 6) % 7;
+      // #425 — `entry_kind` splits three claims that used to share one shape.
+      // A `closed` row carries 0/0 minutes and would otherwise have matched
+      // midnight; an `open_24h` row carries 0/0 too and means the opposite.
       conditions.push(sql`exists (
         select 1 from place_hours h where h.place_id = p.id and (
-          (h.day_of_week = ${dow} and (
-            (not h.is_overnight and ${minute} between h.open_minute and h.close_minute)
-            or (h.is_overnight and ${minute} >= h.open_minute)
+          (h.entry_kind = 'open_24h' and h.day_of_week = ${dow})
+          or (h.entry_kind = 'interval' and (
+            (h.day_of_week = ${dow} and (
+              (not h.is_overnight and ${minute} between h.open_minute and h.close_minute)
+              or (h.is_overnight and ${minute} >= h.open_minute)
+            ))
+            or (h.day_of_week = ${prevDow} and h.is_overnight and ${minute} <= h.close_minute)
           ))
-          or (h.day_of_week = ${prevDow} and h.is_overnight and ${minute} <= h.close_minute)
         )
       )`);
     }
@@ -309,7 +317,7 @@ export class SearchRepository {
   async hoursFor(placeIds: string[]): Promise<HoursRow[]> {
     if (placeIds.length === 0) return [];
     const rows = await this.db.execute(sql`
-      select place_id, day_of_week, open_minute, close_minute, is_overnight
+      select place_id, day_of_week, entry_kind, open_minute, close_minute, is_overnight
       from place_hours where place_id = any((${pgArray(placeIds)})::uuid[])
     `);
     return rows.rows as unknown as HoursRow[];
@@ -328,7 +336,8 @@ export class SearchRepository {
           from place_taxonomies pt join taxonomies t on t.id = pt.taxonomy_id
           where pt.place_id = p.id) as taxonomies,
         (select json_agg(json_build_object(
-            'dayOfWeek', h.day_of_week, 'openMinute', h.open_minute,
+            'dayOfWeek', h.day_of_week, 'kind', h.entry_kind,
+            'openMinute', h.open_minute,
             'closeMinute', h.close_minute, 'isOvernight', h.is_overnight)
             order by h.day_of_week)
           from place_hours h where h.place_id = p.id) as hours,

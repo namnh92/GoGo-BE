@@ -12,6 +12,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  primaryKey,
   smallint,
   text,
   timestamp,
@@ -101,7 +102,33 @@ export const places = pgTable(
     status: placeStatus('status').notNull().default('draft'),
     geom: geometry('geom', { type: 'point', mode: 'xy', srid: 4326 }).notNull(),
     addressText: text('address_text'),
+    /**
+     * BE-CMS-PE-001 (#425) — the **discovery** area: a curated bucket
+     * (`hcm_q1`) shared with `rooms`, `plans`, `plan_templates`,
+     * `content_recommendations` and `cms_banners`, and the key the CMS place
+     * filter sends.
+     *
+     * Its vocabulary is `service_areas.key` — the catalog the community import
+     * already checks a submitted place against, so "an area GoGo covers" and
+     * "an area a place can be filed under" stay one list rather than two that
+     * drift. Not a foreign key: rows predating the catalog carry keys it does
+     * not list, and the picker shows an unknown key rather than losing it.
+     *
+     * Deliberately NOT the postal address. A place can sit in Bình Thạnh and
+     * belong to the "Thảo Điền" discovery area, and an address with no
+     * district is still a valid address — which is why `city`/`district`
+     * below are separate free-text fields and not derived from this key.
+     */
     areaKey: text('area_key'),
+    /**
+     * Administrative address, kept apart from `area_key` for that reason.
+     * Free-text names rather than codes: Vietnam's administrative units are
+     * reorganised, editors need to type one the catalog does not carry, and
+     * inventing a code for it would put a key in the data that resolves to
+     * nothing (#425).
+     */
+    city: text('city'),
+    district: text('district'),
     phone: text('phone'),
     website: text('website'),
     rating: numeric('rating', { precision: 3, scale: 2 }),
@@ -184,6 +211,21 @@ export const placeSources = pgTable(
 
 export const hoursSource = pgEnum('hours_source', ['provider', 'editor']);
 
+/**
+ * BE-CMS-PE-001 (#425) — what a `place_hours` row asserts about its day.
+ *
+ * `interval` is a span and carries minutes; a day may hold several of them
+ * (a lunch service and a dinner service are two rows, not one long one).
+ * `closed` and `open_24h` carry no minutes and are the only row for their day.
+ *
+ * "Open around the clock" needed its own value because the minute columns
+ * cannot express it: the check constraint stops at 1439, so 24:00 has no
+ * encoding, and `00:00–23:59` would quietly shut the place for a minute every
+ * night. **Unknown is the absence of a row** — the fourth state is not in this
+ * enum on purpose, because "we have no data" is not something a row asserts.
+ */
+export const hoursEntryKind = pgEnum('hours_entry_kind', ['interval', 'closed', 'open_24h']);
+
 export const placeHours = pgTable(
   'place_hours',
   {
@@ -193,6 +235,7 @@ export const placeHours = pgTable(
       .references(() => places.id, { onDelete: 'cascade' }),
     // 0 = Sunday .. 6 = Saturday, local place timezone.
     dayOfWeek: smallint('day_of_week').notNull(),
+    entryKind: hoursEntryKind('entry_kind').notNull().default('interval'),
     openMinute: integer('open_minute').notNull(),
     closeMinute: integer('close_minute').notNull(),
     isOvernight: boolean('is_overnight').notNull().default(false),
@@ -205,6 +248,14 @@ export const placeHours = pgTable(
     check(
       'place_hours_minute_range',
       sql`${t.openMinute} between 0 and 1439 and ${t.closeMinute} between 0 and 1439`,
+    ),
+    // A `closed` / `open_24h` row makes a claim about the whole day, so it
+    // must not also carry minutes that something downstream might read as a
+    // span. Pinned at zero rather than nullable: the columns are NOT NULL and
+    // every existing reader dereferences them.
+    check(
+      'place_hours_kind_minutes',
+      sql`${t.entryKind} = 'interval' or (${t.openMinute} = 0 and ${t.closeMinute} = 0 and ${t.isOvernight} = false)`,
     ),
   ],
 );
@@ -289,6 +340,58 @@ export const placeMedia = pgTable(
   (t) => [index('place_media_place_idx').on(t.placeId)],
 );
 
+/**
+ * BE-CMS-PE-001 (#425) — where one *field* of a place came from.
+ *
+ * `place_sources` records that a place is linked to a Google record;
+ * `place_provider_sources` records the liveness of that link. Neither says who
+ * wrote the phone number, and that is the question a provider refresh has to
+ * answer before it overwrites anything: an editor who rang the restaurant and
+ * typed what they heard owns that value, and a later provider fetch must not
+ * silently replace it.
+ *
+ * One row per (place, field). Absent means nobody has claimed the field, which
+ * is the state every place starts in — the table is not backfilled, because
+ * inventing provenance for values whose origin nothing recorded would be the
+ * same lie it exists to prevent.
+ *
+ * `source_reference` is what the claim points at: a provider record id for
+ * `provider`, a submission id for `community`, null for `editorial` (the actor
+ * is the reference, and it is in `actor_id`).
+ *
+ * Per GOGO_PRODUCT_DATA_ARCHITECTURE.md an editor re-typing what Google shows
+ * does not make the value GoGo-owned — the CMS records `google_derived` for a
+ * value applied from a provider preview, and that is a distinct source type
+ * from `editorial` precisely so the difference survives.
+ */
+export const fieldSourceType = pgEnum('field_source_type', [
+  'editorial',
+  'provider',
+  'community',
+  'google_derived',
+]);
+
+export const placeFieldProvenance = pgTable(
+  'place_field_provenance',
+  {
+    placeId: uuid('place_id')
+      .notNull()
+      .references(() => places.id, { onDelete: 'cascade' }),
+    /** Column name in `places`, snake_case: `phone`, `website`, `city`. */
+    field: text('field').notNull(),
+    sourceType: fieldSourceType('source_type').notNull(),
+    sourceReference: text('source_reference'),
+    /** Admin who made the claim, when it was a person. */
+    actorId: uuid('actor_id'),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.placeId, t.field] }),
+    index('place_field_provenance_place_idx').on(t.placeId),
+  ],
+);
+
 export const placeImportStatus = pgEnum('place_import_status', ['pending', 'verified', 'rejected']);
 
 /** BE-BFF-013 / FR-PLACE-001..006 — community place import via Google Maps link. */
@@ -337,6 +440,12 @@ export const placeImports = pgTable(
 export const serviceAreas = pgTable('service_areas', {
   key: text('key').primaryKey(),
   name: text('name').notNull(),
+  /**
+   * BE-CMS-PE-001 (#425) — the city this area sits in, so a picker can group
+   * "Quận 1" under "TP.HCM" instead of asking an editor to read it out of the
+   * name string. Nullable: an area that is itself a city has none.
+   */
+  city: text('city'),
   centerLat: doublePrecision('center_lat').notNull(),
   centerLng: doublePrecision('center_lng').notNull(),
   radiusM: integer('radius_m').notNull(),

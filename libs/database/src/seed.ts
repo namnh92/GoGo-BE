@@ -66,11 +66,26 @@ const TAXONOMY: Record<string, { keys: string[]; labelsVi: Record<string, string
 };
 
 const SERVICE_AREAS = [
-  { key: 'hcm_q1', name: 'Quận 1, TP.HCM', centerLat: 10.7769, centerLng: 106.7009, radiusM: 3000 },
-  { key: 'hcm_q3', name: 'Quận 3, TP.HCM', centerLat: 10.7843, centerLng: 106.6844, radiusM: 2500 },
+  {
+    key: 'hcm_q1',
+    name: 'Quận 1, TP.HCM',
+    city: 'TP.HCM',
+    centerLat: 10.7769,
+    centerLng: 106.7009,
+    radiusM: 3000,
+  },
+  {
+    key: 'hcm_q3',
+    name: 'Quận 3, TP.HCM',
+    city: 'TP.HCM',
+    centerLat: 10.7843,
+    centerLng: 106.6844,
+    radiusM: 2500,
+  },
   {
     key: 'hcm_thuduc',
     name: 'TP. Thủ Đức',
+    city: 'TP.HCM',
     centerLat: 10.8494,
     centerLng: 106.7537,
     radiusM: 8000,
@@ -78,6 +93,7 @@ const SERVICE_AREAS = [
   {
     key: 'hn_hoankiem',
     name: 'Hoàn Kiếm, Hà Nội',
+    city: 'Hà Nội',
     centerLat: 21.0285,
     centerLng: 105.8542,
     radiusM: 2500,
@@ -323,7 +339,7 @@ async function main(): Promise<void> {
       .values({ ...area, sortOrder: i })
       .onConflictDoUpdate({
         target: schema.serviceAreas.key,
-        set: { name: area.name, sortOrder: i },
+        set: { name: area.name, city: area.city, sortOrder: i },
       });
   }
 

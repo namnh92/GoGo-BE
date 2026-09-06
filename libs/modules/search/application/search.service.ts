@@ -28,7 +28,17 @@ export type OpenState = {
 export function openStateAt(hours: HoursRow[], at: Date): OpenState {
   const { dow, minute } = vnDayMinute(at);
   const prevDow = (dow + 6) % 7;
-  for (const h of hours) {
+
+  // #425 — a day may now assert itself whole. `open_24h` is open at every
+  // minute and has no closing time to report; `closed` is not a span at all
+  // and must not reach the span arithmetic below, where its 0/0 minutes would
+  // read as "open at midnight" and as the next opening time.
+  if (hours.some((h) => h.entry_kind === 'open_24h' && h.day_of_week === dow)) {
+    return { openNow: true };
+  }
+  const spans = hours.filter((h) => h.entry_kind === 'interval');
+
+  for (const h of spans) {
     if (
       h.day_of_week === dow &&
       !h.is_overnight &&
@@ -44,10 +54,15 @@ export function openStateAt(hours: HoursRow[], at: Date): OpenState {
       return { openNow: true, closesAtMinute: h.close_minute };
     }
   }
-  // Next opening within a week.
+  // Next opening within a week. Today counts, but only for a span that has not
+  // started yet. An `open_24h` day can only be a future one here — if today
+  // were one, the check above would already have returned.
   for (let offset = 0; offset < 7; offset++) {
     const day = (dow + offset) % 7;
-    const candidates = hours
+    if (offset > 0 && hours.some((h) => h.entry_kind === 'open_24h' && h.day_of_week === day)) {
+      return { openNow: false, opensAtMinute: 0, opensDayOffset: offset };
+    }
+    const candidates = spans
       .filter((h) => h.day_of_week === day && (offset > 0 || h.open_minute > minute))
       .sort((a, b) => a.open_minute - b.open_minute);
     if (candidates.length > 0) {

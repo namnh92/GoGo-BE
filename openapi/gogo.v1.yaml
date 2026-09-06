@@ -3346,6 +3346,67 @@ paths:
       responses:
         '200': { description: Stale queue }
 
+  /cms/areas:
+    get:
+      operationId: cmsListAreas
+      tags: [cms]
+      summary: 'Editor: the discovery-area vocabulary behind every areaKey'
+      description: >
+        `places.area_key` had no catalog: the console shipped it as a free text
+        box under a hint telling the editor to pick a taxonomy, and there is no
+        `area` taxonomy kind. The vocabulary existed all along in
+        `service_areas` — the coverage list community import checks a submitted
+        place against — and its keys are exactly the values the column holds, so
+        this exposes that rather than starting a second list that would drift.
+
+
+        Keys present on places but absent from the catalog are returned with
+        `known: false` and no `name`. They exist, because the column has never
+        been a foreign key, and dropping them would make a place's own value
+        vanish from the picker meant to show it.
+      parameters:
+        - {
+            name: q,
+            in: query,
+            schema: { type: string, maxLength: 120 },
+            description: 'Matched against name and key with the same Vietnamese normalization search uses, so "quan 1" finds "Quận 1, TP.HCM".',
+          }
+        - { name: city, in: query, schema: { type: string, maxLength: 120 } }
+        - {
+            name: includeInactive,
+            in: query,
+            schema: { type: boolean },
+            description: 'Retired areas. Needed when rendering a value a place already holds — a retired area must still resolve its label.',
+          }
+      responses:
+        '200':
+          description: Area vocabulary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [key, isActive, known, placeCount]
+                      properties:
+                        key: { type: string }
+                        name:
+                          {
+                            type: [string, 'null'],
+                            description: 'Null for an unknown key — the key is then the only label that exists.',
+                          }
+                        city: { type: [string, 'null'] }
+                        isActive: { type: boolean }
+                        known: { type: boolean, description: Present in the catalog. }
+                        placeCount: { type: integer }
+                        centerLat: { type: [number, 'null'] }
+                        centerLng: { type: [number, 'null'] }
+                        radiusM: { type: [integer, 'null'] }
+
   /cms/places/duplicates:
     get:
       operationId: cmsDuplicateCandidates
@@ -3386,14 +3447,86 @@ paths:
           application/json:
             schema:
               type: object
+              description: >
+                `null` clears a field, an absent key leaves it alone. Before
+                #425 the console could fill a value and never empty it again,
+                because an empty input arrived as an absent key and was skipped.
+
+
+                **Limits on the pre-existing fields are stated in prose, not as
+                JSON-Schema keywords.** They are not new — `placeEditSchema` has
+                enforced every one of them since BE-IMP-009 — but the spec never
+                said so, which is exactly why the console hand-copied them and
+                got `areaKey` and `avgVisitMinutes` wrong. Writing them as
+                `maxLength`/`minimum` here is indistinguishable, to the oasdiff
+                breaking-change gate, from newly restricting a field that was
+                previously open, so the gate fails a change that alters no
+                behaviour. Documenting them in prose corrects the false promise
+                without suppressing a gate that should keep catching real
+                narrowing. Making them machine-readable needs a reviewed
+                exception mechanism on that gate — GoGo-BE#439 — and the
+                console meanwhile mirrors them in `cmsPlaceContract.ts` with a
+                test that fails when the two disagree.
               properties:
-                name: { type: string }
-                description: { type: string }
-                addressText: { type: string }
-                areaKey: { type: string }
-                lat: { type: number }
-                lng: { type: number }
-                avgVisitMinutes: { type: integer }
+                name:
+                  type: string
+                  description: 'Enforced: trimmed, 1..200 characters. Required to be non-empty.'
+                description:
+                  type: [string, 'null']
+                  description: 'Enforced: at most 4000 characters.'
+                addressText:
+                  type: [string, 'null']
+                  description: 'Enforced: at most 400 characters.'
+                areaKey:
+                  type: [string, 'null']
+                  description: >
+                    Enforced: at most 64 characters. A key from `cmsListAreas`
+                    — the discovery area, not the postal address. Not validated
+                    against the catalog: rows predating it carry keys it does
+                    not list.
+                city:
+                  type: [string, 'null']
+                  maxLength: 120
+                  description: Administrative address; free text, never a code.
+                district:
+                  type: [string, 'null']
+                  maxLength: 120
+                  description: >
+                    Optional. An address with no district is valid — Vietnamese
+                    administrative units are reorganised and not every place has
+                    one.
+                phone:
+                  type: [string, 'null']
+                  maxLength: 40
+                  description: >
+                    Normalized to E.164 on write (`0283 822 9999` →
+                    `+842838229999`). A bare subscriber number with neither a
+                    trunk `0` nor a country code is refused rather than assumed
+                    Vietnamese.
+                website:
+                  type: [string, 'null']
+                  maxLength: 500
+                  description: >
+                    `http`/`https` only, host required. A bare host is upgraded
+                    to `https://`. Other schemes are refused — the value is
+                    rendered as an href in three clients.
+                lat:
+                  {
+                    type: number,
+                    description: 'Enforced: -90..90. Moves the pin only together with `lng`.',
+                  }
+                lng:
+                  {
+                    type: number,
+                    description: 'Enforced: -180..180. Moves the pin only together with `lat`.',
+                  }
+                avgVisitMinutes:
+                  type: [integer, 'null']
+                  description: >
+                    Enforced: 10..720, or `null` when unknown. Do not send `0`
+                    for an empty input — it fails the minimum, which is what
+                    made every save of a place without a visit duration return
+                    400 before #425.
                 suitability:
                   type: object
                   additionalProperties: { type: number }
@@ -3402,9 +3535,20 @@ paths:
                 taxonomyIds:
                   type: array
                   items: { type: string, format: uuid }
+                expectedUpdatedAt:
+                  type: string
+                  format: date-time
+                  description: >
+                    Optimistic concurrency: the `updatedAt` the form was loaded
+                    from. A mismatch is refused `409 PLACE_MODIFIED`, with the
+                    current value in `field_errors[0].message` so the client can
+                    show what it would have overwritten. Omitting it skips the
+                    check.
       responses:
         '200': { description: Updated }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /cms/places/{id}/status:
     patch:
@@ -3442,20 +3586,61 @@ paths:
             schema:
               type: object
               required: [hours]
+              description: >
+                Replaces the whole week. **Unknown is the absence of a row** —
+                there is no `unknown` kind, because "we have no data" is not
+                something a row asserts about a place.
               properties:
                 hours:
                   type: array
-                  maxItems: 21
+                  maxItems: 28
+                  description: 7 days x at most 4 services each.
                   items:
                     type: object
-                    required: [dayOfWeek, openMinute, closeMinute]
+                    required: [dayOfWeek]
                     properties:
                       dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
-                      openMinute: { type: integer, minimum: 0, maximum: 1439 }
-                      closeMinute: { type: integer, minimum: 0, maximum: 1439 }
-                      isOvernight: { type: boolean, default: false }
+                      kind:
+                        type: string
+                        enum: [interval, closed, open_24h]
+                        default: interval
+                        description: >
+                          `interval` is a span and a day may hold several.
+                          `closed` and `open_24h` assert the whole day, carry no
+                          minutes, and must be the only row for their day.
+                          `open_24h` exists because the minute columns cannot
+                          express it — they stop at 1439, and `00:00–23:59`
+                          would shut the place for a minute every night.
+                      openMinute: { type: integer, minimum: 0, maximum: 1439, default: 0 }
+                      closeMinute: { type: integer, minimum: 0, maximum: 1439, default: 0 }
+                      isOvernight:
+                        type: boolean
+                        default: false
+                        description: >
+                          The span wraps past midnight, so `closeMinute` is on
+                          the following day. Required when `closeMinute <=
+                          openMinute`, and refused when it does not.
+                      source:
+                        type: string
+                        enum: [provider, editor]
+                        description: >
+                          Defaults to `editor`. Send `provider` to re-save a
+                          provider-sourced row without claiming to have checked
+                          it: the row keeps provider provenance and the fetch
+                          time of the row it replaces, and the place's freshness
+                          clock does not move. Confirming what a provider said
+                          is not verification (GOGO_PRODUCT_DATA_ARCHITECTURE.md).
+                expectedUpdatedAt:
+                  type: string
+                  format: date-time
+                  description: Optimistic concurrency; see `cmsUpdatePlace`.
       responses:
-        '200': { description: Hours replaced }
+        '200':
+          description: >
+            Hours replaced. `verified` is true only when at least one `editor`
+            row was written — that is also when place freshness moves.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /cms/places/{id}/prices:
     post:
@@ -8736,10 +8921,16 @@ components:
           type: string
           enum: [draft, community_submitted, review, published, suspended, archived]
         addressText: { type: [string, 'null'] }
-        areaKey: { type: [string, 'null'] }
+        areaKey:
+          type: [string, 'null']
+          description: >
+            Discovery area — a `service_areas` key, the same vocabulary the
+            place-list filter sends. Not the postal address.
+        city: { type: [string, 'null'], description: Administrative address. }
+        district: { type: [string, 'null'], description: Administrative address; optional. }
         lat: { type: number }
         lng: { type: number }
-        phone: { type: [string, 'null'] }
+        phone: { type: [string, 'null'], description: E.164. }
         website: { type: [string, 'null'] }
         avgVisitMinutes: { type: [integer, 'null'] }
         suitability:
@@ -8778,17 +8969,52 @@ components:
           type: array
           items: { type: string }
           description: Alongside the ids so a chip can be labelled without a second call; writes still send ids.
+        provenance:
+          type: object
+          description: >
+            Per-field origin, keyed by the field name this contract uses. A
+            field absent from this map has **no recorded origin** — which the
+            UI must say in words rather than defaulting it to GoGo. Not
+            backfilled: places predating #425 have fields whose origin nothing
+            recorded, and claiming one would manufacture the provenance this
+            map exists to keep honest.
+          additionalProperties:
+            type: object
+            required: [sourceType]
+            properties:
+              sourceType:
+                type: string
+                enum: [editorial, provider, community, google_derived]
+                description: >
+                  `editorial` is a person's own claim. `google_derived` is a
+                  value applied from a provider preview — copying does not
+                  transfer ownership (GOGO_PRODUCT_DATA_ARCHITECTURE.md), so the
+                  two stay distinct and a provider refresh may overwrite the
+                  second but not the first.
+              sourceReference: { type: [string, 'null'] }
+              verifiedAt: { type: [string, 'null'], format: date-time }
         hours:
           type: array
+          description: >
+            A day with no row here is *unknown*, not closed — the two are
+            different facts and the UI must not render one as the other.
           items:
             type: object
-            required: [dayOfWeek, openMinute, closeMinute, isOvernight, source]
+            required: [dayOfWeek, kind, openMinute, closeMinute, isOvernight, source]
             properties:
               dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
-              openMinute: { type: integer }
-              closeMinute: { type: integer }
+              kind: { type: string, enum: [interval, closed, open_24h] }
+              openMinute: { type: integer, description: Zero on a non-interval row. }
+              closeMinute: { type: integer, description: Zero on a non-interval row. }
               isOvernight: { type: boolean }
-              source: { type: string }
+              source:
+                type: string
+                description: >
+                  `provider` or `editor`. Left unconstrained here for the same
+                  reason as the write limits above: narrowing a response
+                  property that was previously an open string reads as breaking
+                  to the compatibility gate, even though these are the only two
+                  values `hours_source` has ever held.
               verifiedAt: { type: [string, 'null'], format: date-time }
         prices:
           type: array
