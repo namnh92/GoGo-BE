@@ -18,6 +18,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx libs/database/src/migrate.ts",
     "db:seed": "tsx libs/database/src/seed.ts",
+    "db:seed-admin": "tsx libs/database/src/seed-admin.ts",
     "dev": "pnpm --filter @gogo/api dev",
     "eval:search": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register libs/modules/search/eval/run-eval.ts",
     "format": "prettier --write .",

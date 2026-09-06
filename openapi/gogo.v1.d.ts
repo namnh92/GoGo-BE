@@ -1490,7 +1490,10 @@ export interface paths {
          */
         get: operations["cmsListAdmins"];
         put?: never;
-        /** Super admin: create a staff account */
+        /**
+         * Super admin: create a staff account
+         * @description Every CMS account except the `super_admin` is created here. That one is bootstrapped once from SSM — an environment holds at most one before bootstrap and exactly one after — so `role: super_admin` is refused with 409 `SUPER_ADMIN_SINGLETON` (ADR-0018). The enum still lists it: narrowing the request enum is a breaking change and waits until no client sends the value.
+         */
         post: operations["cmsCreateAdmin"];
         delete?: never;
         options?: never;
@@ -2831,7 +2834,11 @@ export interface paths {
         put?: never;
         /**
          * Staff: replace your own password
-         * @description The only route reachable while a password change is owed, which is what keeps the obligation from being a deadlock. The current password is required even then: it proves the caller is the person the temporary password was handed to, and without it a leaked session id would be enough. Every other session of this account is revoked.
+         * @description The only route reachable while a password change is owed, which is what keeps the obligation from being a deadlock. The current password is required even then: it proves the caller is the person the temporary password was handed to, and without it a leaked session id would be enough.
+         *
+         *     **Sessions: the calling session survives, every other session of this account is revoked.** Both halves matter. The caller authenticated a moment ago and is still working, so ending their session would make a routine rotation read as a failure; and a password change is also how someone answers a suspected compromise, which is worth nothing if the other sessions live on. `POST /cms/auth/admins/{id}/reset-password` keeps none — there the actor is someone else and control of the account is already in doubt.
+         *
+         *     This is also how the `super_admin` rotates the password it was bootstrapped with (ADR-0018). Editing the SSM parameter that password came from changes nothing about how the account signs in: the database holds the Argon2id hash, and rotation has to be authenticated, audited and session-revoking, which editing a parameter is not.
          */
         post: operations["cmsChangeOwnPassword"];
         delete?: never;
@@ -9068,7 +9075,17 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
+            /** @description `SUPER_ADMIN_SINGLETON` — an environment has exactly one `super_admin` and a second cannot be created. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsListUsers: {
@@ -11609,7 +11626,13 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
-            /** @description `LAST_SUPER_ADMIN` — demoting the only active super_admin would leave a console nobody can administer. */
+            /**
+             * @description `LAST_SUPER_ADMIN` — the `super_admin` role cannot be given up. Demoting it leaves a console nobody can administer, and there is by construction no second holder to fall back to.
+             *
+             *     `SUPER_ADMIN_SINGLETON` — nor can `role` be set to `super_admin`: an environment holds at most one before it is bootstrapped and exactly one after, and that account is bootstrapped rather than promoted. The enum still offers the value; the refusal is here.
+             *
+             *     Neither freezes the account's credentials. It rotates its password through `POST /cms/auth/change-password` like every other account.
+             */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -11654,7 +11677,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
-            /** @description `LAST_SUPER_ADMIN` — the only active super_admin cannot be suspended. */
+            /** @description `LAST_SUPER_ADMIN` — the `super_admin` cannot be suspended. Suspending it is demotion by another name, and an environment has exactly one. */
             409: {
                 headers: {
                     [name: string]: unknown;

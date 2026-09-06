@@ -3,12 +3,13 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
 import { authenticator } from 'otplib';
-import { and, desc, eq, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import { AdminAuthService } from '@gogo/modules';
 
 /**
  * CMS-001..010 acceptance: RBAC enforced server-side, place workflow +
@@ -28,23 +29,60 @@ let ipc = 0;
 const ip = () => `10.40.${Math.floor(++ipc / 250)}.${(ipc % 250) + 1}`;
 const auth = (t: string) => ({ authorization: `Bearer ${t}` });
 
-async function createAdmin(
-  email: string,
-  role: 'editor' | 'moderator' | 'ops_admin' | 'super_admin',
-) {
-  const passwordHash = await argon2.hash('admin-password-123', { type: argon2.argon2id });
-  const [row] = await db
-    .insert(schema.adminUsers)
-    .values({ email, passwordHash, displayName: email.split('@')[0]!, role })
-    .returning();
+const ADMIN_PASSWORD = 'admin-password-123';
+
+async function adminLogin(email: string, password: string) {
   const res = await api().inject({
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
-    payload: { email, password: 'admin-password-123' },
+    payload: { email, password },
   });
   expect(res.statusCode).toBe(201);
-  return { id: row!.id, token: res.json().accessToken as string };
+  return res.json().accessToken as string;
+}
+
+async function createAdmin(email: string, role: 'editor' | 'moderator' | 'ops_admin') {
+  const passwordHash = await argon2.hash(ADMIN_PASSWORD, { type: argon2.argon2id });
+  const [row] = await db
+    .insert(schema.adminUsers)
+    .values({ email, passwordHash, displayName: email.split('@')[0]!, role })
+    .returning();
+  return { id: row!.id, token: await adminLogin(email, ADMIN_PASSWORD) };
+}
+
+const SUPER_ADMIN_EMAIL = 'super-admin@gogo.local';
+
+/**
+ * ADR-0018 — an environment has exactly one `super_admin`, and the database
+ * refuses a second row in that role (`admin_users_single_super_admin`). So
+ * every test needing one shares this account rather than creating its own.
+ *
+ * A fresh session per call, deliberately: several tests revoke sessions, and a
+ * cached token would make the next test's failure a puzzle about ordering
+ * rather than about what it was testing.
+ *
+ * `superAdminPassword` is a variable because the rotation test changes it. That
+ * test puts it back, and this is where the rest of the file finds out.
+ */
+let superAdminId: string | null = null;
+let superAdminPassword = ADMIN_PASSWORD;
+
+async function superAdmin(): Promise<{ id: string; token: string }> {
+  if (superAdminId === null) {
+    const passwordHash = await argon2.hash(superAdminPassword, { type: argon2.argon2id });
+    const [row] = await db
+      .insert(schema.adminUsers)
+      .values({
+        email: SUPER_ADMIN_EMAIL,
+        passwordHash,
+        displayName: 'Super Admin',
+        role: 'super_admin',
+      })
+      .returning();
+    superAdminId = row!.id;
+  }
+  return { id: superAdminId, token: await adminLogin(SUPER_ADMIN_EMAIL, superAdminPassword) };
 }
 
 beforeAll(async () => {
@@ -94,7 +132,7 @@ describe('CMS auth + RBAC (CMS-001, FR-CMS-001, SRS §15.7)', () => {
 
   it('role matrix: editor blocked from ops endpoints; super_admin passes everywhere', async () => {
     const editor = await createAdmin('editor1@gogo.local', 'editor');
-    const superAdmin = await createAdmin('super1@gogo.local', 'super_admin');
+    const boss = await superAdmin();
 
     const editorOps = await api().inject({
       method: 'GET',
@@ -107,7 +145,7 @@ describe('CMS auth + RBAC (CMS-001, FR-CMS-001, SRS §15.7)', () => {
     const superOps = await api().inject({
       method: 'GET',
       url: '/v1/cms/ops/kpis',
-      headers: auth(superAdmin.token),
+      headers: auth(boss.token),
     });
     expect(superOps.statusCode).toBe(200);
   });
@@ -140,7 +178,7 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
     await api().inject({ method: 'POST', url, remoteAddress: ip(), headers: auth(token), payload });
 
   it('edits role and display name, and records both sides of the change', async () => {
-    const boss = await createAdmin('g9-boss@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const subject = await createAdmin('g9-subject@gogo.id.vn', 'editor');
 
     const res = await api().inject({
@@ -173,7 +211,7 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
    * of duties, not privilege escalation.
    */
   it('refuses to let an admin change their own role', async () => {
-    const boss = await createAdmin('g9-self@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const res = await api().inject({
       method: 'PATCH',
       url: `/v1/cms/auth/admins/${boss.id}`,
@@ -185,7 +223,7 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
   });
 
   it('allows an admin to change their own display name', async () => {
-    const boss = await createAdmin('g9-rename@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const res = await api().inject({
       method: 'PATCH',
       url: `/v1/cms/auth/admins/${boss.id}`,
@@ -196,7 +234,7 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
   });
 
   it('refuses to suspend your own account', async () => {
-    const boss = await createAdmin('g9-selfsuspend@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const res = await post(boss.token, `/v1/cms/auth/admins/${boss.id}/suspend`);
     expect(res.statusCode).toBe(403);
     expect(res.json().code).toBe('SELF_SUSPEND');
@@ -208,7 +246,7 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
    * account cannot walk itself forward on a token it already holds.
    */
   it('suspending revokes every session, not just the status', async () => {
-    const boss = await createAdmin('g9-suspender@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const victim = await createAdmin('g9-victim@gogo.id.vn', 'editor');
 
     expect((await post(boss.token, `/v1/cms/auth/admins/${victim.id}/suspend`)).statusCode).toBe(
@@ -242,59 +280,221 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
   });
 
   /*
-   * Demoting or suspending the last active super_admin leaves a console nobody
-   * can administer — role changes, account creation and ranking approval are
-   * all super_admin, so recovery means an engineer with database access.
+   * ADR-0018 — an environment has exactly one super_admin. It is bootstrapped
+   * from credentials held in SSM and every other CMS account is created and
+   * managed by it. Two layers refuse a second — the service and the database —
+   * and each is tested for what only it can catch. The request enum still
+   * offers the value: narrowing it is a breaking change and waits for
+   * GoGo-CMS#142.
    */
-  it('refuses to strip the last active super_admin, by demotion or suspension', async () => {
-    // Every other super_admin in this database is suspended first, so the one
-    // under test really is the last.
-    const boss = await createAdmin('g9-last@gogo.id.vn', 'super_admin');
-    await db
-      .update(schema.adminUsers)
-      .set({ status: 'suspended' })
-      .where(and(eq(schema.adminUsers.role, 'super_admin'), ne(schema.adminUsers.id, boss.id)));
-
-    const helper = await createAdmin('g9-last-helper@gogo.id.vn', 'super_admin');
-    const demote = await api().inject({
-      method: 'PATCH',
-      url: `/v1/cms/auth/admins/${boss.id}`,
-      headers: auth(helper.token),
-      payload: { role: 'editor', ...REASON },
-    });
-    // `helper` is itself an active super_admin, so `boss` is not the last one.
-    expect(demote.statusCode).toBe(200);
-
-    // Now helper is the only active super_admin left.
-    const suspendSelfLast = await api().inject({
+  it('refuses to create a second super_admin over HTTP', async () => {
+    const boss = await superAdmin();
+    const res = await api().inject({
       method: 'POST',
-      url: `/v1/cms/auth/admins/${helper.id}/suspend`,
-      headers: auth(helper.token),
-      payload: REASON,
+      url: '/v1/cms/auth/admins',
+      headers: auth(boss.token),
+      payload: {
+        email: 'g9-second-super@gogo.id.vn',
+        password: 'a-much-longer-password-1',
+        displayName: 'Second',
+        role: 'super_admin',
+      },
     });
-    expect(suspendSelfLast.statusCode).toBe(403); // self-suspend catches it first
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('SUPER_ADMIN_SINGLETON');
 
-    const promoted = await createAdmin('g9-last-second@gogo.id.vn', 'super_admin');
-    const demoteLast = await api().inject({
+    const [existing] = await db
+      .select()
+      .from(schema.adminUsers)
+      .where(eq(schema.adminUsers.email, 'g9-second-super@gogo.id.vn'));
+    expect(existing).toBeUndefined();
+  });
+
+  it('refuses to promote an existing account over HTTP', async () => {
+    const boss = await superAdmin();
+    const subject = await createAdmin('g9-promote@gogo.id.vn', 'ops_admin');
+    const res = await api().inject({
       method: 'PATCH',
-      url: `/v1/cms/auth/admins/${promoted.id}`,
-      headers: auth(helper.token),
-      payload: { role: 'editor', ...REASON },
+      url: `/v1/cms/auth/admins/${subject.id}`,
+      headers: auth(boss.token),
+      payload: { role: 'super_admin', ...REASON },
     });
-    expect(demoteLast.statusCode).toBe(200);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('SUPER_ADMIN_SINGLETON');
 
-    const orphan = await api().inject({
-      method: 'PATCH',
-      url: `/v1/cms/auth/admins/${helper.id}`,
-      headers: auth(promoted.token),
-      payload: { role: 'editor', ...REASON },
+    const [after] = await db
+      .select()
+      .from(schema.adminUsers)
+      .where(eq(schema.adminUsers.id, subject.id));
+    expect(after!.role).toBe('ops_admin');
+  });
+
+  /*
+   * Demotion and suspension of the super_admin cannot be reached over HTTP at
+   * all: the caller would have to be a *second* super_admin, which is the thing
+   * that cannot exist. So the service is exercised directly — and the create and
+   * promote cases go through it too, because a rule that only the controller
+   * applies is a rule that disappears the day another caller (a script, a future
+   * controller) reaches the service.
+   */
+  it('refuses the role in the service, which is where the refusal lives', async () => {
+    const auth_ = app.get(AdminAuthService);
+    const boss = await superAdmin();
+    const subject = await createAdmin('g9-svc-promote@gogo.id.vn', 'editor');
+
+    await expect(
+      auth_.createAdmin({
+        email: 'g9-svc-second@gogo.id.vn',
+        password: 'a-much-longer-password-1',
+        displayName: 'Second',
+        role: 'super_admin',
+        createdBy: boss.id,
+      }),
+    ).rejects.toMatchObject({ code: 'SUPER_ADMIN_SINGLETON', httpStatus: 409 });
+
+    await expect(
+      auth_.updateAdmin({
+        id: subject.id,
+        role: 'super_admin',
+        reason: REASON.reason,
+        actorId: boss.id,
+      }),
+    ).rejects.toMatchObject({ code: 'SUPER_ADMIN_SINGLETON', httpStatus: 409 });
+  });
+
+  it('refuses to demote or suspend the one super_admin', async () => {
+    const auth_ = app.get(AdminAuthService);
+    const boss = await superAdmin();
+    // Any actor id: the refusal is about the subject, and an actor who could
+    // make this call would have to be a second super_admin.
+    const actor = await createAdmin('g9-demoter@gogo.id.vn', 'ops_admin');
+
+    await expect(
+      auth_.updateAdmin({
+        id: boss.id,
+        role: 'editor',
+        reason: REASON.reason,
+        actorId: actor.id,
+      }),
+    ).rejects.toMatchObject({ code: 'LAST_SUPER_ADMIN', httpStatus: 409 });
+
+    await expect(
+      auth_.setAdminStatus({
+        id: boss.id,
+        status: 'suspended',
+        reason: REASON.reason,
+        actorId: actor.id,
+      }),
+    ).rejects.toMatchObject({ code: 'LAST_SUPER_ADMIN', httpStatus: 409 });
+
+    const [after] = await db
+      .select()
+      .from(schema.adminUsers)
+      .where(eq(schema.adminUsers.id, boss.id));
+    expect(after).toMatchObject({ role: 'super_admin', status: 'active' });
+  });
+
+  /*
+   * The layer that holds when the service is bypassed. The seed wrote to this
+   * table, the bootstrap command writes to it, and a psql session always can —
+   * so the invariant is a constraint, not a convention.
+   */
+  it('refuses a second super_admin row in the database itself', async () => {
+    await superAdmin();
+    const passwordHash = await argon2.hash(ADMIN_PASSWORD, { type: argon2.argon2id });
+
+    // Drizzle wraps the driver error, so the message is "Failed query: …" and
+    // both the SQLSTATE and the constraint name sit on the cause. Asserted
+    // through it rather than around it: "some insert failed" would pass on a
+    // typo'd column, and the constraint name is the thing under test.
+    let caught: unknown;
+    try {
+      await db.insert(schema.adminUsers).values({
+        email: 'g9-db-second@gogo.id.vn',
+        passwordHash,
+        displayName: 'Second',
+        role: 'super_admin',
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    expect((caught as { cause?: { code?: string; constraint?: string } }).cause).toMatchObject({
+      code: '23505',
+      constraint: 'admin_users_single_super_admin',
     });
-    expect(orphan.statusCode).toBe(403); // promoted is now an editor, not super_admin
 
-    await db
-      .update(schema.adminUsers)
-      .set({ status: 'active' })
-      .where(eq(schema.adminUsers.role, 'super_admin'));
+    const [existing] = await db
+      .select()
+      .from(schema.adminUsers)
+      .where(eq(schema.adminUsers.email, 'g9-db-second@gogo.id.vn'));
+    expect(existing).toBeUndefined();
+  });
+
+  /*
+   * The bootstrap credential in SSM is what the first login is typed from and
+   * nothing after that: the database holds the Argon2id hash, so rotation is
+   * this flow — authenticated, audited, and revoking the sessions it
+   * invalidates — and not an edit to a parameter.
+   */
+  it('lets the super_admin rotate its own bootstrap password', async () => {
+    const boss = await superAdmin();
+    const stale = (await superAdmin()).token; // a second live session
+    const rotated = 'rotated-super-password-1';
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/change-password',
+      remoteAddress: ip(),
+      headers: auth(boss.token),
+      payload: { currentPassword: superAdminPassword, newPassword: rotated },
+    });
+    expect(res.statusCode).toBe(201);
+    superAdminPassword = rotated;
+
+    // The session that did the rotating survives; every other one is dead.
+    expect(
+      (await api().inject({ method: 'GET', url: '/v1/cms/places', headers: auth(boss.token) }))
+        .statusCode,
+    ).toBe(200);
+    expect(
+      (await api().inject({ method: 'GET', url: '/v1/cms/places', headers: auth(stale) }))
+        .statusCode,
+    ).toBe(401);
+
+    const [entry] = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(
+        and(
+          eq(schema.auditLogs.resourceId, boss.id),
+          eq(schema.auditLogs.action, 'admin.password_changed'),
+        ),
+      )
+      .orderBy(desc(schema.auditLogs.createdAt))
+      .limit(1);
+    expect(entry).toBeDefined();
+
+    // The old password is gone, and the new one is what signs in.
+    const old = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/login',
+      remoteAddress: ip(),
+      payload: { email: SUPER_ADMIN_EMAIL, password: ADMIN_PASSWORD },
+    });
+    expect(old.statusCode).toBe(401);
+
+    // Put it back, so the shared fixture is what the rest of the file expects —
+    // and rotating twice is worth one assertion of its own.
+    const back = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/change-password',
+      remoteAddress: ip(),
+      headers: auth((await superAdmin()).token),
+      payload: { currentPassword: rotated, newPassword: ADMIN_PASSWORD },
+    });
+    expect(back.statusCode).toBe(201);
+    superAdminPassword = ADMIN_PASSWORD;
   });
 
   /*
@@ -303,7 +503,7 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
    * console skipping a screen (`core.md` #5).
    */
   it('a temporary password locks the console until it is replaced', async () => {
-    const boss = await createAdmin('g9-reset-boss@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const target = await createAdmin('g9-reset@gogo.id.vn', 'ops_admin');
 
     const reset = await post(boss.token, `/v1/cms/auth/admins/${target.id}/reset-password`);
@@ -373,7 +573,7 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
   });
 
   it('never returns a password hash or the reset reason as a credential', async () => {
-    const boss = await createAdmin('g9-leak@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const list = await api().inject({
       method: 'GET',
       url: '/v1/cms/auth/admins?limit=100',
@@ -664,7 +864,7 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
    * now holds that address.
    */
   it('refuses to change the status of a deleted account', async () => {
-    const boss = await createAdmin('g7-boss@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const user = await createUser('g7-gone@example.com');
     expect((await post(boss.token, `/v1/cms/users/${user.id}/delete`)).statusCode).toBe(201);
 
@@ -674,7 +874,7 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
   });
 
   it('deletes through the consumer flow, so nothing is left behind twice', async () => {
-    const boss = await createAdmin('g7-eraser@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const user = await createUser('g7-erase@example.com');
 
     expect((await post(boss.token, `/v1/cms/users/${user.id}/delete`)).statusCode).toBe(201);
@@ -701,7 +901,7 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
   });
 
   it('erasure is idempotent rather than an error on a second call', async () => {
-    const boss = await createAdmin('g7-twice@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const user = await createUser('g7-twice-user@example.com');
     expect((await post(boss.token, `/v1/cms/users/${user.id}/delete`)).statusCode).toBe(201);
     expect((await post(boss.token, `/v1/cms/users/${user.id}/delete`)).json().deleted).toBe(true);
@@ -1048,7 +1248,7 @@ describe('privacy-request ledger (BE-CMS-G12 #255, ADR-0011)', () => {
    * must not close the other.
    */
   it('execute closes exactly the linked request; a direct delete closes none', async () => {
-    const boss = await createAdmin('g12-boss@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const user = await registeredUser('g12-linked@example.com');
 
     const exportReq = (
@@ -1148,7 +1348,7 @@ describe('privacy-request ledger (BE-CMS-G12 #255, ADR-0011)', () => {
    * row, and reports an overdue review without releasing or deleting.
    */
   it('retention job purges eligible rows, skips held ones, flags overdue reviews', async () => {
-    const boss = await createAdmin('g12-retain@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const mk = async () =>
       (
         await post(boss.token, '/v1/cms/privacy-requests', {
@@ -1190,7 +1390,7 @@ describe('privacy-request ledger (BE-CMS-G12 #255, ADR-0011)', () => {
   });
 
   it('a hold needs a future review date, and release keeps the retention date', async () => {
-    const boss = await createAdmin('g12-hold@gogo.id.vn', 'super_admin');
+    const boss = await superAdmin();
     const id = (
       await post(boss.token, '/v1/cms/privacy-requests', {
         type: 'export',
@@ -1826,7 +2026,7 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
   const prefix = 'acctlist';
 
   beforeAll(async () => {
-    superToken = (await createAdmin(`${prefix}-super@gogo.local`, 'super_admin')).token;
+    superToken = (await superAdmin()).token;
     opsToken = (await createAdmin(`${prefix}-ops@gogo.local`, 'ops_admin')).token;
     editorToken = (await createAdmin(`${prefix}-editor@gogo.local`, 'editor')).token;
 
@@ -1866,7 +2066,9 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
     const res = await list(`?q=${prefix}-`);
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.totalCount).toBe(6);
+    // Five accounts carry this prefix. The `super_admin` reading them is the
+    // environment's one shared account (ADR-0018) and is not one of them.
+    expect(body.totalCount).toBe(5);
 
     const c = body.items.find((a: { email: string }) => a.email === `${prefix}-c@gogo.local`);
     expect(c).toMatchObject({ displayName: 'Lê C', role: 'editor', status: 'active' });
@@ -1919,7 +2121,7 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
   });
 
   it('records the last login, which is what tells a stale account from a new one', async () => {
-    const res = await list(`?q=${prefix}-super`);
+    const res = await list(`?q=${SUPER_ADMIN_EMAIL}`);
     expect(res.json().items[0].lastLoginAt).toBeTypeOf('string');
   });
 
@@ -1931,14 +2133,14 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
         `?q=${prefix}-&limit=2` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''),
       );
       expect(res.statusCode).toBe(200);
-      expect(res.json().totalCount).toBe(6);
+      expect(res.json().totalCount).toBe(5);
       seen.push(...res.json().items.map((a: { id: string }) => a.id));
       cursor = res.json().nextCursor;
       if (!cursor) break;
     }
     expect(cursor).toBeNull();
-    expect(seen).toHaveLength(6);
-    expect(new Set(seen).size).toBe(6);
+    expect(seen).toHaveLength(5);
+    expect(new Set(seen).size).toBe(5);
   });
 
   it('rejects a malformed cursor and a role that is not in the model', async () => {
@@ -4212,7 +4414,7 @@ describe('RBAC: hierarchical read, exact-match write (BE-IMP-008, #143)', () => 
     editor = await createAdmin('rbac-editor@gogo.local', 'editor');
     moderator = await createAdmin('rbac-mod@gogo.local', 'moderator');
     ops = await createAdmin('rbac-ops@gogo.local', 'ops_admin');
-    root = await createAdmin('rbac-root@gogo.local', 'super_admin');
+    root = await superAdmin();
     const [place] = await db
       .insert(schema.places)
       .values({
@@ -4394,7 +4596,11 @@ describe('SEC-001 emergency takedown (break-glass)', () => {
 
   it('every admin role can take a place down — the point is whoever is awake', async () => {
     for (const role of ['editor', 'moderator', 'ops_admin', 'super_admin'] as const) {
-      const admin = await createAdmin(`bg-${role}@gogo.local`, role);
+      // The environment's one `super_admin` is shared rather than created here.
+      const admin =
+        role === 'super_admin'
+          ? await superAdmin()
+          : await createAdmin(`bg-${role}@gogo.local`, role);
       const place = await publishedPlace(`Break Glass ${role}`);
       const res = await takedown(admin.token, `/v1/cms/emergency/places/${place.id}/suspend`);
       expect(res.statusCode).toBe(201);
@@ -4550,7 +4756,7 @@ describe('SEC-001 emergency takedown (break-glass)', () => {
 
 describe('SEC-002 part A: which rule authorized the write', () => {
   it('tells a super_admin bypass apart from a write it was entitled to', async () => {
-    const root = await createAdmin('authz-root@gogo.local', 'super_admin');
+    const root = await superAdmin();
     const editor = await createAdmin('authz-editor@gogo.local', 'editor');
     const [place] = await db
       .insert(schema.places)
@@ -5303,20 +5509,20 @@ describe('audit read (BE-IMP-010, #158, FR-CMS-008)', () => {
   });
 
   it('is read-only: there is no route that edits or deletes an entry', async () => {
-    const superAdmin = await createAdmin('audit-immutable@gogo.local', 'super_admin');
+    const boss = await superAdmin();
     const place = await suspendablePlace('Audit Immutable Cafe');
     await api().inject({
       method: 'POST',
       url: `/v1/cms/emergency/places/${place.id}/suspend`,
       remoteAddress: ip(),
-      headers: auth(superAdmin.token),
+      headers: auth(boss.token),
       payload: { reason: 'Takedown that must remain in the log afterwards' },
     });
     const listed = await api().inject({
       method: 'GET',
       url: `/v1/cms/audit?resourceType=place&resourceId=${place.id}`,
       remoteAddress: ip(),
-      headers: auth(superAdmin.token),
+      headers: auth(boss.token),
     });
     const entryId = listed.json().items[0].id as string;
 
@@ -5326,7 +5532,7 @@ describe('audit read (BE-IMP-010, #158, FR-CMS-008)', () => {
         method,
         url: `/v1/cms/audit/${entryId}`,
         remoteAddress: ip(),
-        headers: auth(superAdmin.token),
+        headers: auth(boss.token),
         payload: { action: 'tampered' },
       });
       expect(res.statusCode).toBe(404);

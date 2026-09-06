@@ -349,6 +349,47 @@ identifier so admin and consumer counters cannot be made to collide. A wrong
 TOTP code counts as a failed attempt too: counting only the password would
 leave the second factor brute-forceable at the per-IP rate.
 
+### The first CMS account, and why there is only one (DB-012, ADR-0018)
+
+An environment holds **at most one** `super_admin` before it is bootstrapped and
+**exactly one** after — the index enforces the upper bound for every writer, and
+the lower bound is held by bootstrap creating the account and by no path being
+able to demote or suspend it. Every other CMS account is created and managed by
+that account. A second holder doubles the blast radius of a
+compromise for nothing the role model needs: `ops_admin` covers every delegable
+operation, and the one thing it does not cover — changing who holds which role —
+is precisely what has to stay singular. Refused at the API and at the database,
+because the API is not the only way into this table: `AdminAuthService` refuses
+to create, grant, demote or suspend the role (`SUPER_ADMIN_SINGLETON` /
+`LAST_SUPER_ADMIN`, both 409), and a partial unique index refuses a second row to
+any writer at all, including a psql session.
+
+**The database is the authentication source for that account, like every other.**
+Its password is an Argon2id hash. AWS SSM holds _bootstrap_ credentials —
+what the first login is typed from, once — and the bootstrap command never
+overwrites an existing account. Editing the parameter afterwards changes nothing
+about how the account signs in, which is the point rather than a limitation:
+
+- a SecureString can be read back by anyone holding the path; a hash cannot;
+- login gains no dependency on a network service that can be unreachable exactly
+  when the console is needed;
+- a parameter edit is not authenticated as a person, writes no audit row and
+  revokes no session, so sessions opened under the old password would survive it.
+
+Rotation therefore goes through account management — `POST
+/cms/auth/change-password`, or a temporary password from
+`POST /cms/auth/admins/{id}/reset-password` — which authenticates the actor,
+audits the change and revokes what it invalidates. Precisely: a self-service
+change **keeps the session that made it and revokes every other session of that
+account**; a reset keeps none, because there the actor is someone else and
+control of the account is already in doubt.
+
+Residual, and tracked: between provisioning a bootstrap value and the first
+rotation, that value is a live credential readable by every principal holding the
+backend SSM prefix. The DEV value is worse than that — it predates this work and
+is the literal that was in this repository's source, so it is in the history for
+good. Rotating it is a required follow-up, not a completed one.
+
 ### CMS session model (SEC-003)
 
 The staff session used to be an access token in a response body with no server
@@ -381,7 +422,11 @@ demoted account cannot refresh onward.
 3. 🟡 Load/soak validation of rate limits + query costs (#76).
 4. 🟡 Dependency/supply-chain scanning in CI (add `pnpm audit` + Dependabot — small follow-up).
 5. 🔴 Pentest before beta (QP gate) — schedule with team.
-6. ✅ Virus scanning for CMS bulk-import uploads — accepted risk (files vetted
+6. 🔴 Rotate the DEV CMS super admin password (ADR-0018). The value is the
+   literal that lived in this repository's source and remains in its history;
+   moving credentials into SSM did not rotate it. Rotation goes through CMS
+   account management, not through an SSM edit.
+7. ✅ Virus scanning for CMS bulk-import uploads — accepted risk (files vetted
    before upload; staff-only endpoint). Reopen if import leaves staff scope.
 
 Review cadence: revisit per release gate (Alpha/Beta/Pilot — WBS §18) and on
