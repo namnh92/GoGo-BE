@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { COST_REGISTRY } from './registry';
-import { providerRuntime, serviceRuntime } from './runtime-coverage';
+import { bootstrapConnection, providerRuntime, serviceRuntime } from './runtime-coverage';
 
 /**
  * ADR-0014 — coverage is a function of the registry and nothing else, so
@@ -113,3 +113,37 @@ describe('providerRuntime', () => {
 function op(instrumented: boolean) {
   return { id: 'x.op', serviceId: 'x', displayName: 'op', instrumented, usageMeters: [] };
 }
+
+describe('bootstrapConnection (#427)', () => {
+  const op = (id: string, bootstrap?: boolean) => ({
+    id,
+    serviceId: 'upstash.redis',
+    displayName: id,
+    instrumented: true,
+    ...(bootstrap ? { bootstrap: true } : {}),
+    usageMeters: [],
+  });
+  const reader = (status: 'ok' | 'error' | 'unavailable' | 'timeout' | null) => ({
+    get: (operation: string) =>
+      status === null ? null : { operation, status, observedAt: '2026-09-06T03:00:00.000Z' },
+  });
+
+  it('is null without a bootstrap operation, without a reader, or with nothing recorded', () => {
+    expect(bootstrapConnection({ operations: [op('x.hit')] }, reader('ok'))).toBeNull();
+    expect(bootstrapConnection({ operations: [op('x.connect', true)] }, null)).toBeNull();
+    expect(bootstrapConnection({ operations: [op('x.connect', true)] }, reader(null))).toBeNull();
+  });
+
+  it('reports the bootstrap operation with its recorded outcome', () => {
+    const service = { operations: [op('x.hit'), op('x.connect', true)] };
+    expect(bootstrapConnection(service, reader('ok'))).toEqual({
+      operation: 'x.connect',
+      status: 'ok',
+      observedAt: '2026-09-06T03:00:00.000Z',
+    });
+    expect(bootstrapConnection(service, reader('timeout'))!.status).toBe('timeout');
+    expect(bootstrapConnection(service, reader('unavailable'))!.status).toBe('unavailable');
+    // A connect never records `error`; a reader that only knows the closed set folds it.
+    expect(bootstrapConnection(service, reader('error'))!.status).toBe('unavailable');
+  });
+});

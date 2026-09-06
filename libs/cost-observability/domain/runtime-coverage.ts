@@ -1,3 +1,4 @@
+import type { RuntimeStateReader } from '@gogo/observability';
 import type { RuntimeSurface, ServiceDefinition } from './registry';
 
 /**
@@ -32,7 +33,40 @@ export type ServiceRuntime = {
   coverage: RuntimeCoverage;
   /** `total: 0` with a surface is NOT_INSTRUMENTED: nothing registered to measure yet. */
   operations: OperationCount;
+  /**
+   * #427 — how this process's one boot-time connect for the service ended,
+   * when the service declares a `bootstrap` operation and this process ran
+   * it. `null` otherwise. A failure here is fail-open, not an outage: it
+   * moves neither `coverage` nor the provider's status.
+   */
+  connection?: RuntimeConnection | null;
 };
+
+export type RuntimeConnectionStatus = 'ok' | 'unavailable' | 'timeout';
+
+export type RuntimeConnection = {
+  operation: string;
+  status: RuntimeConnectionStatus;
+  observedAt: string;
+};
+
+/**
+ * The service's bootstrap operation read from the process's runtime state.
+ * `error` is not something a connect records, but a reader that only knows
+ * the closed set folds it to `unavailable` rather than dropping the row.
+ */
+export function bootstrapConnection(
+  service: Pick<ServiceDefinition, 'operations'>,
+  state: RuntimeStateReader | null | undefined,
+): RuntimeConnection | null {
+  const op = service.operations.find((o) => o.bootstrap);
+  if (!op || !state) return null;
+  const recorded = state.get(op.id);
+  if (!recorded) return null;
+  const status: RuntimeConnectionStatus =
+    recorded.status === 'ok' || recorded.status === 'timeout' ? recorded.status : 'unavailable';
+  return { operation: op.id, status, observedAt: recorded.observedAt };
+}
 
 export type ProviderRuntime = {
   coverage: RuntimeCoverage;

@@ -1,4 +1,5 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { RUNTIME_STATE, type RuntimeStateReader } from '@gogo/observability';
 import {
   COST_REGISTRY,
   CostCenterService,
@@ -43,6 +44,10 @@ export class CmsCostCenterService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(APP_CONFIG) private readonly config: CostCenterConfig,
+    /** #427 — this process's boot-time outcomes; absent outside the API. */
+    @Optional()
+    @Inject(RUNTIME_STATE)
+    private readonly runtimeState: RuntimeStateReader | null = null,
   ) {}
 
   private get environment(): string {
@@ -53,6 +58,7 @@ export class CmsCostCenterService {
     return new CostCenterService(this.db, COST_REGISTRY, {
       environment: this.environment,
       ledgerEnabled: this.config.COST_LEDGER_ENABLED ?? false,
+      runtimeState: this.runtimeState,
     });
   }
 

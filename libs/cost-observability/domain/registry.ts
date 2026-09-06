@@ -143,6 +143,12 @@ export type OperationDefinition = {
   displayName: string;
   /** False = this process emits no metric for it. Reported as a gap, never zero. */
   instrumented: boolean;
+  /**
+   * #427 — runs once per process boot (a warm-up connect), not on the request
+   * path. Its last outcome in this process is reported on the service row as
+   * `runtime.connection`; its counter still lands on the same series family.
+   */
+  bootstrap?: boolean;
   usageMeters: readonly UsageMeterDefinition[];
 };
 
@@ -392,12 +398,17 @@ const google = (service: string) => `google.${service}`;
  * #414 — an infrastructure operation: measured at runtime, metered by nobody
  * here. `id` is the label value the adapter emits, so the two cannot drift.
  */
-function runtimeOperation(op: RuntimeOperation, displayName: string): OperationDefinition {
+function runtimeOperation(
+  op: RuntimeOperation,
+  displayName: string,
+  flags: { bootstrap?: boolean } = {},
+): OperationDefinition {
   return {
     id: op.operation,
     serviceId: op.service,
     displayName,
     instrumented: true,
+    ...(flags.bootstrap ? { bootstrap: true } : {}),
     usageMeters: [],
   };
 }
@@ -831,6 +842,11 @@ const UPSTASH: ProviderDefinition = {
         runtimeOperation(
           UPSTASH_REDIS_OPERATIONS.roomEventsSubscribe,
           'Room event subscribe (ZRANGEBYSCORE/SUBSCRIBE)',
+        ),
+        runtimeOperation(
+          UPSTASH_REDIS_OPERATIONS.rateLimitConnect,
+          'Rate limit connect (API boot)',
+          { bootstrap: true },
         ),
       ],
       meters: [

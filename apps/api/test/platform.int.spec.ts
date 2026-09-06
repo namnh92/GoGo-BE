@@ -10,7 +10,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
-import { MetricsRegistry } from '@gogo/observability';
+import { MetricsRegistry, RuntimeStateStore } from '@gogo/observability';
 
 /**
  * Platform contract pieces: Idempotency-Key semantics (api-contract rule)
@@ -266,8 +266,22 @@ describe('Redis rate-limit store (multi-instance)', () => {
     expect(out).toContain(`${hit},provider="upstash",service="upstash.redis",status="ok"} 1`);
     expect(out).not.toContain('status="error"');
 
+    // #427 — the warm-up itself is one recorded operation per boot, with the
+    // process keeping its last outcome for the Cost Center's `runtime.connection`.
+    const { RateLimitRedisWarmup } =
+      await import('../../../libs/modules/identity/presentation/rate-limit-redis.js');
+    const booted = createRateLimitRedis(url);
+    const bootMetrics = new MetricsRegistry();
+    const state = new RuntimeStateStore();
+    await new RateLimitRedisWarmup(booted, bootMetrics, state).onApplicationBootstrap();
+    expect(bootMetrics.render()).toContain(
+      'provider_requests_total{operation="upstash.redis.rate_limit.connect",provider="upstash",service="upstash.redis",status="ok"} 1',
+    );
+    expect(state.get('upstash.redis.rate_limit.connect')).toMatchObject({ status: 'ok' });
+
     cold.disconnect();
     warm.disconnect();
+    booted.disconnect();
   });
 });
 

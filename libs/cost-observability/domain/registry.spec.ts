@@ -298,6 +298,18 @@ describe('cost registry — invariants at construction', () => {
     }
   });
 
+  it('declares the rate-limit warm-up as a bootstrap operation, apart from the request-path hit (#427)', () => {
+    const connect = COST_REGISTRY.operation('upstash.redis.rate_limit.connect')!;
+    expect(connect.serviceId).toBe('upstash.redis');
+    expect(connect.instrumented).toBe(true);
+    expect(connect.bootstrap).toBe(true);
+    expect(connect.usageMeters).toEqual([]);
+    expect(COST_REGISTRY.operation('upstash.redis.rate_limit.hit')!.bootstrap).toBeUndefined();
+    // One bootstrap operation per service: the row reports one connection.
+    const upstash = COST_REGISTRY.service('upstash.redis')!;
+    expect(upstash.operations.filter((o) => o.bootstrap)).toHaveLength(1);
+  });
+
   it('refuses an instrumented operation on a service that declares no runtime', () => {
     const data = minimal();
     (data.providers[0]!.services[0] as { runtime: string }).runtime = 'none';

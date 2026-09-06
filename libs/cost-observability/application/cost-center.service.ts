@@ -1,3 +1,4 @@
+import type { RuntimeStateReader } from '@gogo/observability';
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import {
@@ -19,6 +20,7 @@ import {
 } from '../domain/cost-source';
 import { freshnessStatus, type FreshnessStatus } from '../domain/freshness';
 import {
+  bootstrapConnection,
   providerRuntime,
   serviceRuntime,
   type ProviderRuntime,
@@ -389,6 +391,8 @@ export type RowInputs = {
   /** The days the rows were read for; what is due is judged inside it. */
   range: DateRange;
   now: Date;
+  /** #427 — this process's boot-time outcomes, for `runtime.connection`. Absent in a worker or a test. */
+  runtimeState?: RuntimeStateReader | null;
 };
 
 const newest = (values: readonly string[]): string | null =>
@@ -446,7 +450,10 @@ export function buildServiceRow(
     sourcesForService(input.freshness, service.providerId, service.id),
     input.now,
   );
-  const runtime = serviceRuntime(service);
+  const runtime = {
+    ...serviceRuntime(service),
+    connection: bootstrapConnection(service, input.runtimeState),
+  };
   const instrumented = runtime.coverage === 'FULL' || runtime.coverage === 'PARTIAL';
   const measuredZero =
     costRows.length === 0 &&
@@ -631,6 +638,8 @@ export type CostCenterOptions = {
   environment: string;
   ledgerEnabled: boolean;
   now?: () => Date;
+  /** #427 — the API process's `RuntimeStateStore`; `runtime.connection` reads from it. */
+  runtimeState?: RuntimeStateReader | null;
 };
 
 export class CostCenterService {
@@ -751,7 +760,15 @@ export class CostCenterService {
       this.freshnessRows(),
       readManualItemFacts(this.db, this.options.environment),
     ]);
-    return { costRows, usageRows, freshness, manualItems, range, now };
+    return {
+      costRows,
+      usageRows,
+      freshness,
+      manualItems,
+      range,
+      now,
+      runtimeState: this.options.runtimeState ?? null,
+    };
   }
 
   private async costRows(range: DateRange): Promise<CostRowWithMeta[]> {

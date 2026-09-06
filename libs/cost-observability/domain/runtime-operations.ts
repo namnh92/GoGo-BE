@@ -27,6 +27,12 @@ export const UPSTASH_REDIS_OPERATIONS = {
   roomEventsPublish: { ...UPSTASH, operation: 'upstash.redis.room_events.publish' },
   /** `RedisRoomEventBus.subscribe` — the replay ZRANGEBYSCORE and the channel SUBSCRIBE. */
   roomEventsSubscribe: { ...UPSTASH, operation: 'upstash.redis.room_events.subscribe' },
+  /**
+   * #427 — `RateLimitRedisWarmup`: the one `connect()` at API boot, recorded
+   * once per process as `ok | unavailable | timeout`. A bootstrap operation,
+   * not a request-path one; `rate_limit.hit` stays the request-path signal.
+   */
+  rateLimitConnect: { ...UPSTASH, operation: 'upstash.redis.rate_limit.connect' },
 } as const satisfies Record<string, RuntimeOperation>;
 
 const NEON = { provider: 'neon', service: 'neon.postgres' } as const;
