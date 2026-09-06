@@ -103,6 +103,14 @@ export function assertDestinationShape(
  * the provider, some are already on someone's phone. Saying a campaign can be
  * cancelled at that point would be a promise the backend cannot keep.
  */
+/**
+ * `sent: []` is what makes a completed campaign final, and it decides more than
+ * it looks like it does: a recipient the provider had no subscription for is
+ * counted in `failed_count` and keeps `push_sent_at` null, but because nothing
+ * can move a `sent` campaign back to `scheduled`, that recipient is never
+ * attempted again. From `failed` the same recipient *is* retried, because that
+ * status reopens. Recorded, not changed — see review finding R4.
+ */
 export const CAMPAIGN_TRANSITIONS: Record<CampaignStatus, CampaignStatus[]> = {
   draft: ['scheduled'],
   scheduled: ['draft', 'sending', 'cancelled'],
@@ -112,7 +120,15 @@ export const CAMPAIGN_TRANSITIONS: Record<CampaignStatus, CampaignStatus[]> = {
   failed: ['scheduled'],
 };
 
-/** Editing is only meaningful while nothing has been sent. */
+/**
+ * Editing is only meaningful while nothing has been sent.
+ *
+ * `failed` and `cancelled` are on the list because a campaign that never
+ * reached anyone is still a draft in every way that matters. Once it *has*
+ * reached someone, `CampaignsService.update` refuses the fields that reach a
+ * phone regardless of status (review finding R3) — status alone cannot express
+ * that, because a failed campaign may have delivered to none or to half.
+ */
 export const EDITABLE_STATUSES: CampaignStatus[] = ['draft', 'cancelled', 'failed'];
 
 /**

@@ -201,7 +201,17 @@ export class CampaignDispatcher {
     });
     // A message id is a delivery the provider accepted. None means no
     // subscription for this person right now — recorded in failed_count, as an
-    // account with no registered device was before, and left retryable.
+    // account with no registered device was before.
+    //
+    // "Left retryable" is only half true, and the half that is not is worth
+    // stating (review finding R4). The row keeps `push_sent_at` null, so any
+    // later run of this dispatch does attempt it again — but a campaign that
+    // reaches the end of its recipient list finishes `sent`, and `sent` has no
+    // outgoing transition, so no later run happens. In practice: a no-target
+    // recipient is retried when an outage failed the campaign and an operator
+    // retries it, and never when the campaign completed. Both paths are
+    // asserted in `cms.int.spec.ts`. Changing that is a product decision about
+    // what an unsubscribed recipient means, not a dispatcher fix.
     if (result.providerMessageId === null) return 'no_target';
     await this.db.execute(sql`
       update notifications

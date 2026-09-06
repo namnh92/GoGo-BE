@@ -93,7 +93,7 @@ key>`, `include_aliases.external_id`, `target_channel: push`, chunked at 2,000
 ### Review amendments (2026-09-06)
 
 - **Delivery progress is its own fact.** `notifications.push_sent_at` /
-  `push_message_id` (migration 0045) record that the provider created a
+  `push_message_id` (migration `0048_notification-push-delivery`) record that the provider created a
   message for that recipient. The campaign dispatcher inserts the inbox row,
   then skips recipients whose row is marked delivered and sends to the rest.
   Rescheduling a campaign that _failed_ mid-send keeps its `dispatch_key`, so
@@ -101,6 +101,17 @@ key>`, `include_aliases.external_id`, `target_channel: push`, chunked at 2,000
   still mints a new key and is the deliberate re-send. Before this, a reschedule
   after an outage pushed everyone who had already been reached a second time and
   never retried the recipient the outage hit.
+- **A delivered campaign's message is frozen.** Resuming under the old key
+  fixed the duplicates but opened a second hole: `failed` is editable, so the
+  copy could be changed and the resumed send would deliver the new text to the
+  remainder only, leaving half the audience on each version. Once a campaign has
+  any recipient with `push_sent_at` set, `update` refuses `title`, `body`,
+  `imageKey`, `ctaLabel`, audience and destination with 409
+  `CAMPAIGN_ALREADY_DELIVERED` — whatever its status, because status cannot
+  express "failed having reached half of them". Cancelling first is not an
+  escape hatch: that path would deliver a second, different message to the
+  people already reached. The editorial `name` stays editable (no recipient
+  sees it), an unchanged retry stays allowed, and new copy means a new campaign.
 - **"Sent" means a message was created.** `PushSendResult` now carries every
   provider message id and the number of requests the provider accepted with
   nobody subscribed (`id: ""`). The outbox counts `push_delivery_sent_total` per

@@ -197,9 +197,9 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `push_delivery_sent_total`                       | `kind`                                       | message provider đã tạo cho một event (#193); tăng theo số message, không theo số lần gọi                                                                                                |
 | `push_delivery_no_target_total`                  | `kind`                                       | provider trả 200 nhưng không có subscription nào trong request — không phải gửi, không phải lỗi                                                                                          |
 | `push_delivery_unknown_user_total`               | `kind`                                       | user id provider không biết (chưa từng login/đã logout) — không phải lỗi gửi                                                                                                             |
+| `push_delivery_failed_total`                     | `kind`                                       | provider từ chối vĩnh viễn (credential/payload); lỗi tạm thời đi qua outbox retry                                                                                                        |
 | `push_provider_requests_total`                   | `status`                                     | mỗi request tới OneSignal; `status` là HTTP code hoặc `network`                                                                                                                          |
 | `push_provider_request_duration_seconds`         | `status`                                     | độ trễ request OneSignal                                                                                                                                                                 |
-| `push_delivery_failed_total`                     | `kind`                                       | provider từ chối vĩnh viễn (credential/payload); lỗi tạm thời đi qua outbox retry                                                                                                        |
 
 Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 
