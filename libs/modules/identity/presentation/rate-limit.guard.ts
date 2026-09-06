@@ -51,7 +51,9 @@ export class RateLimitGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const req = context.switchToHttp().getRequest<FastifyRequest & { actor?: Actor }>();
+    const req = context
+      .switchToHttp()
+      .getRequest<FastifyRequest & { actor?: Actor; edgeClientIp?: string }>();
     await this.enforceBaseline(req);
 
     const spec = this.reflector.getAllAndOverride<RateLimitSpec | undefined>(RATE_LIMIT_KEY, [
@@ -61,7 +63,14 @@ export class RateLimitGuard implements CanActivate {
     if (!spec) return true;
 
     const parts: string[] = [spec.action];
-    if (spec.keyBy.includes('ip')) parts.push(req.ip ?? 'noip');
+    if (spec.keyBy.includes('ip')) {
+      // SEC-004: `edgeClientIp` is set only for a request whose edge hop
+      // authenticated (see `edge-client-ip.ts`); a spoofed header never
+      // reaches here because the hook strips it. Absent it, this is `req.ip`
+      // exactly as before.
+      const clientIp = spec.edgeClientIp ? (req.edgeClientIp ?? req.ip) : req.ip;
+      parts.push(clientIp ?? 'noip');
+    }
     if (spec.keyBy.includes('actor'))
       parts.push(req.actor ? `${req.actor.type}:${req.actor.id}` : 'anon');
 
@@ -81,7 +90,10 @@ export class RateLimitGuard implements CanActivate {
     if (BASELINE_EXEMPT.test(req.url)) return;
 
     // req.ip already honours TRUST_PROXY — never read X-Forwarded-For directly
-    // (that was the spoofing hole fixed in #129).
+    // (that was the spoofing hole fixed in #129). The baseline stays on the
+    // connecting address deliberately: SEC-004's forwarded value is scoped to
+    // the one share-link spec that asks for it, so a busy edge is still held
+    // to one baseline bucket here.
     const key = req.actor
       ? `baseline|${req.actor.type}:${req.actor.id}`
       : `baseline|ip:${req.ip ?? 'noip'}`;

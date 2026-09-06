@@ -4,7 +4,7 @@ import {
   ProviderConfigurationError,
   TenjinAcquisitionLinkProvider,
 } from '@gogo/providers';
-import { parseIdentitySigningKey } from '@gogo/modules';
+import { EDGE_AUTH_TOKEN_MIN_LENGTH, parseIdentitySigningKey } from '@gogo/modules';
 
 /**
  * FND-006: config validation — the process must fail fast on invalid config.
@@ -261,6 +261,22 @@ const envSchema = z
      * Store Connect app and a tracking template exist (GoGo-Infra#14).
      */
     TENJIN_TRACKING_URL_TEMPLATE: z.string().default(''),
+    /**
+     * SEC-004 (#445) — the shared token the share-link Worker presents so the
+     * client address it forwards can be believed (`X-GoGo-Edge-Auth`).
+     *
+     * Empty is the safe default and the state of every environment today:
+     * nothing is trusted, the forwarded header is stripped from every request,
+     * and the share-link limit keys on the connecting address exactly as it
+     * did before. Per environment, never shared between them — a token that
+     * works in DEV and PROD lets DEV's edge speak for PROD's.
+     *
+     * Rendered from SSM `share-link/worker-auth-token`. The Worker gets the
+     * same value put on it at deploy time; it never passes through Terraform.
+     * Provisioning, rotation and rollback: GoGo-Infra
+     * `docs/share-link-edge-auth.md` (INF-070).
+     */
+    SHARE_LINK_EDGE_AUTH_TOKEN: z.string().default(''),
     R2_ACCOUNT_ID: z.string().default(''),
     R2_ACCESS_KEY_ID: z.string().default(''),
     R2_SECRET_ACCESS_KEY: z.string().default(''),
@@ -516,6 +532,19 @@ const envSchema = z
           message: 'SHARE_LINK_BASE_URL must be an https origin with no path, query or credentials',
         });
       }
+    }
+
+    // SEC-004 — a short token is not a secret. Refused at boot rather than
+    // accepted into a comparison that would then be doing nothing useful.
+    if (
+      env.SHARE_LINK_EDGE_AUTH_TOKEN &&
+      env.SHARE_LINK_EDGE_AUTH_TOKEN.trim().length < EDGE_AUTH_TOKEN_MIN_LENGTH
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SHARE_LINK_EDGE_AUTH_TOKEN'],
+        message: `SHARE_LINK_EDGE_AUTH_TOKEN must be at least ${EDGE_AUTH_TOKEN_MIN_LENGTH} characters, or empty to trust no edge`,
+      });
     }
 
     // #206 — validated the same way the adapter does, so a bad template fails

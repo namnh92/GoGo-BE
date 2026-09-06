@@ -11,6 +11,13 @@ export { TokenService } from '../identity/application/token.service';
 export { PasswordService } from '../identity/application/password.service';
 export { IdentityRepository } from '../identity/infrastructure/identity.repository';
 export {
+  EDGE_AUTH_HEADER,
+  EDGE_AUTH_TOKEN_MIN_LENGTH,
+  EDGE_CLIENT_IP_HEADER,
+  createEdgeClientIpHook,
+  vettedEdgeClientIp,
+} from '../identity/application/edge-client-ip';
+export {
   AuthGuard,
   ACCESS_COOKIE,
   CSRF_COOKIE,
