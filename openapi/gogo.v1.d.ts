@@ -3730,41 +3730,12 @@ export interface components {
             excludesReason: string;
             p99MinSamples: number;
         };
-        /**
-         * @description What the cost number is, in the payload rather than in a comment nobody reading the JSON will see.
-         *
-         *     Before #335 this was `units_only` with `estimatedCost: null`, because no price existed anywhere in the system. There is now a versioned list price, so the number is stated — with every qualification attached to it rather than assumed.
-         */
-        CmsOpsCostModel: {
-            /** @enum {string} */
-            kind: "estimated";
-            /** @description Integer USD minor units (cents). Null where nothing under the group has a verified price — an absence, never a zero. Rounded so a real charge under one cent reports as one cent rather than as nothing; `estimatedCostMicros` carries the exact figure. */
-            estimatedCost: number | null;
-            /** @description USD micros. The exact value the minor-unit figure is rounded from. */
-            estimatedCostMicros: number | null;
-            /** @example USD */
-            currency: string | null;
-            /**
-             * @description Arithmetic over our own counters against a list price. Not an invoice. No field here is named `billed`, `actualSpend` or `invoiceCost`, because none of them would be true.
-             * @enum {string}
-             */
-            basis: "ESTIMATED";
-            /** @enum {string} */
-            confidence: "MEDIUM";
-            /**
-             * @description Which price list produced the number.
-             * @example 2026-09-01
-             */
-            pricingVersion: string;
-            /** @description False on this surface, always. A free cap is monthly and these windows are 1h–30d, so subtracting a monthly allowance from an hour of traffic would understate by an arbitrary amount. Month-to-date spend with the cap applied is on `/cms/ops/costs`. */
-            freeCapApplied: boolean;
-            /** @description False when at least one operation in the group has no verified list price. The sum is then a floor, not a total, and the reader is told which. */
-            costComplete: boolean;
-            /** @description The operations whose units are counted but whose price is unknown. */
-            unpricedOperations: string[];
-            /** @description What has no number, and why. Two different absences, never merged into one. */
-            measurementGaps: components["schemas"]["CmsOpsCostGap"][];
-            note: string;
+        /** @description COST-BE-035 (#420), ADR-0014 amendment — where the money for this row lives. The ops surface states no amount: it used to price its own counters at list price with no free tier while `/cms/ops/costs` read the durable ledger with the cap applied, and the two could not agree for one service on one day. Registry ids, so the console can link to the Cost Center row; `serviceId` is null where the console group spans several services (the two Maps SDKs) and the link lands on the provider. */
+        CmsOpsCostCenterRef: {
+            /** @example google */
+            providerId: string;
+            /** @example google.places */
+            serviceId: string | null;
         };
         CmsOpsCostGap: {
             /** @example google.maps_sdk_ios */
@@ -3794,11 +3765,8 @@ export interface components {
                 p50?: number | null;
                 p95?: number | null;
             };
+            /** @description Measured SKU units — a count, never a price. The money for any of them is on `/cms/ops/costs`; see `CmsOpsCostCenterRef`. */
             billableUnits: number;
-            estimatedCost: number | null;
-            estimatedCostMicros: number | null;
-            costComplete: boolean;
-            unpricedOperations: string[];
         };
         CmsOpsProvider: {
             /**
@@ -3816,11 +3784,7 @@ export interface components {
             latency: components["schemas"]["CmsOpsPercentiles"];
             /** @description Null where the provider has no SKU counter. Sheets is quota-limited rather than billed per call, so it is null and must never render as 0, which reads as "free". */
             billableUnits: number | null;
-            /** @description USD minor units at list price. Null where nothing here has a verified price. */
-            estimatedCost: number | null;
-            estimatedCostMicros: number | null;
-            costComplete: boolean;
-            unpricedOperations: string[];
+            costCenter: components["schemas"]["CmsOpsCostCenterRef"];
         };
         CmsOpsProviderDetail: components["schemas"]["CmsOpsProvider"] & {
             operations: components["schemas"]["CmsOpsOperation"][];
@@ -3843,9 +3807,7 @@ export interface components {
              * @example Places API (New) — Place Details Enterprise
              */
             googleSku: string | null;
-            estimatedCost: number | null;
-            /** @description USD micros at list price. Null when the units are unknown **or** the price is — both are absences, and neither is a zero. */
-            estimatedCostMicros: number | null;
+            costCenter: components["schemas"]["CmsOpsCostCenterRef"];
         };
         CmsOpsTrends: {
             /** @description Fixed per window (1h→60, 24h→300, 7d→1800, 30d→7200) so every chart is 60–360 points. The client does not choose it: a step is a resolution decision and an arbitrary one is arbitrary load. */
@@ -12510,7 +12472,6 @@ export interface operations {
                         /** @description Null when the backend could not be read. Never a zero — no traffic and no measurement are different facts, and the console must render them differently. */
                         totals: components["schemas"]["CmsOpsTotals"] | null;
                         trends: components["schemas"]["CmsOpsTrends"] | null;
-                        costModel: components["schemas"]["CmsOpsCostModel"];
                         latencySemantics: components["schemas"]["CmsOpsLatencySemantics"];
                     };
                 };
@@ -12544,7 +12505,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["CmsOpsEnvelope"] & {
                         providers: components["schemas"]["CmsOpsProvider"][];
-                        costModel: components["schemas"]["CmsOpsCostModel"];
                         latencySemantics: components["schemas"]["CmsOpsLatencySemantics"];
                     };
                 };
@@ -12581,7 +12541,6 @@ export interface operations {
                     "application/json": components["schemas"]["CmsOpsEnvelope"] & {
                         provider: components["schemas"]["CmsOpsProviderDetail"] | null;
                         trends?: components["schemas"]["CmsOpsTrends"] | null;
-                        costModel: components["schemas"]["CmsOpsCostModel"];
                         latencySemantics: components["schemas"]["CmsOpsLatencySemantics"];
                     };
                 };

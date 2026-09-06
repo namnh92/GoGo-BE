@@ -1,12 +1,13 @@
 import type { PromSample } from '@gogo/providers';
 import {
-  listCostMicros,
-  microsToMinorUnits,
+  costCenterRefFor,
+  costCenterRefForOperation,
   operationForSku,
   OPS_PROVIDERS,
   pricingFor,
   providerOf,
   utcDay,
+  type CostCenterRef,
   type OpsProvider,
 } from '@gogo/cost-observability';
 
@@ -206,21 +207,14 @@ export type ProviderOperation = {
    * response.
    */
   billableUnits: number | null;
-  /** #335 — the Google SKU these units bill as, or `null` where none does. */
+  /** #335 — the Google SKU these units bill as, or `null` where none does. A name, not a price. */
   googleSku: string | null;
   /**
-   * List-price estimate for this window, USD micros, or `null` when the
-   * registry has no verified price.
-   *
-   * **List price, no free-tier deduction.** A free cap is monthly and this
-   * window is one of 1h/24h/7d/30d; subtracting a monthly allowance from an
-   * hour of traffic would understate by an arbitrary amount. Month-to-date
-   * spend with the cap applied comes from the durable ledger, on
-   * `/cms/ops/costs`.
+   * COST-BE-035 (#420) — where the money is. This surface states no amount
+   * (ADR-0014 amendment): the Cost Center row for the service that owns the
+   * operation is the one place that does.
    */
-  estimatedCostMicros: number | null;
-  /** The same figure in integer USD minor units, for display. */
-  estimatedCost: number | null;
+  costCenter: CostCenterRef;
 };
 
 export type ProviderBreakdown = {
@@ -233,15 +227,8 @@ export type ProviderBreakdown = {
   successRate: number | null;
   latency: Percentiles;
   billableUnits: number | null;
-  estimatedCostMicros: number | null;
-  estimatedCost: number | null;
-  /**
-   * False when at least one operation under this provider has no verified
-   * price. The sum that survives is a floor, not a total, and a reader has to
-   * be told which — `unpricedOperations` names them.
-   */
-  costComplete: boolean;
-  unpricedOperations: string[];
+  /** The Cost Center row for this group: one service, or the provider when the group spans several. */
+  costCenter: CostCenterRef;
   operations: ProviderOperation[];
 };
 
@@ -256,10 +243,6 @@ export type OpsTotals = {
   latency: Percentiles;
   rejectedLatency: Pick<Percentiles, 'p50' | 'p95'>;
   billableUnits: number;
-  estimatedCostMicros: number | null;
-  estimatedCost: number | null;
-  costComplete: boolean;
-  unpricedOperations: string[];
 };
 
 /** Raw instant-query results, one array per template. */
@@ -377,7 +360,6 @@ export function aggregate(
     const samplesForP99 = latencyCount.get(method) ?? 0;
     const units = cost.has(method) ? roundCount(cost.get(method)!) : null;
     const pricing = pricingFor(method, pricingDay);
-    const costMicros = units === null ? null : listCostMicros(method, pricingDay, units);
     operations.push({
       method,
       calls,
@@ -394,12 +376,7 @@ export function aggregate(
       },
       billableUnits: units,
       googleSku: pricing?.googleSku ?? null,
-      // `null` where the units are unknown *or* the price is. Both are
-      // absences and neither is a zero: an operation with no SKU counter has
-      // no cost to state, and one whose list price is unverified (Routes per
-      // element, Dynamic Maps) must not be reported as free.
-      estimatedCostMicros: costMicros,
-      estimatedCost: costMicros === null ? null : microsToMinorUnits(costMicros),
+      costCenter: costCenterRefForOperation(method),
     });
   }
 
@@ -422,7 +399,7 @@ export function aggregate(
       // Sheets is quota-limited rather than billed per call, so it has no SKU
       // counter and must report `null` — never 0, which reads as "free".
       billableUnits: units.length > 0 ? sum(units) : null,
-      ...costOf(ops),
+      costCenter: costCenterRefFor(provider),
       operations: ops,
     };
   });
@@ -452,7 +429,6 @@ export function aggregate(
         p95: aggregateQuantile(samples.rejectedP95),
       },
       billableUnits: sum([...cost.values()].map(roundCount)),
-      ...costOf(operations),
     },
     providers,
   };
@@ -485,45 +461,4 @@ function roundOrNull(n: number | undefined): number | null {
 
 function sum(values: number[]): number {
   return values.reduce((a, b) => a + b, 0);
-}
-
-/**
- * Fold operation-level estimates into one, keeping the absences visible.
- *
- * A sum over a set containing an unpriced member is a *floor*, and presenting
- * a floor as a total is the same lie as presenting an unmeasured thing as a
- * zero — just harder to spot, because the number looks plausible. So the sum
- * is still reported (a floor is useful) and `costComplete: false` plus the
- * names of the unpriced operations travel with it.
- *
- * When nothing under the group is priced at all, the estimate is `null`
- * rather than 0. Sheets is the everyday case: quota-limited, no SKU counter,
- * genuinely no money to report.
- */
-function costOf(ops: readonly ProviderOperation[]): {
-  estimatedCostMicros: number | null;
-  estimatedCost: number | null;
-  costComplete: boolean;
-  unpricedOperations: string[];
-} {
-  const priced = ops.filter((o) => o.estimatedCostMicros !== null);
-  const unpriced = ops
-    .filter((o) => o.estimatedCostMicros === null && o.billableUnits !== null)
-    .map((o) => o.method)
-    .sort();
-  if (priced.length === 0) {
-    return {
-      estimatedCostMicros: null,
-      estimatedCost: null,
-      costComplete: unpriced.length === 0,
-      unpricedOperations: unpriced,
-    };
-  }
-  const micros = sum(priced.map((o) => o.estimatedCostMicros!));
-  return {
-    estimatedCostMicros: micros,
-    estimatedCost: microsToMinorUnits(micros),
-    costComplete: unpriced.length === 0,
-    unpricedOperations: unpriced,
-  };
 }
