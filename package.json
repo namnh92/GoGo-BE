@@ -29,7 +29,8 @@
     "test:integration": "vitest run --project integration",
     "typecheck": "turbo run typecheck",
     "typecheck:scripts": "tsc --noEmit --project scripts/cost-baseline/tsconfig.json && tsc --noEmit --project scripts/cost-backfill/tsconfig.json",
-    "cost:backfill": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/cost-backfill/index.ts"
+    "cost:backfill": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/cost-backfill/index.ts",
+    "api:version": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/check-openapi-version.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
