@@ -116,7 +116,8 @@ export class SuggestionsRepository {
           where pt.place_id = p.id group by t.kind
         ) tk), '{}'::jsonb) as taxonomy_keys,
         coalesce((select jsonb_agg(jsonb_build_object(
-            'dayOfWeek', h.day_of_week, 'openMinute', h.open_minute,
+            'dayOfWeek', h.day_of_week, 'kind', h.entry_kind,
+            'openMinute', h.open_minute,
             'closeMinute', h.close_minute, 'isOvernight', h.is_overnight))
           from place_hours h where h.place_id = p.id), '[]'::jsonb) as hours,
         (${seedExpr}) as is_seed

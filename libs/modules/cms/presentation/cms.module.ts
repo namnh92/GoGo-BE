@@ -30,6 +30,7 @@ import { SearchAnalyticsService } from '../application/search-analytics.service'
 import { AdminGuard } from './admin.guard';
 import { EmergencyController } from './emergency.controller';
 import {
+  CmsAreasController,
   CmsAuditController,
   CmsAuthController,
   CmsBannersController,
@@ -49,6 +50,7 @@ import {
 @Module({
   imports: [IdentityModule, SuggestionsModule, ReviewsModule],
   controllers: [
+    CmsAreasController,
     CmsAuditController,
     CmsAuthController,
     CmsBannersController,

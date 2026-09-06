@@ -36,6 +36,11 @@ export type Candidate = {
   freshnessDays: number | null;
   hours: {
     dayOfWeek: number;
+    /**
+     * #425. Older rows and fixtures predate the column, so it is optional and
+     * absent means `interval` — the only thing a row could have been before.
+     */
+    kind?: 'interval' | 'closed' | 'open_24h';
     openMinute: number;
     closeMinute: number;
     isOvernight: boolean;

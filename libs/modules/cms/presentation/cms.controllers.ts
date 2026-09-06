@@ -15,6 +15,7 @@ import {
   PLACE_SOURCES,
   type PlaceEditInput,
 } from '../application/cms-catalog.service';
+import { HOURS_ENTRY_KINDS } from '../domain/place-hours';
 import { CmsContentService } from '../application/cms-content.service';
 import { CmsUploadsService } from '../application/cms-uploads.service';
 import {
@@ -624,33 +625,70 @@ export class PrivacyRequestsController {
 
 // ---------------------------------------------------------------- catalog
 
+/**
+ * BE-CMS-PE-001 (#425).
+ *
+ * `.nullable()` on the text fields is the point of this revision: an editor
+ * could fill `areaKey` and never empty it again, because the console had no
+ * way to say "clear this" that this schema would accept. `null` clears,
+ * absence leaves alone.
+ *
+ * `avgVisitMinutes` keeps its 10..720 floor — a place worth ten minutes is a
+ * typo — but gains `null`, which is what an empty box actually means. The
+ * console used to coerce that empty box to `0` and get a 400 on every save of
+ * a place that had no visit duration.
+ */
 const placeEditSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
-  description: z.string().max(4000).optional(),
-  addressText: z.string().max(400).optional(),
-  areaKey: z.string().max(64).optional(),
+  description: z.string().max(4000).nullable().optional(),
+  addressText: z.string().max(400).nullable().optional(),
+  areaKey: z.string().trim().max(64).nullable().optional(),
+  city: z.string().trim().max(120).nullable().optional(),
+  district: z.string().trim().max(120).nullable().optional(),
+  phone: z.string().trim().max(40).nullable().optional(),
+  website: z.string().trim().max(500).nullable().optional(),
   lat: z.number().min(-90).max(90).optional(),
   lng: z.number().min(-180).max(180).optional(),
-  avgVisitMinutes: z.number().int().min(10).max(720).optional(),
+  avgVisitMinutes: z.number().int().min(10).max(720).nullable().optional(),
   suitability: z.record(z.string(), z.number().min(0).max(1)).optional(),
   isLodging: z.boolean().optional(),
   curatedRank: z.number().int().min(0).nullable().optional(),
   taxonomyIds: z.array(z.string().uuid()).max(30).optional(),
+  /** Optimistic concurrency — the `updatedAt` the form was loaded from. */
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 const placeStatusSchema = z.object({
   status: z.enum(['draft', 'community_submitted', 'review', 'published', 'suspended', 'archived']),
 });
+/**
+ * #425 — a row now says which of the three things it asserts about its day.
+ *
+ * `kind` defaults to `interval`, so a body written against the previous
+ * contract still validates and still means what it meant. `closed` and
+ * `open_24h` carry no minutes; the domain rejects a body that sends them
+ * anyway, before the column check has to.
+ *
+ * `source` lets the console re-save a week without claiming to have verified
+ * it. Absent means `editor`, because a row arriving from this endpoint is
+ * normally something a person typed.
+ */
 const hoursSchema = z.object({
   hours: z
     .array(
-      z.object({
-        dayOfWeek: z.number().int().min(0).max(6),
-        openMinute: z.number().int().min(0).max(1439),
-        closeMinute: z.number().int().min(0).max(1439),
-        isOvernight: z.boolean().default(false),
-      }),
+      z
+        .object({
+          dayOfWeek: z.number().int().min(0).max(6),
+          kind: z.enum(HOURS_ENTRY_KINDS).default('interval'),
+          openMinute: z.number().int().min(0).max(1439).default(0),
+          closeMinute: z.number().int().min(0).max(1439).default(0),
+          isOvernight: z.boolean().default(false),
+          source: z.enum(['provider', 'editor']).optional(),
+        })
+        .strict(),
     )
-    .max(21),
+    // 7 days x 4 services. The old cap of 21 predated multiple services a day.
+    .max(28),
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
 const priceSchema = z.object({
   priceMin: z.number().int().min(0),
@@ -735,7 +773,7 @@ export class CmsCatalogController {
     @Param('id', Uuid) id: string,
     @Body(new ZodValidationPipe(hoursSchema)) body: z.infer<typeof hoursSchema>,
   ) {
-    return this.catalog.setHours(actor.id, id, body.hours);
+    return this.catalog.setHours(actor.id, id, body.hours, body.expectedUpdatedAt);
   }
 
   @Post(':id/prices')
@@ -759,6 +797,46 @@ export class CmsCatalogController {
     @Body(new ZodValidationPipe(mergeSchema)) body: { duplicateId: string },
   ) {
     return this.catalog.mergePlaces(actor.id, id, body.duplicateId);
+  }
+}
+
+// ------------------------------------------------------------------ areas
+
+const areaListQuery = z.object({
+  q: z.string().trim().max(120).optional(),
+  city: z.string().trim().max(120).optional(),
+  /**
+   * A retired area is not offered as a new choice, but a place already filed
+   * under one must still resolve its label — so the console asks for the
+   * inactive rows too when it is rendering a value it already holds.
+   */
+  includeInactive: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .transform((value) => value === true || value === 'true')
+    .optional(),
+});
+
+/**
+ * BE-CMS-PE-001 (#425) — the catalog behind `areaKey`.
+ *
+ * The console shipped `areaKey` as a free text box under a hint telling the
+ * editor to pick a taxonomy, and there is no `area` taxonomy kind — so the
+ * hint pointed at nothing and the box accepted anything, including keys the
+ * place filter would never match.
+ *
+ * The vocabulary was there the whole time: `service_areas` is what community
+ * import checks a submitted place's coordinates against, and its keys are
+ * exactly the values `places.area_key` holds. This exposes it rather than
+ * building a second list that would drift from the first.
+ */
+@RequireRole('editor')
+@Controller('cms/areas')
+export class CmsAreasController {
+  constructor(private readonly catalog: CmsCatalogService) {}
+
+  @Get()
+  list(@Query(new ZodValidationPipe(areaListQuery)) query: z.infer<typeof areaListQuery>) {
+    return this.catalog.listAreas(query);
   }
 }
 

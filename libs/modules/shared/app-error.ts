@@ -35,8 +35,13 @@ export class AppError extends Error {
     return new AppError(code, message, 404);
   }
 
-  static conflict(code: string, message: string): AppError {
-    return new AppError(code, message, 409);
+  /**
+   * `fieldErrors` carries the current server value on an optimistic-concurrency
+   * refusal (#425), so a client can show what it would have overwritten rather
+   * than re-fetching to find out.
+   */
+  static conflict(code: string, message: string, fieldErrors?: FieldError[]): AppError {
+    return new AppError(code, message, 409, { ...(fieldErrors ? { fieldErrors } : {}) });
   }
 
   static gone(code: string, message: string): AppError {

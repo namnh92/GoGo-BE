@@ -9,6 +9,8 @@ import { GOOGLE_PROVIDER, googleProvenanceRows } from '../../shared/google-prove
 import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
 import { writeOutbox } from '../../shared/outbox';
+import { validateWeek, type HoursEntry, type HoursEntryKind } from '../domain/place-hours';
+import { normalizePhone, normalizeWebsite } from '../domain/place-contact';
 
 type PlaceStatus = (typeof schema.places.$inferSelect)['status'];
 
@@ -22,19 +24,65 @@ const PLACE_TRANSITIONS: Record<PlaceStatus, PlaceStatus[]> = {
   archived: [],
 };
 
+/**
+ * BE-CMS-PE-001 (#425) — `null` means *clear this field*, `undefined` means
+ * *leave it alone*. The distinction is the contract: the console could
+ * previously never empty a value it had filled, because an empty input arrived
+ * as `undefined` and was skipped.
+ */
 export type PlaceEditInput = {
   name?: string | undefined;
-  description?: string | undefined;
-  addressText?: string | undefined;
-  areaKey?: string | undefined;
+  description?: string | null | undefined;
+  addressText?: string | null | undefined;
+  areaKey?: string | null | undefined;
+  city?: string | null | undefined;
+  district?: string | null | undefined;
+  phone?: string | null | undefined;
+  website?: string | null | undefined;
   lat?: number | undefined;
   lng?: number | undefined;
-  avgVisitMinutes?: number | undefined;
+  avgVisitMinutes?: number | null | undefined;
   suitability?: Record<string, number> | undefined;
   isLodging?: boolean | undefined;
   curatedRank?: number | null | undefined;
   taxonomyIds?: string[] | undefined;
+  /**
+   * The `updatedAt` the editor's form was loaded from. When it no longer
+   * matches, somebody else has written since — the save is refused instead of
+   * silently winning (api-contract: optimistic concurrency).
+   */
+  expectedUpdatedAt?: string | undefined;
 };
+
+/**
+ * Fields whose origin `place_field_provenance` records. Kept as a list rather
+ * than "every column" because provenance is only meaningful where a provider
+ * and an editor could both plausibly have written the value.
+ */
+export const PROVENANCE_FIELDS = [
+  'name',
+  'description',
+  'address_text',
+  'area_key',
+  'city',
+  'district',
+  'phone',
+  'website',
+] as const;
+export type ProvenanceField = (typeof PROVENANCE_FIELDS)[number];
+
+const PROVENANCE_COLUMN: Record<string, ProvenanceField> = {
+  name: 'name',
+  description: 'description',
+  addressText: 'address_text',
+  areaKey: 'area_key',
+  city: 'city',
+  district: 'district',
+  phone: 'phone',
+  website: 'website',
+};
+
+export type HoursWriteEntry = HoursEntry & { source?: 'provider' | 'editor' | undefined };
 
 export const PLACE_SORTS = ['updated_at', 'created_at', 'name', 'confidence'] as const;
 export type PlaceSort = (typeof PLACE_SORTS)[number];
@@ -96,6 +144,8 @@ type PlaceDetailRow = {
   status: PlaceStatus;
   address_text: string | null;
   area_key: string | null;
+  city: string | null;
+  district: string | null;
   lat: number | string | null;
   lng: number | string | null;
   phone: string | null;
@@ -111,10 +161,12 @@ type PlaceDetailRow = {
   freshness_checked_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
+  provenance: PlaceProvenanceRow[] | null;
 };
 
 type PlaceHoursRow = {
   day_of_week: number;
+  entry_kind: HoursEntryKind;
   open_minute: number;
   close_minute: number;
   is_overnight: boolean;
@@ -150,6 +202,25 @@ type PlaceMediaRow = {
   height: number | null;
   sort_order: number;
   moderation: string;
+};
+
+type PlaceProvenanceRow = {
+  field: string;
+  source_type: string;
+  source_reference: string | null;
+  verified_at: Date | string | null;
+};
+
+/** Column name → the name the public contract uses for the same field. */
+const API_FIELD_OF: Record<string, string> = {
+  name: 'name',
+  description: 'description',
+  address_text: 'addressText',
+  area_key: 'areaKey',
+  city: 'city',
+  district: 'district',
+  phone: 'phone',
+  website: 'website',
 };
 
 type PlaceListRow = {
@@ -191,6 +262,33 @@ function sourcePredicate(source: PlaceSource): SQL {
   if (source === 'community') return fromCommunity;
   if (source === 'google') return sql`${linkedToProvider} and not ${fromCommunity}`;
   return sql`not ${linkedToProvider} and not ${fromCommunity}`;
+}
+
+/**
+ * Optimistic concurrency (api-contract). The console sends the `updatedAt` its
+ * form was loaded from; a mismatch means somebody saved in between, and the
+ * write is refused with the current value so the UI can show what it would
+ * have overwritten instead of overwriting it.
+ *
+ * Omitting the field skips the check, which keeps the endpoint usable from a
+ * script and from a client that predates this contract.
+ */
+export function assertNotStale(current: Date, expected?: string | undefined): void {
+  if (expected === undefined) return;
+  const parsed = new Date(expected);
+  if (Number.isNaN(parsed.getTime())) {
+    throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', [
+      { field: 'expectedUpdatedAt', code: 'invalid_datetime', message: 'Không phải thời điểm ISO' },
+    ]);
+  }
+  if (parsed.getTime() !== current.getTime()) {
+    throw AppError.conflict(
+      'PLACE_MODIFIED',
+      'This place changed after the form was loaded',
+      // The current value, so the console can diff rather than guess.
+      [{ field: 'updatedAt', code: 'stale', message: current.toISOString() }],
+    );
+  }
 }
 
 export function encodePlaceCursor(value: string | number | Date, id: string): string {
@@ -339,10 +437,23 @@ export class CmsCatalogService {
     const [row] = (
       await this.db.execute(sql`
         select p.id, p.name, p.description, p.status, p.address_text, p.area_key,
+               p.city, p.district,
                ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
                p.phone, p.website, p.rating, p.rating_count, p.price_level,
                p.avg_visit_minutes, p.suitability, p.is_lodging, p.confidence,
-               p.curated_rank, p.freshness_checked_at, p.created_at, p.updated_at
+               p.curated_rank, p.freshness_checked_at, p.created_at, p.updated_at,
+               -- #425 — per-field origin, read here rather than as an eighth
+               -- parallel query: DB_POOL_MAX defaults to 10 and this endpoint
+               -- already checks out six connections at once, so one more turned
+               -- a busy moment into a connect timeout. It is a handful of rows
+               -- on the same key, so it costs nothing to carry along.
+               coalesce((
+                 select jsonb_agg(jsonb_build_object(
+                   'field', fp.field, 'source_type', fp.source_type,
+                   'source_reference', fp.source_reference,
+                   'verified_at', fp.verified_at))
+                 from place_field_provenance fp where fp.place_id = p.id
+               ), '[]'::jsonb) as provenance
         from places p
         where p.id = ${placeId}::uuid
       `)
@@ -358,9 +469,9 @@ export class CmsCatalogService {
         order by t.kind, t.key
       `),
       this.db.execute(sql`
-        select day_of_week, open_minute, close_minute, is_overnight, source, verified_at
+        select day_of_week, entry_kind, open_minute, close_minute, is_overnight, source, verified_at
         from place_hours where place_id = ${placeId}::uuid
-        order by day_of_week, open_minute
+        order by day_of_week, entry_kind, open_minute
       `),
       this.db.execute(sql`
         select id, price_min, price_max, currency, unit, source, confidence, verified_at, created_at
@@ -392,6 +503,8 @@ export class CmsCatalogService {
       status: row.status,
       addressText: row.address_text,
       areaKey: row.area_key,
+      city: row.city,
+      district: row.district,
       lat: row.lat !== null ? Number(row.lat) : undefined,
       lng: row.lng !== null ? Number(row.lng) : undefined,
       phone: row.phone,
@@ -420,6 +533,7 @@ export class CmsCatalogService {
         const r = h as PlaceHoursRow;
         return {
           dayOfWeek: r.day_of_week,
+          kind: r.entry_kind,
           openMinute: r.open_minute,
           closeMinute: r.close_minute,
           isOvernight: r.is_overnight,
@@ -464,12 +578,40 @@ export class CmsCatalogService {
           moderation: r.moderation,
         };
       }),
+      /**
+       * Per-field origin, keyed by the API's field name rather than the
+       * column's, so the console does not have to know the schema. A field
+       * missing from this map has no recorded origin — which the UI must say
+       * in words rather than defaulting it to "GoGo".
+       */
+      provenance: Object.fromEntries(
+        (row.provenance ?? []).map((pv) => {
+          const r = pv as PlaceProvenanceRow;
+          return [
+            API_FIELD_OF[r.field] ?? r.field,
+            {
+              sourceType: r.source_type,
+              sourceReference: r.source_reference,
+              verifiedAt: toIso(r.verified_at),
+            },
+          ];
+        }),
+      ),
       freshnessCheckedAt: toIso(row.freshness_checked_at),
       createdAt: toIso(row.created_at)!,
       updatedAt: toIso(row.updated_at)!,
     };
   }
 
+  /**
+   * BE-CMS-PE-001 (#425) — the editor's save.
+   *
+   * Three things happen here that did not before: a stale form is refused
+   * rather than allowed to win, contact values are normalized before they are
+   * stored, and every field the editor wrote gets an origin recorded against
+   * it. The last one is what makes a later provider refresh safe: it can see
+   * that a human owns this phone number and leave it alone.
+   */
   async updatePlace(adminId: string, placeId: string, input: PlaceEditInput) {
     const [before] = await this.db
       .select()
@@ -478,51 +620,139 @@ export class CmsCatalogService {
       .limit(1);
     if (!before) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
 
-    // #339 — an editor dragging a pin across town invalidates every cached
-    // travel time to and from this place, and every live plan built on them.
-    // Measured before the write, because afterwards there is nothing to
-    // measure against.
-    if (input.lat !== undefined && input.lng !== undefined) {
-      await invalidateTravelOnMove(this.db, placeId, { lat: input.lat, lng: input.lng });
-    }
+    assertNotStale(before.updatedAt, input.expectedUpdatedAt);
 
-    const [after] = await this.db
-      .update(schema.places)
-      .set({
-        ...(input.name !== undefined ? { name: input.name } : {}),
-        ...(input.description !== undefined ? { description: input.description } : {}),
-        ...(input.addressText !== undefined ? { addressText: input.addressText } : {}),
-        ...(input.areaKey !== undefined ? { areaKey: input.areaKey } : {}),
-        ...(input.lat !== undefined && input.lng !== undefined
-          ? { geom: { x: input.lng, y: input.lat } }
-          : {}),
-        ...(input.avgVisitMinutes !== undefined ? { avgVisitMinutes: input.avgVisitMinutes } : {}),
-        ...(input.suitability !== undefined ? { suitability: input.suitability } : {}),
-        ...(input.isLodging !== undefined ? { isLodging: input.isLodging } : {}),
-        ...(input.curatedRank !== undefined ? { curatedRank: input.curatedRank } : {}),
-        updatedAt: sql`now()`,
-      })
-      .where(eq(schema.places.id, placeId))
-      .returning();
+    const claimed = Object.keys(input)
+      .filter((key) => PROVENANCE_COLUMN[key] !== undefined)
+      .map((key) => PROVENANCE_COLUMN[key]!);
 
-    if (input.taxonomyIds) {
-      await this.db
-        .delete(schema.placeTaxonomies)
-        .where(eq(schema.placeTaxonomies.placeId, placeId));
-      if (input.taxonomyIds.length > 0) {
-        await this.db
-          .insert(schema.placeTaxonomies)
-          .values(input.taxonomyIds.map((taxonomyId) => ({ placeId, taxonomyId })))
-          .onConflictDoNothing();
+    // Normalized before the write, and reported per field, so the console can
+    // point at the box that holds the bad value instead of a toast.
+    const fieldErrors: { field: string; code: string; message: string }[] = [];
+    let phone: string | null | undefined;
+    if (input.phone !== undefined) {
+      if (input.phone === null) {
+        phone = null;
+      } else {
+        const result = normalizePhone(input.phone);
+        if (result.ok) phone = result.value;
+        else fieldErrors.push(result.issue);
       }
     }
+    let website: string | null | undefined;
+    if (input.website !== undefined) {
+      if (input.website === null) {
+        website = null;
+      } else {
+        const result = normalizeWebsite(input.website);
+        if (result.ok) website = result.value;
+        else fieldErrors.push(result.issue);
+      }
+    }
+    if (fieldErrors.length > 0) {
+      throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', fieldErrors);
+    }
+
+    /**
+     * One transaction for the whole save.
+     *
+     * Four writes make up an edit — the travel-cache invalidation, the row
+     * itself, the taxonomy links, the provenance claims — and before this they
+     * ran independently. A failure between any two left a place whose
+     * taxonomies had been deleted and not re-inserted, or whose new phone
+     * number carried no record of who wrote it, with nothing to say so.
+     *
+     * `invalidateTravelOnMove` takes a `Pick<Db, 'execute'>`, so it joins the
+     * transaction rather than deleting cached legs for a move that then rolls
+     * back.
+     */
+    const after = await this.db.transaction(async (tx) => {
+      // #339 — an editor dragging a pin across town invalidates every cached
+      // travel time to and from this place, and every live plan built on them.
+      // Measured before the write, because afterwards there is nothing to
+      // measure against.
+      if (input.lat !== undefined && input.lng !== undefined) {
+        await invalidateTravelOnMove(tx, placeId, { lat: input.lat, lng: input.lng });
+      }
+
+      const [row] = await tx
+        .update(schema.places)
+        .set({
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.addressText !== undefined ? { addressText: input.addressText } : {}),
+          ...(input.areaKey !== undefined ? { areaKey: input.areaKey } : {}),
+          ...(input.city !== undefined ? { city: input.city } : {}),
+          ...(input.district !== undefined ? { district: input.district } : {}),
+          ...(phone !== undefined ? { phone } : {}),
+          ...(website !== undefined ? { website } : {}),
+          ...(input.lat !== undefined && input.lng !== undefined
+            ? { geom: { x: input.lng, y: input.lat } }
+            : {}),
+          ...(input.avgVisitMinutes !== undefined
+            ? { avgVisitMinutes: input.avgVisitMinutes }
+            : {}),
+          ...(input.suitability !== undefined ? { suitability: input.suitability } : {}),
+          ...(input.isLodging !== undefined ? { isLodging: input.isLodging } : {}),
+          ...(input.curatedRank !== undefined ? { curatedRank: input.curatedRank } : {}),
+          updatedAt: sql`now()`,
+        })
+        .where(eq(schema.places.id, placeId))
+        .returning();
+
+      if (input.taxonomyIds) {
+        await tx.delete(schema.placeTaxonomies).where(eq(schema.placeTaxonomies.placeId, placeId));
+        if (input.taxonomyIds.length > 0) {
+          await tx
+            .insert(schema.placeTaxonomies)
+            .values(input.taxonomyIds.map((taxonomyId) => ({ placeId, taxonomyId })))
+            .onConflictDoNothing();
+        }
+      }
+
+      /**
+       * A value typed into this form is the editor's own claim, so it is
+       * recorded `editorial` — including a value they read off a provider
+       * preview and retyped. GOGO_PRODUCT_DATA_ARCHITECTURE.md is explicit that
+       * copying does not transfer ownership, which is why applying a field
+       * *from* a preview is a separate, currently-blocked path that writes
+       * `google_derived` instead. This endpoint never sets that.
+       */
+
+      if (claimed.length > 0) {
+        await tx
+          .insert(schema.placeFieldProvenance)
+          .values(
+            claimed.map((field) => ({
+              placeId,
+              field,
+              sourceType: 'editorial' as const,
+              sourceReference: null,
+              actorId: adminId,
+            })),
+          )
+          .onConflictDoUpdate({
+            target: [schema.placeFieldProvenance.placeId, schema.placeFieldProvenance.field],
+            set: {
+              sourceType: sql`'editorial'::field_source_type`,
+              sourceReference: sql`null`,
+              actorId: adminId,
+              verifiedAt: sql`now()`,
+              updatedAt: sql`now()`,
+            },
+          });
+      }
+
+      return row!;
+    });
 
     // FR-CMS-008: before/after diff of the sensitive write.
     await this.audit(adminId, 'place.updated', placeId, {
       before: { name: before.name, status: before.status },
-      changed: Object.keys(input),
+      changed: Object.keys(input).filter((key) => key !== 'expectedUpdatedAt'),
+      claimedFields: claimed,
     });
-    return { id: after!.id, status: after!.status };
+    return { id: after.id, status: after.status, updatedAt: after.updatedAt.toISOString() };
   }
 
   async transitionPlace(adminId: string, placeId: string, to: PlaceStatus) {
@@ -543,31 +773,169 @@ export class CmsCatalogService {
     return { id: placeId, status: to };
   }
 
-  /** CMS-003 — replace weekly hours (editor-verified). */
+  /**
+   * CMS-003 / #425 — replace the week.
+   *
+   * Still a whole-week replace: a partial update would need a row identity the
+   * editor does not have, and "these are this place's hours" is the statement
+   * the console is actually making. What changed is what a row may say — a day
+   * can now be `closed` or `open_24h` rather than encoding both as an absence
+   * — and who is credited for it.
+   *
+   * Provenance is not assumed. A row the editor declares `provider` stays
+   * provider-sourced and keeps the fetch time of the row it replaces, because
+   * confirming what Google said is not the same as having checked it
+   * (GOGO_PRODUCT_DATA_ARCHITECTURE.md). Only editor rows stamp `verified_at`,
+   * and the place's freshness clock moves only when at least one exists —
+   * otherwise re-saving a provider week would look like a verification nobody
+   * performed.
+   */
   async setHours(
     adminId: string,
     placeId: string,
-    hours: { dayOfWeek: number; openMinute: number; closeMinute: number; isOvernight: boolean }[],
+    hours: HoursWriteEntry[],
+    expectedUpdatedAt?: string,
   ) {
+    const [place] = await this.db
+      .select({ id: schema.places.id, updatedAt: schema.places.updatedAt })
+      .from(schema.places)
+      .where(eq(schema.places.id, placeId))
+      .limit(1);
+    if (!place) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
+    assertNotStale(place.updatedAt, expectedUpdatedAt);
+
+    const issues = validateWeek(hours);
+    if (issues.length > 0) {
+      throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', issues);
+    }
+
+    const existing = await this.db
+      .select()
+      .from(schema.placeHours)
+      .where(eq(schema.placeHours.placeId, placeId));
+    const verifiedBefore = new Map(
+      existing.map((row) => [
+        `${row.dayOfWeek}|${row.entryKind}|${row.openMinute}|${row.closeMinute}|${row.isOvernight}`,
+        row.verifiedAt,
+      ]),
+    );
+
+    const now = new Date();
+    const rows = hours.map((h) => {
+      const source = h.source ?? 'editor';
+      const key = `${h.dayOfWeek}|${h.kind}|${h.openMinute}|${h.closeMinute}|${h.isOvernight}`;
+      return {
+        placeId,
+        dayOfWeek: h.dayOfWeek,
+        entryKind: h.kind,
+        openMinute: h.openMinute,
+        closeMinute: h.closeMinute,
+        isOvernight: h.isOvernight,
+        source,
+        // A carried-over provider row keeps its fetch time; a provider row
+        // that is new here has never been verified by anything GoGo saw.
+        verifiedAt: source === 'editor' ? now : (verifiedBefore.get(key) ?? null),
+      };
+    });
+    const editorRows = rows.filter((row) => row.source === 'editor').length;
+
     await this.db.transaction(async (tx) => {
       await tx.delete(schema.placeHours).where(eq(schema.placeHours.placeId, placeId));
-      if (hours.length > 0) {
-        await tx.insert(schema.placeHours).values(
-          hours.map((h) => ({
-            placeId,
-            ...h,
-            source: 'editor' as const,
-            verifiedAt: new Date(),
-          })),
-        );
-      }
+      if (rows.length > 0) await tx.insert(schema.placeHours).values(rows);
       await tx
         .update(schema.places)
-        .set({ freshnessCheckedAt: sql`now()`, updatedAt: sql`now()` })
+        .set({
+          ...(editorRows > 0 ? { freshnessCheckedAt: sql`now()` } : {}),
+          updatedAt: sql`now()`,
+        })
         .where(eq(schema.places.id, placeId));
     });
-    await this.audit(adminId, 'place.hours_set', placeId, { count: hours.length });
-    return { updated: true };
+    await this.audit(adminId, 'place.hours_set', placeId, {
+      count: rows.length,
+      editorRows,
+      days: [...new Set(rows.map((row) => row.dayOfWeek))].sort((a, b) => a - b),
+    });
+    return { updated: true, verified: editorRows > 0 };
+  }
+
+  /**
+   * BE-CMS-PE-001 (#425) — the `areaKey` vocabulary, with the count of places
+   * already filed under each.
+   *
+   * The count is what makes the list usable rather than merely correct: an
+   * editor picking an area wants to know whether they are joining 40 places or
+   * inventing a category of one, and a key with zero places is the first sign
+   * the catalog and the catalogue have drifted.
+   *
+   * Keys **not** in `service_areas` but present on places are returned too,
+   * flagged `known: false`. They exist — `places.area_key` has never been a
+   * foreign key — and hiding them would make a place's own value vanish from
+   * the picker that is supposed to show it.
+   */
+  async listAreas(query: {
+    q?: string | undefined;
+    city?: string | undefined;
+    includeInactive?: boolean | undefined;
+  }) {
+    const needle = query.q?.trim() ? normalizeVietnamese(query.q.trim()) : null;
+    const rows = await this.db.execute(sql`
+      with counted as (
+        select area_key, count(*)::int as place_count
+        from places where area_key is not null group by area_key
+      )
+      select
+        coalesce(sa.key, c.area_key) as key,
+        sa.name,
+        sa.city,
+        sa.is_active,
+        sa.sort_order,
+        sa.center_lat, sa.center_lng, sa.radius_m,
+        coalesce(c.place_count, 0) as place_count,
+        (sa.key is not null) as known
+      from service_areas sa
+      full outer join counted c on c.area_key = sa.key
+      where (${query.city ?? null}::text is null or sa.city = ${query.city ?? null})
+        and (${query.includeInactive === true} or sa.is_active is not false)
+      order by known desc, sa.sort_order nulls last, coalesce(sa.name, c.area_key)
+    `);
+
+    type AreaRow = {
+      key: string;
+      name: string | null;
+      city: string | null;
+      is_active: boolean | null;
+      sort_order: number | null;
+      center_lat: number | string | null;
+      center_lng: number | string | null;
+      radius_m: number | null;
+      place_count: number;
+      known: boolean;
+    };
+
+    const items = (rows.rows as AreaRow[])
+      .map((r) => ({
+        key: r.key,
+        // An unknown key has no curated name; the key itself is the only label
+        // that exists, and inventing one would put a display string in data.
+        name: r.name,
+        city: r.city,
+        isActive: r.is_active ?? false,
+        known: r.known,
+        placeCount: r.place_count,
+        centerLat: r.center_lat !== null ? Number(r.center_lat) : null,
+        centerLng: r.center_lng !== null ? Number(r.center_lng) : null,
+        radiusM: r.radius_m,
+      }))
+      // Filtered in memory rather than SQL: matching an editor typing "quan 1"
+      // against "Quận 1, TP.HCM" needs the same Vietnamese normalization
+      // search uses, and that lives in TypeScript.
+      .filter((item) =>
+        needle === null
+          ? true
+          : normalizeVietnamese(`${item.name ?? ''} ${item.key}`).includes(needle),
+      );
+
+    return { items };
   }
 
   /** CMS-003 — add a verified price observation. */

@@ -28,6 +28,10 @@ function openDuringWindow(candidate: Candidate, startAt: Date, endAt: Date): boo
   const endMin = startMin + winMinutes;
   return candidate.hours.some((h) => {
     if (h.dayOfWeek !== dow) return false;
+    // #425 — a whole-day row is not a span. `closed` carries 0/0 minutes,
+    // which the arithmetic below would read as a midnight opening.
+    if (h.kind === 'closed') return false;
+    if (h.kind === 'open_24h') return true;
     const close = h.isOvernight ? h.closeMinute + 24 * 60 : h.closeMinute;
     // overlap between [open, close] and [startMin, endMin]
     return h.openMinute < endMin && close > startMin;
