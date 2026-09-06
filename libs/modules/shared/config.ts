@@ -84,3 +84,10 @@ export type PushIdentityConfig = {
   ONESIGNAL_IDENTITY_VERIFICATION_KEY: string;
   ONESIGNAL_IDENTITY_TOKEN_TTL_SECONDS: number;
 };
+
+/**
+ * LNK-BE-002 (#205) — the canonical share host, e.g. `https://go-dev.gogo.id.vn`.
+ * Empty means this environment cannot mint links (503, not retryable); resolve
+ * and revoke do not need it.
+ */
+export type ShareLinksConfig = { SHARE_LINK_BASE_URL: string };

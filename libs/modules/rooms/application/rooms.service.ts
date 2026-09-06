@@ -326,12 +326,22 @@ export class RoomsService {
 
   // --- invites --------------------------------------------------------------
 
-  async createInvite(actor: Actor, roomId: string, maxUses?: number) {
+  async createInvite(
+    actor: Actor,
+    roomId: string,
+    maxUses?: number,
+    /**
+     * LNK-BE-002 (#205): a canonical share link's slug doubles as the invite
+     * code, so the link service supplies it. Same entropy contract as ours —
+     * 128 bits, base64url — and it is hashed here exactly like a generated one.
+     */
+    options: { code?: string } = {},
+  ) {
     const { room, member } = await this.policy.requireHost(actor, roomId);
     if (!['draft', 'collecting'].includes(room.status)) {
       throw AppError.conflict('ROOM_NOT_JOINABLE', 'Room is not accepting new members');
     }
-    const code = randomBytes(16).toString('base64url'); // 128-bit, no PII
+    const code = options.code ?? randomBytes(16).toString('base64url'); // 128-bit, no PII
     const invite = await this.repo.createInvite({
       roomId,
       codeHash: this.tokens.hashOpaqueToken(code),

@@ -1276,6 +1276,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/share-links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mint a canonical share link for a room invite, plan or place (LNK-BE-002)
+         * @description Returns `https://<share-host>/l/{slug}` — a random 128-bit slug and nothing else in the URL (FR-LINK-001). The sharer's right to point at the entity is checked here: room host for `ROOM_INVITE` (the slug then doubles as the invite code, joined with `POST /rooms/join`), room member for `PLAN`, any signed-in user for a published `PLACE`. `COLLECTION` and `REFERRAL` are reserved and answer 400 `SHARE_LINK_TYPE_UNSUPPORTED`. Guests cannot mint. 503 `SHARE_LINKS_UNAVAILABLE` (not retryable) when the environment has no share host configured.
+         */
+        post: operations["createShareLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/share-links/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Edge resolve — what a slug points at (LNK-BE-002)
+         * @description Called by the share-link Worker on every click and by the app for a deferred link. Public: the slug is the credential. Answers the target's type and id only — the client authorises through the entity's own endpoint afterwards (FR-LINK-002). 404 for a slug nobody minted, 410 the moment a link is revoked, expired, or its invite is spent. Edge caching follows FR-LINK-005 (room invite ≤ 30 s, others ≤ 300 s).
+         */
+        get: operations["resolveShareLink"];
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a share link immediately (LNK-BE-002)
+         * @description Creator, or the host of the room a ROOM_INVITE / PLAN link points into. A ROOM_INVITE revoke also revokes the invite in the same transaction. Idempotent.
+         */
+        delete: operations["revokeShareLink"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/notification-preferences": {
         parameters: {
             query?: never;
@@ -4753,6 +4797,53 @@ export interface components {
              * @description Refresh before this instant.
              */
             expiresAt: string;
+        };
+        /**
+         * @description COLLECTION and REFERRAL are reserved contract; not issued yet.
+         * @enum {string}
+         */
+        ShareLinkType: "ROOM_INVITE" | "PLAN" | "PLACE" | "COLLECTION" | "REFERRAL";
+        ShareLinkCreated: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: uri
+             * @description The canonical link — the only URL a client shares.
+             */
+            url: string;
+            type: components["schemas"]["ShareLinkType"];
+            /**
+             * Format: date-time
+             * @description ROOM_INVITE follows the invite's expiry; other types do not expire.
+             */
+            expiresAt: string | null;
+        };
+        ShareLinkResolution: {
+            type: components["schemas"]["ShareLinkType"];
+            /** @description Exactly one key, by type — ROOM_INVITE `inviteCode` (join with it), PLAN `planId`, PLACE `placeId`, COLLECTION `collectionId`, REFERRAL `code`. Never a user id. */
+            target: {
+                inviteCode?: string;
+                /** Format: uuid */
+                planId?: string;
+                /** Format: uuid */
+                placeId?: string;
+                collectionId?: string;
+                code?: string;
+            };
+            /** Format: date-time */
+            expiresAt: string | null;
+            /**
+             * @description Attribution vendor this link was minted with; NONE when none was configured or it failed.
+             * @enum {string}
+             */
+            provider: "NONE" | "TENJIN";
+            /**
+             * Format: uri
+             * @description The vendor click URL with the canonical link as deferred target, or null. Routing only — never the shared URL. Composed per resolve from the slug presented; it is not stored, because it embeds the slug (for a room invite, the join credential).
+             */
+            trackingUrl: string | null;
+            source: string | null;
+            campaign: string | null;
         };
         /** @description Facts only — compose the display string client-side from `kind` + `payload`. */
         Notification: {
@@ -8640,6 +8731,117 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+        };
+    };
+    createShareLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    type: components["schemas"]["ShareLinkType"];
+                    /**
+                     * Format: uuid
+                     * @description rooms.id for ROOM_INVITE, plans.id for PLAN, places.id for PLACE.
+                     */
+                    entityId: string;
+                    source?: string;
+                    medium?: string;
+                    campaign?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Link minted; the URL is the only thing the client shares */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareLinkCreated"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["RateLimited"];
+            /** @description No share host configured in this environment (`SHARE_LINKS_UNAVAILABLE`) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    resolveShareLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resolution facts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareLinkResolution"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Link revoked, expired, or its invite no longer usable (`SHARE_LINK_GONE`) */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    revokeShareLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description { revoked: true } */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        revoked: true;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
         };
     };
     getNotificationPreferences: {

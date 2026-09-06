@@ -238,6 +238,14 @@ const envSchema = z
     ONESIGNAL_IDENTITY_VERIFICATION_KEY: z.string().default(''),
     /** Spec §14: one hour at most; the client refreshes. */
     ONESIGNAL_IDENTITY_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(3_600),
+    /**
+     * LNK-BE-002 (#205) — the canonical share host this environment mints
+     * links on, e.g. `https://go-dev.gogo.id.vn`. HTTPS origin only: no path,
+     * query or credentials, because everything after the host is the slug and
+     * nothing else (FR-LINK-001). Empty means `POST /share-links` answers 503;
+     * resolving and revoking existing links does not need it.
+     */
+    SHARE_LINK_BASE_URL: z.string().default(''),
     R2_ACCOUNT_ID: z.string().default(''),
     R2_ACCESS_KEY_ID: z.string().default(''),
     R2_SECRET_ACCESS_KEY: z.string().default(''),
@@ -466,6 +474,33 @@ const envSchema = z
         path: ['ONESIGNAL_IDENTITY_VERIFICATION_KEY'],
         message: err instanceof Error ? err.message : 'invalid identity signing key',
       });
+    }
+
+    // #205 — a share host that is not a bare https origin would put something
+    // other than the slug into every public URL.
+    if (env.SHARE_LINK_BASE_URL) {
+      const origin = ((): URL | null => {
+        try {
+          return new URL(env.SHARE_LINK_BASE_URL);
+        } catch {
+          return null;
+        }
+      })();
+      if (
+        !origin ||
+        origin.protocol !== 'https:' ||
+        origin.username ||
+        origin.password ||
+        origin.search ||
+        origin.hash ||
+        (origin.pathname !== '/' && origin.pathname !== '')
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SHARE_LINK_BASE_URL'],
+          message: 'SHARE_LINK_BASE_URL must be an https origin with no path, query or credentials',
+        });
+      }
     }
 
     // #62 / ADR-0010 — half-configured single sign-on is worse than none. A

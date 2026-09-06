@@ -76,4 +76,20 @@ describe('loadEnv (FND-006 fail-fast config)', () => {
       /ONESIGNAL_IDENTITY_TOKEN_TTL_SECONDS/,
     );
   });
+
+  it('accepts a bare https share host and refuses anything with a path or credentials (#205)', () => {
+    expect(
+      loadEnv({ ...base, SHARE_LINK_BASE_URL: 'https://go-dev.gogo.id.vn' }).SHARE_LINK_BASE_URL,
+    ).toBe('https://go-dev.gogo.id.vn');
+    expect(loadEnv(base).SHARE_LINK_BASE_URL).toBe('');
+    for (const bad of [
+      'http://go-dev.gogo.id.vn',
+      'https://go-dev.gogo.id.vn/l',
+      'https://user:pw@go-dev.gogo.id.vn',
+      'https://go-dev.gogo.id.vn?x=1',
+      'go-dev.gogo.id.vn',
+    ]) {
+      expect(() => loadEnv({ ...base, SHARE_LINK_BASE_URL: bad })).toThrow(/SHARE_LINK_BASE_URL/);
+    }
+  });
 });
