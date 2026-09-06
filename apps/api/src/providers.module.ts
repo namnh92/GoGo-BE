@@ -6,6 +6,7 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import {
+  ACQUISITION_LINK_PROVIDER,
   AREA_AUTOCOMPLETE,
   FakeAreaAutocomplete,
   FakePlaceProvider,
@@ -18,6 +19,7 @@ import {
   HaversineTravelTime,
   METRICS_QUERY,
   OneSignalPushAdapter,
+  NoAcquisitionLinkProvider,
   PLACE_PROVIDER,
   PrometheusQueryAdapter,
   PUSH_PROVIDER,
@@ -25,6 +27,7 @@ import {
   R2StorageAdapter,
   STORAGE_PROVIDER,
   TRAVEL_TIME_PROVIDER,
+  TenjinAcquisitionLinkProvider,
   UnconfiguredPlaceProvider,
   UnconfiguredPushProvider,
   placeProviderStatus,
@@ -215,6 +218,17 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       inject: [APP_CONFIG, METRICS],
     },
     {
+      // #206: attribution is optional by design (FR-LINK-006). A template binds
+      // Tenjin; none binds the provider that attaches nothing, and share links
+      // are minted either way. The template was validated by `loadEnv`.
+      provide: ACQUISITION_LINK_PROVIDER,
+      useFactory: (config: AppConfig) =>
+        config.TENJIN_TRACKING_URL_TEMPLATE
+          ? new TenjinAcquisitionLinkProvider(config.TENJIN_TRACKING_URL_TEMPLATE)
+          : new NoAcquisitionLinkProvider(),
+      inject: [APP_CONFIG],
+    },
+    {
       // Real R2 the moment credentials exist; the fake keeps every other
       // environment able to run the whole upload flow without them.
       provide: STORAGE_PROVIDER,
@@ -245,6 +259,7 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     TRAVEL_TIME_PROVIDER,
     PUSH_PROVIDER,
     STORAGE_PROVIDER,
+    ACQUISITION_LINK_PROVIDER,
     METRICS,
   ],
 })
@@ -321,5 +336,15 @@ export class ProvidersModule implements OnModuleInit, OnApplicationShutdown {
     };
     if (status.ready) logger.info(line, 'place provider ready');
     else logger.error(line, 'place provider NOT ready — place resolution will answer 503');
+    // #206 — which attribution vendor new share links carry. `none` is a valid
+    // state, reported at info: the canonical link works without it.
+    logger.info(
+      {
+        port: 'ACQUISITION_LINK_PROVIDER',
+        provider: this.config.TENJIN_TRACKING_URL_TEMPLATE ? 'tenjin' : 'none',
+        shareHost: this.config.SHARE_LINK_BASE_URL || null,
+      },
+      'share link attribution provider bound',
+    );
   }
 }

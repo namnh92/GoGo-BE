@@ -151,6 +151,9 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // nobody minted); `result` is ok / not_found / gone.
   share_link_created_total: ['type'],
   share_link_resolved_total: ['type', 'result'],
+  // #206 — `attached` (vendor URL stored), `none` (no vendor configured),
+  // `fallback` (vendor failed; link minted without attribution, FR-LINK-006).
+  share_link_attribution_total: ['result'],
 
   // --- notifications -------------------------------------------------------
   campaign_dispatched_total: ['result'],

@@ -1,5 +1,7 @@
 import { ProviderQuotaExceededError, ProviderUnavailableError, SheetAccessError } from './ports';
 import type {
+  AcquisitionLinkInput,
+  AcquisitionLinkPort,
   AreaAutocompletePort,
   AreaPrediction,
   PlaceDescriptionTier,
@@ -280,3 +282,20 @@ export class FakeSheets implements SheetsPort {
  * fabricates a backlog teaches a dashboard test to pass against numbers no
  * deployment will ever produce.
  */
+
+/**
+ * LNK-BE-003 (#206) — records what the link service hands an attribution
+ * vendor, so a test can prove the payload carries the canonical URL and
+ * nothing personal, and can make the vendor fail to prove the canonical link
+ * survives it.
+ */
+export class FakeAcquisitionLinkProvider implements AcquisitionLinkPort {
+  readonly requests: AcquisitionLinkInput[] = [];
+  failing = false;
+
+  async createTrackingUrl(input: AcquisitionLinkInput): Promise<string> {
+    this.requests.push(input);
+    if (this.failing) throw new ProviderUnavailableError('fake.link', 'simulated outage');
+    return `https://track.fake.test/click?deeplink_url=${encodeURIComponent(input.canonicalUrl)}`;
+  }
+}

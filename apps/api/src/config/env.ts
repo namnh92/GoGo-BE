@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { ONESIGNAL_APP_ID_PATTERN } from '@gogo/providers';
+import {
+  ONESIGNAL_APP_ID_PATTERN,
+  ProviderConfigurationError,
+  TenjinAcquisitionLinkProvider,
+} from '@gogo/providers';
 import { parseIdentitySigningKey } from '@gogo/modules';
 
 /**
@@ -246,6 +250,17 @@ const envSchema = z
      * resolving and revoking existing links does not need it.
      */
     SHARE_LINK_BASE_URL: z.string().default(''),
+    /**
+     * LNK-BE-003 (#206) — the Tenjin campaign click URL this environment
+     * attaches to new share links, e.g. `https://track.tenjin.com/v0/click/…`.
+     * The link service appends `deeplink_url=<canonical link>`; nothing else
+     * is sent and no Tenjin credential exists server-side. Empty is a valid
+     * state — links are minted with `provider: NONE` and keep working; only
+     * install attribution is absent (FR-LINK-006). Values are per environment
+     * and follow the Tenjin campaign for that app; DEV has none until an App
+     * Store Connect app and a tracking template exist (GoGo-Infra#14).
+     */
+    TENJIN_TRACKING_URL_TEMPLATE: z.string().default(''),
     R2_ACCOUNT_ID: z.string().default(''),
     R2_ACCESS_KEY_ID: z.string().default(''),
     R2_SECRET_ACCESS_KEY: z.string().default(''),
@@ -499,6 +514,23 @@ const envSchema = z
           code: z.ZodIssueCode.custom,
           path: ['SHARE_LINK_BASE_URL'],
           message: 'SHARE_LINK_BASE_URL must be an https origin with no path, query or credentials',
+        });
+      }
+    }
+
+    // #206 — validated the same way the adapter does, so a bad template fails
+    // the boot rather than every share link after it.
+    if (env.TENJIN_TRACKING_URL_TEMPLATE) {
+      try {
+        new TenjinAcquisitionLinkProvider(env.TENJIN_TRACKING_URL_TEMPLATE);
+      } catch (err) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['TENJIN_TRACKING_URL_TEMPLATE'],
+          message:
+            err instanceof ProviderConfigurationError && err.providerReason
+              ? err.providerReason
+              : 'TENJIN_TRACKING_URL_TEMPLATE is invalid',
         });
       }
     }

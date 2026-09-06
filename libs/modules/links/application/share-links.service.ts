@@ -1,5 +1,10 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
+import {
+  ACQUISITION_LINK_PROVIDER,
+  NoAcquisitionLinkProvider,
+  type AcquisitionLinkPort,
+} from '@gogo/providers';
 import type { Actor } from '../../identity/domain/actor';
 import { TokenService } from '../../identity/application/token.service';
 import { RoomsService } from '../../rooms/application/rooms.service';
@@ -16,6 +21,9 @@ import {
   type ShareLinkType,
 } from '../domain/share-link';
 import { ShareLinksRepository, type ShareLinkRow } from '../infrastructure/share-links.repository';
+
+/** String building today; the bound is for the day an adapter makes a call. */
+const ATTRIBUTION_TIMEOUT_MS = 2_000;
 
 export type CreateShareLinkInput = {
   type: ShareLinkType;
@@ -60,6 +68,9 @@ export class ShareLinksService {
     private readonly tokens: TokenService,
     @Inject(APP_CONFIG) private readonly config: ShareLinksConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+    @Optional()
+    @Inject(ACQUISITION_LINK_PROVIDER)
+    private readonly acquisition: AcquisitionLinkPort = new NoAcquisitionLinkProvider(),
   ) {}
 
   async create(actor: Actor, input: CreateShareLinkInput): Promise<ShareLinkCreated> {
@@ -113,13 +124,16 @@ export class ShareLinksService {
         throw AppError.badRequest('SHARE_LINK_TYPE_UNSUPPORTED', 'Unsupported link type');
     }
 
+    const url = canonicalShareUrl(this.config.SHARE_LINK_BASE_URL, slug);
+    const attribution = await this.attribution(url, input);
     const row = await this.repo.insert({
       slugHash: this.tokens.hashOpaqueToken(slug),
       type: input.type,
       targetId: input.entityId,
       ...(inviteId ? { inviteId } : {}),
       createdByUserId: actor.id,
-      provider: 'NONE',
+      provider: attribution.provider,
+      providerTrackingUrl: attribution.trackingUrl,
       ...(input.source ? { source: input.source } : {}),
       ...(input.medium ? { medium: input.medium } : {}),
       ...(input.campaign ? { campaign: input.campaign } : {}),
@@ -128,10 +142,45 @@ export class ShareLinksService {
     this.metrics.increment('share_link_created_total', { type: input.type });
     return {
       id: row.id,
-      url: canonicalShareUrl(this.config.SHARE_LINK_BASE_URL, slug),
+      url,
       type: input.type,
       expiresAt: expiresAt ? expiresAt.toISOString() : null,
     };
+  }
+
+  /**
+   * LNK-BE-003 (#206): attribution never blocks a share link (FR-LINK-006). The
+   * vendor receives the canonical URL and bounded campaign words — no token,
+   * no id, no personal data — and a vendor error or timeout leaves the link
+   * minted with `provider: NONE`. Bounded so a hung vendor cannot hold the
+   * request either.
+   */
+  private async attribution(
+    canonicalUrl: string,
+    input: CreateShareLinkInput,
+  ): Promise<{ provider: ShareLinkProvider; trackingUrl: string | null }> {
+    try {
+      const trackingUrl = await Promise.race([
+        this.acquisition.createTrackingUrl({
+          canonicalUrl,
+          ...(input.campaign ? { campaign: input.campaign } : {}),
+          ...(input.source ? { source: input.source } : {}),
+          ...(input.medium ? { medium: input.medium } : {}),
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('attribution timed out')), ATTRIBUTION_TIMEOUT_MS),
+        ),
+      ]);
+      if (!trackingUrl) {
+        this.metrics.increment('share_link_attribution_total', { result: 'none' });
+        return { provider: 'NONE', trackingUrl: null };
+      }
+      this.metrics.increment('share_link_attribution_total', { result: 'attached' });
+      return { provider: 'TENJIN', trackingUrl };
+    } catch {
+      this.metrics.increment('share_link_attribution_total', { result: 'fallback' });
+      return { provider: 'NONE', trackingUrl: null };
+    }
   }
 
   /** Public. 404 for a slug nobody minted, 410 for one that no longer opens. */

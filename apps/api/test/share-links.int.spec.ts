@@ -18,6 +18,7 @@ import { schema } from '@gogo/database';
  */
 
 const SHARE_HOST = 'https://go-test.gogo.id.vn';
+const TENJIN_TEMPLATE = 'https://track.tenjin.com/v0/click/TeStTeMpLaTe?campaign_id=gogo_test';
 
 let container: StartedPostgreSqlContainer;
 let pool: Pool;
@@ -102,6 +103,10 @@ beforeAll(async () => {
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
   process.env.GOOGLE_PLACES_API_KEY = '';
   process.env.SHARE_LINK_BASE_URL = SHARE_HOST;
+  // #206: a template shaped like Tenjin's; string building only, nothing is
+  // called, and every minted link must carry it with the canonical URL as
+  // deferred target.
+  process.env.TENJIN_TRACKING_URL_TEMPLATE = TENJIN_TEMPLATE;
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
   pool.on('error', () => undefined);
@@ -154,12 +159,24 @@ describe('ROOM_INVITE share link — the slug is the invite code', () => {
     expect(resolved.json()).toMatchObject({
       type: 'ROOM_INVITE',
       target: { inviteCode: slug },
-      provider: 'NONE',
-      trackingUrl: null,
+      provider: 'TENJIN',
       source: 'room_share',
     });
     // FR-LINK-002: the room id is not part of the public answer.
     expect(JSON.stringify(resolved.json())).not.toContain(room.id);
+    // #206 / FR-LINK-003/006: the vendor URL is routing, carrying the canonical
+    // link as deferred target and nothing about the person or the room.
+    const tracking = new URL(resolved.json().trackingUrl as string);
+    expect(tracking.origin + tracking.pathname).toBe(
+      'https://track.tenjin.com/v0/click/TeStTeMpLaTe',
+    );
+    expect(tracking.searchParams.get('deeplink_url')).toBe(body.url);
+    expect(tracking.searchParams.get('campaign_id')).toBe('gogo_test');
+    expect(resolved.json().trackingUrl).not.toContain(room.id);
+    expect(resolved.json().trackingUrl).not.toContain(host.userId);
+    expect(resolved.json().trackingUrl).not.toContain(host.token);
+    // The shared URL is still the canonical one, never the vendor's.
+    expect(body.url.startsWith(SHARE_HOST)).toBe(true);
 
     // The same door a typed invite code goes through.
     const joiner = await register('link-joiner@gogo.id.vn');
