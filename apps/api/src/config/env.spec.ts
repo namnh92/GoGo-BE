@@ -111,3 +111,22 @@ describe('loadEnv (FND-006 fail-fast config)', () => {
     }
   });
 });
+
+describe('SHARE_LINK_EDGE_AUTH_TOKEN (SEC-004)', () => {
+  it('is empty by default — no edge is trusted until one is configured', () => {
+    expect(loadEnv({ ...base }).SHARE_LINK_EDGE_AUTH_TOKEN).toBe('');
+  });
+
+  it('accepts a token long enough to be one', () => {
+    const token = 'a'.repeat(32);
+    expect(loadEnv({ ...base, SHARE_LINK_EDGE_AUTH_TOKEN: token }).SHARE_LINK_EDGE_AUTH_TOKEN).toBe(
+      token,
+    );
+  });
+
+  it('refuses a short token at boot rather than comparing against it', () => {
+    expect(() => loadEnv({ ...base, SHARE_LINK_EDGE_AUTH_TOKEN: 'short' })).toThrow(
+      /SHARE_LINK_EDGE_AUTH_TOKEN/,
+    );
+  });
+});

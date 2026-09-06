@@ -28,6 +28,16 @@ export type RateLimitSpec = {
    * human working through an incident.
    */
   burst?: { limit: number; windowSeconds: number };
+  /**
+   * SEC-004 (#445): key on the address the share-link Worker forwarded, when
+   * the request proved it came from the Worker, and on `ip` otherwise.
+   *
+   * Opt-in per action rather than global. Every other `keyBy: 'ip'` spec keeps
+   * meaning "the address that connected to us", and so does the per-actor
+   * baseline and the origin-wide flood net — a forwarded value earns its way
+   * into exactly the one limit that is useless without it.
+   */
+  edgeClientIp?: boolean;
 };
 
 export const RATE_LIMIT_KEY = 'gogo:rate_limit';

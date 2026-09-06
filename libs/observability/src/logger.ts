@@ -7,6 +7,11 @@ import pino, { type DestinationStream } from 'pino';
 export const REDACT_PATHS = [
   'req.headers.authorization',
   'req.headers.cookie',
+  // SEC-004: the share-link Worker's shared token. The onRequest hook deletes
+  // it before anything reads the request, so this is the second line of
+  // defence — for an error path that captured headers earlier, or a future
+  // caller that logs them before the hook has run.
+  'req.headers["x-gogo-edge-auth"]',
   'res.headers["set-cookie"]',
   '*.password',
   '*.token',

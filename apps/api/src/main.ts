@@ -9,7 +9,7 @@ import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
-import { CSRF_HEADER, runWithRequestContext } from '@gogo/modules';
+import { CSRF_HEADER, createEdgeClientIpHook, runWithRequestContext } from '@gogo/modules';
 import { AppModule } from './app.module';
 import { loadEnv } from './config/env';
 
@@ -60,8 +60,20 @@ export async function createApp(
   });
 
   const fastify = app.getHttpAdapter().getInstance();
+  // SEC-004 (#445), and first on purpose: it deletes the edge headers from
+  // every request before any other hook, guard or serializer can see them, so
+  // a spoofed `X-GoGo-Client-IP` cannot be believed by accident anywhere. With
+  // no token configured it strips and trusts nothing, which is every
+  // environment today.
+  const vetEdgeClientIp = createEdgeClientIpHook(config.SHARE_LINK_EDGE_AUTH_TOKEN);
+  fastify.addHook('onRequest', (req, _reply, done) => {
+    vetEdgeClientIp(req);
+    done();
+  });
   // Runs before routing so everything downstream — guards, services, audit
   // writers — can read the request id and client IP without being handed them.
+  // `ip` is the connecting address: the edge value is scoped to one rate-limit
+  // spec and deliberately does not follow the request around.
   fastify.addHook('onRequest', (req, _reply, done) => {
     runWithRequestContext({ requestId: String(req.id), ip: req.ip }, done);
   });

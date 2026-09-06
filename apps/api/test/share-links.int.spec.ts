@@ -25,6 +25,10 @@ let pool: Pool;
 let db: ReturnType<typeof drizzle<typeof schema>>;
 let app: NestFastifyApplication;
 /** Every line the API logger wrote during this file — what a log reader would see. */
+const EDGE_TOKEN = 'edge-token-for-tests-'.padEnd(48, 'z');
+const EDGE_AUTH_HEADER = 'x-gogo-edge-auth';
+const EDGE_CLIENT_IP_HEADER = 'x-gogo-client-ip';
+
 const logLines: string[] = [];
 const logSink = new Writable({
   write(chunk, _encoding, callback) {
@@ -107,6 +111,9 @@ beforeAll(async () => {
   // called, and every minted link must carry it with the canonical URL as
   // deferred target.
   process.env.TENJIN_TRACKING_URL_TEMPLATE = TENJIN_TEMPLATE;
+  // SEC-004: the token the share-link Worker would present. Not a real value
+  // anywhere — the environments hold none yet.
+  process.env.SHARE_LINK_EDGE_AUTH_TOKEN = EDGE_TOKEN;
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
   pool.on('error', () => undefined);
@@ -367,5 +374,62 @@ describe('request logs (review finding 2)', () => {
     expect(out).toContain('incoming request');
     for (const slug of mintedSlugs) expect(out).not.toContain(slug);
     expect(out).not.toContain('Af82XcAf82XcAf82XcAf82');
+  });
+});
+
+describe('the forwarded client address (SEC-004)', () => {
+  async function resolveAs(slug: string, headers: Record<string, string>) {
+    return api().inject({
+      method: 'GET',
+      url: `/v1/share-links/${slug}`,
+      remoteAddress: '198.51.100.20',
+      headers,
+    });
+  }
+
+  it('serves a resolve identically whether or not the edge forwarded an address', async () => {
+    const owner = await register('edge-owner@gogo.id.vn');
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Quán Biên',
+        nameNormalized: 'x',
+        geom: { x: 106.72, y: 10.79 },
+        status: 'published',
+      })
+      .returning({ id: schema.places.id });
+    const created = await mint(owner.token, { type: 'PLACE', entityId: place!.id });
+    const slug = slugOf((created.json() as { url: string }).url);
+
+    const authenticated = await resolveAs(slug, {
+      [EDGE_AUTH_HEADER]: EDGE_TOKEN,
+      [EDGE_CLIENT_IP_HEADER]: '203.0.113.31',
+    });
+    const spoofed = await resolveAs(slug, { [EDGE_CLIENT_IP_HEADER]: '203.0.113.32' });
+    const wrongToken = await resolveAs(slug, {
+      [EDGE_AUTH_HEADER]: 'not-the-token-'.padEnd(48, 'q'),
+      [EDGE_CLIENT_IP_HEADER]: '203.0.113.33',
+    });
+    const malformed = await resolveAs(slug, {
+      [EDGE_AUTH_HEADER]: EDGE_TOKEN,
+      [EDGE_CLIENT_IP_HEADER]: '203.0.113.31, 198.51.100.4',
+    });
+
+    // The header changes which bucket the request is counted in and nothing
+    // else: a rejected one must never turn a working link into an error.
+    for (const res of [authenticated, spoofed, wrongToken, malformed]) {
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as { type: string }).type).toBe('PLACE');
+    }
+  });
+
+  it('keeps the edge token and the forwarded address out of the logs', async () => {
+    const out = logLines.join('');
+    expect(out).not.toContain(EDGE_TOKEN);
+    // The hook deletes both headers before the request logger serialises
+    // anything, so neither name nor value reaches a log line.
+    expect(out).not.toContain(EDGE_CLIENT_IP_HEADER);
+    expect(out).not.toContain('203.0.113.31');
+    expect(out).not.toContain('203.0.113.33');
   });
 });
