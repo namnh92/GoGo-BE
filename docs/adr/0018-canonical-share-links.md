@@ -83,6 +83,17 @@ revoked_at)`; enum `share_link_type` carries the P1 values COLLECTION and
   `share_link_attribution_total{result}`. Domain events
   (`share_link.created/resolved`) are LNK-BE-004 (#207).
 
+### Review amendment (2026-09-06)
+
+The vendor click URL is **not persisted**. It embeds the canonical link, and the
+canonical link embeds the slug — for a ROOM_INVITE the very credential
+`slug_hash` keeps out of the table; a row that stored the URL undid the hash.
+`share_links.provider` records only which vendor a link was minted with, and
+the URL is composed on each resolve from the slug the caller presents. A vendor
+that cannot compose at resolve time degrades to `provider: NONE, trackingUrl:
+null` — the canonical link alone (FR-LINK-006). Consequence: attribution
+follows the environment's _current_ template, not the one at mint time.
+
 ## Consequences
 
 - A ROOM_INVITE share link is an invite: it follows the invite TTL (7 days),
