@@ -10,6 +10,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import { MetricsRegistry } from '@gogo/observability';
 
 /**
  * Platform contract pieces: Idempotency-Key semantics (api-contract rule)
@@ -227,6 +228,46 @@ describe('Redis rate-limit store (multi-instance)', () => {
     expect(await store.hit('k', 60)).toBe(1);
     expect(await store.hit('k', 60)).toBe(2); // memory fallback keeps counting
     dead.disconnect();
+  });
+
+  /**
+   * COST-BE-037 (#424). The production client is `lazyConnect` with the
+   * offline queue off, so the first command of a cold client is refused
+   * (fail-open, answered from memory) — one `status="error"` per boot on
+   * DEV. Warming the client at bootstrap is what makes the first real hit
+   * `ok`. Real ioredis against a real Redis, because the guarantee rests on
+   * `connect()` resolving only once the connection is *ready*.
+   */
+  it('a client warmed at bootstrap answers its first hit ok; a cold one records an error (#424)', async () => {
+    const { createRateLimitRedis, warmRateLimitRedis } =
+      await import('../../../libs/modules/identity/presentation/rate-limit-redis.js');
+    const { RedisRateLimitStore, FallbackRateLimitStore } =
+      await import('../../../libs/modules/identity/presentation/redis-rate-limit.store.js');
+    const url = `redis://${redisContainer.getHost()}:${redisContainer.getMappedPort(6379)}`;
+    const hit = 'provider_requests_total{operation="upstash.redis.rate_limit.hit"';
+
+    // Cold: the defect as shipped before #424.
+    const cold = createRateLimitRedis(url);
+    const coldMetrics = new MetricsRegistry();
+    const coldStore = new FallbackRateLimitStore(new RedisRateLimitStore(cold, coldMetrics));
+    expect(await coldStore.hit('boot|cold', 60)).toBe(1); // from memory
+    expect(coldMetrics.render()).toContain(
+      `${hit},provider="upstash",service="upstash.redis",status="error"} 1`,
+    );
+
+    // Warmed: what RateLimitRedisWarmup does in onApplicationBootstrap.
+    const warm = createRateLimitRedis(url);
+    expect(await warmRateLimitRedis(warm)).toBe('ready');
+    const warmMetrics = new MetricsRegistry();
+    const warmStore = new FallbackRateLimitStore(new RedisRateLimitStore(warm, warmMetrics));
+    expect(await warmStore.hit('boot|warm', 60)).toBe(1);
+    expect(await warm.ttl('rl:boot|warm')).toBeGreaterThan(0); // it really went to Redis
+    const out = warmMetrics.render();
+    expect(out).toContain(`${hit},provider="upstash",service="upstash.redis",status="ok"} 1`);
+    expect(out).not.toContain('status="error"');
+
+    cold.disconnect();
+    warm.disconnect();
   });
 });
 

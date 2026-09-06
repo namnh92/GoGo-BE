@@ -237,7 +237,9 @@ Registry-keyed, under the existing namespace — never `/costs/google`. All rout
   not a cost meter (§8); Upstash's command count and Neon's compute hours stay the
   collectors' to read. Not measured, on purpose: the `/health` Redis ping and the
   CMS queue-stats probe (ops paths, not request paths) and R2 (no request leaves
-  the process).
+  the process). The rate-limit client is connected at bootstrap (#424,
+  `RateLimitRedisWarmup`, bounded 2 s, fail-open) so the first hit after a boot is
+  measured `ok`; readiness still gates on the database alone.
 
 Deprecated, kept one release: the legacy `providers[]` / `gaps[]` on `/cms/ops/costs`
 and `/cms/ops/providers/{provider}` (enum `places|routes|sheets`). CMS re-vendor is
