@@ -304,3 +304,34 @@ export {
   type UnitLevel,
   type UnitType,
 } from '../administrative/domain/unit-type';
+
+// Administrative validation and diff (ADM-004 / #457)
+export {
+  AdministrativeValidationService,
+  AFFECTED_PLACE_SAMPLE_LIMIT,
+} from '../administrative/application/administrative-validation.service';
+export {
+  validateDataset,
+  countUnits,
+  identity as administrativeIdentity,
+  RECORD_COUNT_DELTA_THRESHOLD,
+  SAMPLE_LIMIT as VALIDATION_SAMPLE_LIMIT,
+  type DatasetCounts,
+  type DatasetUnderValidation,
+  type Finding,
+  type GateId,
+  type QuarantineSummary,
+  type Severity,
+  type ValidationReport,
+} from '../administrative/domain/validation';
+export {
+  diffDatasets,
+  impactedCodes,
+  DIFF_ENTRY_LIMIT,
+  type AffectedPlaces,
+  type DatasetDiff,
+  type DiffCategory,
+  type DiffEntry,
+  type DiffIdentity,
+  type DiffInput,
+} from '../administrative/domain/dataset-diff';
