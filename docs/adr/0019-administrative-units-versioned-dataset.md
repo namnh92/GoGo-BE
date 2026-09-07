@@ -140,12 +140,17 @@ Measured against the pinned trio:
 
 | classification                   | rows                        |
 | -------------------------------- | --------------------------- |
-| `VALID_UNIQUE`                   | 236                         |
-| `VALID_MERGE`                    | 9,328 → 3,041 targets       |
+| `VALID_UNIQUE`                   | 132                         |
+| `VALID_MERGE`                    | 9,432                       |
 | `VALID_DISTRICT_TO_SPECIAL_ZONE` | 5                           |
 | `DIVIDED_REQUIRES_REVIEW`        | **1,033**, from 471 sources |
 | every other class                | 0                           |
 | **canonical / quarantined**      | **9,569 / 1,033**           |
+
+"Merged" means the successor absorbed more than one distinct legacy predecessor,
+counting the ones that reached it through a split. Only **135** of the 3,321
+current communes have a single predecessor at all — the 2025 reorganisation was
+a consolidation, not a renaming, which is why the merge class dominates.
 
 For a `SPLIT`: use verified coordinate boundaries where available, otherwise
 return the candidates and require review. **Never decide by name similarity.**
