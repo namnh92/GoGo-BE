@@ -95,6 +95,7 @@ function run(over: Partial<DatasetUnderValidation> = {}) {
     stored: { combinedDatasetVersion: 'test+v1', combinedChecksum: 'sum' },
     snapshotChecksumsVerified: true,
     publishedVersionCount: 1,
+    overrideRevision: 0,
     ...over,
   });
 }

@@ -6,6 +6,7 @@ import { AdministrativeTelemetryService } from '../application/administrative-te
 import { AdministrativeBoundaryImportService } from '../application/administrative-boundary-import.service';
 import { BoundaryArchiveReader } from '../application/boundary-archive.reader';
 import { AdministrativeImportService } from '../application/administrative-import.service';
+import { AdministrativeOverrideService } from '../application/administrative-override.service';
 import { AdministrativePublicationService } from '../application/administrative-publication.service';
 import { AdministrativeResolverService } from '../application/administrative-resolver.service';
 import { AdministrativeQueryService } from '../application/administrative-query.service';
@@ -20,6 +21,7 @@ import { InProcessAdministrativeDatasetCache } from '../infrastructure/in-proces
 import { PinnedSnapshotReader } from '../application/pinned-snapshot.reader';
 import { AdministrativeController } from './administrative.controller';
 import { AdministrativeAdminController } from './administrative-admin.controller';
+import { AdministrativeOverrideController } from './administrative-override.controller';
 import {
   AdministrativeMappingController,
   AdministrativeMappingQueueController,
@@ -40,6 +42,7 @@ import {
   controllers: [
     AdministrativeController,
     AdministrativeAdminController,
+    AdministrativeOverrideController,
     AdministrativeMappingQueueController,
     AdministrativeMappingController,
   ],
@@ -53,6 +56,7 @@ import {
     AdministrativeQueryService,
     AdministrativeValidationService,
     AdministrativeImportService,
+    AdministrativeOverrideService,
     AdministrativePublicationService,
     AdministrativeResolverRepository,
     AdministrativeResolverService,
@@ -67,6 +71,7 @@ import {
     AdministrativeQueryService,
     AdministrativeValidationService,
     AdministrativeImportService,
+    AdministrativeOverrideService,
     AdministrativePublicationService,
     AdministrativeResolverRepository,
     AdministrativeResolverService,

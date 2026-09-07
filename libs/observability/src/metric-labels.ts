@@ -218,6 +218,16 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // is not, so they must never be one bucket.
   administrative_dataset_operations_total: ['operation', 'result'],
   administrative_dataset_operation_duration_seconds: ['operation'],
+  // ADM-011 (#484). `view` is list|detail; `decision` is accept|reject;
+  // `operation` is decision|materialize; `result` is succeeded|rejected. The
+  // dataset, the quarantined row and the reviewer are all unbounded and all
+  // live in the audit row instead — a label per decision would be a series per
+  // row of a 1,033-row queue.
+  administrative_override_queue_reads_total: ['view'],
+  administrative_override_decisions_total: ['decision', 'result'],
+  administrative_override_conflicts_total: ['operation'],
+  administrative_override_materializations_total: ['result'],
+  administrative_override_operation_duration_seconds: ['operation'],
   // `gate` is a GateId from ADM-004's closed list of twenty; `severity` is
   // ERROR or WARNING. This is what an alert on "validation regressed" reads.
   administrative_validation_findings_total: ['gate', 'severity'],

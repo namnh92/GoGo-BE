@@ -35,6 +35,12 @@ export type ChangeRow = {
   changeType: string;
   effectiveDate: string;
   legalReference: string | null;
+  /**
+   * Which reviewer decision produced this edge (#484), or null for one the
+   * pinned upstream asserted. It is the difference between "the source says so"
+   * and "a person decided", and several gates turn on it.
+   */
+  overrideDecisionId?: string | null;
 };
 
 export type SearchEntry = {

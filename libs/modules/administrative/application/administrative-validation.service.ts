@@ -160,6 +160,7 @@ export class AdministrativeValidationService {
       },
       snapshotChecksumsVerified,
       publishedVersionCount: publishedCount,
+      overrideRevision: staged.overrideRevision,
       baseline: published
         ? { datasetVersion: published.combinedDatasetVersion, units: baselineUnits }
         : undefined,
@@ -575,6 +576,7 @@ export class AdministrativeValidationService {
         changeType: schema.administrativeUnitChanges.changeType,
         effectiveDate: schema.administrativeUnitChanges.effectiveDate,
         legalReference: schema.administrativeUnitChanges.legalReference,
+        overrideDecisionId: schema.administrativeUnitChanges.overrideDecisionId,
       })
       .from(schema.administrativeUnitChanges)
       .where(

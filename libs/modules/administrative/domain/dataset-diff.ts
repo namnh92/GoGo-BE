@@ -35,7 +35,16 @@ export type DiffCategory =
   | 'STATUS_CHANGED'
   | 'EFFECTIVE_PERIOD_CHANGED'
   | 'UNRESOLVED'
-  | 'SOURCE_DRIFT';
+  | 'SOURCE_DRIFT'
+  /**
+   * ADM-011 (#484). A reviewer decision that reached a dataset is not the same
+   * claim as an upstream migration, and a diff that reported it as one would
+   * hide the only change a publication reviewer is actually being asked about.
+   * Added rather than folded into SOURCE_DRIFT: the contract types `category`
+   * as a string and `countsByCategory` as a free map, so this is additive.
+   */
+  | 'OVERRIDE_ACCEPTED'
+  | 'OVERRIDE_TARGET_CHANGED';
 
 export type DiffIdentity = {
   code: string;
@@ -94,6 +103,8 @@ const CATEGORIES: DiffCategory[] = [
   'EFFECTIVE_PERIOD_CHANGED',
   'UNRESOLVED',
   'SOURCE_DRIFT',
+  'OVERRIDE_ACCEPTED',
+  'OVERRIDE_TARGET_CHANGED',
 ];
 
 function toIdentity(unit: ProvenancedUnit | undefined): DiffIdentity | null {
@@ -228,12 +239,28 @@ export function diffDatasets(input: DiffInput): DatasetDiff {
   );
   const toByCode = new Map<string, ProvenancedUnit>();
   for (const unit of input.toUnits) if (!toByCode.has(unit.code)) toByCode.set(unit.code, unit);
+  /*
+   * Which sources already carried a reviewer override on the from-side. A new
+   * override for one of them is a *changed* decision, not a first one, and that
+   * distinction is the whole reason a second review round is reviewable.
+   */
+  const priorOverrideTargets = new Map<string, string>();
+  for (const change of input.fromChanges ?? []) {
+    if (change.overrideDecisionId && change.oldCode && change.newCode) {
+      priorOverrideTargets.set(change.oldCode, change.newCode);
+    }
+  }
+
   for (const change of input.toChanges) {
     if (priorEdges.has(`${change.oldCode ?? ''}>${change.newCode ?? ''}:${change.changeType}`)) {
       continue;
     }
-    const category: DiffCategory =
-      change.changeType === 'MERGED'
+    const previousTarget = change.oldCode ? priorOverrideTargets.get(change.oldCode) : undefined;
+    const category: DiffCategory = change.overrideDecisionId
+      ? previousTarget
+        ? 'OVERRIDE_TARGET_CHANGED'
+        : 'OVERRIDE_ACCEPTED'
+      : change.changeType === 'MERGED'
         ? 'MERGED'
         : change.changeType === 'SPLIT'
           ? 'SPLIT'
@@ -256,14 +283,29 @@ export function diffDatasets(input: DiffInput): DatasetDiff {
       key: `${category}:${change.oldCode ?? ''}>${change.newCode ?? ''}`,
       from: toIdentity(change.oldCode ? toByCode.get(change.oldCode) : undefined),
       to: toIdentity(change.newCode ? toByCode.get(change.newCode) : undefined),
-      detail: `${change.oldCode ?? '?'} → ${change.newCode ?? '?'} on ${change.effectiveDate}`,
-      provenance: change.legalReference ?? 'canonical change',
-      validation: link(
-        'CHANGE_SOURCE_RESOLVES',
-        'CHANGE_TARGET_RESOLVES',
-        'CHANGE_HIERARCHY',
-        'MERGE_SPLIT_STRUCTURE',
-      ),
+      detail: change.overrideDecisionId
+        ? previousTarget
+          ? `${change.oldCode ?? '?'}: reviewer target changed ${previousTarget} → ${change.newCode ?? '?'}`
+          : `${change.oldCode ?? '?'} → ${change.newCode ?? '?'} accepted by a reviewer on ${change.effectiveDate}`
+        : `${change.oldCode ?? '?'} → ${change.newCode ?? '?'} on ${change.effectiveDate}`,
+      provenance: change.overrideDecisionId
+        ? `GoGo reviewer decision ${change.overrideDecisionId}`
+        : (change.legalReference ?? 'canonical change'),
+      validation: change.overrideDecisionId
+        ? link(
+            'CHANGE_SOURCE_RESOLVES',
+            'CHANGE_TARGET_RESOLVES',
+            'CHANGE_HIERARCHY',
+            'OVERRIDE_PROVENANCE',
+            'OVERRIDE_CONFLICT',
+            'OVERRIDE_REVISION_CONSISTENT',
+          )
+        : link(
+            'CHANGE_SOURCE_RESOLVES',
+            'CHANGE_TARGET_RESOLVES',
+            'CHANGE_HIERARCHY',
+            'MERGE_SPLIT_STRUCTURE',
+          ),
     });
   }
 
