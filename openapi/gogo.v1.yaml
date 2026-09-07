@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.5
+  version: 1.0.0-alpha.6
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1135,6 +1135,287 @@ paths:
         '304': { $ref: '#/components/responses/NotModified' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/AdministrativeUnavailable' }
+
+  /cms/administrative-datasets:
+    get:
+      operationId: listAdministrativeDatasets
+      tags: [cms, administrative]
+      summary: 'Ops: every imported dataset version, newest first (ADM-005)'
+      description: >
+        ADM-005 (#458). Read needs rank >= ops_admin; every write on this
+        resource needs the exact ops_admin role (or the audited super-admin
+        bypass), so an on-call operator can inspect a dataset without being able
+        to publish it. `validation` is the stored result summary — absent means
+        the version has never been validated, which is itself a refusal reason
+        for publication.
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 25 },
+          }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: A page of dataset versions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdministrativeDatasetSummary' }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/import:
+    post:
+      operationId: importAdministrativeDataset
+      tags: [cms, administrative]
+      summary: 'Ops: import the pinned snapshot set into staging (ADM-005)'
+      description: >
+        Writes a STAGED version and nothing else — no path here can touch the
+        active dataset. One transaction: a failure leaves nothing behind, so a
+        retry is a clean import rather than a half-written version that the
+        checksum guard would then call a duplicate. Re-importing byte-identical
+        sources at the same override revision is 409 DATASET_ALREADY_IMPORTED,
+        because the same inputs are the same dataset.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                overrideRevision:
+                  type: integer
+                  minimum: 0
+                  maximum: 10000
+                  default: 0
+                  description: >
+                    Bumped by a reviewer decision rather than an upstream
+                    release. It is a component of the combined version, so
+                    bumping it mints a new dataset from unchanged sources.
+      responses:
+        '201':
+          description: A new STAGED dataset version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeImportReport' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/restorable:
+    get:
+      operationId: listRestorableAdministrativeDatasets
+      tags: [cms, administrative]
+      summary: 'Ops: versions a rollback could restore (ADM-005)'
+      description: >
+        Previously published, not active now. A version that was never published
+        never appears here: rollback restores an earlier active dataset, it does
+        not publish a new one.
+      responses:
+        '200':
+          description: Restorable versions, most recently published first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdministrativeDatasetSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/{id}:
+    get:
+      operationId: getAdministrativeDataset
+      tags: [cms, administrative]
+      summary: 'Ops: one dataset version with its stored validation and diff'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The dataset version
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AdministrativeDatasetSummary'
+                  - type: object
+                    properties:
+                      validationReport:
+                        $ref: '#/components/schemas/AdministrativeValidationReport'
+                      diffSummary:
+                        type: object
+                        nullable: true
+                        additionalProperties: true
+                        description: >
+                          The diff stored when this version was last validated.
+                          It describes the baseline that was active *then* —
+                          GET /diff recomputes against today's.
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/{id}/diff:
+    get:
+      operationId: getAdministrativeDatasetDiff
+      tags: [cms, administrative]
+      summary: 'Ops: this version against whatever is published now (ADM-005)'
+      description: >
+        Recomputed on read, never written. A first publication compares against
+        an explicitly empty baseline, so `fromVersion` is null rather than the
+        request being an error. Entries are paged; `countsByCategory` is always
+        complete, so a reviewer walking a 14,000-entry diff never sees a total
+        that shrinks to the page. A change to nothing but `overrideRevision`
+        yields exactly one SOURCE_DRIFT entry rather than replaying every
+        migration the dataset already asserted.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 500, default: 100 },
+          }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: The diff, with complete counts and a bounded entry page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeDatasetDiff' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/{id}/validate:
+    post:
+      operationId: validateAdministrativeDataset
+      tags: [cms, administrative]
+      summary: 'Ops: run every gate against this exact snapshot (ADM-005)'
+      description: >
+        Runs the ADM-004 gates and stores the result bound to the dataset's
+        identity, checksum, staged-row digest, override revision and validator
+        version. Re-validating replaces the previous result rather than adding
+        to it. A publishable result moves the version to VALIDATED; a failing one
+        leaves it STAGED, because it failed a check — nobody rejected it.
+      responses:
+        '201':
+          description: The validation result and the diff computed with it
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [validation, diff]
+                properties:
+                  validation: { $ref: '#/components/schemas/AdministrativeValidationReport' }
+                  diff: { $ref: '#/components/schemas/AdministrativeDatasetDiff' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+
+  /cms/administrative-datasets/{id}/publish:
+    post:
+      operationId: publishAdministrativeDataset
+      tags: [cms, administrative]
+      summary: 'Ops: make this version the active dataset (ADM-005)'
+      description: >
+        Takes a dataset id and nothing else. No `publishable` flag, no checksum
+        and no warning acknowledgement is accepted from the caller: inside the
+        publishing transaction the server re-reads the lifecycle status, the
+        stored checksum, the checksum the pinned files produce now, the digest of
+        the staged rows and the validation bound to them, and refuses on the
+        first disagreement.
+
+
+        `publishable === errors === 0`. An ERROR can never be overridden; a
+        WARNING never blocks and stays visible and audited.
+
+
+        Demote and promote are one transaction serialised by an advisory lock, so
+        there are never two active versions and never zero. The previous version
+        is retained — it is what a rollback restores. Publishing the already
+        active version is 409 DATASET_ALREADY_PUBLISHED, not a silent no-op;
+        replaying the same `Idempotency-Key` returns the original result. The
+        in-process cache pointer is refreshed only after commit and a failure to
+        refresh it is reported in `cacheWarmed`, never rolled back: PostgreSQL is
+        authoritative and other processes converge within the 60-second TTL.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: The version is now active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeTransitionResult' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            Refused, and audited with its reason. DATASET_NOT_VALIDATED,
+            DATASET_REJECTED, DATASET_ALREADY_PUBLISHED, VALIDATION_MISSING,
+            VALIDATION_STALE, VALIDATION_HAS_ERRORS, SNAPSHOT_CHECKSUM_MISMATCH,
+            or ACTIVE_VERSION_CHANGED when another publication won the race
+            while this one was being prepared.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/{id}/rollback:
+    post:
+      operationId: rollbackAdministrativeDataset
+      tags: [cms, administrative]
+      summary: 'Ops: re-activate a previously published version (ADM-005)'
+      description: >
+        A forward act with its own audit row, not an undo. Nothing is deleted, no
+        migration is reversed, no stored address text is rewritten and no place
+        mapping is changed — stale mappings against the restored version are
+        reported, not written, because whether a claim a person verified should
+        be demoted is the mapping work's decision (#459/#461/#462).
+
+
+        Refuses a version that was never published, one that is already active,
+        and one whose stored rows no longer match the snapshot that was
+        validated. It deliberately does not re-verify the pinned source files: a
+        version published long ago may have been built from a snapshot no longer
+        vendored, and refusing on that ground would remove the escape hatch
+        exactly when it is needed.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: The earlier version is active again
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeTransitionResult' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            Refused, and audited with its reason. DATASET_NEVER_PUBLISHED,
+            DATASET_ALREADY_PUBLISHED, DATASET_NOT_RESTORABLE, VALIDATION_MISSING,
+            DATASET_CORRUPTED, or ACTIVE_VERSION_CHANGED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /taxonomies:
     get:
@@ -7274,6 +7555,349 @@ components:
             legacyDistricts: { type: integer }
             legacyCommunes: { type: integer }
             changes: { type: integer }
+    AdministrativeDatasetSummary:
+      type: object
+      required:
+        [
+          id,
+          combinedDatasetVersion,
+          combinedChecksum,
+          status,
+          effectiveDate,
+          overrideRevision,
+          sources,
+          importedAt,
+          publishedAt,
+          validation,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        combinedDatasetVersion:
+          type: string
+          description: >
+            The identity of a GoGo dataset is the tuple of its pinned upstreams
+            plus the override revision, not any single source version.
+        combinedChecksum: { type: string }
+        status:
+          type: string
+          enum: [STAGED, VALIDATED, REJECTED, PUBLISHED, ROLLED_BACK]
+          description: >
+            At most one version is PUBLISHED, held by a partial unique index.
+            A version demoted by a later publication becomes ROLLED_BACK and is
+            retained — that is what a rollback restores.
+        effectiveDate: { type: string, format: date }
+        overrideRevision: { type: integer }
+        sources:
+          type: object
+          required:
+            [
+              currentSourceVersion,
+              historicalSourceVersion,
+              mappingSourceCommit,
+              boundarySourceVersion,
+            ]
+          properties:
+            currentSourceVersion: { type: string }
+            historicalSourceVersion: { type: string, nullable: true }
+            mappingSourceCommit: { type: string, nullable: true }
+            boundarySourceVersion: { type: string, nullable: true }
+        importedAt: { type: string, format: date-time }
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Non-null means this version was active at some point, which is what
+            makes it a legitimate rollback target.
+        validation:
+          type: object
+          nullable: true
+          required:
+            [validationId, validatorVersion, ranAt, errors, warnings, publishable, warningGates]
+          properties:
+            validationId: { type: string }
+            validatorVersion: { type: string }
+            ranAt: { type: string, format: date-time }
+            errors: { type: integer }
+            warnings: { type: integer }
+            publishable:
+              type: boolean
+              description: Exactly `errors === 0`. Warnings never affect it.
+            warningGates:
+              type: array
+              items: { type: string }
+    AdministrativeImportReport:
+      type: object
+      required:
+        [
+          datasetVersionId,
+          combinedDatasetVersion,
+          combinedChecksum,
+          counts,
+          classification,
+          warnings,
+        ]
+      properties:
+        datasetVersionId: { type: string, format: uuid }
+        combinedDatasetVersion: { type: string }
+        combinedChecksum: { type: string }
+        counts:
+          type: object
+          required:
+            [provinces, communes, legacyDistricts, legacyCommunes, canonicalChanges, quarantined]
+          properties:
+            provinces: { type: integer }
+            communes: { type: integer }
+            legacyDistricts: { type: integer }
+            legacyCommunes: { type: integer }
+            canonicalChanges: { type: integer }
+            quarantined: { type: integer }
+        classification:
+          type: object
+          additionalProperties: { type: integer }
+          description: >
+            Count per quarantine class. An advisory mapping row is promoted to a
+            canonical change only when both endpoints resolve; the rest are
+            quarantined with their raw payload, never guessed.
+        warnings:
+          type: array
+          items: { type: string }
+    AdministrativeValidationReport:
+      type: object
+      nullable: true
+      required:
+        [
+          datasetVersion,
+          ranAt,
+          findings,
+          errors,
+          warnings,
+          publishable,
+          counts,
+          validationId,
+          validatorVersion,
+          boundTo,
+        ]
+      properties:
+        datasetVersion: { type: string }
+        ranAt: { type: string, format: date-time }
+        findings:
+          type: array
+          items:
+            type: object
+            required: [gate, severity, message, count, samples]
+            properties:
+              gate: { type: string }
+              severity: { type: string, enum: [ERROR, WARNING] }
+              message: { type: string }
+              count: { type: integer }
+              samples:
+                type: array
+                items: { type: string }
+        errors: { type: integer }
+        warnings: { type: integer }
+        publishable:
+          type: boolean
+          description: >
+            `errors === 0`. The only thing publication consults, and it is
+            re-checked server-side against a freshly re-read result.
+        counts:
+          type: object
+          required:
+            [
+              currentProvinces,
+              currentCommunes,
+              historicalProvinces,
+              historicalDistricts,
+              historicalCommunes,
+              canonicalChanges,
+              quarantined,
+            ]
+          properties:
+            currentProvinces: { type: integer }
+            currentCommunes: { type: integer }
+            historicalProvinces: { type: integer }
+            historicalDistricts: { type: integer }
+            historicalCommunes: { type: integer }
+            canonicalChanges: { type: integer }
+            quarantined: { type: integer }
+        validationId:
+          type: string
+          description: >
+            Deterministic in what was checked and what was found, so an audit row
+            can name the exact validation a publication relied on.
+        validatorVersion: { type: string }
+        boundTo:
+          type: object
+          description: >
+            What this result is evidence about. Publication re-derives every one
+            of these and refuses as VALIDATION_STALE on any disagreement — which
+            is what makes "validated, then someone edited a staged row" a refusal
+            rather than a silent publication of unvalidated data.
+          required:
+            [
+              datasetVersionId,
+              combinedDatasetVersion,
+              combinedChecksum,
+              snapshotFingerprint,
+              overrideRevision,
+            ]
+          properties:
+            datasetVersionId: { type: string, format: uuid }
+            combinedDatasetVersion: { type: string }
+            combinedChecksum: { type: string }
+            snapshotFingerprint:
+              type: string
+              description: >
+                Digest of the stored rows themselves. The combined checksum is
+                computed from the pinned files, so it cannot see a row edited
+                directly in the database; this can.
+            overrideRevision: { type: integer }
+    AdministrativeAffectedPlaces:
+      type: object
+      required: [total, samples, truncated, sampleLimit]
+      properties:
+        total:
+          type: integer
+          description: >
+            Counted in the database. Places with no administrative claim
+            (UNMAPPED) are excluded — a place with no claim is not affected by a
+            change to administrative data.
+        samples:
+          type: array
+          items:
+            type: object
+            required: [placeId, name, code, status]
+            properties:
+              placeId: { type: string, format: uuid }
+              name: { type: string }
+              code: { type: string }
+              status: { type: string }
+        truncated: { type: boolean }
+        sampleLimit: { type: integer }
+    AdministrativeDatasetDiff:
+      type: object
+      required:
+        [
+          fromVersion,
+          toVersion,
+          countsByCategory,
+          entries,
+          entriesTruncated,
+          entryLimit,
+          affectedPlaces,
+        ]
+      properties:
+        fromVersion:
+          type: string
+          nullable: true
+          description: Null for a first publication, which compares against an empty baseline.
+        toVersion: { type: string }
+        countsByCategory:
+          type: object
+          additionalProperties: { type: integer }
+          description: >
+            Always complete, never paged. Categories: CREATED, DISSOLVED,
+            RENAMED, PARENT_CHANGED, STATUS_CHANGED, EFFECTIVE_PERIOD_CHANGED,
+            MERGED, SPLIT, REASSIGNED, UNRESOLVED, SOURCE_DRIFT.
+        entries:
+          type: array
+          items:
+            type: object
+            required: [key, category, from, to, detail, provenance, validation]
+            properties:
+              key: { type: string }
+              category: { type: string }
+              from:
+                type: object
+                nullable: true
+                properties:
+                  code: { type: string }
+                  effectiveFrom: { type: string, format: date }
+              to:
+                type: object
+                nullable: true
+                properties:
+                  code: { type: string }
+                  effectiveFrom: { type: string, format: date }
+              detail: { type: string }
+              provenance: { type: string, nullable: true }
+              validation:
+                type: array
+                items: { type: string }
+        entriesTruncated: { type: boolean }
+        entryLimit: { type: integer }
+        affectedPlaces: { $ref: '#/components/schemas/AdministrativeAffectedPlaces' }
+        pagination:
+          type: object
+          required: [offset, limit, totalEntries, hasMore]
+          properties:
+            offset: { type: integer }
+            limit: { type: integer }
+            totalEntries: { type: integer }
+            hasMore: { type: boolean }
+    AdministrativeStaleMappings:
+      type: object
+      description: >
+        Places whose administrative claim does not resolve against the dataset
+        being activated. Reported, never written: whether a claim a person
+        verified should be demoted is the mapping work's decision (#459/#461/#462).
+      required: [total, samples, truncated, sampleLimit]
+      properties:
+        total: { type: integer }
+        samples:
+          type: array
+          items:
+            type: object
+            required: [placeId, name, code, status]
+            properties:
+              placeId: { type: string, format: uuid }
+              name: { type: string }
+              code: { type: string }
+              status: { type: string }
+        truncated: { type: boolean }
+        sampleLimit: { type: integer }
+    AdministrativeTransitionResult:
+      type: object
+      required:
+        [
+          datasetVersionId,
+          combinedDatasetVersion,
+          previousActiveVersion,
+          previousActiveVersionId,
+          publishedAt,
+          validationId,
+          warnings,
+          warningGates,
+          diff,
+          staleMappings,
+          cacheWarmed,
+        ]
+      properties:
+        datasetVersionId: { type: string, format: uuid }
+        combinedDatasetVersion: { type: string }
+        previousActiveVersion:
+          type: string
+          nullable: true
+          description: Retained, not deleted. This is what a rollback restores.
+        previousActiveVersionId: { type: string, format: uuid, nullable: true }
+        publishedAt: { type: string, format: date-time }
+        validationId:
+          type: string
+          description: The exact validation result this transition relied on.
+        warnings: { type: integer }
+        warningGates:
+          type: array
+          items: { type: string }
+          description: Visible and audited; they never blocked the publication.
+        diff: { $ref: '#/components/schemas/AdministrativeDatasetDiff' }
+        staleMappings: { $ref: '#/components/schemas/AdministrativeStaleMappings' }
+        cacheWarmed:
+          type: boolean
+          description: >
+            Whether this process refilled its own active-version pointer after
+            the commit. False is not a failed publication — PostgreSQL is
+            authoritative and every process converges within the 60-second TTL.
     RoomConstraintInput:
       type: object
       required: [budgetMode, budgetAmount]
