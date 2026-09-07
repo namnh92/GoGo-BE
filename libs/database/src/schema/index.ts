@@ -1,6 +1,7 @@
 export * from './identity';
 export * from './rooms';
 export * from './places';
+export * from './administrative';
 export * from './plans';
 export * from './social';
 export * from './cms';
