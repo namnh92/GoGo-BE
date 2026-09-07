@@ -10,6 +10,7 @@ import { GOOGLE_PROVIDER, googleProvenanceRows } from '../../shared/google-prove
 import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
 import { writeOutbox } from '../../shared/outbox';
+import { assertPlaceApprovable } from '../../administrative/application/place-approval';
 import { validateWeek, type HoursEntry, type HoursEntryKind } from '../domain/place-hours';
 import { normalizePhone, normalizeWebsite } from '../domain/place-contact';
 
@@ -1084,21 +1085,49 @@ export class CmsCatalogService {
     return { id: after.id, status: after.status, updatedAt: after.updatedAt.toISOString() };
   }
 
+  /**
+   * ADM-009 (#462) / ADR-0019 §7 — the authoritative place state transition,
+   * and therefore where the approval policy lives.
+   *
+   * It is one transaction now, and it was not before. Publishing a place is the
+   * moment its administrative mapping has to be true, and a policy checked
+   * before the transaction is a policy a concurrent dataset publication, a
+   * mapping rejection or another reviewer can invalidate between the check and
+   * the write. So the place is locked, the mapping is re-read, the *active*
+   * dataset is re-read, and the commune is re-resolved against it — all inside
+   * the transaction that flips the status.
+   *
+   * The gate applies to every transition **into** `published`, including
+   * `suspended → published`: restoring a place to the catalogue is publishing
+   * it, and a mapping that went stale while it was suspended is exactly the
+   * case worth catching.
+   */
   async transitionPlace(adminId: string, placeId: string, to: PlaceStatus) {
-    const [place] = await this.db
-      .select()
-      .from(schema.places)
-      .where(eq(schema.places.id, placeId))
-      .limit(1);
-    if (!place) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
-    if (!PLACE_TRANSITIONS[place.status].includes(to)) {
-      throw AppError.conflict('INVALID_PLACE_TRANSITION', `${place.status} → ${to} is not allowed`);
-    }
-    await this.db
-      .update(schema.places)
-      .set({ status: to, updatedAt: sql`now()` })
-      .where(eq(schema.places.id, placeId));
-    await this.audit(adminId, 'place.status_changed', placeId, { from: place.status, to });
+    const from = await this.db.transaction(async (tx) => {
+      const [place] = await tx
+        .select()
+        .from(schema.places)
+        .where(eq(schema.places.id, placeId))
+        .limit(1)
+        .for('update');
+      if (!place) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
+      if (!PLACE_TRANSITIONS[place.status].includes(to)) {
+        throw AppError.conflict(
+          'INVALID_PLACE_TRANSITION',
+          `${place.status} → ${to} is not allowed`,
+        );
+      }
+      // ADM-009 (#462): the shared invariant, not a copy of it. Three modules
+      // publish places and a policy written twice is a policy that drifts.
+      if (to === 'published') await assertPlaceApprovable(tx, place);
+
+      await tx
+        .update(schema.places)
+        .set({ status: to, updatedAt: sql`now()` })
+        .where(eq(schema.places.id, placeId));
+      return place.status;
+    });
+    await this.audit(adminId, 'place.status_changed', placeId, { from, to });
     return { id: placeId, status: to };
   }
 

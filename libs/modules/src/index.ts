@@ -242,6 +242,31 @@ export {
 } from '../administrative/application/administrative-audit';
 export { snapshotFingerprint } from '../administrative/application/snapshot-fingerprint';
 export {
+  AdministrativeModerationService,
+  type MappingDetail,
+  type MappingListItem,
+  type ModerationActor,
+} from '../administrative/application/administrative-moderation.service';
+export {
+  assertPlaceApprovable,
+  evaluatePlaceApproval,
+  publicationOutcomeFor,
+  type ApprovalSubject,
+  type PublicationOutcome,
+} from '../administrative/application/place-approval';
+export {
+  approvalBlock,
+  remediationCategory,
+  type ApprovalBlock,
+  type ApprovalBlockCode,
+  type MappingUnderApproval,
+  type RemediationCategory,
+} from '../administrative/domain/approval-policy';
+export {
+  AdministrativeMappingController,
+  AdministrativeMappingQueueController,
+} from '../administrative/presentation/administrative-moderation.controller';
+export {
   AdministrativeBackfillService,
   type BackfillOptions,
   type BackfillResult,

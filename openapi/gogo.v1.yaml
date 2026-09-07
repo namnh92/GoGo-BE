@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.6
+  version: 1.0.0-alpha.7
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1415,6 +1415,399 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-mappings:
+    get:
+      operationId: listAdministrativeMappings
+      tags: [cms, administrative]
+      summary: 'Moderation: places by administrative mapping status (ADM-009)'
+      description: >
+        The review queue. NEEDS_REVIEW and STALE are the actionable states — the
+        ones where a person has something to decide — but nothing is hidden:
+        every status is one filter away and all of them are in `counts`.
+
+
+        `blockedApprovalOnly=true` is the view that matters most: places waiting
+        for approval that cannot get it because of their mapping, including
+        UNMAPPED ones. A place stuck on a mapping nobody can see is exactly the
+        case a queue ordered by "what looks actionable" would bury.
+
+
+        Cursor pagination orders by place id, not by `updated_at`: ordering by a
+        column reviewers are changing would let a place they just touched jump
+        pages under them.
+      parameters:
+        - name: status
+          in: query
+          description: Comma-separated mapping statuses.
+          schema: { type: string, example: 'NEEDS_REVIEW,STALE' }
+        - name: placeStatus
+          in: query
+          description: Comma-separated place statuses.
+          schema: { type: string, example: 'review,community_submitted' }
+        - name: blockedApprovalOnly
+          in: query
+          schema: { type: string, enum: ['true', 'false'] }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: A page of mappings, with complete counts per status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor, counts]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdministrativeMappingListItem' }
+                  nextCursor: { type: string, format: uuid, nullable: true }
+                  counts:
+                    type: object
+                    additionalProperties: { type: integer }
+                    description: One per mapping status plus `actionable`.
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-mappings/remediation:
+    get:
+      operationId: getAdministrativeRemediation
+      tags: [cms, administrative]
+      summary: 'Moderation: approved places that would not pass the policy today'
+      description: >
+        Reporting only. Nothing here un-approves anything: these places were
+        approved before the policy existed, and taking a working catalogue off
+        the air to satisfy a rule written afterwards would do more harm than the
+        gap it closes.
+
+
+        `verified_against_older_version` is not a defect. The approval gate tests
+        the identity — does this commune still exist, is it still current, does
+        it still sit under this province — not the version string, because
+        otherwise every publication would un-approve the catalogue. The category
+        exists because "who verified this, and against what" is what a reviewer
+        asks before deciding whether to look again.
+      responses:
+        '200':
+          description: Counts per remediation category with bounded samples
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [activeDatasetVersion, counts, samples]
+                properties:
+                  activeDatasetVersion: { type: string }
+                  counts:
+                    type: object
+                    required:
+                      [
+                        unmapped,
+                        auto_matched,
+                        needs_review,
+                        rejected,
+                        stale,
+                        verified_against_older_version,
+                        compliant,
+                      ]
+                    properties:
+                      unmapped: { type: integer }
+                      auto_matched: { type: integer }
+                      needs_review: { type: integer }
+                      rejected: { type: integer }
+                      stale: { type: integer }
+                      verified_against_older_version: { type: integer }
+                      compliant: { type: integer }
+                  samples:
+                    type: object
+                    additionalProperties:
+                      type: array
+                      items: { type: string, format: uuid }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/places/{id}/administrative-mapping:
+    get:
+      operationId: getPlaceAdministrativeMapping
+      tags: [cms, administrative]
+      summary: 'Moderation: one mapping, its evidence and what may be done to it'
+      description: >
+        Everything the console needs on one screen, recomputed on read rather
+        than served from a cache of what the resolver once thought: current
+        codes and their resolved names, the resolver's evidence and alternative
+        candidates, the unresolved reason, hierarchy validity, the staleness
+        verdict, whether this mapping blocks approving the place and why, and
+        which actions this role may take.
+
+
+        The place's own address text, `city` and `district` are returned because
+        a reviewer judges the mapping against what the address actually says.
+        They are read here and never written by any endpoint in this group.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The mapping and its evidence
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeMappingDetail' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/AdministrativeUnavailable' }
+
+  /cms/places/{id}/administrative-mapping/verify:
+    post:
+      operationId: verifyPlaceAdministrativeMapping
+      tags: [cms, administrative]
+      summary: 'Moderation: a reviewer verifies these codes (ADM-009)'
+      description: >
+        The only path that writes VERIFIED. Inside the write transaction the
+        server re-reads the place under a row lock, re-reads the *active*
+        dataset, and checks that the province and commune are both current in it
+        and that the commune belongs to the province — a code is not an
+        identity, so the period is part of the check.
+
+
+        No confidence number is written. A person's judgement is not a
+        probability; VERIFIED plus their identity is the whole claim.
+
+
+        `expectedUpdatedAt` is required: a reviewer decides about a row they saw,
+        and a publication, another reviewer or a backfill can move it in
+        between.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provinceCode, communeCode, expectedUpdatedAt]
+              properties:
+                provinceCode: { type: string, pattern: '^[0-9]{2,5}$' }
+                communeCode: { type: string, pattern: '^[0-9]{2,5}$' }
+                legacyDistrictCode:
+                  type: string
+                  pattern: '^[0-9]{2,5}$'
+                  nullable: true
+                  description: Pre-2025-07-01 evidence. Checked against the historical set.
+                note: { type: string, maxLength: 500 }
+                expectedUpdatedAt: { type: string, format: date-time }
+      responses:
+        '201':
+          description: The mapping is verified
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [placeId, status, datasetVersion]
+                properties:
+                  placeId: { type: string, format: uuid }
+                  status: { type: string, enum: [VERIFIED] }
+                  datasetVersion: { type: string }
+        '400':
+          description: >
+            PROVINCE_NOT_CURRENT, COMMUNE_NOT_CURRENT, HIERARCHY_INVALID or
+            LEGACY_DISTRICT_UNKNOWN — the selection does not describe a real
+            unit in the active dataset.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: PLACE_MODIFIED — the place changed since it was read.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/places/{id}/administrative-mapping/reject:
+    post:
+      operationId: rejectPlaceAdministrativeMapping
+      tags: [cms, administrative]
+      summary: 'Moderation: reject the mapping — not the place (ADM-009)'
+      description: >
+        Rejecting a mapping says this answer is wrong. It does not touch the
+        place's own moderation state, its address, or its geometry; it blocks
+        approval until somebody produces a mapping that is right.
+
+
+        The rejected codes and the resolver's evidence are kept on the record,
+        because what was rejected is the most useful thing the next reviewer can
+        be told.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdministrativeMappingReason' }
+      responses:
+        '201':
+          description: The mapping is rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [placeId, status]
+                properties:
+                  placeId: { type: string, format: uuid }
+                  status: { type: string, enum: [REJECTED] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/places/{id}/administrative-mapping/rematch:
+    post:
+      operationId: rematchPlaceAdministrativeMapping
+      tags: [cms, administrative]
+      summary: 'Moderation: re-run the resolver on one rejected mapping (ADM-009)'
+      description: >
+        The only route that reopens a REJECTED mapping — one place, a reason, and
+        an authenticated person to attribute it to. The bulk backfill (#461) has
+        no such option, because it has nobody to name.
+
+
+        Asking for a rematch is not verifying anything. The resolver's answer is
+        written under the ordinary transition rules, the previous reviewer's
+        attribution is cleared because their decision no longer stands, and the
+        requester is recorded in the audit as the requester — never in
+        `administrative_mapped_by`.
+
+
+        A VERIFIED mapping is refused: correcting one is an explicit reviewer
+        act that names both people, not a re-derivation.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdministrativeMappingReason' }
+      responses:
+        '201':
+          description: The resolver ran and its result was persisted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [placeId, status, communeCode]
+                properties:
+                  placeId: { type: string, format: uuid }
+                  status:
+                    type: string
+                    enum: [UNMAPPED, AUTO_MATCHED, NEEDS_REVIEW]
+                  communeCode: { type: string, nullable: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: VERIFIED_NOT_REMATCHABLE, or PLACE_MODIFIED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/places/{id}/administrative-mapping/correct:
+    post:
+      operationId: correctPlaceAdministrativeMapping
+      tags: [cms, administrative]
+      summary: 'Moderation: correct a mapping somebody already verified (ADM-009)'
+      description: >
+        Separate from verify on purpose. Changing a decision a person recorded is
+        an act that must name both of them, and the audit row does: the previous
+        reviewer, their codes, the corrector, the reason, and the new codes.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provinceCode, communeCode, reason, expectedUpdatedAt]
+              properties:
+                provinceCode: { type: string, pattern: '^[0-9]{2,5}$' }
+                communeCode: { type: string, pattern: '^[0-9]{2,5}$' }
+                legacyDistrictCode: { type: string, pattern: '^[0-9]{2,5}$', nullable: true }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+                expectedUpdatedAt: { type: string, format: date-time }
+      responses:
+        '201':
+          description: The mapping is corrected and re-verified
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [placeId, status, datasetVersion]
+                properties:
+                  placeId: { type: string, format: uuid }
+                  status: { type: string, enum: [VERIFIED] }
+                  datasetVersion: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: NOT_VERIFIED, or PLACE_MODIFIED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/places/{id}/administrative-mapping/reconcile:
+    post:
+      operationId: reconcilePlaceAdministrativeMapping
+      tags: [cms, administrative]
+      summary: 'Ops: re-evaluate one mapping against the active dataset (ADM-009)'
+      description: >
+        System reconciliation, and `ops_admin` rather than `moderator` because it
+        belongs to whoever published the dataset that changed — and because it is
+        emphatically not a verification.
+
+
+        A version change alone never makes a mapping stale. If the same commune
+        still exists, is still current and still sits under the same province,
+        nothing is written and the older version stays as provenance. When the
+        identity really has failed, STALE is written and the codes and
+        `administrative_mapped_by` are **kept**: that column names who verified
+        the stored mapping, and they did — STALE says that verification is no
+        longer current. The audit row names the reconciler separately, so the log
+        can never be read as "this person verified it".
+
+
+        Idempotent: reconciling an already-stale mapping writes nothing.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: The verdict, and whether anything was written
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [placeId, changed, verdict]
+                properties:
+                  placeId: { type: string, format: uuid }
+                  changed: { type: boolean }
+                  verdict: { $ref: '#/components/schemas/AdministrativeStaleVerdict' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
   /taxonomies:
@@ -7898,6 +8291,235 @@ components:
             Whether this process refilled its own active-version pointer after
             the commit. False is not a failed publication — PostgreSQL is
             authoritative and every process converges within the 60-second TTL.
+    AdministrativeMappingReason:
+      type: object
+      additionalProperties: false
+      required: [reason, expectedUpdatedAt]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Required. A decision with no stated reason cannot be reviewed later.
+        expectedUpdatedAt:
+          type: string
+          format: date-time
+          description: >
+            The place's `updatedAt` as the reviewer saw it. A mismatch is 409
+            PLACE_MODIFIED rather than a lost update.
+    AdministrativeMappingListItem:
+      type: object
+      required:
+        [
+          placeId,
+          name,
+          placeStatus,
+          mappingStatus,
+          provinceCode,
+          communeCode,
+          datasetVersion,
+          updatedAt,
+          blocksApproval,
+        ]
+      properties:
+        placeId: { type: string, format: uuid }
+        name: { type: string }
+        placeStatus: { type: string }
+        mappingStatus: { $ref: '#/components/schemas/AdministrativeMappingStatus' }
+        provinceCode: { type: string, nullable: true }
+        communeCode: { type: string, nullable: true }
+        datasetVersion: { type: string, nullable: true }
+        updatedAt: { type: string, format: date-time }
+        blocksApproval:
+          type: boolean
+          description: >
+            True for anything that is not VERIFIED. The precise reason is
+            per place and comes from the detail endpoint.
+    AdministrativeMappingStatus:
+      type: string
+      enum: [UNMAPPED, AUTO_MATCHED, NEEDS_REVIEW, VERIFIED, REJECTED, STALE]
+      description: >
+        VERIFIED and REJECTED are reviewer-owned: no automatic path writes them.
+        AUTO_MATCHED is the resolver's answer, which is why it does not permit
+        approval — the point of a review queue is that the machine's answer is
+        not the decision.
+    AdministrativeStaleVerdict:
+      type: object
+      required:
+        [stale, reason, reviewerOwned, requiresReview, storedDatasetVersion, activeDatasetVersion]
+      properties:
+        stale: { type: boolean }
+        reason:
+          type: string
+          enum:
+            [
+              NO_MAPPING,
+              CURRENT,
+              REVALIDATED,
+              UNIT_NOT_IN_ACTIVE_DATASET,
+              UNIT_NOT_CURRENT,
+              HIERARCHY_CHANGED,
+            ]
+          description: >
+            `REVALIDATED` is the healthy case: the mapping is labelled with an
+            older dataset version and is still true. It is not stale, and
+            nothing is written for it.
+        reviewerOwned: { type: boolean }
+        requiresReview: { type: boolean }
+        storedDatasetVersion: { type: string, nullable: true }
+        activeDatasetVersion: { type: string }
+    AdministrativeMappingEvidence:
+      type: object
+      required: [method, provinceCode, communeCode, hierarchyValid, deterministic, detail]
+      properties:
+        method: { type: string }
+        provinceCode: { type: string, nullable: true }
+        communeCode: { type: string, nullable: true }
+        legacyDistrictCode: { type: string, nullable: true }
+        hierarchyValid: { type: boolean }
+        deterministic:
+          type: boolean
+          description: False for anything that may only ever be offered to a person.
+        onEdge:
+          type: boolean
+          description: Boundary evidence only — the point sits on the polygon's own edge.
+        detail: { type: string }
+    AdministrativeMappingDetail:
+      type: object
+      required:
+        [
+          placeId,
+          place,
+          mapping,
+          activeDatasetVersion,
+          evidence,
+          candidates,
+          unresolvedReason,
+          hierarchyValid,
+          staleness,
+          approval,
+          permittedActions,
+        ]
+      properties:
+        placeId: { type: string, format: uuid }
+        place:
+          type: object
+          description: >
+            Read here so a reviewer can judge the mapping against what the
+            address actually says. No endpoint in this group writes any of it.
+          required: [name, status, addressText, city, district, geometry, updatedAt]
+          properties:
+            name: { type: string }
+            status: { type: string }
+            addressText: { type: string, nullable: true }
+            city: { type: string, nullable: true }
+            district: { type: string, nullable: true }
+            geometry:
+              type: object
+              required: [lng, lat]
+              properties:
+                lng: { type: number }
+                lat: { type: number }
+            updatedAt:
+              type: string
+              format: date-time
+              description: Send this back as `expectedUpdatedAt` on any decision.
+        mapping:
+          type: object
+          required:
+            [
+              status,
+              provinceCode,
+              communeCode,
+              legacyDistrictCode,
+              provinceName,
+              communeName,
+              legacyDistrictName,
+              method,
+              confidence,
+              datasetVersion,
+              boundaryVersion,
+              mappedAt,
+              reviewer,
+            ]
+          properties:
+            status: { $ref: '#/components/schemas/AdministrativeMappingStatus' }
+            provinceCode: { type: string, nullable: true }
+            communeCode: { type: string, nullable: true }
+            legacyDistrictCode: { type: string, nullable: true }
+            provinceName: { type: string, nullable: true }
+            communeName: { type: string, nullable: true }
+            legacyDistrictName: { type: string, nullable: true }
+            method: { type: string, nullable: true }
+            confidence:
+              type: string
+              nullable: true
+              description: >
+                1.00 or absent. Only an official code or a strictly-inside
+                containment is definitional; a manual verification writes none,
+                because a person's judgement is not a probability.
+            datasetVersion: { type: string, nullable: true }
+            boundaryVersion: { type: string, nullable: true }
+            mappedAt: { type: string, format: date-time, nullable: true }
+            reviewer:
+              type: object
+              nullable: true
+              description: >
+                Who is responsible for the mapping the row carries now. Retained
+                on a STALE row — they did verify it; STALE says that
+                verification is no longer current.
+              required: [id, displayName]
+              properties:
+                id: { type: string, format: uuid }
+                displayName: { type: string }
+        activeDatasetVersion: { type: string }
+        evidence:
+          type: array
+          items: { $ref: '#/components/schemas/AdministrativeMappingEvidence' }
+        candidates:
+          type: array
+          description: Alternatives the resolver refused to choose between.
+          items:
+            type: object
+            required: [method, provinceCode, communeCode, detail]
+            properties:
+              method: { type: string }
+              provinceCode: { type: string, nullable: true }
+              communeCode: { type: string, nullable: true }
+              detail: { type: string }
+        unresolvedReason: { type: string, nullable: true }
+        hierarchyValid: { type: boolean }
+        staleness: { $ref: '#/components/schemas/AdministrativeStaleVerdict' }
+        approval:
+          type: object
+          required: [blocked, block]
+          properties:
+            blocked: { type: boolean }
+            block:
+              type: object
+              nullable: true
+              required: [code, message]
+              properties:
+                code:
+                  type: string
+                  enum:
+                    [
+                      MAPPING_UNMAPPED,
+                      MAPPING_NOT_VERIFIED,
+                      MAPPING_REJECTED,
+                      MAPPING_STALE,
+                      MAPPING_INCOMPLETE,
+                      MAPPING_UNIT_NOT_CURRENT,
+                      MAPPING_HIERARCHY_INVALID,
+                    ]
+                message: { type: string }
+        permittedActions:
+          type: array
+          description: >
+            What this role may do, so the console renders buttons it knows will
+            work. The server still enforces it: hiding a button is not
+            authorization.
+          items: { type: string }
     RoomConstraintInput:
       type: object
       required: [budgetMode, budgetAmount]
@@ -10293,6 +10915,45 @@ components:
             rowsByStatus:
               type: object
               additionalProperties: { type: integer }
+            publication:
+              type: object
+              description: >
+                ADM-009 (#462) — what happened to the publication this mode asked
+                for. Kept apart from `rowsByStatus` because they answer different
+                questions: a row can be `imported` and not published, and folding
+                the two together would tell an operator their places are live
+                when they are waiting for a reviewer.
+
+
+                A newly imported place has never been verified by anybody, so its
+                publication is always deferred and the place lands in `review`.
+                The one row that can publish is one matching an existing place
+                whose mapping a reviewer already verified and which is still
+                valid against the active administrative dataset.
+              required:
+                [
+                  requested,
+                  published,
+                  deferred,
+                  mappingUnverified,
+                  mappingInvalid,
+                  noActiveAdministrativeDataset,
+                ]
+              properties:
+                requested:
+                  type: integer
+                  description: Rows whose mode asked for publication.
+                published: { type: integer }
+                deferred: { type: integer }
+                mappingUnverified:
+                  type: integer
+                  description: No mapping, or one no reviewer has verified.
+                mappingInvalid:
+                  type: integer
+                  description: Verified, but the unit or hierarchy no longer holds.
+                noActiveAdministrativeDataset:
+                  type: integer
+                  description: Nothing to validate a mapping against in this environment.
             startedAt: { type: string, format: date-time }
             cancelledAt: { type: string, format: date-time }
             reused:

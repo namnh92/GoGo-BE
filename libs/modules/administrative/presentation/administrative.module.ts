@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { IdentityModule } from '../../identity/presentation/identity.module';
 import { AdministrativeBackfillService } from '../application/administrative-backfill.service';
+import { AdministrativeModerationService } from '../application/administrative-moderation.service';
 import { AdministrativeBoundaryImportService } from '../application/administrative-boundary-import.service';
 import { BoundaryArchiveReader } from '../application/boundary-archive.reader';
 import { AdministrativeImportService } from '../application/administrative-import.service';
@@ -18,6 +19,10 @@ import { InProcessAdministrativeDatasetCache } from '../infrastructure/in-proces
 import { PinnedSnapshotReader } from '../application/pinned-snapshot.reader';
 import { AdministrativeController } from './administrative.controller';
 import { AdministrativeAdminController } from './administrative-admin.controller';
+import {
+  AdministrativeMappingController,
+  AdministrativeMappingQueueController,
+} from './administrative-moderation.controller';
 
 /**
  * ADM-003 (#456). The cache is bound to the port here and nowhere else, so
@@ -31,7 +36,12 @@ import { AdministrativeAdminController } from './administrative-admin.controller
  */
 @Module({
   imports: [IdentityModule],
-  controllers: [AdministrativeController, AdministrativeAdminController],
+  controllers: [
+    AdministrativeController,
+    AdministrativeAdminController,
+    AdministrativeMappingQueueController,
+    AdministrativeMappingController,
+  ],
   providers: [
     // Registered rather than left to the service's default parameter: a TS
     // default is invisible to Nest, which sees a required token and refuses to
@@ -48,6 +58,7 @@ import { AdministrativeAdminController } from './administrative-admin.controller
     BoundaryArchiveReader,
     AdministrativeBoundaryImportService,
     AdministrativeBackfillService,
+    AdministrativeModerationService,
   ],
   exports: [
     ADMINISTRATIVE_DATASET,
@@ -59,6 +70,7 @@ import { AdministrativeAdminController } from './administrative-admin.controller
     AdministrativeResolverService,
     AdministrativeBoundaryImportService,
     AdministrativeBackfillService,
+    AdministrativeModerationService,
   ],
 })
 export class AdministrativeModule {}

@@ -770,6 +770,188 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/administrative-mappings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Moderation: places by administrative mapping status (ADM-009)
+         * @description The review queue. NEEDS_REVIEW and STALE are the actionable states — the ones where a person has something to decide — but nothing is hidden: every status is one filter away and all of them are in `counts`.
+         *
+         *     `blockedApprovalOnly=true` is the view that matters most: places waiting for approval that cannot get it because of their mapping, including UNMAPPED ones. A place stuck on a mapping nobody can see is exactly the case a queue ordered by "what looks actionable" would bury.
+         *
+         *     Cursor pagination orders by place id, not by `updated_at`: ordering by a column reviewers are changing would let a place they just touched jump pages under them.
+         */
+        get: operations["listAdministrativeMappings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/administrative-mappings/remediation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Moderation: approved places that would not pass the policy today
+         * @description Reporting only. Nothing here un-approves anything: these places were approved before the policy existed, and taking a working catalogue off the air to satisfy a rule written afterwards would do more harm than the gap it closes.
+         *
+         *     `verified_against_older_version` is not a defect. The approval gate tests the identity — does this commune still exist, is it still current, does it still sit under this province — not the version string, because otherwise every publication would un-approve the catalogue. The category exists because "who verified this, and against what" is what a reviewer asks before deciding whether to look again.
+         */
+        get: operations["getAdministrativeRemediation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/places/{id}/administrative-mapping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Moderation: one mapping, its evidence and what may be done to it
+         * @description Everything the console needs on one screen, recomputed on read rather than served from a cache of what the resolver once thought: current codes and their resolved names, the resolver's evidence and alternative candidates, the unresolved reason, hierarchy validity, the staleness verdict, whether this mapping blocks approving the place and why, and which actions this role may take.
+         *
+         *     The place's own address text, `city` and `district` are returned because a reviewer judges the mapping against what the address actually says. They are read here and never written by any endpoint in this group.
+         */
+        get: operations["getPlaceAdministrativeMapping"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/places/{id}/administrative-mapping/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moderation: a reviewer verifies these codes (ADM-009)
+         * @description The only path that writes VERIFIED. Inside the write transaction the server re-reads the place under a row lock, re-reads the *active* dataset, and checks that the province and commune are both current in it and that the commune belongs to the province — a code is not an identity, so the period is part of the check.
+         *
+         *     No confidence number is written. A person's judgement is not a probability; VERIFIED plus their identity is the whole claim.
+         *
+         *     `expectedUpdatedAt` is required: a reviewer decides about a row they saw, and a publication, another reviewer or a backfill can move it in between.
+         */
+        post: operations["verifyPlaceAdministrativeMapping"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/places/{id}/administrative-mapping/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moderation: reject the mapping — not the place (ADM-009)
+         * @description Rejecting a mapping says this answer is wrong. It does not touch the place's own moderation state, its address, or its geometry; it blocks approval until somebody produces a mapping that is right.
+         *
+         *     The rejected codes and the resolver's evidence are kept on the record, because what was rejected is the most useful thing the next reviewer can be told.
+         */
+        post: operations["rejectPlaceAdministrativeMapping"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/places/{id}/administrative-mapping/rematch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moderation: re-run the resolver on one rejected mapping (ADM-009)
+         * @description The only route that reopens a REJECTED mapping — one place, a reason, and an authenticated person to attribute it to. The bulk backfill (#461) has no such option, because it has nobody to name.
+         *
+         *     Asking for a rematch is not verifying anything. The resolver's answer is written under the ordinary transition rules, the previous reviewer's attribution is cleared because their decision no longer stands, and the requester is recorded in the audit as the requester — never in `administrative_mapped_by`.
+         *
+         *     A VERIFIED mapping is refused: correcting one is an explicit reviewer act that names both people, not a re-derivation.
+         */
+        post: operations["rematchPlaceAdministrativeMapping"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/places/{id}/administrative-mapping/correct": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moderation: correct a mapping somebody already verified (ADM-009)
+         * @description Separate from verify on purpose. Changing a decision a person recorded is an act that must name both of them, and the audit row does: the previous reviewer, their codes, the corrector, the reason, and the new codes.
+         */
+        post: operations["correctPlaceAdministrativeMapping"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/places/{id}/administrative-mapping/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: re-evaluate one mapping against the active dataset (ADM-009)
+         * @description System reconciliation, and `ops_admin` rather than `moderator` because it belongs to whoever published the dataset that changed — and because it is emphatically not a verification.
+         *
+         *     A version change alone never makes a mapping stale. If the same commune still exists, is still current and still sits under the same province, nothing is written and the older version stays as provenance. When the identity really has failed, STALE is written and the codes and `administrative_mapped_by` are **kept**: that column names who verified the stored mapping, and they did — STALE says that verification is no longer current. The audit row names the reconciler separately, so the log can never be read as "this person verified it".
+         *
+         *     Idempotent: reconciling an already-stale mapping writes nothing.
+         */
+        post: operations["reconcilePlaceAdministrativeMapping"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/taxonomies": {
         parameters: {
             query?: never;
@@ -4239,6 +4421,123 @@ export interface components {
             /** @description Whether this process refilled its own active-version pointer after the commit. False is not a failed publication — PostgreSQL is authoritative and every process converges within the 60-second TTL. */
             cacheWarmed: boolean;
         };
+        AdministrativeMappingReason: {
+            /** @description Required. A decision with no stated reason cannot be reviewed later. */
+            reason: string;
+            /**
+             * Format: date-time
+             * @description The place's `updatedAt` as the reviewer saw it. A mismatch is 409 PLACE_MODIFIED rather than a lost update.
+             */
+            expectedUpdatedAt: string;
+        };
+        AdministrativeMappingListItem: {
+            /** Format: uuid */
+            placeId: string;
+            name: string;
+            placeStatus: string;
+            mappingStatus: components["schemas"]["AdministrativeMappingStatus"];
+            provinceCode: string | null;
+            communeCode: string | null;
+            datasetVersion: string | null;
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description True for anything that is not VERIFIED. The precise reason is per place and comes from the detail endpoint. */
+            blocksApproval: boolean;
+        };
+        /**
+         * @description VERIFIED and REJECTED are reviewer-owned: no automatic path writes them. AUTO_MATCHED is the resolver's answer, which is why it does not permit approval — the point of a review queue is that the machine's answer is not the decision.
+         * @enum {string}
+         */
+        AdministrativeMappingStatus: "UNMAPPED" | "AUTO_MATCHED" | "NEEDS_REVIEW" | "VERIFIED" | "REJECTED" | "STALE";
+        AdministrativeStaleVerdict: {
+            stale: boolean;
+            /**
+             * @description `REVALIDATED` is the healthy case: the mapping is labelled with an older dataset version and is still true. It is not stale, and nothing is written for it.
+             * @enum {string}
+             */
+            reason: "NO_MAPPING" | "CURRENT" | "REVALIDATED" | "UNIT_NOT_IN_ACTIVE_DATASET" | "UNIT_NOT_CURRENT" | "HIERARCHY_CHANGED";
+            reviewerOwned: boolean;
+            requiresReview: boolean;
+            storedDatasetVersion: string | null;
+            activeDatasetVersion: string;
+        };
+        AdministrativeMappingEvidence: {
+            method: string;
+            provinceCode: string | null;
+            communeCode: string | null;
+            legacyDistrictCode?: string | null;
+            hierarchyValid: boolean;
+            /** @description False for anything that may only ever be offered to a person. */
+            deterministic: boolean;
+            /** @description Boundary evidence only — the point sits on the polygon's own edge. */
+            onEdge?: boolean;
+            detail: string;
+        };
+        AdministrativeMappingDetail: {
+            /** Format: uuid */
+            placeId: string;
+            /** @description Read here so a reviewer can judge the mapping against what the address actually says. No endpoint in this group writes any of it. */
+            place: {
+                name: string;
+                status: string;
+                addressText: string | null;
+                city: string | null;
+                district: string | null;
+                geometry: {
+                    lng: number;
+                    lat: number;
+                };
+                /**
+                 * Format: date-time
+                 * @description Send this back as `expectedUpdatedAt` on any decision.
+                 */
+                updatedAt: string;
+            };
+            mapping: {
+                status: components["schemas"]["AdministrativeMappingStatus"];
+                provinceCode: string | null;
+                communeCode: string | null;
+                legacyDistrictCode: string | null;
+                provinceName: string | null;
+                communeName: string | null;
+                legacyDistrictName: string | null;
+                method: string | null;
+                /** @description 1.00 or absent. Only an official code or a strictly-inside containment is definitional; a manual verification writes none, because a person's judgement is not a probability. */
+                confidence: string | null;
+                datasetVersion: string | null;
+                boundaryVersion: string | null;
+                /** Format: date-time */
+                mappedAt: string | null;
+                /** @description Who is responsible for the mapping the row carries now. Retained on a STALE row — they did verify it; STALE says that verification is no longer current. */
+                reviewer: {
+                    /** Format: uuid */
+                    id: string;
+                    displayName: string;
+                } | null;
+            };
+            activeDatasetVersion: string;
+            evidence: components["schemas"]["AdministrativeMappingEvidence"][];
+            /** @description Alternatives the resolver refused to choose between. */
+            candidates: {
+                method: string;
+                provinceCode: string | null;
+                communeCode: string | null;
+                detail: string;
+            }[];
+            unresolvedReason: string | null;
+            hierarchyValid: boolean;
+            staleness: components["schemas"]["AdministrativeStaleVerdict"];
+            approval: {
+                blocked: boolean;
+                block: {
+                    /** @enum {string} */
+                    code: "MAPPING_UNMAPPED" | "MAPPING_NOT_VERIFIED" | "MAPPING_REJECTED" | "MAPPING_STALE" | "MAPPING_INCOMPLETE" | "MAPPING_UNIT_NOT_CURRENT" | "MAPPING_HIERARCHY_INVALID";
+                    message: string;
+                } | null;
+            };
+            /** @description What this role may do, so the console renders buttons it knows will work. The server still enforces it: hiding a button is not authorization. */
+            permittedActions: string[];
+        };
         RoomConstraintInput: {
             originText?: string;
             originLat?: number;
@@ -5776,6 +6075,23 @@ export interface components {
             defaultCity?: string | null;
             rowsByStatus?: {
                 [key: string]: number;
+            };
+            /**
+             * @description ADM-009 (#462) — what happened to the publication this mode asked for. Kept apart from `rowsByStatus` because they answer different questions: a row can be `imported` and not published, and folding the two together would tell an operator their places are live when they are waiting for a reviewer.
+             *
+             *     A newly imported place has never been verified by anybody, so its publication is always deferred and the place lands in `review`. The one row that can publish is one matching an existing place whose mapping a reviewer already verified and which is still valid against the active administrative dataset.
+             */
+            publication?: {
+                /** @description Rows whose mode asked for publication. */
+                requested: number;
+                published: number;
+                deferred: number;
+                /** @description No mapping, or one no reviewer has verified. */
+                mappingUnverified: number;
+                /** @description Verified, but the unit or hierarchy no longer holds. */
+                mappingInvalid: number;
+                /** @description Nothing to validate a mapping against in this environment. */
+                noActiveAdministrativeDataset: number;
             };
             /** Format: date-time */
             startedAt?: string;
@@ -8403,6 +8719,344 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    listAdministrativeMappings: {
+        parameters: {
+            query?: {
+                /** @description Comma-separated mapping statuses. */
+                status?: string;
+                /** @description Comma-separated place statuses. */
+                placeStatus?: string;
+                blockedApprovalOnly?: "true" | "false";
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of mappings, with complete counts per status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["AdministrativeMappingListItem"][];
+                        /** Format: uuid */
+                        nextCursor: string | null;
+                        /** @description One per mapping status plus `actionable`. */
+                        counts: {
+                            [key: string]: number;
+                        };
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    getAdministrativeRemediation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Counts per remediation category with bounded samples */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        activeDatasetVersion: string;
+                        counts: {
+                            unmapped: number;
+                            auto_matched: number;
+                            needs_review: number;
+                            rejected: number;
+                            stale: number;
+                            verified_against_older_version: number;
+                            compliant: number;
+                        };
+                        samples: {
+                            [key: string]: string[];
+                        };
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    getPlaceAdministrativeMapping: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The mapping and its evidence */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeMappingDetail"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["AdministrativeUnavailable"];
+        };
+    };
+    verifyPlaceAdministrativeMapping: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    provinceCode: string;
+                    communeCode: string;
+                    /** @description Pre-2025-07-01 evidence. Checked against the historical set. */
+                    legacyDistrictCode?: string | null;
+                    note?: string;
+                    /** Format: date-time */
+                    expectedUpdatedAt: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The mapping is verified */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        placeId: string;
+                        /** @enum {string} */
+                        status: "VERIFIED";
+                        datasetVersion: string;
+                    };
+                };
+            };
+            /** @description PROVINCE_NOT_CURRENT, COMMUNE_NOT_CURRENT, HIERARCHY_INVALID or LEGACY_DISTRICT_UNKNOWN — the selection does not describe a real unit in the active dataset. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description PLACE_MODIFIED — the place changed since it was read. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    rejectPlaceAdministrativeMapping: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdministrativeMappingReason"];
+            };
+        };
+        responses: {
+            /** @description The mapping is rejected */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        placeId: string;
+                        /** @enum {string} */
+                        status: "REJECTED";
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    rematchPlaceAdministrativeMapping: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdministrativeMappingReason"];
+            };
+        };
+        responses: {
+            /** @description The resolver ran and its result was persisted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        placeId: string;
+                        /** @enum {string} */
+                        status: "UNMAPPED" | "AUTO_MATCHED" | "NEEDS_REVIEW";
+                        communeCode: string | null;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description VERIFIED_NOT_REMATCHABLE, or PLACE_MODIFIED. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    correctPlaceAdministrativeMapping: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    provinceCode: string;
+                    communeCode: string;
+                    legacyDistrictCode?: string | null;
+                    reason: string;
+                    /** Format: date-time */
+                    expectedUpdatedAt: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The mapping is corrected and re-verified */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        placeId: string;
+                        /** @enum {string} */
+                        status: "VERIFIED";
+                        datasetVersion: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description NOT_VERIFIED, or PLACE_MODIFIED. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    reconcilePlaceAdministrativeMapping: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The verdict, and whether anything was written */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        placeId: string;
+                        changed: boolean;
+                        verdict: components["schemas"]["AdministrativeStaleVerdict"];
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
         };
     };

@@ -1435,6 +1435,11 @@ describe('privacy-request ledger (BE-CMS-G12 #255, ADR-0011)', () => {
 describe('place workflow + search sync (CMS-002, SRS §15.5)', () => {
   it('draft → review → published appears in search; suspended disappears', async () => {
     const editor = await createAdmin('editor2@gogo.local', 'editor');
+    // ADM-009 (#462): publishing a place now requires a reviewer-verified
+    // administrative mapping that is still valid against the active dataset.
+    // A minimal published dataset and a verified mapping are the preconditions
+    // for approval, so this flow test carries them.
+    const { datasetVersion } = await seedAdministrativeMapping();
     const [place] = await db
       .insert(schema.places)
       .values({
@@ -1446,6 +1451,11 @@ describe('place workflow + search sync (CMS-002, SRS §15.5)', () => {
         ratingCount: 100,
         confidence: '0.9',
         freshnessCheckedAt: new Date(),
+        provinceCode: '79',
+        communeCode: '26734',
+        administrativeMappingStatus: 'VERIFIED',
+        administrativeMappingSource: 'editor',
+        administrativeDatasetVersion: datasetVersion,
       })
       .returning();
 
@@ -5920,3 +5930,64 @@ describe('experiments and offline evaluation', () => {
     expect(res.statusCode).toBe(404);
   });
 });
+
+/**
+ * ADM-009 (#462) — the smallest administrative dataset an approval can be
+ * validated against: one published version, one current province, one current
+ * commune under it. Deliberately not the pinned import, which would put a
+ * 14,000-row parse into a CMS flow test to prove one status transition.
+ */
+async function seedAdministrativeMapping(): Promise<{ datasetVersion: string }> {
+  const datasetVersion = 'cms-test-dataset';
+  const existing = await db
+    .select({ id: schema.administrativeDatasetVersions.id })
+    .from(schema.administrativeDatasetVersions)
+    .where(eq(schema.administrativeDatasetVersions.combinedDatasetVersion, datasetVersion));
+  if (existing.length > 0) return { datasetVersion };
+
+  const [dataset] = await db
+    .insert(schema.administrativeDatasetVersions)
+    .values({
+      combinedDatasetVersion: datasetVersion,
+      combinedChecksum: 'cms-test-checksum',
+      currentSourceVersion: 'test',
+      source: 'test',
+      effectiveDate: '2025-07-01',
+      status: 'PUBLISHED',
+      publishedAt: new Date(),
+    })
+    .returning();
+
+  await db.insert(schema.administrativeUnits).values([
+    {
+      datasetVersionId: dataset!.id,
+      code: '79',
+      name: 'Hồ Chí Minh',
+      fullName: 'Thành phố Hồ Chí Minh',
+      nameNormalized: 'ho chi minh',
+      fullNameNormalized: 'thanh pho ho chi minh',
+      unitType: 'MUNICIPALITY',
+      level: 'PROVINCE',
+      status: 'ACTIVE',
+      effectiveFrom: '2025-07-01',
+      source: 'test',
+      sourceVersion: 'test',
+    },
+    {
+      datasetVersionId: dataset!.id,
+      code: '26734',
+      name: 'Sài Gòn',
+      fullName: 'Phường Sài Gòn',
+      nameNormalized: 'sai gon',
+      fullNameNormalized: 'phuong sai gon',
+      unitType: 'WARD',
+      level: 'COMMUNE',
+      parentCode: '79',
+      status: 'ACTIVE',
+      effectiveFrom: '2025-07-01',
+      source: 'test',
+      sourceVersion: 'test',
+    },
+  ]);
+  return { datasetVersion };
+}

@@ -9,6 +9,7 @@ import {
 } from '@gogo/providers';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
+import { evaluatePlaceApproval } from '../../administrative/application/place-approval';
 import {
   APP_CONFIG,
   type PlatformConfig,
@@ -353,6 +354,16 @@ export class PlaceImportService {
     }
   }
 
+  /**
+   * ADM-009 (#462) — `autoPublish` is a request, not a permission.
+   *
+   * A place created here has never had its administrative mapping verified by
+   * anybody, so the shared approval invariant cannot pass at creation and the
+   * place lands in `community_submitted` to be resolved and reviewed. The flag
+   * is kept because it still expresses intent, and because the invariant is
+   * evaluated rather than assumed: the moment a path exists that creates a
+   * place with a verified mapping, this publishes it without further change.
+   */
   private async createPlace(details: ResolvedProviderPlace, autoPublish: boolean): Promise<string> {
     return this.db.transaction(async (tx) => {
       const [place] = await tx
@@ -360,7 +371,7 @@ export class PlaceImportService {
         .values({
           name: details.name,
           nameNormalized: 'set-by-trigger',
-          status: autoPublish ? 'published' : 'community_submitted',
+          status: 'community_submitted',
           geom: { x: details.lng, y: details.lat },
           addressText: details.addressText,
           rating: details.rating !== null ? details.rating.toFixed(2) : null,
@@ -370,6 +381,17 @@ export class PlaceImportService {
           freshnessCheckedAt: new Date(),
         })
         .returning();
+
+      if (autoPublish) {
+        const block = await evaluatePlaceApproval(tx, place!);
+        if (!block) {
+          await tx
+            .update(schema.places)
+            .set({ status: 'published' })
+            .where(eq(schema.places.id, place!.id));
+        }
+      }
+
       // #334 — Google provenance is written to `place_provider_sources`, the
       // table dedup and attribution both read. The old `place_sources` write
       // is gone with it, and so is `raw`: it carried a whole Details payload

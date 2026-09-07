@@ -1117,10 +1117,24 @@ describe('PI-BE-015/016 — processing, quota pause, publish RBAC', () => {
       payload: {},
     });
 
-    const [published] = await db
+    // ADM-009 (#462): a newly imported place is never published by the import —
+    // nobody has verified its administrative mapping — so it lands in `review`.
+    // This test is about what happens to a place that has *changed hands* while
+    // in circulation, so the precondition is set directly rather than by routing
+    // the import through a reviewer it is not testing.
+    const [imported] = await db
       .select()
       .from(schema.places)
       .where(eq(schema.places.name, 'Nhà Hàng Sen Việt'));
+    expect(imported!.status, 'the import ingests it, deferring publication').toBe('review');
+    await db
+      .update(schema.places)
+      .set({ status: 'published' })
+      .where(eq(schema.places.id, imported!.id));
+    const [published] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.id, imported!.id));
     expect(published!.status, 'precondition: it is published and being served').toBe('published');
 
     // The same Google id, describing a different business: a name sharing
@@ -1326,6 +1340,109 @@ describe('PI-BE-015/016 — processing, quota pause, publish RBAC', () => {
     const done = await imports.getJob(job.id);
     expect(done.rowsByStatus.unresolved).toBe(1);
     expect(done.status).toBe('failed');
+  });
+
+  /**
+   * ADM-009 (#462) — bulk import may not publish an administratively unverified
+   * place, and must say so rather than reporting it as published.
+   */
+  describe('publish_approved is a request, not a permission', () => {
+    it('ingests a new place into review and defers its publication', async () => {
+      const editor = await createAdmin('adm009-import-editor@gogo.local', 'editor');
+      const ops = await createAdmin('adm009-import-ops@gogo.local', 'ops_admin');
+      places.seed({
+        providerPlaceId: 'fake-adm009-defer',
+        name: 'Quán Chờ Duyệt',
+        lat: 10.78,
+        lng: 106.7,
+      });
+      const row =
+        'ADM9-1,Quán Chờ Duyệt,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-adm009-defer,cafe,,,';
+      const job = await createJob(editor.token, [row], 'publish_approved');
+      await api().inject({
+        method: 'POST',
+        url: `/v1/cms/place-imports/${job.id}/start`,
+        remoteAddress: ip(),
+        headers: auth(editor.token),
+      });
+      await imports.processJob(job.id);
+      await api().inject({
+        method: 'POST',
+        url: `/v1/cms/place-imports/${job.id}/publish`,
+        remoteAddress: ip(),
+        headers: auth(ops.token),
+        payload: {},
+      });
+
+      const [created] = await db
+        .select()
+        .from(schema.places)
+        .where(eq(schema.places.name, 'Quán Chờ Duyệt'));
+      // Ingested, in front of a reviewer, and not live.
+      expect(created!.status).toBe('review');
+      expect(created!.administrativeMappingStatus).toBe('UNMAPPED');
+
+      const detail = await api().inject({
+        method: 'GET',
+        url: `/v1/cms/place-imports/${job.id}`,
+        remoteAddress: ip(),
+        headers: auth(editor.token),
+      });
+      const publication = detail.json().publication;
+      // The result never calls a deferred row published.
+      expect(publication.published).toBe(0);
+      expect(publication.requested).toBe(1);
+      expect(publication.deferred).toBe(1);
+      // No administrative dataset exists in this suite, which is its own reason.
+      expect(publication.noActiveAdministrativeDataset + publication.mappingUnverified).toBe(1);
+
+      const [ingestRow] = await db
+        .select()
+        .from(schema.placeIngestRows)
+        .where(eq(schema.placeIngestRows.jobId, job.id));
+      expect(ingestRow!.publicationOutcome).not.toBe('published');
+      expect(ingestRow!.status).toBe('imported');
+
+      // The deferral is audited as what it is.
+      const audits = await db
+        .select()
+        .from(schema.auditLogs)
+        .where(eq(schema.auditLogs.action, 'place.publication_deferred'));
+      expect(audits.length).toBeGreaterThan(0);
+    }, 120_000);
+
+    it('does not fail the import merely because publication was deferred', async () => {
+      const editor = await createAdmin('adm009-import-editor2@gogo.local', 'editor');
+      places.seed({
+        providerPlaceId: 'fake-adm009-ok',
+        name: 'Quán Vẫn Nhập',
+        lat: 10.78,
+        lng: 106.7,
+      });
+      const row =
+        'ADM9-2,Quán Vẫn Nhập,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-adm009-ok,cafe,,,';
+      const job = await createJob(editor.token, [row], 'publish_approved');
+      await api().inject({
+        method: 'POST',
+        url: `/v1/cms/place-imports/${job.id}/start`,
+        remoteAddress: ip(),
+        headers: auth(editor.token),
+      });
+      await imports.processJob(job.id);
+
+      const detail = await api().inject({
+        method: 'GET',
+        url: `/v1/cms/place-imports/${job.id}`,
+        remoteAddress: ip(),
+        headers: auth(editor.token),
+      });
+      // A deferred publication is a successful import of a place that is not yet
+      // live, not a failed row.
+      expect(detail.json().totals.failed).toBe(0);
+      expect(
+        detail.json().rowsByStatus.ready ?? detail.json().rowsByStatus.imported,
+      ).toBeGreaterThan(0);
+    }, 120_000);
   });
 });
 

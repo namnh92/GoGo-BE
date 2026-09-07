@@ -1,6 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { schema, type Db, type IngestMessage, type MatchCandidate } from '@gogo/database';
 import {
   ProviderConfigurationError,
@@ -43,6 +43,11 @@ import { PlaceDedupService, type KnownProviderPlace } from './place-dedup.servic
 import { PlaceResolverService, type ResolveOutcome } from './place-resolver.service';
 import { writeAudit } from '../../shared/audit';
 import { invalidateTravelOnMove } from '../../shared/place-relocation';
+import {
+  evaluatePlaceApproval,
+  publicationOutcomeFor,
+  type PublicationOutcome,
+} from '../../administrative/application/place-approval';
 
 export type ImportMode = 'dry_run' | 'create_drafts' | 'publish_approved' | 'update_existing';
 
@@ -454,6 +459,41 @@ export class PlaceImportJobService {
       .where(eq(schema.placeIngestRows.jobId, jobId))
       .groupBy(schema.placeIngestRows.status);
 
+    /**
+     * ADM-009 (#462): what happened to the publication the mode asked for.
+     *
+     * Kept apart from `rowsByStatus` because they answer different questions.
+     * A row can be `imported` and not published, and a result that folded the
+     * two together would tell the operator their places are live when they are
+     * waiting for a reviewer.
+     */
+    const publicationRows = await this.db
+      .select({
+        outcome: schema.placeIngestRows.publicationOutcome,
+        n: sql<number>`count(*)::int`,
+      })
+      .from(schema.placeIngestRows)
+      .where(
+        and(
+          eq(schema.placeIngestRows.jobId, jobId),
+          isNotNull(schema.placeIngestRows.publicationOutcome),
+        ),
+      )
+      .groupBy(schema.placeIngestRows.publicationOutcome);
+    const byOutcome = Object.fromEntries(publicationRows.map((r) => [r.outcome!, r.n]));
+    const publication = {
+      /** Rows whose mode asked for publication. */
+      requested: publicationRows.reduce((sum, r) => sum + r.n, 0),
+      published: byOutcome.published ?? 0,
+      mappingUnverified: byOutcome.deferred_mapping_unverified ?? 0,
+      mappingInvalid: byOutcome.deferred_mapping_invalid ?? 0,
+      noActiveAdministrativeDataset: byOutcome.deferred_no_active_dataset ?? 0,
+      deferred:
+        (byOutcome.deferred_mapping_unverified ?? 0) +
+        (byOutcome.deferred_mapping_invalid ?? 0) +
+        (byOutcome.deferred_no_active_dataset ?? 0),
+    };
+
     return {
       id: job.id,
       status: job.status,
@@ -469,6 +509,7 @@ export class PlaceImportJobService {
         failed: job.failedRows,
       },
       rowsByStatus: Object.fromEntries(counts.map((c) => [c.status, c.n])),
+      publication,
       // Parse-time diagnostics survive the navigation away from the wizard.
       unmappedHeaders: job.unmappedHeaders,
       missingRequiredColumns: job.missingRequiredColumns,
@@ -1015,9 +1056,25 @@ export class PlaceImportJobService {
         await this.updateExisting(rowId, verdict.placeId, details, context.normalized, base);
         return;
       }
+      // ADM-009 (#462): a `publish_approved` row that matched an existing place
+      // is still a duplicate — the import creates nothing — but the operator
+      // did ask for it to be live. An existing place whose mapping a reviewer
+      // already verified, and which is still valid against the active dataset,
+      // is the one case a bulk row can legitimately publish. Decided by the
+      // shared invariant inside its own transaction, never by the mode.
+      const duplicatePublication =
+        context?.mode === 'publish_approved' ? await this.settlePublication(verdict.placeId) : null;
+      if (duplicatePublication === 'published') {
+        await this.dedup.emitReindex(verdict.placeId, 'published');
+      }
       await this.db
         .update(schema.placeIngestRows)
-        .set({ ...base, status: 'duplicate', matchedPlaceId: verdict.placeId })
+        .set({
+          ...base,
+          status: 'duplicate',
+          matchedPlaceId: verdict.placeId,
+          ...(duplicatePublication ? { publicationOutcome: duplicatePublication } : {}),
+        })
         .where(eq(schema.placeIngestRows.id, rowId));
       this.countRow('duplicate', 'PLACE_ALREADY_LINKED');
       this.metrics.increment('place_duplicate_candidates_total', { kind: 'provider_id' });
@@ -1518,7 +1575,17 @@ export class PlaceImportJobService {
     }
     const normalized = normalizedOf(row);
     const score = await this.resolver.scoreFor(details, null, normalized.categoryKey ?? null);
-    const status = mode === 'publish_approved' ? 'published' : 'draft';
+    /**
+     * ADM-009 (#462): `publish_approved` is a request, not a permission.
+     *
+     * A place created here has never been verified by anybody, so the approval
+     * invariant cannot pass — and the honest outcome is to ingest it into the
+     * moderation queue rather than publish it. `review` rather than `draft`
+     * because the operator did ask for it to go live: it belongs in front of a
+     * reviewer, not in a drawer.
+     */
+    const wantsPublication = mode === 'publish_approved';
+    const status = wantsPublication ? 'review' : 'draft';
 
     const placeId = await this.db.transaction(async (tx) => {
       const [place] = await tx
@@ -1594,12 +1661,73 @@ export class PlaceImportJobService {
       derivedScore: score,
       fetchTier: details.fetchTier,
     });
+    // ADM-009: the row records what happened to its publication request, so a
+    // result can never call a deferred row published.
+    const publication = wantsPublication ? await this.settlePublication(placeId) : null;
     await this.db
       .update(schema.placeIngestRows)
-      .set({ status: 'imported', matchedPlaceId: placeId, updatedAt: new Date() })
+      .set({
+        status: 'imported',
+        matchedPlaceId: placeId,
+        ...(publication ? { publicationOutcome: publication } : {}),
+        updatedAt: new Date(),
+      })
       .where(eq(schema.placeIngestRows.id, row.id));
-    if (status === 'published') await this.dedup.emitReindex(placeId, 'published');
+    if (publication === 'published') await this.dedup.emitReindex(placeId, 'published');
     return placeId;
+  }
+
+  /**
+   * ADM-009 (#462) — publish this place if, and only if, the shared approval
+   * invariant permits it.
+   *
+   * Re-read and decided inside the publishing transaction, against the dataset
+   * that is active at that moment: a mapping can be rejected, a reviewer can
+   * change their mind and a dataset can publish between a row being resolved
+   * and this running. Nothing about the import authorises publication — not the
+   * mode, not the operator, not codes supplied in the file.
+   *
+   * A refusal is not a row failure. The place is ingested and waiting in
+   * moderation, which is a successful import of a place that is not yet live.
+   */
+  private async settlePublication(placeId: string): Promise<PublicationOutcome> {
+    return this.db.transaction(async (tx) => {
+      const [place] = await tx
+        .select()
+        .from(schema.places)
+        .where(eq(schema.places.id, placeId))
+        .limit(1)
+        .for('update');
+      if (!place) return 'deferred_mapping_unverified';
+
+      const block = await evaluatePlaceApproval(tx, place);
+      const outcome = publicationOutcomeFor(block);
+      if (outcome === 'published' && place.status !== 'published') {
+        await tx
+          .update(schema.places)
+          .set({ status: 'published', updatedAt: sql`now()` })
+          .where(eq(schema.places.id, placeId));
+      }
+      await writeAudit(tx, {
+        actorType: 'system',
+        actorId: null,
+        action: outcome === 'published' ? 'place.status_changed' : 'place.publication_deferred',
+        resourceType: 'place',
+        resourceId: placeId,
+        diff: {
+          source: 'cms_import',
+          outcome,
+          ...(block ? { block } : {}),
+          mapping: {
+            status: place.administrativeMappingStatus,
+            provinceCode: place.provinceCode,
+            communeCode: place.communeCode,
+            datasetVersion: place.administrativeDatasetVersion,
+          },
+        },
+      });
+      return outcome;
+    });
   }
 
   // --- helpers -------------------------------------------------------------

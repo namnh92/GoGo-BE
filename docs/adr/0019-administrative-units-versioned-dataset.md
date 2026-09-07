@@ -218,11 +218,61 @@ can never yield `VERIFIED`; manual CMS confirmation yields `VERIFIED` plus an
 audit event; provider address text is preserved on every path. Vietnamese
 normalization reuses `normalizeVietnamese()` — one normalizer, not two.
 
-**MVP approval policy:** approval requires a valid hierarchy and `VERIFIED`,
-until measured resolver accuracy justifies relaxing it. `UNMAPPED`,
-`NEEDS_REVIEW`, `REJECTED` and `STALE` block approval. Draft and import
-ingestion may remain unresolved. Approval revalidates the mapping against the
-_currently active_ version rather than trusting the stored value.
+**MVP approval policy (implemented in ADM-009, #462):** approval requires
+`VERIFIED` and a hierarchy that still holds. `UNMAPPED`, **`AUTO_MATCHED`**,
+`NEEDS_REVIEW`, `REJECTED` and `STALE` all block it — `AUTO_MATCHED` included,
+because it is the resolver's answer and the whole point of a review queue is
+that the machine's answer is not the decision. Draft and import ingestion may
+remain unresolved.
+
+Approval revalidates against the _currently active_ dataset rather than
+trusting the stored value — but on **identity**, not on the version string. Every
+publication mints a new combined version; requiring the stamp to match would
+un-approve the whole catalogue on every release and demand it be re-verified by
+hand, which is not a stricter policy but an unusable one. So the gate asks
+whether the commune still exists, is still current, and still sits under the
+mapped province. The version the reviewer worked against is kept as provenance
+and reported in the remediation view.
+
+The gate lives inside `transitionPlace`'s transaction, which is now one
+transaction for the first time: the place is locked, the mapping and the active
+dataset are re-read, and the commune is re-resolved, all before the status
+flips. A policy checked before the transaction is one a concurrent publication,
+a mapping rejection or another reviewer can invalidate in between.
+
+**The invariant governs every path, not one endpoint.** It lives in one shared
+guard — `evaluatePlaceApproval` / `assertPlaceApprovable` — and every write that
+can make a place `published` calls it inside the transaction that performs the
+transition:
+
+| path                                  | how                                                                         |
+| ------------------------------------- | --------------------------------------------------------------------------- |
+| `transitionPlace` (CMS status change) | `assertPlaceApprovable` before the update                                   |
+| CMS bulk import (`publish_approved`)  | `settlePublication` → `evaluatePlaceApproval`                               |
+| link import (`autoPublish`)           | `evaluatePlaceApproval` before promoting the new row                        |
+| `libs/database/src/seed.ts`           | development fixture, builds a database directly, never a product write path |
+
+A unit test asserts that set: the files able to write a `place_status` are
+enumerated, and a new one fails the build until somebody decides which list it
+belongs in. The policy itself is defined once — a second copy would drift, and
+the reason this section exists is that the bulk import had already published
+places for months without consulting it.
+
+**Bulk ingestion stays; bulk _publication_ becomes conditional.** A place the
+import creates has never been verified by anybody, so its publication is
+deferred and the place lands in `review` — in front of a reviewer, because the
+operator did ask for it to go live — rather than in a drawer. The row records
+why (`deferred_mapping_unverified`, `deferred_mapping_invalid`,
+`deferred_no_active_dataset`), the job result reports `requested`, `published`
+and `deferred` separately from `rowsByStatus`, and a deferral is never counted
+as a failure: it is a successful import of a place that is not yet live. The one
+bulk row that can publish is one matching an **existing** place whose mapping a
+reviewer already verified and which is still valid against the active dataset.
+
+**An environment cannot publish any place until an administrative dataset is
+published there** — there is nothing to validate a mapping against otherwise,
+and the guard says so with `ADMINISTRATIVE_DATASET_UNAVAILABLE` rather than
+letting the place through.
 
 #### 7a. What the resolver may write, and what belongs to a person (ADM-006, #459)
 
@@ -387,6 +437,35 @@ One consequence worth recording, found by the dry-run/execute equality test: an
 that is already `UNMAPPED` is therefore _unchanged_ by it. Comparing against the
 dataset version regardless made the resolver report a change the write path then
 correctly declined to make.
+
+#### 7d. Moderation: who may write what (ADM-009, #462)
+
+`VERIFIED` has exactly one writer — a moderator, through the moderation API.
+The resolver may not write it, the backfill may not write it, and neither may
+an editor: the person who decides a place belongs in the catalogue is not the
+person who certifies where it is. `super_admin` bypasses both, audibly.
+
+| action                                      | role                                 |
+| ------------------------------------------- | ------------------------------------ |
+| read the queue, read one mapping's evidence | rank ≥ `moderator` (so `editor` too) |
+| verify · reject · correct · rematch         | exact `moderator`                    |
+| reconcile against the active dataset        | exact `ops_admin`                    |
+| approve the place                           | exact `editor`, as it already was    |
+
+Every decision re-reads its row `FOR UPDATE`, re-reads the active dataset,
+re-checks the hierarchy and requires `expectedUpdatedAt` — a reviewer's screen
+is a photograph, and between the photograph and the click a dataset can publish
+and another reviewer can decide.
+
+**Attribution follows the decision.** Verification sets
+`administrative_mapped_by`; a rematch clears it, because the requester has not
+verified anything and the audit says so; and a `STALE` row **keeps** it, because
+that person did verify the stored mapping — `STALE` says the verification is no
+longer current, not that it never happened. The reconciler is named separately
+in the audit so the log can never be read as "this person verified it".
+
+No confidence number is written by a manual verification. A person's judgement
+is not a probability; `VERIFIED` plus their identity is the whole claim.
 
 ### 8. The cache is in-process, version-keyed, behind a port. Redis is not used.
 

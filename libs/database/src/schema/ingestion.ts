@@ -131,10 +131,27 @@ export type MatchCandidate = {
   confidence: number;
 };
 
+/**
+ * ADM-009 (#462) — why a row was, or was not, published.
+ *
+ * NULL means the row never asked to be. A new imported place has never been
+ * verified by anybody, so its publication is deferred rather than performed,
+ * and a result that called those rows "published" would be lying to whoever
+ * ran the import.
+ */
+export const ingestPublicationOutcome = pgEnum('ingest_publication_outcome', [
+  'published',
+  'deferred_mapping_unverified',
+  'deferred_mapping_invalid',
+  'deferred_no_active_dataset',
+]);
+
 export const placeIngestRows = pgTable(
   'place_ingest_rows',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    /** ADM-009: set only on rows whose mode asked for publication. */
+    publicationOutcome: ingestPublicationOutcome('publication_outcome'),
     jobId: uuid('job_id')
       .notNull()
       .references(() => placeIngestJobs.id, { onDelete: 'cascade' }),
