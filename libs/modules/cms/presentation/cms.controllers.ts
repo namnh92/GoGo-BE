@@ -714,10 +714,33 @@ const placeCreateSchema = placeEditSchema
  * Same body as the public `POST /places/resolve-google-maps-link`, minus
  * `roomId`: the console is not adding to anyone's plan.
  */
-const resolveLinkSchema = z.object({
-  url: z.string().trim().url().max(2000),
-  cityHint: z.string().trim().max(80).optional(),
-});
+const resolveLinkSchema = z
+  .object({
+    url: z.string().trim().url().max(2000).optional(),
+    /**
+     * #469 — the branch the editor picked out of a `CANDIDATE_SELECTION`.
+     * Resolving one is the same question as resolving a link that named it
+     * outright, so it takes the same route and answers the same shape.
+     */
+    googlePlaceId: z
+      .string()
+      .trim()
+      .regex(/^[\w-]{6,255}$/, 'not a Google Place ID')
+      .optional(),
+    cityHint: z.string().trim().max(80).optional(),
+  })
+  .superRefine((body, ctx) => {
+    const given = [body.url, body.googlePlaceId].filter((v) => v !== undefined).length;
+    if (given === 1) return;
+    // Both would mean two different questions in one request and no way to say
+    // which was answered; neither is an empty request wearing a 201.
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['url'],
+      message:
+        given === 0 ? 'url or googlePlaceId is required' : 'send url or googlePlaceId, not both',
+    });
+  });
 const placeStatusSchema = z.object({
   status: z.enum(['draft', 'community_submitted', 'review', 'published', 'suspended', 'archived']),
 });

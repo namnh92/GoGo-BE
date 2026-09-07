@@ -56,6 +56,44 @@ export type ResolveLinkResponse = {
     { googlePlaceId: string; name: string; address: string; confidence: number }[] | undefined;
 };
 
+/**
+ * Every outcome that is not one identified place, in the shape `/v1` promises.
+ *
+ * Shared by both doors of `resolveLink` (#469). `NEEDS_CONFIRMATION` from a
+ * chosen Place ID should not happen — `resolveByProviderId` matches on the id
+ * itself — but the type admits it, and turning an unexpected outcome into a
+ * candidate list the client already knows how to render beats asserting it away
+ * and throwing on the day it happens.
+ */
+function undecided(outcome: {
+  status: 'UNRESOLVED' | 'NEEDS_CONFIRMATION';
+  reasonCode?: string;
+  decision?: {
+    reasons: string[];
+    best?: { confidence: number } | undefined;
+    candidates: {
+      target: { googlePlaceId: string; name: string; address: string };
+      confidence: number;
+    }[];
+  };
+}): ResolveLinkResponse {
+  if (outcome.status === 'UNRESOLVED') {
+    return { status: 'UNRESOLVED', reasonCodes: [outcome.reasonCode ?? 'LOW_CONFIDENCE'] };
+  }
+  const decision = outcome.decision;
+  return {
+    status: 'CANDIDATE_SELECTION',
+    reasonCodes: decision?.reasons ?? [],
+    matchConfidence: decision?.best?.confidence,
+    candidates: (decision?.candidates ?? []).map((c) => ({
+      googlePlaceId: c.target.googlePlaceId,
+      name: c.target.name,
+      address: c.target.address,
+      confidence: c.confidence,
+    })),
+  };
+}
+
 function iso(value: Date | string | null | undefined): string | undefined {
   if (value === null || value === undefined) return undefined;
   const date = value instanceof Date ? value : new Date(value);
@@ -108,14 +146,42 @@ export class PlaceSubmissionService {
     });
   }
 
+  /**
+   * #469 — the second door.
+   *
+   * `CANDIDATE_SELECTION` hands a client three real Google Place IDs and, until
+   * this, no way to act on one. That answer is usually right: three places
+   * inside one tower are three places, and `decideMatch` deliberately refuses
+   * to auto-pick between candidates within 0.05 of each other. But the spec has
+   * always said a person picks (§11.3 step 5, §11.8), and picking is a
+   * resolution — so it resolves through here rather than through a second
+   * endpoint that would drift from this one.
+   *
+   * Exactly one of `url` and `googlePlaceId`; the controller rejects both and
+   * neither.
+   */
   async resolveLink(input: {
-    url: string;
+    url?: string | undefined;
+    googlePlaceId?: string | undefined;
     cityHint?: string | undefined;
   }): Promise<ResolveLinkResponse> {
+    if (input.googlePlaceId !== undefined) {
+      const known = await this.knownIdAnswer(input.googlePlaceId);
+      if (known) return known;
+
+      const chosen = await this.resolver
+        .resolveByProviderId(input.googlePlaceId, 'quality')
+        .catch((err: unknown) => {
+          throw placeProviderUnavailable(err);
+        });
+      if (chosen.status !== 'RESOLVED') return undecided(chosen);
+      return this.finishResolution(chosen.details, chosen.decision, input.cityHint);
+    }
+
     // Learn which place the link names before deciding whether to pay for it.
     // A short link still costs its one redirect hop — that hop *is* how the id
     // is learned — but no Places request has happened yet (#337, plan §4 C).
-    const identified = await this.resolver.identifyUrl(input.url).catch((err: unknown) => {
+    const identified = await this.resolver.identifyUrl(input.url!).catch((err: unknown) => {
       throw placeProviderUnavailable(err);
     });
     if (!identified.ok) {
@@ -123,44 +189,9 @@ export class PlaceSubmissionService {
     }
 
     const knownId = identified.value.providerPlaceId;
-    if (knownId && (await this.dbFirstEnabled())) {
-      const known = await this.dedup.knownProviderPlace(knownId, {
-        verificationWindowSeconds: this.config.PLACE_RESOLUTION_TTL_S,
-      });
-      if (known.kind === 'CONFLICT') {
-        return { status: 'UNRESOLVED', reasonCodes: ['PLACE_IDENTITY_CONFLICT'] };
-      }
-      if (known.kind === 'KNOWN') {
-        this.metrics.increment('place_dbfirst_hit_total', { path: 'resolve_link' });
-        // No `resolutionToken`: nothing was verified with Google in this
-        // request, and a token minted from a stored row would be exactly the
-        // cross-request snapshot ADR-0006 §9.5 forbids, wearing a signature.
-        return {
-          status: 'ALREADY_EXISTS',
-          existingPlaceId: known.place.placeId,
-          reasonCodes: ['PLACE_ALREADY_LINKED', 'DB_FIRST'],
-          candidate: {
-            googlePlaceId: known.place.googlePlaceId,
-            name: known.place.name,
-            address: known.place.addressText,
-            location: { lat: known.place.lat, lng: known.place.lng },
-            googleRating: known.place.rating,
-            googleRatingCount: known.place.ratingCount,
-            googleScore: known.place.derivedScore,
-            businessStatus: known.place.businessStatus,
-            source: 'google_places' as const,
-            // The stored fetch time, not `now()`. Saying "just now" about a row
-            // last refreshed three weeks ago is the one lie this path could
-            // tell, and freshness is what the user is judging the answer on.
-            fetchedAt: known.place.fetchedAt,
-            // #339 — a stored row may carry the old wording; the user sees one.
-            attributions: known.place.attribution
-              ? [normalizeGoogleAttribution(known.place.attribution)]
-              : [],
-          },
-        };
-      }
-      this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
+    if (knownId) {
+      const known = await this.knownIdAnswer(knownId);
+      if (known) return known;
     }
 
     // `quality`, and this is the one preview path that earns Enterprise (#338).
@@ -178,28 +209,28 @@ export class PlaceSubmissionService {
         throw placeProviderUnavailable(err);
       });
 
-    if (outcome.status === 'UNRESOLVED') {
-      return { status: 'UNRESOLVED', reasonCodes: [outcome.reasonCode] };
-    }
-    if (outcome.status === 'NEEDS_CONFIRMATION') {
-      return {
-        status: 'CANDIDATE_SELECTION',
-        reasonCodes: outcome.decision.reasons,
-        matchConfidence: outcome.decision.best?.confidence,
-        candidates: outcome.decision.candidates.map((c) => ({
-          googlePlaceId: c.target.googlePlaceId,
-          name: c.target.name,
-          address: c.target.address,
-          confidence: c.confidence,
-        })),
-      };
-    }
+    if (outcome.status !== 'RESOLVED') return undecided(outcome);
 
-    const details = outcome.details;
+    return this.finishResolution(outcome.details, outcome.decision, input.cityHint);
+  }
+
+  /**
+   * Everything after Google has answered about one specific place: the moved-id
+   * report, the dedup verdict, the score and the envelope.
+   *
+   * One copy, because the two doors must agree. A branch the editor picked and
+   * a link that named the same place outright have to produce the same answer —
+   * the same `ALREADY_EXISTS`, the same conflict refusal, the same token.
+   */
+  private async finishResolution(
+    details: ResolvedProviderPlace,
+    decision: { best?: { confidence: number } | undefined; reasons: string[] },
+    cityHint: string | undefined,
+  ): Promise<ResolveLinkResponse> {
     // #334 — Google can answer about the successor of a place that moved.
     this.dedup.reportIdMismatch(details, 'submission');
     const verdict = await this.dedup.check(details);
-    const score = await this.resolver.scoreFor(details, input.cityHint ?? null, null);
+    const score = await this.resolver.scoreFor(details, cityHint ?? null, null);
     const candidate = this.toCandidate(details, score);
 
     if (verdict.kind === 'IDENTITY_CONFLICT') {
@@ -215,19 +246,99 @@ export class PlaceSubmissionService {
       return {
         status: 'ALREADY_EXISTS',
         existingPlaceId: verdict.placeId,
-        matchConfidence: outcome.decision.best?.confidence,
-        reasonCodes: outcome.decision.reasons,
+        matchConfidence: decision.best?.confidence,
+        reasonCodes: decision.reasons,
         candidate,
       };
     }
     return {
       status: 'RESOLVED',
-      matchConfidence: outcome.decision.best?.confidence,
-      reasonCodes: outcome.decision.reasons,
+      matchConfidence: decision.best?.confidence,
+      reasonCodes: decision.reasons,
       candidate,
       ...(verdict.kind === 'MERGE_CANDIDATE' ? { existingPlaceId: verdict.placeId } : {}),
       ...(await this.mintAttestation(details)),
     };
+  }
+
+  /**
+   * What the catalogue already knows about a Google Place ID, from rows GoGo
+   * holds — no provider request (#337). `null` means "nothing decided here,
+   * carry on and ask Google".
+   *
+   * Shared by both doors: a link that carries an id and a branch the editor
+   * picked are the same question, and answering them differently would mean a
+   * place that opens from a pasted link but duplicates from a chosen one.
+   */
+  private async knownIdAnswer(googlePlaceId: string): Promise<ResolveLinkResponse | null> {
+    if (!(await this.dbFirstEnabled())) return null;
+    const known = await this.dedup.knownProviderPlace(googlePlaceId, {
+      verificationWindowSeconds: this.config.PLACE_RESOLUTION_TTL_S,
+    });
+    if (known.kind === 'CONFLICT') {
+      return { status: 'UNRESOLVED', reasonCodes: ['PLACE_IDENTITY_CONFLICT'] };
+    }
+    if (known.kind === 'KNOWN') {
+      this.metrics.increment('place_dbfirst_hit_total', { path: 'resolve_link' });
+      // No `resolutionToken`: nothing was verified with Google in this
+      // request, and a token minted from a stored row would be exactly the
+      // cross-request snapshot ADR-0006 §9.5 forbids, wearing a signature.
+      return {
+        status: 'ALREADY_EXISTS',
+        existingPlaceId: known.place.placeId,
+        reasonCodes: ['PLACE_ALREADY_LINKED', 'DB_FIRST'],
+        candidate: {
+          googlePlaceId: known.place.googlePlaceId,
+          name: known.place.name,
+          address: known.place.addressText,
+          location: { lat: known.place.lat, lng: known.place.lng },
+          googleRating: known.place.rating,
+          googleRatingCount: known.place.ratingCount,
+          googleScore: known.place.derivedScore,
+          businessStatus: known.place.businessStatus,
+          source: 'google_places' as const,
+          // The stored fetch time, not `now()`. Saying "just now" about a row
+          // last refreshed three weeks ago is the one lie this path could
+          // tell, and freshness is what the user is judging the answer on.
+          fetchedAt: known.place.fetchedAt,
+          // #339 — a stored row may carry the old wording; the user sees one.
+          attributions: known.place.attribution
+            ? [normalizeGoogleAttribution(known.place.attribution)]
+            : [],
+        },
+      };
+    }
+    /**
+     * Identity resolved, no `place_provider_sources` row. That used to mean a
+     * legacy `place_sources` link the backfill had not reached; since #465 it
+     * also means a place an editor created from a link, which writes the
+     * identity and nothing else.
+     *
+     * The catalogue holds this place either way, and saying so is the whole
+     * answer. Asking Google instead would answer `RESOLVED`, invite the editor
+     * to create it, and hand them a `409 PLACE_ALREADY_LINKED` at the end of
+     * the form — a round trip and a Details call to reach a fact already in the
+     * database.
+     *
+     * No `candidate`: there is no provider row, so there is no rating and no
+     * `fetchedAt` that could be published honestly. `/v1` has always allowed
+     * `ALREADY_EXISTS` without one, and both clients render the place-exists
+     * panel from `existingPlaceId` alone.
+     */
+    if (known.reason === 'legacy') {
+      const identity = await this.dedup.resolveGoogleIdentity(googlePlaceId);
+      if (identity.kind === 'RESOLVED') {
+        this.metrics.increment('place_dbfirst_hit_total', { path: 'resolve_link_identity' });
+        return {
+          status: 'ALREADY_EXISTS',
+          existingPlaceId: identity.placeId,
+          reasonCodes: ['PLACE_ALREADY_LINKED', 'DB_FIRST'],
+        };
+      }
+    }
+
+    this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
+    return null;
   }
 
   /**
