@@ -1,6 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
+import { PlaceDedupService } from '../../ingestion/application/place-dedup.service';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { AppError } from '../../shared/app-error';
 import { invalidateTravelOnMove } from '../../shared/place-relocation';
@@ -71,6 +72,25 @@ export type PlaceCreateInput = Omit<
   lng: number;
   /** The editor has seen the near-duplicates and says this is a different place. */
   allowDuplicate?: boolean | undefined;
+  /**
+   * #465 — the Google record this place is the GoGo copy of, from the preceding
+   * `POST /cms/places/resolve-link`. Identity only: it becomes a `place_sources`
+   * row, which is what puts the place inside provider dedup and makes a later
+   * refresh possible at all. ADR-0006 §9.3 permits storing the id indefinitely.
+   */
+  googlePlaceId?: string | undefined;
+  /**
+   * Which fields still hold the value the resolution filled in — the ones the
+   * editor looked at and left alone. They are recorded `google_derived`, not
+   * `editorial`, because that is what happened.
+   *
+   * The client is the only thing that knows this: the server holds no snapshot
+   * of the preview to diff against, deliberately (ADR-0006 §9.5 — no
+   * cross-request provider content). An editor who retypes a name over the top
+   * of Google's owns it, and the console drops the field from this list when
+   * they do.
+   */
+  googleDerivedFields?: readonly GoogleDerivableField[] | undefined;
 };
 
 /**
@@ -87,9 +107,24 @@ export const PROVENANCE_FIELDS = [
   'district',
   'phone',
   'website',
+  /**
+   * #465 — the position, and the reason add-by-link exists. A coordinate is
+   * exactly the kind of value both a provider and an editor could plausibly
+   * have written, and the difference between "Google says this is where it is"
+   * and "someone typed 10.7769, 106.7009" is the difference between a pin on
+   * the door and a pin on the next street.
+   */
+  'geom',
 ] as const;
 export type ProvenanceField = (typeof PROVENANCE_FIELDS)[number];
 
+/**
+ * Input field name to the column its provenance is recorded against.
+ *
+ * `lat` and `lng` are two halves of one column, so both map to `geom` and the
+ * callers de-duplicate — `place_field_provenance` is keyed on
+ * (place_id, field), and inserting the pair twice would violate it.
+ */
 const PROVENANCE_COLUMN: Record<string, ProvenanceField> = {
   name: 'name',
   description: 'description',
@@ -99,7 +134,21 @@ const PROVENANCE_COLUMN: Record<string, ProvenanceField> = {
   district: 'district',
   phone: 'phone',
   website: 'website',
+  lat: 'geom',
+  lng: 'geom',
 };
+
+/**
+ * The fields a Google Maps resolution can legitimately fill.
+ *
+ * Deliberately short. `POST /cms/places/resolve-link` returns a rating and a
+ * review count too, and neither is here: per GOGO_PRODUCT_DATA_ARCHITECTURE.md
+ * §2 canonical name/address/geo are GoGo-owned and persist, while Google
+ * rating/review/photo/hours are "No by default". The preview shows them so an
+ * editor can tell two branches of one chain apart; nothing writes them.
+ */
+export const GOOGLE_DERIVABLE_FIELDS = ['name', 'addressText', 'lat', 'lng'] as const;
+export type GoogleDerivableField = (typeof GOOGLE_DERIVABLE_FIELDS)[number];
 
 export type HoursWriteEntry = HoursEntry & { source?: 'provider' | 'editor' | undefined };
 
@@ -336,6 +385,13 @@ export function decodePlaceCursor(cursor: string): { value: string; id: string }
 export class CmsCatalogService {
   constructor(
     @Inject(DB) private readonly db: Db,
+    /**
+     * #465 — identity lookups for add-by-link. Reused rather than reimplemented
+     * because `resolveGoogleIdentity` reads both `place_provider_sources` and
+     * the legacy `place_sources`, and a second copy of that query would drift
+     * away from the one dedup enforces.
+     */
+    private readonly dedup: PlaceDedupService,
     @Optional()
     @Inject(APP_CONFIG)
     private readonly config?: ProvenanceConfig & Partial<MediaConfig>,
@@ -690,6 +746,40 @@ export class CmsCatalogService {
     const contact = this.normalizeContact(input);
 
     /**
+     * #465 — identity beats similarity. When the editor arrived by link, the
+     * catalogue already knows whether that Google record belongs to a place,
+     * and answering "you already have this, here it is" is both cheaper and
+     * more useful than the fuzzy 150 m / 0.5-similarity answer below, which
+     * would miss it outright for a place that moved or was renamed.
+     *
+     * `allowDuplicate` does not open this gate. Two GoGo places may legitimately
+     * share a name and a street corner; they may not share one Google record —
+     * `place_sources_provider_external_unique` would reject the second insert
+     * anyway, and a 409 naming the existing place beats a constraint violation.
+     */
+    if (input.googlePlaceId !== undefined) {
+      const identity = await this.dedup.resolveGoogleIdentity(input.googlePlaceId);
+      if (identity.kind === 'CONFLICT') {
+        throw AppError.conflict(
+          'PLACE_IDENTITY_CONFLICT',
+          'Google ID này đang bị hai địa điểm cùng nhận — cần gộp trước khi thêm mới',
+          identity.placeIds.map((id) => ({
+            field: 'googlePlaceId',
+            code: 'conflict',
+            message: id,
+          })),
+        );
+      }
+      if (identity.kind !== 'NONE') {
+        throw AppError.conflict(
+          'PLACE_ALREADY_LINKED',
+          'GoGo đã có địa điểm gắn với link Google này',
+          [{ field: 'googlePlaceId', code: 'already_linked', message: identity.placeId }],
+        );
+      }
+    }
+
+    /**
      * Same rule the duplicate queue uses — 150 m apart and a name similarity
      * over 0.5 — applied before the row exists rather than after. A near-copy
      * of a place already in the catalogue is the failure mode of manual entry,
@@ -724,9 +814,19 @@ export class CmsCatalogService {
       }
     }
 
-    const claimed = Object.keys(input)
-      .filter((key) => PROVENANCE_COLUMN[key] !== undefined)
-      .map((key) => PROVENANCE_COLUMN[key]!);
+    // `lat` and `lng` both name `geom`, so the pair collapses to one row.
+    const claimed = [
+      ...new Set(
+        Object.keys(input)
+          .filter((key) => PROVENANCE_COLUMN[key] !== undefined)
+          .map((key) => PROVENANCE_COLUMN[key]!),
+      ),
+    ];
+    const derived = new Set(
+      input.googlePlaceId === undefined
+        ? []
+        : (input.googleDerivedFields ?? []).map((key) => PROVENANCE_COLUMN[key]!),
+    );
 
     const created = await this.db.transaction(async (tx) => {
       const [place] = await tx
@@ -761,15 +861,42 @@ export class CmsCatalogService {
           .onConflictDoNothing();
       }
 
+      /**
+       * The link is what puts the place inside provider dedup. Written in the
+       * same transaction as the row it identifies, so a failure after the
+       * insert cannot leave a place claiming a Google id nothing recorded — or
+       * a `place_sources` row pointing at a place that does not exist.
+       */
+      if (input.googlePlaceId !== undefined) {
+        await tx.insert(schema.placeSources).values({
+          placeId: place!.id,
+          provider: 'google',
+          externalId: input.googlePlaceId,
+        });
+      }
+
+      /**
+       * A value the editor typed is their own claim and is recorded
+       * `editorial` — including one they read off the preview and retyped,
+       * because GOGO_PRODUCT_DATA_ARCHITECTURE.md is explicit that copying does
+       * not transfer ownership. A value *applied* from the preview and left
+       * alone is `google_derived`, which is the case this enum member was
+       * reserved for, and it carries the Google id as its reference so a later
+       * refresh knows which fields it may overwrite without arguing with a
+       * person.
+       */
       if (claimed.length > 0) {
         await tx.insert(schema.placeFieldProvenance).values(
-          claimed.map((field) => ({
-            placeId: place!.id,
-            field,
-            sourceType: 'editorial' as const,
-            sourceReference: null,
-            actorId: adminId,
-          })),
+          claimed.map((field) => {
+            const fromGoogle = derived.has(field);
+            return {
+              placeId: place!.id,
+              field,
+              sourceType: fromGoogle ? ('google_derived' as const) : ('editorial' as const),
+              sourceReference: fromGoogle ? input.googlePlaceId! : null,
+              actorId: adminId,
+            };
+          }),
         );
       }
 
@@ -777,7 +904,10 @@ export class CmsCatalogService {
         eventType: 'place.created',
         resourceType: 'place',
         resourceId: place!.id,
-        payload: { status: 'draft', origin: 'cms_manual' },
+        payload: {
+          status: 'draft',
+          origin: input.googlePlaceId !== undefined ? 'cms_link' : 'cms_manual',
+        },
       });
 
       return place!;
@@ -788,6 +918,9 @@ export class CmsCatalogService {
       status: created.status,
       claimedFields: claimed,
       allowDuplicate: input.allowDuplicate === true,
+      ...(input.googlePlaceId !== undefined
+        ? { googlePlaceId: input.googlePlaceId, googleDerivedFields: [...derived] }
+        : {}),
     });
 
     return this.getPlace(created.id);
@@ -838,9 +971,14 @@ export class CmsCatalogService {
 
     assertNotStale(before.updatedAt, input.expectedUpdatedAt);
 
-    const claimed = Object.keys(input)
-      .filter((key) => PROVENANCE_COLUMN[key] !== undefined)
-      .map((key) => PROVENANCE_COLUMN[key]!);
+    // `lat` and `lng` both name `geom`, so the pair collapses to one row.
+    const claimed = [
+      ...new Set(
+        Object.keys(input)
+          .filter((key) => PROVENANCE_COLUMN[key] !== undefined)
+          .map((key) => PROVENANCE_COLUMN[key]!),
+      ),
+    ];
 
     const { phone, website } = this.normalizeContact(input);
 

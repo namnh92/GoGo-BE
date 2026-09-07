@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.2
+  version: 1.0.0-alpha.3
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3514,10 +3514,26 @@ paths:
         decisions, and `cmsTransitionPlace` already owns the second.
 
 
-        Every field written here is recorded `editorial` provenance, including a
-        value the editor read off a provider preview and retyped — copying does
-        not transfer ownership (GOGO_PRODUCT_DATA_ARCHITECTURE.md). No provider
-        content is created, fetched or stored.
+        **Provenance.** A value the editor typed is recorded `editorial`,
+        including one they read off a preview and retyped — copying does not
+        transfer ownership (GOGO_PRODUCT_DATA_ARCHITECTURE.md). A value
+        *applied* from `cmsResolvePlaceLink` and left alone is recorded
+        `google_derived` with the Google Place ID as its reference, and
+        `googleDerivedFields` says which. Coordinates carry provenance too,
+        under the field name `geom`.
+
+
+        No provider content is created, fetched or stored here: this endpoint
+        makes no provider call at all, and the only Google-owned value it
+        accepts is the Place ID, which is an identifier rather than content.
+
+
+        **Identity beats similarity.** Given a `googlePlaceId`, the catalogue is
+        asked first whether that Google record already belongs to a place — it
+        does, and the answer is `409 PLACE_ALREADY_LINKED` naming it; two places
+        already claim it, and the answer is `409 PLACE_IDENTITY_CONFLICT` naming
+        both. `allowDuplicate` does not open this gate: two GoGo places may
+        share a name and a street corner, but never one Google record.
 
 
         **Duplicate check.** Before inserting, the same rule the duplicate queue
@@ -3569,6 +3585,44 @@ paths:
                   description: >
                     Skip the duplicate check. Send it only after showing the
                     editor the candidates from a previous 409.
+                googlePlaceId:
+                  type: string
+                  pattern: '^[\w-]{6,255}$'
+                  description: >
+                    The Google record this place is the GoGo copy of, from the
+                    preceding `cmsResolvePlaceLink`. Stored as a `place_sources`
+                    row — identity only, which is what puts the place inside
+                    provider dedup and makes a later refresh possible at all.
+                    ADR-0006 §9.3 permits storing the id indefinitely.
+                googleDerivedFields:
+                  type: array
+                  maxItems: 8
+                  items: { type: string, enum: [name, addressText, lat, lng] }
+                  description: >
+                    Which fields still hold the value the resolution filled in —
+                    the ones the editor looked at and left alone. Their
+                    provenance is recorded `google_derived` with `googlePlaceId`
+                    as the reference; everything else is `editorial`.
+
+
+                    Only the client knows this. The server keeps no snapshot of
+                    the preview to diff against, deliberately (ADR-0006 §9.5 —
+                    no cross-request provider content), so an editor who retypes
+                    a name over Google's owns it and the console drops that
+                    field from the list.
+
+
+                    The enum is short on purpose. `cmsResolvePlaceLink` also
+                    returns a rating and a review count, and neither may be
+                    applied: per GOGO_PRODUCT_DATA_ARCHITECTURE.md §2 canonical
+                    name/address/geo are GoGo-owned and persist, while Google
+                    rating/review/photo/hours are "No by default". The preview
+                    shows them so an editor can tell two branches of one chain
+                    apart, and nothing writes them.
+
+
+                    Requires `googlePlaceId` when non-empty — provenance
+                    pointing at nothing is worse than no provenance.
       responses:
         '201':
           description: Created as draft; the body is the record the editor screen loads.
@@ -3579,7 +3633,74 @@ paths:
         '409':
           description: >
             `PLACE_DUPLICATE_SUSPECTED` — near-identical places already in the
-            catalogue, listed in `field_errors`.
+            catalogue, listed in `field_errors`; `allowDuplicate: true` proceeds
+            anyway.
+
+
+            `PLACE_ALREADY_LINKED` — the `googlePlaceId` already belongs to a
+            GoGo place, whose id is the single `field_errors` message. The
+            console opens that place rather than creating a second one.
+
+
+            `PLACE_IDENTITY_CONFLICT` — two places already claim that Google ID.
+            Nothing may be added against it until an editor merges them; both
+            ids are in `field_errors`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/places/resolve-link:
+    post:
+      operationId: cmsResolvePlaceLink
+      tags: [cms]
+      summary: 'Editor: resolve a Google Maps link for the create form (GoGo-BE#465)'
+      description: >
+        PI-BE-020. The same resolution the app has used since #337, behind the
+        console's own door — identical body (minus `roomId`; the console adds to
+        no one's plan) and identical `ResolveLinkResult`.
+
+
+        It is a separate route from `resolveGoogleMapsLink` for two reasons,
+        neither of them the response shape. **Who pays:** the public route is
+        unauthenticated and rate-limited on IP without an edge-client-IP hop, so
+        behind Cloudflare every caller in the world shares one bucket of
+        10/minute, and an editor entering a morning's worth of places would be
+        throttled by strangers. This route keys on `ip+actor`, 20/minute.
+        **Who is asking:** a resolution that misses cache costs a provider
+        request, and a request that costs money should name the person who spent
+        it.
+
+
+        Requires `place.write`. Nothing is written — this is a preview, and the
+        place is created by `cmsCreatePlace` carrying the `googlePlaceId` this
+        returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, maxLength: 2000 }
+                cityHint: { type: string, maxLength: 80 }
+      responses:
+        '201':
+          description: >-
+            Resolution outcome with candidate + attribution facts. UNRESOLVED here always
+            means the provider answered and there was no match — never that GoGo could not
+            reach it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolveLinkResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: >-
+            PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now. A statement
+            about this deployment, not about the link, so the console must not present it
+            as "không tìm thấy địa điểm" (GoGo-BE#279). `retryable` is true.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }

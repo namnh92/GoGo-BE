@@ -1,6 +1,11 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { IdentityModule } from '../../identity/presentation/identity.module';
+// #465 — `PlaceSubmissionService.resolveLink` and `PlaceDedupService` are the
+// server half of add-by-link, and the console needs both. Ingestion has no
+// dependency on this module (it borrows `RequireRole`, a decorator), so the
+// import is one-way.
+import { IngestionModule } from '../../ingestion/presentation/ingestion.module';
 import { SuggestionsModule } from '../../suggestions/presentation/suggestions.module';
 // #246 — the console reuses the consumer erase/export rather than growing a
 // second implementation of them.
@@ -50,7 +55,7 @@ import {
 } from './cms.controllers';
 
 @Module({
-  imports: [IdentityModule, SuggestionsModule, ReviewsModule],
+  imports: [IdentityModule, IngestionModule, SuggestionsModule, ReviewsModule],
   controllers: [
     CmsAreasController,
     CmsAuditController,

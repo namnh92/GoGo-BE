@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import { PLACE_PROVIDER } from '@gogo/providers';
 
 /**
  * BE-CMS-PE-001 (#425) — the contract the CMS place editor writes against.
@@ -65,6 +66,8 @@ async function makePlace(overrides: Partial<typeof schema.places.$inferInsert> =
 }
 
 let editor: { id: string; token: string };
+/** The fake bound in test: `seed()` decides what a link resolves to. */
+let places: { seed: (p: Record<string, unknown>) => void };
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgis/postgis:16-3.4')
@@ -86,6 +89,7 @@ beforeAll(async () => {
   await api().ready();
 
   editor = await createAdmin('pe-editor@gogo.local', 'editor');
+  places = app.get(PLACE_PROVIDER);
 }, 180_000);
 
 afterAll(async () => {
@@ -715,5 +719,206 @@ describe('#452 create a place by hand', () => {
     const res = await create({ name: 'Quán Cấm', lat: 10.7, lng: 106.7 }, moderator.token);
 
     expect(res.statusCode).toBe(403);
+  });
+});
+
+/**
+ * PI-BE-020 (#465) — add by Google Maps link.
+ *
+ * The create form used to ask an editor for a latitude. Coordinates typed by
+ * hand are the single most reliable way to get a place wrong, and a place
+ * entered that way carries no Google Place ID — so it sits outside provider
+ * dedup, and nothing can ever refresh it. The link the editor already has in
+ * their clipboard answers both.
+ */
+const resolveLink = (payload: Record<string, unknown>, token = editor.token) =>
+  api().inject({
+    method: 'POST',
+    url: '/v1/cms/places/resolve-link',
+    remoteAddress: ip(),
+    headers: auth(token),
+    payload,
+  });
+
+describe('#465 add a place by Google Maps link', () => {
+  it('resolves a link to the place it names', async () => {
+    places.seed({
+      providerPlaceId: 'ChIJcmslink',
+      name: 'Cà Phê Bên Đường',
+      addressText: '9 Nguyễn Huệ, Quận 1, Hồ Chí Minh',
+      lat: 10.7743,
+      lng: 106.7038,
+      rating: 4.4,
+      ratingCount: 88,
+    });
+
+    const res = await resolveLink({ url: 'https://www.google.com/maps?place_id=ChIJcmslink' });
+
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.status).toBe('RESOLVED');
+    expect(body.candidate.name).toBe('Cà Phê Bên Đường');
+    expect(body.candidate.location).toMatchObject({ lat: 10.7743, lng: 106.7038 });
+    // Shown so the editor can tell two branches of a chain apart. Never stored:
+    // the create endpoint has no field that would accept it.
+    expect(body.candidate.googleRating).toBe(4.4);
+    expect(body.candidate.attributions.length).toBeGreaterThan(0);
+  });
+
+  it('is closed to a moderator, who does not spend the provider budget', async () => {
+    const moderator = await createAdmin(`pe-link-mod-${Date.now()}@gogo.local`, 'moderator');
+    const res = await resolveLink({ url: 'https://www.google.com/maps?place_id=ChIJcmslink' }, moderator.token);
+
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('refuses a host that only looks like Google, without asking the provider', async () => {
+    const res = await resolveLink({ url: 'https://maps.google.com.evil.example/?place_id=x' });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().status).toBe('UNRESOLVED');
+  });
+
+  it('links the Google record and marks the applied fields as its own', async () => {
+    const googlePlaceId = `ChIJapply${Date.now()}`;
+    const res = await create({
+      name: 'Nhà Hàng Từ Link',
+      lat: 10.7801,
+      lng: 106.6991,
+      addressText: '44 Lê Lợi, Quận 1',
+      // Not from the preview — the editor rang them.
+      phone: '0283 822 1111',
+      googlePlaceId,
+      googleDerivedFields: ['name', 'addressText', 'lat', 'lng'],
+    });
+    expect(res.statusCode).toBe(201);
+    const placeId = res.json().id;
+
+    // The link is what puts the place inside provider dedup at all.
+    const sources = await db
+      .select()
+      .from(schema.placeSources)
+      .where(eq(schema.placeSources.placeId, placeId));
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({ provider: 'google', externalId: googlePlaceId });
+
+    const provenance = await db
+      .select()
+      .from(schema.placeFieldProvenance)
+      .where(eq(schema.placeFieldProvenance.placeId, placeId));
+    const byField = new Map(provenance.map((row) => [row.field, row]));
+
+    for (const field of ['name', 'address_text', 'geom']) {
+      expect(byField.get(field)).toMatchObject({
+        sourceType: 'google_derived',
+        sourceReference: googlePlaceId,
+      });
+    }
+    // Typed, not applied. Copying does not transfer ownership either way.
+    expect(byField.get('phone')).toMatchObject({ sourceType: 'editorial', sourceReference: null });
+  });
+
+  it('records the position once, not once per coordinate', async () => {
+    const res = await create({
+      name: `Quán Một Toạ Độ ${Date.now()}`,
+      lat: 10.7402,
+      lng: 106.7211,
+      googlePlaceId: `ChIJgeom${Date.now()}`,
+      googleDerivedFields: ['lat', 'lng'],
+    });
+    expect(res.statusCode).toBe(201);
+
+    const provenance = await db
+      .select()
+      .from(schema.placeFieldProvenance)
+      .where(eq(schema.placeFieldProvenance.placeId, res.json().id));
+    expect(provenance.filter((row) => row.field === 'geom')).toHaveLength(1);
+  });
+
+  it('records a retyped value as the editor’s own, not Google’s', async () => {
+    const googlePlaceId = `ChIJretyped${Date.now()}`;
+    const res = await create({
+      name: 'Tên Editor Tự Gõ',
+      lat: 10.75,
+      lng: 106.66,
+      googlePlaceId,
+      // The editor changed the name Google gave, so it left the list.
+      googleDerivedFields: ['lat', 'lng'],
+    });
+    expect(res.statusCode).toBe(201);
+
+    const provenance = await db
+      .select()
+      .from(schema.placeFieldProvenance)
+      .where(eq(schema.placeFieldProvenance.placeId, res.json().id));
+    const byField = new Map(provenance.map((row) => [row.field, row]));
+    expect(byField.get('name')).toMatchObject({ sourceType: 'editorial' });
+    expect(byField.get('geom')).toMatchObject({ sourceType: 'google_derived' });
+  });
+
+  it('refuses a second place for one Google record, and names the first', async () => {
+    const googlePlaceId = `ChIJonce${Date.now()}`;
+    const first = await create({
+      name: 'Quán Đã Có',
+      lat: 10.79,
+      lng: 106.68,
+      googlePlaceId,
+    });
+    expect(first.statusCode).toBe(201);
+
+    // Far away and differently named: the similarity check would let this
+    // through. Identity is the thing that must not be duplicated.
+    const second = await create({
+      name: 'Một Cái Tên Hoàn Toàn Khác',
+      lat: 21.0285,
+      lng: 105.8542,
+      googlePlaceId,
+    });
+
+    expect(second.statusCode).toBe(409);
+    const body = second.json();
+    expect(body.code).toBe('PLACE_ALREADY_LINKED');
+    expect(body.field_errors[0].message).toBe(first.json().id);
+  });
+
+  it('does not let allowDuplicate open the identity gate', async () => {
+    const googlePlaceId = `ChIJforce${Date.now()}`;
+    await create({ name: 'Quán Gốc', lat: 10.72, lng: 106.64, googlePlaceId });
+
+    const second = await create({
+      name: 'Quán Gốc',
+      lat: 10.72,
+      lng: 106.64,
+      googlePlaceId,
+      allowDuplicate: true,
+    });
+
+    expect(second.statusCode).toBe(409);
+    expect(second.json().code).toBe('PLACE_ALREADY_LINKED');
+  });
+
+  it('refuses provenance that points at no Google record', async () => {
+    const res = await create({
+      name: `Quán Không Nguồn ${Date.now()}`,
+      lat: 10.73,
+      lng: 106.65,
+      googleDerivedFields: ['name'],
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().field_errors.map((e: { field: string }) => e.field)).toContain(
+      'googlePlaceId',
+    );
+  });
+
+  it('still creates a place with no link at all', async () => {
+    const res = await create({ name: `Quán Không Google ${Date.now()}`, lat: 10.71, lng: 106.63 });
+
+    expect(res.statusCode).toBe(201);
+    const sources = await db
+      .select()
+      .from(schema.placeSources)
+      .where(eq(schema.placeSources.placeId, res.json().id));
+    expect(sources).toHaveLength(0);
   });
 });

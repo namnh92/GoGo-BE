@@ -11,10 +11,12 @@ import {
 } from '../application/cf-access.service';
 import {
   CmsCatalogService,
+  GOOGLE_DERIVABLE_FIELDS,
   PLACE_SORTS,
   PLACE_SOURCES,
   type PlaceEditInput,
 } from '../application/cms-catalog.service';
+import { PlaceSubmissionService } from '../../ingestion/application/place-submission.service';
 import { HOURS_ENTRY_KINDS } from '../domain/place-hours';
 import { CmsPlaceMediaService } from '../application/cms-place-media.service';
 import { CmsContentService } from '../application/cms-content.service';
@@ -679,11 +681,42 @@ const placeEditSchema = z.object({
  * the optimistic-concurrency token, plus the two things a new row cannot do
  * without: a name and a position.
  */
-const placeCreateSchema = placeEditSchema.omit({ expectedUpdatedAt: true }).extend({
-  name: z.string().trim().min(1).max(200),
-  lat: z.number().min(-90).max(90),
-  lng: z.number().min(-180).max(180),
-  allowDuplicate: z.boolean().optional(),
+const placeCreateSchema = placeEditSchema
+  .omit({ expectedUpdatedAt: true })
+  .extend({
+    name: z.string().trim().min(1).max(200),
+    lat: z.number().min(-90).max(90),
+    lng: z.number().min(-180).max(180),
+    allowDuplicate: z.boolean().optional(),
+    /** #465 — same shape Google's own share links carry. */
+    googlePlaceId: z
+      .string()
+      .trim()
+      .regex(/^[\w-]{6,255}$/, 'not a Google Place ID')
+      .optional(),
+    googleDerivedFields: z.array(z.enum(GOOGLE_DERIVABLE_FIELDS)).max(8).optional(),
+  })
+  .superRefine((body, ctx) => {
+    // Provenance pointing at nothing is worse than no provenance: the row would
+    // claim a Google origin with no id to check it against.
+    if (body.googleDerivedFields?.length && body.googlePlaceId === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['googlePlaceId'],
+        message: 'required when googleDerivedFields is set',
+      });
+    }
+  });
+
+/**
+ * PI-BE-020 (#465) — the editor's half of add-by-link.
+ *
+ * Same body as the public `POST /places/resolve-google-maps-link`, minus
+ * `roomId`: the console is not adding to anyone's plan.
+ */
+const resolveLinkSchema = z.object({
+  url: z.string().trim().url().max(2000),
+  cityHint: z.string().trim().max(80).optional(),
 });
 const placeStatusSchema = z.object({
   status: z.enum(['draft', 'community_submitted', 'review', 'published', 'suspended', 'archived']),
@@ -745,7 +778,37 @@ const placeListQuery = z.object({
 @RequireRole('editor')
 @Controller('cms/places')
 export class CmsCatalogController {
-  constructor(private readonly catalog: CmsCatalogService) {}
+  constructor(
+    private readonly catalog: CmsCatalogService,
+    private readonly submissions: PlaceSubmissionService,
+  ) {}
+
+  /**
+   * PI-BE-020 (#465) — what Google Place a link names, for the create form.
+   *
+   * The same resolution the app has used since #337, behind the console's own
+   * door. It is a separate route from the public one for two reasons, and
+   * neither is the response shape:
+   *
+   * - **Who pays.** The public route is `@Public()` and keyed on `ip` without
+   *   `edgeClientIp`, so behind Cloudflare every caller in the world shares one
+   *   bucket of 10/minute. An editor entering a morning's worth of places would
+   *   be rate-limited by strangers. Here the key carries the actor.
+   * - **Who is asking.** A resolution that misses cache costs a provider
+   *   request, and a request that costs money should name the person who spent
+   *   it. `ip+actor` does; anonymous does not.
+   *
+   * The limit is 20/minute rather than something generous: each miss is one
+   * Places Details call at the `quality` tier, and an editor pastes links at
+   * human speed. A number that cannot be reached by hand is not a limit.
+   */
+  @RateLimit({ action: 'cms.places.resolve_link', limit: 20, windowSeconds: 60, keyBy: 'ip+actor' })
+  @Post('resolve-link')
+  resolveLink(
+    @Body(new ZodValidationPipe(resolveLinkSchema)) body: z.infer<typeof resolveLinkSchema>,
+  ) {
+    return this.submissions.resolveLink(body);
+  }
 
   @Get()
   list(@Query(new ZodValidationPipe(placeListQuery)) query: z.infer<typeof placeListQuery>) {
