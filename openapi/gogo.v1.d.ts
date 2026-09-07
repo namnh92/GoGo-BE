@@ -487,6 +487,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/administrative/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Active administrative dataset version (the cheap poll)
+         * @description ADM-003 / ADR-0019. A client holds a snapshot and refetches only when datasetVersion changes. Serves the one PUBLISHED dataset; 503 when none is published, which is an operational fault rather than an empty result.
+         */
+        get: operations["getAdministrativeVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/administrative/provinces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Current provinces and municipalities, ordered by code
+         * @description ADM-003. The 34 current province-level units. Legacy district-level units are never returned here — they were dissolved on 2025-07-01.
+         */
+        get: operations["listAdministrativeProvinces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/administrative/provinces/{provinceCode}/communes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Current communes of one province, ordered by code
+         * @description ADM-003. A province code that names no current province answers 404 PROVINCE_NOT_FOUND rather than an empty page — "no communes" and "no such province" are different answers.
+         */
+        get: operations["listAdministrativeCommunes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/administrative/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Accent-insensitive search over unit names
+         * @description ADM-003. Matches both the short name ("Ba Đình") and the full name ("Phường Ba Đình"), accented or not, through the same Vietnamese normalizer the place search uses. Legacy units require includeLegacy.
+         */
+        get: operations["searchAdministrativeUnits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/administrative/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What a code meant on a date, and where the unit went
+         * @description ADM-003 / ADR-0019 §2. Codes are reused: 2,212 of the 3,321 current commune codes named a different unit before 2025-07-01, so `at` selects the effective period. Successors come from canonical changes only — a divided commune is quarantined, never resolved, and is reported with unresolved=true rather than the source's guess.
+         */
+        get: operations["resolveAdministrativeCode"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/administrative/units/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One code and its effective periods
+         * @description ADM-003. Without includeLegacy only the current period is returned, and a code naming no current unit answers 404 UNIT_NOT_CURRENT.
+         */
+        get: operations["getAdministrativeUnit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/taxonomies": {
         parameters: {
             query?: never;
@@ -3709,6 +3829,75 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AdministrativeUnit: {
+            /** @description Official GSO code. Not unique on its own — see ADR-0019 §2. */
+            code: string;
+            /** @description Short name without its type prefix ("Ba Đình"). */
+            name: string;
+            /** @description The source's own string ("Phường Ba Đình"). */
+            fullName: string;
+            nameEn?: string | null;
+            codeName?: string | null;
+            /** @enum {string} */
+            unitType: "PROVINCE" | "MUNICIPALITY" | "WARD" | "COMMUNE" | "SPECIAL_ZONE" | "LEGACY_DISTRICT";
+            /** @enum {string} */
+            level: "PROVINCE" | "COMMUNE" | "LEGACY_DISTRICT";
+            /** @description Province code; null for a province. */
+            parentCode?: string | null;
+            /** @enum {string} */
+            status: "ACTIVE" | "INACTIVE" | "FUTURE";
+            /** Format: date */
+            effectiveFrom: string;
+            /** Format: date */
+            effectiveTo?: string | null;
+            isCurrent: boolean;
+        };
+        AdministrativeUnitPage: {
+            datasetVersion: string;
+            items: components["schemas"]["AdministrativeUnit"][];
+            nextCursor: string | null;
+            total: number;
+        };
+        AdministrativeUnitDetail: {
+            datasetVersion: string;
+            current: components["schemas"]["AdministrativeUnit"] | null;
+            /** @description Every effective period this code has had, oldest first. */
+            periods: components["schemas"]["AdministrativeUnit"][];
+        };
+        AdministrativeResolution: {
+            datasetVersion: string;
+            requested: {
+                code: string;
+                /** Format: date */
+                at: string | null;
+            };
+            unit: components["schemas"]["AdministrativeUnit"];
+            /** @description Canonical changes only. A quarantined split never appears here. */
+            successors: {
+                code: string | null;
+                /** @enum {string} */
+                changeType: "CREATED" | "RENAMED" | "MERGED" | "SPLIT" | "REASSIGNED" | "DISSOLVED";
+                /** Format: date */
+                effectiveDate: string;
+                legalReference?: string | null;
+            }[];
+            /** @description True when the unit is not current and GoGo holds no canonical successor — typically an ambiguous split awaiting CMS review. Said in a field rather than left to be inferred from an empty list. */
+            unresolved: boolean;
+        };
+        AdministrativeVersion: {
+            datasetVersion: string;
+            /** Format: date */
+            effectiveDate: string;
+            /** Format: date-time */
+            publishedAt: string | null;
+            counts: {
+                provinces: number;
+                communes: number;
+                legacyDistricts: number;
+                legacyCommunes: number;
+                changes: number;
+            };
+        };
         RoomConstraintInput: {
             originText?: string;
             originLat?: number;
@@ -6354,6 +6543,22 @@ export interface components {
         };
     };
     responses: {
+        /** @description The client's ETag still matches. No body, by definition — this is the whole saving the tag exists for. */
+        NotModified: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content?: never;
+        };
+        /** @description No administrative dataset is PUBLISHED. Deliberately not an empty list, which would read as "Vietnam has no provinces"; this is an operational fault and #463 alerts on it. */
+        AdministrativeUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
         /** @description Validation or business rule failure */
         BadRequest: {
             headers: {
@@ -6410,6 +6615,13 @@ export interface components {
         };
     };
     parameters: {
+        /** @description ADM-003 / ADR-0019 §8. The ETag a client already holds. The tag is derived from the active datasetVersion plus the resolved request, so it carries no clock and no process-local state: two instances serving the same version answer with the same tag, and a restart does not invalidate anyone's cache. */
+        IfNoneMatch: string;
+        /** @description District-level units were dissolved on 2025-07-01 and are excluded from every response unless this is `true`. A form offering "Quận Ba Đình" would be offering something that no longer exists. */
+        AdministrativeIncludeLegacy: "true" | "false";
+        AdministrativeLimit: number;
+        /** @description Opaque cursor from a previous page's `nextCursor`. */
+        AdministrativeCursor: string;
         /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
         IdempotencyKey: string;
         /** @description Fixed window, never a duration or a range. Four values only: a free-form range is arbitrary load on the store and an arbitrary number of points at the browser, and the enum is also what makes "no client-supplied PromQL" true by construction rather than by escaping. */
@@ -6423,7 +6635,12 @@ export interface components {
         Limit: number;
     };
     requestBodies: never;
-    headers: never;
+    headers: {
+        /** @description Deterministic entity tag over datasetVersion + the resolved request. */
+        ETag: string;
+        /** @description Always `public, max-age=0, must-revalidate` — immutable per version, but the active version can change. */
+        CacheControl: string;
+    };
     pathItems: never;
 }
 export type $defs = Record<string, never>;
@@ -7402,6 +7619,199 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    getAdministrativeVersion: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description ADM-003 / ADR-0019 §8. The ETag a client already holds. The tag is derived from the active datasetVersion plus the resolved request, so it carries no clock and no process-local state: two instances serving the same version answer with the same tag, and a restart does not invalidate anyone's cache. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active dataset version and record counts */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeVersion"];
+                };
+            };
+            304: components["responses"]["NotModified"];
+            503: components["responses"]["AdministrativeUnavailable"];
+        };
+    };
+    listAdministrativeProvinces: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["AdministrativeLimit"];
+                /** @description Opaque cursor from a previous page's `nextCursor`. */
+                cursor?: components["parameters"]["AdministrativeCursor"];
+            };
+            header?: {
+                /** @description ADM-003 / ADR-0019 §8. The ETag a client already holds. The tag is derived from the active datasetVersion plus the resolved request, so it carries no clock and no process-local state: two instances serving the same version answer with the same tag, and a restart does not invalidate anyone's cache. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Province page */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeUnitPage"];
+                };
+            };
+            304: components["responses"]["NotModified"];
+            503: components["responses"]["AdministrativeUnavailable"];
+        };
+    };
+    listAdministrativeCommunes: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["AdministrativeLimit"];
+                /** @description Opaque cursor from a previous page's `nextCursor`. */
+                cursor?: components["parameters"]["AdministrativeCursor"];
+            };
+            header?: {
+                /** @description ADM-003 / ADR-0019 §8. The ETag a client already holds. The tag is derived from the active datasetVersion plus the resolved request, so it carries no clock and no process-local state: two instances serving the same version answer with the same tag, and a restart does not invalidate anyone's cache. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
+            path: {
+                provinceCode: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Commune page */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeUnitPage"];
+                };
+            };
+            304: components["responses"]["NotModified"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["AdministrativeUnavailable"];
+        };
+    };
+    searchAdministrativeUnits: {
+        parameters: {
+            query: {
+                query: string;
+                provinceCode?: string;
+                /** @description District-level units were dissolved on 2025-07-01 and are excluded from every response unless this is `true`. A form offering "Quận Ba Đình" would be offering something that no longer exists. */
+                includeLegacy?: components["parameters"]["AdministrativeIncludeLegacy"];
+                limit?: components["parameters"]["AdministrativeLimit"];
+                /** @description Opaque cursor from a previous page's `nextCursor`. */
+                cursor?: components["parameters"]["AdministrativeCursor"];
+            };
+            header?: {
+                /** @description ADM-003 / ADR-0019 §8. The ETag a client already holds. The tag is derived from the active datasetVersion plus the resolved request, so it carries no clock and no process-local state: two instances serving the same version answer with the same tag, and a restart does not invalidate anyone's cache. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Matching units, current first, then legacy when asked for */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeUnitPage"];
+                };
+            };
+            304: components["responses"]["NotModified"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["AdministrativeUnavailable"];
+        };
+    };
+    resolveAdministrativeCode: {
+        parameters: {
+            query: {
+                code: string;
+                /** @description ISO date. Absent means "the current unit". */
+                at?: string;
+            };
+            header?: {
+                /** @description ADM-003 / ADR-0019 §8. The ETag a client already holds. The tag is derived from the active datasetVersion plus the resolved request, so it carries no clock and no process-local state: two instances serving the same version answer with the same tag, and a restart does not invalidate anyone's cache. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The unit effective on that date, plus canonical successors */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeResolution"];
+                };
+            };
+            304: components["responses"]["NotModified"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["AdministrativeUnavailable"];
+        };
+    };
+    getAdministrativeUnit: {
+        parameters: {
+            query?: {
+                /** @description District-level units were dissolved on 2025-07-01 and are excluded from every response unless this is `true`. A form offering "Quận Ba Đình" would be offering something that no longer exists. */
+                includeLegacy?: components["parameters"]["AdministrativeIncludeLegacy"];
+            };
+            header?: {
+                /** @description ADM-003 / ADR-0019 §8. The ETag a client already holds. The tag is derived from the active datasetVersion plus the resolved request, so it carries no clock and no process-local state: two instances serving the same version answer with the same tag, and a restart does not invalidate anyone's cache. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The current unit and the periods this code has had */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Cache-Control": components["headers"]["CacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeUnitDetail"];
+                };
+            };
+            304: components["responses"]["NotModified"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["AdministrativeUnavailable"];
         };
     };
     listTaxonomies: {

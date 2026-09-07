@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { IdempotencyInterceptor } from '@gogo/modules';
 import {
+  AdministrativeModule,
   CmsModule,
   FeedbackModule,
   IdentityModule,
@@ -54,6 +55,7 @@ class ConfigModule {}
     ReviewsModule,
     NotificationsModule,
     ShareLinksModule,
+    AdministrativeModule,
     CmsModule,
     IngestionModule,
     UploadsModule,
