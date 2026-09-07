@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { IdentityModule } from '../../identity/presentation/identity.module';
 import { AdministrativeImportService } from '../application/administrative-import.service';
 import { AdministrativePublicationService } from '../application/administrative-publication.service';
+import { AdministrativeResolverService } from '../application/administrative-resolver.service';
 import { AdministrativeQueryService } from '../application/administrative-query.service';
 import { AdministrativeValidationService } from '../application/administrative-validation.service';
 import { ADMINISTRATIVE_DATASET } from '../application/administrative-dataset.port';
@@ -9,6 +10,7 @@ import {
   ADMINISTRATIVE_REPOSITORY,
   DrizzleAdministrativeRepository,
 } from '../infrastructure/administrative.repository';
+import { AdministrativeResolverRepository } from '../infrastructure/administrative-resolver.repository';
 import { InProcessAdministrativeDatasetCache } from '../infrastructure/in-process-dataset.cache';
 import { PinnedSnapshotReader } from '../application/pinned-snapshot.reader';
 import { AdministrativeController } from './administrative.controller';
@@ -38,6 +40,8 @@ import { AdministrativeAdminController } from './administrative-admin.controller
     AdministrativeValidationService,
     AdministrativeImportService,
     AdministrativePublicationService,
+    AdministrativeResolverRepository,
+    AdministrativeResolverService,
   ],
   exports: [
     ADMINISTRATIVE_DATASET,
@@ -45,6 +49,8 @@ import { AdministrativeAdminController } from './administrative-admin.controller
     AdministrativeValidationService,
     AdministrativeImportService,
     AdministrativePublicationService,
+    AdministrativeResolverRepository,
+    AdministrativeResolverService,
   ],
 })
 export class AdministrativeModule {}

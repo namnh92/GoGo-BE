@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   check,
+  customType,
   date,
   index,
   integer,
@@ -361,5 +362,60 @@ export const administrativeUnitChangeOverrides = pgTable(
       .on(t.oldCode)
       .where(sql`${t.revokedAt} is null`),
     // The live-uniqueness index uses COALESCE and lives in the SQL migration.
+  ],
+);
+
+/**
+ * drizzle's `geometry` helper only models points, so the boundary column is
+ * declared here. It is never selected into JavaScript — a multipolygon of a
+ * Vietnamese commune is hundreds of kilobytes and containment is decided in
+ * PostgreSQL — so the mapped type is the driver's own WKB hex.
+ */
+const multiPolygon4326 = customType<{ data: string; driverParam: string }>({
+  dataType: () => 'geometry(MultiPolygon,4326)',
+});
+
+/**
+ * ADM-006 (#459) / ADR-0019 — polygons for the point-in-polygon evidence.
+ *
+ * Versioned on its own: the GIS add-on is a separate upstream on its own
+ * cadence (v4.0.0 against v5.0.0 units), so one boundary release is shared by
+ * every dataset version that cites it, and `places.administrative_boundary_version`
+ * records which release produced a claim.
+ *
+ * Filled by ADM-007 (#460), which pins the release and verifies its checksum;
+ * migration 0052 creates it empty so the resolver's geometric path can be
+ * written and tested rather than waiting for 50 MB of GeoJSON.
+ */
+export const administrativeUnitBoundaries = pgTable(
+  'administrative_unit_boundaries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    boundaryVersion: text('boundary_version').notNull(),
+    code: text('code').notNull(),
+    level: administrativeLevel('level').notNull(),
+    parentCode: text('parent_code'),
+    name: text('name').notNull(),
+    nameNormalized: text('name_normalized').notNull(),
+    geom: multiPolygon4326('geom').notNull(),
+    source: text('source').notNull(),
+    sourceChecksum: text('source_checksum').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('administrative_boundaries_version_code_unique').on(
+      t.boundaryVersion,
+      t.level,
+      t.code,
+    ),
+    index('administrative_boundaries_version_level_idx').on(t.boundaryVersion, t.level),
+    // There are no legacy district polygons at any version: the units were
+    // dissolved before any of these releases were drawn.
+    check('administrative_boundaries_level_has_polygons', sql`${t.level} <> 'LEGACY_DISTRICT'`),
+    check(
+      'administrative_boundaries_parent_present',
+      sql`(${t.level} = 'PROVINCE' and ${t.parentCode} is null)
+          or (${t.level} = 'COMMUNE' and ${t.parentCode} is not null)`,
+    ),
   ],
 );

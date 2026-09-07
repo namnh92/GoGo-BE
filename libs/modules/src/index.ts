@@ -242,6 +242,44 @@ export {
 } from '../administrative/application/administrative-audit';
 export { snapshotFingerprint } from '../administrative/application/snapshot-fingerprint';
 export {
+  AdministrativeResolverService,
+  type PersistOutcome,
+  type PersistResult,
+  type ResolveOptions,
+} from '../administrative/application/administrative-resolver.service';
+export {
+  ADMINISTRATIVE_RESOLVER_REPOSITORY,
+  AdministrativeResolverRepository,
+  type BoundaryMatch,
+  type ChangeEdge,
+  type UnitRecord,
+} from '../administrative/infrastructure/administrative-resolver.repository';
+export {
+  adjudicate,
+  definitionalConfidence,
+  PRECEDENCE,
+  type AdjudicationInput,
+  type Candidate,
+  type CurrentMapping,
+  type Evidence,
+  type Resolution,
+  type ResolverReason,
+} from '../administrative/domain/resolver';
+export {
+  applyAutomaticTransition,
+  clearsReviewerAttribution,
+  isReviewerOwned,
+  type MappingMethod,
+  type MappingStatus,
+  type TransitionDecision,
+} from '../administrative/domain/mapping-status';
+export {
+  evaluateStaleness,
+  type ActiveUnit,
+  type StaleReason,
+  type StaleVerdict,
+} from '../administrative/domain/staleness';
+export {
   publishRefusal,
   rollbackRefusal,
   VALIDATOR_VERSION,

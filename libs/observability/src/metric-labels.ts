@@ -178,6 +178,27 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // #199 — identity JWTs. `result` is `issued` or `unavailable` (no signing key
   // in this environment). Never the token, never the user.
   push_identity_tokens_total: ['result'],
+  // #459 — the administrative address resolver. `status` is a mapping status,
+  // `method` the evidence that decided it (or `none`). Deliberately **not**
+  // labelled with the dataset or boundary version: those are minted per
+  // publication and would grow the series set forever, which is the same
+  // mistake `place_import_unknown_mapping_total{field}` made. The versions live
+  // on every resolver result and in the audit row, where they belong.
+  administrative_resolver_runs_total: ['status', 'method'],
+  administrative_resolver_duration_seconds: ['status'],
+  // Why a run could not resolve: a closed vocabulary (`ResolverReason`), so the
+  // rate of `EVIDENCE_CONFLICT` against `NO_BOUNDARY_MATCH` is answerable.
+  administrative_resolver_unresolved_total: ['reason'],
+  // `outcome` is `unique | province_only | multiple | edge | none | invalid |
+  // skipped`. `edge` apart from `multiple` on purpose: a point on a shared
+  // border is geometry working correctly, overlapping polygons are a data
+  // defect, and they have different fixes.
+  administrative_boundary_matches_total: ['outcome'],
+  // `written | noop | conflict | blocked`. A rising `blocked` means unattended
+  // runs are repeatedly meeting reviewer-owned rows.
+  administrative_mapping_writes_total: ['outcome'],
+  // `StaleReason`. `REVALIDATED` is the healthy case — still true, older label.
+  administrative_stale_evaluations_total: ['reason'],
 };
 
 /**
