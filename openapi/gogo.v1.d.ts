@@ -1951,13 +1951,41 @@ export interface paths {
          *
          *     Always created `draft`. Entering the catalogue and being visible are two decisions, and `cmsTransitionPlace` already owns the second.
          *
-         *     Every field written here is recorded `editorial` provenance, including a value the editor read off a provider preview and retyped — copying does not transfer ownership (GOGO_PRODUCT_DATA_ARCHITECTURE.md). No provider content is created, fetched or stored.
+         *     **Provenance.** A value the editor typed is recorded `editorial`, including one they read off a preview and retyped — copying does not transfer ownership (GOGO_PRODUCT_DATA_ARCHITECTURE.md). A value *applied* from `cmsResolvePlaceLink` and left alone is recorded `google_derived` with the Google Place ID as its reference, and `googleDerivedFields` says which. Coordinates carry provenance too, under the field name `geom`.
+         *
+         *     No provider content is created, fetched or stored here: this endpoint makes no provider call at all, and the only Google-owned value it accepts is the Place ID, which is an identifier rather than content.
+         *
+         *     **Identity beats similarity.** Given a `googlePlaceId`, the catalogue is asked first whether that Google record already belongs to a place — it does, and the answer is `409 PLACE_ALREADY_LINKED` naming it; two places already claim it, and the answer is `409 PLACE_IDENTITY_CONFLICT` naming both. `allowDuplicate` does not open this gate: two GoGo places may share a name and a street corner, but never one Google record.
          *
          *     **Duplicate check.** Before inserting, the same rule the duplicate queue uses — within 150 m and name similarity above 0.5 — runs against the catalogue. A hit answers `409 PLACE_DUPLICATE_SUSPECTED` with the candidates in `field_errors` (name and distance in metres), so the console can offer the merge screen it already has. `allowDuplicate: true` is how an editor says they looked and these are different places; two cafés of one chain on the same street are real.
          *
          *     Field limits follow `cmsUpdatePlace` exactly and are stated there.
          */
         post: operations["cmsCreatePlace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/places/resolve-link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Editor: resolve a Google Maps link for the create form (GoGo-BE#465)
+         * @description PI-BE-020. The same resolution the app has used since #337, behind the console's own door — identical body (minus `roomId`; the console adds to no one's plan) and identical `ResolveLinkResult`.
+         *
+         *     It is a separate route from `resolveGoogleMapsLink` for two reasons, neither of them the response shape. **Who pays:** the public route is unauthenticated and rate-limited on IP without an edge-client-IP hop, so behind Cloudflare every caller in the world shares one bucket of 10/minute, and an editor entering a morning's worth of places would be throttled by strangers. This route keys on `ip+actor`, 20/minute. **Who is asking:** a resolution that misses cache costs a provider request, and a request that costs money should name the person who spent it.
+         *
+         *     Requires `place.write`. Nothing is written — this is a preview, and the place is created by `cmsCreatePlace` carrying the `googlePlaceId` this returned.
+         */
+        post: operations["cmsResolvePlaceLink"];
         delete?: never;
         options?: never;
         head?: never;
@@ -10073,6 +10101,18 @@ export interface operations {
                     taxonomyIds?: string[];
                     /** @description Skip the duplicate check. Send it only after showing the editor the candidates from a previous 409. */
                     allowDuplicate?: boolean;
+                    /** @description The Google record this place is the GoGo copy of, from the preceding `cmsResolvePlaceLink`. Stored as a `place_sources` row — identity only, which is what puts the place inside provider dedup and makes a later refresh possible at all. ADR-0006 §9.3 permits storing the id indefinitely. */
+                    googlePlaceId?: string;
+                    /**
+                     * @description Which fields still hold the value the resolution filled in — the ones the editor looked at and left alone. Their provenance is recorded `google_derived` with `googlePlaceId` as the reference; everything else is `editorial`.
+                     *
+                     *     Only the client knows this. The server keeps no snapshot of the preview to diff against, deliberately (ADR-0006 §9.5 — no cross-request provider content), so an editor who retypes a name over Google's owns it and the console drops that field from the list.
+                     *
+                     *     The enum is short on purpose. `cmsResolvePlaceLink` also returns a rating and a review count, and neither may be applied: per GOGO_PRODUCT_DATA_ARCHITECTURE.md §2 canonical name/address/geo are GoGo-owned and persist, while Google rating/review/photo/hours are "No by default". The preview shows them so an editor can tell two branches of one chain apart, and nothing writes them.
+                     *
+                     *     Requires `googlePlaceId` when non-empty — provenance pointing at nothing is worse than no provenance.
+                     */
+                    googleDerivedFields?: ("name" | "addressText" | "lat" | "lng")[];
                 };
             };
         };
@@ -10087,8 +10127,54 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            /** @description `PLACE_DUPLICATE_SUSPECTED` — near-identical places already in the catalogue, listed in `field_errors`. */
+            /**
+             * @description `PLACE_DUPLICATE_SUSPECTED` — near-identical places already in the catalogue, listed in `field_errors`; `allowDuplicate: true` proceeds anyway.
+             *
+             *     `PLACE_ALREADY_LINKED` — the `googlePlaceId` already belongs to a GoGo place, whose id is the single `field_errors` message. The console opens that place rather than creating a second one.
+             *
+             *     `PLACE_IDENTITY_CONFLICT` — two places already claim that Google ID. Nothing may be added against it until an editor merges them; both ids are in `field_errors`.
+             */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsResolvePlaceLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uri */
+                    url: string;
+                    cityHint?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Resolution outcome with candidate + attribution facts. UNRESOLVED here always means the provider answered and there was no match — never that GoGo could not reach it. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveLinkResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            /** @description PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now. A statement about this deployment, not about the link, so the console must not present it as "không tìm thấy địa điểm" (GoGo-BE#279). `retryable` is true. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
