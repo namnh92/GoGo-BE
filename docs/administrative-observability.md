@@ -91,6 +91,20 @@ Until then place approval is blocked by design and everything else works.
 for the gate, then the stored report on the dataset row for the rows that tripped
 it. An ERROR is never overridable; fix the source or the override and re-validate.
 
+**Override decision refused (409).** `OVERRIDE_SET_REVISION_CONFLICT` means
+another reviewer decided a row first — re-read the set and decide against the
+revision it is now. `OVERRIDE_TARGET_NOT_FOUND` means the named identity (code
+_and_ effective date) is not in that dataset. `OVERRIDE_BASE_ALREADY_MATERIALIZED`
+means the base already produced a version; the next round belongs on that one.
+Nothing is written by any of them, and all are audited under
+`administrative_mapping_override.decision_rejected`.
+
+**Materialisation refused (409).** `OVERRIDE_SET_EMPTY` — a dataset identical to
+its base is not a version. `BASE_DATASET_CHANGED` — open a new set on the
+current version. `SNAPSHOT_CHECKSUM_MISMATCH` — a pinned file moved and the
+derived version cannot be named. The derived dataset is STAGED and serves
+nobody: it still has to be validated and published like any import.
+
 **Validation refused (409).** Nothing was written — not the status, not the
 previous report. `DATASET_STATE_NOT_VALIDATABLE` means the version is
 `PUBLISHED`, `ROLLED_BACK` or `REJECTED`: validation writes a lifecycle status,

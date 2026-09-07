@@ -445,6 +445,27 @@ export {
   type UnitType,
 } from '../administrative/domain/unit-type';
 
+// Administrative source-drift adjudication (ADM-011 / #484)
+export {
+  AdministrativeOverrideService,
+  OVERRIDE_PLACE_SAMPLE_LIMIT,
+  QUARANTINE_PAGE_MAX,
+  RAW_PAYLOAD_MAX_BYTES,
+  type QuarantineCounts,
+  type QuarantineListItem,
+} from '../administrative/application/administrative-override.service';
+export {
+  abandonRefusal,
+  acceptRefusal,
+  decisionRefusal,
+  decisionState,
+  materializeRefusal,
+  DECISION_STATES,
+  type DecisionKind,
+  type DecisionState,
+  type OverrideSet,
+} from '../administrative/domain/override-sets';
+
 // Administrative validation and diff (ADM-004 / #457)
 export {
   AdministrativeValidationService,

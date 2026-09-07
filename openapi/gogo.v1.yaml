@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.9
+  version: 1.0.0-alpha.10
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1471,6 +1471,327 @@ paths:
             Refused, and audited with its reason. DATASET_NEVER_PUBLISHED,
             DATASET_ALREADY_PUBLISHED, DATASET_NOT_RESTORABLE, VALIDATION_MISSING,
             DATASET_CORRUPTED, or ACTIVE_VERSION_CHANGED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/{id}/quarantine:
+    get:
+      operationId: listAdministrativeQuarantine
+      tags: [cms, administrative]
+      summary: 'Ops: the source-drift review queue for this dataset (ADM-011)'
+      description: >
+        The advisory change-mapping upstream is never authoritative. Rows whose
+        source or target does not resolve — overwhelmingly divided communes,
+        where the source offers a default successor ADR-0019 forbids trusting —
+        are quarantined at import and wait here for a person.
+
+
+        Counts come back in three groups because they answer three questions.
+        `canonical` is every edge the dataset asserts, by change type.
+        `backlog` is the quarantine rows themselves, by classification — this is
+        the review queue. `decisions` is those rows by the state of their
+        effective decision in the current draft set. They are deliberately not
+        one map: `AdministrativeImportReport.classification` counts every
+        advisory row including the ones the importer promoted, so a backlog read
+        from it is nine times too large.
+
+
+        Ordering is `(source code, id)`, so the candidates of one divided
+        commune sit together and a page boundary cannot drift when a decision is
+        appended mid-review.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - name: classification
+          in: query
+          schema: { type: string }
+          description: Comma-separated quarantine classifications.
+        - name: decisionState
+          in: query
+          schema: { type: string }
+          description: >
+            Comma-separated subset of UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT,
+            SUPERSEDED.
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: A page of the review queue, with complete counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeQuarantinePage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/{id}/quarantine/{rowId}:
+    get:
+      operationId: getAdministrativeQuarantineRow
+      tags: [cms, administrative]
+      summary: 'Ops: one quarantined advisory row and everything behind it'
+      description: >
+        The raw payload verbatim (bounded), the source and every candidate as
+        full identities with their effective periods, whether each candidate's
+        hierarchy resolves in this dataset, how many places carry the source
+        code, the effective decision, and the whole append-only decision
+        history.
+
+
+        `proposedByUpstream` marks the successor the source guessed. It is
+        reported so a reviewer can see what the source said and never
+        pre-selected: accepting it by position would launder that guess through
+        a person's click.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: rowId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The quarantined row
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeQuarantineDetail' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/{id}/override-set:
+    get:
+      operationId: getAdministrativeOverrideSet
+      tags: [cms, administrative]
+      summary: 'Ops: the draft decision set for this dataset (ADM-011)'
+      description: >
+        At most one DRAFT set exists per base dataset, held by a partial unique
+        index. Its `revision` increments with every appended decision and is
+        what a mutation sends back as `expectedRevision` — two reviewers
+        deciding the same row a second apart both succeed without it, and the
+        second silently wins.
+
+
+        `draft` is null until the first decision opens one.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The draft set, its counts, and earlier materialisations
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeOverrideSet' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/{id}/quarantine/{rowId}/accept:
+    post:
+      operationId: acceptAdministrativeQuarantineRow
+      tags: [cms, administrative]
+      summary: 'Ops: accept the advisory edge onto a named target (ADM-011)'
+      description: >
+        Appends a decision to the draft set. It changes nothing that is running:
+        the resolver reaches its quarantine branch only when no canonical edge
+        exists for a source code, and a draft decision creates no edge, so a
+        draft ACCEPT cannot outrank published data by construction.
+
+
+        The target is named — code **and** effective date — because a code alone
+        is not an identity: 2,212 of the 3,321 current commune codes changed
+        meaning on 2025-07-01. There is deliberately no way to accept "the first
+        candidate".
+
+
+        Correcting an earlier decision appends a new one that supersedes it. The
+        previous decision is never edited and never deleted.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: rowId, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [targetCode, targetEffectiveFrom, reason, expectedRevision]
+              properties:
+                targetCode: { type: string, minLength: 1, maxLength: 20 }
+                targetEffectiveFrom: { type: string, format: date }
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 1000
+                  description: Required. A decision nobody explained cannot be reviewed later.
+                expectedRevision:
+                  type: integer
+                  minimum: 0
+                  description: The draft set revision the reviewer was looking at.
+      responses:
+        '201':
+          description: The appended decision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeOverrideDecisionResult' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            Refused, and audited. OVERRIDE_SET_NOT_DRAFT,
+            OVERRIDE_SET_REVISION_CONFLICT when somebody else decided a row
+            first, QUARANTINE_ROW_NOT_IN_DATASET, QUARANTINE_ROW_HAS_NO_SOURCE,
+            OVERRIDE_TARGET_NOT_FOUND when the named identity is not in this
+            dataset, OVERRIDE_TARGET_NOT_CURRENT, OVERRIDE_TARGET_HIERARCHY_INVALID,
+            OVERRIDE_TARGET_IS_SOURCE, or OVERRIDE_EDGE_ALREADY_CANONICAL.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/{id}/quarantine/{rowId}/reject:
+    post:
+      operationId: rejectAdministrativeQuarantineRow
+      tags: [cms, administrative]
+      summary: 'Ops: refuse the advisory edge (ADM-011)'
+      description: >
+        The advisory relation should not become a canonical change. It deletes
+        no evidence — the row keeps its raw payload and travels into the derived
+        dataset with the decision recorded beside it — and it rejects no place:
+        this is the mapping source, not the catalogue.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: rowId, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason, expectedRevision]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 1000 }
+                expectedRevision: { type: integer, minimum: 0 }
+      responses:
+        '201':
+          description: The appended decision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeOverrideDecisionResult' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            Refused, and audited. OVERRIDE_SET_NOT_DRAFT,
+            OVERRIDE_SET_REVISION_CONFLICT or QUARANTINE_ROW_NOT_IN_DATASET.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/{id}/override-set/materialize:
+    post:
+      operationId: materializeAdministrativeOverrideSet
+      tags: [cms, administrative]
+      summary: 'Ops: turn the decisions into one new STAGED dataset (ADM-011)'
+      description: >
+        The only act in this feature that produces something the resolver will
+        eventually answer from — and it still answers from nothing until the
+        derived version is published.
+
+
+        One transaction, serialised behind publish, rollback and validate on the
+        same advisory lock. The base dataset is **copied, never moved**: its
+        units, canonical changes and quarantine rows are byte-identical
+        afterwards. The copies carry each row's effective decision, and accepted
+        decisions additionally become canonical edges bound to the decision that
+        made them.
+
+
+        The derived version is STAGED and nothing more. It is not validated and
+        not published as a side effect: it goes through the ordinary
+        validate → diff → publish path, because a reviewer decision that
+        published itself would be a publication nobody reviewed. Its
+        `overrideRevision` is the base's plus one, which mints a new combined
+        version and checksum deterministically.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason, expectedRevision]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 1000 }
+                expectedRevision: { type: integer, minimum: 0 }
+      responses:
+        '201':
+          description: The derived STAGED dataset version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeMaterializeResult' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            Refused, and audited. OVERRIDE_SET_NOT_FOUND,
+            OVERRIDE_SET_NOT_DRAFT, OVERRIDE_SET_REVISION_CONFLICT,
+            OVERRIDE_SET_EMPTY, BASE_DATASET_CHANGED, or
+            SNAPSHOT_CHECKSUM_MISMATCH when a pinned file no longer matches the
+            manifest and the derived version cannot be named.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/{id}/override-set/abandon:
+    post:
+      operationId: abandonAdministrativeOverrideSet
+      tags: [cms, administrative]
+      summary: 'Ops: close a draft nobody is going to materialise (ADM-011)'
+      description: >
+        The set stops accepting decisions and can never be materialised. The
+        decisions themselves stay exactly where they are — abandoning a round of
+        review is not a reason to lose the record of what was considered.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason, expectedRevision]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 1000 }
+                expectedRevision: { type: integer, minimum: 0 }
+      responses:
+        '201':
+          description: The set is abandoned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [overrideSetId, status, abandonedAt]
+                properties:
+                  overrideSetId: { type: string, format: uuid }
+                  status: { type: string, enum: [ABANDONED] }
+                  abandonedAt: { type: string, format: date-time, nullable: true }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            Refused, and audited. OVERRIDE_SET_NOT_FOUND,
+            OVERRIDE_SET_NOT_DRAFT or OVERRIDE_SET_REVISION_CONFLICT.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -8288,6 +8609,269 @@ components:
             limit: { type: integer }
             totalEntries: { type: integer }
             hasMore: { type: boolean }
+    AdministrativeUnitIdentity:
+      type: object
+      description: >
+        A code and the effective date that makes it mean something. 2,212 of the
+        3,321 current commune codes named a different unit before 2025-07-01, so
+        a code on its own is ambiguous rather than merely terse.
+      required: [code, name, unitType, level, effectiveFrom, effectiveTo, parentCode, status]
+      properties:
+        code: { type: string, nullable: true }
+        name: { type: string, nullable: true }
+        unitType: { type: string, nullable: true }
+        level: { type: string, nullable: true }
+        effectiveFrom: { type: string, format: date, nullable: true }
+        effectiveTo: { type: string, format: date, nullable: true }
+        parentCode: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+    AdministrativeQuarantineCounts:
+      type: object
+      required: [canonical, backlog, decisions]
+      properties:
+        canonical:
+          type: object
+          additionalProperties: { type: integer }
+          description: Every canonical edge this dataset asserts, by change type.
+        backlog:
+          type: object
+          additionalProperties: { type: integer }
+          description: >
+            Quarantine rows only, by classification. This is the review queue,
+            and it is deliberately not derivable from the import report's
+            `classification`, which counts promoted rows too.
+        decisions:
+          type: object
+          additionalProperties: { type: integer }
+          description: >
+            Rows by the state of their effective decision: UNDECIDED,
+            ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED.
+    AdministrativeQuarantineItem:
+      type: object
+      required:
+        [
+          id,
+          classification,
+          validationReason,
+          source,
+          proposedTarget,
+          upstreamFlags,
+          candidateCount,
+          affectedPlaceCount,
+          decisionState,
+          decidedAt,
+          sourceProvenance,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        classification: { type: string }
+        validationReason: { type: string }
+        source:
+          type: object
+          properties:
+            code: { type: string, nullable: true }
+            name: { type: string, nullable: true }
+        proposedTarget:
+          type: object
+          description: What the upstream guessed. Reported, never pre-selected.
+          properties:
+            code: { type: string, nullable: true }
+            name: { type: string, nullable: true }
+        upstreamFlags:
+          type: object
+          additionalProperties: true
+        candidateCount: { type: integer }
+        affectedPlaceCount: { type: integer }
+        decisionState:
+          type: string
+          enum: [UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED]
+        decidedAt: { type: string, format: date-time, nullable: true }
+        sourceProvenance: { type: string }
+    AdministrativeQuarantinePage:
+      type: object
+      required: [items, nextCursor, counts]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdministrativeQuarantineItem' }
+        nextCursor: { type: string, nullable: true }
+        counts: { $ref: '#/components/schemas/AdministrativeQuarantineCounts' }
+    AdministrativeOverrideDecisionRecord:
+      type: object
+      required: [id, sequence, decision, targetCode, targetEffectiveFrom, reason, decidedAt]
+      properties:
+        id: { type: string, format: uuid }
+        sequence: { type: integer }
+        decision: { type: string, enum: [ACCEPT, REJECT] }
+        targetCode: { type: string, nullable: true }
+        targetEffectiveFrom: { type: string, format: date, nullable: true }
+        reason: { type: string }
+        supersedesDecisionId: { type: string, format: uuid, nullable: true }
+        supersededById: { type: string, format: uuid, nullable: true }
+        decidedAt: { type: string, format: date-time }
+    AdministrativeQuarantineDetail:
+      type: object
+      required:
+        [
+          id,
+          datasetVersionId,
+          classification,
+          validationReason,
+          sourceProvenance,
+          combinedDatasetVersion,
+          rawPayload,
+          source,
+          candidates,
+          affectedPlaces,
+          overrideSet,
+          decision,
+          decisionState,
+          history,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        datasetVersionId: { type: string, format: uuid }
+        classification: { type: string }
+        validationReason: { type: string }
+        sourceProvenance: { type: string }
+        combinedDatasetVersion: { type: string }
+        upstreamFlags:
+          type: object
+          additionalProperties: true
+        rawPayload:
+          type: object
+          description: >
+            The advisory row verbatim, capped. It is evidence a reviewer reads,
+            not an archive to stream, so `truncated` says when the cap applied.
+          required: [value, truncated]
+          properties:
+            value: {}
+            truncated: { type: boolean }
+        source: { $ref: '#/components/schemas/AdministrativeUnitIdentity' }
+        candidates:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/AdministrativeUnitIdentity'
+              - type: object
+                properties:
+                  proposedByUpstream:
+                    type: boolean
+                    description: The successor the source guessed. Never a default.
+                  hierarchyValid: { type: boolean }
+                  selectable: { type: boolean }
+        affectedPlaces: { $ref: '#/components/schemas/AdministrativeAffectedPlaces' }
+        overrideSet:
+          type: object
+          required: [id, revision, status]
+          properties:
+            id: { type: string, format: uuid, nullable: true }
+            revision: { type: integer }
+            status: { type: string }
+        decision:
+          allOf: [{ $ref: '#/components/schemas/AdministrativeOverrideDecisionRecord' }]
+          nullable: true
+        decisionState:
+          type: string
+          enum: [UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED]
+        history:
+          type: array
+          description: Append-only, newest first. Nothing here is ever rewritten.
+          items: { $ref: '#/components/schemas/AdministrativeOverrideDecisionRecord' }
+    AdministrativeOverrideSet:
+      type: object
+      required: [draft, counts, materialized]
+      properties:
+        draft:
+          type: object
+          nullable: true
+          description: Null until the first decision opens one. At most one per base dataset.
+          required: [id, revision, status, createdAt, updatedAt]
+          properties:
+            id: { type: string, format: uuid }
+            revision:
+              type: integer
+              description: >
+                Increments with every appended decision, and is what a mutation
+                sends back as `expectedRevision`.
+            status: { type: string, enum: [DRAFT] }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+        counts: { $ref: '#/components/schemas/AdministrativeQuarantineCounts' }
+        materialized:
+          type: array
+          items:
+            type: object
+            required: [id, revision, datasetVersionId, materializedAt]
+            properties:
+              id: { type: string, format: uuid }
+              revision: { type: integer }
+              datasetVersionId: { type: string, format: uuid, nullable: true }
+              materializedAt: { type: string, format: date-time, nullable: true }
+    AdministrativeOverrideDecisionResult:
+      type: object
+      required:
+        [
+          decisionId,
+          overrideSetId,
+          overrideSetRevision,
+          decision,
+          quarantineRowId,
+          supersededDecisionId,
+          decidedAt,
+        ]
+      properties:
+        decisionId: { type: string, format: uuid }
+        overrideSetId: { type: string, format: uuid }
+        overrideSetRevision:
+          type: integer
+          description: Send this back as `expectedRevision` on the next decision.
+        decision: { type: string, enum: [ACCEPT, REJECT] }
+        quarantineRowId: { type: string, format: uuid }
+        supersededDecisionId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The decision this one replaces. The replaced row is never edited.
+        decidedAt: { type: string, format: date-time }
+    AdministrativeMaterializeResult:
+      type: object
+      required:
+        [
+          overrideSetId,
+          overrideSetRevision,
+          datasetVersionId,
+          combinedDatasetVersion,
+          combinedChecksum,
+          overrideRevision,
+          status,
+          decisions,
+        ]
+      properties:
+        overrideSetId: { type: string, format: uuid }
+        overrideSetRevision: { type: integer }
+        datasetVersionId:
+          type: string
+          format: uuid
+          description: The derived version. STAGED, and served to nobody until it is published.
+        combinedDatasetVersion: { type: string }
+        combinedChecksum: { type: string }
+        overrideRevision:
+          type: integer
+          description: The base's plus one, which is what mints a new identity deterministically.
+        status: { type: string, enum: [STAGED] }
+        decisions:
+          type: object
+          required: [effective, accepted, rejected, edges]
+          properties:
+            effective: { type: integer }
+            accepted: { type: integer }
+            rejected: { type: integer }
+            edges:
+              type: integer
+              description: >
+                Canonical edges written. A rejection produces none — it changes
+                the derived dataset's provenance, not its content.
     AdministrativeStaleMappings:
       type: object
       description: >

@@ -55,7 +55,12 @@ export type GateId =
   | 'RECORD_COUNT_DELTA'
   | 'REMOVED_UNIT_UNEXPLAINED'
   | 'SOURCE_FORMATTING'
-  | 'UNRESOLVED_CHANGES';
+  | 'UNRESOLVED_CHANGES'
+  // ADM-011 (#484) — the three things a materialised reviewer override has to
+  // be true about, beyond what any canonical edge already has to be.
+  | 'OVERRIDE_PROVENANCE'
+  | 'OVERRIDE_CONFLICT'
+  | 'OVERRIDE_REVISION_CONSISTENT';
 
 export type Finding = {
   gate: GateId;
@@ -87,6 +92,8 @@ export type DatasetUnderValidation = {
   /** Verified by the snapshot reader before parsing; false means drift. */
   snapshotChecksumsVerified: boolean;
   publishedVersionCount: number;
+  /** The dataset's own override revision, for the #484 consistency gate. */
+  overrideRevision: number;
   /** The currently published set, when there is one, for delta comparison. */
   baseline?: { datasetVersion: string; units: readonly ProvenancedUnit[] } | undefined;
 };
@@ -409,8 +416,18 @@ export function validateDataset(input: DatasetUnderValidation): ValidationReport
       structural.push(`${change.oldCode}->${change.newCode}:${change.changeType}`);
       continue;
     }
+    /*
+     * A SPLIT is never canonical **from the upstream**: the source offers a
+     * default successor for a divided commune and ADR-0019 forbids trusting it.
+     * A SPLIT a reviewer decided is a different claim entirely — it carries the
+     * id of the decision that made it, and that is what the provenance gate
+     * below checks. Without this exemption the override feature would have
+     * shipped producing datasets its own validation calls malformed.
+     */
     if (change.changeType === 'SPLIT') {
-      structural.push(`${change.oldCode}->${change.newCode}:SPLIT is never canonical`);
+      if (!change.overrideDecisionId) {
+        structural.push(`${change.oldCode}->${change.newCode}:SPLIT is never canonical`);
+      }
       continue;
     }
     if (!change.newCode) continue;
@@ -431,7 +448,19 @@ export function validateDataset(input: DatasetUnderValidation): ValidationReport
     ),
   );
 
-  const canonicalEdges = new Set(input.changes.map((c) => `${c.oldCode ?? ''}>${c.newCode ?? ''}`));
+  /*
+   * An advisory row that is also canonical means the importer promoted
+   * something it had quarantined — except where a reviewer decided it. The
+   * quarantine row is *retained* through a materialisation on purpose: it is
+   * the evidence of what the source said before anybody adjudicated it, and
+   * dropping it to satisfy this gate would destroy the only record of the
+   * question the decision answered.
+   */
+  const upstreamEdges = new Set(
+    input.changes
+      .filter((c) => !c.overrideDecisionId)
+      .map((c) => `${c.oldCode ?? ''}>${c.newCode ?? ''}`),
+  );
   push(
     finding(
       'QUARANTINE_EXCLUDED',
@@ -439,7 +468,55 @@ export function validateDataset(input: DatasetUnderValidation): ValidationReport
       'a quarantined advisory row also appears as a canonical change',
       input.quarantine
         .map((q) => `${q.oldCode ?? ''}>${q.newCode ?? ''}`)
-        .filter((edge) => canonicalEdges.has(edge)),
+        .filter((edge) => upstreamEdges.has(edge)),
+    ),
+  );
+
+  // ADM-011 (#484) — what a materialised reviewer override must be true about.
+  const overrides = input.changes.filter((c) => c.overrideDecisionId);
+  push(
+    finding(
+      'OVERRIDE_PROVENANCE',
+      'ERROR',
+      'a reviewer override names no source or no target, so it asserts nothing',
+      overrides
+        .filter((c) => !c.oldCode || !c.newCode)
+        .map((c) => `${c.oldCode ?? '?'}->${c.newCode ?? '?'}`),
+    ),
+  );
+
+  // Two effective overrides sending one source to different successors is the
+  // contradiction the whole append-only decision model exists to prevent; if it
+  // reaches a dataset, something wrote edges outside the materialisation path.
+  const overrideTargets = new Map<string, Set<string>>();
+  for (const change of overrides) {
+    if (!change.oldCode || !change.newCode) continue;
+    const targets = overrideTargets.get(change.oldCode) ?? new Set<string>();
+    targets.add(change.newCode);
+    overrideTargets.set(change.oldCode, targets);
+  }
+  push(
+    finding(
+      'OVERRIDE_CONFLICT',
+      'ERROR',
+      'one source carries reviewer overrides onto more than one successor',
+      [...overrideTargets.entries()]
+        .filter(([, targets]) => targets.size > 1)
+        .map(([source, targets]) => `${source}->${[...targets].sort().join('|')}`),
+    ),
+  );
+
+  // A dataset holding reviewer overrides at revision 0 is one whose identity
+  // does not account for them — and the identity is what publication and the
+  // duplicate-import gate both read.
+  push(
+    finding(
+      'OVERRIDE_REVISION_CONSISTENT',
+      'ERROR',
+      'the dataset carries reviewer overrides but its override revision is zero',
+      overrides.length > 0 && input.overrideRevision === 0
+        ? [`${overrides.length} override edge(s) at r0`]
+        : [],
     ),
   );
 

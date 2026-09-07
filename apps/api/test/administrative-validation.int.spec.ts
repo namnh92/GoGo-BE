@@ -232,6 +232,10 @@ describe('the diff against a published baseline', () => {
       EFFECTIVE_PERIOD_CHANGED: 0,
       UNRESOLVED: 0,
       SOURCE_DRIFT: 1,
+      // #484 added two. A pure override bump with no decisions behind it still
+      // says exactly one thing.
+      OVERRIDE_ACCEPTED: 0,
+      OVERRIDE_TARGET_CHANGED: 0,
     });
     expect(diff.entries).toHaveLength(1);
     expect(diff.entries.find((e) => e.category === 'SOURCE_DRIFT')!.detail).toBe(

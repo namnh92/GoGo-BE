@@ -109,6 +109,78 @@ previous one, and writes an audit event. Rollback re-activates a previous valid
 version: a forward act with its own audit row, not an undo. Republishing the
 same version is refused, not silently ignored.
 
+#### 3a-0. Reviewer adjudication of the advisory source (ADM-011, #484)
+
+1,033 rows of the pinned change-mapping upstream are quarantined, every one a
+commune the source says was divided, across 471 sources. The source offers a
+default successor for each; §2 forbids trusting it, because which successor a
+divided commune became is a question about where a place physically is. So a
+person decides — and until #484 there was nowhere for that decision to go. The
+`reviewer_decision` columns on `administrative_mapping_quarantine` were declared
+in 0051 and never read or written by anything.
+
+The shape is append-only draft, then explicit materialisation:
+
+1. decisions are rows in a **draft override set** bound to one immutable base;
+2. a decision has **no runtime effect at all**;
+3. an explicit **materialisation** produces one new immutable STAGED dataset;
+4. that dataset goes through the ordinary validate → diff → publish path;
+5. only publication changes what the resolver answers.
+
+**Why a draft rather than a dataset per decision.** A dataset version owns its
+rows — 14,149 units, 9,571 changes and 1,033 quarantine rows on the pinned
+source — because that is what makes the snapshot fingerprint mean anything.
+Minting one per click would be 24,700 rows per reviewer decision and 1,033
+versions per review round. One clone per round costs 593 ms, measured.
+
+**Why the resolver needed no change.** It consults quarantine only when no
+canonical edge exists for a source code, and it filters edges to
+`resolution = 'resolved'`. A draft decision creates no edge, so a draft ACCEPT
+cannot outrank published data _by construction_ rather than by a rule anybody
+has to remember; a materialised ACCEPT creates exactly the edge the resolver
+already knows how to use; a REJECT creates none, so the code stays unresolved,
+which is what a rejection means.
+
+**One draft per base dataset**, held by a partial unique index. The combined
+checksum is a pure function of the four pinned source checksums plus
+`override_revision`, and both the version string and the checksum are unique —
+two drafts on one base would both mint `r+1` and the second would be refused
+after copying 24,700 rows. The next round opens against the _derived_ dataset:
+r0 → r1 → r2. A base that already materialised refuses to open a second draft
+(`OVERRIDE_BASE_ALREADY_MATERIALIZED`) rather than letting a reviewer build a
+round that could never land.
+
+**Nothing is ever edited.** Not the pinned snapshot, not the base dataset's
+rows — a materialisation leaves them byte-identical, which is asserted — and not
+an earlier decision. A correction appends a decision that supersedes the
+previous one. The single column ever updated is the back-pointer
+`superseded_by_id`, written by the replacement inside its own transaction so
+that "one effective decision per row" is a database constraint; its foreign key
+is `DEFERRABLE INITIALLY DEFERRED`, because the pointer has to be written before
+the row it points at exists.
+
+**Concurrency is a revision, not a lock.** Every mutation sends the draft
+revision the reviewer was looking at. Two people deciding the same row a second
+apart both succeed without it and the second silently wins, which is the one
+failure a review queue cannot have. Materialisation additionally takes the same
+advisory transition key as publish, rollback and validate.
+
+**Two validation gates learned about overrides.** `MERGE_SPLIT_STRUCTURE` says a
+SPLIT is never canonical — true of the _upstream_, and false of a SPLIT a
+reviewer decided, which carries the id of the decision that made it.
+`QUARANTINE_EXCLUDED` refuses a row that is both quarantined and canonical —
+except through an override, because the quarantine row is retained on purpose as
+the evidence of what the source said before anybody adjudicated it. Three gates
+were added: `OVERRIDE_PROVENANCE`, `OVERRIDE_CONFLICT` (one source cannot carry
+overrides onto two successors) and `OVERRIDE_REVISION_CONSISTENT`.
+
+The diff gained `OVERRIDE_ACCEPTED` and `OVERRIDE_TARGET_CHANGED`. A
+materialisation of two decisions diffs as two entries plus one `SOURCE_DRIFT`
+for the revision — not as 9,569 replayed migrations, because the diff already
+skips edges the baseline asserted. `OVERRIDE_REJECTED` is deliberately absent: a
+rejection creates no edge, so it changes the derived dataset's provenance rather
+than its content, and it is reported in the decision counts instead.
+
 #### 3a-i. Validation is a transition, not a read (#482)
 
 `validate` runs the gates and stores the report — and, with it, the resulting

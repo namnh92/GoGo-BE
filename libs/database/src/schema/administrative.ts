@@ -115,6 +115,23 @@ export const administrativeBackfillStatus = pgEnum('administrative_backfill_stat
   'abandoned',
 ]);
 
+export const administrativeOverrideSetStatus = pgEnum('administrative_override_set_status', [
+  'DRAFT',
+  'MATERIALIZED',
+  'ABANDONED',
+]);
+
+/**
+ * Two outcomes, not three. "Superseded" is the relationship between two
+ * decisions, not an outcome a reviewer picks — offering it as a third value
+ * would ask them to tell "I reject this mapping" apart from "I withdraw my
+ * earlier opinion", a question about bookkeeping rather than about geography.
+ */
+export const administrativeOverrideDecision = pgEnum('administrative_override_decision', [
+  'ACCEPT',
+  'REJECT',
+]);
+
 export const administrativeQuarantineClass = pgEnum('administrative_quarantine_class', [
   'VALID_UNIQUE',
   'VALID_MERGE',
@@ -278,6 +295,13 @@ export const administrativeUnitChanges = pgTable(
     legalReference: text('legal_reference'),
     sourceVersion: text('source_version').notNull(),
     resolution: administrativeChangeResolution('resolution').notNull().default('resolved'),
+    /**
+     * Which reviewer decision produced this edge (#484), or NULL for one the
+     * pinned upstream asserted. It is what lets the diff say "a reviewer
+     * decided this" rather than reporting a GoGo decision as an upstream fact,
+     * and what binds a materialised edge to the audit row behind it.
+     */
+    overrideDecisionId: uuid('override_decision_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -290,6 +314,9 @@ export const administrativeUnitChanges = pgTable(
     index('administrative_unit_changes_unresolved_idx')
       .on(t.datasetVersionId)
       .where(sql`${t.resolution} = 'ambiguous'`),
+    index('administrative_unit_changes_override_idx')
+      .on(t.datasetVersionId)
+      .where(sql`${t.overrideDecisionId} is not null`),
     check(
       'administrative_unit_changes_endpoints',
       sql`${t.oldCode} is not null or ${t.newCode} is not null`,
@@ -342,6 +369,114 @@ export const administrativeMappingQuarantine = pgTable(
     index('administrative_mapping_quarantine_pending_idx')
       .on(t.datasetVersionId)
       .where(sql`${t.reviewedAt} is null`),
+  ],
+);
+
+/**
+ * ADM-011 (#484) — a round of reviewer adjudication against one immutable base.
+ *
+ * The 1,033 quarantined rows are divided communes, and ADR-0019 forbids anyone
+ * from guessing which successor one became. A person has to decide, and the
+ * decision must not edit the pinned snapshot, must not touch a published
+ * dataset, and must not change what the resolver answers the moment it is
+ * taken. So a decision is an append-only row in a draft set, it has no runtime
+ * effect at all, and an explicit materialisation turns the accepted ones into a
+ * single new STAGED dataset that is validated, diffed and published like any
+ * import.
+ *
+ * **One draft per base dataset.** The combined checksum is a pure function of
+ * the four pinned source checksums plus `overrideRevision`, and both it and the
+ * version string are unique — so two drafts on the same base would both mint
+ * `r+1` and the second would be refused after copying 24,000 rows. The next
+ * round opens against the derived dataset instead: r0 → r1 → r2.
+ */
+export const administrativeMappingOverrideSets = pgTable(
+  'administrative_mapping_override_sets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    baseDatasetId: uuid('base_dataset_id')
+      .notNull()
+      .references(() => administrativeDatasetVersions.id, { onDelete: 'cascade' }),
+    /**
+     * Incremented by every appended decision, and the value a mutation sends
+     * back. Two reviewers deciding at once cannot silently overwrite each
+     * other: the loser is told the set moved and re-reads it.
+     */
+    revision: integer('revision').notNull().default(0),
+    status: administrativeOverrideSetStatus('status').notNull().default('DRAFT'),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    /** The one dataset this set produced. Written once, with the status. */
+    materializedDatasetId: uuid('materialized_dataset_id'),
+    materializedAt: timestamp('materialized_at', { withTimezone: true }),
+    materializedBy: uuid('materialized_by'),
+    abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
+    abandonedBy: uuid('abandoned_by'),
+    abandonedReason: text('abandoned_reason'),
+  },
+  (t) => [
+    uniqueIndex('administrative_override_sets_one_draft')
+      .on(t.baseDatasetId)
+      .where(sql`${t.status} = 'DRAFT'`),
+    uniqueIndex('administrative_override_sets_materialized_unique')
+      .on(t.materializedDatasetId)
+      .where(sql`${t.materializedDatasetId} is not null`),
+    index('administrative_override_sets_base_idx').on(t.baseDatasetId, t.status),
+    // The paired-column CHECKs live in the SQL migration.
+  ],
+);
+
+/**
+ * One reviewer decision about one quarantined advisory row.
+ *
+ * Append-only in the literal sense: nothing rewrites a decision's content. A
+ * correction appends a new row pointing at the one it replaces, and the only
+ * column ever updated is `supersededById`, written by that replacement inside
+ * the same transaction — it exists so "one effective decision per quarantine
+ * row" is a database constraint rather than a rule the application has to
+ * remember.
+ */
+export const administrativeMappingOverrideDecisions = pgTable(
+  'administrative_mapping_override_decisions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    overrideSetId: uuid('override_set_id')
+      .notNull()
+      .references(() => administrativeMappingOverrideSets.id, { onDelete: 'cascade' }),
+    quarantineRowId: uuid('quarantine_row_id')
+      .notNull()
+      .references(() => administrativeMappingQuarantine.id, { onDelete: 'cascade' }),
+    /** Denormalised so a decision reads as evidence without walking to its set. */
+    baseDatasetId: uuid('base_dataset_id')
+      .notNull()
+      .references(() => administrativeDatasetVersions.id, { onDelete: 'cascade' }),
+    sequence: integer('sequence').notNull(),
+    decision: administrativeOverrideDecision('decision').notNull(),
+    /**
+     * The target the reviewer named. A code alone is not an identity, so the
+     * effective period travels with it and `targetIdentity` keeps the whole
+     * unit as it read at decision time.
+     */
+    targetCode: text('target_code'),
+    targetEffectiveFrom: date('target_effective_from'),
+    targetIdentity: jsonb('target_identity').$type<Record<string, unknown> | null>(),
+    reason: text('reason').notNull(),
+    /** The quarantine row and its candidates as they were. */
+    evidence: jsonb('evidence').$type<Record<string, unknown>>().notNull().default({}),
+    supersedesDecisionId: uuid('supersedes_decision_id'),
+    supersededById: uuid('superseded_by_id'),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('administrative_override_decisions_sequence').on(t.overrideSetId, t.sequence),
+    uniqueIndex('administrative_override_decisions_effective')
+      .on(t.overrideSetId, t.quarantineRowId)
+      .where(sql`${t.supersededById} is null`),
+    index('administrative_override_decisions_set_idx').on(t.overrideSetId, t.createdAt.desc()),
+    index('administrative_override_decisions_row_idx').on(t.quarantineRowId),
+    // CHECKs (accept needs a target, reason is non-empty) live in the migration.
   ],
 );
 

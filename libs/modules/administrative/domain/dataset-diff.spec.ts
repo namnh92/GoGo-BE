@@ -241,9 +241,13 @@ describe('ordering, bounding and linkage', () => {
   });
 
   it('reports every category key even when nothing fell into it', () => {
+    // A category that vanishes when empty cannot be told apart from one nobody
+    // computed. #484 added two, so this is 13.
     const diff = run();
     expect(Object.values(diff.countsByCategory).every((n) => n === 0)).toBe(true);
-    expect(Object.keys(diff.countsByCategory)).toHaveLength(11);
+    expect(Object.keys(diff.countsByCategory)).toHaveLength(13);
+    expect(diff.countsByCategory.OVERRIDE_ACCEPTED).toBe(0);
+    expect(diff.countsByCategory.OVERRIDE_TARGET_CHANGED).toBe(0);
   });
 });
 

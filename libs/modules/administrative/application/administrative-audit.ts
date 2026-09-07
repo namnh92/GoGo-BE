@@ -8,6 +8,15 @@
  */
 export const AUDIT_RESOURCE = 'administrative_dataset';
 
+/**
+ * ADM-011 (#484) — reviewer adjudication of the advisory mapping source.
+ *
+ * A separate resource type from the dataset: a decision is about one quarantined
+ * row, and a reviewer asking "who decided 00160, and why" should not have to
+ * read past every publication of the dataset it belonged to.
+ */
+export const AUDIT_OVERRIDE_RESOURCE = 'administrative_mapping_override';
+
 export const AUDIT_ACTION = {
   import: 'administrative_dataset.import',
   validate: 'administrative_dataset.validate',
@@ -16,4 +25,19 @@ export const AUDIT_ACTION = {
   publishRejected: 'administrative_dataset.publish_rejected',
   rollback: 'administrative_dataset.rollback',
   rollbackRejected: 'administrative_dataset.rollback_rejected',
+} as const;
+
+/**
+ * The override vocabulary. `superseded` is written on the decision being
+ * replaced, by the one replacing it — so the trail reads as a sequence of
+ * opinions rather than as a value that changed.
+ */
+export const OVERRIDE_ACTION = {
+  accepted: 'administrative_mapping_override.accepted',
+  rejected: 'administrative_mapping_override.rejected',
+  superseded: 'administrative_mapping_override.superseded',
+  decisionRefused: 'administrative_mapping_override.decision_rejected',
+  materialized: 'administrative_mapping_override_set.materialized',
+  materializeRefused: 'administrative_mapping_override_set.materialize_rejected',
+  abandoned: 'administrative_mapping_override_set.abandoned',
 } as const;
