@@ -140,6 +140,13 @@ export const administrativeDatasetVersions = pgTable(
     currentSourceVersion: text('current_source_version').notNull(),
     historicalSourceVersion: text('historical_source_version'),
     mappingSourceCommit: text('mapping_source_commit'),
+    /**
+     * The boundary set is a fourth pinned upstream, not a facet of the unit
+     * data: it is versioned separately (GIS v4.0.0 against v5.0.0 units), so it
+     * gets its own component of the combined identity rather than being assumed
+     * in step.
+     */
+    boundarySourceVersion: text('boundary_source_version'),
     /** Bumped by a reviewer decision, not by an upstream release. */
     overrideRevision: integer('override_revision').notNull().default(0),
     source: text('source').notNull(),

@@ -386,6 +386,52 @@ describe('places compatibility', () => {
     expect(place.administrativeDatasetVersion).toBe('gogo-2026-09-07-a');
   });
 
+  it('refuses a boundary-derived claim that cannot name its boundary set', async () => {
+    // GoGo-BE#464 classified these codes as GoGo's own facts *because* they are
+    // reproducible from a stored point and a pinned boundary version. A claim
+    // that cannot name the version is not reproducible, so it is not that kind
+    // of fact and the database will not hold it.
+    await expectViolation(
+      () =>
+        insertPlace({
+          provinceCode: '01',
+          communeCode: '00004',
+          administrativeMappingStatus: 'AUTO_MATCHED',
+          administrativeMappingSource: 'boundary_point_in_polygon',
+          administrativeDatasetVersion: 'gogo-2026-09-07-a',
+          administrativeBoundaryVersion: null,
+        }),
+      'places_administrative_boundary_version_present',
+    );
+  });
+
+  it('accepts a boundary-derived claim that names both versions', async () => {
+    const place = await insertPlace({
+      provinceCode: '01',
+      communeCode: '00004',
+      administrativeMappingStatus: 'AUTO_MATCHED',
+      administrativeMappingSource: 'boundary_point_in_polygon',
+      administrativeDatasetVersion: 'gogo-2026-09-07-a',
+      administrativeBoundaryVersion: 'gis-v4.0.0',
+      administrativeMappedAt: new Date(),
+    });
+    expect(place.administrativeBoundaryVersion).toBe('gis-v4.0.0');
+    expect(place.administrativeMappingSource).toBe('boundary_point_in_polygon');
+  });
+
+  it('lets a non-boundary claim omit the boundary version', async () => {
+    // The constraint is scoped to the evidence that needs it. An editor typing
+    // a code owes no boundary provenance, because no polygon was consulted.
+    const place = await insertPlace({
+      provinceCode: '01',
+      communeCode: '00004',
+      administrativeMappingStatus: 'VERIFIED',
+      administrativeMappingSource: 'editor',
+      administrativeDatasetVersion: 'gogo-2026-09-07-a',
+    });
+    expect(place.administrativeBoundaryVersion).toBeNull();
+  });
+
   it('refuses a confidence outside 0..1', async () => {
     await expectViolation(
       () =>

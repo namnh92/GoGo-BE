@@ -4,7 +4,7 @@
 - **Date:** 2026-09-07
 - **Deciders:** Database, BFF/API, CMS Ops, Platform/SRE, repository owner
 - **Supersedes in part:** ADR-0016 — its `places.city` / `places.district` clause, and only its conclusion
-- **Constrained by:** the permanent Google-content freeze (`GoGo-BE/CLAUDE.md`, `GOGO_PRODUCT_DATA_ARCHITECTURE.md`) — see §10
+- **Constrained by:** the permanent Google-content freeze (`GoGo-BE/CLAUDE.md`, `GOGO_PRODUCT_DATA_ARCHITECTURE.md`) — resolved for this work by the owner decision on GoGo-BE#464, recorded in §10
 - **Issues:** GoGo-BE#454 … #464; GoGo-CMS#153 … #156; GoGo-MobileApp#148; GoGo-Infra#156
 
 ## Context
@@ -209,38 +209,79 @@ CONSUMER**, recorded as GoGo-MobileApp#148 with a future integration plan and no
 code. The flow stays: mobile submits a Google link → BE fetches Details → the BE
 resolver maps codes → CMS reviews ambiguity → approval enforces the policy.
 
-### 10. What the Google-content freeze still blocks
+### 10. Boundary-derived codes are GoGo facts; Google address content stays out
 
-`GoGo-BE/CLAUDE.md` states the freeze plainly, and states that it is
-**permanent** under `GOGO_PRODUCT_DATA_ARCHITECTURE.md` — Google is identity,
-routes and directions only — rather than a queue waiting on a signature. PR8 was
-cancelled, not deferred.
+The Google-content freeze is permanent — `GoGo-BE/CLAUDE.md` and
+`GOGO_PRODUCT_DATA_ARCHITECTURE.md` limit Google to identity, routes and
+directions, and PR8 was cancelled rather than deferred. GoGo consequently stores
+no Google address component: none on `place_provider_sources`,
+`place_sources.raw` stopped and nulled by migration `0033`, and no
+`PLACE_FIELD_MASKS` tier asking for `addressComponents`.
 
-> Adding a provider-response snapshot, a new provider-derived column, or a cache
-> of names/addresses/ratings/hours/coordinates is a blocking review finding.
+That freeze left one question open, and the repository owner answered it on
+2026-09-07 (GoGo-BE#464). The two halves land differently, and the boundary
+between them is **purpose**, not mechanism.
 
-GoGo consequently stores **no** Google address component: no `addressComponents`
-and no `formattedAddress` on `place_provider_sources`, `place_sources.raw`
-stopped and nulled by migration `0033`, and no `PLACE_FIELD_MASKS` tier asking
-for components. The resolver's component-based evidence levels therefore have no
-stored input for existing places.
+**Allowed — administrative codes derived from stored geometry.** Intersecting an
+already-stored `places.geom` with GoGo's pinned MIT boundary dataset to write
+`province_code` and `commune_code` is a **GoGo-generated normalized fact**, not a
+provider-derived column. `places.geom` is already accepted GoGo data; no Google
+request is made; the classification runs entirely against GoGo-controlled MIT
+data; and the result is reproducible from the stored geometry plus a pinned
+boundary version. Provenance is recorded explicitly and always:
+`administrative_mapping_source = 'boundary_point_in_polygon'`,
+`administrative_dataset_version`, `administrative_boundary_version`,
+`administrative_mapped_at`, and the resolver status.
 
-Unblocked and shipping now: the dataset, import, quarantine, validation, diff,
-publish, rollback, read APIs, cache, resolver evidence levels 1, 5, 6 and 7, the
-place columns, and the whole CMS surface — none of which touches Google.
+**Prohibited — fetching Google address content for this purpose.**
+`addressComponents` is not added to any field mask, and Place Details is not
+called to obtain administrative components for ingestion or for backfill.
+Calling Details for components and persisting only a derived code is still use
+of Google content **for an administrative-address purpose**, and that purpose is
+outside the three permitted uses. "Same-execution reuse" authorises reuse within
+a purpose already permitted; it does not authorise a new one, and it does not
+make persisted derived output compliant. Nothing in this ADR supersedes or
+weakens the permanent Google-content architecture.
 
-Blocked pending **GoGo-BE#464**: point-in-polygon over `places.geom` (#460) and
-the Place-Details enrichment backfill (#461). The open question is whether a GSO
-code derived from an already-stored coordinate is GoGo's own geographic fact or
-"a new provider-derived column"; an administrative address is not one of the
-three uses the data architecture permits, which is the strongest argument that
-it is the latter. Each resolver evidence source is a registered provider
-declaring its class, and the two in question ship disabled with no write path.
+So Google administrative components appear at **no level** of the resolver
+precedence, which is:
 
-If the answer is that they stay closed, the resolver runs on names, historical
-mappings and human-entered codes, `NEEDS_REVIEW` will be the common outcome, and
-most of the catalogue passes through a person in the CMS. That is a cost to
-accept deliberately — not something to engineer around.
+1. GoGo reviewer-approved override
+2. trusted, explicitly supplied official codes
+3. unique boundary intersection against the pinned current dataset
+4. validated historical mapping / name evidence
+5. unresolved candidates for CMS review
+
+**Point-in-polygon rules.** SRID 4326 throughout; geometry validated before
+intersection; MultiPolygon handled; deterministic behaviour defined for a point
+lying on a shared edge; zero matches and multiple matches both detected, and a
+multiple match is **never** resolved by picking one. The commune→province
+hierarchy is validated against the same dataset version, which is recorded, so
+the same point and version always give the same answer.
+
+| outcome                       | status                                                 |
+| ----------------------------- | ------------------------------------------------------ |
+| unique commune and province   | `AUTO_MATCHED`, evidence `boundary_point_in_polygon`   |
+| province unique, no commune   | `NEEDS_REVIEW`                                         |
+| several communes or provinces | `NEEDS_REVIEW`, candidates listed                      |
+| no containing polygon         | `UNMAPPED` or `NEEDS_REVIEW`, per the documented cause |
+| geometry invalid or missing   | `UNMAPPED`                                             |
+| reviewer confirmation         | `VERIFIED`                                             |
+
+**`legacy_district_code` gets no boundary path at all.** The chosen boundary
+source has no legacy district polygons, so point-in-polygon cannot resolve one
+and must not pretend to. It may be populated only from a uniquely resolved
+historical name or code already lawfully stored, a validated historical mapping,
+explicit import data whose licence permits persistence, or a CMS reviewer's
+selection. Otherwise it stays `NULL` and the evidence is marked unavailable.
+Legacy boundary support is not fabricated.
+
+**Approval is unchanged by this.** A boundary-derived `AUTO_MATCHED` populates
+the codes; it does not approve a place. CMS verification remains required for
+MVP approval until a separately accepted policy says otherwise, and the reviewer
+sees the matched province and commune, the point in map context where supported,
+the boundary dataset version, the match method, any conflict or rival candidates,
+and the legacy-district status.
 
 ## Sources, pinned
 

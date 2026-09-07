@@ -37,6 +37,7 @@
 --   ALTER TABLE places
 --     DROP COLUMN administrative_mapped_by,
 --     DROP COLUMN administrative_mapped_at,
+--     DROP COLUMN administrative_boundary_version,
 --     DROP COLUMN administrative_dataset_version,
 --     DROP COLUMN administrative_mapping_confidence,
 --     DROP COLUMN administrative_mapping_source,
@@ -153,6 +154,10 @@ CREATE TABLE IF NOT EXISTS administrative_dataset_versions (
   current_source_version text NOT NULL,
   historical_source_version text,
   mapping_source_commit text,
+  -- The boundary set is a fourth pinned upstream, not a facet of the unit data:
+  -- it is versioned separately (GIS v4.0.0 against v5.0.0 units), so it gets its
+  -- own component of the combined identity rather than being assumed in step.
+  boundary_source_version text,
   -- Bumped by a reviewer decision, not by an upstream release.
   override_revision integer NOT NULL DEFAULT 0,
   source text NOT NULL,
@@ -391,6 +396,11 @@ ALTER TABLE places
   -- Which dataset produced the codes above. Without it a code is ambiguous
   -- across 2025-07-01 — see the header.
   ADD COLUMN IF NOT EXISTS administrative_dataset_version text,
+  -- Which boundary set produced a point-in-polygon claim (GoGo-BE#464). Kept
+  -- apart from the dataset version because the same units can be published
+  -- against a newer boundary release, and "which polygons said so" is the
+  -- question a reviewer asks when a match looks wrong.
+  ADD COLUMN IF NOT EXISTS administrative_boundary_version text,
   ADD COLUMN IF NOT EXISTS administrative_mapped_at timestamptz,
   ADD COLUMN IF NOT EXISTS administrative_mapped_by uuid
     REFERENCES admin_users(id) ON DELETE SET NULL;--> statement-breakpoint
@@ -415,6 +425,19 @@ DO $$ BEGIN
     ALTER TABLE places ADD CONSTRAINT places_administrative_version_present
       CHECK (administrative_mapping_status = 'UNMAPPED'
              OR administrative_dataset_version IS NOT NULL);
+  END IF;
+END $$;--> statement-breakpoint
+
+-- A point-in-polygon claim that cannot say which polygons it came from is not
+-- reproducible, and reproducibility is the whole basis on which GoGo-BE#464
+-- classified these codes as GoGo's own facts rather than provider content.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'places_administrative_boundary_version_present'
+  ) THEN
+    ALTER TABLE places ADD CONSTRAINT places_administrative_boundary_version_present
+      CHECK (administrative_mapping_source IS DISTINCT FROM 'boundary_point_in_polygon'
+             OR administrative_boundary_version IS NOT NULL);
   END IF;
 END $$;--> statement-breakpoint
 

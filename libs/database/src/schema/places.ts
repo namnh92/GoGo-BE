@@ -177,6 +177,13 @@ export const places = pgTable(
       scale: 2,
     }),
     administrativeDatasetVersion: text('administrative_dataset_version'),
+    /**
+     * Which boundary set produced a point-in-polygon claim (GoGo-BE#464). Kept
+     * apart from the dataset version because the same units can be published
+     * against a newer boundary release, and "which polygons said so" is the
+     * question a reviewer asks when a match looks wrong.
+     */
+    administrativeBoundaryVersion: text('administrative_boundary_version'),
     administrativeMappedAt: timestamp('administrative_mapped_at', { withTimezone: true }),
     administrativeMappedBy: uuid('administrative_mapped_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -206,6 +213,14 @@ export const places = pgTable(
       'places_administrative_version_present',
       sql`${t.administrativeMappingStatus} = 'UNMAPPED'
           or ${t.administrativeDatasetVersion} is not null`,
+    ),
+    // A point-in-polygon claim that cannot say which polygons it came from is
+    // not reproducible, and reproducibility is the whole basis on which
+    // GoGo-BE#464 classified these codes as GoGo's own facts.
+    check(
+      'places_administrative_boundary_version_present',
+      sql`${t.administrativeMappingSource} is distinct from 'boundary_point_in_polygon'
+          or ${t.administrativeBoundaryVersion} is not null`,
     ),
     // GiST geo index + trigram/FTS indexes live in the raw SQL migration
     // (DB-009) because drizzle-kit cannot express them.
