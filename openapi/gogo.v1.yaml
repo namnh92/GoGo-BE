@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.4
+  version: 1.0.0-alpha.5
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -954,6 +954,187 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '503':
           description: Object storage is not configured in this environment
+
+  /administrative/version:
+    get:
+      operationId: getAdministrativeVersion
+      tags: [administrative]
+      summary: Active administrative dataset version (the cheap poll)
+      description: >
+        ADM-003 / ADR-0019. A client holds a snapshot and refetches only when
+        datasetVersion changes. Serves the one PUBLISHED dataset; 503 when none
+        is published, which is an operational fault rather than an empty result.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: Active dataset version and record counts
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeVersion' }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '503': { $ref: '#/components/responses/AdministrativeUnavailable' }
+
+  /administrative/provinces:
+    get:
+      operationId: listAdministrativeProvinces
+      tags: [administrative]
+      summary: Current provinces and municipalities, ordered by code
+      description: >
+        ADM-003. The 34 current province-level units. Legacy district-level
+        units are never returned here — they were dissolved on 2025-07-01.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/AdministrativeLimit'
+        - $ref: '#/components/parameters/AdministrativeCursor'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: Province page
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeUnitPage' }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '503': { $ref: '#/components/responses/AdministrativeUnavailable' }
+
+  /administrative/provinces/{provinceCode}/communes:
+    get:
+      operationId: listAdministrativeCommunes
+      tags: [administrative]
+      summary: Current communes of one province, ordered by code
+      description: >
+        ADM-003. A province code that names no current province answers 404
+        PROVINCE_NOT_FOUND rather than an empty page — "no communes" and "no
+        such province" are different answers.
+      security: []
+      parameters:
+        - name: provinceCode
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[0-9]{2,5}$' }
+        - $ref: '#/components/parameters/AdministrativeLimit'
+        - $ref: '#/components/parameters/AdministrativeCursor'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: Commune page
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeUnitPage' }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/AdministrativeUnavailable' }
+
+  /administrative/search:
+    get:
+      operationId: searchAdministrativeUnits
+      tags: [administrative]
+      summary: Accent-insensitive search over unit names
+      description: >
+        ADM-003. Matches both the short name ("Ba Đình") and the full name
+        ("Phường Ba Đình"), accented or not, through the same Vietnamese
+        normalizer the place search uses. Legacy units require includeLegacy.
+      security: []
+      parameters:
+        - {
+            name: query,
+            in: query,
+            required: true,
+            schema: { type: string, minLength: 1, maxLength: 120 },
+          }
+        - { name: provinceCode, in: query, schema: { type: string, pattern: '^[0-9]{2,5}$' } }
+        - $ref: '#/components/parameters/AdministrativeIncludeLegacy'
+        - $ref: '#/components/parameters/AdministrativeLimit'
+        - $ref: '#/components/parameters/AdministrativeCursor'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: Matching units, current first, then legacy when asked for
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeUnitPage' }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/AdministrativeUnavailable' }
+
+  /administrative/resolve:
+    get:
+      operationId: resolveAdministrativeCode
+      tags: [administrative]
+      summary: What a code meant on a date, and where the unit went
+      description: >
+        ADM-003 / ADR-0019 §2. Codes are reused: 2,212 of the 3,321 current
+        commune codes named a different unit before 2025-07-01, so `at` selects
+        the effective period. Successors come from canonical changes only — a
+        divided commune is quarantined, never resolved, and is reported with
+        unresolved=true rather than the source's guess.
+      security: []
+      parameters:
+        - {
+            name: code,
+            in: query,
+            required: true,
+            schema: { type: string, pattern: '^[0-9]{2,5}$' },
+          }
+        - name: at
+          in: query
+          description: ISO date. Absent means "the current unit".
+          schema: { type: string, format: date }
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: The unit effective on that date, plus canonical successors
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeResolution' }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/AdministrativeUnavailable' }
+
+  /administrative/units/{code}:
+    get:
+      operationId: getAdministrativeUnit
+      tags: [administrative]
+      summary: One code and its effective periods
+      description: >
+        ADM-003. Without includeLegacy only the current period is returned, and
+        a code naming no current unit answers 404 UNIT_NOT_CURRENT.
+      security: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[0-9]{2,5}$' }
+        - $ref: '#/components/parameters/AdministrativeIncludeLegacy'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: The current unit and the periods this code has had
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeUnitDetail' }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/AdministrativeUnavailable' }
 
   /taxonomies:
     get:
@@ -6916,6 +7097,37 @@ components:
       in: cookie
       name: gogo_at
   parameters:
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: >
+        ADM-003 / ADR-0019 §8. The ETag a client already holds. The tag is
+        derived from the active datasetVersion plus the resolved request, so it
+        carries no clock and no process-local state: two instances serving the
+        same version answer with the same tag, and a restart does not invalidate
+        anyone's cache.
+      schema: { type: string, maxLength: 256 }
+    AdministrativeIncludeLegacy:
+      name: includeLegacy
+      in: query
+      required: false
+      description: >
+        District-level units were dissolved on 2025-07-01 and are excluded from
+        every response unless this is `true`. A form offering "Quận Ba Đình"
+        would be offering something that no longer exists.
+      schema: { type: string, enum: ['true', 'false'] }
+    AdministrativeLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    AdministrativeCursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque cursor from a previous page's `nextCursor`.
+      schema: { type: string, maxLength: 64 }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -6975,6 +7187,93 @@ components:
         maximum: 100
         default: 20
   schemas:
+    AdministrativeUnit:
+      type: object
+      required: [code, name, fullName, unitType, level, status, effectiveFrom, isCurrent]
+      properties:
+        code:
+          { type: string, description: Official GSO code. Not unique on its own — see ADR-0019 §2. }
+        name: { type: string, description: Short name without its type prefix ("Ba Đình"). }
+        fullName: { type: string, description: The source's own string ("Phường Ba Đình"). }
+        nameEn: { type: string, nullable: true }
+        codeName: { type: string, nullable: true }
+        unitType:
+          type: string
+          enum: [PROVINCE, MUNICIPALITY, WARD, COMMUNE, SPECIAL_ZONE, LEGACY_DISTRICT]
+        level: { type: string, enum: [PROVINCE, COMMUNE, LEGACY_DISTRICT] }
+        parentCode:
+          { type: string, nullable: true, description: Province code; null for a province. }
+        status: { type: string, enum: [ACTIVE, INACTIVE, FUTURE] }
+        effectiveFrom: { type: string, format: date }
+        effectiveTo: { type: string, format: date, nullable: true }
+        isCurrent: { type: boolean }
+    AdministrativeUnitPage:
+      type: object
+      required: [datasetVersion, items, nextCursor, total]
+      properties:
+        datasetVersion: { type: string }
+        items: { type: array, items: { $ref: '#/components/schemas/AdministrativeUnit' } }
+        nextCursor: { type: string, nullable: true }
+        total: { type: integer }
+    AdministrativeUnitDetail:
+      type: object
+      required: [datasetVersion, current, periods]
+      properties:
+        datasetVersion: { type: string }
+        current:
+          allOf: [{ $ref: '#/components/schemas/AdministrativeUnit' }]
+          nullable: true
+        periods:
+          type: array
+          description: Every effective period this code has had, oldest first.
+          items: { $ref: '#/components/schemas/AdministrativeUnit' }
+    AdministrativeResolution:
+      type: object
+      required: [datasetVersion, requested, unit, successors, unresolved]
+      properties:
+        datasetVersion: { type: string }
+        requested:
+          type: object
+          required: [code, at]
+          properties:
+            code: { type: string }
+            at: { type: string, format: date, nullable: true }
+        unit: { $ref: '#/components/schemas/AdministrativeUnit' }
+        successors:
+          type: array
+          description: Canonical changes only. A quarantined split never appears here.
+          items:
+            type: object
+            required: [code, changeType, effectiveDate]
+            properties:
+              code: { type: string, nullable: true }
+              changeType:
+                type: string
+                enum: [CREATED, RENAMED, MERGED, SPLIT, REASSIGNED, DISSOLVED]
+              effectiveDate: { type: string, format: date }
+              legalReference: { type: string, nullable: true }
+        unresolved:
+          type: boolean
+          description: >
+            True when the unit is not current and GoGo holds no canonical
+            successor — typically an ambiguous split awaiting CMS review. Said
+            in a field rather than left to be inferred from an empty list.
+    AdministrativeVersion:
+      type: object
+      required: [datasetVersion, effectiveDate, publishedAt, counts]
+      properties:
+        datasetVersion: { type: string }
+        effectiveDate: { type: string, format: date }
+        publishedAt: { type: string, format: date-time, nullable: true }
+        counts:
+          type: object
+          required: [provinces, communes, legacyDistricts, legacyCommunes, changes]
+          properties:
+            provinces: { type: integer }
+            communes: { type: integer }
+            legacyDistricts: { type: integer }
+            legacyCommunes: { type: integer }
+            changes: { type: integer }
     RoomConstraintInput:
       type: object
       required: [budgetMode, budgetAmount]
@@ -10991,7 +11290,27 @@ components:
               runId: { type: string, format: uuid }
               reason: { type: string }
 
+  headers:
+    ETag:
+      description: Deterministic entity tag over datasetVersion + the resolved request.
+      schema: { type: string }
+    CacheControl:
+      description: Always `public, max-age=0, must-revalidate` — immutable per version, but the active version can change.
+      schema: { type: string }
+
   responses:
+    NotModified:
+      description: >
+        The client's ETag still matches. No body, by definition — this is the
+        whole saving the tag exists for.
+    AdministrativeUnavailable:
+      description: >
+        No administrative dataset is PUBLISHED. Deliberately not an empty list,
+        which would read as "Vietnam has no provinces"; this is an operational
+        fault and #463 alerts on it.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     BadRequest:
       description: Validation or business rule failure
       content:

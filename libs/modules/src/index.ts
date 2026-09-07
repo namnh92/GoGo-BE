@@ -224,7 +224,46 @@ export { SUGGESTION_LATENCY_BUDGET_MS } from '../suggestions/application/suggest
 // import path in that PR; new code should import the package directly.
 export * from '@gogo/cost-observability';
 
-// Administrative units (ADM-002 / #455, ADR-0019)
+// Administrative units (ADM-002 / #455, ADM-003 / #456, ADR-0019)
+export { AdministrativeModule } from '../administrative/presentation/administrative.module';
+export { AdministrativeController } from '../administrative/presentation/administrative.controller';
+export {
+  AdministrativeQueryService,
+  MAX_LIMIT as ADMINISTRATIVE_MAX_LIMIT,
+  type Page as AdministrativePage,
+  type UnitDto,
+} from '../administrative/application/administrative-query.service';
+export {
+  ADMINISTRATIVE_DATASET,
+  NoPublishedDatasetError,
+  type AdministrativeDatasetPort,
+} from '../administrative/application/administrative-dataset.port';
+export {
+  administrativeEtag,
+  ifNoneMatchSatisfied,
+  type EtagParts,
+} from '../administrative/application/administrative-etag';
+export {
+  ADMINISTRATIVE_REPOSITORY,
+  DrizzleAdministrativeRepository,
+  type ActiveVersion,
+  type AdministrativeRepository,
+} from '../administrative/infrastructure/administrative.repository';
+export {
+  InProcessAdministrativeDatasetCache,
+  ACTIVE_VERSION_TTL_MS,
+  type CacheStats,
+} from '../administrative/infrastructure/in-process-dataset.cache';
+export {
+  buildSnapshot,
+  isCurrent,
+  matches,
+  unitAt,
+  type ChangeRow,
+  type DatasetSnapshot,
+  type SearchEntry,
+  type UnitRow,
+} from '../administrative/domain/snapshot';
 export {
   AdministrativeImportService,
   DuplicateImportError,
