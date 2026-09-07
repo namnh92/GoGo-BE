@@ -607,6 +607,169 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/administrative-datasets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: every imported dataset version, newest first (ADM-005)
+         * @description ADM-005 (#458). Read needs rank >= ops_admin; every write on this resource needs the exact ops_admin role (or the audited super-admin bypass), so an on-call operator can inspect a dataset without being able to publish it. `validation` is the stored result summary — absent means the version has never been validated, which is itself a refusal reason for publication.
+         */
+        get: operations["listAdministrativeDatasets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/administrative-datasets/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: import the pinned snapshot set into staging (ADM-005)
+         * @description Writes a STAGED version and nothing else — no path here can touch the active dataset. One transaction: a failure leaves nothing behind, so a retry is a clean import rather than a half-written version that the checksum guard would then call a duplicate. Re-importing byte-identical sources at the same override revision is 409 DATASET_ALREADY_IMPORTED, because the same inputs are the same dataset.
+         */
+        post: operations["importAdministrativeDataset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/administrative-datasets/restorable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: versions a rollback could restore (ADM-005)
+         * @description Previously published, not active now. A version that was never published never appears here: rollback restores an earlier active dataset, it does not publish a new one.
+         */
+        get: operations["listRestorableAdministrativeDatasets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/administrative-datasets/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ops: one dataset version with its stored validation and diff */
+        get: operations["getAdministrativeDataset"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/administrative-datasets/{id}/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: this version against whatever is published now (ADM-005)
+         * @description Recomputed on read, never written. A first publication compares against an explicitly empty baseline, so `fromVersion` is null rather than the request being an error. Entries are paged; `countsByCategory` is always complete, so a reviewer walking a 14,000-entry diff never sees a total that shrinks to the page. A change to nothing but `overrideRevision` yields exactly one SOURCE_DRIFT entry rather than replaying every migration the dataset already asserted.
+         */
+        get: operations["getAdministrativeDatasetDiff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/administrative-datasets/{id}/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: run every gate against this exact snapshot (ADM-005)
+         * @description Runs the ADM-004 gates and stores the result bound to the dataset's identity, checksum, staged-row digest, override revision and validator version. Re-validating replaces the previous result rather than adding to it. A publishable result moves the version to VALIDATED; a failing one leaves it STAGED, because it failed a check — nobody rejected it.
+         */
+        post: operations["validateAdministrativeDataset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/administrative-datasets/{id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: make this version the active dataset (ADM-005)
+         * @description Takes a dataset id and nothing else. No `publishable` flag, no checksum and no warning acknowledgement is accepted from the caller: inside the publishing transaction the server re-reads the lifecycle status, the stored checksum, the checksum the pinned files produce now, the digest of the staged rows and the validation bound to them, and refuses on the first disagreement.
+         *
+         *     `publishable === errors === 0`. An ERROR can never be overridden; a WARNING never blocks and stays visible and audited.
+         *
+         *     Demote and promote are one transaction serialised by an advisory lock, so there are never two active versions and never zero. The previous version is retained — it is what a rollback restores. Publishing the already active version is 409 DATASET_ALREADY_PUBLISHED, not a silent no-op; replaying the same `Idempotency-Key` returns the original result. The in-process cache pointer is refreshed only after commit and a failure to refresh it is reported in `cacheWarmed`, never rolled back: PostgreSQL is authoritative and other processes converge within the 60-second TTL.
+         */
+        post: operations["publishAdministrativeDataset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/administrative-datasets/{id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops: re-activate a previously published version (ADM-005)
+         * @description A forward act with its own audit row, not an undo. Nothing is deleted, no migration is reversed, no stored address text is rewritten and no place mapping is changed — stale mappings against the restored version are reported, not written, because whether a claim a person verified should be demoted is the mapping work's decision (#459/#461/#462).
+         *
+         *     Refuses a version that was never published, one that is already active, and one whose stored rows no longer match the snapshot that was validated. It deliberately does not re-verify the pinned source files: a version published long ago may have been built from a snapshot no longer vendored, and refusing on that ground would remove the escape hatch exactly when it is needed.
+         */
+        post: operations["rollbackAdministrativeDataset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/taxonomies": {
         parameters: {
             query?: never;
@@ -3897,6 +4060,184 @@ export interface components {
                 legacyCommunes: number;
                 changes: number;
             };
+        };
+        AdministrativeDatasetSummary: {
+            /** Format: uuid */
+            id: string;
+            /** @description The identity of a GoGo dataset is the tuple of its pinned upstreams plus the override revision, not any single source version. */
+            combinedDatasetVersion: string;
+            combinedChecksum: string;
+            /**
+             * @description At most one version is PUBLISHED, held by a partial unique index. A version demoted by a later publication becomes ROLLED_BACK and is retained — that is what a rollback restores.
+             * @enum {string}
+             */
+            status: "STAGED" | "VALIDATED" | "REJECTED" | "PUBLISHED" | "ROLLED_BACK";
+            /** Format: date */
+            effectiveDate: string;
+            overrideRevision: number;
+            sources: {
+                currentSourceVersion: string;
+                historicalSourceVersion: string | null;
+                mappingSourceCommit: string | null;
+                boundarySourceVersion: string | null;
+            };
+            /** Format: date-time */
+            importedAt: string;
+            /**
+             * Format: date-time
+             * @description Non-null means this version was active at some point, which is what makes it a legitimate rollback target.
+             */
+            publishedAt: string | null;
+            validation: {
+                validationId: string;
+                validatorVersion: string;
+                /** Format: date-time */
+                ranAt: string;
+                errors: number;
+                warnings: number;
+                /** @description Exactly `errors === 0`. Warnings never affect it. */
+                publishable: boolean;
+                warningGates: string[];
+            } | null;
+        };
+        AdministrativeImportReport: {
+            /** Format: uuid */
+            datasetVersionId: string;
+            combinedDatasetVersion: string;
+            combinedChecksum: string;
+            counts: {
+                provinces: number;
+                communes: number;
+                legacyDistricts: number;
+                legacyCommunes: number;
+                canonicalChanges: number;
+                quarantined: number;
+            };
+            /** @description Count per quarantine class. An advisory mapping row is promoted to a canonical change only when both endpoints resolve; the rest are quarantined with their raw payload, never guessed. */
+            classification: {
+                [key: string]: number;
+            };
+            warnings: string[];
+        };
+        AdministrativeValidationReport: {
+            datasetVersion: string;
+            /** Format: date-time */
+            ranAt: string;
+            findings: {
+                gate: string;
+                /** @enum {string} */
+                severity: "ERROR" | "WARNING";
+                message: string;
+                count: number;
+                samples: string[];
+            }[];
+            errors: number;
+            warnings: number;
+            /** @description `errors === 0`. The only thing publication consults, and it is re-checked server-side against a freshly re-read result. */
+            publishable: boolean;
+            counts: {
+                currentProvinces: number;
+                currentCommunes: number;
+                historicalProvinces: number;
+                historicalDistricts: number;
+                historicalCommunes: number;
+                canonicalChanges: number;
+                quarantined: number;
+            };
+            /** @description Deterministic in what was checked and what was found, so an audit row can name the exact validation a publication relied on. */
+            validationId: string;
+            validatorVersion: string;
+            /** @description What this result is evidence about. Publication re-derives every one of these and refuses as VALIDATION_STALE on any disagreement — which is what makes "validated, then someone edited a staged row" a refusal rather than a silent publication of unvalidated data. */
+            boundTo: {
+                /** Format: uuid */
+                datasetVersionId: string;
+                combinedDatasetVersion: string;
+                combinedChecksum: string;
+                /** @description Digest of the stored rows themselves. The combined checksum is computed from the pinned files, so it cannot see a row edited directly in the database; this can. */
+                snapshotFingerprint: string;
+                overrideRevision: number;
+            };
+        } | null;
+        AdministrativeAffectedPlaces: {
+            /** @description Counted in the database. Places with no administrative claim (UNMAPPED) are excluded — a place with no claim is not affected by a change to administrative data. */
+            total: number;
+            samples: {
+                /** Format: uuid */
+                placeId: string;
+                name: string;
+                code: string;
+                status: string;
+            }[];
+            truncated: boolean;
+            sampleLimit: number;
+        };
+        AdministrativeDatasetDiff: {
+            /** @description Null for a first publication, which compares against an empty baseline. */
+            fromVersion: string | null;
+            toVersion: string;
+            /** @description Always complete, never paged. Categories: CREATED, DISSOLVED, RENAMED, PARENT_CHANGED, STATUS_CHANGED, EFFECTIVE_PERIOD_CHANGED, MERGED, SPLIT, REASSIGNED, UNRESOLVED, SOURCE_DRIFT. */
+            countsByCategory: {
+                [key: string]: number;
+            };
+            entries: {
+                key: string;
+                category: string;
+                from: {
+                    code?: string;
+                    /** Format: date */
+                    effectiveFrom?: string;
+                } | null;
+                to: {
+                    code?: string;
+                    /** Format: date */
+                    effectiveFrom?: string;
+                } | null;
+                detail: string;
+                provenance: string | null;
+                validation: string[];
+            }[];
+            entriesTruncated: boolean;
+            entryLimit: number;
+            affectedPlaces: components["schemas"]["AdministrativeAffectedPlaces"];
+            pagination?: {
+                offset: number;
+                limit: number;
+                totalEntries: number;
+                hasMore: boolean;
+            };
+        };
+        /** @description Places whose administrative claim does not resolve against the dataset being activated. Reported, never written: whether a claim a person verified should be demoted is the mapping work's decision (#459/#461/#462). */
+        AdministrativeStaleMappings: {
+            total: number;
+            samples: {
+                /** Format: uuid */
+                placeId: string;
+                name: string;
+                code: string;
+                status: string;
+            }[];
+            truncated: boolean;
+            sampleLimit: number;
+        };
+        AdministrativeTransitionResult: {
+            /** Format: uuid */
+            datasetVersionId: string;
+            combinedDatasetVersion: string;
+            /** @description Retained, not deleted. This is what a rollback restores. */
+            previousActiveVersion: string | null;
+            /** Format: uuid */
+            previousActiveVersionId: string | null;
+            /** Format: date-time */
+            publishedAt: string;
+            /** @description The exact validation result this transition relied on. */
+            validationId: string;
+            warnings: number;
+            /** @description Visible and audited; they never blocked the publication. */
+            warningGates: string[];
+            diff: components["schemas"]["AdministrativeDatasetDiff"];
+            staleMappings: components["schemas"]["AdministrativeStaleMappings"];
+            /** @description Whether this process refilled its own active-version pointer after the commit. False is not a failed publication — PostgreSQL is authoritative and every process converges within the 60-second TTL. */
+            cacheWarmed: boolean;
         };
         RoomConstraintInput: {
             originText?: string;
@@ -7812,6 +8153,257 @@ export interface operations {
             304: components["responses"]["NotModified"];
             404: components["responses"]["NotFound"];
             503: components["responses"]["AdministrativeUnavailable"];
+        };
+    };
+    listAdministrativeDatasets: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of dataset versions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["AdministrativeDatasetSummary"][];
+                        total: number;
+                        limit: number;
+                        offset: number;
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    importAdministrativeDataset: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Bumped by a reviewer decision rather than an upstream release. It is a component of the combined version, so bumping it mints a new dataset from unchanged sources.
+                     * @default 0
+                     */
+                    overrideRevision?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description A new STAGED dataset version */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeImportReport"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    listRestorableAdministrativeDatasets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Restorable versions, most recently published first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["AdministrativeDatasetSummary"][];
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    getAdministrativeDataset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The dataset version */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeDatasetSummary"] & {
+                        validationReport?: components["schemas"]["AdministrativeValidationReport"];
+                        /** @description The diff stored when this version was last validated. It describes the baseline that was active *then* — GET /diff recomputes against today's. */
+                        diffSummary?: {
+                            [key: string]: unknown;
+                        } | null;
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    getAdministrativeDatasetDiff: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The diff, with complete counts and a bounded entry page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeDatasetDiff"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    validateAdministrativeDataset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The validation result and the diff computed with it */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        validation: components["schemas"]["AdministrativeValidationReport"];
+                        diff: components["schemas"]["AdministrativeDatasetDiff"];
+                    };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    publishAdministrativeDataset: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The version is now active */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeTransitionResult"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Refused, and audited with its reason. DATASET_NOT_VALIDATED, DATASET_REJECTED, DATASET_ALREADY_PUBLISHED, VALIDATION_MISSING, VALIDATION_STALE, VALIDATION_HAS_ERRORS, SNAPSHOT_CHECKSUM_MISMATCH, or ACTIVE_VERSION_CHANGED when another publication won the race while this one was being prepared. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    rollbackAdministrativeDataset: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The earlier version is active again */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeTransitionResult"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Refused, and audited with its reason. DATASET_NEVER_PUBLISHED, DATASET_ALREADY_PUBLISHED, DATASET_NOT_RESTORABLE, VALIDATION_MISSING, DATASET_CORRUPTED, or ACTIVE_VERSION_CHANGED. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
         };
     };
     listTaxonomies: {

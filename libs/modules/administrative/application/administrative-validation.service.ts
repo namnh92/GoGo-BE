@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { DB } from '../../shared/tokens';
@@ -10,6 +11,11 @@ import {
   type AffectedPlaces,
   type DatasetDiff,
 } from '../domain/dataset-diff';
+import {
+  VALIDATOR_VERSION,
+  type PersistedValidation,
+  type ValidationBinding,
+} from '../domain/publication-gates';
 import type { ChangeRow } from '../domain/snapshot';
 import {
   validateDataset,
@@ -18,14 +24,21 @@ import {
   type ValidationReport,
 } from '../domain/validation';
 import { PinnedSnapshotReader, SnapshotChecksumError } from './pinned-snapshot.reader';
+import { snapshotFingerprint } from './snapshot-fingerprint';
 
 /**
  * ADM-004 (#457) — runs the gates and the diff for one staged dataset, and
  * stores the results on its row.
  *
- * Publication is #458's work and is not here. What is here is the only thing
- * publication will be allowed to consult: `validation_report.publishable`,
- * which is true exactly when no ERROR gate fired.
+ * What is stored is the only thing publication is allowed to consult:
+ * `validation_report.publishable`, true exactly when no ERROR gate fired.
+ *
+ * ADM-005 (#458) added the binding around it. A report that says "publishable"
+ * is evidence about a particular set of rows carrying a particular checksum,
+ * validated by a particular set of gates — so it is stored with all three, and
+ * publication re-derives them and refuses on any disagreement. Without that, a
+ * dataset validated before an override bump, or before someone edited a staged
+ * row, would still read as publishable.
  *
  * The service reads; it never writes a unit, a change, or a place. Re-running
  * it on the same dataset produces the same report and the same diff, so a
@@ -49,7 +62,7 @@ export class AdministrativeValidationService {
    * report and the diff. Returns them too, so a caller does not re-read.
    */
   async validate(datasetVersionId: string): Promise<{
-    report: ValidationReport;
+    report: PersistedValidation;
     diff: DatasetDiff;
   }> {
     const staged = await this.datasetRow(datasetVersionId);
@@ -63,37 +76,12 @@ export class AdministrativeValidationService {
 
     // Recomputed from the pinned manifest, so a stored version string that no
     // longer matches its own components is caught rather than trusted.
-    let snapshotChecksumsVerified = true;
-    let expected = {
+    const recomputed = this.recomputeCombined(staged);
+    const snapshotChecksumsVerified = recomputed !== null;
+    const expected = recomputed ?? {
       combinedDatasetVersion: staged.combinedDatasetVersion,
       combinedChecksum: staged.combinedChecksum,
     };
-    try {
-      const components = {
-        currentSourceVersion: staged.currentSourceVersion,
-        currentChecksum: this.reader.source('current-units').sha256,
-        historicalSourceVersion: staged.historicalSourceVersion,
-        historicalChecksum: staged.historicalSourceVersion
-          ? this.reader.source('historical-units').sha256
-          : null,
-        mappingSourceCommit: staged.mappingSourceCommit,
-        mappingChecksum: staged.mappingSourceCommit
-          ? this.reader.source('change-mapping').sha256
-          : null,
-        boundarySourceVersion: staged.boundarySourceVersion,
-        boundaryChecksum: null,
-        overrideRevision: staged.overrideRevision,
-      };
-      // Reading verifies each checksum against the decompressed bytes.
-      this.reader.read(this.reader.source('current-units'));
-      expected = {
-        combinedDatasetVersion: combinedDatasetVersion(components),
-        combinedChecksum: combinedChecksum(components),
-      };
-    } catch (error) {
-      if (error instanceof SnapshotChecksumError) snapshotChecksumsVerified = false;
-      else throw error;
-    }
 
     const publishedCount = await this.publishedVersionCount();
     const [baselineUnits, baselineChanges, baselineQuarantine] = published
@@ -143,17 +131,152 @@ export class AdministrativeValidationService {
     const affectedPlaces = await this.affectedPlaces(impactedCodes(shape.entries));
     const diff = { ...shape, affectedPlaces };
 
+    const boundTo: ValidationBinding = {
+      datasetVersionId,
+      combinedDatasetVersion: staged.combinedDatasetVersion,
+      combinedChecksum: staged.combinedChecksum,
+      // Taken after the reads above, so it describes the rows that were
+      // actually validated rather than the rows present when the call started.
+      snapshotFingerprint: await snapshotFingerprint(
+        this.db,
+        datasetVersionId,
+        staged.overrideRevision,
+      ),
+      overrideRevision: staged.overrideRevision,
+    };
+    const persisted: PersistedValidation = {
+      ...report,
+      validationId: validationId(boundTo, report),
+      validatorVersion: VALIDATOR_VERSION,
+      boundTo,
+    };
+
     await this.db
       .update(schema.administrativeDatasetVersions)
       .set({
-        validationReport: report,
+        validationReport: persisted,
         diffSummary: diff,
+        // A dataset that fails its gates goes back to STAGED rather than to
+        // REJECTED: it failed a check, nobody rejected it, and re-running after
+        // a fixed source must not need a status to be undone by hand first.
         status: report.publishable ? 'VALIDATED' : 'STAGED',
         updatedAt: new Date(),
       })
       .where(eq(schema.administrativeDatasetVersions.id, datasetVersionId));
 
-    return { report, diff };
+    return { report: persisted, diff };
+  }
+
+  /**
+   * The combined identity these pinned sources produce **now**, or null when a
+   * pinned file is missing or its bytes no longer match the manifest.
+   *
+   * Null is a fact, not an error: it is what `SNAPSHOT_CHECKSUM` reports as a
+   * validation failure and what publication refuses on. Reading the snapshot is
+   * what verifies it — the reader checks each checksum before returning bytes.
+   */
+  recomputeCombined(
+    row: DatasetRow,
+  ): { combinedDatasetVersion: string; combinedChecksum: string } | null {
+    try {
+      const components = {
+        currentSourceVersion: row.currentSourceVersion,
+        currentChecksum: this.reader.source('current-units').sha256,
+        historicalSourceVersion: row.historicalSourceVersion,
+        historicalChecksum: row.historicalSourceVersion
+          ? this.reader.source('historical-units').sha256
+          : null,
+        mappingSourceCommit: row.mappingSourceCommit,
+        mappingChecksum: row.mappingSourceCommit
+          ? this.reader.source('change-mapping').sha256
+          : null,
+        boundarySourceVersion: row.boundarySourceVersion,
+        boundaryChecksum: null,
+        overrideRevision: row.overrideRevision,
+      };
+      this.reader.read(this.reader.source('current-units'));
+      return {
+        combinedDatasetVersion: combinedDatasetVersion(components),
+        combinedChecksum: combinedChecksum(components),
+      };
+    } catch (error) {
+      if (error instanceof SnapshotChecksumError) return null;
+      throw error;
+    }
+  }
+
+  /**
+   * The diff of one dataset against whatever is published right now, computed
+   * fresh and written nowhere.
+   *
+   * It is recomputed rather than read back from `diff_summary` because the
+   * stored copy describes the baseline that was active when the dataset was
+   * validated. A reviewer opening the screen after someone else published is
+   * asking about today's baseline, and answering from the stored copy would
+   * quietly show them yesterday's.
+   */
+  async diffAgainstPublished(
+    datasetVersionId: string,
+    options: { entryLimit?: number } = {},
+  ): Promise<DatasetDiff> {
+    const target = await this.datasetRow(datasetVersionId);
+    const published = await this.publishedRow();
+    const baseline = published && published.id !== datasetVersionId ? published : null;
+    return this.buildDiff(target, baseline, options.entryLimit);
+  }
+
+  /**
+   * The diff between two named versions. Used by publication and rollback,
+   * which must show what the switch would do before doing it.
+   */
+  async diffBetween(
+    from: DatasetRow | null,
+    to: DatasetRow,
+    options: { entryLimit?: number } = {},
+  ): Promise<DatasetDiff> {
+    return this.buildDiff(to, from, options.entryLimit);
+  }
+
+  private async buildDiff(
+    target: DatasetRow,
+    baseline: DatasetRow | null,
+    entryLimit?: number,
+  ): Promise<DatasetDiff> {
+    const [units, changes, quarantine] = await Promise.all([
+      this.unitsFor(target.id),
+      this.changesFor(target.id),
+      this.quarantineFor(target.id),
+    ]);
+    const [baselineUnits, baselineChanges, baselineQuarantine] = baseline
+      ? await Promise.all([
+          this.unitsFor(baseline.id),
+          this.changesFor(baseline.id),
+          this.quarantineFor(baseline.id),
+        ])
+      : [[], [], []];
+
+    // Gates are cited only when a stored report describes these very rows;
+    // otherwise the linkage would attribute someone else's findings to them.
+    const stored = target.validationReport as PersistedValidation | null;
+    const firedGates = stored?.findings?.map((f) => f.gate) ?? [];
+
+    const shape = diffDatasets({
+      fromVersion: baseline?.combinedDatasetVersion ?? null,
+      toVersion: target.combinedDatasetVersion,
+      fromUnits: baselineUnits,
+      toUnits: units,
+      toChanges: changes,
+      toQuarantine: quarantine,
+      fromChanges: baselineChanges,
+      fromQuarantine: baselineQuarantine,
+      fromSources: baseline ? this.sourcesOf(baseline) : null,
+      toSources: this.sourcesOf(target),
+      affectedPlaces: emptyAffected(),
+      firedGates,
+      ...(entryLimit === undefined ? {} : { entryLimit }),
+    });
+    const affectedPlaces = await this.affectedPlaces(impactedCodes(shape.entries));
+    return { ...shape, affectedPlaces };
   }
 
   /**
@@ -311,7 +434,30 @@ export class AdministrativeValidationService {
   }
 }
 
-type DatasetRow = typeof schema.administrativeDatasetVersions.$inferSelect;
+export type DatasetRow = typeof schema.administrativeDatasetVersions.$inferSelect;
+
+/**
+ * Deterministic in its inputs: re-validating unchanged rows with unchanged
+ * gates produces the same id, and any change to what was checked or what was
+ * found produces a different one. That is what lets an audit row name the exact
+ * validation a publication relied on.
+ */
+function validationId(boundTo: ValidationBinding, report: ValidationReport): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        boundTo,
+        VALIDATOR_VERSION,
+        report.publishable,
+        report.errors,
+        report.warnings,
+        report.findings.map((f) => [f.gate, f.severity, f.count]),
+        report.counts,
+      ]),
+    )
+    .digest('hex')
+    .slice(0, 32);
+}
 
 function emptyAffected(): AffectedPlaces {
   return { total: 0, samples: [], truncated: false, sampleLimit: AFFECTED_PLACE_SAMPLE_LIMIT };

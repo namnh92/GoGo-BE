@@ -227,6 +227,31 @@ export * from '@gogo/cost-observability';
 // Administrative units (ADM-002 / #455, ADM-003 / #456, ADR-0019)
 export { AdministrativeModule } from '../administrative/presentation/administrative.module';
 export { AdministrativeController } from '../administrative/presentation/administrative.controller';
+export { AdministrativeAdminController } from '../administrative/presentation/administrative-admin.controller';
+export {
+  AdministrativePublicationService,
+  STALE_MAPPING_SAMPLE_LIMIT,
+  type DatasetSummary,
+  type StaleMappings,
+  type TransitionResult,
+  type ValidationSummary,
+} from '../administrative/application/administrative-publication.service';
+export {
+  AUDIT_ACTION as ADMINISTRATIVE_AUDIT_ACTION,
+  AUDIT_RESOURCE as ADMINISTRATIVE_AUDIT_RESOURCE,
+} from '../administrative/application/administrative-audit';
+export { snapshotFingerprint } from '../administrative/application/snapshot-fingerprint';
+export {
+  publishRefusal,
+  rollbackRefusal,
+  VALIDATOR_VERSION,
+  type DatasetStatus,
+  type PersistedValidation,
+  type PublishCandidate,
+  type Refusal,
+  type RollbackCandidate,
+  type ValidationBinding,
+} from '../administrative/domain/publication-gates';
 export {
   AdministrativeQueryService,
   MAX_LIMIT as ADMINISTRATIVE_MAX_LIMIT,

@@ -108,6 +108,48 @@ previous one, and writes an audit event. Rollback re-activates a previous valid
 version: a forward act with its own audit row, not an undo. Republishing the
 same version is refused, not silently ignored.
 
+#### 3a. What publication is allowed to believe (ADM-005, #458)
+
+The caller names a dataset and supplies nothing else — no `publishable` flag, no
+checksum, no acknowledgement of the warnings. Inside the publishing transaction
+the server re-reads the lifecycle status, the stored checksum, the checksum the
+pinned files produce **now**, a digest of the staged rows, and the validation
+result bound to all of them, and refuses on the first disagreement.
+
+The digest — `snapshot_fingerprint`, stored inside `validation_report.boundTo` —
+exists because the combined checksum cannot see a row edited directly in the
+database: it is computed from the pinned files and the override revision, so a
+`psql` session leaves it untouched while changing what the dataset holds. Without
+the digest, "validated last week, then someone edited a staged row" would still
+read as publishable.
+
+`publishable === errors === 0`. An ERROR is never overridable. A WARNING never
+blocks and stays visible and audited: the pinned dataset legitimately trips two,
+and a publication path a warning could block would teach reviewers to silence
+warnings rather than read them.
+
+A version demoted by a later publication becomes `ROLLED_BACK` and keeps its
+`published_at`; that pair — previously published, not active now — is what makes
+it a legitimate rollback target, and it is why nothing is ever deleted. Rollback
+deliberately does **not** re-verify the pinned files: a version published long
+ago may have been built from a snapshot no longer vendored, and refusing on that
+ground would remove the escape hatch exactly when it is needed. It verifies the
+rows, which is what actually gets served.
+
+Publish and rollback **report** stale place mappings; they write nothing to
+`places`. Issue #458 originally had publication mark substantively-deactivated
+mappings `STALE`. It does not, because whether a claim should be demoted depends
+on facts publication does not have — above all whether a person verified it —
+and a version switch must not be the thing that quietly overwrites that. The
+write belongs to the mapping work (#459/#461/#462); the count and a bounded
+sample are returned and audited so the decision is visible when it is taken.
+
+The staff routes live under `/cms/administrative-datasets`, not under a new
+`/admin` prefix: `AdminGuard` is bound there, the console already speaks it, and
+a second staff prefix would split the surface. RBAC reuses the guard's existing
+rule rather than inventing a permission — a write needs the exact `ops_admin`
+role (or the audited super-admin bypass), a read needs only rank ≥ `ops_admin`.
+
 ### 4. The combined version is the identity of a published set
 
 A GoGo dataset combines three independently pinned upstreams plus GoGo's own
