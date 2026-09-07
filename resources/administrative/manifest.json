@@ -39,7 +39,11 @@
       "licenseFile": "LICENSE.vietnamese-provinces-database.txt",
       "retrievedAt": "2026-09-07",
       "effectiveTo": "2025-06-30",
-      "expected": { "provinces": 63, "legacyDistricts": 696, "communes": 10035 },
+      "expected": {
+        "provinces": 63,
+        "legacyDistricts": 696,
+        "communes": 10035
+      },
       "note": "The last three-level snapshot. Imported INACTIVE and effective-dated; the only source of LEGACY_DISTRICT units."
     },
     {
@@ -56,8 +60,54 @@
       "licenseFile": "LICENSE.vietnamadminunits.txt",
       "retrievedAt": "2026-09-07",
       "upstreamUpdatedAt": "2025-10-08",
-      "expected": { "rows": 10602, "canonical": 9569, "quarantined": 1033 },
+      "expected": {
+        "rows": 10602,
+        "canonical": 9569,
+        "quarantined": 1033
+      },
       "note": "ADVISORY ONLY. Never authoritative current data. A row is promoted to a canonical change solely when both endpoints resolve against the two sources above; nothing here may mint a current unit."
+    },
+    {
+      "role": "current-boundaries",
+      "repository": "thanglequoc/vietnamese-provinces-database",
+      "ref": "v5.0.0",
+      "commit": "b092d6b45ea76c39990afd34375eabe1f6c3a492",
+      "path": "json/vn_provinces_wards_geojson.zip",
+      "vendoredAs": "vn_provinces_wards_geojson.v5.0.0.zip",
+      "fetchUrl": "https://raw.githubusercontent.com/thanglequoc/vietnamese-provinces-database/b092d6b45ea76c39990afd34375eabe1f6c3a492/json/vn_provinces_wards_geojson.zip",
+      "sha256": "5d92c003d7fd379dccd781e72603016126e5a8d16224f54acd16f4ff01705f7e",
+      "bytes": 49943320,
+      "license": "MIT",
+      "licenseFile": "LICENSE.vietnamese-provinces-database.txt",
+      "retrievedAt": "2026-09-07",
+      "authority": "Bản đồ đơn vị hành chính Việt Nam (sapnhap.bando.com.vn), NXB Tài nguyên Môi trường và Bản đồ",
+      "expected": {
+        "provinces": 34,
+        "communes": 3321,
+        "files": 3355
+      },
+      "note": "NOT vendored: 47.6 MB compressed, 629 MB expanded, 3,355 files. The fetch URL names an immutable commit and the sha256 above is verified before a single entry is read, so the pin still decides what is loaded. Boundaries ship at v5.0.0, the same tag as current-units — issue #460's assumption of a separate v4.0.0 GIS release predates this archive, and the codes agree exactly: 34/34 provinces, 3321/3321 communes, zero parent disagreements.",
+      "coverage": "complete"
+    },
+    {
+      "role": "boundaries-fixture",
+      "repository": "thanglequoc/vietnamese-provinces-database",
+      "ref": "v5.0.0",
+      "commit": "b092d6b45ea76c39990afd34375eabe1f6c3a492",
+      "path": "json/vn_provinces_wards_geojson.zip",
+      "vendoredAs": "boundaries-fixture.v5.0.0.zip",
+      "sha256": "9200b1b17f76c2a90b7833d0ee8006d3516d46e1094e7d4e81e4f30a1a6709bd",
+      "bytes": 64530,
+      "license": "MIT",
+      "licenseFile": "LICENSE.vietnamese-provinces-database.txt",
+      "retrievedAt": "2026-09-07",
+      "expected": {
+        "provinces": 2,
+        "communes": 3,
+        "files": 5
+      },
+      "note": "Five real, unmodified entries taken from the pinned archive above (Ha Noi + Ba Dinh + Ngoc Ha, Da Nang + Hoang Sa), so the loader and every gate can be tested offline against genuine geometry: adjacent communes for the shared-edge case, an island special zone, and a province with only some of its communes present.",
+      "coverage": "partial"
     }
   ],
   "knownDefects": [

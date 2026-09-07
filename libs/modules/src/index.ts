@@ -242,6 +242,37 @@ export {
 } from '../administrative/application/administrative-audit';
 export { snapshotFingerprint } from '../administrative/application/snapshot-fingerprint';
 export {
+  AdministrativeBoundaryImportService,
+  BoundaryValidationError,
+  BoundaryVersionConflictError,
+  type BoundaryLoadOutcome,
+  type BoundaryLoadResult,
+  type TopologyReport,
+} from '../administrative/application/administrative-boundary-import.service';
+export {
+  BoundaryArchiveReader,
+  BoundaryArchiveUnavailableError,
+  type ArchiveOrigin,
+  type BoundaryFeature,
+  type ResolvedArchive,
+} from '../administrative/application/boundary-archive.reader';
+export {
+  readZipEntries,
+  ZipFormatError,
+  type ZipEntry,
+} from '../administrative/application/zip-archive';
+export {
+  anomaly,
+  validateBoundaries,
+  BOUNDARY_SAMPLE_LIMIT,
+  type Anomaly,
+  type BoundaryFinding,
+  type BoundaryGateId,
+  type BoundaryMeasurements,
+  type BoundarySeverity,
+  type BoundaryValidationReport,
+} from '../administrative/domain/boundary-validation';
+export {
   AdministrativeResolverService,
   type PersistOutcome,
   type PersistResult,

@@ -21,12 +21,24 @@ import path from 'node:path';
  */
 
 export type ManifestSource = {
-  role: 'current-units' | 'historical-units' | 'change-mapping' | 'boundaries';
+  role:
+    | 'current-units'
+    | 'historical-units'
+    | 'change-mapping'
+    | 'current-boundaries'
+    | 'boundaries-fixture';
   repository: string;
   ref: string;
   commit: string;
   path: string;
   vendoredAs: string;
+  /**
+   * ADM-007 (#460): where an archive too large to vendor is fetched from. The
+   * URL names an immutable commit, never a tag, and the checksum above is
+   * verified before a byte of it is used — so the pin still decides what gets
+   * loaded, and the network only decides whether it can be loaded at all.
+   */
+  fetchUrl?: string;
   sha256: string;
   bytes: number;
   license: string;
@@ -38,6 +50,12 @@ export type ManifestSource = {
   authority?: string;
   upstreamUpdatedAt?: string;
   expected?: Record<string, number>;
+  /**
+   * ADM-007: whether this archive claims to cover every current unit. The test
+   * fixture is five real entries and says so, so the coverage gates check its
+   * declared counts without demanding all 3,321 communes of it.
+   */
+  coverage?: 'complete' | 'partial';
   note?: string;
 };
 
