@@ -11,6 +11,7 @@ import {
 } from '../application/administrative-import.service';
 import { AdministrativeValidationService } from '../application/administrative-validation.service';
 import { AdministrativePublicationService } from '../application/administrative-publication.service';
+import { AdministrativeTelemetryService } from '../application/administrative-telemetry.service';
 
 /**
  * ADM-005 (#458) / ADR-0019 §3 — the staff surface for administrative datasets.
@@ -68,7 +69,27 @@ export class AdministrativeAdminController {
     private readonly imports: AdministrativeImportService,
     private readonly validation: AdministrativeValidationService,
     private readonly publication: AdministrativePublicationService,
+    private readonly telemetry: AdministrativeTelemetryService,
   ) {}
+
+  /**
+   * What this environment can currently do, and since when.
+   *
+   * Deliberately separate from readiness. An environment with no administrative
+   * dataset still serves rooms, search and plans; it simply cannot publish a
+   * place, which the domain guard already refuses. Taking the whole API out of
+   * the load balancer for that would turn a configuration gap into an outage.
+   *
+   * This is also where the exact dataset and boundary versions live. They are
+   * not Prometheus labels: a label whose values grow with every publication is
+   * a series set that never stops growing, so the number goes on a dashboard
+   * and the identity goes here.
+   */
+  @RateLimit({ action: 'cms.administrative.read', limit: 120, windowSeconds: 60, keyBy: 'actor' })
+  @Get('capability')
+  async capability() {
+    return this.telemetry.capability();
+  }
 
   /**
    * Imports the pinned snapshot set into staging.

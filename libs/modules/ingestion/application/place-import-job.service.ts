@@ -1700,8 +1700,14 @@ export class PlaceImportJobService {
         .for('update');
       if (!place) return 'deferred_mapping_unverified';
 
-      const block = await evaluatePlaceApproval(tx, place);
+      const block = await evaluatePlaceApproval(tx, place, this.metrics);
       const outcome = publicationOutcomeFor(block);
+      if (outcome !== 'published') {
+        this.metrics.increment('place_publication_deferred_total', {
+          source: 'cms_import',
+          reason: outcome,
+        });
+      }
       if (outcome === 'published' && place.status !== 'published') {
         await tx
           .update(schema.places)

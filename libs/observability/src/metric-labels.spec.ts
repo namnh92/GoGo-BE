@@ -108,7 +108,7 @@ function labelKeys(objectSrc: string): string[] {
 function collect(): Emission[] {
   const files = execFileSync(
     'grep',
-    ['-rlE', '\\.(increment|observe|time)\\(', '--include=*.ts', 'libs', 'apps'],
+    ['-rlE', '\\.(increment|observe|time|gauge)\\(', '--include=*.ts', 'libs', 'apps'],
     { cwd: repoRoot, encoding: 'utf8' },
   )
     .split('\n')
@@ -117,7 +117,7 @@ function collect(): Emission[] {
   const out: Emission[] = [];
   for (const file of files) {
     const src = readFileSync(path.join(repoRoot, file), 'utf8');
-    for (const m of src.matchAll(/\.(increment|observe|time)\(\s*'([a-z_]+)'/g)) {
+    for (const m of src.matchAll(/\.(increment|observe|time|gauge)\(\s*'([a-z_]+)'/g)) {
       const open = src.indexOf('(', m.index! + 1);
       const close = matchParen(src, open);
       if (close === -1) continue;

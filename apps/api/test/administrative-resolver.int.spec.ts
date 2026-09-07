@@ -8,6 +8,9 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import argon2 from 'argon2';
 import { schema } from '@gogo/database';
+
+/** Set before any import reads the environment; the config is parsed once. */
+process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 import { AdministrativeImportService, AdministrativeResolverService } from '@gogo/modules';
 
 /**
@@ -953,12 +956,21 @@ function constraintOf(error: unknown): string | null {
 }
 
 async function metricCount(metric: string, contains?: string): Promise<number> {
+  // `/v1/metrics`, not `/metrics`: the app sets a global `v1` prefix, and an
+  // earlier version of this helper asked for the unprefixed path, got a 404 and
+  // returned 0 — so every "the provider counter did not move" assertion built
+  // on it was comparing zero to zero. It throws now rather than answering 0,
+  // because a scrape that cannot be read is not evidence of anything.
   const metrics = await api().inject({
     method: 'GET',
-    url: '/metrics',
+    url: '/v1/metrics',
     headers: { authorization: `Bearer ${process.env.METRICS_TOKEN ?? ''}` },
   });
-  if (metrics.statusCode !== 200) return 0;
+  if (metrics.statusCode !== 200) {
+    throw new Error(
+      `metrics scrape failed with ${metrics.statusCode}; the assertion would be vacuous`,
+    );
+  }
   return metrics.body
     .split('\n')
     .filter((line) => line.startsWith(metric) && (!contains || line.includes(contains)))

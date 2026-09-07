@@ -165,7 +165,9 @@ describe('the metrics the alerts in infrastructure.md §3b fire on', () => {
     // Not "was this emitted" — "is it in the scrape output", which is what an
     // alert rule actually reads.
     for (const line of body.split('\n').filter((l) => l.startsWith('# TYPE'))) {
-      expect(line).toMatch(/^# TYPE [a-z_]+ (counter|histogram)$/);
+      // `gauge` joined the set in ADM-010 (#463): a counter cannot say whether
+      // a dataset is published or how many places are waiting for a reviewer.
+      expect(line).toMatch(/^# TYPE [a-z_]+ (counter|gauge|histogram)$/);
     }
     expect(body.endsWith('\n')).toBe(true);
   });

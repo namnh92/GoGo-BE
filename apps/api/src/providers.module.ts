@@ -41,6 +41,7 @@ import {
   RUNTIME_METRICS,
   RUNTIME_STATE,
   RuntimeStateStore,
+  GAUGE_SINK,
   MetricsRegistry,
   TeeMetrics,
   createLogger,
@@ -113,6 +114,15 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       // the registry already holds. Not METRICS: the usage ledger is a cost
       // meter, and runtime telemetry is not one (epic §8).
       provide: RUNTIME_METRICS,
+      useFactory: (registry: MetricsRegistry) => registry,
+      inject: [METRICS_REGISTRY],
+    },
+    {
+      // ADM-010 (#463) — the registry as a gauge sink. Gauges live only on the
+      // registry, not on `MetricsPort`: a log line is a stream of events and a
+      // gauge is a current value, so teeing one into the other would emit a
+      // "metric" line every time a number was re-read.
+      provide: GAUGE_SINK,
       useFactory: (registry: MetricsRegistry) => registry,
       inject: [METRICS_REGISTRY],
     },
@@ -251,6 +261,7 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     // exported, the optional injections in DatabaseModule / IdentityModule /
     // RealtimeBusModule resolved to `undefined` and the API emitted nothing.
     RUNTIME_METRICS,
+    GAUGE_SINK,
     COST_USAGE_LEDGER,
     METRICS_QUERY,
     PLACE_PROVIDER,

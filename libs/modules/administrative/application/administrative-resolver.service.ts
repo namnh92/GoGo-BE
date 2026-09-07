@@ -128,10 +128,14 @@ export class AdministrativeResolverService {
     this.metrics.observe(
       'administrative_resolver_duration_seconds',
       (Date.now() - startedAt) / 1000,
-      {
-        status: resolution.status,
-      },
+      { status: resolution.status },
     );
+    // Two classes, not a number: 1.00 where the evidence is definitional, and
+    // absent everywhere else. A dashboard that plotted a mean confidence would
+    // be averaging a definition with a silence.
+    this.metrics.increment('administrative_resolver_confidence_total', {
+      class: resolution.confidence === null ? 'unnumbered' : 'definitional',
+    });
     return resolution;
   }
 
@@ -326,7 +330,16 @@ export class AdministrativeResolverService {
       };
     });
 
-    this.metrics.increment('administrative_mapping_writes_total', { outcome: result.outcome });
+    // `conflict` and `blocked` are renamed at the metric boundary because the
+    // words matter on a dashboard: one is two writers racing, the other is the
+    // reviewer-owned rule holding.
+    const outcome =
+      result.outcome === 'conflict'
+        ? 'concurrency_conflict'
+        : result.outcome === 'blocked'
+          ? 'protected'
+          : result.outcome;
+    this.metrics.increment('administrative_mapping_writes_total', { outcome });
     return result;
   }
 
@@ -445,11 +458,15 @@ export class AdministrativeResolverService {
       // parameter and comes back as an error, and (0,0) is in the Gulf of
       // Guinea, which no Vietnamese polygon will ever claim.
       reasons.push('INVALID_GEOMETRY');
-      this.metrics.increment('administrative_boundary_matches_total', { outcome: 'invalid' });
+      this.metrics.increment('administrative_boundary_matches_total', {
+        outcome: 'invalid_geometry',
+      });
       return;
     }
 
+    const pipStartedAt = Date.now();
     const matches = await this.repository.containing(input.boundaryVersion, point);
+    this.metrics.observe('administrative_pip_duration_seconds', (Date.now() - pipStartedAt) / 1000);
     const communes = matches.filter((m) => m.level === 'COMMUNE');
 
     if (communes.length === 1) {
@@ -471,7 +488,9 @@ export class AdministrativeResolverService {
         onEdge: match.onEdge,
         detail: `point in ${match.name} (${match.code})`,
       });
-      this.metrics.increment('administrative_boundary_matches_total', { outcome: 'unique' });
+      this.metrics.increment('administrative_boundary_matches_total', {
+        outcome: match.onEdge ? 'unique_edge' : 'strict_inside',
+      });
       return;
     }
 
@@ -491,7 +510,7 @@ export class AdministrativeResolverService {
         });
       }
       this.metrics.increment('administrative_boundary_matches_total', {
-        outcome: allOnEdge ? 'edge' : 'multiple',
+        outcome: allOnEdge ? 'shared_edge' : 'multiple_overlap',
       });
       return;
     }
@@ -511,7 +530,7 @@ export class AdministrativeResolverService {
     }
 
     reasons.push('NO_BOUNDARY_MATCH');
-    this.metrics.increment('administrative_boundary_matches_total', { outcome: 'none' });
+    this.metrics.increment('administrative_boundary_matches_total', { outcome: 'no_match' });
   }
 
   /**

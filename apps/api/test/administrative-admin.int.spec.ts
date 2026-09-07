@@ -8,6 +8,10 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
+
+/** Set before any import reads the environment; the config is parsed once. */
+process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
+import { NoopMetrics } from '@gogo/observability';
 import {
   ADMINISTRATIVE_DATASET,
   AdministrativePublicationService,
@@ -448,6 +452,7 @@ describe('failure inside the transaction leaves the old version active', () => {
       db,
       app.get<AdministrativeDatasetPort>(ADMINISTRATIVE_DATASET),
       app.get(AdministrativeValidationService),
+      new NoopMetrics(),
     );
     await expect(service.publish(r1.id, { id: 'not-a-uuid', type: 'admin' })).rejects.toThrow();
     expect(await activeIds()).toEqual([r0.id]);
@@ -468,6 +473,7 @@ describe('the cache is downstream of the commit, never upstream', () => {
       db,
       broken,
       app.get(AdministrativeValidationService),
+      new NoopMetrics(),
     );
     const result = await service.publish(r1.id, { id: null, type: 'system' });
     expect(result.cacheWarmed).toBe(false);
@@ -629,12 +635,21 @@ describe('the whole surface issues no Redis command', () => {
 
 /** Sums `provider_requests_total` samples whose labels mention a provider. */
 async function metricCount(provider: string): Promise<number> {
+  // `/v1/metrics`, not `/metrics`: the app sets a global `v1` prefix, and an
+  // earlier version of this helper asked for the unprefixed path, got a 404 and
+  // returned 0 — so every "the provider counter did not move" assertion built
+  // on it was comparing zero to zero. It throws now rather than answering 0,
+  // because a scrape that cannot be read is not evidence of anything.
   const metrics = await api().inject({
     method: 'GET',
-    url: '/metrics',
+    url: '/v1/metrics',
     headers: { authorization: `Bearer ${process.env.METRICS_TOKEN ?? ''}` },
   });
-  if (metrics.statusCode !== 200) return 0;
+  if (metrics.statusCode !== 200) {
+    throw new Error(
+      `metrics scrape failed with ${metrics.statusCode}; the assertion would be vacuous`,
+    );
+  }
   return metrics.body
     .split('\n')
     .filter((line) => line.startsWith('provider_requests_total') && line.includes(provider))

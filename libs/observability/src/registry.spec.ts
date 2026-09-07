@@ -198,3 +198,68 @@ describe('#320 — seconds, and an edge on every alert threshold', () => {
     expect(edges.at(-1)).toBe(30);
   });
 });
+
+/**
+ * ADM-010 (#463) — gauges and collectors.
+ *
+ * The property that matters is that a gauge *replaces* rather than accumulates,
+ * and that a collector runs at scrape time. An age computed when a dataset was
+ * published and never refreshed would be wrong by however long the process has
+ * been running.
+ */
+describe('gauges', () => {
+  it('replaces the previous reading rather than adding to it', () => {
+    const registry = new MetricsRegistry();
+    registry.gauge('administrative_dataset_age_seconds', 10);
+    registry.gauge('administrative_dataset_age_seconds', 42);
+    expect(registry.render()).toContain('administrative_dataset_age_seconds 42');
+    expect(registry.render()).not.toContain('administrative_dataset_age_seconds 52');
+  });
+
+  it('keeps one series per label set, and renders a gauge type', () => {
+    const registry = new MetricsRegistry();
+    registry.gauge('administrative_mappings', 3, { status: 'NEEDS_REVIEW' });
+    registry.gauge('administrative_mappings', 7, { status: 'VERIFIED' });
+    const body = registry.render();
+    expect(body).toContain('# TYPE administrative_mappings gauge');
+    expect(body).toContain('administrative_mappings{status="NEEDS_REVIEW"} 3');
+    expect(body).toContain('administrative_mappings{status="VERIFIED"} 7');
+  });
+
+  it('runs its collectors immediately before rendering', async () => {
+    const registry = new MetricsRegistry();
+    let reads = 0;
+    registry.registerCollector(async () => {
+      reads += 1;
+      registry.gauge('administrative_dataset_active', reads);
+    });
+    expect(await registry.collect()).toContain('administrative_dataset_active 1');
+    expect(await registry.collect()).toContain('administrative_dataset_active 2');
+  });
+
+  it('does not let a failing collector take the scrape down with it', async () => {
+    const registry = new MetricsRegistry();
+    registry.gauge('administrative_dataset_active', 1);
+    registry.increment('administrative_dataset_operations_total', {
+      operation: 'publish',
+      result: 'succeeded',
+    });
+    registry.registerCollector(() => Promise.reject(new Error('database is asleep')));
+
+    // A database hiccup degrades one gauge to its previous value; it does not
+    // take every other metric in the process with it.
+    const body = await registry.collect();
+    expect(body).toContain('administrative_dataset_active 1');
+    expect(body).toContain('administrative_dataset_operations_total');
+  });
+
+  it('lists gauge names alongside counters and histograms', () => {
+    const registry = new MetricsRegistry();
+    registry.gauge('administrative_publication_enabled', 1);
+    registry.increment('administrative_cache_refresh_total', { result: 'ok' });
+    expect(registry.names()).toEqual([
+      'administrative_cache_refresh_total',
+      'administrative_publication_enabled',
+    ]);
+  });
+});

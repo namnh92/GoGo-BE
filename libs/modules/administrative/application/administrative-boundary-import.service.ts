@@ -1,6 +1,7 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { DB } from '../../shared/tokens';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import {
@@ -105,6 +106,7 @@ export class AdministrativeBoundaryImportService {
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly archives: BoundaryArchiveReader = new BoundaryArchiveReader(),
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
   /**
@@ -134,6 +136,7 @@ export class AdministrativeBoundaryImportService {
           archive.sha256,
         );
       }
+      this.metrics.increment('administrative_boundary_loads_total', { result: 'unchanged' });
       return {
         outcome: 'unchanged',
         boundaryVersion,
@@ -194,7 +197,16 @@ export class AdministrativeBoundaryImportService {
 
       // An ERROR rolls back everything above, including the delete — so a failed
       // reload of an existing version leaves that version exactly as it was.
-      if (!validation.loadable) throw new BoundaryValidationError(validation);
+      for (const finding of validation.findings) {
+        this.metrics.increment('administrative_boundary_findings_total', {
+          gate: finding.gate,
+          severity: finding.severity,
+        });
+      }
+      if (!validation.loadable) {
+        this.metrics.increment('administrative_boundary_loads_total', { result: 'rejected' });
+        throw new BoundaryValidationError(validation);
+      }
 
       const durationMs = Date.now() - startedAt;
       await tx.insert(schema.administrativeBoundaryLoads).values({
@@ -211,6 +223,11 @@ export class AdministrativeBoundaryImportService {
         loadDurationMs: durationMs,
       });
 
+      this.metrics.increment('administrative_boundary_loads_total', { result: 'loaded' });
+      this.metrics.observe('administrative_boundary_load_duration_seconds', durationMs / 1000);
+      // Bytes, not a version: the size of what was loaded is a number an
+      // operator watches; which release it was is on the ledger row.
+      this.metrics.observe('administrative_boundary_archive_bytes', archive.bytes);
       return {
         outcome: 'loaded' as const,
         boundaryVersion,

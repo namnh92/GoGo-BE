@@ -1,5 +1,6 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
+import type { MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
 import { approvalBlock, type ApprovalBlock } from '../domain/approval-policy';
 import type { MappingStatus } from '../domain/mapping-status';
@@ -48,6 +49,13 @@ type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
 export async function evaluatePlaceApproval(
   executor: Executor,
   place: ApprovalSubject,
+  /**
+   * Optional so the guard stays a function anyone can call. When it is given,
+   * every approval decision is counted by its closed-set reason — which is the
+   * number an operator watches to see whether the policy is blocking work or
+   * catching it.
+   */
+  metrics?: MetricsPort,
 ): Promise<ApprovalBlock | null> {
   const [dataset] = await (executor as Db)
     .select({
@@ -86,7 +94,7 @@ export async function evaluatePlaceApproval(
         .limit(1)
     : [];
 
-  return approvalBlock(
+  const block = approvalBlock(
     {
       status: place.administrativeMappingStatus,
       provinceCode: place.provinceCode,
@@ -96,14 +104,26 @@ export async function evaluatePlaceApproval(
     dataset.version,
     commune ?? null,
   );
+  count(metrics, block);
+  return block;
+}
+
+function count(metrics: MetricsPort | undefined, block: ApprovalBlock | null): void {
+  metrics?.increment('place_approval_checks_total', {
+    result: block ? 'blocked' : 'allowed',
+    // The closed `ApprovalBlockCode` enum, never a message: an error string is
+    // operator free text wearing the clothes of a label.
+    reason: block?.code ?? 'none',
+  });
 }
 
 /** The throwing form, for paths where refusing to publish is the right answer. */
 export async function assertPlaceApprovable(
   executor: Executor,
   place: ApprovalSubject,
+  metrics?: MetricsPort,
 ): Promise<void> {
-  const block = await evaluatePlaceApproval(executor, place);
+  const block = await evaluatePlaceApproval(executor, place, metrics);
   if (block) throw AppError.conflict(block.code, block.message);
 }
 
