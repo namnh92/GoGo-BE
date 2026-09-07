@@ -39,14 +39,18 @@ describe('resolveFromUrl on a shared link (PI-BE-025)', () => {
   const link = (q: string, extra = '') =>
     `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}${extra}`;
 
-  it('offers the branches instead of answering UNRESOLVED', async () => {
+  it('resolves the branch the link names, keeping the other on the decision', async () => {
     const out = await resolver.resolveFromUrl(
       link('Lacaph Coffee Experiences Space Ho Chi Minh City'),
       'quality',
     );
 
-    expect(out.status).toBe('NEEDS_CONFIRMATION');
-    if (out.status !== 'NEEDS_CONFIRMATION') return;
+    // #311's guarantee holds: never UNRESOLVED for a link Google answered, and
+    // the alternative stays on the decision. #473 lets it finish the job — the
+    // query names this branch in full, and "Lacàph Coffee Bar" is a different
+    // place rather than a branch wearing the same name.
+    expect(out.status).toBe('RESOLVED');
+    if (out.status !== 'RESOLVED') return;
     expect(out.decision.candidates).toHaveLength(2);
     expect(out.decision.best?.target.googlePlaceId).toBe('ChIJ-lacaph-space');
   });

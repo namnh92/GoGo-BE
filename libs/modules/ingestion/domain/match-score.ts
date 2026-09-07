@@ -113,49 +113,99 @@ export type ScoredMatch = {
   reasons: MatchReason[];
 };
 
+/**
+ * #473 — a dimension the input says nothing about leaves the average entirely,
+ * rather than sitting in it at a neutral 0.5.
+ *
+ * Neutral-0.5 was meant not to punish an unknown, and inside the score it does
+ * not. At the threshold it does: 0.5 on a 0.2-weight field still forfeits 0.1
+ * against a match that could have been perfect. A Google Maps link carries a
+ * name and a coordinate and never a district or a category — those are bulk
+ * import's CSV columns — so its ceiling was
+ *
+ *     0.50·1 + 0.20·0.5 + 0.15·1 + 0.10·0.5 + 0.05·1 = 0.85
+ *
+ * against an `auto` threshold of 0.90. **No link could ever auto-resolve.**
+ * Every one of them came back as "pick a branch", usually with one branch.
+ * GoGo-BE#311 fought a symptom of this and fixed `nameCoverage`; the ceiling
+ * outlived it.
+ *
+ * Normalising over the informed weights cuts both ways, which is what says it
+ * is the right transform rather than a thumb on the scale: a weak name no
+ * longer gets propped up by three neutral dimensions either (0.4 alone now
+ * scores 0.4, where it used to reach 0.425).
+ *
+ * The thresholds do not move, and neither does the ambiguity rule below — two
+ * candidates within 0.05 are still a question for a person.
+ */
+type Dimension = { weight: number; score: number; informed: boolean };
+
+function weightedConfidence(dimensions: Dimension[]): number {
+  let total = 0;
+  let weight = 0;
+  for (const d of dimensions) {
+    if (!d.informed) continue;
+    total += d.weight * d.score;
+    weight += d.weight;
+  }
+  // Nothing to go on. `resolveIdentified` refuses to search without a query, so
+  // this is unreachable through the API — but the function is exported, and
+  // dividing by zero would answer `NaN`, which compares false against every
+  // threshold and would quietly read as "not confident" instead of "no idea".
+  if (weight === 0) return 0;
+  return round3(total / weight);
+}
+
 export function scoreMatch(input: MatchInput, target: MatchTarget): ScoredMatch {
   const reasons: MatchReason[] = [];
 
+  const named = Boolean(input.name ?? input.query);
   const nameScore = input.name
     ? nameSimilarity(input.name, target.name)
     : input.query
       ? nameCoverage(input.query, target.name)
-      : 0.5;
+      : 0;
 
   const districtHit = containsNormalized(target.address, input.district);
-  const districtScore = input.district ? (districtHit ? 1 : 0) : 0.5;
   if (input.district && !districtHit) reasons.push('DISTRICT_MISMATCH');
 
   const cityHit = containsNormalized(target.address, input.city);
-  const cityScore = input.city ? (cityHit ? 1 : 0) : 0.5;
   if (input.city && !cityHit) reasons.push('CITY_MISMATCH');
 
-  // Neutral unless both sides actually say something. A Google type GoGo has
-  // no category for means "cannot tell" — scoring that as a mismatch would
-  // penalise every place outside the eight categories for existing.
-  let categoryScore = 0.5;
+  // Informed only when both sides say something. A Google type GoGo has no
+  // category for means "cannot tell" — scoring it as a mismatch would penalise
+  // every place outside the eight categories for existing, and scoring it
+  // neutral would hold back a row that matched everything it did know.
+  let categoryScore = 0;
+  let categoryKnown = false;
   if (input.categoryKey && target.primaryType) {
     const implied = categoryForGoogleType(target.primaryType);
     if (implied) {
+      categoryKnown = true;
       const hit = implied === input.categoryKey;
       categoryScore = hit ? 1 : 0;
       if (!hit) reasons.push('TYPE_MISMATCH');
     }
   }
 
-  let coordinateScore = 0.5;
-  if (input.lat !== undefined && input.lng !== undefined) {
-    const d = haversineMeters({ lat: input.lat, lng: input.lng }, target);
+  const located = input.lat !== undefined && input.lng !== undefined;
+  let coordinateScore = 0;
+  if (located) {
+    const d = haversineMeters({ lat: input.lat!, lng: input.lng! }, target);
     coordinateScore = d <= 150 ? 1 : d <= 1000 ? 0.6 : d <= 5000 ? 0.2 : 0;
   }
 
-  const confidence = round3(
-    MATCH_WEIGHTS.name * nameScore +
-      MATCH_WEIGHTS.district * districtScore +
-      MATCH_WEIGHTS.city * cityScore +
-      MATCH_WEIGHTS.category * categoryScore +
-      MATCH_WEIGHTS.coordinate * coordinateScore,
-  );
+  const confidence = weightedConfidence([
+    { weight: MATCH_WEIGHTS.name, score: nameScore, informed: named },
+    {
+      weight: MATCH_WEIGHTS.district,
+      score: districtHit ? 1 : 0,
+      informed: Boolean(input.district),
+    },
+    { weight: MATCH_WEIGHTS.city, score: cityHit ? 1 : 0, informed: Boolean(input.city) },
+    { weight: MATCH_WEIGHTS.category, score: categoryScore, informed: categoryKnown },
+    { weight: MATCH_WEIGHTS.coordinate, score: coordinateScore, informed: located },
+  ]);
 
   if (nameScore >= 0.99 && cityHit) reasons.unshift('EXACT_NAME_CITY');
   if (confidence < MATCH_THRESHOLDS.confirm) reasons.push('LOW_CONFIDENCE');
@@ -171,9 +221,37 @@ export type MatchDecision = {
 };
 
 /**
+ * Is `a` a strictly shorter naming of the same thing as `b`?
+ *
+ * #473 — the score gap alone cannot tell a brand from a place. Ask Google for
+ * "Highlands Coffee" and one candidate is called exactly that while the rest
+ * are "Highlands Coffee Hai Bà Trưng" and friends. Coverage measures how much
+ * of the *candidate's* name the query accounts for, so the brand-named branch
+ * scores 1.0 and every real branch scores less — a wide gap, no ambiguity by
+ * the 0.05 rule, and the first shop in the list silently wins the chain.
+ *
+ * The tell is containment in the other direction: the winner's name being a
+ * strict subset of another candidate's means the query named the brand and the
+ * others are its branches. "Landmark 81" inside "CGV Vincom Center Landmark 81"
+ * is the same shape.
+ *
+ * Not symmetric, and not a similarity: "Lacàph Coffee Experiences Space" is not
+ * inside "Lacàph Coffee Bar", so naming one of two differently-named places
+ * still resolves.
+ */
+function isShorterNamingOf(a: string, b: string): boolean {
+  const ta = tokens(a);
+  const tb = tokens(b);
+  if (ta.size === 0 || ta.size >= tb.size) return false;
+  for (const t of ta) if (!tb.has(t)) return false;
+  return true;
+}
+
+/**
  * Ranks candidates and applies the thresholds. Two candidates within 0.05 of
  * each other are branches of the same brand — never auto-resolve those, a
- * human picks (FR-INGEST-004).
+ * human picks (FR-INGEST-004) — and neither is a winner whose name is merely
+ * the brand the others carry.
  */
 export function decideMatch(
   input: MatchInput,
@@ -191,7 +269,9 @@ export function decideMatch(
     );
   const best = scored[0]!;
   const runnerUp = scored[1];
-  const ambiguous = runnerUp !== undefined && best.confidence - runnerUp.confidence < 0.05;
+  const ambiguous =
+    (runnerUp !== undefined && best.confidence - runnerUp.confidence < 0.05) ||
+    scored.slice(1).some((other) => isShorterNamingOf(best.target.name, other.target.name));
   const reasons = [...best.reasons];
   if (ambiguous) reasons.unshift('MULTIPLE_BRANCHES');
 

@@ -3,6 +3,7 @@ import { expandShortLink, isAllowedMapsHost, parseMapsUrl } from './maps-url';
 import {
   decideMatch,
   exactProviderMatch,
+  MATCH_THRESHOLDS,
   nameCoverage,
   nameSimilarity,
   scoreMatch,
@@ -203,21 +204,72 @@ describe('free-text link queries (PI-BE-025, spec §6.2 step 5)', () => {
 
   it('locality tokens the user left in the link do not sink the match', () => {
     const d = decideMatch({ query: 'Landmark 81 Ho Chi Minh City' }, [landmark]);
-    expect(d.outcome).toBe('NEEDS_CONFIRMATION');
-    expect(d.best?.confidence).toBeGreaterThanOrEqual(0.7);
+    // #473 — this used to be the best available answer: the link named one
+    // place, Google returned that one place, and it still could not clear
+    // `auto` because district and category are unknowable from a link and were
+    // scored 0.5 into a total the threshold assumed would be complete.
+    expect(d.outcome).toBe('RESOLVED_AUTOMATICALLY');
+    expect(d.best?.confidence).toBe(1);
     expect(d.reasons).not.toContain('LOW_CONFIDENCE');
   });
 
-  it('offers every branch Google returned instead of silently taking the first', () => {
+  it('keeps every branch Google returned, ranked, and names the right one', () => {
     const d = decideMatch({ query: 'Lacaph Coffee Experiences Space Ho Chi Minh City' }, [
       lacaph,
       lacaphBar,
     ]);
-    expect(d.outcome).toBe('NEEDS_CONFIRMATION');
+    // #311's guarantee: never UNRESOLVED for a link Google answered correctly,
+    // and the alternatives stay on the decision. #473 lets it go further — the
+    // query names this branch in full and the other is a differently-named
+    // place, so there is nothing for a person to decide.
+    expect(d.outcome).toBe('RESOLVED_AUTOMATICALLY');
     expect(d.candidates).toHaveLength(2);
-    // The branch the user actually named ranks first.
     expect(d.candidates[0]?.target.googlePlaceId).toBe(lacaph.googlePlaceId);
     expect(d.candidates[1]?.confidence).toBeLessThan(d.candidates[0]!.confidence);
+  });
+
+  /**
+   * #473 — the case the score gap cannot see. Every one of these contains
+   * "Highlands Coffee", so the brand-named shop covers its own name completely
+   * and every real branch covers less: a wide gap, no ambiguity by the 0.05
+   * rule, and the first shop in the list would silently win the whole chain.
+   */
+  it('refuses to pick a shop just because it is named after the chain', () => {
+    const brand = {
+      googlePlaceId: 'ChIJ-hl-brand',
+      name: 'Highlands Coffee',
+      address: '1 Lê Lợi, Bến Nghé, Hồ Chí Minh, Vietnam',
+      lat: 10.7743,
+      lng: 106.7038,
+    };
+    const branch = {
+      googlePlaceId: 'ChIJ-hl-hbt',
+      name: 'Highlands Coffee Hai Bà Trưng',
+      address: '88 Hai Bà Trưng, Bến Nghé, Hồ Chí Minh, Vietnam',
+      lat: 10.7801,
+      lng: 106.7011,
+    };
+
+    const d = decideMatch({ query: 'Highlands Coffee' }, [brand, branch]);
+
+    expect(d.outcome).toBe('NEEDS_CONFIRMATION');
+    expect(d.reasons).toContain('MULTIPLE_BRANCHES');
+    // The gap is wide — this is not the 0.05 rule catching it.
+    expect(d.best!.confidence - d.candidates[1]!.confidence).toBeGreaterThan(0.05);
+  });
+
+  it('resolves a branch the link names in full, chain or not', () => {
+    const branch = {
+      googlePlaceId: 'ChIJ-4ps-hadong',
+      name: "Pizza 4P's Aeon Mall Hà Đông",
+      address: 'Dương Nội, Hà Đông, Hà Nội, Vietnam',
+      lat: 20.9765,
+      lng: 105.7488,
+    };
+
+    const d = decideMatch({ query: "Pizza 4P's Aeon Mall Hà Đông" }, [branch]);
+
+    expect(d.outcome).toBe('RESOLVED_AUTOMATICALLY');
   });
 
   it('still rejects a candidate the query does not name', () => {
@@ -247,8 +299,50 @@ describe('free-text link queries (PI-BE-025, spec §6.2 step 5)', () => {
     );
   });
 
-  it('neither name nor query stays neutral rather than scoring zero', () => {
-    expect(scoreMatch({}, landmark).confidence).toBe(0.5);
+  it('scores nothing when the input says nothing', () => {
+    // #473 — there is no average to take over zero informed dimensions, and 0
+    // is the honest floor. What has to hold either way is that an empty input
+    // never clears a threshold: it used to answer 0.5 and this answers 0, and
+    // both are below `confirm`.
+    const d = decideMatch({}, [landmark]);
+    expect(d.best?.confidence).toBe(0);
+    expect(d.outcome).toBe('UNRESOLVED');
+  });
+
+  /**
+   * #473 — the ceiling itself, pinned. A link carries a name and a coordinate
+   * and never a district or a category, so under fixed weights its best
+   * possible score was 0.85 against an `auto` of 0.90: no link could ever
+   * resolve on its own. Scoring over the informed weights is what removes it,
+   * and this is the arithmetic that would notice the ceiling coming back.
+   */
+  it('a link that matches everything it can know reaches the top', () => {
+    const perfect = scoreMatch(
+      { query: 'Landmark 81', city: 'Hồ Chí Minh', lat: landmark.lat, lng: landmark.lng },
+      landmark,
+    );
+    expect(perfect.confidence).toBe(1);
+    expect(perfect.confidence).toBeGreaterThanOrEqual(MATCH_THRESHOLDS.auto);
+  });
+
+  it('an unknown dimension neither helps nor hurts', () => {
+    // Same name, same coordinate; one input also knows the city and the other
+    // does not. Not knowing must not move the number.
+    const withCity = scoreMatch(
+      { query: 'Landmark 81', city: 'Hồ Chí Minh', lat: landmark.lat, lng: landmark.lng },
+      landmark,
+    );
+    const without = scoreMatch(
+      { query: 'Landmark 81', lat: landmark.lat, lng: landmark.lng },
+      landmark,
+    );
+    expect(without.confidence).toBe(withCity.confidence);
+  });
+
+  it('a weak name is not propped up by what nobody knows', () => {
+    // The other side of the same transform: three neutral dimensions used to
+    // lift a 0.4 name to 0.425. It is now worth what it is worth.
+    expect(scoreMatch({ query: 'Trung Nguyen Legend' }, landmark).confidence).toBeLessThan(0.5);
   });
 });
 
