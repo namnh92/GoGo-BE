@@ -268,15 +268,16 @@ describe('administrative_unit_changes', () => {
 
   it('refuses an edge with neither endpoint', async () => {
     const dataset = await seedDataset();
-    await expect(
-      db.insert(schema.administrativeUnitChanges).values({
-        datasetVersionId: dataset,
-        oldCode: null,
-        newCode: null,
-        changeType: 'DISSOLVED',
-        effectiveDate: '2025-07-01',
-        sourceVersion: '7fac8c4',
-      }),
+    await expectViolation(
+      () =>
+        db.insert(schema.administrativeUnitChanges).values({
+          datasetVersionId: dataset,
+          oldCode: null,
+          newCode: null,
+          changeType: 'DISSOLVED',
+          effectiveDate: '2025-07-01',
+          sourceVersion: '7fac8c4',
+        }),
       'administrative_unit_changes_endpoints',
     );
   });
@@ -361,12 +362,13 @@ describe('places compatibility', () => {
   it('refuses a mapped place that does not name the dataset that mapped it', async () => {
     // A code without its dataset version is ambiguous across 2025-07-01, so
     // the database refuses to hold one rather than trusting the writer.
-    await expect(
-      insertPlace({
-        communeCode: '00004',
-        administrativeMappingStatus: 'AUTO_MATCHED',
-        administrativeDatasetVersion: null,
-      }),
+    await expectViolation(
+      () =>
+        insertPlace({
+          communeCode: '00004',
+          administrativeMappingStatus: 'AUTO_MATCHED',
+          administrativeDatasetVersion: null,
+        }),
       'places_administrative_version_present',
     );
   });
