@@ -223,3 +223,45 @@ export { SUGGESTION_LATENCY_BUDGET_MS } from '../suggestions/application/suggest
 // epic §39). Re-exported here for one release so no consumer had to change an
 // import path in that PR; new code should import the package directly.
 export * from '@gogo/cost-observability';
+
+// Administrative units (ADM-002 / #455, ADR-0019)
+export {
+  AdministrativeImportService,
+  DuplicateImportError,
+  type ImportReport,
+} from '../administrative/application/administrative-import.service';
+export {
+  PinnedSnapshotReader,
+  SnapshotChecksumError,
+  ADMINISTRATIVE_RESOURCES,
+  type Manifest,
+  type ManifestSource,
+} from '../administrative/application/pinned-snapshot.reader';
+export { parseMappingCsv } from '../administrative/application/mapping-csv';
+export {
+  parseCurrentUnits,
+  parseHistoricalUnits,
+  REORGANISATION_DATE,
+  LEGACY_EFFECTIVE_TO,
+  type ParsedUnit,
+} from '../administrative/application/unit-snapshot';
+export {
+  classifyMapping,
+  isCanonical,
+  summarise,
+  type Classified,
+  type MappingRow,
+  type QuarantineClass,
+  type UnitIndex,
+} from '../administrative/domain/change-classification';
+export {
+  combinedChecksum,
+  combinedDatasetVersion,
+  type DatasetComponents,
+} from '../administrative/domain/combined-version';
+export {
+  deriveUnitType,
+  stripTypePrefix,
+  type UnitLevel,
+  type UnitType,
+} from '../administrative/domain/unit-type';
