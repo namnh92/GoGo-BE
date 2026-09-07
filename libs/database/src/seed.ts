@@ -373,6 +373,12 @@ async function main(): Promise<void> {
       .values({
         name: p.name,
         nameNormalized: p.name.toLowerCase(),
+        // ADM-009 (#462): the approval invariant governs product write paths —
+        // the CMS transition, the bulk import and the link import all run the
+        // shared guard. This is a development fixture that builds a database
+        // directly and never goes through any of them; it is listed in ADR-0019
+        // §7 as the one writer deliberately outside the policy, because there is
+        // no reviewer in a seed script to verify anything.
         status: 'published',
         geom: { x: p.lng, y: p.lat },
         areaKey: p.areaKey,
