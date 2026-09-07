@@ -29,10 +29,10 @@ export class MetricsController {
 
   @Public()
   @Get()
-  scrape(
+  async scrape(
     @Headers('authorization') authorization: string | undefined,
     @Res({ passthrough: true }) reply: FastifyReply,
-  ): string {
+  ): Promise<string> {
     const expected = this.config.METRICS_TOKEN;
     // 404 rather than 401: an unconfigured endpoint should not advertise that
     // it exists and is merely locked.
@@ -45,7 +45,10 @@ export class MetricsController {
 
     reply.header('content-type', 'text/plain; version=0.0.4; charset=utf-8');
     reply.header('cache-control', 'no-store');
-    return this.registry.render();
+    // ADM-010 (#463): gauges are refreshed immediately before rendering. "How
+    // old is the active dataset" has to be answered at scrape time, not at the
+    // time of the last publication.
+    return this.registry.collect();
   }
 }
 

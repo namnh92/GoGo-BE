@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, isNotNull, ne, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
+import { METRICS, type MetricsPort } from '@gogo/observability';
 import { DB } from '../../shared/tokens';
 import { AppError } from '../../shared/app-error';
 import { writeAudit } from '../../shared/audit';
@@ -121,7 +122,26 @@ export class AdministrativePublicationService {
     @Inject(DB) private readonly db: Db,
     @Inject(ADMINISTRATIVE_DATASET) private readonly cache: AdministrativeDatasetPort,
     private readonly validation: AdministrativeValidationService,
+    @Inject(METRICS) private readonly metrics: MetricsPort,
   ) {}
+
+  /**
+   * One counter for every dataset lifecycle operation, labelled by operation
+   * and by result. Neither label is derived from a version, an id or a
+   * checksum: those grow without bound and belong in the audit row.
+   */
+  private record(
+    operation: 'import' | 'validate' | 'diff' | 'publish' | 'rollback',
+    result: 'succeeded' | 'rejected' | 'failed',
+    startedAt: number,
+  ): void {
+    this.metrics.increment('administrative_dataset_operations_total', { operation, result });
+    this.metrics.observe(
+      'administrative_dataset_operation_duration_seconds',
+      (Date.now() - startedAt) / 1000,
+      { operation },
+    );
+  }
 
   async list(options: { limit: number; offset: number }): Promise<{
     items: DatasetSummary[];
@@ -173,6 +193,7 @@ export class AdministrativePublicationService {
     actor: { id: string | null; type: 'admin' | 'system' },
     context: { idempotencyKey?: string | null } = {},
   ): Promise<TransitionResult> {
+    const startedAt = Date.now();
     const staged = await this.requireRow(this.db, datasetVersionId);
     const activeBefore = await this.activeRow(this.db);
 
@@ -227,6 +248,7 @@ export class AdministrativePublicationService {
     });
 
     if ('refusal' in outcome) {
+      this.record('publish', 'rejected', startedAt);
       throw await this.refusalError(
         AUDIT_ACTION.publishRejected,
         staged,
@@ -237,6 +259,13 @@ export class AdministrativePublicationService {
     }
 
     const cacheWarmed = await this.refreshCache();
+    this.record('publish', 'succeeded', startedAt);
+    // A warm-up that failed is not a failed publication, and the two must stay
+    // tellable apart: PostgreSQL is authoritative and every other process
+    // converges on the TTL.
+    this.metrics.increment('administrative_cache_refresh_total', {
+      result: cacheWarmed ? 'ok' : 'failed',
+    });
     return {
       datasetVersionId,
       combinedDatasetVersion: staged.combinedDatasetVersion,
@@ -264,11 +293,13 @@ export class AdministrativePublicationService {
     actor: { id: string | null; type: 'admin' | 'system' },
     context: { idempotencyKey?: string | null } = {},
   ): Promise<TransitionResult> {
+    const startedAt = Date.now();
     const target = await this.requireRow(this.db, datasetVersionId);
     const activeBefore = await this.activeRow(this.db);
 
     const preflight = await this.rollbackGate(this.db, target);
     if (preflight) {
+      this.record('rollback', 'rejected', startedAt);
       throw await this.refusalError(
         AUDIT_ACTION.rollbackRejected,
         target,
@@ -316,6 +347,7 @@ export class AdministrativePublicationService {
     });
 
     if ('refusal' in outcome) {
+      this.record('rollback', 'rejected', startedAt);
       throw await this.refusalError(
         AUDIT_ACTION.rollbackRejected,
         target,
@@ -326,6 +358,10 @@ export class AdministrativePublicationService {
     }
 
     const cacheWarmed = await this.refreshCache();
+    this.record('rollback', 'succeeded', startedAt);
+    this.metrics.increment('administrative_cache_refresh_total', {
+      result: cacheWarmed ? 'ok' : 'failed',
+    });
     return {
       datasetVersionId,
       combinedDatasetVersion: target.combinedDatasetVersion,

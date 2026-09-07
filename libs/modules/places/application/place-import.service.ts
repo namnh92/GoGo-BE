@@ -9,7 +9,10 @@ import {
 } from '@gogo/providers';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
-import { evaluatePlaceApproval } from '../../administrative/application/place-approval';
+import {
+  evaluatePlaceApproval,
+  publicationOutcomeFor,
+} from '../../administrative/application/place-approval';
 import {
   APP_CONFIG,
   type PlatformConfig,
@@ -383,7 +386,13 @@ export class PlaceImportService {
         .returning();
 
       if (autoPublish) {
-        const block = await evaluatePlaceApproval(tx, place!);
+        const block = await evaluatePlaceApproval(tx, place!, this.metrics);
+        if (block) {
+          this.metrics.increment('place_publication_deferred_total', {
+            source: 'link_import',
+            reason: publicationOutcomeFor(block),
+          });
+        }
         if (!block) {
           await tx
             .update(schema.places)

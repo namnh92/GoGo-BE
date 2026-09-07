@@ -80,8 +80,31 @@ function bucketsFor(name: string): number[] {
 
 type HistogramState = { counts: number[]; sum: number; count: number };
 
-export class MetricsRegistry implements MetricsPort {
+/**
+ * ADM-010 (#463) — the two things a counter cannot express.
+ *
+ * A gauge is a *current* value: is a dataset published, how old is it, how many
+ * places are waiting for review. Deriving those from counters would mean
+ * replaying every event since boot, and the answer would be wrong for any
+ * process that restarted.
+ *
+ * A collector is how a gauge stays honest. "How old is the active dataset" has
+ * to be answered at scrape time, not at the time of the last publication, so
+ * the registry asks its collectors immediately before rendering rather than
+ * holding whatever was written hours ago.
+ */
+export interface GaugeSink {
+  gauge(name: string, value: number, labels?: MetricLabels): void;
+  /** Called immediately before each scrape. Failures never fail the scrape. */
+  registerCollector(collect: () => Promise<void>): void;
+}
+
+export const GAUGE_SINK = Symbol('GAUGE_SINK');
+
+export class MetricsRegistry implements MetricsPort, GaugeSink {
   private readonly counters = new Map<string, Map<string, Sample>>();
+  private readonly gauges = new Map<string, Map<string, Sample>>();
+  private readonly collectors: (() => Promise<void>)[] = [];
   private readonly histograms = new Map<
     string,
     Map<string, HistogramState & { labels: MetricLabels }>
@@ -93,6 +116,30 @@ export class MetricsRegistry implements MetricsPort {
     const existing = series.get(key);
     series.set(key, { value: (existing?.value ?? 0) + by, labels: clean(labels) });
     this.counters.set(name, series);
+  }
+
+  gauge(name: string, value: number, labels: MetricLabels = {}): void {
+    const series = this.gauges.get(name) ?? new Map<string, Sample>();
+    // Set, not added: a gauge's whole point is that the newest reading replaces
+    // the last one rather than accumulating with it.
+    series.set(seriesKey(labels), { value, labels: clean(labels) });
+    this.gauges.set(name, series);
+  }
+
+  registerCollector(collect: () => Promise<void>): void {
+    this.collectors.push(collect);
+  }
+
+  /**
+   * Refreshes every gauge, then renders.
+   *
+   * A collector that throws is swallowed: a database hiccup must degrade one
+   * gauge to its previous value, not take the whole scrape — and with it every
+   * other metric — down with it.
+   */
+  async collect(): Promise<string> {
+    await Promise.allSettled(this.collectors.map((collect) => collect()));
+    return this.render();
   }
 
   observe(name: string, value: number, labels: MetricLabels = {}): void {
@@ -138,6 +185,13 @@ export class MetricsRegistry implements MetricsPort {
       }
     }
 
+    for (const [name, series] of [...this.gauges].sort(byName)) {
+      lines.push(`# TYPE ${name} gauge`);
+      for (const sample of series.values()) {
+        lines.push(`${name}${renderLabels(sample.labels)} ${sample.value}`);
+      }
+    }
+
     for (const [name, series] of [...this.histograms].sort(byName)) {
       const buckets = bucketsFor(name);
       lines.push(`# TYPE ${name} histogram`);
@@ -158,7 +212,9 @@ export class MetricsRegistry implements MetricsPort {
 
   /** Names currently carrying at least one sample — what an alert can match. */
   names(): string[] {
-    return [...new Set([...this.counters.keys(), ...this.histograms.keys()])].sort();
+    return [
+      ...new Set([...this.counters.keys(), ...this.gauges.keys(), ...this.histograms.keys()]),
+    ].sort();
   }
 }
 

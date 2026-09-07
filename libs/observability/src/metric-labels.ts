@@ -203,6 +203,73 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // `executed`; the per-place numbers live on the run row, where a reviewer
   // reads them together rather than as twelve unrelated series.
   administrative_backfill_batches_total: ['outcome'],
+
+  // --- ADM-010 (#463): administrative dataset, boundaries, moderation --------
+  //
+  // Every label below comes from a closed set. Deliberately absent, and each
+  // one was tempting: `placeId`, `datasetId`, an administrative code, a
+  // reviewer id, a `runId`, a checksum, a raw error message, and the combined
+  // dataset version — that last one mints a new value on every publication, so
+  // labelling by it would grow the series set forever. Exact identities live on
+  // the capability endpoint, in structured logs and in audit rows.
+  //
+  // `operation` is import|validate|diff|publish|rollback; `result` is
+  // succeeded|rejected|failed. A rejection is the policy working and a failure
+  // is not, so they must never be one bucket.
+  administrative_dataset_operations_total: ['operation', 'result'],
+  administrative_dataset_operation_duration_seconds: ['operation'],
+  // `gate` is a GateId from ADM-004's closed list of twenty; `severity` is
+  // ERROR or WARNING. This is what an alert on "validation regressed" reads.
+  administrative_validation_findings_total: ['gate', 'severity'],
+  // `result` is ok|failed. A failed warm-up is not a failed publication —
+  // PostgreSQL is authoritative and other processes converge on the TTL — so it
+  // is counted apart from the publication itself.
+  administrative_cache_refresh_total: ['result'],
+  // `result` is loaded|unchanged|rejected|failed.
+  administrative_boundary_loads_total: ['result'],
+  administrative_boundary_load_duration_seconds: [],
+  // Bytes of the pinned archive as fetched. A histogram because it is a
+  // measurement of a thing that changes per release, not a running total.
+  administrative_boundary_archive_bytes: [],
+  administrative_boundary_findings_total: ['gate', 'severity'],
+  // How long one point-in-polygon containment took. No labels: one query
+  // shape, and the boundary version is not a label.
+  administrative_pip_duration_seconds: [],
+  // `class` is definitional|unnumbered. Confidence is 1.00 or absent, and a
+  // dashboard that averaged the two would be averaging a definition with a
+  // silence.
+  administrative_resolver_confidence_total: ['class'],
+  // `mode` is dry_run|execute — the distinction the whole job is built on.
+  administrative_backfill_runs_total: ['outcome', 'mode'],
+  administrative_backfill_places_total: ['outcome', 'mode'],
+  administrative_backfill_run_duration_seconds: ['mode'],
+  administrative_backfill_batch_duration_seconds: ['mode'],
+  administrative_backfill_version_stops_total: ['mode'],
+  // `action` is the moderator verb, `result` is ok|rejected|conflict|unchanged.
+  // Never the reviewer: unbounded, and nothing good comes of a leaderboard.
+  administrative_moderation_actions_total: ['action', 'result'],
+  // `reason` is the closed ApprovalBlockCode enum, or `none` when allowed.
+  place_approval_checks_total: ['result', 'reason'],
+  // `source` is cms_import|link_import; `reason` is the deferral enum.
+  place_publication_deferred_total: ['source', 'reason'],
+
+  // --- gauges: current state, not events ------------------------------------
+  //
+  // A counter cannot answer "is a dataset published" or "how many places are
+  // waiting for a reviewer", and a process that restarted would answer wrong if
+  // it tried. These are refreshed by a collector immediately before each
+  // scrape, so an age is the age now rather than at the last publication.
+  administrative_dataset_active: [],
+  administrative_dataset_age_seconds: [],
+  administrative_datasets: ['state'],
+  administrative_quarantined_changes: [],
+  administrative_unresolved_changes: [],
+  administrative_boundary_active: [],
+  administrative_boundary_age_seconds: [],
+  administrative_boundary_units: ['level'],
+  administrative_mappings: ['status'],
+  administrative_remediation: ['category'],
+  administrative_publication_enabled: [],
 };
 
 /**

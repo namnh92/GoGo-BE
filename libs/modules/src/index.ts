@@ -242,6 +242,12 @@ export {
 } from '../administrative/application/administrative-audit';
 export { snapshotFingerprint } from '../administrative/application/snapshot-fingerprint';
 export {
+  AdministrativeTelemetryService,
+  type AdministrativeCapability,
+  type CapabilityState,
+  type ResolverCapability,
+} from '../administrative/application/administrative-telemetry.service';
+export {
   AdministrativeModerationService,
   type MappingDetail,
   type MappingListItem,

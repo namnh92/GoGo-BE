@@ -1,6 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
+import { METRICS, type MetricsPort } from '@gogo/observability';
 import { PlaceDedupService } from '../../ingestion/application/place-dedup.service';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { AppError } from '../../shared/app-error';
@@ -396,6 +397,8 @@ export class CmsCatalogService {
     @Optional()
     @Inject(APP_CONFIG)
     private readonly config?: ProvenanceConfig & Partial<MediaConfig>,
+    /** ADM-010 (#463): approval decisions are counted by their closed reason. */
+    @Optional() @Inject(METRICS) private readonly metrics?: MetricsPort,
   ) {}
 
   /** Default on: off is the state that serves ingestion places unattributed. */
@@ -1119,7 +1122,7 @@ export class CmsCatalogService {
       }
       // ADM-009 (#462): the shared invariant, not a copy of it. Three modules
       // publish places and a policy written twice is a policy that drifts.
-      if (to === 'published') await assertPlaceApprovable(tx, place);
+      if (to === 'published') await assertPlaceApprovable(tx, place, this.metrics);
 
       await tx
         .update(schema.places)

@@ -1,6 +1,7 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, asc, eq, gt, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { DB } from '../../shared/tokens';
 import { AppError } from '../../shared/app-error';
 import { writeAudit } from '../../shared/audit';
@@ -101,7 +102,21 @@ export class AdministrativeModerationService {
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly resolver: AdministrativeResolverService,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
+
+  /**
+   * One counter for every moderator action. The action and the result are both
+   * closed sets; who did it is in the audit row, because a reviewer's identity
+   * in a Prometheus label is both unbounded and a thing nobody should be able
+   * to build a leaderboard from.
+   */
+  private action(
+    action: 'list' | 'detail' | 'verify' | 'reject' | 'rematch' | 'correct' | 'reconcile',
+    result: 'ok' | 'rejected' | 'conflict' | 'unchanged',
+  ): void {
+    this.metrics.increment('administrative_moderation_actions_total', { action, result });
+  }
 
   /**
    * The review queue.
@@ -176,8 +191,14 @@ export class AdministrativeModerationService {
         blocksApproval: r.mappingStatus !== 'VERIFIED',
       })),
       nextCursor: rows.length > limit ? (page.at(-1)?.placeId ?? null) : null,
-      counts: await this.counts(),
+      counts: await this.countsWith(() => this.action('list', 'ok')),
     };
+  }
+
+  private async countsWith(after: () => void): Promise<Record<string, number>> {
+    const counts = await this.counts();
+    after();
+    return counts;
   }
 
   /** One count per mapping status, so a queue can show what it is not showing. */
@@ -207,6 +228,7 @@ export class AdministrativeModerationService {
 
   /** Everything the CMS needs to show one mapping, recomputed on read. */
   async detail(placeId: string, actorRole: string): Promise<MappingDetail> {
+    this.action('detail', 'ok');
     const place = await this.placeRow(placeId);
     const dataset = await this.activeDataset();
     const resolution = await this.resolver.resolvePlace(placeId);
@@ -488,6 +510,7 @@ export class AdministrativeModerationService {
       },
     });
 
+    this.action('rematch', 'ok');
     return { placeId, status: resolution.status, communeCode: resolution.communeCode };
   }
 
@@ -582,6 +605,7 @@ export class AdministrativeModerationService {
     if (!verdict.stale || place.administrativeMappingStatus === 'STALE') {
       // Idempotent: a second reconciliation of a stale row writes nothing, and
       // a valid mapping is never touched.
+      this.action('reconcile', 'unchanged');
       return { placeId, changed: false, verdict };
     }
 
@@ -609,6 +633,7 @@ export class AdministrativeModerationService {
         },
       });
     });
+    this.action('reconcile', 'ok');
     return { placeId, changed: true, verdict };
   }
 
@@ -691,6 +716,10 @@ export class AdministrativeModerationService {
         .for('update');
       if (!place) throw AppError.notFound('PLACE_NOT_FOUND', `no place ${placeId}`);
       if (place.updatedAt.getTime() !== expectedUpdatedAt.getTime()) {
+        this.metrics.increment('administrative_moderation_actions_total', {
+          action: 'decide',
+          result: 'conflict',
+        });
         throw AppError.conflict(
           'PLACE_MODIFIED',
           'the place changed since it was read; reload the mapping and decide again',
@@ -698,6 +727,7 @@ export class AdministrativeModerationService {
       }
       const dataset = await this.activeDataset(tx);
       const { action, diff, result } = await body(tx, place as PlaceRow, dataset);
+      this.action(action.split('.').at(-1) as 'verify', 'ok');
       await writeAudit(tx, {
         actorType: 'admin',
         actorId: actor.id,

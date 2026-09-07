@@ -144,6 +144,7 @@ export class AdministrativeBackfillService {
           break;
         }
 
+        const batchStartedAt = Date.now();
         const batch = await this.selectBatch(run, {
           cursor,
           batchSize,
@@ -213,6 +214,11 @@ export class AdministrativeBackfillService {
         this.metrics.increment('administrative_backfill_batches_total', {
           outcome: dryRun ? 'dry_run' : 'executed',
         });
+        this.metrics.observe(
+          'administrative_backfill_batch_duration_seconds',
+          (Date.now() - batchStartedAt) / 1000,
+          { mode: dryRun ? 'dry_run' : 'execute' },
+        );
         if (options.maxRows && counters.scanned >= options.maxRows) break;
       }
       // The run-level audit row: one per run, not one per place left alone.
@@ -224,11 +230,41 @@ export class AdministrativeBackfillService {
       await this.audit(run, options, dryRun, status, counters, cursor, Date.now() - startedAt);
     } catch (error) {
       await this.finish(run.id, 'failed', cursor, counters, conflicts, failures, error);
+      this.metrics.increment('administrative_backfill_runs_total', {
+        outcome: 'failed',
+        mode: dryRun ? 'dry_run' : 'execute',
+      });
       throw error;
     }
 
     await this.finish(run.id, status, cursor, counters, conflicts, failures);
     const completedAt = Date.now();
+    const mode = dryRun ? 'dry_run' : 'execute';
+    this.metrics.increment('administrative_backfill_runs_total', { outcome: status, mode });
+    this.metrics.observe(
+      'administrative_backfill_run_duration_seconds',
+      (completedAt - startedAt) / 1000,
+      { mode },
+    );
+    // Per-place outcomes as one bounded family. Not per run: `runId` is a UUID
+    // and a label whose values grow with every run is a series set that never
+    // stops growing.
+    for (const [outcome, total] of [
+      ['written', counters.written],
+      ['would_write', counters.wouldWrite],
+      ['noop', counters.noop],
+      ['concurrency_conflict', counters.conflicts],
+      ['protected_verified', counters.protectedVerified],
+      ['protected_rejected', counters.protectedRejected],
+      ['failure', counters.failures],
+    ] as const) {
+      if (total > 0) {
+        this.metrics.increment('administrative_backfill_places_total', { outcome, mode }, total);
+      }
+    }
+    if (status === 'stopped_version_changed') {
+      this.metrics.increment('administrative_backfill_version_stops_total', { mode });
+    }
 
     return this.result(
       run,

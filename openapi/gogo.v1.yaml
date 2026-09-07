@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.7
+  version: 1.0.0-alpha.8
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1170,6 +1170,37 @@ paths:
                   total: { type: integer }
                   limit: { type: integer }
                   offset: { type: integer }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-datasets/capability:
+    get:
+      operationId: getAdministrativeCapability
+      tags: [cms, administrative]
+      summary: 'Ops: what this environment can currently do (ADM-010)'
+      description: >
+        Deliberately separate from readiness. An environment with no
+        administrative dataset still serves rooms, search and plans; it simply
+        cannot publish a place, which the domain guard already refuses. Taking
+        the whole API out of the load balancer for that would turn a
+        configuration gap into an outage.
+
+
+        This is also where the exact dataset and boundary versions live. They
+        are not Prometheus labels: a label whose values grow with every
+        publication is a series set that never stops growing, so the numbers go
+        on a dashboard and the identities go here.
+
+
+        `resolver` is `FULL` with polygons loaded, `PARTIAL` without them — the
+        resolver still answers from explicit codes, stored names and the change
+        mapping, which is less of the catalogue rather than none of it.
+      responses:
+        '200':
+          description: Current administrative capability
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeCapability' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
@@ -8291,6 +8322,64 @@ components:
             Whether this process refilled its own active-version pointer after
             the commit. False is not a failed publication — PostgreSQL is
             authoritative and every process converges within the 60-second TTL.
+    AdministrativeCapability:
+      type: object
+      required: [dataset, boundaries, resolver, publication, mappings, remediation, observedAt]
+      properties:
+        dataset:
+          type: object
+          required:
+            [state, version, publishedAt, ageSeconds, counts, quarantined, unresolved, validation]
+          properties:
+            state: { type: string, enum: [AVAILABLE, MISSING, ERROR] }
+            version: { type: string, nullable: true }
+            publishedAt: { type: string, format: date-time, nullable: true }
+            ageSeconds: { type: integer, nullable: true }
+            counts:
+              type: object
+              additionalProperties: { type: integer }
+              description: One per lifecycle status.
+            quarantined: { type: integer }
+            unresolved: { type: integer }
+            validation:
+              type: object
+              nullable: true
+              required: [errors, warnings]
+              properties:
+                errors: { type: integer }
+                warnings: { type: integer }
+        boundaries:
+          type: object
+          required: [state, version, loadedAt, ageSeconds, provinces, communes]
+          properties:
+            state: { type: string, enum: [AVAILABLE, MISSING, ERROR] }
+            version: { type: string, nullable: true }
+            loadedAt: { type: string, format: date-time, nullable: true }
+            ageSeconds: { type: integer, nullable: true }
+            provinces: { type: integer }
+            communes: { type: integer }
+        resolver:
+          type: string
+          enum: [FULL, PARTIAL, UNAVAILABLE]
+          description: >
+            PARTIAL means no boundary release is loaded: the resolver still
+            answers from explicit codes, stored names and the change mapping.
+        publication:
+          type: string
+          enum: [ENABLED, BLOCKED]
+          description: >
+            BLOCKED when no dataset is published — nothing to validate a mapping
+            against, so no place may be approved. Enforced by the domain guard,
+            not by taking the service offline.
+        mappings:
+          type: object
+          additionalProperties: { type: integer }
+          description: Places per administrative mapping status.
+        remediation:
+          type: object
+          additionalProperties: { type: integer }
+          description: Approved places per remediation category.
+        observedAt: { type: string, format: date-time }
     AdministrativeMappingReason:
       type: object
       additionalProperties: false

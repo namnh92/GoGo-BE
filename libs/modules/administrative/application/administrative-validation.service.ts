@@ -1,7 +1,8 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { DB } from '../../shared/tokens';
 import { AppError } from '../../shared/app-error';
 import { combinedChecksum, combinedDatasetVersion } from '../domain/combined-version';
@@ -55,6 +56,7 @@ export class AdministrativeValidationService {
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly reader: PinnedSnapshotReader = new PinnedSnapshotReader(),
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
   /**
@@ -65,6 +67,7 @@ export class AdministrativeValidationService {
     report: PersistedValidation;
     diff: DatasetDiff;
   }> {
+    const startedAt = Date.now();
     const staged = await this.datasetRow(datasetVersionId);
     const published = await this.publishedRow();
 
@@ -163,6 +166,25 @@ export class AdministrativeValidationService {
         updatedAt: new Date(),
       })
       .where(eq(schema.administrativeDatasetVersions.id, datasetVersionId));
+
+    // One series per gate per severity, from a closed vocabulary of twenty
+    // gates. The gate name is what an operator alerts on; the dataset it fired
+    // against is in the stored report, not in a label.
+    for (const finding of report.findings) {
+      this.metrics.increment('administrative_validation_findings_total', {
+        gate: finding.gate,
+        severity: finding.severity,
+      });
+    }
+    this.metrics.increment('administrative_dataset_operations_total', {
+      operation: 'validate',
+      result: report.publishable ? 'succeeded' : 'rejected',
+    });
+    this.metrics.observe(
+      'administrative_dataset_operation_duration_seconds',
+      (Date.now() - startedAt) / 1000,
+      { operation: 'validate' },
+    );
 
     return { report: persisted, diff };
   }

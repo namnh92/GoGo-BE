@@ -627,6 +627,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/administrative-datasets/capability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: what this environment can currently do (ADM-010)
+         * @description Deliberately separate from readiness. An environment with no administrative dataset still serves rooms, search and plans; it simply cannot publish a place, which the domain guard already refuses. Taking the whole API out of the load balancer for that would turn a configuration gap into an outage.
+         *
+         *     This is also where the exact dataset and boundary versions live. They are not Prometheus labels: a label whose values grow with every publication is a series set that never stops growing, so the numbers go on a dashboard and the identities go here.
+         *
+         *     `resolver` is `FULL` with polygons loaded, `PARTIAL` without them — the resolver still answers from explicit codes, stored names and the change mapping, which is less of the catalogue rather than none of it.
+         */
+        get: operations["getAdministrativeCapability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/administrative-datasets/import": {
         parameters: {
             query?: never;
@@ -4420,6 +4444,56 @@ export interface components {
             staleMappings: components["schemas"]["AdministrativeStaleMappings"];
             /** @description Whether this process refilled its own active-version pointer after the commit. False is not a failed publication — PostgreSQL is authoritative and every process converges within the 60-second TTL. */
             cacheWarmed: boolean;
+        };
+        AdministrativeCapability: {
+            dataset: {
+                /** @enum {string} */
+                state: "AVAILABLE" | "MISSING" | "ERROR";
+                version: string | null;
+                /** Format: date-time */
+                publishedAt: string | null;
+                ageSeconds: number | null;
+                /** @description One per lifecycle status. */
+                counts: {
+                    [key: string]: number;
+                };
+                quarantined: number;
+                unresolved: number;
+                validation: {
+                    errors: number;
+                    warnings: number;
+                } | null;
+            };
+            boundaries: {
+                /** @enum {string} */
+                state: "AVAILABLE" | "MISSING" | "ERROR";
+                version: string | null;
+                /** Format: date-time */
+                loadedAt: string | null;
+                ageSeconds: number | null;
+                provinces: number;
+                communes: number;
+            };
+            /**
+             * @description PARTIAL means no boundary release is loaded: the resolver still answers from explicit codes, stored names and the change mapping.
+             * @enum {string}
+             */
+            resolver: "FULL" | "PARTIAL" | "UNAVAILABLE";
+            /**
+             * @description BLOCKED when no dataset is published — nothing to validate a mapping against, so no place may be approved. Enforced by the domain guard, not by taking the service offline.
+             * @enum {string}
+             */
+            publication: "ENABLED" | "BLOCKED";
+            /** @description Places per administrative mapping status. */
+            mappings: {
+                [key: string]: number;
+            };
+            /** @description Approved places per remediation category. */
+            remediation: {
+                [key: string]: number;
+            };
+            /** Format: date-time */
+            observedAt: string;
         };
         AdministrativeMappingReason: {
             /** @description Required. A decision with no stated reason cannot be reviewed later. */
@@ -8495,6 +8569,28 @@ export interface operations {
                         limit: number;
                         offset: number;
                     };
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    getAdministrativeCapability: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current administrative capability */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeCapability"];
                 };
             };
             403: components["responses"]["Forbidden"];
