@@ -740,6 +740,10 @@ export interface paths {
         /**
          * Ops: run every gate against this exact snapshot (ADM-005)
          * @description Runs the ADM-004 gates and stores the result bound to the dataset's identity, checksum, staged-row digest, override revision and validator version. Re-validating replaces the previous result rather than adding to it. A publishable result moves the version to VALIDATED; a failing one leaves it STAGED, because it failed a check — nobody rejected it.
+         *
+         *     Because it writes that status, validation is a transition and is serialised behind publish and rollback on the same advisory lock. Only a STAGED or VALIDATED version may be validated: applied to the active dataset the status write would demote it out of PUBLISHED and leave the environment with no active version, and applied to a ROLLED_BACK one it would take it out of the restorable set. Both are refused with DATASET_STATE_NOT_VALIDATABLE and nothing is written.
+         *
+         *     The row is re-read under the lock before the write. If the version, its checksum, its override revision or its staged rows moved while the gates were running, the report describes rows that are no longer there, so it is discarded with DATASET_CHANGED_DURING_VALIDATION rather than stored.
          */
         post: operations["validateAdministrativeDataset"];
         delete?: never;
@@ -8719,7 +8723,10 @@ export interface operations {
     validateAdministrativeDataset: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
@@ -8741,6 +8748,15 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description Refused, and audited with its reason as `administrative_dataset.validate_rejected`. Nothing is written: not the lifecycle status, not the previous validation, not the active-version pointer, not the restorable set, not a place, not the cache. DATASET_STATE_NOT_VALIDATABLE when the version is not STAGED or VALIDATED, or DATASET_CHANGED_DURING_VALIDATION when it moved while the gates were running. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             429: components["responses"]["RateLimited"];
         };
     };

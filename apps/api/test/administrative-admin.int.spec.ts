@@ -77,6 +77,8 @@ type Dataset = { id: string; version: string };
 let r0!: Dataset;
 let r1!: Dataset;
 let r2!: Dataset;
+/** The one whose gates fail: imported by the ERROR test, reused by #482. */
+let r3!: Dataset;
 
 async function createAdmin(role: Role) {
   const email = `adm005-${role}@gogo.local`;
@@ -591,6 +593,7 @@ describe('concurrent publication', () => {
 describe('ERROR cannot be overridden', () => {
   it('refuses a dataset whose gates failed, even with the status flipped by hand', async () => {
     const target = await importDataset(3);
+    r3 = target;
     // A commune whose province is not in the dataset: an ERROR gate, and a real
     // one — this is what a bad merge of two sources looks like.
     await db.execute(sql`
@@ -619,6 +622,243 @@ describe('ERROR cannot be overridden', () => {
   }, 120_000);
 });
 
+/**
+ * #482 — validation writes a lifecycle status, so it is a transition.
+ *
+ * `publishable ? VALIDATED : STAGED` is the right answer for a version being
+ * prepared and a demotion for every other version there is. Before this gate,
+ * validating the active dataset moved it out of PUBLISHED and left the
+ * environment with none — the partial unique index forbids two, not zero — and
+ * every place approval started refusing. These tests are that refusal, and the
+ * proof that a refused run writes nothing at all.
+ */
+describe('validation refuses the states it would otherwise demote', () => {
+  const rolledBackId = async () => {
+    const [row] = await db
+      .select({ id: schema.administrativeDatasetVersions.id })
+      .from(schema.administrativeDatasetVersions)
+      .where(eq(schema.administrativeDatasetVersions.status, 'ROLLED_BACK'))
+      .limit(1);
+    return row!.id;
+  };
+
+  it('refuses the active version, and the environment keeps serving it', async () => {
+    const [active] = await activeIds();
+    const before = (await get(`${BASE}/${active}`, 'ops_admin')).json();
+
+    const res = await post(`${BASE}/${active}/validate`, 'ops_admin');
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('DATASET_STATE_NOT_VALIDATABLE');
+    expect(res.json().message).toContain('PUBLISHED');
+
+    // Still exactly one active version, still this one.
+    expect(await activeIds()).toEqual([active]);
+    expect(await statusOf(active!)).toBe('PUBLISHED');
+
+    // The stored validation is the one that was there before the attempt.
+    const after = (await get(`${BASE}/${active}`, 'ops_admin')).json();
+    expect(after.validation.validationId).toBe(before.validation.validationId);
+    expect(after.validationReport).toEqual(before.validationReport);
+
+    // Public reads and the capability both continue to answer.
+    const version = await get('/v1/administrative/version');
+    expect(version.statusCode).toBe(200);
+    const capability = (await get(`${BASE}/capability`, 'ops_admin')).json();
+    expect(capability.dataset.state).toBe('AVAILABLE');
+    expect(capability.publication).toBe('ENABLED');
+  });
+
+  it('audits the refusal as a refusal, never as a validation that ran', async () => {
+    const row = await lastAudit('administrative_dataset.validate_rejected');
+    expect(row).toBeTruthy();
+    expect((row!.diff as { reason: string }).reason).toBe('DATASET_STATE_NOT_VALIDATABLE');
+    // The vocabulary has a `validate` action; a refused attempt must not borrow
+    // it, or the trail would claim a report exists that does not.
+    expect(await lastAudit('administrative_dataset.validate')).toBeUndefined();
+  });
+
+  it('refuses a restorable version, and it stays restorable', async () => {
+    const id = await rolledBackId();
+    const res = await post(`${BASE}/${id}/validate`, 'ops_admin');
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('DATASET_STATE_NOT_VALIDATABLE');
+    expect(await statusOf(id)).toBe('ROLLED_BACK');
+
+    // `rollbackRefusal` requires exactly ROLLED_BACK, so a status write here
+    // would have removed the escape hatch.
+    const restorable = (await get(`${BASE}/restorable`, 'ops_admin')).json();
+    expect(restorable.items.map((i: { id: string }) => i.id)).toContain(id);
+  });
+
+  it('refuses a rejected version rather than quietly reviving it', async () => {
+    const id = await rolledBackId();
+    await db
+      .update(schema.administrativeDatasetVersions)
+      .set({ status: 'REJECTED' })
+      .where(eq(schema.administrativeDatasetVersions.id, id));
+    try {
+      const res = await post(`${BASE}/${id}/validate`, 'ops_admin');
+      expect(res.statusCode).toBe(409);
+      expect(res.json().code).toBe('DATASET_STATE_NOT_VALIDATABLE');
+      expect(await statusOf(id)).toBe('REJECTED');
+    } finally {
+      await db
+        .update(schema.administrativeDatasetVersions)
+        .set({ status: 'ROLLED_BACK' })
+        .where(eq(schema.administrativeDatasetVersions.id, id));
+    }
+  });
+
+  it('still lets a VALIDATED version be re-validated back down to STAGED', async () => {
+    // The one state pair that must keep working: r3's gates fail, and its
+    // status was flipped to VALIDATED by hand in the test above.
+    expect(await statusOf(r3.id)).toBe('VALIDATED');
+    const res = await post(`${BASE}/${r3.id}/validate`, 'ops_admin');
+    expect(res.statusCode).toBe(201);
+    expect(res.json().validation.publishable).toBe(false);
+    expect(await statusOf(r3.id)).toBe('STAGED');
+  }, 120_000);
+
+  it('refuses when the staged rows are edited while the gates are running', async () => {
+    // Deterministic rather than timed: the mutation runs inside the read pass,
+    // after the fingerprint that opens the bracket and before the one taken
+    // under lock.
+    const service = new AdministrativeValidationService(db);
+    const inner = service as unknown as {
+      affectedPlaces: (...args: unknown[]) => Promise<unknown>;
+    };
+    const original = inner.affectedPlaces.bind(service);
+    inner.affectedPlaces = async (...args: unknown[]) => {
+      await db.execute(sql`
+        update administrative_units set full_name = full_name || ' (raced)'
+        where dataset_version_id = ${r3.id} and code = '00007'`);
+      return original(...args);
+    };
+
+    const before = (await get(`${BASE}/${r3.id}`, 'ops_admin')).json();
+    await expect(service.validate(r3.id)).rejects.toMatchObject({
+      code: 'DATASET_CHANGED_DURING_VALIDATION',
+    });
+
+    // Nothing written: not the status, not the previous report.
+    expect(await statusOf(r3.id)).toBe('STAGED');
+    const after = (await get(`${BASE}/${r3.id}`, 'ops_admin')).json();
+    expect(after.validation.validationId).toBe(before.validation.validationId);
+  }, 120_000);
+
+  it('refuses when the override revision moves while the gates are running', async () => {
+    const service = new AdministrativeValidationService(db);
+    const inner = service as unknown as {
+      affectedPlaces: (...args: unknown[]) => Promise<unknown>;
+    };
+    const original = inner.affectedPlaces.bind(service);
+    inner.affectedPlaces = async (...args: unknown[]) => {
+      await db
+        .update(schema.administrativeDatasetVersions)
+        .set({ overrideRevision: 42 })
+        .where(eq(schema.administrativeDatasetVersions.id, r3.id));
+      return original(...args);
+    };
+
+    try {
+      await expect(service.validate(r3.id)).rejects.toMatchObject({
+        code: 'DATASET_CHANGED_DURING_VALIDATION',
+      });
+      expect(await statusOf(r3.id)).toBe('STAGED');
+    } finally {
+      await db
+        .update(schema.administrativeDatasetVersions)
+        .set({ overrideRevision: 3 })
+        .where(eq(schema.administrativeDatasetVersions.id, r3.id));
+    }
+  }, 120_000);
+
+  it('serialises against a publication of the same version', async () => {
+    // A real race, not two refusals: a publishable version, validated and
+    // published at the same instant. Both paths take the same advisory key, so
+    // one of them sees the other's committed result rather than a half-written
+    // one.
+    const target = await importDataset(6);
+    expect((await post(`${BASE}/${target.id}/validate`, 'ops_admin')).statusCode).toBe(201);
+    const activeBefore = (await activeIds())[0];
+
+    const [validated, published] = await Promise.all([
+      post(`${BASE}/${target.id}/validate`, 'ops_admin'),
+      post(`${BASE}/${target.id}/publish`, 'ops_admin'),
+    ]);
+
+    expect(published.statusCode).toBe(201);
+    // Validation either landed before the promotion (201) or found a PUBLISHED
+    // row under the lock and refused (409). It never demotes the winner.
+    expect([201, 409]).toContain(validated.statusCode);
+    if (validated.statusCode === 409) {
+      expect(validated.json().code).toBe('DATASET_STATE_NOT_VALIDATABLE');
+    }
+    expect(await statusOf(target.id)).toBe('PUBLISHED');
+    expect(await activeIds()).toEqual([target.id]);
+    expect(activeBefore).not.toBe(target.id);
+  }, 180_000);
+
+  it('serialises against a rollback of another version', async () => {
+    // Validating one version while another is being re-activated: both take the
+    // lock, so neither sees the other half-applied, and the count of active
+    // versions is one throughout.
+    const restorable = await rolledBackId();
+    const [validated, rolled] = await Promise.all([
+      post(`${BASE}/${r3.id}/validate`, 'ops_admin'),
+      post(`${BASE}/${restorable}/rollback`, 'ops_admin'),
+    ]);
+
+    expect(validated.statusCode).toBe(201);
+    // r3's gates fail, so a successful run puts it back to STAGED — the
+    // rollback of a different version changes nothing about that.
+    expect(await statusOf(r3.id)).toBe('STAGED');
+    expect(await activeIds()).toHaveLength(1);
+    if (rolled.statusCode === 201) expect(await activeIds()).toEqual([restorable]);
+  }, 180_000);
+
+  it('judges every attempt on its own state, whatever key it carries', async () => {
+    const [active] = await activeIds();
+    const key = 'adm482-refused-validate';
+
+    const first = await post(`${BASE}/${active}/validate`, 'ops_admin', { idempotencyKey: key });
+    expect(first.statusCode).toBe(409);
+    expect(first.json().code).toBe('DATASET_STATE_NOT_VALIDATABLE');
+
+    /*
+     * A refused mutation releases its key (`IdempotencyInterceptor.release`),
+     * so the retry is a fresh execution rather than a stored replay — which is
+     * why there is no `x-idempotent-replay` header on it. The status and body
+     * match anyway, because the refusal is a pure function of state that has
+     * not moved. That is the property worth having: the key never carries a
+     * verdict forward, so a refusal can never harden into a permanent one, and
+     * a refused attempt can never be redeemed into a success it did not have.
+     */
+    const retry = await post(`${BASE}/${active}/validate`, 'ops_admin', { idempotencyKey: key });
+    expect(retry.statusCode).toBe(409);
+    expect(retry.json().code).toBe(first.json().code);
+    expect(retry.json().message).toBe(first.json().message);
+    expect(retry.headers['x-idempotent-replay']).toBeUndefined();
+
+    // The refused version is untouched by any of it.
+    expect(await statusOf(active!)).toBe('PUBLISHED');
+    expect(await activeIds()).toEqual([active]);
+  }, 120_000);
+
+  it('touches no place, no provider and no Upstash while refusing', async () => {
+    const [active] = await activeIds();
+    const placesBefore = await placeDigest();
+    const google = await metricCount('google');
+    const upstash = await metricCount('upstash');
+
+    expect((await post(`${BASE}/${active}/validate`, 'ops_admin')).statusCode).toBe(409);
+
+    expect(await placeDigest()).toEqual(placesBefore);
+    expect(await metricCount('google')).toBe(google);
+    expect(await metricCount('upstash')).toBe(upstash);
+  });
+});
+
 describe('the whole surface issues no Redis command', () => {
   it('reads, validates and refuses without touching Upstash', async () => {
     // ADR-0019 §8: the administrative cache is in-process by decision, and
@@ -632,6 +872,25 @@ describe('the whole surface issues no Redis command', () => {
     expect(await metricCount('upstash')).toBe(before);
   });
 });
+
+/**
+ * Every administrative column on `places`, plus the row count and the latest
+ * `updated_at`. A refused validation must move none of it.
+ */
+async function placeDigest(): Promise<Record<string, unknown>> {
+  const result = await db.execute(sql`
+    select
+      count(*)::int as rows,
+      coalesce(max(updated_at)::text, 'none') as touched,
+      coalesce(md5(string_agg(
+        coalesce(province_code, '') ||
+        coalesce(commune_code, '') ||
+        coalesce(administrative_mapping_status::text, '') ||
+        coalesce(administrative_dataset_version, ''),
+        E'\n' order by id)), 'empty') as administrative
+    from places`);
+  return (result as unknown as { rows: Record<string, unknown>[] }).rows[0] ?? {};
+}
 
 /** Sums `provider_requests_total` samples whose labels mention a provider. */
 async function metricCount(provider: string): Promise<number> {

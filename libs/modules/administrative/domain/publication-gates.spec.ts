@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest';
 import {
   publishRefusal,
   rollbackRefusal,
+  validateRefusal,
+  validationDrift,
   VALIDATOR_VERSION,
+  type DatasetStatus,
   type PersistedValidation,
   type PublishCandidate,
   type RollbackCandidate,
   type ValidationBinding,
+  type ValidationIdentity,
 } from './publication-gates';
 
 /**
@@ -215,5 +219,97 @@ describe('rollbackRefusal', () => {
 
   it('refuses a version with no stored validation', () => {
     expect(rollbackRefusal(target({ validation: null }))?.code).toBe('VALIDATION_MISSING');
+  });
+});
+
+/**
+ * #482 — what validation is allowed to write to.
+ *
+ * Validation is not a read: it stores `publishable ? VALIDATED : STAGED` on the
+ * row. That is the right answer for a version being prepared and a demotion for
+ * every other version there is, so the states it may be asked for are a closed
+ * set and the identity it was computed from is re-checked before the write.
+ */
+describe('validateRefusal', () => {
+  const candidate = (status: DatasetStatus) => ({
+    status,
+    combinedDatasetVersion: 'v5.0.0+v2.4.1+7fac8c4a+none+r0',
+  });
+
+  it('allows the two states a version being prepared can be in', () => {
+    expect(validateRefusal(candidate('STAGED'))).toBeNull();
+    // Re-validating a VALIDATED version is how a reviewer re-checks after a
+    // source fix, and it can legitimately push it back to STAGED.
+    expect(validateRefusal(candidate('VALIDATED'))).toBeNull();
+  });
+
+  it('refuses the active version, because the write would demote it', () => {
+    // The partial unique index forbids two PUBLISHED rows, not zero of them.
+    // Demoting the only one leaves the environment with no active dataset and
+    // every place approval refusing.
+    const refusal = validateRefusal(candidate('PUBLISHED'));
+    expect(refusal?.code).toBe('DATASET_STATE_NOT_VALIDATABLE');
+    expect(refusal?.message).toContain('PUBLISHED');
+  });
+
+  it('refuses a restorable version, because the write would un-restore it', () => {
+    // `rollbackRefusal` requires exactly ROLLED_BACK; moving it to VALIDATED
+    // removes the escape hatch.
+    expect(validateRefusal(candidate('ROLLED_BACK'))?.code).toBe('DATASET_STATE_NOT_VALIDATABLE');
+  });
+
+  it('refuses a rejected version rather than quietly reviving it', () => {
+    expect(validateRefusal(candidate('REJECTED'))?.code).toBe('DATASET_STATE_NOT_VALIDATABLE');
+  });
+});
+
+describe('validationDrift', () => {
+  const identity: ValidationIdentity = {
+    status: 'STAGED',
+    combinedDatasetVersion: 'v5.0.0+v2.4.1+7fac8c4a+none+r0',
+    combinedChecksum: 'checksum-a',
+    overrideRevision: 0,
+    snapshotFingerprint: 'fingerprint-a',
+  };
+
+  it('writes the report when nothing moved under it', () => {
+    expect(validationDrift(identity, { ...identity })).toBeNull();
+  });
+
+  it('refuses when the staged rows were edited while the gates ran', () => {
+    // This is the case the fingerprint exists for: the combined checksum is
+    // computed from the pinned files and cannot see a direct UPDATE.
+    const refusal = validationDrift(identity, {
+      ...identity,
+      snapshotFingerprint: 'fingerprint-b',
+    });
+    expect(refusal?.code).toBe('DATASET_CHANGED_DURING_VALIDATION');
+    expect(refusal?.message).toContain('staged rows');
+    expect(refusal?.message).toContain('nothing was written');
+  });
+
+  it('names each identity that moved, so a reviewer knows what to look at', () => {
+    for (const [drift, expected] of [
+      [{ status: 'PUBLISHED' as DatasetStatus }, 'status'],
+      [{ combinedDatasetVersion: 'v5.1.0+v2.4.1+7fac8c4a+none+r0' }, 'combined version'],
+      [{ combinedChecksum: 'checksum-b' }, 'combined checksum'],
+      [{ overrideRevision: 1 }, 'override revision'],
+    ] as [Partial<ValidationIdentity>, string][]) {
+      const refusal = validationDrift(identity, { ...identity, ...drift });
+      expect(refusal?.code).toBe('DATASET_CHANGED_DURING_VALIDATION');
+      expect(refusal?.message).toContain(expected);
+    }
+  });
+
+  it('reports every movement at once rather than the first', () => {
+    // Unlike the publish gates, this is not a diagnosis a reviewer acts on
+    // step by step — the whole run is discarded either way.
+    const refusal = validationDrift(identity, {
+      ...identity,
+      overrideRevision: 2,
+      snapshotFingerprint: 'fingerprint-c',
+    });
+    expect(refusal?.message).toContain('override revision');
+    expect(refusal?.message).toContain('staged rows');
   });
 });
