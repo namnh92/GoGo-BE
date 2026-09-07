@@ -1945,7 +1945,19 @@ export interface paths {
          */
         get: operations["cmsListPlaces"];
         put?: never;
-        post?: never;
+        /**
+         * Editor: create a place by hand (GoGo-BE#452)
+         * @description The third way a place enters the catalogue, and the only one where the facts are a person's own. Bulk import resolves rows against a provider; a community submission arrives from the app for review; this is an editor typing what they know from a menu, a phone call or a visit.
+         *
+         *     Always created `draft`. Entering the catalogue and being visible are two decisions, and `cmsTransitionPlace` already owns the second.
+         *
+         *     Every field written here is recorded `editorial` provenance, including a value the editor read off a provider preview and retyped — copying does not transfer ownership (GOGO_PRODUCT_DATA_ARCHITECTURE.md). No provider content is created, fetched or stored.
+         *
+         *     **Duplicate check.** Before inserting, the same rule the duplicate queue uses — within 150 m and name similarity above 0.5 — runs against the catalogue. A hit answers `409 PLACE_DUPLICATE_SUSPECTED` with the candidates in `field_errors` (name and distance in metres), so the console can offer the merge screen it already has. `allowDuplicate: true` is how an editor says they looked and these are different places; two cafés of one chain on the same street are real.
+         *
+         *     Field limits follow `cmsUpdatePlace` exactly and are stated there.
+         */
+        post: operations["cmsCreatePlace"];
         delete?: never;
         options?: never;
         head?: never;
@@ -10025,6 +10037,65 @@ export interface operations {
                 };
             };
             403: components["responses"]["Forbidden"];
+        };
+    };
+    cmsCreatePlace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Enforced: trimmed, 1..200 characters. */
+                    name: string;
+                    /** @description Enforced: -90..90. Required — a place with no position cannot be searched, routed to, or checked for duplicates. */
+                    lat: number;
+                    /** @description Enforced: -180..180. */
+                    lng: number;
+                    description?: string | null;
+                    addressText?: string | null;
+                    areaKey?: string | null;
+                    city?: string | null;
+                    district?: string | null;
+                    /** @description Normalized to E.164 on write, same as `cmsUpdatePlace`. */
+                    phone?: string | null;
+                    website?: string | null;
+                    /** @description Enforced: 10..720, or `null` when unknown. */
+                    avgVisitMinutes?: number | null;
+                    suitability?: {
+                        [key: string]: number;
+                    };
+                    isLodging?: boolean;
+                    curatedRank?: number | null;
+                    taxonomyIds?: string[];
+                    /** @description Skip the duplicate check. Send it only after showing the editor the candidates from a previous 409. */
+                    allowDuplicate?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Created as draft; the body is the record the editor screen loads. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsPlaceDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description `PLACE_DUPLICATE_SUSPECTED` — near-identical places already in the catalogue, listed in `field_errors`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsStaleQueue: {

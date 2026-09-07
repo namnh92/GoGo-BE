@@ -674,6 +674,17 @@ const placeEditSchema = z.object({
   /** Optimistic concurrency — the `updatedAt` the form was loaded from. */
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 });
+/**
+ * GoGo-BE#452 — manual creation. Same field vocabulary as the edit form, minus
+ * the optimistic-concurrency token, plus the two things a new row cannot do
+ * without: a name and a position.
+ */
+const placeCreateSchema = placeEditSchema.omit({ expectedUpdatedAt: true }).extend({
+  name: z.string().trim().min(1).max(200),
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+  allowDuplicate: z.boolean().optional(),
+});
 const placeStatusSchema = z.object({
   status: z.enum(['draft', 'community_submitted', 'review', 'published', 'suspended', 'archived']),
 });
@@ -745,6 +756,14 @@ export class CmsCatalogController {
         ? { staleBefore: new Date(Date.now() - staleDays * 86_400_000) }
         : {}),
     });
+  }
+
+  @Post()
+  create(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(placeCreateSchema)) body: z.infer<typeof placeCreateSchema>,
+  ) {
+    return this.catalog.createPlace(actor.id, body);
   }
 
   @Get('stale')
