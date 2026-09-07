@@ -591,3 +591,129 @@ describe('#425 audit', () => {
     ]);
   });
 });
+
+/**
+ * GoGo-BE#452 — manual creation.
+ *
+ * Until this endpoint existed a place could only arrive through bulk import or
+ * a community submission, so an editor holding a menu and a phone number had
+ * nowhere to put it, and the console shipped its "Thêm địa điểm" button
+ * visibly disabled (GoGo-CMS#128).
+ */
+const create = (payload: Record<string, unknown>, token = editor.token) =>
+  api().inject({ method: 'POST', url: '/v1/cms/places', headers: auth(token), payload });
+
+describe('#452 create a place by hand', () => {
+  it('creates a draft and returns the record the editor screen loads', async () => {
+    const res = await create({
+      name: `Quán Mới ${Date.now()}`,
+      lat: 10.7769,
+      lng: 106.7009,
+      district: 'Quận 1',
+      phone: '0283 822 9999',
+      avgVisitMinutes: 60,
+    });
+
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.status).toBe('draft');
+    // Normalised on the way in, exactly as an edit would be.
+    expect(body.phone).toBe('+842838229999');
+    expect(body.avgVisitMinutes).toBe(60);
+
+    // The body is the same shape the editor screen already reads.
+    const loaded = await detail(body.id);
+    expect(loaded.statusCode).toBe(200);
+    expect(loaded.json().name).toBe(body.name);
+  });
+
+  it('never creates a published place, even if asked', async () => {
+    const res = await create({
+      name: `Quán Ẩn ${Date.now()}`,
+      lat: 10.78,
+      lng: 106.71,
+      status: 'published',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().status).toBe('draft');
+  });
+
+  it('requires a name and a position — the three things the catalogue is for', async () => {
+    const res = await create({ description: 'không tên, không toạ độ' });
+
+    expect(res.statusCode).toBe(400);
+    const fields = res.json().field_errors.map((e: { field: string }) => e.field);
+    expect(fields).toEqual(expect.arrayContaining(['name', 'lat', 'lng']));
+  });
+
+  it('reports a bad phone against its own field rather than as a toast', async () => {
+    const res = await create({
+      name: `Quán Sai ${Date.now()}`,
+      lat: 10.9,
+      lng: 106.9,
+      phone: '38229999',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().field_errors[0]).toMatchObject({ field: 'phone' });
+  });
+
+  it('refuses a near-duplicate and names the candidates', async () => {
+    const name = `Cà Phê Trùng ${Date.now()}`;
+    const first = await create({ name, lat: 10.762, lng: 106.682 });
+    expect(first.statusCode).toBe(201);
+
+    // Same name, 20-odd metres away: the shape of an accidental re-entry.
+    const second = await create({ name, lat: 10.7622, lng: 106.6821 });
+
+    expect(second.statusCode).toBe(409);
+    const body = second.json();
+    expect(body.code).toBe('PLACE_DUPLICATE_SUSPECTED');
+    // The console needs enough to draw its merge screen: which place, how far.
+    expect(body.field_errors[0].message).toContain(name);
+    expect(body.field_errors[0].message).toMatch(/\dm\)/);
+  });
+
+  it('creates anyway when the editor says they are different places', async () => {
+    const name = `Bún Chuỗi ${Date.now()}`;
+    await create({ name, lat: 10.771, lng: 106.691 });
+
+    const second = await create({ name, lat: 10.7711, lng: 106.6911, allowDuplicate: true });
+
+    expect(second.statusCode).toBe(201);
+  });
+
+  it('records every typed field as the editor’s own claim', async () => {
+    const res = await create({
+      name: `Quán Ghi Nguồn ${Date.now()}`,
+      lat: 10.8,
+      lng: 106.72,
+      website: 'quanghinguon.vn',
+      areaKey: 'hcm_q3',
+    });
+    const placeId = res.json().id;
+
+    const provenance = await db
+      .select()
+      .from(schema.placeFieldProvenance)
+      .where(eq(schema.placeFieldProvenance.placeId, placeId));
+    expect(provenance.length).toBeGreaterThan(0);
+    // Never `google_derived`: typing a value read off a preview does not make
+    // it provider data (GOGO_PRODUCT_DATA_ARCHITECTURE.md).
+    expect(provenance.every((row) => row.sourceType === 'editorial')).toBe(true);
+
+    const audit = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.resourceId, placeId));
+    expect(audit.some((row) => row.action === 'place.created')).toBe(true);
+  });
+
+  it('is closed to a moderator, who does not edit the catalogue', async () => {
+    const moderator = await createAdmin(`pe-mod-${Date.now()}@gogo.local`, 'moderator');
+    const res = await create({ name: 'Quán Cấm', lat: 10.7, lng: 106.7 }, moderator.token);
+
+    expect(res.statusCode).toBe(403);
+  });
+});

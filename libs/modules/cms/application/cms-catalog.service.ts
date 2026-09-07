@@ -55,6 +55,25 @@ export type PlaceEditInput = {
 };
 
 /**
+ * Creating differs from editing in two ways, and both are deliberate.
+ *
+ * `name` and a coordinate are required: a place with no name is not a record
+ * anyone can act on, and one with no position cannot be searched, routed to, or
+ * checked for duplicates — the three things the catalogue exists for. There is
+ * no `expectedUpdatedAt` because there is nothing yet to be stale against.
+ */
+export type PlaceCreateInput = Omit<
+  PlaceEditInput,
+  'name' | 'lat' | 'lng' | 'expectedUpdatedAt'
+> & {
+  name: string;
+  lat: number;
+  lng: number;
+  /** The editor has seen the near-duplicates and says this is a different place. */
+  allowDuplicate?: boolean | undefined;
+};
+
+/**
  * Fields whose origin `place_field_provenance` records. Kept as a list rather
  * than "every column" because provenance is only meaningful where a provider
  * and an editor could both plausibly have written the value.
@@ -649,6 +668,166 @@ export class CmsCatalogService {
    * it. The last one is what makes a later provider refresh safe: it can see
    * that a human owns this phone number and leave it alone.
    */
+  /**
+   * GoGo-BE#452 — the third way a place can enter the catalogue.
+   *
+   * There were two before, and neither is a person typing what they know:
+   * bulk import resolves rows against a provider, and a community submission
+   * arrives from the app for review. An editor holding a menu and a phone
+   * number had nowhere to put it, so the CMS shipped its "Thêm địa điểm"
+   * button visibly disabled (GoGo-CMS#128).
+   *
+   * Created as `draft`, never `published`: entering the catalogue and being
+   * visible are separate decisions, and the existing status workflow already
+   * owns the second one.
+   *
+   * Nothing here touches provider data. Every field is the editor's own claim
+   * and is recorded `editorial`, the same as a typed edit — copying a value off
+   * a provider preview does not transfer ownership
+   * (`GOGO_PRODUCT_DATA_ARCHITECTURE.md`).
+   */
+  async createPlace(adminId: string, input: PlaceCreateInput) {
+    const contact = this.normalizeContact(input);
+
+    /**
+     * Same rule the duplicate queue uses — 150 m apart and a name similarity
+     * over 0.5 — applied before the row exists rather than after. A near-copy
+     * of a place already in the catalogue is the failure mode of manual entry,
+     * and finding it later means merging two histories instead of one.
+     *
+     * `allowDuplicate` is how an editor says "I looked, they are different
+     * places": two cafés of the same chain on one street are real.
+     */
+    if (!input.allowDuplicate) {
+      const normalized = normalizeVietnamese(input.name);
+      const { rows } = await this.db.execute(sql`
+        select id, name, status,
+          similarity(name_normalized, ${normalized}) as name_similarity,
+          ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint(${input.lng}, ${input.lat}), 4326)::geography) as distance_m
+        from places
+        where status <> 'archived'
+          and ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint(${input.lng}, ${input.lat}), 4326)::geography, 150)
+          and similarity(name_normalized, ${normalized}) > 0.5
+        order by name_similarity desc
+        limit 5
+      `);
+      if (rows.length > 0) {
+        throw AppError.conflict(
+          'PLACE_DUPLICATE_SUSPECTED',
+          'Địa điểm này có thể đã có trong danh mục',
+          rows.map((row) => ({
+            field: 'name',
+            code: 'duplicate_candidate',
+            message: `${String(row.name)} (${Math.round(Number(row.distance_m))}m)`,
+          })),
+        );
+      }
+    }
+
+    const claimed = Object.keys(input)
+      .filter((key) => PROVENANCE_COLUMN[key] !== undefined)
+      .map((key) => PROVENANCE_COLUMN[key]!);
+
+    const created = await this.db.transaction(async (tx) => {
+      const [place] = await tx
+        .insert(schema.places)
+        .values({
+          name: input.name,
+          // The database trigger owns this column; every other writer passes
+          // the same placeholder rather than normalising twice.
+          nameNormalized: 'set-by-trigger',
+          status: 'draft',
+          geom: { x: input.lng, y: input.lat },
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.addressText !== undefined ? { addressText: input.addressText } : {}),
+          ...(input.areaKey !== undefined ? { areaKey: input.areaKey } : {}),
+          ...(input.city !== undefined ? { city: input.city } : {}),
+          ...(input.district !== undefined ? { district: input.district } : {}),
+          ...(contact.phone !== undefined ? { phone: contact.phone } : {}),
+          ...(contact.website !== undefined ? { website: contact.website } : {}),
+          ...(input.avgVisitMinutes !== undefined
+            ? { avgVisitMinutes: input.avgVisitMinutes }
+            : {}),
+          ...(input.suitability !== undefined ? { suitability: input.suitability } : {}),
+          ...(input.isLodging !== undefined ? { isLodging: input.isLodging } : {}),
+          ...(input.curatedRank !== undefined ? { curatedRank: input.curatedRank } : {}),
+        })
+        .returning();
+
+      if (input.taxonomyIds && input.taxonomyIds.length > 0) {
+        await tx
+          .insert(schema.placeTaxonomies)
+          .values(input.taxonomyIds.map((taxonomyId) => ({ placeId: place!.id, taxonomyId })))
+          .onConflictDoNothing();
+      }
+
+      if (claimed.length > 0) {
+        await tx.insert(schema.placeFieldProvenance).values(
+          claimed.map((field) => ({
+            placeId: place!.id,
+            field,
+            sourceType: 'editorial' as const,
+            sourceReference: null,
+            actorId: adminId,
+          })),
+        );
+      }
+
+      await writeOutbox(tx, {
+        eventType: 'place.created',
+        resourceType: 'place',
+        resourceId: place!.id,
+        payload: { status: 'draft', origin: 'cms_manual' },
+      });
+
+      return place!;
+    });
+
+    await this.audit(adminId, 'place.created', created.id, {
+      name: created.name,
+      status: created.status,
+      claimedFields: claimed,
+      allowDuplicate: input.allowDuplicate === true,
+    });
+
+    return this.getPlace(created.id);
+  }
+
+  /**
+   * Phone and website are stored normalised, and a bad one is reported against
+   * its own field so the console can point at the box rather than raise a
+   * toast. Shared by create and update because a value typed into either form
+   * has to end up in the same shape.
+   */
+  private normalizeContact(input: {
+    phone?: string | null | undefined;
+    website?: string | null | undefined;
+  }): { phone?: string | null | undefined; website?: string | null | undefined } {
+    const fieldErrors: { field: string; code: string; message: string }[] = [];
+    const out: { phone?: string | null; website?: string | null } = {};
+
+    if (input.phone !== undefined) {
+      if (input.phone === null) out.phone = null;
+      else {
+        const result = normalizePhone(input.phone);
+        if (result.ok) out.phone = result.value;
+        else fieldErrors.push(result.issue);
+      }
+    }
+    if (input.website !== undefined) {
+      if (input.website === null) out.website = null;
+      else {
+        const result = normalizeWebsite(input.website);
+        if (result.ok) out.website = result.value;
+        else fieldErrors.push(result.issue);
+      }
+    }
+    if (fieldErrors.length > 0) {
+      throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', fieldErrors);
+    }
+    return out;
+  }
+
   async updatePlace(adminId: string, placeId: string, input: PlaceEditInput) {
     const [before] = await this.db
       .select()
@@ -663,32 +842,7 @@ export class CmsCatalogService {
       .filter((key) => PROVENANCE_COLUMN[key] !== undefined)
       .map((key) => PROVENANCE_COLUMN[key]!);
 
-    // Normalized before the write, and reported per field, so the console can
-    // point at the box that holds the bad value instead of a toast.
-    const fieldErrors: { field: string; code: string; message: string }[] = [];
-    let phone: string | null | undefined;
-    if (input.phone !== undefined) {
-      if (input.phone === null) {
-        phone = null;
-      } else {
-        const result = normalizePhone(input.phone);
-        if (result.ok) phone = result.value;
-        else fieldErrors.push(result.issue);
-      }
-    }
-    let website: string | null | undefined;
-    if (input.website !== undefined) {
-      if (input.website === null) {
-        website = null;
-      } else {
-        const result = normalizeWebsite(input.website);
-        if (result.ok) website = result.value;
-        else fieldErrors.push(result.issue);
-      }
-    }
-    if (fieldErrors.length > 0) {
-      throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', fieldErrors);
-    }
+    const { phone, website } = this.normalizeContact(input);
 
     /**
      * One transaction for the whole save.
