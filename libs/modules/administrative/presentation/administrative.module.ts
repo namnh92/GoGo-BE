@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { IdentityModule } from '../../identity/presentation/identity.module';
+import { AdministrativeBackfillService } from '../application/administrative-backfill.service';
 import { AdministrativeBoundaryImportService } from '../application/administrative-boundary-import.service';
 import { BoundaryArchiveReader } from '../application/boundary-archive.reader';
 import { AdministrativeImportService } from '../application/administrative-import.service';
@@ -46,6 +47,7 @@ import { AdministrativeAdminController } from './administrative-admin.controller
     AdministrativeResolverService,
     BoundaryArchiveReader,
     AdministrativeBoundaryImportService,
+    AdministrativeBackfillService,
   ],
   exports: [
     ADMINISTRATIVE_DATASET,
@@ -56,6 +58,7 @@ import { AdministrativeAdminController } from './administrative-admin.controller
     AdministrativeResolverRepository,
     AdministrativeResolverService,
     AdministrativeBoundaryImportService,
+    AdministrativeBackfillService,
   ],
 })
 export class AdministrativeModule {}

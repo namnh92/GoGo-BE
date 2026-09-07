@@ -242,6 +242,21 @@ export {
 } from '../administrative/application/administrative-audit';
 export { snapshotFingerprint } from '../administrative/application/snapshot-fingerprint';
 export {
+  AdministrativeBackfillService,
+  type BackfillOptions,
+  type BackfillResult,
+  type BackfillStatus,
+} from '../administrative/application/administrative-backfill.service';
+export {
+  classify,
+  count as countBackfillOutcome,
+  countResolution,
+  emptyCounters,
+  type BackfillCounters,
+  type BackfillOutcome,
+  type BackfillSample,
+} from '../administrative/domain/backfill-outcome';
+export {
   AdministrativeBoundaryImportService,
   BoundaryValidationError,
   BoundaryVersionConflictError,

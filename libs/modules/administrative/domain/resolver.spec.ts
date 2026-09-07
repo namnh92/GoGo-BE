@@ -375,6 +375,38 @@ describe('change detection', () => {
     expect(run({ current, evidence: [evidence()] }).changed).toBe(false);
   });
 
+  it('does not call an UNMAPPED place changed just because the dataset moved', () => {
+    // An UNMAPPED result claims nothing, so it stamps no version — and a place
+    // that is already UNMAPPED is unchanged by it, however recent the dataset.
+    // Getting this wrong made a dry run promise a write the write path then
+    // correctly declined to make.
+    const current: CurrentMapping = {
+      status: 'UNMAPPED',
+      provinceCode: null,
+      communeCode: null,
+      legacyDistrictCode: null,
+      method: null,
+      datasetVersion: null,
+      boundaryVersion: null,
+    };
+    const result = run({ current, evidence: [], reasons: ['NO_BOUNDARY_MATCH'] });
+    expect(result.status).toBe('UNMAPPED');
+    expect(result.changed).toBe(false);
+  });
+
+  it('does call a previously mapped place changed when it becomes UNMAPPED', () => {
+    const current: CurrentMapping = {
+      status: 'AUTO_MATCHED',
+      provinceCode: '01',
+      communeCode: '00004',
+      legacyDistrictCode: null,
+      method: 'boundary_point_in_polygon',
+      datasetVersion: 'v5.0.0+…',
+      boundaryVersion: 'v5.0.0',
+    };
+    expect(run({ current, evidence: [], reasons: ['NO_BOUNDARY_MATCH'] }).changed).toBe(true);
+  });
+
   it('reports a change when only the dataset version moved', () => {
     // The codes are the same characters and a different claim: they are now
     // asserted against a dataset that was not the one they were derived from.

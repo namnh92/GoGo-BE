@@ -199,6 +199,10 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   administrative_mapping_writes_total: ['outcome'],
   // `StaleReason`. `REVALIDATED` is the healthy case — still true, older label.
   administrative_stale_evaluations_total: ['reason'],
+  // #461 — one per committed enrichment batch. `outcome` is `dry_run` or
+  // `executed`; the per-place numbers live on the run row, where a reviewer
+  // reads them together rather than as twelve unrelated series.
+  administrative_backfill_batches_total: ['outcome'],
 };
 
 /**

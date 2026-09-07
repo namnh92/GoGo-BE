@@ -188,6 +188,13 @@ export class AdministrativeResolverService {
       /** Optimistic concurrency: the `updated_at` the caller last saw. */
       expectedUpdatedAt?: Date;
       allowRematchRejected?: boolean;
+      /**
+       * ADM-008: the enrichment run this write belongs to. Recorded on the
+       * audit row so a mapping can be traced back to the run that made it —
+       * which is what keeps a bulk run accountable without an audit row per
+       * place that was left alone.
+       */
+      runId?: string;
     } = {},
   ): Promise<PersistResult> {
     const result = await this.db.transaction(async (tx) => {
@@ -293,6 +300,7 @@ export class AdministrativeResolverService {
           evidence: resolution.evidence,
           candidates: resolution.candidates,
           reason: resolution.reason,
+          ...(options.runId ? { runId: options.runId } : {}),
           ...(clearReviewer
             ? {
                 // Recorded apart from the mapping on purpose. Asking for a

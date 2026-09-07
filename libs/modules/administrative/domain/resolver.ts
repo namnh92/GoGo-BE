@@ -408,13 +408,20 @@ function finish(
       changed: false,
     };
   }
+  // `changed` must mean "the stored row would differ", which is not the same as
+  // "the answer is new". An `UNMAPPED` result claims nothing, so it stamps no
+  // version and no method — and a place that is already `UNMAPPED` is therefore
+  // unchanged by it, however recent the dataset is. Comparing against the
+  // dataset version regardless made a dry run promise a write that the write
+  // path then correctly declined to make.
+  const claims = proposal.status !== 'UNMAPPED';
   const changed =
     proposal.status !== input.current.status ||
     proposal.provinceCode !== input.current.provinceCode ||
     proposal.communeCode !== input.current.communeCode ||
     proposal.legacyDistrictCode !== input.current.legacyDistrictCode ||
-    proposal.method !== input.current.method ||
-    input.datasetVersion !== input.current.datasetVersion ||
-    proposal.boundaryVersion !== input.current.boundaryVersion;
+    (claims ? proposal.method : null) !== input.current.method ||
+    (claims ? input.datasetVersion : null) !== input.current.datasetVersion ||
+    (claims ? proposal.boundaryVersion : null) !== input.current.boundaryVersion;
   return { ...base, ...proposal, writable: true, changed };
 }

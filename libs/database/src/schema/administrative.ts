@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   customType,
   date,
@@ -101,6 +102,17 @@ export const administrativeMappingSource = pgEnum('administrative_mapping_source
   'exact_name',
   'change_mapping',
   'fuzzy_suggestion',
+]);
+
+export const administrativeBackfillStatus = pgEnum('administrative_backfill_status', [
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+  /** The active dataset or boundary version moved while the run was walking. */
+  'stopped_version_changed',
+  /** Closed by an operator: it will not be resumed, and says so. */
+  'abandoned',
 ]);
 
 export const administrativeQuarantineClass = pgEnum('administrative_quarantine_class', [
@@ -452,5 +464,46 @@ export const administrativeBoundaryLoads = pgTable(
       'administrative_boundary_loads_counts_positive',
       sql`${t.provinceCount} >= 0 and ${t.communeCount} >= 0`,
     ),
+  ],
+);
+
+/**
+ * ADM-008 (#461) — one row per geometry-only enrichment run.
+ *
+ * A backfill is not one transaction and must not be: it walks the catalogue in
+ * batches that commit separately, so the run itself has to be durable — a thing
+ * to resume, to report on, and for a per-place audit row to point back at.
+ *
+ * The pinned versions are the point. A run is bound to the exact dataset and
+ * boundary it started against, so it can never write half its rows against one
+ * and half against another.
+ */
+export const administrativeBackfillRuns = pgTable(
+  'administrative_backfill_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    status: administrativeBackfillStatus('status').notNull().default('running'),
+    /** A run that writes must be asked to write. */
+    dryRun: boolean('dry_run').notNull().default(true),
+    datasetVersionId: uuid('dataset_version_id').notNull(),
+    /** Written once at start and never updated. A pin that can move is not a pin. */
+    pinnedDatasetVersion: text('pinned_dataset_version').notNull(),
+    pinnedBoundaryVersion: text('pinned_boundary_version'),
+    scope: jsonb('scope').notNull(),
+    /** Resume starts strictly after this id. */
+    cursor: text('cursor'),
+    counters: jsonb('counters').notNull().default({}),
+    conflicts: jsonb('conflicts').notNull().default([]),
+    failures: jsonb('failures').notNull().default([]),
+    failureReason: text('failure_reason'),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('administrative_backfill_runs_started_idx').on(t.startedAt.desc()),
+    index('administrative_backfill_runs_open_idx')
+      .on(t.status, t.startedAt.desc())
+      .where(sql`${t.status} in ('running', 'stopped_version_changed')`),
   ],
 );

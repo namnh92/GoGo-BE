@@ -328,6 +328,66 @@ and commune outlines were simplified independently — and it changes nothing,
 because the resolver takes a commune's province from the **units** table and
 never from a province polygon.
 
+#### 7c. Bulk enrichment is a pinned, resumable, dry-run-by-default job (ADM-008, #461)
+
+The backfill reimplements none of §7a: it calls the same `resolvePlace` and
+`persist` a single-place call uses, so a place enriched in bulk gets the same
+answer, the same transition matrix and the same reviewer protections as one
+enriched on its own.
+
+**Dry run is the default**, everywhere. A dry run executes the real selection
+and the real resolver and reports exactly what it would have written — that is
+what makes it evidence about the execute rather than a rehearsal of a different
+program, and the invariant is asserted: the two runs produce identical resolver
+counts.
+
+**Batches commit separately.** One transaction across a catalogue would hold
+locks for its whole duration and throw away 90% of the work on a failure at
+90%. Each place is its own write; each batch checkpoints a cursor; a resume
+continues strictly after the last committed id.
+
+**A run is pinned** to the dataset and boundary versions it started against,
+re-checked before every batch. If the active version moves the run stops with
+its cursor intact rather than writing half the catalogue against one release and
+half against another — the failure that would be invisible afterwards, because
+every individual row would look correct.
+
+**Selection is a policy, not a scan of everything.** Both reviewer-owned states
+are excluded in SQL and never reach the resolver, and a place already resolved
+against these exact versions is not selected at all — so a second run over
+settled data selects nothing rather than walking the catalogue to discover it
+has no work.
+
+**`REJECTED` cannot be reopened from this job at all.** §7a gives the resolver an
+authorised rematch, and a bulk command has nobody to attribute one to: every
+CLI-originated audit row in this repository is written as `actorType: 'system'`
+with a null actor id, because no command authenticates anybody. A switch that
+reopened reviewers' rejections while recording "system" as who asked would be
+worse than no switch, so the job has none. Rematch belongs to #462's
+authenticated workflow, where there is a real reviewer to name.
+
+**A run writes only while its pinned versions are the active ones.** The check
+runs before every batch, including the first batch of a resume, and it asks
+which version the published dataset points at — not whether the old snapshots
+happen to still be in the database. They always are: boundary rows are never
+deleted, and treating their presence as authorisation would stamp places with a
+version nothing serves any more. A run that stops this way keeps its cursor and
+counters, and a repeated resume stops again without writing. The only recovery
+that continues it is a rollback restoring both exact versions; otherwise the run
+is closed as `abandoned` — a terminal state, so a run that will not finish never
+reads as one that might — and the work goes into a new run pinned to what is
+active now. Pins are written once and never updated.
+
+Audit is one row per run plus one per material place write, each citing the run
+id. A no-op writes nothing: a nightly pass over an unchanged catalogue must not
+fill the audit log with news of nothing happening.
+
+One consequence worth recording, found by the dry-run/execute equality test: an
+`UNMAPPED` result claims nothing, so it stamps no dataset version, and a place
+that is already `UNMAPPED` is therefore _unchanged_ by it. Comparing against the
+dataset version regardless made the resolver report a change the write path then
+correctly declined to make.
+
 ### 8. The cache is in-process, version-keyed, behind a port. Redis is not used.
 
 The published set is ~800 KB and immutable within a version; publication is
@@ -468,13 +528,26 @@ that became đặc khu — Bạch Long Vĩ, Cồn Cỏ, Hoàng Sa, Lý Sơn, Cô
 them changing province), classified `VALID_DISTRICT_TO_SPECIAL_ZONE` rather than
 discarded as malformed.
 
-Boundaries (for #460, gated): the repo's GIS add-on covers 34/34 provinces and
-3,321/3,321 communes as MultiPolygons in **SRID 4326** — the same SRID as
-`places.geom` — derived from the Vietnam Administrative Units Reference Map
-(sapnhap.bando.com.vn). Versioned **v4.0.0 (2026-06-20)** against v5.0.0 unit
-data, so it is pinned and verified separately rather than assumed in step. There
-are **no legacy district boundaries**, so point-in-polygon can never resolve
-`legacy_district_code`.
+Boundaries (ADM-007, #460): `json/vn_provinces_wards_geojson.zip` at **v5.0.0,
+the same immutable commit as the current units** — 34/34 provinces and
+3,321/3,321 communes as MultiPolygons in **SRID 4326**, the same SRID as
+`places.geom`, derived from the Vietnam Administrative Units Reference Map
+(sapnhap.bando.com.vn).
+
+An earlier reading of this ADR selected the **v4.0.0 (2026-06-20)** GIS release,
+because that was the newest tag carrying GIS data when #460 was written. It is
+no longer the selected source: v5.0.0 ships a purpose-built provinces-and-wards
+archive, and taking boundaries from the same commit as the units removes an
+entire class of disagreement rather than managing it.
+
+The separate pinning and the cross-source consistency gate **stay**. The two
+components are still versioned independently in the combined dataset version,
+and the loader still refuses a release whose commune parents disagree with the
+units — measured agreement today is not guaranteed agreement at the next
+release, and the gate is what will catch the day they diverge.
+
+There are **no legacy district boundaries** at any release, so point-in-polygon
+can never resolve `legacy_district_code`.
 
 ## Consequences
 
