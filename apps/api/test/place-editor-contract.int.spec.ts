@@ -782,6 +782,69 @@ describe('#465 add a place by Google Maps link', () => {
     expect(res.json().status).toBe('UNRESOLVED');
   });
 
+  /**
+   * #469 — three places inside one tower are three places, and the matcher is
+   * right to refuse to pick. What was missing was any way for the person to.
+   */
+  it('resolves the branch the editor picked', async () => {
+    places.seed({
+      providerPlaceId: 'ChIJbranchB',
+      name: 'CGV Vincom Center Landmark 81',
+      addressText: 'Tầng B1, 772 Điện Biên Phủ, Hồ Chí Minh',
+      lat: 10.7949,
+      lng: 106.7219,
+      rating: 4.1,
+      ratingCount: 512,
+    });
+
+    const res = await resolveLink({ googlePlaceId: 'ChIJbranchB' });
+
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.status).toBe('RESOLVED');
+    expect(body.candidate.name).toBe('CGV Vincom Center Landmark 81');
+    expect(body.candidate.googlePlaceId).toBe('ChIJbranchB');
+  });
+
+  it('answers a chosen branch GoGo already holds without paying Google', async () => {
+    const googlePlaceId = `ChIJchosen${Date.now()}`;
+    const created = await create({
+      name: 'Chi Nhánh Đã Có',
+      lat: 10.7948,
+      lng: 106.7218,
+      googlePlaceId,
+    });
+    expect(created.statusCode).toBe(201);
+
+    const res = await resolveLink({ googlePlaceId });
+
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.status).toBe('ALREADY_EXISTS');
+    expect(body.existingPlaceId).toBe(created.json().id);
+    // The same answer the link path gives for the same id — a place that opens
+    // from a pasted link must not duplicate from a chosen one.
+    expect(body.reasonCodes).toContain('DB_FIRST');
+  });
+
+  it('does not answer two questions, or none', async () => {
+    const both = await resolveLink({
+      url: 'https://www.google.com/maps?place_id=ChIJbranchB',
+      googlePlaceId: 'ChIJbranchB',
+    });
+    expect(both.statusCode).toBe(400);
+
+    const neither = await resolveLink({});
+    expect(neither.statusCode).toBe(400);
+  });
+
+  it('says so plainly when the chosen id names nothing', async () => {
+    const res = await resolveLink({ googlePlaceId: 'ChIJnothinghere' });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().status).toBe('UNRESOLVED');
+  });
+
   it('links the Google record and marks the applied fields as its own', async () => {
     const googlePlaceId = `ChIJapply${Date.now()}`;
     const res = await create({

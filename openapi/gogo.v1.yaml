@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.3
+  version: 1.0.0-alpha.4
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3674,15 +3674,39 @@ paths:
         Requires `place.write`. Nothing is written — this is a preview, and the
         place is created by `cmsCreatePlace` carrying the `googlePlaceId` this
         returned.
+
+
+        Takes either a link or a Place ID; see the request body. A
+        `CANDIDATE_SELECTION` answer is meant to be resolved by sending one of
+        its `candidates[].googlePlaceId` straight back here.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [url]
+              description: >
+                Exactly one of `url` and `googlePlaceId`. Both would be two
+                questions in one request with no way to say which was answered;
+                neither is an empty request wearing a 201. Either way the
+                answer is the same `ResolveLinkResult`.
               properties:
                 url: { type: string, format: uri, maxLength: 2000 }
+                googlePlaceId:
+                  type: string
+                  pattern: '^[\w-]{6,255}$'
+                  description: >
+                    The branch the editor picked out of a previous
+                    `CANDIDATE_SELECTION` (GoGo-BE#469).
+
+
+                    That answer is usually right — three places inside one tower
+                    are three places, and the matcher deliberately refuses to
+                    auto-pick between candidates within 0.05 of each other — but
+                    until this field existed the client received three real
+                    Place IDs and had no way to act on one. Choosing is a
+                    resolution, so it goes through the same route: same DB-first
+                    check, same dedup verdict, same `resolutionToken`.
                 cityHint: { type: string, maxLength: 80 }
       responses:
         '201':
@@ -3693,7 +3717,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ResolveLinkResult' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400':
+          description: >-
+            `VALIDATION_FAILED` — neither `url` nor `googlePlaceId`, or both.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503':

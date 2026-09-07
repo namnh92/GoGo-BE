@@ -1984,6 +1984,8 @@ export interface paths {
          *     It is a separate route from `resolveGoogleMapsLink` for two reasons, neither of them the response shape. **Who pays:** the public route is unauthenticated and rate-limited on IP without an edge-client-IP hop, so behind Cloudflare every caller in the world shares one bucket of 10/minute, and an editor entering a morning's worth of places would be throttled by strangers. This route keys on `ip+actor`, 20/minute. **Who is asking:** a resolution that misses cache costs a provider request, and a request that costs money should name the person who spent it.
          *
          *     Requires `place.write`. Nothing is written — this is a preview, and the place is created by `cmsCreatePlace` carrying the `googlePlaceId` this returned.
+         *
+         *     Takes either a link or a Place ID; see the request body. A `CANDIDATE_SELECTION` answer is meant to be resolved by sending one of its `candidates[].googlePlaceId` straight back here.
          */
         post: operations["cmsResolvePlaceLink"];
         delete?: never;
@@ -10155,7 +10157,13 @@ export interface operations {
             content: {
                 "application/json": {
                     /** Format: uri */
-                    url: string;
+                    url?: string;
+                    /**
+                     * @description The branch the editor picked out of a previous `CANDIDATE_SELECTION` (GoGo-BE#469).
+                     *
+                     *     That answer is usually right — three places inside one tower are three places, and the matcher deliberately refuses to auto-pick between candidates within 0.05 of each other — but until this field existed the client received three real Place IDs and had no way to act on one. Choosing is a resolution, so it goes through the same route: same DB-first check, same dedup verdict, same `resolutionToken`.
+                     */
+                    googlePlaceId?: string;
                     cityHint?: string;
                 };
             };
@@ -10170,7 +10178,15 @@ export interface operations {
                     "application/json": components["schemas"]["ResolveLinkResult"];
                 };
             };
-            400: components["responses"]["BadRequest"];
+            /** @description `VALIDATION_FAILED` — neither `url` nor `googlePlaceId`, or both. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
             /** @description PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now. A statement about this deployment, not about the link, so the console must not present it as "không tìm thấy địa điểm" (GoGo-BE#279). `retryable` is true. */
