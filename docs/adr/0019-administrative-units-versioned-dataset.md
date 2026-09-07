@@ -297,6 +297,37 @@ because the two have different fixes. There are no legacy district polygons at
 any release — the units were dissolved before any of them were drawn — and a
 CHECK constraint says so, so a legacy code can never be boundary-derived.
 
+#### 7b. The boundary release: pinned by commit, verified by checksum (ADM-007, #460)
+
+The GeoJSON release is 47.6 MB compressed and 629 MB expanded, so it is the one
+pinned input GoGo does not vendor. The pin moves from the bytes to an immutable
+commit URL plus a SHA-256 verified before a single entry is read — integrity is
+preserved, only availability is traded, and availability is not on the request
+path: nothing fetches it at startup, and the resolver reads polygons out of
+PostgreSQL. A 64 KB fixture of five real entries is committed so every test runs
+offline against genuine geometry.
+
+Boundaries ship at **v5.0.0, the same tag as the current units**, and the two
+agree exactly: 34/34 provinces, 3,321/3,321 communes, zero parent
+disagreements. §10's cross-release hierarchy check stays, because agreement
+measured once is not agreement guaranteed.
+
+**Nothing is repaired.** `ST_Multi` is the only normalization and it promoted
+nothing — every one of the 3,355 features is already a MultiPolygon in WGS84
+with 2D coordinates. `ST_MakeValid` is not used anywhere: an invalid polygon is
+an ERROR that names the unit, because repairing one silently would move a border
+and nobody would know which.
+
+ERROR is a structural impossibility — geometry PostGIS cannot use, a code no
+unit holds, a hierarchy the units contradict, a duplicate identity, a count that
+is not the count that was pinned. WARNING is coherent geography. The pinned
+release loads with **three warnings and no errors**: 233 same-level overlaps,
+1,370 communes not fully covered by their own province polygon, and 56 area
+outliers. The middle figure is 41% of the country and is not a defect — province
+and commune outlines were simplified independently — and it changes nothing,
+because the resolver takes a commune's province from the **units** table and
+never from a province polygon.
+
 ### 8. The cache is in-process, version-keyed, behind a port. Redis is not used.
 
 The published set is ~800 KB and immutable within a version; publication is

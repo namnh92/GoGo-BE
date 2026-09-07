@@ -22,16 +22,11 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: {
         projectService: {
-          allowDefaultProject: [
-            'vitest.config.ts',
-            'drizzle.config.ts',
-            'scripts/check-route-coverage.ts',
-            'scripts/check-package-boundaries.ts',
-            'scripts/build-artifacts.ts',
-            'scripts/artifacts.spec.ts',
-            'scripts/check-openapi-version.ts',
-            'scripts/check-openapi-version.spec.ts',
-          ],
+          // `scripts/` has its own tsconfig, so nothing under it needs the
+          // default project. What is left is the two config files at the root,
+          // which no tsconfig includes and which typescript-eslint caps at
+          // eight before it starts costing lint time.
+          allowDefaultProject: ['vitest.config.ts', 'drizzle.config.ts'],
         },
       },
     },

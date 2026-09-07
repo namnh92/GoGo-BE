@@ -419,3 +419,38 @@ export const administrativeUnitBoundaries = pgTable(
     ),
   ],
 );
+
+/**
+ * ADM-007 (#460) — one row per loaded boundary release.
+ *
+ * The polygons carry their own `source_checksum`, but 3,355 copies of one
+ * answer is not a record: this is where "which archive produced this version,
+ * did its bytes match the pin, and what did validation find" is answerable, and
+ * where a second load of the same version name with different bytes is refused.
+ */
+export const administrativeBoundaryLoads = pgTable(
+  'administrative_boundary_loads',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    boundaryVersion: text('boundary_version').notNull(),
+    source: text('source').notNull(),
+    sourceUrl: text('source_url'),
+    sourceCommit: text('source_commit').notNull(),
+    sourceChecksum: text('source_checksum').notNull(),
+    license: text('license').notNull(),
+    provinceCount: integer('province_count').notNull(),
+    communeCount: integer('commune_count').notNull(),
+    validationReport: jsonb('validation_report').notNull(),
+    topologyReport: jsonb('topology_report').notNull(),
+    loadDurationMs: integer('load_duration_ms').notNull(),
+    loadedAt: timestamp('loaded_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('administrative_boundary_loads_version_unique').on(t.boundaryVersion),
+    index('administrative_boundary_loads_loaded_idx').on(t.loadedAt.desc()),
+    check(
+      'administrative_boundary_loads_counts_positive',
+      sql`${t.provinceCount} >= 0 and ${t.communeCount} >= 0`,
+    ),
+  ],
+);

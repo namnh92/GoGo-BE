@@ -358,6 +358,13 @@
       "when": 1789430400000,
       "tag": "0052_administrative-boundaries",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1789516800000,
+      "tag": "0053_administrative-boundary-loads",
+      "breakpoints": true
     }
   ]
 }
