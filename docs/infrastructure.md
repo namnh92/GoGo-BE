@@ -213,6 +213,7 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `administrative_boundary_matches_total`          | `outcome`                                    | kết quả point-in-polygon: `unique`/`province_only`/`multiple`/`edge`/`none`/`invalid`/`skipped`                                                                                          |
 | `administrative_mapping_writes_total`            | `outcome`                                    | ghi mapping: `written`/`noop`/`conflict`/`blocked`; `blocked` tăng = chạm hàng do người duyệt sở hữu                                                                                     |
 | `administrative_stale_evaluations_total`         | `reason`                                     | đánh giá stale so với dataset đang hoạt động; `REVALIDATED` là trạng thái lành                                                                                                           |
+| `administrative_backfill_batches_total`          | `outcome`                                    | mỗi batch enrichment đã commit (#461): `dry_run`/`executed`; số liệu theo place nằm trên run row                                                                                         |
 
 Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 
