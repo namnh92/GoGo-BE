@@ -11,6 +11,7 @@ export const AUDIT_RESOURCE = 'administrative_dataset';
 export const AUDIT_ACTION = {
   import: 'administrative_dataset.import',
   validate: 'administrative_dataset.validate',
+  validateRejected: 'administrative_dataset.validate_rejected',
   publish: 'administrative_dataset.publish',
   publishRejected: 'administrative_dataset.publish_rejected',
   rollback: 'administrative_dataset.rollback',

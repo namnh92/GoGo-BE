@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.8
+  version: 1.0.0-alpha.9
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1342,6 +1342,21 @@ paths:
         version. Re-validating replaces the previous result rather than adding
         to it. A publishable result moves the version to VALIDATED; a failing one
         leaves it STAGED, because it failed a check — nobody rejected it.
+
+
+        Because it writes that status, validation is a transition and is
+        serialised behind publish and rollback on the same advisory lock. Only a
+        STAGED or VALIDATED version may be validated: applied to the active
+        dataset the status write would demote it out of PUBLISHED and leave the
+        environment with no active version, and applied to a ROLLED_BACK one it
+        would take it out of the restorable set. Both are refused with
+        DATASET_STATE_NOT_VALIDATABLE and nothing is written.
+
+
+        The row is re-read under the lock before the write. If the version, its
+        checksum, its override revision or its staged rows moved while the gates
+        were running, the report describes rows that are no longer there, so it
+        is discarded with DATASET_CHANGED_DURING_VALIDATION rather than stored.
       responses:
         '201':
           description: The validation result and the diff computed with it
@@ -1355,9 +1370,22 @@ paths:
                   diff: { $ref: '#/components/schemas/AdministrativeDatasetDiff' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            Refused, and audited with its reason as
+            `administrative_dataset.validate_rejected`. Nothing is written:
+            not the lifecycle status, not the previous validation, not the
+            active-version pointer, not the restorable set, not a place, not the
+            cache. DATASET_STATE_NOT_VALIDATABLE when the version is not STAGED
+            or VALIDATED, or DATASET_CHANGED_DURING_VALIDATION when it moved
+            while the gates were running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { $ref: '#/components/responses/RateLimited' }
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
 
   /cms/administrative-datasets/{id}/publish:
     post:

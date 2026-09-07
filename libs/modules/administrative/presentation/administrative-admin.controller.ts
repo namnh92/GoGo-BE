@@ -172,6 +172,11 @@ export class AdministrativeAdminController {
    * Runs every gate against the exact staged snapshot and stores the result
    * bound to it. Re-running replaces the previous result rather than adding to
    * it, so "the validation" is never ambiguous.
+   *
+   * It is a transition, not a read: it writes the resulting lifecycle status,
+   * so it takes the same actor and idempotency key as publish and rollback, and
+   * it refuses — 409, nothing written — for a version that is not STAGED or
+   * VALIDATED, or that changed while the gates were running (#482).
    */
   @RateLimit({
     action: 'cms.administrative.validate',
@@ -180,8 +185,16 @@ export class AdministrativeAdminController {
     keyBy: 'actor',
   })
   @Post(':id/validate')
-  async validate(@Param('id', new ZodValidationPipe(ID)) id: string) {
-    const { report, diff } = await this.validation.validate(id);
+  async validate(
+    @CurrentActor() actor: Actor,
+    @Param('id', new ZodValidationPipe(ID)) id: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const { report, diff } = await this.validation.validate(
+      id,
+      { id: actor.id, type: 'admin' },
+      { idempotencyKey: idempotencyKey ?? null },
+    );
     return { validation: report, diff };
   }
 

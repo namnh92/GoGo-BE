@@ -91,6 +91,16 @@ Until then place approval is blocked by design and everything else works.
 for the gate, then the stored report on the dataset row for the rows that tripped
 it. An ERROR is never overridable; fix the source or the override and re-validate.
 
+**Validation refused (409).** Nothing was written — not the status, not the
+previous report. `DATASET_STATE_NOT_VALIDATABLE` means the version is
+`PUBLISHED`, `ROLLED_BACK` or `REJECTED`: validation writes a lifecycle status,
+so running it there would demote the active dataset or un-restore a rollback
+target (#482). Validate a `STAGED` or `VALIDATED` version instead, or import a
+fresh one. `DATASET_CHANGED_DURING_VALIDATION` means the dataset moved while the
+gates ran — a publication won the lock, an override was bumped, or a staged row
+was edited; the message names which, and re-running is the whole fix. Both are
+audited as `administrative_dataset.validate_rejected`.
+
 **Publication failed.** The transaction rolled back and the previous version is
 still active. Check the audit row (`administrative_dataset.publish_rejected`
 carries the refusal reason) and the run's `ACTIVE_VERSION_CHANGED` case, which

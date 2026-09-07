@@ -165,6 +165,84 @@ function staleness(candidate: PublishCandidate, validation: PersistedValidation)
   };
 }
 
+/**
+ * The lifecycle states a validation run may be asked for.
+ *
+ * Validation is not a read: it writes the report, the diff and the resulting
+ * lifecycle status onto the row. `publishable ? VALIDATED : STAGED` is the
+ * right answer for a version being prepared and the wrong one for every other
+ * version there is — applied to the active dataset it would demote it out of
+ * PUBLISHED and leave the environment with no active version at all (the
+ * partial unique index forbids *two*, not *none*), and applied to a
+ * ROLLED_BACK version it would take it out of the restorable set, since
+ * `rollbackRefusal` requires that exact status.
+ *
+ * Neither is something an operator asked for by pressing "validate", so
+ * neither is allowed. Reported as GoGo-BE#482.
+ */
+export const VALIDATABLE_STATUSES: readonly DatasetStatus[] = ['STAGED', 'VALIDATED'];
+
+export type ValidateCandidate = {
+  status: DatasetStatus;
+  combinedDatasetVersion: string;
+};
+
+/** Returns the reason this dataset may not be validated, or null. */
+export function validateRefusal(candidate: ValidateCandidate): Refusal | null {
+  if (VALIDATABLE_STATUSES.includes(candidate.status)) return null;
+  return {
+    code: 'DATASET_STATE_NOT_VALIDATABLE',
+    message:
+      `${candidate.combinedDatasetVersion} is ${candidate.status}; ` +
+      `only ${VALIDATABLE_STATUSES.join(' and ')} versions can be validated, because ` +
+      'validation writes the resulting lifecycle status and would otherwise demote this one',
+  };
+}
+
+/**
+ * What a validation run is *about*, sampled before the reads and again under
+ * lock before the write.
+ *
+ * A validation takes long enough to read every unit, change and quarantine row
+ * of a dataset. In that window a publication can win the transition lock, an
+ * override revision can be bumped, or a staged row can be edited directly. A
+ * report written afterwards would then describe rows that are no longer there
+ * while claiming, through its own binding, that it describes the current ones.
+ */
+export type ValidationIdentity = {
+  status: DatasetStatus;
+  combinedDatasetVersion: string;
+  combinedChecksum: string;
+  overrideRevision: number;
+  snapshotFingerprint: string;
+};
+
+/**
+ * Returns the reason a completed validation must not be written, or null.
+ *
+ * Ordered after `validateRefusal` on the re-read row: a version that became
+ * PUBLISHED mid-run is refused for *being* published, which is the more useful
+ * of the two true answers.
+ */
+export function validationDrift(
+  before: ValidationIdentity,
+  now: ValidationIdentity,
+): Refusal | null {
+  const moved: string[] = [];
+  if (before.status !== now.status) moved.push(`status (${before.status} -> ${now.status})`);
+  if (before.combinedDatasetVersion !== now.combinedDatasetVersion) moved.push('combined version');
+  if (before.combinedChecksum !== now.combinedChecksum) moved.push('combined checksum');
+  if (before.overrideRevision !== now.overrideRevision) moved.push('override revision');
+  if (before.snapshotFingerprint !== now.snapshotFingerprint) moved.push('staged rows');
+  if (moved.length === 0) return null;
+  return {
+    code: 'DATASET_CHANGED_DURING_VALIDATION',
+    message:
+      `${now.combinedDatasetVersion} changed while it was being validated: ` +
+      `${moved.join(', ')}; nothing was written, re-run the validation`,
+  };
+}
+
 export type RollbackCandidate = {
   datasetVersionId: string;
   status: DatasetStatus;

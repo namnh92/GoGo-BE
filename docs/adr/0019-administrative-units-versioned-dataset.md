@@ -98,6 +98,7 @@ required companion, enforced by a check constraint — and why the identity is
 ### 3. Datasets are staged, validated, reviewed, then published
 
 `STAGED → VALIDATED → PUBLISHED`, with `REJECTED` and `ROLLED_BACK` terminal.
+Only the first two are validatable — see §3a-i.
 Import writes rows carrying their own `dataset_version_id`; it never touches the
 active set. At most one version is `PUBLISHED`, held by a partial unique index —
 the shape migration 0050 used for the CMS super-admin singleton, for the same
@@ -107,6 +108,46 @@ Publication is one transaction that switches the active version, retains the
 previous one, and writes an audit event. Rollback re-activates a previous valid
 version: a forward act with its own audit row, not an undo. Republishing the
 same version is refused, not silently ignored.
+
+#### 3a-i. Validation is a transition, not a read (#482)
+
+`validate` runs the gates and stores the report — and, with it, the resulting
+lifecycle status: `publishable ? VALIDATED : STAGED`. That is the right answer
+for a version being prepared and a demotion for every other version there is.
+Applied to the active dataset it moved it out of `PUBLISHED`, and the partial
+unique index does not save that case: it forbids _two_ active versions, not
+_zero_. The environment was then left with no active dataset, `capability`
+reported `MISSING`/`BLOCKED`, and the approval guard refused every place until
+somebody published again. Applied to a `ROLLED_BACK` version it took it out of
+the restorable set, because `rollbackRefusal` requires exactly that status.
+
+So the state machine is closed:
+
+| from          | gates    | to                                       |
+| ------------- | -------- | ---------------------------------------- |
+| `STAGED`      | no ERROR | `VALIDATED`                              |
+| `STAGED`      | ERROR    | `STAGED`                                 |
+| `VALIDATED`   | no ERROR | `VALIDATED`                              |
+| `VALIDATED`   | ERROR    | `STAGED`                                 |
+| `PUBLISHED`   | —        | refused, `DATASET_STATE_NOT_VALIDATABLE` |
+| `ROLLED_BACK` | —        | refused, `DATASET_STATE_NOT_VALIDATABLE` |
+| `REJECTED`    | —        | refused, `DATASET_STATE_NOT_VALIDATABLE` |
+
+Because it writes a lifecycle status, validation takes the same advisory
+transition key as publish and rollback and queues behind them rather than
+interleaving. The row is re-read `FOR UPDATE` inside the writing transaction and
+the identity the report was computed from — status, combined version, combined
+checksum, override revision, and the digest of the staged rows, sampled before
+the reads and again under the lock — must still hold. A publication that won the
+lock, an override bump, or a direct edit to a staged row during the run makes the
+report evidence about rows that are no longer there, so it is discarded with
+`DATASET_CHANGED_DURING_VALIDATION`.
+
+A refused run writes nothing: not the status, not the previous validation, not
+the active pointer, not the restorable set, not a place, not the cache. The one
+thing it does write is the audit row for the refusal, as
+`administrative_dataset.validate_rejected` — never as `validate`, which would
+claim a report exists that does not.
 
 #### 3a. What publication is allowed to believe (ADM-005, #458)
 

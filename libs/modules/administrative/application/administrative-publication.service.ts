@@ -5,6 +5,7 @@ import { METRICS, type MetricsPort } from '@gogo/observability';
 import { DB } from '../../shared/tokens';
 import { AppError } from '../../shared/app-error';
 import { writeAudit } from '../../shared/audit';
+import { TRANSITION_LOCK, TRANSITION_LOCK_TIMEOUT } from './administrative-transition';
 import {
   publishRefusal,
   rollbackRefusal,
@@ -49,20 +50,6 @@ import { snapshotFingerprint } from './snapshot-fingerprint';
  * published dataset because a local map did not refill would be the tail
  * wagging the dog.
  */
-
-/**
- * One key for every active-version transition, publish and rollback alike. The
- * literal is arbitrary and permanent; what matters is that both paths take the
- * same one, so they queue behind each other instead of interleaving.
- */
-const TRANSITION_LOCK = 4_580_019;
-
-/**
- * A transition that cannot get its row locks quickly is a transition competing
- * with something it should not be competing with. Failing is better than
- * holding the advisory lock — and every other publisher — behind it.
- */
-const LOCK_TIMEOUT = '5s';
 
 /** Bounded like every other sample window a reviewer reads. */
 export const STALE_MAPPING_SAMPLE_LIMIT = 20;
@@ -571,7 +558,7 @@ export class AdministrativePublicationService {
   }
 
   private async lockTransition(tx: Tx): Promise<void> {
-    await tx.execute(sql.raw(`set local lock_timeout = '${LOCK_TIMEOUT}'`));
+    await tx.execute(sql.raw(`set local lock_timeout = '${TRANSITION_LOCK_TIMEOUT}'`));
     await tx.execute(sql`select pg_advisory_xact_lock(${TRANSITION_LOCK})`);
   }
 
