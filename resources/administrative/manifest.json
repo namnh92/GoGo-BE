@@ -1,0 +1,77 @@
+{
+  "$comment": "ADM-002 (#455) / ADR-0019. The pinned inputs a GoGo administrative dataset is built from. The importer verifies every sha256 here against the decompressed bytes before parsing anything, and refuses to run on a mismatch — a snapshot that has drifted is not the snapshot the counts and the licence review were done against.",
+  "sources": [
+    {
+      "role": "current-units",
+      "repository": "thanglequoc/vietnamese-provinces-database",
+      "ref": "v5.0.0",
+      "commit": "b092d6b45ea76c39990afd34375eabe1f6c3a492",
+      "path": "json/simplified_json_generated_data_vn_units.json",
+      "vendoredAs": "current-units.v5.0.0.json.gz",
+      "sha256": "b2af4329be6bbbb68bb53217d26edc8d4ff0a24aea5ad5569e72232cf6275ac3",
+      "bytes": 805291,
+      "license": "MIT",
+      "licenseFile": "LICENSE.vietnamese-provinces-database.txt",
+      "retrievedAt": "2026-09-07",
+      "effectiveDate": "2026-04-30",
+      "legalReference": "Nghị quyết 30/2026/QH16",
+      "authority": "Tổng cục Thống kê (General Statistics Office of Vietnam)",
+      "expected": {
+        "provinces": 34,
+        "municipalities": 7,
+        "communes": 3321,
+        "wards": 697,
+        "ruralCommunes": 2610,
+        "specialZones": 13
+      },
+      "note": "The only source that decides whether a current target code exists."
+    },
+    {
+      "role": "historical-units",
+      "repository": "thanglequoc/vietnamese-provinces-database",
+      "ref": "v2.4.1",
+      "commit": "fc33b7411ec4e3697817fab8118718a8d39ef090",
+      "path": "json/simplified_json_generated_data_vn_units.json",
+      "vendoredAs": "historical-units.v2.4.1.json.gz",
+      "sha256": "86c1e097b1b8b63cf5f8b7aa71d90e3bd97f2e75412af67d5dede4d9c0e91899",
+      "bytes": 2451968,
+      "license": "MIT",
+      "licenseFile": "LICENSE.vietnamese-provinces-database.txt",
+      "retrievedAt": "2026-09-07",
+      "effectiveTo": "2025-06-30",
+      "expected": { "provinces": 63, "legacyDistricts": 696, "communes": 10035 },
+      "note": "The last three-level snapshot. Imported INACTIVE and effective-dated; the only source of LEGACY_DISTRICT units."
+    },
+    {
+      "role": "change-mapping",
+      "authority": "advisory",
+      "repository": "tranngocminhhieu/vietnamadminunits",
+      "ref": "main",
+      "commit": "7fac8c45805aad9916b17237c54baf4502303b93",
+      "path": "data/interim/convert_legacy_2025_simple.csv",
+      "vendoredAs": "change-mapping.7fac8c4.csv.gz",
+      "sha256": "93d53e6f53d2094a0bfa4a17fba18f772eab36106737962b00fe1749ca7bbb1d",
+      "bytes": 2159038,
+      "license": "MIT",
+      "licenseFile": "LICENSE.vietnamadminunits.txt",
+      "retrievedAt": "2026-09-07",
+      "upstreamUpdatedAt": "2025-10-08",
+      "expected": { "rows": 10602, "canonical": 9569, "quarantined": 1033 },
+      "note": "ADVISORY ONLY. Never authoritative current data. A row is promoted to a canonical change solely when both endpoints resolve against the two sources above; nothing here may mint a current unit."
+    }
+  ],
+  "knownDefects": [
+    {
+      "source": "current-units",
+      "code": "06325",
+      "observed": "xã Bắc Sơn",
+      "issue": "lowercase unit-type prefix; every other row capitalises it",
+      "handling": "unit type is derived case-insensitively and a warning is raised — the source is not silently corrected"
+    },
+    {
+      "source": "change-mapping",
+      "issue": "five rows carry a district-level source rather than a commune (island districts that became đặc khu: Bạch Long Vĩ, Cồn Cỏ, Hoàng Sa, Lý Sơn, Côn Đảo; Cồn Cỏ 45→44 and Côn Đảo 77→79 also change province)",
+      "handling": "classified VALID_DISTRICT_TO_SPECIAL_ZONE — they are correct data in an unexpected shape, not malformed rows"
+    }
+  ]
+}
