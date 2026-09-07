@@ -20,6 +20,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { users } from './identity';
+import { administrativeMappingSource, administrativeMappingStatus } from './administrative';
 
 /**
  * DB-005 — place/source/hours/price/taxonomy/media schema.
@@ -142,12 +143,85 @@ export const places = pgTable(
     confidence: numeric('confidence', { precision: 3, scale: 2 }).notNull().default('0.50'),
     freshnessCheckedAt: timestamp('freshness_checked_at', { withTimezone: true }),
     curatedRank: integer('curated_rank'),
+    /**
+     * ADM-001 (#454) / ADR-0019 — the administrative address as **codes**,
+     * beside the free-text names above rather than instead of them.
+     *
+     * ADR-0016 decided `city`/`district` stay free text because an editor must
+     * be able to type a unit the catalog does not carry, and because a minted
+     * code would resolve to nothing. ADR-0019 supersedes only the second half:
+     * a code taken from the official directory resolves to a row GoGo can show,
+     * search and version. `city`, `district` and `address_text` are unchanged,
+     * still writable, and never rewritten by a dataset publication — they are
+     * the evidence of what a provider or a person actually wrote.
+     *
+     * `administrativeDatasetVersion` is not bookkeeping. 2,212 of the 3,321
+     * current commune codes named a *different* unit before 2025-07-01, so a
+     * code read without knowing which dataset produced it resolves to a
+     * confidently wrong commune. Every read of these codes is qualified by it.
+     */
+    provinceCode: text('province_code'),
+    communeCode: text('commune_code'),
+    /** Pre-2025-07-01 evidence. Never part of the current hierarchy. */
+    legacyDistrictCode: text('legacy_district_code'),
+    administrativeMappingStatus: administrativeMappingStatus('administrative_mapping_status')
+      .notNull()
+      .default('UNMAPPED'),
+    administrativeMappingSource: administrativeMappingSource('administrative_mapping_source'),
+    /**
+     * Written only where it is computed deterministically. A resolver path that
+     * cannot produce a number leaves it NULL rather than inventing 0.5.
+     */
+    administrativeMappingConfidence: numeric('administrative_mapping_confidence', {
+      precision: 3,
+      scale: 2,
+    }),
+    administrativeDatasetVersion: text('administrative_dataset_version'),
+    /**
+     * Which boundary set produced a point-in-polygon claim (GoGo-BE#464). Kept
+     * apart from the dataset version because the same units can be published
+     * against a newer boundary release, and "which polygons said so" is the
+     * question a reviewer asks when a match looks wrong.
+     */
+    administrativeBoundaryVersion: text('administrative_boundary_version'),
+    administrativeMappedAt: timestamp('administrative_mapped_at', { withTimezone: true }),
+    administrativeMappedBy: uuid('administrative_mapped_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('places_status_idx').on(t.status),
     index('places_area_idx').on(t.areaKey),
+    index('places_administrative_status_idx')
+      .on(t.administrativeMappingStatus)
+      .where(sql`${t.administrativeMappingStatus} <> 'UNMAPPED'`),
+    index('places_commune_code_idx')
+      .on(t.communeCode)
+      .where(sql`${t.communeCode} is not null`),
+    index('places_province_code_idx')
+      .on(t.provinceCode)
+      .where(sql`${t.provinceCode} is not null`),
+    check(
+      'places_administrative_confidence_range',
+      sql`${t.administrativeMappingConfidence} is null
+          or (${t.administrativeMappingConfidence} >= 0
+              and ${t.administrativeMappingConfidence} <= 1)`,
+    ),
+    // A mapped place must say which dataset mapped it; UNMAPPED carries nothing,
+    // which is why this keys on the status rather than on the code.
+    check(
+      'places_administrative_version_present',
+      sql`${t.administrativeMappingStatus} = 'UNMAPPED'
+          or ${t.administrativeDatasetVersion} is not null`,
+    ),
+    // A point-in-polygon claim that cannot say which polygons it came from is
+    // not reproducible, and reproducibility is the whole basis on which
+    // GoGo-BE#464 classified these codes as GoGo's own facts.
+    check(
+      'places_administrative_boundary_version_present',
+      sql`${t.administrativeMappingSource} is distinct from 'boundary_point_in_polygon'
+          or ${t.administrativeBoundaryVersion} is not null`,
+    ),
     // GiST geo index + trigram/FTS indexes live in the raw SQL migration
     // (DB-009) because drizzle-kit cannot express them.
   ],
