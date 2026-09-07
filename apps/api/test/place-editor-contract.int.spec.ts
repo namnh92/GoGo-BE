@@ -767,7 +767,10 @@ describe('#465 add a place by Google Maps link', () => {
 
   it('is closed to a moderator, who does not spend the provider budget', async () => {
     const moderator = await createAdmin(`pe-link-mod-${Date.now()}@gogo.local`, 'moderator');
-    const res = await resolveLink({ url: 'https://www.google.com/maps?place_id=ChIJcmslink' }, moderator.token);
+    const res = await resolveLink(
+      { url: 'https://www.google.com/maps?place_id=ChIJcmslink' },
+      moderator.token,
+    );
 
     expect(res.statusCode).toBe(403);
   });
