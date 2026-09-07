@@ -224,6 +224,79 @@ until measured resolver accuracy justifies relaxing it. `UNMAPPED`,
 ingestion may remain unresolved. Approval revalidates the mapping against the
 _currently active_ version rather than trusting the stored value.
 
+#### 7a. What the resolver may write, and what belongs to a person (ADM-006, #459)
+
+`VERIFIED` and `REJECTED` are reviewer-owned. An unattended run may read them,
+disagree with them, and report the disagreement — it may not act on it. The
+place a fresh boundary release is most likely to contradict is exactly the place
+someone already looked at _because_ the machine was wrong, and "the machine had
+newer data" is not a reason to discard that. `REJECTED` has one documented way
+back, an explicit rematch action; `VERIFIED` has none.
+
+`NEEDS_REVIEW` and `STALE` are queue states rather than decisions, so a later run
+that finds decisive evidence may resolve them.
+
+`updated_at` does not move when nothing material changed — a nightly pass over
+an unchanged catalogue must not look like a catalogue that changed every night.
+
+**Reviewer attribution follows the decision, not the row.**
+`administrative_mapped_by` names who is responsible for the mapping the row
+carries _now_; the history of everyone who ever touched it is the audit log,
+which keeps all of them. So:
+
+| situation                                                                                 | mapping                 | `administrative_mapped_by` |
+| ----------------------------------------------------------------------------------------- | ----------------------- | -------------------------- |
+| ordinary automatic run against `VERIFIED`                                                 | no write                | unchanged                  |
+| ordinary automatic run against `REJECTED`                                                 | no write                | unchanged                  |
+| authorised rematch of `REJECTED` → `AUTO_MATCHED` / `NEEDS_REVIEW` / `UNMAPPED` / `STALE` | replaced per the matrix | **cleared**                |
+| rematch that leaves `REJECTED` standing                                                   | no write                | unchanged                  |
+| no-op on a reviewer-owned row                                                             | no write                | unchanged                  |
+| manual verification (#462)                                                                | `VERIFIED`              | set to the reviewer        |
+
+The rematch actor is recorded in the audit event under its own key and is never
+written to the column: asking for a rematch is not verifying anything, and a
+machine-produced mapping that still carried a reviewer's id would read as
+reviewed to anything keying on that column being set.
+
+**Confidence is definitional or absent.** Deterministic _selection_ and
+calibrated _certainty_ are different claims, and conflating them puts a number
+nobody measured in front of decisions downstream. `1.00` is written only where
+the evidence answers "which unit is this" by construction and nothing
+contradicts it:
+
+| evidence                                                                               | confidence |
+| -------------------------------------------------------------------------------------- | ---------- |
+| explicit official codes validated against this exact dataset version                   | `1.00`     |
+| unique, strictly-inside point-in-polygon containment with a valid implied province     | `1.00`     |
+| exact normalized name, with or without a city narrowing it                             | NULL       |
+| canonical historical change mapping, including district → special zone                 | NULL       |
+| a unique containment that sits on an edge                                              | NULL       |
+| province-only, divided/split without independent unique geometry, any fuzzy suggestion | NULL       |
+| any result with contradicting deterministic evidence                                   | NULL       |
+
+A result is still `AUTO_MATCHED` with a NULL confidence; its certainty is
+carried by `method`, `evidence`, `status` and `datasetVersion` — four things a
+reviewer can check — rather than by one number that cannot be checked. A
+contradiction voids the number even where the contradicting claim was itself
+invalid and never reached the answer.
+
+Staleness is **evaluated, never written**. The distinction that matters is
+between a mapping _labelled_ with an older dataset version — the normal state of
+the catalogue between publications — and one the new dataset _invalidates_. Only
+the codes tell those apart, so the stored version alone is never the test, and
+the verdict carries no proposed status: what to do about a stale `VERIFIED`
+place belongs to #461/#462 and to a person.
+
+Boundary polygons live in `administrative_unit_boundaries`, created empty by
+migration 0052 and filled by ADM-007 (#460), which pins the release and verifies
+its checksum. Containment uses `ST_Intersects`, not `ST_Contains`: a point on a
+shared border is inside Vietnam and inside two communes, and reporting that as
+ambiguous is correct where reporting it as "no match" would be a lie about the
+geometry. A shared edge is reported apart from genuinely overlapping polygons
+because the two have different fixes. There are no legacy district polygons at
+any release — the units were dissolved before any of them were drawn — and a
+CHECK constraint says so, so a legacy code can never be boundary-derived.
+
 ### 8. The cache is in-process, version-keyed, behind a port. Redis is not used.
 
 The published set is ~800 KB and immutable within a version; publication is
