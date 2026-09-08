@@ -5,6 +5,7 @@ import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import type { Actor } from '../../identity/domain/actor';
 import { AppError } from '../../shared/app-error';
 import { APP_CONFIG, type PushIdentityConfig } from '../../shared/config';
+import { ONESIGNAL_API_BASE } from '@gogo/providers';
 
 /**
  * NTF-BE-008 (#199) — the identity JWT the mobile client hands to the OneSignal
@@ -63,6 +64,19 @@ export function parseIdentitySigningKey(raw: string): KeyObject | null {
   return key;
 }
 
+/** What `POST /v1/notifications/identity/logout` answers. */
+export type DeviceUnsubscribeConfirmation = {
+  /**
+   * True when this device's subscription is no longer able to receive
+   * notifications for the caller: absent from their user, or present and
+   * disabled. False means the provider still has it enabled.
+   */
+  confirmed: boolean;
+};
+
+/** How long the token minted for a confirmation read is good for. */
+const CONFIRM_TOKEN_TTL_SECONDS = 60;
+
 export type PushIdentityToken = {
   /** `users.id` — what the SDK logs in with. */
   externalId: string;
@@ -75,12 +89,18 @@ export type PushIdentityToken = {
 @Injectable()
 export class PushIdentityService {
   private readonly sign: ((payload: Record<string, unknown>) => string) | null;
+  /** Signs the short-lived token the confirmation read authenticates with. */
+  private readonly signConfirm: ((payload: Record<string, unknown>) => string) | null;
+  private readonly appId: string;
   readonly ttlSeconds: number;
 
   constructor(
     @Inject(APP_CONFIG) config: PushIdentityConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+    /** Injected only by tests; Nest has nothing to provide and must not try. */
+    @Optional() private readonly fetchImpl: typeof fetch = fetch,
   ) {
+    this.appId = config.ONESIGNAL_APP_ID;
     this.ttlSeconds = Math.min(
       Math.max(60, config.ONESIGNAL_IDENTITY_TOKEN_TTL_SECONDS),
       IDENTITY_TOKEN_MAX_TTL_SECONDS,
@@ -95,6 +115,15 @@ export class PushIdentityService {
             // fast-jwt takes milliseconds. `iat` is stamped by the signer, so a
             // verifier that allows the usual skew window sees a consistent pair.
             expiresIn: this.ttlSeconds * 1_000,
+          })
+        : null;
+    this.signConfirm =
+      key && config.ONESIGNAL_APP_ID
+        ? createSigner({
+            algorithm: 'ES256',
+            key: key.export({ type: 'pkcs8', format: 'pem' }) as string,
+            iss: config.ONESIGNAL_APP_ID,
+            expiresIn: CONFIRM_TOKEN_TTL_SECONDS * 1_000,
           })
         : null;
   }
@@ -131,5 +160,92 @@ export class PushIdentityService {
       token,
       expiresAt: new Date(claims.exp * 1_000).toISOString(),
     };
+  }
+
+  /**
+   * NTF-APP-004 (#160) — "this device is no longer subscribed for me", asked of
+   * the provider rather than of the SDK on the device.
+   *
+   * The client cannot answer this itself. It holds no REST credential, and
+   * `.claude/rules/core.md` rule 12 keeps clients on the BFF, so the read
+   * happens here. The SDK's own opt-out state is not the answer either: under
+   * Identity Verification logout sets a flag the device-side API does not
+   * report, which is exactly how a logout that never reached the provider looks
+   * identical to one that did.
+   *
+   * Scoped to the caller by construction: the only user ever read is the
+   * actor's own `external_id`. There is no parameter that can name someone
+   * else's, so this cannot report on — or touch — another person's devices. It
+   * is a read: nothing is disabled or deleted here, least of all the user.
+   */
+  async confirmDeviceUnsubscribed(
+    actor: Actor,
+    subscriptionId: string,
+  ): Promise<DeviceUnsubscribeConfirmation> {
+    if (actor.type !== 'user') {
+      throw AppError.forbidden('USER_ONLY', 'Push identity is issued to signed-in users only');
+    }
+    if (!this.signConfirm) {
+      throw AppError.serviceUnavailable(
+        'PUSH_IDENTITY_UNAVAILABLE',
+        'Push identity signing is not configured in this environment',
+        false,
+      );
+    }
+
+    const token = this.signConfirm({ identity: { external_id: actor.id } });
+    const url = `${ONESIGNAL_API_BASE}/apps/${encodeURIComponent(this.appId)}/users/by/external_id/${encodeURIComponent(actor.id)}`;
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+      });
+    } catch {
+      this.metrics.increment('push_identity_logout_confirm_total', { result: 'unreachable' });
+      // Retryable: the client is still signed in and will ask again.
+      throw AppError.serviceUnavailable(
+        'PUSH_UNSUBSCRIBE_UNCONFIRMED',
+        'Could not reach the push provider to confirm unsubscription',
+        true,
+      );
+    }
+
+    if (response.status === 404) {
+      // No user at that external id: nothing of theirs can be subscribed.
+      this.metrics.increment('push_identity_logout_confirm_total', { result: 'confirmed' });
+      return { confirmed: true };
+    }
+    if (!response.ok) {
+      this.metrics.increment('push_identity_logout_confirm_total', { result: 'error' });
+      throw AppError.serviceUnavailable(
+        'PUSH_UNSUBSCRIBE_UNCONFIRMED',
+        'The push provider did not answer the unsubscription check',
+        true,
+      );
+    }
+
+    let body: { subscriptions?: { id?: string; enabled?: boolean }[] };
+    try {
+      body = (await response.json()) as typeof body;
+    } catch {
+      // A 200 we cannot parse is not a confirmation. Same answer as an outage:
+      // say so, and let the client keep its session and ask again.
+      this.metrics.increment('push_identity_logout_confirm_total', { result: 'error' });
+      throw AppError.serviceUnavailable(
+        'PUSH_UNSUBSCRIBE_UNCONFIRMED',
+        'The push provider returned an unreadable unsubscription check',
+        true,
+      );
+    }
+    const match = (body.subscriptions ?? []).find((s) => s.id === subscriptionId);
+    // Absent means it no longer belongs to this user; present-and-disabled
+    // means it does but cannot be delivered to. Either satisfies logout.
+    const confirmed = match === undefined || match.enabled !== true;
+    this.metrics.increment('push_identity_logout_confirm_total', {
+      result: confirmed ? 'confirmed' : 'still_enabled',
+    });
+    return { confirmed };
   }
 }

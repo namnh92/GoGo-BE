@@ -1925,6 +1925,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/notifications/identity/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm this device's push subscription is no longer live for the caller (NTF-APP-004)
+         * @description A **read**, asked while signing out: it disables nothing, deletes nothing, and never touches the OneSignal user. The client cannot answer this itself — it holds no provider credential, and the device SDK does not report the disabled flag that Identity Verification logout sets, so a logout that never reached the provider looks identical on the device to one that did. The only user read is the caller's own, taken from the session, so no field in the body can point this at another person's devices. `confirmed` is true when the given subscription is absent from the caller's user or present but not enabled. A client that gets `confirmed: false`, or an error, must not clear its session.
+         */
+        post: operations["confirmDeviceUnsubscribed"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/share-links": {
         parameters: {
             query?: never;
@@ -6073,6 +6093,10 @@ export interface components {
             targetId?: string;
             /** Format: date-time */
             savedAt?: string;
+        };
+        DeviceUnsubscribeConfirmation: {
+            /** @description True when the named subscription is absent from the caller's user or present and not enabled. False means the provider still has it enabled, and the caller must keep its session. */
+            confirmed: boolean;
         };
         PushIdentityToken: {
             /**
@@ -11147,6 +11171,46 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
             /** @description No identity signing key in this environment (`PUSH_IDENTITY_UNAVAILABLE`) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    confirmDeviceUnsubscribed: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The OneSignal subscription id of the device asking. */
+                    subscriptionId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Whether this device is unsubscribed for the caller */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceUnsubscribeConfirmation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            /** @description No identity signing key (`PUSH_IDENTITY_UNAVAILABLE`), or the provider could not be reached (`PUSH_UNSUBSCRIBE_UNCONFIRMED`, `retryable: true`). */
             503: {
                 headers: {
                     [name: string]: unknown;

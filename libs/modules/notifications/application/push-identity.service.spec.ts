@@ -25,6 +25,30 @@ function service(overrides: Partial<Record<string, unknown>> = {}) {
   } as never);
 }
 
+/** A service whose provider call is a stub, so no test touches the network. */
+function serviceWithFetch(
+  fetchImpl: typeof fetch,
+  overrides: Partial<Record<string, unknown>> = {},
+) {
+  return new PushIdentityService(
+    {
+      ONESIGNAL_APP_ID: APP_ID,
+      ONESIGNAL_IDENTITY_VERIFICATION_KEY: PEM,
+      ONESIGNAL_IDENTITY_TOKEN_TTL_SECONDS: 3_600,
+      ...overrides,
+    } as never,
+    undefined,
+    fetchImpl,
+  );
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 describe('parseIdentitySigningKey', () => {
   it('accepts raw PEM, \\n-escaped PEM and base64 PEM as the same key', () => {
     const escaped = PEM.replace(/\n/g, '\\n');
@@ -119,5 +143,119 @@ describe('PushIdentityService (NTF-BE-008)', () => {
     const { token } = svc.issue(user);
     expect(JSON.stringify(increments)).not.toContain(token);
     expect(increments).toEqual([['push_identity_tokens_total', { result: 'issued' }]]);
+  });
+});
+
+describe('confirmDeviceUnsubscribed (#160)', () => {
+  const SUB = 'b3e26d4e-59dd-4eda-bd34-8261885ccefc';
+
+  it('is not confirmed while the provider still has this device enabled', async () => {
+    // The case the whole endpoint exists for: the device believes it logged
+    // out, the provider disagrees, and the client must keep its session.
+    const svc = serviceWithFetch(async () =>
+      jsonResponse({ subscriptions: [{ id: SUB, enabled: true }] }),
+    );
+    await expect(svc.confirmDeviceUnsubscribed(user, SUB)).resolves.toEqual({ confirmed: false });
+  });
+
+  it('confirms once the provider reports it disabled', async () => {
+    const svc = serviceWithFetch(async () =>
+      jsonResponse({ subscriptions: [{ id: SUB, enabled: false }] }),
+    );
+    await expect(svc.confirmDeviceUnsubscribed(user, SUB)).resolves.toEqual({ confirmed: true });
+  });
+
+  it('confirms when the subscription no longer belongs to this user', async () => {
+    // After a switch the device moves to the next account, so it is simply
+    // absent here. Nothing of the caller's can deliver to it.
+    const svc = serviceWithFetch(async () =>
+      jsonResponse({ subscriptions: [{ id: 'someone-elses', enabled: true }] }),
+    );
+    await expect(svc.confirmDeviceUnsubscribed(user, SUB)).resolves.toEqual({ confirmed: true });
+  });
+
+  it('reads only the caller, and only reads', async () => {
+    // The security argument, asserted rather than described: the URL carries
+    // the actor's own id and the method is GET, so no body value can address
+    // another person's devices and nothing can be mutated.
+    let seenUrl = '';
+    let seenMethod = '';
+    const svc = serviceWithFetch(async (url, init) => {
+      seenUrl = String(url);
+      seenMethod = String((init as RequestInit).method);
+      return jsonResponse({ subscriptions: [] });
+    });
+    await svc.confirmDeviceUnsubscribed(user, SUB);
+    expect(seenUrl).toContain(`/users/by/external_id/${user.id}`);
+    expect(seenUrl).toContain(`/apps/${APP_ID}/`);
+    expect(seenMethod).toBe('GET');
+  });
+
+  it('authenticates with a Bearer identity token for that same user', async () => {
+    // Identity Verification refuses the App API key on user reads, so this must
+    // carry a JWT — and it must be the caller's, not a general credential.
+    let auth = '';
+    const svc = serviceWithFetch(async (_url, init) => {
+      auth = String(
+        (init as RequestInit).headers
+          ? ((init as RequestInit).headers as Record<string, string>).authorization
+          : '',
+      );
+      return jsonResponse({ subscriptions: [] });
+    });
+    await svc.confirmDeviceUnsubscribed(user, SUB);
+    expect(auth.startsWith('Bearer ')).toBe(true);
+    const verify = createVerifier({ key: PUBLIC_PEM, algorithms: ['ES256'] });
+    const claims = verify(auth.slice('Bearer '.length)) as {
+      iss: string;
+      identity: { external_id: string };
+    };
+    expect(claims.iss).toBe(APP_ID);
+    expect(claims.identity.external_id).toBe(user.id);
+  });
+
+  it('a provider that cannot be reached is retryable, never a false confirmation', async () => {
+    const svc = serviceWithFetch(async () => {
+      throw new Error('network down');
+    });
+    await expect(svc.confirmDeviceUnsubscribed(user, SUB)).rejects.toMatchObject({
+      code: 'PUSH_UNSUBSCRIBE_UNCONFIRMED',
+      options: { retryable: true },
+    });
+  });
+
+  it('a provider error is not a confirmation either', async () => {
+    const svc = serviceWithFetch(async () => jsonResponse({ errors: ['nope'] }, 500));
+    await expect(svc.confirmDeviceUnsubscribed(user, SUB)).rejects.toBeInstanceOf(AppError);
+  });
+
+  it('a 200 it cannot parse is not a confirmation', async () => {
+    const svc = serviceWithFetch(
+      async () => new Response('<html>maintenance</html>', { status: 200 }),
+    );
+    await expect(svc.confirmDeviceUnsubscribed(user, SUB)).rejects.toMatchObject({
+      code: 'PUSH_UNSUBSCRIBE_UNCONFIRMED',
+    });
+  });
+
+  it('no user at that external id means nothing of theirs is subscribed', async () => {
+    const svc = serviceWithFetch(async () => jsonResponse({}, 404));
+    await expect(svc.confirmDeviceUnsubscribed(user, SUB)).resolves.toEqual({ confirmed: true });
+  });
+
+  it('guests have no push identity to confirm', async () => {
+    const svc = serviceWithFetch(async () => jsonResponse({ subscriptions: [] }));
+    await expect(svc.confirmDeviceUnsubscribed(guest, SUB)).rejects.toMatchObject({
+      code: 'USER_ONLY',
+    });
+  });
+
+  it('an environment with no signing key cannot confirm', async () => {
+    const svc = serviceWithFetch(async () => jsonResponse({ subscriptions: [] }), {
+      ONESIGNAL_IDENTITY_VERIFICATION_KEY: '',
+    });
+    await expect(svc.confirmDeviceUnsubscribed(user, SUB)).rejects.toMatchObject({
+      code: 'PUSH_IDENTITY_UNAVAILABLE',
+    });
   });
 });
