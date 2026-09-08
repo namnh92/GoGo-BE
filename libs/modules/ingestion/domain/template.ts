@@ -271,6 +271,45 @@ export function validateRow(
     errors.push(msg('PRICE_INVALID', 'price_min', 'Giá không được âm'));
   }
 
+  /**
+   * PI-BE-026 — a price this import cannot store must not pass as if it could.
+   *
+   * `place_prices.unit` is `per_person | per_item | per_hour | per_night`.
+   * `PRICE_UNITS` above accepts two values that are not in it — `per_group`,
+   * which the contract invited operators to use, and `unknown`, which is the
+   * default when the column is absent — and `dbPriceUnit` turned both into
+   * `null`, which made `createPlaceFromRow` skip the insert. A validated row
+   * with a real minimum and maximum produced a place with no price at all, and
+   * nothing anywhere said so.
+   *
+   * Persisting `per_group` properly would mean a new value on the
+   * `price_unit` enum, and that changes what every consumer of a price has to
+   * handle — the itinerary, the budget check, the mobile card. That is a price
+   * model decision, not an import one, so this refuses instead.
+   *
+   * Core rule 13: a price never leaves its unit behind. A row that states a
+   * price has to state what it is per.
+   */
+  const hasPrice = priceMin !== null || priceMax !== null;
+  if (hasPrice && priceUnit === 'per_group') {
+    errors.push(
+      msg(
+        'PRICE_UNIT_UNSUPPORTED',
+        'price_unit',
+        'price_unit=per_group chưa lưu được. Dùng per_person, per_item hoặc free.',
+      ),
+    );
+  }
+  if (hasPrice && priceUnit === 'unknown') {
+    errors.push(
+      msg(
+        'PRICE_UNIT_REQUIRED',
+        'price_unit',
+        'Có giá thì phải nói giá tính theo gì: per_person, per_item hoặc free.',
+      ),
+    );
+  }
+
   const audiences = collectKeys(
     raw.audiences,
     raw.audiences_raw,

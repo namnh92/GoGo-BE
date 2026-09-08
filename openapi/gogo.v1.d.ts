@@ -1672,6 +1672,8 @@ export interface paths {
          *     `places.suitability` is deliberately **not** an import column. `audiences` is the operator-facing vocabulary for the same product concept — who a place suits — and `suitability` is the weighted score GoGo derives from it and from editorial curation. Asking a spreadsheet to author both would be asking one person to write the same fact at two levels of abstraction and keep them consistent. The column and every other API path that writes it are unchanged.
          *
          *     `phone` and `website` are no longer retired mapping values; `address` still is, because `address_text` is written from the provider's formatted address and a sheet's own address string has no writer.
+         *
+         *     **Price units (PI-BE-026).** `place_prices.unit` is `per_person`, `per_item`, `per_hour` or `per_night`. A row that states a price must state a unit this table can hold: `per_group` fails with `PRICE_UNIT_UNSUPPORTED` and `unknown` — which is also the default when the column is absent — fails with `PRICE_UNIT_REQUIRED`. Both used to be accepted and then dropped the price on commit without a word. `free` is stored as `per_person` with a zero amount. A row with no price at all is unaffected.
          */
         post: operations["createPlaceImport"];
         delete?: never;
