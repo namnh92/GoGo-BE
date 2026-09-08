@@ -140,6 +140,10 @@ describe('every path that can set a place status', () => {
         // ADM-016 — the place detail summary the console's editors read. Same
         // policy, reported rather than enforced.
         'libs/modules/administrative/application/place-administrative-summary.ts',
+        // ADM-017 — the import review screen, which has to say why a row will
+        // not publish. Reported, not enforced: `settlePublication` still asks
+        // the guard inside the transaction that publishes.
+        'libs/modules/ingestion/application/place-import-job.service.ts',
         'libs/modules/administrative/application/place-approval.ts',
         'libs/modules/administrative/domain/approval-policy.ts',
       ].sort(),

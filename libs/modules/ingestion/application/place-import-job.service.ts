@@ -52,7 +52,16 @@ import {
   AdministrativeResolverService,
   type PersistResult,
 } from '../../administrative/application/administrative-resolver.service';
-import { activeDataset, unitNames } from '../../administrative/application/unit-lookup';
+import {
+  activeDataset,
+  currentCommunes,
+  unitNames,
+} from '../../administrative/application/unit-lookup';
+import {
+  approvalBlock,
+  type ActiveCommune,
+  type ApprovalBlock,
+} from '../../administrative/domain/approval-policy';
 import type { MappingStatus } from '../../administrative/domain/mapping-status';
 
 export type ImportMode = 'dry_run' | 'create_drafts' | 'publish_approved' | 'update_existing';
@@ -1044,15 +1053,18 @@ export class PlaceImportJobService {
    * preview computed by a second, simpler rule is a preview that will
    * eventually disagree with what the import actually stores.
    *
+   * The sheet's `city` and `district` cells are **not** passed. They are not
+   * resolver inputs any more (ADR-0019 §7b) — `city` is the string an operator
+   * wrote to help Google find the place, and treating a search hint as a claim
+   * about which province the place is in is exactly how a wrong answer gets a
+   * confident `AUTO_MATCHED`.
+   *
    * Best-effort by design. A deployment with no published dataset still has to
    * be able to run an import — the rows land `UNMAPPED`, which already blocks
    * publication — so an absent dataset leaves the columns null rather than
    * failing the row.
    */
-  private async administrativePreview(
-    details: ResolvedProviderPlace,
-    normalized: NormalizedImportRow | null,
-  ): Promise<{
+  private async administrativePreview(details: ResolvedProviderPlace): Promise<{
     administrativeProvinceCode: string | null;
     administrativeCommuneCode: string | null;
     administrativeMappingStatus: MappingStatus | null;
@@ -1070,9 +1082,6 @@ export class PlaceImportJobService {
       // No place exists yet, so the row is what this answer is about.
       subjectId: details.providerPlaceId,
       geometry: { lng: details.lng, lat: details.lat },
-      // The sheet's own text, read as evidence exactly as it will be at commit.
-      city: normalized?.city ?? null,
-      district: normalized?.district ?? null,
     });
     return {
       administrativeProvinceCode: resolution.provinceCode,
@@ -1113,7 +1122,7 @@ export class PlaceImportJobService {
       // ADM-017 — which commune this row lands in, answered now rather than at
       // publish time. The review screen is the last point where an operator can
       // still act on it, and it was the one screen that could not see it.
-      ...(await this.administrativePreview(details, context?.normalized ?? null)),
+      ...(await this.administrativePreview(details)),
     };
 
     if (verdict.kind === 'IDENTITY_CONFLICT') {
@@ -1961,14 +1970,69 @@ export class PlaceImportJobService {
   ): Promise<Map<string, AdministrativeRowView>> {
     const views = new Map<string, AdministrativeRowView>();
     const dataset = await activeDataset(this.db);
-    const names = dataset
-      ? await unitNames(this.db, dataset.id, [
-          ...rows.map((r) => r.administrativeProvinceCode ?? ''),
-          ...rows.map((r) => r.administrativeCommuneCode ?? ''),
-        ])
-      : new Map<string, string>();
 
-    for (const row of rows) {
+    /**
+     * A row matched to an existing place is **about that place**, so it reports
+     * that place's stored mapping rather than a preview of the coordinate.
+     *
+     * Without this the two halves disagree in the one case that matters: a
+     * duplicate row pointing at a place a reviewer already verified would be
+     * previewed as `AUTO_MATCHED` and reported as blocked, while
+     * `settlePublication` — asking the same policy about the place — published
+     * it. The screen would have been describing a row the server no longer was.
+     */
+    const matchedIds = rows
+      .map((r) => r.matchedPlaceId)
+      .filter((id): id is string => id !== null && id !== undefined);
+    const matched = matchedIds.length
+      ? new Map(
+          (
+            await this.db
+              .select({
+                id: schema.places.id,
+                provinceCode: schema.places.provinceCode,
+                communeCode: schema.places.communeCode,
+                status: schema.places.administrativeMappingStatus,
+                datasetVersion: schema.places.administrativeDatasetVersion,
+              })
+              .from(schema.places)
+              .where(inArray(schema.places.id, [...new Set(matchedIds)]))
+          ).map((p) => [p.id, p] as const),
+        )
+      : new Map<string, never>();
+
+    const effective = (row: AdministrativeRowColumns): AdministrativeRowColumns => {
+      const place = row.matchedPlaceId ? matched.get(row.matchedPlaceId) : undefined;
+      return place
+        ? {
+            id: row.id,
+            matchedPlaceId: row.matchedPlaceId,
+            administrativeProvinceCode: place.provinceCode,
+            administrativeCommuneCode: place.communeCode,
+            administrativeMappingStatus: place.status,
+            administrativeDatasetVersion: place.datasetVersion,
+          }
+        : row;
+    };
+
+    const resolved = rows.map(effective);
+    const codes = [
+      ...resolved.map((r) => r.administrativeProvinceCode ?? ''),
+      ...resolved.map((r) => r.administrativeCommuneCode ?? ''),
+    ];
+    const names = dataset ? await unitNames(this.db, dataset.id, codes) : new Map<string, string>();
+    // The commune as the **active** dataset holds it, which is what the policy
+    // asks about: does it still exist, is it still current, is it still under
+    // the mapped province. One query for the page, not one per row.
+    const communes = dataset
+      ? await currentCommunes(
+          this.db,
+          dataset.id,
+          resolved.map((r) => r.administrativeCommuneCode).filter((c): c is string => c !== null),
+        )
+      : new Map<string, ActiveCommune>();
+
+    for (const row of resolved) {
       const status = row.administrativeMappingStatus;
       views.set(row.id, {
         provinceCode: row.administrativeProvinceCode,
@@ -1982,9 +2046,7 @@ export class PlaceImportJobService {
         status,
         datasetVersion: row.administrativeDatasetVersion,
         requiresReview: status === 'NEEDS_REVIEW',
-        // Always true for an import: only a moderator's VERIFIED permits
-        // publication, and no path here can write that.
-        blocksPublication: status !== null,
+        ...blockOf(row, dataset, communes),
       });
     }
     return views;
@@ -2092,6 +2154,8 @@ function sheetError(err: unknown): AppError {
 /** The stored preview columns `administrativeViews` reads. */
 type AdministrativeRowColumns = {
   id: string;
+  /** Set when the row is about a place the catalogue already holds. */
+  matchedPlaceId?: string | null | undefined;
   administrativeProvinceCode: string | null;
   administrativeCommuneCode: string | null;
   administrativeMappingStatus: MappingStatus | null;
@@ -2108,6 +2172,57 @@ type AdministrativeRowView = {
   datasetVersion: string | null;
   /** The resolver could not decide; a person has to. */
   requiresReview: boolean;
-  /** No import result is a verification, so this is true whenever a mapping exists. */
+  /**
+   * Whether this mapping stops the place being published, **from the shared
+   * approval policy** — the same `approvalBlock` the publish transaction runs.
+   *
+   * It was `status !== null`, which happened to give the right answer for every
+   * state an import can currently produce and gave it for the wrong reason: it
+   * asserted a property of the import rather than reading the policy. A row
+   * matching a place a reviewer had already verified would have been reported
+   * as blocked while the server went on to publish it.
+   */
   blocksPublication: boolean;
+  /** Why, in the policy's own closed vocabulary. Null when nothing blocks. */
+  approvalBlock: ApprovalBlock | null;
 };
+
+/**
+ * The policy, applied to one row's stored mapping.
+ *
+ * Preview and result run this over the same four columns, so they cannot
+ * disagree — and neither can disagree with `settlePublication`, which asks the
+ * same `approvalBlock` about the place those columns became.
+ */
+function blockOf(
+  row: AdministrativeRowColumns,
+  dataset: { combinedDatasetVersion: string } | null,
+  communes: Map<string, ActiveCommune>,
+): { blocksPublication: boolean; approvalBlock: ApprovalBlock | null } {
+  if (row.administrativeMappingStatus === null) {
+    // The row has not resolved yet. There is no mapping to judge, and calling
+    // that "blocked" would be reporting a decision nobody has made.
+    return { blocksPublication: false, approvalBlock: null };
+  }
+  if (!dataset) {
+    return {
+      blocksPublication: true,
+      approvalBlock: {
+        code: 'ADMINISTRATIVE_DATASET_UNAVAILABLE',
+        message:
+          'no administrative dataset is published, so no mapping can be validated against one',
+      },
+    };
+  }
+  const block = approvalBlock(
+    {
+      status: row.administrativeMappingStatus,
+      provinceCode: row.administrativeProvinceCode,
+      communeCode: row.administrativeCommuneCode,
+      datasetVersion: row.administrativeDatasetVersion,
+    },
+    dataset.combinedDatasetVersion,
+    row.administrativeCommuneCode ? (communes.get(row.administrativeCommuneCode) ?? null) : null,
+  );
+  return { blocksPublication: block !== null, approvalBlock: block };
+}

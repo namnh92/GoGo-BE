@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
+import type { ActiveCommune } from '../domain/approval-policy';
 import {
   validateCurrentPair,
   type UnitPairInput,
@@ -209,4 +210,42 @@ export async function unitNames(
     if (!names.has(key)) names.set(key, row.fullName);
   }
   return names;
+}
+
+/**
+ * The communes a batch of codes name **in the active dataset**, at their latest
+ * period, in the exact shape the approval policy asks for.
+ *
+ * Latest period, not the current one: `approvalBlock` needs to be able to say
+ * "this commune exists but is no longer current", and a lookup restricted to
+ * current units would hand it a null and report the unit as missing instead.
+ */
+export async function currentCommunes(
+  executor: Executor,
+  datasetVersionId: string,
+  codes: readonly string[],
+): Promise<Map<string, NonNullable<ActiveCommune>>> {
+  const distinct = [...new Set(codes.filter((code) => code.length > 0))];
+  const found = new Map<string, NonNullable<ActiveCommune>>();
+  if (distinct.length === 0) return found;
+
+  const rows = await (executor as Db)
+    .select({
+      code: schema.administrativeUnits.code,
+      parentCode: schema.administrativeUnits.parentCode,
+      status: schema.administrativeUnits.status,
+      effectiveTo: schema.administrativeUnits.effectiveTo,
+    })
+    .from(schema.administrativeUnits)
+    .where(
+      and(
+        eq(schema.administrativeUnits.datasetVersionId, datasetVersionId),
+        eq(schema.administrativeUnits.level, 'COMMUNE'),
+        inArray(schema.administrativeUnits.code, distinct),
+      ),
+    )
+    .orderBy(desc(schema.administrativeUnits.effectiveFrom));
+
+  for (const row of rows) if (!found.has(row.code)) found.set(row.code, row);
+  return found;
 }

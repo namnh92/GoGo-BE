@@ -6561,6 +6561,8 @@ export interface components {
          * @description ADM-017 — which of Vietnam's two current administrative levels a place falls in: a province/municipality and a ward/commune/special zone. The district tier was dissolved on 2025-07-01 and is not represented here at all; the legacy `city`/`district` cells of a spreadsheet are free text the resolver reads as evidence, not an identity.
          *
          *     Resolved from geometry against GoGo's pinned boundary release. No provider is asked — that is what makes these GoGo facts rather than provider content (ADR-0019 §10).
+         *
+         *     The sheet's own `city` and `district` cells play no part in it (ADR-0019 §7b). `city` is a provider **search hint** — the string an operator wrote to help Google find the place — and `district` names a tier dissolved on 2025-07-01. Both are still accepted and still stored; neither selects a code.
          */
         ImportAdministrativeIdentity: {
             provinceCode?: string | null;
@@ -6576,8 +6578,22 @@ export interface components {
             datasetVersion?: string | null;
             /** @description About the **mapping** rather than the place — the resolver could not decide, and a person has to. */
             requiresReview: boolean;
-            /** @description About **publication**. True whenever a mapping exists here, because no import result is a verification: only a moderator's `VERIFIED` permits publishing a place, and an import has no path that writes it. A screen that renders `AUTO_MATCHED` as "đã xác minh" is claiming something the server will refuse to act on. */
+            /**
+             * @description About **publication**, and read from the shared approval policy — the same `approvalBlock` the publish transaction runs — rather than asserted by the import.
+             *
+             *     In practice an import result almost always blocks: only a moderator's `VERIFIED` mapping that still holds against the active dataset permits publishing, and no import path writes `VERIFIED`. The one row that does not block is one matching an **existing** place a reviewer already verified. That case is why this is derived and not a constant: a hardcoded "a mapping exists, so it blocks" gave the right answer for the wrong reason and would have reported that row as blocked while the server went on to publish it.
+             *
+             *     False, with a null `approvalBlock`, while `status` is null — the row has not resolved, so there is no mapping to judge and calling it blocked would report a decision nobody has made.
+             *
+             *     A screen that renders `AUTO_MATCHED` as "đã xác minh" is claiming something the server will refuse to act on.
+             */
             blocksPublication: boolean;
+            /** @description Why this mapping does not permit publishing, in the policy's own closed vocabulary, or null. Preview and result compute it over the same four stored columns, so they cannot disagree with each other — and neither can disagree with `settlePublication`, which asks the same policy about the place those columns became. */
+            approvalBlock?: {
+                /** @enum {string} */
+                code: "ADMINISTRATIVE_DATASET_UNAVAILABLE" | "MAPPING_UNMAPPED" | "MAPPING_NOT_VERIFIED" | "MAPPING_REJECTED" | "MAPPING_STALE" | "MAPPING_INCOMPLETE" | "MAPPING_UNIT_NOT_CURRENT" | "MAPPING_HIERARCHY_INVALID";
+                message: string;
+            } | null;
         };
         ImportRow: {
             /** Format: uuid */
@@ -6600,6 +6616,8 @@ export interface components {
              * @description ADM-017 — the preview while the job is reviewable, and what was actually stored once the row is `imported`.
              *
              *     The two are produced by the same resolver over the same coordinate, which is what makes comparing them worth anything; a preview that agreed by construction would prove nothing. Null until the row has resolved against the provider, and on any deployment with no published administrative dataset.
+             *
+             *     A row matched to an existing place reports **that place's** stored mapping rather than a preview of the coordinate, because the row is about that place. It is the case where the distinction is load bearing: a duplicate row pointing at a place a reviewer already verified must not be reported as blocked while the publish step — asking the same policy about the same place — goes ahead.
              */
             administrative?: components["schemas"]["ImportAdministrativeIdentity"] | null;
             errors?: components["schemas"]["IngestMessage"][];

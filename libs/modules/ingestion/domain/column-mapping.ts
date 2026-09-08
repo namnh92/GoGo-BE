@@ -233,9 +233,19 @@ export function resolveMapping(
   }
 
   const covered = new Set(Object.values(mapping));
-  const missing = (['source_row_id', 'city', 'category'] as CanonicalField[]).filter(
-    (f) => !covered.has(f),
-  );
+  /**
+   * ADR-0019 §7b — `city` is a search hint, and a sheet that carries a Google
+   * Maps link column has no text search to narrow.
+   *
+   * Requiring it there said, in the one screen an operator reads before
+   * importing, that GoGo files places under a city. It does not: the
+   * administrative identity comes from the coordinate the link resolves to.
+   */
+  const linked = covered.has('google_maps_url') || covered.has('google_maps_query');
+  const required: CanonicalField[] = linked
+    ? ['source_row_id', 'category']
+    : ['source_row_id', 'city', 'category'];
+  const missing = required.filter((f) => !covered.has(f));
   return { mapping, unmapped, missing };
 }
 

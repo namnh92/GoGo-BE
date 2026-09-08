@@ -139,6 +139,7 @@ async function rowsOf(jobId: string, token: string) {
       datasetVersion: string | null;
       requiresReview: boolean;
       blocksPublication: boolean;
+      approvalBlock: { code: string; message: string } | null;
     } | null;
   }[];
 }
@@ -250,8 +251,10 @@ describe('a spreadsheet row says which commune it lands in, before it lands', ()
       status: 'AUTO_MATCHED',
       datasetVersion,
       requiresReview: false,
-      // The claim an import screen is most tempted to make, and must not.
+      // The claim an import screen is most tempted to make, and must not — and
+      // it is the shared policy saying so, in the policy's own words.
       blocksPublication: true,
+      approvalBlock: { code: 'MAPPING_NOT_VERIFIED' },
     });
     expect(preview.communeName).toBeTruthy();
 
@@ -273,6 +276,10 @@ describe('a spreadsheet row says which commune it lands in, before it lands', ()
       communeCode: preview.communeCode,
       status: preview.status,
       datasetVersion: preview.datasetVersion,
+      // Correction 3: preview and result report the same publication verdict,
+      // because both read the same policy over the same stored columns.
+      blocksPublication: preview.blocksPublication,
+      approvalBlock: preview.approvalBlock,
     });
 
     const [place] = await db
@@ -310,6 +317,8 @@ describe('a spreadsheet row says which commune it lands in, before it lands', ()
       // Nothing is claimed, so no version is stamped.
       datasetVersion: null,
       requiresReview: false,
+      blocksPublication: true,
+      approvalBlock: { code: 'MAPPING_UNMAPPED' },
     });
   }, 180_000);
 
@@ -377,6 +386,160 @@ describe('a spreadsheet row says which commune it lands in, before it lands', ()
       .where(eq(schema.places.name, 'Tiệm Bánh Mì Bà Tư'));
     expect(place!.communeCode).toBe(mapped.communeCode);
   }, 180_000);
+});
+
+describe('a sheet with a link needs no city (ADR-0019 §7b)', () => {
+  it('imports a row that carries a Google Maps link and no city at all', async () => {
+    const editor = await createAdmin('adm017-nocity@gogo.local', 'editor');
+    const ops = await createAdmin('adm017-nocity-ops@gogo.local', 'ops_admin');
+    places.seed({ providerPlaceId: 'adm017-nocity', name: 'Phở Gánh Hàng Chiếu', ...inside });
+
+    // No city cell, and no `defaultCity` either. The link names the place, so
+    // there is no text search to narrow — and the administrative identity comes
+    // from the coordinate the link resolves to, never from this column.
+    const body = multipart(
+      { mode: 'create_drafts' },
+      {
+        name: `adm017-nocity-${Math.random()}.csv`,
+        content: csv([
+          'NC-1,Phở Gánh Hàng Chiếu,,,https://www.google.com/maps?place_id=adm017-nocity,cafe,,,',
+        ]),
+      },
+    );
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(editor.token), ...body.headers },
+      payload: body.payload,
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const job = created.json();
+
+    // Not a blocking column, and not a per-row error.
+    expect(job.missingRequiredColumns ?? []).not.toContain('city');
+    expect(job.totals.failed).toBe(0);
+
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(job.id);
+
+    const rows = await rowsOf(job.id, editor.token);
+    expect(rows[0]!.status).toBe('ready');
+    expect(rows[0]!.administrative).toMatchObject({
+      provinceCode: mapped.provinceCode,
+      communeCode: mapped.communeCode,
+      status: 'AUTO_MATCHED',
+    });
+
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Phở Gánh Hàng Chiếu'));
+    expect(place!.communeCode).toBe(mapped.communeCode);
+  }, 180_000);
+
+  it('still asks for a city on a row with nothing to look the place up by', async () => {
+    // A row with no link and no query is a text search, and that is the one
+    // thing the city string is actually for.
+    const editor = await createAdmin('adm017-needscity@gogo.local', 'editor');
+    const body = multipart(
+      { mode: 'dry_run' },
+      {
+        name: `adm017-needscity-${Math.random()}.csv`,
+        content: Buffer.from(
+          ['source_row_id,name,city,category', 'NC-2,Quán Không Link,,cafe'].join('\n'),
+          'utf8',
+        ),
+      },
+    );
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(editor.token), ...body.headers },
+      payload: body.payload,
+    });
+    expect(created.statusCode, created.body).toBe(201);
+
+    const rows = await rowsOf(created.json().id as string, editor.token);
+    expect(rows[0]!.status).toBe('validation_failed');
+  }, 120_000);
+});
+
+describe('a row matching a verified place does not report itself blocked', () => {
+  it('reads the approval policy rather than asserting that a mapping blocks', async () => {
+    const editor = await createAdmin('adm017-verified@gogo.local', 'editor');
+    const moderator = await createAdmin('adm017-verified-mod@gogo.local', 'moderator');
+    places.seed({ providerPlaceId: 'adm017-dup', name: 'Cháo Sườn Ngõ Huyện', ...inside });
+
+    // Import it once so the catalogue holds it, then have a moderator verify
+    // the mapping the import produced.
+    const first = await runImport(editor.token, [
+      rowFor('V-1', 'Cháo Sườn Ngõ Huyện', 'https://www.google.com/maps?place_id=adm017-dup'),
+    ]);
+    const ops = await createAdmin('adm017-verified-ops@gogo.local', 'ops_admin');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${first.job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Cháo Sườn Ngõ Huyện'));
+    const verified = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/places/${place!.id}/administrative-mapping/verify`,
+      remoteAddress: ip(),
+      headers: auth(moderator.token),
+      payload: {
+        provinceCode: mapped.provinceCode,
+        communeCode: mapped.communeCode,
+        expectedUpdatedAt: place!.updatedAt.toISOString(),
+      },
+    });
+    expect(verified.statusCode, verified.body).toBe(201);
+
+    // Now import the same Google id again. The row matches the existing place,
+    // whose mapping a person verified and which still holds — the one case a
+    // bulk row may legitimately publish.
+    const second = await runImport(
+      editor.token,
+      [rowFor('V-2', 'Cháo Sườn Ngõ Huyện', 'https://www.google.com/maps?place_id=adm017-dup')],
+      'publish_approved',
+    );
+    const duplicate = second.rows[0]!;
+    expect(duplicate.status).toBe('duplicate');
+    expect(duplicate.matchedPlaceId).toBe(place!.id);
+
+    // The old `status !== null` rule would have called this blocked while the
+    // server went on to publish it.
+    const publish = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${second.job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(publish.statusCode).toBe(201);
+
+    const [after] = await db.select().from(schema.places).where(eq(schema.places.id, place!.id));
+    expect(after!.status).toBe('published');
+  }, 240_000);
 });
 
 describe('the Google-link create form opens on a real identity', () => {

@@ -115,7 +115,6 @@ export function validateRow(
 
   const name = raw.name?.trim() || null;
   const city = raw.city?.trim() || ctx.defaultCity?.trim() || null;
-  if (!city) errors.push(msg('CITY_REQUIRED', 'city', 'city là bắt buộc'));
 
   // A row must be resolvable: either a maps link or a name to search with.
   let googleMapsUrl: string | null = null;
@@ -134,6 +133,27 @@ export function validateRow(
       // Legacy sheets put a plain place name in the link column.
       googleMapsQuery = rawUrl;
     }
+  }
+
+  /**
+   * ADR-0019 §7b — `city` is a **search hint**, and a row that already names the
+   * place outright does not need one.
+   *
+   * It was required unconditionally, which read as though GoGo filed places
+   * under it. It does not: the administrative identity comes from the
+   * coordinate. What the string is actually for is narrowing a provider text
+   * search, so it is required exactly where a text search is what will happen —
+   * a row with no link and no explicit query — and not where the row carries a
+   * Google Maps link that names the place by id.
+   */
+  if (!city && !googleMapsUrl && !googleMapsQuery) {
+    errors.push(
+      msg(
+        'CITY_REQUIRED',
+        'city',
+        'city là bắt buộc khi dòng không có link Google Maps — nó là gợi ý để tìm địa điểm',
+      ),
+    );
   }
   // Anything the resolver can turn into a provider lookup: a link, an explicit
   // query, or a name it can search for.
