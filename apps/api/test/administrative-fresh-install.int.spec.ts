@@ -7,6 +7,8 @@ import { Pool } from 'pg';
 import type { INestApplication } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
+import type { MetricsRegistry } from '@gogo/observability';
+import { METRICS_REGISTRY } from '../src/metrics.tokens';
 import {
   AdministrativeBackfillService,
   AdministrativeBoundaryImportService,
@@ -54,6 +56,8 @@ let publication: AdministrativePublicationService;
 let resolver: AdministrativeResolverService;
 let telemetry: AdministrativeTelemetryService;
 let backfill: AdministrativeBackfillService;
+/** Captured before the install starts; asserted again after every step of it. */
+let metersAtStart: { google: number; upstash: number; ledger: number };
 
 /** What the ledger says was loaded, which is the only record of what a version name means. */
 async function ledger(version: string) {
@@ -93,16 +97,44 @@ async function insertPlace(over: Record<string, unknown> = {}) {
   return row!;
 }
 
+/** Every sample of one counter, summed. An absent metric reads as 0, not a skip. */
+function counterTotal(body: string, metric: string, where: (l: string) => boolean = () => true) {
+  return body
+    .split('\n')
+    .filter((line) => line.startsWith(`${metric}{`) || line.startsWith(`${metric} `))
+    .filter((line) => where(line))
+    .reduce((sum, line) => {
+      const value = /\s([-\d.e+]+)$/.exec(line.trim())?.[1];
+      return sum + (value ? Number(value) : 0);
+    }, 0);
+}
+
 /**
- * The provider meters, read straight from the tables the Cost Center bills from.
+ * The provider meters themselves, not the bill.
  *
- * Scraping /v1/metrics would only show this process's counters; the usage ledger
- * is what a spend question is actually answered from, and a write there is what
- * "the administrative surface called a provider" would look like.
+ * `provider_usage_daily` says what was persisted as billable, which is weaker
+ * evidence than it looks: a request that fails before the ledger flush, or one
+ * that escapes the collector, leaves that table empty and still happened. These
+ * counters increment at the adapter on every outcome, failures included, so they
+ * answer the question the ledger cannot — whether a provider was called at all.
+ *
+ * Both are asserted: the counters for calls, the ledger for cost.
  */
-async function providerUsage(): Promise<number> {
-  const result = await db.execute(sql`select count(*)::int as n from provider_usage_daily`);
-  return (result as unknown as { rows: { n: number }[] }).rows[0]!.n;
+async function providerMeters(): Promise<{ google: number; upstash: number; ledger: number }> {
+  // Rendered from the registry rather than scraped over HTTP. Reaching
+  // /v1/metrics needs METRICS_TOKEN, and setting that at module scope — the only
+  // point early enough for the config parse — leaked into other spec files
+  // sharing the worker and changed what they measured. The registry is the same
+  // numbers without the global.
+  const body = app.get<MetricsRegistry>(METRICS_REGISTRY).render();
+  const rows = await db.execute(sql`select count(*)::int as n from provider_usage_daily`);
+  return {
+    google:
+      counterTotal(body, 'places_provider_requests_total') +
+      counterTotal(body, 'places_provider_failures_total'),
+    upstash: counterTotal(body, 'provider_requests_total', (l) => l.includes('provider="upstash"')),
+    ledger: (rows as unknown as { rows: { n: number }[] }).rows[0]!.n,
+  };
 }
 
 async function placeSnapshot(): Promise<string> {
@@ -147,6 +179,9 @@ afterAll(async () => {
 
 describe('a fresh environment, in the order it actually happens', () => {
   it('refuses to import before any boundary release is loaded', async () => {
+    // The baseline every later step is measured against. Taken here, before a
+    // single byte of the install has run.
+    metersAtStart = await providerMeters();
     expect(await datasets()).toEqual([]);
 
     await expect(importer.importPinnedSnapshot()).rejects.toBeInstanceOf(
@@ -275,7 +310,7 @@ describe('a fresh environment, in the order it actually happens', () => {
     const point = await insidePoint('00004');
     await insertPlace({ geom: { x: point.lng, y: point.lat } });
 
-    const usageBefore = await providerUsage();
+    const metersBefore = await providerMeters();
     const placesBefore = await placeSnapshot();
 
     const result = await backfill.run();
@@ -290,7 +325,9 @@ describe('a fresh environment, in the order it actually happens', () => {
     expect(result.counters.written).toBe(0);
 
     expect(await placeSnapshot()).toBe(placesBefore);
-    expect(await providerUsage()).toBe(usageBefore);
+    // Calls, not just cost: a request that failed before the ledger flush would
+    // leave provider_usage_daily empty and still have been made.
+    expect(await providerMeters()).toEqual(metersBefore);
   });
 
   it('makes a different boundary release a different dataset, and rolls the old one back', async () => {
@@ -380,5 +417,19 @@ describe('a fresh environment, in the order it actually happens', () => {
     expect(rows.find((d) => d.status === 'PUBLISHED')!.boundarySourceVersion).toBe(
       BOUNDARY_VERSION,
     );
+  });
+
+  it('called no provider anywhere in the install', async () => {
+    // The whole flow, end to end: load, import, validate, publish, resolve,
+    // dry-run, a second release, a publication, a rollback and a refusal.
+    // ADR-0019 §10 says the administrative surface calls no provider, and this
+    // is the measurement of that claim rather than a restatement of it.
+    const now = await providerMeters();
+
+    expect(now.google).toBe(metersAtStart.google);
+    expect(now.upstash).toBe(metersAtStart.upstash);
+    // Cost evidence, kept alongside the call counters rather than instead of
+    // them: nothing billable was persisted either.
+    expect(now.ledger).toBe(metersAtStart.ledger);
   });
 });
