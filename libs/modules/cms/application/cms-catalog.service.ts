@@ -2,7 +2,9 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { METRICS, type MetricsPort } from '@gogo/observability';
+import type { ResolvedProviderPlace } from '@gogo/providers';
 import { PlaceDedupService } from '../../ingestion/application/place-dedup.service';
+import { PlaceResolverService } from '../../ingestion/application/place-resolver.service';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { AppError } from '../../shared/app-error';
 import { invalidateTravelOnMove } from '../../shared/place-relocation';
@@ -450,6 +452,14 @@ export class CmsCatalogService {
      * are all in there, and a second copy would be a second answer.
      */
     private readonly resolver: AdministrativeResolverService,
+    /**
+     * PI-BE-021 — the one Details fetch a place created from a link is worth.
+     *
+     * Injected rather than reimplemented for the third time: `resolveByProviderId`
+     * already carries the tier decision, the operational-vs-answered error split
+     * (#279) and the request counters the cost dashboards read.
+     */
+    private readonly providerResolver: PlaceResolverService,
     @Optional()
     @Inject(APP_CONFIG)
     private readonly config?: ProvenanceConfig & Partial<MediaConfig>,
@@ -923,6 +933,30 @@ export class CmsCatalogService {
     };
     const codesAsserted = codes.provinceCode !== null || codes.communeCode !== null;
 
+    /**
+     * PI-BE-021 — the provider facts, fetched **before** the transaction opens.
+     *
+     * A place created from a link used to store its Google id and nothing else,
+     * so `GET /cms/places/{id}` came back with no rating, no review count, no
+     * opening hours and no canonical Google link — the exact facts the editor
+     * had just been shown in the preview, missing from the row that preview
+     * created.
+     *
+     * They are fetched here rather than carried from the resolve because
+     * ADR-0006 §9.5 forbids the server holding provider content across
+     * requests: there is no snapshot to replay, deliberately. This is the same
+     * argument, and the same code path, as `createDraftFromSubmission` — the
+     * approve step re-verifies for the identical reason.
+     *
+     * Outside the transaction so that a slow or unreachable provider cannot
+     * hold a write lock on `places` open, and `null` on failure so that Google
+     * being down costs the editor the enrichment rather than the whole form.
+     */
+    const provider =
+      input.googlePlaceId === undefined
+        ? null
+        : await this.providerSnapshot(input.googlePlaceId, input.areaKey ?? null);
+
     let mappingWrite: PersistResult | null = null;
     const created = await this.db.transaction(async (tx) => {
       /**
@@ -964,8 +998,55 @@ export class CmsCatalogService {
           ...(input.suitability !== undefined ? { suitability: input.suitability } : {}),
           ...(input.isLodging !== undefined ? { isLodging: input.isLodging } : {}),
           ...(input.curatedRank !== undefined ? { curatedRank: input.curatedRank } : {}),
+          /**
+           * PI-BE-021 — provider aggregates, written as the provider's own
+           * figures and nothing else.
+           *
+           * `places.rating` has always meant "the provider's rating"; the
+           * console renders it beside GoGo's own and never averages the two
+           * (FR-INGEST-006). Storing it here does not make it a GoGo fact —
+           * `GOGO_PRODUCT_DATA_ARCHITECTURE.md` is explicit that copying never
+           * transfers ownership — and nothing in the recommendation pipeline
+           * reads it as one. See `docs/adr/0020-*`.
+           *
+           * An editor cannot type these: they come from the provider answer
+           * this request made, not from the request body, so there is no path
+           * by which a person's number is stored wearing Google's attribution.
+           */
+          ...(provider
+            ? {
+                rating:
+                  provider.details.rating !== null ? provider.details.rating.toFixed(2) : null,
+                ratingCount: provider.details.ratingCount,
+                priceLevel: provider.details.priceLevel,
+                freshnessCheckedAt: new Date(),
+              }
+            : {}),
         })
         .returning();
+
+      /**
+       * PI-BE-021 — the week, in GoGo's representation.
+       *
+       * `entry_kind` is left at its `interval` default: the adapter only ever
+       * produces spans, and inventing `closed` for a day Google did not
+       * mention would assert a fact nobody supplied. A day with no period
+       * simply has no row, which is what "unknown is the absence of a row"
+       * means on this table.
+       */
+      if (provider && provider.details.hours.length > 0) {
+        await tx.insert(schema.placeHours).values(
+          provider.details.hours.map((h) => ({
+            placeId: place!.id,
+            dayOfWeek: h.dayOfWeek,
+            openMinute: h.openMinute,
+            closeMinute: h.closeMinute,
+            isOvernight: h.isOvernight,
+            source: 'provider' as const,
+            verifiedAt: new Date(),
+          })),
+        );
+      }
 
       if (input.taxonomyIds && input.taxonomyIds.length > 0) {
         await tx
@@ -1049,17 +1130,102 @@ export class CmsCatalogService {
     // has committed.
     if (mappingWrite) this.resolver.countPersist(mappingWrite);
 
+    /**
+     * PI-BE-021 — the canonical Google link, the aggregates and the fetch tier,
+     * on the row that owns provider provenance.
+     *
+     * After the transaction, not inside it: `upsertProviderSource` writes
+     * through the pool and keys on `(provider, external_id)`, so running it in
+     * the transaction would either need a second executor or a signature change
+     * across every caller. A failure here leaves a place that holds its Google
+     * identity (`place_sources`, written in the transaction) without the
+     * provider snapshot — which is exactly the state every place created before
+     * this change is in, and the refresh job repairs it.
+     *
+     * `provider_uri` is what makes Place Detail able to open the place in
+     * Google Maps: it is the URI Google published, never the short link the
+     * editor pasted.
+     */
+    if (provider) {
+      await this.dedup.upsertProviderSource({
+        placeId: created.id,
+        details: provider.details,
+        derivedScore: provider.score,
+        fetchTier: provider.details.fetchTier,
+      });
+    }
+
     await this.audit(adminId, 'place.created', created.id, {
       name: created.name,
       status: created.status,
       claimedFields: claimed,
       allowDuplicate: input.allowDuplicate === true,
       ...(input.googlePlaceId !== undefined
-        ? { googlePlaceId: input.googlePlaceId, googleDerivedFields: [...derived] }
+        ? {
+            googlePlaceId: input.googlePlaceId,
+            googleDerivedFields: [...derived],
+            // Whether the row carries provider facts, and why not when it does
+            // not. An audit line that only said "created from a link" could not
+            // tell a missing rating from a provider outage.
+            providerSnapshot: provider ? 'applied' : 'absent',
+          }
         : {}),
     });
 
     return this.getPlace(created.id);
+  }
+
+  /**
+   * PI-BE-021 — one `quality` Details call for a place being created from a
+   * link, or `null` and a reason.
+   *
+   * `quality` because that is the tier whose mask carries the fields this
+   * write needs — `rating`, `userRatingCount`, `regularOpeningHours`,
+   * `priceLevel` — and because it is the tier the preview the editor just saw
+   * was fetched at. Asking for `core` here would store a place whose rating
+   * the console had already shown and the row does not have.
+   *
+   * **Nothing throws.** Three failures are possible and all of them mean the
+   * same thing to the editor: the place is created, without provider facts.
+   *
+   *   - the provider is down, misconfigured or out of quota — losing a
+   *     completed form to Google's availability is a worse answer than a row
+   *     that the refresh job will fill in later;
+   *   - Google has never heard of the id;
+   *   - Google answered about a *different* id, because the place moved or was
+   *     merged (#334). That answer describes a different Place ID than the one
+   *     `place_sources` is about to store, and writing it would file one
+   *     place's rating under another's identity. It is dropped and counted;
+   *     `PlaceRefreshService` owns relocation.
+   *
+   * Each outcome is counted separately, because "no rating on this place" and
+   * "Google was unreachable for an hour" look identical in the data and are
+   * not the same operational fact.
+   */
+  private async providerSnapshot(
+    googlePlaceId: string,
+    areaKey: string | null,
+  ): Promise<{ details: ResolvedProviderPlace; score: number } | null> {
+    const count = (result: string) =>
+      this.metrics?.increment('cms_place_create_provider_enrichment_total', { result });
+    let outcome;
+    try {
+      outcome = await this.providerResolver.resolveByProviderId(googlePlaceId, 'quality');
+    } catch {
+      count('unavailable');
+      return null;
+    }
+    if (outcome.status !== 'RESOLVED') {
+      count(outcome.status === 'UNRESOLVED' ? 'not_found' : 'undecided');
+      return null;
+    }
+    if (outcome.details.providerPlaceId !== googlePlaceId) {
+      count('moved');
+      return null;
+    }
+    const score = await this.providerResolver.scoreFor(outcome.details, areaKey, null);
+    count('applied');
+    return { details: outcome.details, score };
   }
 
   /**

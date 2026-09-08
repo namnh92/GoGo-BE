@@ -125,6 +125,14 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // never a place id. `unconfigured` climbing means a deployment lost its
   // secret and is quietly paying for the second Details call again.
   place_resolution_attestation_total: ['result'],
+  // PI-BE-021 — what happened to the one Details call a place created from a
+  // link is worth. `result` is a closed set of five: `applied`, `unavailable`
+  // (provider down, misconfigured or out of quota), `not_found`, `undecided`
+  // (an outcome the resolver would not commit to) and `moved` (Google answered
+  // about a different Place ID, so the facts describe another place and are
+  // dropped). Without the split, "this place has no rating" and "Google was
+  // unreachable for an hour" look identical in the data.
+  cms_place_create_provider_enrichment_total: ['result'],
 
   // --- submissions ---------------------------------------------------------
   mobile_place_submissions_total: ['status'],

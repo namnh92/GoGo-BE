@@ -2622,7 +2622,11 @@ export interface paths {
          *
          *     **Provenance.** A value the editor typed is recorded `editorial`, including one they read off a preview and retyped — copying does not transfer ownership (GOGO_PRODUCT_DATA_ARCHITECTURE.md). A value *applied* from `cmsResolvePlaceLink` and left alone is recorded `google_derived` with the Google Place ID as its reference, and `googleDerivedFields` says which. Coordinates carry provenance too, under the field name `geom`.
          *
-         *     No provider content is created, fetched or stored here: this endpoint makes no provider call at all, and the only Google-owned value it accepts is the Place ID, which is an identifier rather than content.
+         *     **Provider facts (PI-BE-021).** Given a `googlePlaceId`, this endpoint makes exactly one `quality` Place Details call and stores what it returns as the *provider's* facts: `ratings.provider`, `priceLevel`, the weekly `hours` at `source: provider`, and the canonical `googleMapsUri` on the place's Google source row. They are attributed to the provider, never presented as GoGo-owned, and never read as recommendation input (`docs/adr/0020-provider-facts-on-editor-created-places.md`).
+         *
+         *     The call is made here rather than replaying the preview because a preview's content may not be carried across requests (ADR-0006 §9.5) — the same reason the submission approve step re-verifies. The request body accepts none of these values: they come from the provider answer, so an editor cannot store their own number wearing Google's attribution.
+         *
+         *     A provider that is unreachable, out of quota, does not know the id, or answers about a *different* id (a place that moved) costs the enrichment, not the place: the row is created with its Google identity and no provider facts, exactly as every place created before this change. The outcome is counted as `cms_place_create_provider_enrichment_total`.
          *
          *     **Identity beats similarity.** Given a `googlePlaceId`, the catalogue is asked first whether that Google record already belongs to a place — it does, and the answer is `409 PLACE_ALREADY_LINKED` naming it; two places already claim it, and the answer is `409 PLACE_IDENTITY_CONFLICT` naming both. `allowDuplicate` does not open this gate: two GoGo places may share a name and a street corner, but never one Google record.
          *
@@ -6425,6 +6429,29 @@ export interface components {
                 /** Format: date-time */
                 fetchedAt?: string;
                 attributions?: string[];
+                /**
+                 * @description PI-BE-021 — the provider's own canonical link to the place.
+                 *
+                 *     Not the URL that was submitted. A `maps.app.goo.gl` share link resolves *to* this value and never replaces it, so a client that stores or renders "the Google link" must use this one.
+                 *
+                 *     Absent (rather than null) on an answer built from a stored row without a live provider fetch: absent means this request did not look, `null` means the provider published none.
+                 */
+                googleMapsUri?: string | null;
+                /** @description 0–4, as the provider grades it. */
+                priceLevel?: number | null;
+                /** @description The provider's own primary category token. */
+                primaryType?: string | null;
+                /** @description Every type the provider assigns, `primaryType` included. Order is not meaningful — read `categoryKey` rather than position. */
+                types?: string[];
+                /** @description The GoGo category the provider's types imply, already checked against the live taxonomy. `null` when the provider described the place in terms GoGo has no category for — an ordinary answer, not a failure. Resolve it to a taxonomy id before saving. */
+                categoryKey?: string | null;
+                /** @description The weekly hours the provider publishes, in GoGo's own representation — the same shape `PlaceHours` uses. An empty array means the provider published none; it never means "closed". */
+                openingHours?: {
+                    dayOfWeek: number;
+                    openMinute: number;
+                    closeMinute: number;
+                    isOvernight: boolean;
+                }[];
             };
             candidates?: {
                 googlePlaceId?: string;
