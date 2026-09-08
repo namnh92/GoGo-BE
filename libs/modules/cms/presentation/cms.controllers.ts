@@ -10,6 +10,7 @@ import {
   CloudflareAccessService,
 } from '../application/cf-access.service';
 import {
+  ADMINISTRATIVE_STATES,
   CmsCatalogService,
   GOOGLE_DERIVABLE_FIELDS,
   PLACE_SORTS,
@@ -799,6 +800,11 @@ const mergeSchema = z.object({ duplicateId: z.string().uuid() });
 
 /** BE-IMP-001 — server-side filter/sort/paginate for the CMS place table. */
 const placeListQuery = z.object({
+  /**
+   * ADM-018 — absent no longer means "everything". An archived place is the
+   * closest thing this schema has to a deleted one, and it is excluded unless
+   * this asks for it by name.
+   */
   status: z
     .enum(['draft', 'community_submitted', 'review', 'published', 'suspended', 'archived'])
     .optional(),
@@ -808,11 +814,32 @@ const placeListQuery = z.object({
   source: z.enum(PLACE_SOURCES).optional(),
   /** Places whose freshness was last checked before N days ago (or never). */
   staleDays: z.coerce.number().int().min(0).max(3650).optional(),
+  /**
+   * ADM-018 — the canonical address, as codes. `communeCode` needs the province
+   * it belongs to: the pair is validated against the published dataset, so two
+   * codes that do not belong together are refused rather than answered with an
+   * empty page.
+   */
+  provinceCode: ADMINISTRATIVE_CODE.optional(),
+  communeCode: ADMINISTRATIVE_CODE.optional(),
+  administrativeState: z.enum(ADMINISTRATIVE_STATES).optional(),
   sort: z.enum(PLACE_SORTS).default('updated_at'),
   direction: z.enum(['asc', 'desc']).default('desc'),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().max(512).optional(),
 });
+
+/** ADM-018 — the hierarchy counts, over the same filters as the list above. */
+const administrativeSummaryQuery = placeListQuery
+  .pick({
+    status: true,
+    q: true,
+    areaKey: true,
+    category: true,
+    source: true,
+    staleDays: true,
+  })
+  .extend({ provinceCode: ADMINISTRATIVE_CODE.optional() });
 
 @RequireRole('editor')
 @Controller('cms/places')
@@ -866,6 +893,34 @@ export class CmsCatalogController {
     @Body(new ZodValidationPipe(placeCreateSchema)) body: z.infer<typeof placeCreateSchema>,
   ) {
     return this.catalog.createPlace(actor.id, body);
+  }
+
+  /**
+   * ADM-018 — how many places sit under each current administrative unit.
+   *
+   * One level per call: provinces, or the communes of the province named. The
+   * console renders one of those at a time, and the alternative — the whole
+   * tree — is 3,321 communes to draw 34 rows.
+   *
+   * Every count here is reproducible through `GET /cms/places` with the same
+   * filters plus `provinceCode`/`communeCode` and `administrativeState`, which
+   * is the property that makes a number on screen something an editor can
+   * click through and check. Free-text `city`, `district`, `addressText` and
+   * the curated `areaKey` have no bearing on it: grouping reads the canonical
+   * codes and nothing else.
+   */
+  @Get('administrative-summary')
+  administrativeSummary(
+    @Query(new ZodValidationPipe(administrativeSummaryQuery))
+    query: z.infer<typeof administrativeSummaryQuery>,
+  ) {
+    const { staleDays, ...rest } = query;
+    return this.catalog.administrativeSummary({
+      ...rest,
+      ...(staleDays !== undefined
+        ? { staleBefore: new Date(Date.now() - staleDays * 86_400_000) }
+        : {}),
+    });
   }
 
   @Get('stale')

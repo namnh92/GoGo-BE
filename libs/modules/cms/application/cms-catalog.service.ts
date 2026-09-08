@@ -21,7 +21,9 @@ import {
 import {
   activeDataset,
   assertCurrentPair,
+  currentUnit,
   requireActiveDataset,
+  unitNames,
   type DatasetRef,
   type Executor,
 } from '../../administrative/application/unit-lookup';
@@ -219,13 +221,39 @@ const SORTABLE: Record<PlaceSort, { column: SQL; nullable: boolean; cast: SQL }>
   confidence: { column: sql`p.confidence`, nullable: false, cast: sql`::numeric` },
 };
 
-export type PlaceListQuery = {
+/**
+ * ADM-018 — which side of the canonical hierarchy a place sits on.
+ *
+ * `grouped` is a place that can honestly appear under a province and a
+ * commune; `review` is everything else. There is no third value, because a
+ * place is either placeable in the current hierarchy or it is not, and the
+ * reason it is not belongs in the summary's breakdown rather than in a filter
+ * the console would have to enumerate.
+ */
+export const ADMINISTRATIVE_STATES = ['grouped', 'review'] as const;
+export type AdministrativeState = (typeof ADMINISTRATIVE_STATES)[number];
+
+/**
+ * ADM-018 — the predicates `GET /cms/places` and the hierarchy counts share.
+ *
+ * One type, because a count that does not reconcile with the list it claims to
+ * describe is worse than no count: an editor who clicks "Phường Bến Thành · 10"
+ * and gets eight rows has been told something false about the catalogue. The
+ * two callers build their SQL from the same function, so they cannot drift.
+ */
+export type PlaceFilter = {
   status?: PlaceStatus | undefined;
   q?: string | undefined;
   areaKey?: string | undefined;
   category?: string | undefined;
   source?: PlaceSource | undefined;
   staleBefore?: Date | undefined;
+  provinceCode?: string | undefined;
+  communeCode?: string | undefined;
+  administrativeState?: AdministrativeState | undefined;
+};
+
+export type PlaceListQuery = PlaceFilter & {
   sort: PlaceSort;
   direction: 'asc' | 'desc';
   limit: number;
@@ -242,9 +270,128 @@ export type PlaceListItem = {
   freshnessCheckedAt?: string | undefined;
   createdAt: string;
   updatedAt: string;
+  /**
+   * ADM-018 — the canonical address as stored, so the list, the detail and the
+   * forms all name a place's province and commune the same way. Names travel
+   * beside the codes because a row showing `79` tells an editor nothing.
+   */
+  provinceCode?: string | undefined;
+  provinceName?: string | undefined;
+  communeCode?: string | undefined;
+  communeName?: string | undefined;
+  administrativeMappingStatus: MappingStatus;
 };
 
 export type PlaceListPage = { items: PlaceListItem[]; nextCursor: string | null };
+
+/**
+ * ADM-018 — one level of the canonical hierarchy, with its counts.
+ *
+ * `totals.grouped + totals.review` is every place the filters select, and each
+ * half maps to a real list query: `administrativeState=grouped` and
+ * `administrativeState=review` with the same filters. That is the property
+ * that makes a number on screen something an editor can click through to and
+ * check, rather than something they have to believe.
+ */
+export type AdministrativeSummary = {
+  /** The dataset the codes and names were read from. Null: none published. */
+  datasetVersion: string | null;
+  level: 'province' | 'commune';
+  /** The province whose communes these are; null at province level. */
+  province: { code: string; name: string } | null;
+  units: {
+    code: string;
+    /** Null when the dataset has no name for a stored code — never invented. */
+    name: string | null;
+    placeCount: number;
+    /**
+     * Places filed against this province whose mapping cannot enter the
+     * hierarchy. A **subset** of `totals.review`, never part of `placeCount`,
+     * and null on a commune row — a place under review has no commune anyone
+     * should trust it under.
+     */
+    reviewCount: number | null;
+  }[];
+  totals: { grouped: number; review: number };
+  review: {
+    byStatus: {
+      UNMAPPED: number;
+      NEEDS_REVIEW: number;
+      REJECTED: number;
+      STALE: number;
+      /**
+       * `AUTO_MATCHED` or `VERIFIED`, but against a commune that is no longer
+       * current or no longer sits under the stored province. The status alone
+       * cannot say this, and reporting it as `AUTO_MATCHED` would claim the
+       * mapping is fine while the place is uncountable.
+       */
+      INVALID_HIERARCHY: number;
+    };
+  };
+};
+
+/**
+ * ADM-018 — a place that may appear beneath a province and a commune.
+ *
+ * Four conditions, and every one of them has to hold at read time rather than
+ * at write time. A mapping is a claim about a dataset, and the dataset moves:
+ * a commune is dissolved, a code is reassigned to a unit under a different
+ * province, a place is rejected by a reviewer. A row that was groupable last
+ * month is not therefore groupable now, and counting it as if it were is how a
+ * console shows a province total nobody can reproduce.
+ *
+ *   1. both codes present — a province without a commune is not an address,
+ *      and a commune without its province has no hierarchy to be checked in;
+ *   2. the commune is current in the active dataset;
+ *   3. its parent is the province the place stores — two codes that are each
+ *      valid and do not belong together are worse than one missing code;
+ *   4. the mapping is `AUTO_MATCHED` or `VERIFIED`. `NEEDS_REVIEW` means the
+ *      evidence disagreed with itself, `STALE` means the dataset moved under
+ *      it, `REJECTED` means a person said no. None of those is a location.
+ *
+ * `AUTO_MATCHED` groups but still does not publish: `approvalBlock` is
+ * untouched and a machine's answer is still not a moderator's.
+ */
+function groupablePredicate(datasetVersionId: string): SQL {
+  return sql`(
+    p.administrative_mapping_status in ('AUTO_MATCHED', 'VERIFIED')
+    and p.province_code is not null
+    and p.commune_code is not null
+    and exists (
+      select 1 from administrative_units c
+      where c.dataset_version_id = ${datasetVersionId}::uuid
+        and c.level = 'COMMUNE' and c.status = 'ACTIVE' and c.effective_to is null
+        and c.code = p.commune_code and c.parent_code = p.province_code
+    )
+    and exists (
+      select 1 from administrative_units pr
+      where pr.dataset_version_id = ${datasetVersionId}::uuid
+        and pr.level = 'PROVINCE' and pr.status = 'ACTIVE' and pr.effective_to is null
+        and pr.code = p.province_code
+    )
+  )`;
+}
+
+/**
+ * The stored province code, but only where it names a province that exists now.
+ *
+ * This is what lets a review bucket be reported under a province without
+ * pretending the mapping is usable: a place whose commune is `NEEDS_REVIEW`
+ * but whose province is a real current unit can be shown to the person who
+ * looks after that province. A code that names nothing current cannot, and
+ * those stay in the global bucket.
+ */
+function attributableProvincePredicate(datasetVersionId: string): SQL {
+  return sql`(
+    p.province_code is not null
+    and exists (
+      select 1 from administrative_units pr
+      where pr.dataset_version_id = ${datasetVersionId}::uuid
+        and pr.level = 'PROVINCE' and pr.status = 'ACTIVE' and pr.effective_to is null
+        and pr.code = p.province_code
+    )
+  )`;
+}
 
 /**
  * Driver rows for the detail read. `db.execute` returns whatever the parser
@@ -357,6 +504,9 @@ type PlaceListRow = {
   area_key: string | null;
   rating: string | null;
   confidence: string;
+  province_code: string | null;
+  commune_code: string | null;
+  administrative_mapping_status: MappingStatus;
   // `db.execute` returns driver rows: timestamps may arrive as Date or as the
   // raw string, depending on the parser in play. Normalize instead of assuming.
   freshness_checked_at: Date | string | null;
@@ -511,33 +661,34 @@ export class CmsCatalogService {
     if (nullable) throw new Error(`sort column ${query.sort} must be NOT NULL for keyset paging`);
     const descending = query.direction === 'desc';
 
-    const where: SQL[] = [];
-    if (query.status) where.push(sql`p.status = ${query.status}`);
-    if (query.areaKey) where.push(sql`p.area_key = ${query.areaKey}`);
+    const dataset = await activeDataset(this.db);
 
-    if (query.q) {
-      // Already lower/unaccented on both sides, so LIKE is enough — and it is
-      // what `places_name_trgm_idx` (gin_trgm_ops) can actually serve.
-      const needle = `%${normalizeVietnamese(query.q)}%`;
-      where.push(sql`p.name_normalized like ${needle}`);
+    /**
+     * ADM-018 — a commune filter is checked against the province it was sent
+     * with, before a row is read.
+     *
+     * Two codes that are each real and do not belong together return nothing,
+     * and nothing is indistinguishable from "this commune is empty". The
+     * refusal names the field, so the console can point at the box rather than
+     * leave an editor staring at an empty table wondering which half is wrong.
+     */
+    if (query.communeCode) {
+      if (!query.provinceCode) {
+        throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', [
+          {
+            field: 'provinceCode',
+            code: 'required',
+            message: 'bắt buộc khi lọc theo phường/xã',
+          },
+        ]);
+      }
+      await assertCurrentPair(this.db, await requireActiveDataset(this.db), {
+        provinceCode: query.provinceCode,
+        communeCode: query.communeCode,
+      });
     }
 
-    if (query.category) {
-      where.push(sql`exists (
-        select 1 from place_taxonomies pt
-        join taxonomies t on t.id = pt.taxonomy_id
-        where pt.place_id = p.id and t.kind = 'category' and t.key = ${query.category}
-      )`);
-    }
-
-    if (query.source) where.push(sourcePredicate(query.source));
-
-    if (query.staleBefore) {
-      // Never checked counts as stale — that is the case an editor most wants.
-      where.push(
-        sql`(p.freshness_checked_at is null or p.freshness_checked_at < ${query.staleBefore})`,
-      );
-    }
+    const where = this.placePredicates(query, dataset);
 
     if (query.cursor) {
       const { value, id } = decodePlaceCursor(query.cursor);
@@ -555,6 +706,7 @@ export class CmsCatalogService {
     // limit + 1 so `nextCursor` means "there is more", not "maybe more".
     const rows = await this.db.execute(sql`
       select p.id, p.name, p.status, p.area_key, p.rating, p.confidence,
+             p.province_code, p.commune_code, p.administrative_mapping_status,
              p.freshness_checked_at, p.created_at, p.updated_at,
              ${column} as sort_value
       from places p
@@ -567,6 +719,21 @@ export class CmsCatalogService {
     const items = page.slice(0, query.limit);
     const last = items[items.length - 1];
 
+    /**
+     * ADM-018 — one lookup for the whole page, not one per row.
+     *
+     * A list of fifty places spans a handful of distinct units, so this is a
+     * single indexed query over at most a hundred codes. Resolving a name per
+     * row would be the N+1 the list endpoint was built to avoid.
+     */
+    const names = dataset
+      ? await unitNames(
+          this.db,
+          dataset.id,
+          items.flatMap((p) => [p.province_code ?? '', p.commune_code ?? '']),
+        )
+      : new Map<string, string>();
+
     return {
       items: items.map((p) => ({
         id: p.id,
@@ -578,9 +745,290 @@ export class CmsCatalogService {
         freshnessCheckedAt: toIso(p.freshness_checked_at),
         createdAt: toIso(p.created_at)!,
         updatedAt: toIso(p.updated_at)!,
+        provinceCode: p.province_code ?? undefined,
+        provinceName: p.province_code
+          ? (names.get(`PROVINCE:${p.province_code}`) ?? undefined)
+          : undefined,
+        communeCode: p.commune_code ?? undefined,
+        communeName: p.commune_code
+          ? (names.get(`COMMUNE:${p.commune_code}`) ?? undefined)
+          : undefined,
+        administrativeMappingStatus: p.administrative_mapping_status,
       })),
       nextCursor:
         page.length > query.limit && last ? encodePlaceCursor(last.sort_value, last.id) : null,
+    };
+  }
+
+  /**
+   * ADM-018 — every `where` clause the list and the counts agree on.
+   *
+   * Two things here are new rather than moved.
+   *
+   * **Archived is excluded unless it is asked for.** The list had no default
+   * status filter at all, so an archived place — including the fourteen the DEV
+   * smoke left behind — appeared in the ordinary catalogue and in anything that
+   * counted it. "Archived" is the closest thing this schema has to a soft
+   * delete; a deleted place inflating a commune's total is exactly the count
+   * nobody can reconcile. Asking for `status=archived` still returns them,
+   * which is the one place they belong.
+   *
+   * **The administrative filters mean the canonical codes and only those.**
+   * `city`, `district`, `address_text` and `area_key` are free text or a
+   * curated bucket; none of them is an administrative claim, and none of them
+   * may move a place between provinces. `provinceCode`/`communeCode` compare
+   * stored codes, and `administrativeState` decides whether the place also has
+   * to be placeable in the current hierarchy.
+   */
+  private placePredicates(filter: PlaceFilter, dataset: DatasetRef | null): SQL[] {
+    const where: SQL[] = [];
+
+    if (filter.status) where.push(sql`p.status = ${filter.status}`);
+    else where.push(sql`p.status <> 'archived'`);
+
+    if (filter.areaKey) where.push(sql`p.area_key = ${filter.areaKey}`);
+
+    if (filter.q) {
+      // Already lower/unaccented on both sides, so LIKE is enough — and it is
+      // what `places_name_trgm_idx` (gin_trgm_ops) can actually serve.
+      const needle = `%${normalizeVietnamese(filter.q)}%`;
+      where.push(sql`p.name_normalized like ${needle}`);
+    }
+
+    if (filter.category) {
+      where.push(sql`exists (
+        select 1 from place_taxonomies pt
+        join taxonomies t on t.id = pt.taxonomy_id
+        where pt.place_id = p.id and t.kind = 'category' and t.key = ${filter.category}
+      )`);
+    }
+
+    if (filter.source) where.push(sourcePredicate(filter.source));
+
+    if (filter.staleBefore) {
+      // Never checked counts as stale — that is the case an editor most wants.
+      where.push(
+        sql`(p.freshness_checked_at is null or p.freshness_checked_at < ${filter.staleBefore})`,
+      );
+    }
+
+    if (filter.provinceCode) where.push(sql`p.province_code = ${filter.provinceCode}`);
+    if (filter.communeCode) where.push(sql`p.commune_code = ${filter.communeCode}`);
+
+    if (filter.administrativeState) {
+      if (!dataset) {
+        /**
+         * No published dataset means nothing can be checked against one, so
+         * nothing is groupable — and saying "no places" to a `grouped` filter
+         * is the truthful answer rather than an error. `review` is then every
+         * place, which is also true: none of them has a hierarchy that can be
+         * verified.
+         */
+        if (filter.administrativeState === 'grouped') where.push(sql`false`);
+      } else {
+        const groupable = groupablePredicate(dataset.id);
+        where.push(filter.administrativeState === 'grouped' ? groupable : sql`not ${groupable}`);
+      }
+    }
+
+    return where;
+  }
+
+  /**
+   * ADM-018 — the canonical Province → Commune hierarchy, with the number of
+   * places under each unit.
+   *
+   * One level per call, because that is how it is read: the console shows
+   * provinces, an editor opens one, and the communes of that province arrive.
+   * Returning the whole tree would be 34 provinces and 3,321 communes to render
+   * a screen that shows one of them.
+   *
+   * Only units that hold at least one place are listed. The catalogue's
+   * hierarchy is what this describes, not the country's — the dataset screen is
+   * where every unit lives, and a page of provinces reading `0` would bury the
+   * three that matter.
+   *
+   * Counting rules, all of which the tests pin:
+   *
+   *   - a place is counted **once**, under exactly one commune, and only when
+   *     it is groupable (see `groupablePredicate`);
+   *   - a province's total is the sum of its communes' totals, because both
+   *     come from the same predicate over the same rows;
+   *   - everything else is `review`, split by why. A review row whose stored
+   *     province is a current unit is reported against that province as well,
+   *     which is a **subset** of `review.total` and never added to `placeCount`;
+   *   - archived places are outside all of it unless `status=archived` asked
+   *     for them, and every other filter applies exactly as it does to the list.
+   *
+   * Two queries per level and no N+1: one `group by` over `places`, and one
+   * batched name lookup for the codes that came back.
+   */
+  async administrativeSummary(
+    filter: PlaceFilter & { provinceCode?: string | undefined },
+  ): Promise<AdministrativeSummary> {
+    const dataset = await activeDataset(this.db);
+
+    /**
+     * A province the caller named has to exist before anything is counted
+     * under it. Answering with empty communes would read as "this province has
+     * no places", which is a different fact from "there is no such province".
+     */
+    let province: { code: string; name: string } | null = null;
+    if (filter.provinceCode) {
+      const unit = dataset
+        ? await currentUnit(this.db, dataset.id, filter.provinceCode, 'PROVINCE')
+        : null;
+      if (!unit) {
+        throw AppError.badRequest('ADMINISTRATIVE_UNIT_NOT_CURRENT', 'Không có tỉnh/thành này', [
+          {
+            field: 'provinceCode',
+            code: 'not_current',
+            message: filter.provinceCode,
+          },
+        ]);
+      }
+      province = { code: unit.code, name: unit.fullName };
+    }
+
+    // The filters the caller sent, minus the administrative ones: this endpoint
+    // computes both sides of that split rather than being told one of them.
+    const base = {
+      ...filter,
+      provinceCode: undefined,
+      communeCode: undefined,
+      administrativeState: undefined,
+    };
+    const scope = (extra: SQL[]) => {
+      const where = [...this.placePredicates(base, dataset), ...extra];
+      return sql.join(where, sql` and `);
+    };
+
+    const level = province ? ('commune' as const) : ('province' as const);
+    const groupable = dataset ? groupablePredicate(dataset.id) : sql`false`;
+    const inProvince = province ? [sql`p.province_code = ${province.code}`] : [];
+
+    const unitColumn = level === 'commune' ? sql`p.commune_code` : sql`p.province_code`;
+    const counted = await this.db.execute(sql`
+      select ${unitColumn} as code, count(*)::int as place_count
+      from places p
+      where ${scope([groupable, ...inProvince])}
+      group by ${unitColumn}
+    `);
+    const rows = counted.rows as { code: string; place_count: number }[];
+
+    /**
+     * Review, and where it can honestly be filed.
+     *
+     * `bucket` names the four mapping statuses that are not groupable plus
+     * `INVALID_HIERARCHY`, which is the case a status alone cannot express: a
+     * place `AUTO_MATCHED` against a commune that has since been dissolved, or
+     * whose parent is no longer the province the place stores. Reporting that
+     * as `AUTO_MATCHED` would say the mapping is fine and the count is wrong.
+     */
+    const reviewed = await this.db.execute(sql`
+      select
+        case
+          when p.administrative_mapping_status in ('UNMAPPED','NEEDS_REVIEW','REJECTED','STALE')
+            then p.administrative_mapping_status::text
+          else 'INVALID_HIERARCHY'
+        end as bucket,
+        case
+          when ${dataset ? attributableProvincePredicate(dataset.id) : sql`false`}
+            then p.province_code
+          else null
+        end as province_code,
+        count(*)::int as n
+      from places p
+      where ${scope([sql`not ${groupable}`, ...inProvince])}
+      group by 1, 2
+    `);
+    const reviewRows = reviewed.rows as {
+      bucket: string;
+      province_code: string | null;
+      n: number;
+    }[];
+
+    const names = dataset
+      ? await unitNames(
+          this.db,
+          dataset.id,
+          rows.map((r) => r.code),
+        )
+      : new Map<string, string>();
+
+    const reviewByProvince = new Map<string, number>();
+    const byStatus: Record<string, number> = {};
+    let reviewTotal = 0;
+    for (const row of reviewRows) {
+      byStatus[row.bucket] = (byStatus[row.bucket] ?? 0) + row.n;
+      reviewTotal += row.n;
+      if (row.province_code) {
+        reviewByProvince.set(
+          row.province_code,
+          (reviewByProvince.get(row.province_code) ?? 0) + row.n,
+        );
+      }
+    }
+
+    const levelKey = level === 'commune' ? 'COMMUNE' : 'PROVINCE';
+    const units = rows
+      .map((row) => ({
+        code: row.code,
+        name: names.get(`${levelKey}:${row.code}`) ?? null,
+        placeCount: row.place_count,
+        // A commune row carries no review count: a place whose mapping is under
+        // review has no commune anyone should trust it under.
+        reviewCount: level === 'province' ? (reviewByProvince.get(row.code) ?? 0) : null,
+      }))
+      .sort((a, b) => (a.name ?? a.code).localeCompare(b.name ?? b.code, 'vi'));
+
+    /**
+     * Province rows only list units that hold a groupable place, so a province
+     * whose every place is under review would otherwise vanish along with its
+     * review count. It is added back with `placeCount: 0`, which is the honest
+     * shape: nothing grouped here yet, and this much waiting.
+     */
+    if (level === 'province') {
+      const listed = new Set(units.map((u) => u.code));
+      for (const [code, count] of reviewByProvince) {
+        if (listed.has(code)) continue;
+        units.push({
+          code,
+          name: names.get(`PROVINCE:${code}`) ?? null,
+          placeCount: 0,
+          reviewCount: count,
+        });
+      }
+      // The names for provinces that arrived only through the review bucket
+      // were not in the first lookup; resolve them in one more batched read.
+      const missing = units.filter((u) => u.name === null).map((u) => u.code);
+      if (dataset && missing.length > 0) {
+        const extra = await unitNames(this.db, dataset.id, missing);
+        for (const unit of units) {
+          if (unit.name === null) unit.name = extra.get(`PROVINCE:${unit.code}`) ?? null;
+        }
+      }
+      units.sort((a, b) => (a.name ?? a.code).localeCompare(b.name ?? b.code, 'vi'));
+    }
+
+    return {
+      datasetVersion: dataset?.combinedDatasetVersion ?? null,
+      level,
+      province,
+      units,
+      totals: {
+        grouped: rows.reduce((sum, row) => sum + row.place_count, 0),
+        review: reviewTotal,
+      },
+      review: {
+        byStatus: {
+          UNMAPPED: byStatus.UNMAPPED ?? 0,
+          NEEDS_REVIEW: byStatus.NEEDS_REVIEW ?? 0,
+          REJECTED: byStatus.REJECTED ?? 0,
+          STALE: byStatus.STALE ?? 0,
+          INVALID_HIERARCHY: byStatus.INVALID_HIERARCHY ?? 0,
+        },
+      },
     };
   }
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.14
+  version: 1.0.0-alpha.15
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4716,6 +4716,13 @@ paths:
         is null only when there is genuinely nothing more. Text search runs on
         the normalized name — accent-insensitive, same behaviour as the
         consumer-facing search.
+
+
+        **Archived places are excluded unless `status=archived` asks for them**
+        (ADM-018). This endpoint previously had no default status filter, so an
+        archived place — the closest thing this schema has to a soft delete —
+        appeared in the ordinary catalogue and in anything that counted it. Every
+        other status behaves as before.
       parameters:
         - name: status
           in: query
@@ -4743,6 +4750,40 @@ paths:
           in: query
           description: Freshness last verified more than N days ago, or never.
           schema: { type: integer, minimum: 0, maximum: 3650 }
+        - name: provinceCode
+          in: query
+          description: >
+            ADM-018 — the canonical province code the place stores. Free-text
+            `city`, `district` and the curated `areaKey` have no bearing on this
+            filter; only the code does.
+          schema: { type: string, pattern: '^[0-9]{2,5}$' }
+        - name: communeCode
+          in: query
+          description: >
+            The canonical commune code. Requires `provinceCode`, and the pair is
+            validated against the published dataset — two codes that are each
+            real but do not belong together are refused with a `400` naming the
+            field, rather than answered with an empty page that reads as "this
+            commune has no places".
+          schema: { type: string, pattern: '^[0-9]{2,5}$' }
+        - name: administrativeState
+          in: query
+          description: >
+            ADM-018 — which side of the canonical hierarchy to list.
+
+
+            `grouped` is a place that can honestly appear under a province and a
+            commune: both codes present, both units current, the commune under
+            the stored province, and the mapping `AUTO_MATCHED` or `VERIFIED`.
+            `review` is every other place — `NEEDS_REVIEW`, `UNMAPPED`,
+            `REJECTED`, `STALE`, or a mapping whose units no longer fit
+            together.
+
+
+            Omitted applies no administrative constraint at all. These two
+            values are what the counts in `cmsPlaceAdministrativeSummary`
+            reconcile against.
+          schema: { type: string, enum: [grouped, review] }
         - name: sort
           in: query
           schema:
@@ -5065,6 +5106,76 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/places/administrative-summary:
+    get:
+      operationId: cmsPlaceAdministrativeSummary
+      tags: [cms]
+      summary: 'Editor: how many places sit under each current administrative unit (ADM-018)'
+      description: >
+        The canonical hierarchy for the catalogue: Tỉnh/Thành phố →
+        Phường/Xã/Đặc khu → the places filed under that commune. There is no
+        district level; district-level units were dissolved on 2025-07-01 and
+        are never current data.
+
+
+        One level per call. Without `provinceCode` this returns provinces; with
+        it, the communes of that province. The console renders one of those at a
+        time, and the alternative — the whole tree — is 3,321 communes to draw 34
+        rows.
+
+
+        **What may be grouped.** A place appears under a province and a commune
+        only when it holds both codes, both units are current in the published
+        dataset, the commune's parent is the province the place stores, and the
+        mapping is `AUTO_MATCHED` or `VERIFIED`. Everything else is `review`,
+        split by why. `AUTO_MATCHED` groups geographically and still does not
+        authorise publication — that gate is unchanged.
+
+
+        **What has no bearing on it.** Free-text `city`, `district`,
+        `addressText`, and the curated `areaKey`, which is a discovery bucket
+        rather than an address. Grouping reads the canonical codes and nothing
+        else.
+
+
+        **Counts reconcile with the list.** `totals.grouped` and `totals.review`
+        are `GET /cms/places` with the same filters plus
+        `administrativeState=grouped` / `review`; a unit's `placeCount` is that
+        plus its `provinceCode`/`communeCode`; a province's `reviewCount` is
+        `administrativeState=review` with that `provinceCode`. Archived places
+        are outside all of it unless `status=archived` asked for them.
+      parameters:
+        - name: provinceCode
+          in: query
+          description: >
+            List this province's communes instead of the provinces. A code that
+            is not a current province is refused with
+            `ADMINISTRATIVE_UNIT_NOT_CURRENT` rather than answered with an empty
+            list, which would read as "this province has no places".
+          schema: { type: string, pattern: '^[0-9]{2,5}$' }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, community_submitted, review, published, suspended, archived]
+        - { name: q, in: query, schema: { type: string, maxLength: 120 } }
+        - { name: areaKey, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: category, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: source, in: query, schema: { type: string, enum: [google, community, manual] } }
+        - { name: staleDays, in: query, schema: { type: integer, minimum: 0, maximum: 3650 } }
+      responses:
+        '200':
+          description: One level of the hierarchy, with its counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsPlaceAdministrativeSummary' }
+        '400':
+          description: ADMINISTRATIVE_UNIT_NOT_CURRENT — no such current province
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /cms/places/stale:
     get:
@@ -12090,6 +12201,75 @@ components:
         warnings:
           type: array
           items: { $ref: '#/components/schemas/IngestMessage' }
+    CmsPlaceAdministrativeSummary:
+      type: object
+      required: [datasetVersion, level, province, units, totals, review]
+      properties:
+        datasetVersion:
+          type: [string, 'null']
+          description: >
+            The dataset the codes and names were read from. Null means none is
+            published, in which case nothing can be grouped and every place is
+            under review — which is the truth, not an error.
+        level: { type: string, enum: [province, commune] }
+        province:
+          type: [object, 'null']
+          description: The province whose communes these are; null at province level.
+          properties:
+            code: { type: string }
+            name: { type: string }
+        units:
+          type: array
+          items:
+            type: object
+            required: [code, name, placeCount, reviewCount]
+            properties:
+              code: { type: string }
+              name:
+                type: [string, 'null']
+                description: Null when the dataset has no name for a stored code. Never invented.
+              placeCount:
+                type: integer
+                description: >
+                  Places that may be grouped under this unit. A province's total
+                  is the sum of its communes' totals — both come from the same
+                  predicate over the same rows, so no place is counted twice.
+              reviewCount:
+                type: [integer, 'null']
+                description: >
+                  Places filed against this province whose mapping cannot enter
+                  the hierarchy. A subset of `totals.review`, never part of
+                  `placeCount`. Null on a commune row: a place under review has
+                  no commune anyone should trust it under.
+        totals:
+          type: object
+          required: [grouped, review]
+          properties:
+            grouped: { type: integer }
+            review: { type: integer }
+          description: >
+            `grouped + review` is every place the filters select. Each half is a
+            real list query, which is what makes these numbers checkable.
+        review:
+          type: object
+          required: [byStatus]
+          properties:
+            byStatus:
+              type: object
+              required: [UNMAPPED, NEEDS_REVIEW, REJECTED, STALE, INVALID_HIERARCHY]
+              properties:
+                UNMAPPED: { type: integer }
+                NEEDS_REVIEW: { type: integer }
+                REJECTED: { type: integer }
+                STALE: { type: integer }
+                INVALID_HIERARCHY:
+                  type: integer
+                  description: >
+                    `AUTO_MATCHED` or `VERIFIED`, but against a commune that is
+                    no longer current or no longer sits under the stored
+                    province. The mapping status alone cannot say this, and
+                    reporting it as `AUTO_MATCHED` would claim the mapping is
+                    fine while the place is uncountable.
     CmsPlaceListItem:
       type: object
       required: [id, name, status, confidence, createdAt, updatedAt]
@@ -12105,6 +12285,22 @@ components:
         freshnessCheckedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+        provinceCode:
+          type: string
+          description: >
+            ADM-018 — the canonical administrative address as stored, so the
+            list, the detail and the forms all name a place's units the same
+            way. Absent when the place has none.
+        provinceName:
+          type: string
+          description: >
+            The unit's full name in the published dataset. Absent when the
+            dataset has no name for the stored code — never invented, and never
+            derived from the free-text `city`.
+        communeCode: { type: string }
+        communeName: { type: string }
+        administrativeMappingStatus:
+          $ref: '#/components/schemas/AdministrativeMappingStatus'
     EmergencyTakedownRequest:
       type: object
       required: [reason]
