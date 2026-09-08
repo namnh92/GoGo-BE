@@ -5,7 +5,13 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
-import { PlaceDedupService, PlaceImportJobService, PlaceResolverService } from '@gogo/modules';
+import {
+  AdministrativeResolverRepository,
+  AdministrativeResolverService,
+  PlaceDedupService,
+  PlaceImportJobService,
+  PlaceResolverService,
+} from '@gogo/modules';
 import { FakePlaceProvider, FakeSheets } from '@gogo/providers';
 import { createLogger, type MetricsPort } from '@gogo/observability';
 import { createWorkerMetrics, startMetricsEndpoint, type MetricsEndpoint } from '../src/metrics';
@@ -74,6 +80,7 @@ beforeAll(async () => {
     db,
     new PlaceResolverService(places, db),
     new PlaceDedupService(db),
+    new AdministrativeResolverService(db, new AdministrativeResolverRepository(db), metrics),
     new FakeSheets(),
     { APP_ENV: 'dev', PLACE_RESOLUTION_TTL_S: 600 },
     metrics,

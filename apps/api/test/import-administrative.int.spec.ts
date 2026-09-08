@@ -1,0 +1,647 @@
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { eq, sql } from 'drizzle-orm';
+import argon2 from 'argon2';
+import path from 'node:path';
+import { Pool } from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { schema } from '@gogo/database';
+
+/** Set before any import reads the environment; the config is parsed once. */
+process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
+import {
+  AdministrativeBoundaryImportService,
+  AdministrativeImportService,
+  PlaceImportJobService,
+  evaluatePlaceApproval,
+} from '@gogo/modules';
+import { PLACE_PROVIDER } from '@gogo/providers';
+import type { FakePlaceProvider } from '@gogo/providers';
+
+/**
+ * ADM-017 (#497) — the two import doors, mapped.
+ *
+ * Neither of them consulted the administrative resolver, so every place either
+ * one created was `UNMAPPED` — which the approval policy then blocked, with the
+ * import screen unable to say why. These tests are about the two claims that
+ * matter: that the mapping is written in the same transaction as the place, and
+ * that what the operator was shown beforehand is what actually got stored.
+ */
+
+let container: StartedPostgreSqlContainer;
+let pool: Pool;
+let db: ReturnType<typeof drizzle<typeof schema>>;
+let app: NestFastifyApplication;
+let places: FakePlaceProvider;
+let imports: PlaceImportJobService;
+let datasetVersion: string;
+
+const BOUNDARY_VERSION = 'fixture-v5.0.0';
+const FIXTURE = path.resolve(
+  __dirname,
+  '../../../resources/administrative/boundaries-fixture.v5.0.0.zip',
+);
+
+const api = () => app.getHttpAdapter().getInstance();
+let ipc = 0;
+const ip = () => `10.72.${Math.floor(++ipc / 250)}.${(ipc % 250) + 1}`;
+const auth = (t: string) => ({ authorization: `Bearer ${t}` });
+
+/** Discovered from the fixture, never assumed. */
+let mapped: { communeCode: string; provinceCode: string };
+let inside: { lng: number; lat: number };
+/** In Vietnam, in none of the fixture's polygons. */
+const outside = { lng: 108.5, lat: 12.0 };
+
+async function createAdmin(email: string, role: 'editor' | 'moderator' | 'ops_admin') {
+  const passwordHash = await argon2.hash('admin-password-123', { type: argon2.argon2id });
+  const [row] = await db
+    .insert(schema.adminUsers)
+    .values({ email, passwordHash, displayName: 'Admin', role })
+    .returning();
+  const res = await api().inject({
+    method: 'POST',
+    url: '/v1/cms/auth/login',
+    remoteAddress: ip(),
+    payload: { email, password: 'admin-password-123' },
+  });
+  return { id: row!.id, token: res.json().accessToken as string };
+}
+
+/** Fastify inject has no form-data helper; build the body by hand. */
+function multipart(fields: Record<string, string>, file: { name: string; content: Buffer }) {
+  const boundary = '----gogoformboundary1234567890';
+  const parts: Buffer[] = [];
+  for (const [key, value] of Object.entries(fields)) {
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${value}\r\n`,
+      ),
+    );
+  }
+  parts.push(
+    Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.name}"\r\n` +
+        'Content-Type: application/octet-stream\r\n\r\n',
+    ),
+    file.content,
+    Buffer.from('\r\n'),
+    Buffer.from(`--${boundary}--\r\n`),
+  );
+  return {
+    payload: Buffer.concat(parts),
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+  };
+}
+
+const CSV_HEADER =
+  'source_row_id,name,city,district,google_maps_url,category,price_min,price_max,price_unit';
+
+function csv(rows: string[]): Buffer {
+  return Buffer.from([CSV_HEADER, ...rows].join('\n'), 'utf8');
+}
+
+async function createJob(token: string, rows: string[], mode = 'create_drafts') {
+  const body = multipart(
+    { mode, defaultCity: 'Hồ Chí Minh' },
+    { name: `adm017-${Math.random()}.csv`, content: csv(rows) },
+  );
+  const res = await api().inject({
+    method: 'POST',
+    url: '/v1/cms/place-imports',
+    remoteAddress: ip(),
+    headers: { ...auth(token), ...body.headers },
+    payload: body.payload,
+  });
+  expect(res.statusCode, res.body).toBe(201);
+  return res.json();
+}
+
+async function rowsOf(jobId: string, token: string) {
+  const res = await api().inject({
+    method: 'GET',
+    url: `/v1/cms/place-imports/${jobId}/rows`,
+    remoteAddress: ip(),
+    headers: auth(token),
+  });
+  expect(res.statusCode, res.body).toBe(200);
+  return res.json().items as {
+    id: string;
+    status: string;
+    matchedPlaceId: string | null;
+    administrative: {
+      provinceCode: string | null;
+      provinceName: string | null;
+      communeCode: string | null;
+      communeName: string | null;
+      status: string | null;
+      datasetVersion: string | null;
+      requiresReview: boolean;
+      blocksPublication: boolean;
+      approvalBlock: { code: string; message: string } | null;
+    } | null;
+  }[];
+}
+
+/** Upload → start → one worker tick. Returns the job's rows. */
+async function runImport(token: string, rows: string[], mode = 'create_drafts') {
+  const job = await createJob(token, rows, mode);
+  await api().inject({
+    method: 'POST',
+    url: `/v1/cms/place-imports/${job.id}/start`,
+    remoteAddress: ip(),
+    headers: auth(token),
+  });
+  await imports.processJob(job.id);
+  return { job, rows: await rowsOf(job.id, token) };
+}
+
+/**
+ * Names share no token with each other on purpose.
+ *
+ * Every seeded place in this suite sits on the same coordinate, and the
+ * catalogue's duplicate rule is 150 m plus a name similarity over 0.5 — so
+ * "Quán A" and "Quán C" are a merge candidate, and the row under test would end
+ * as `duplicate` having created nothing.
+ */
+function rowFor(id: string, name: string, url: string, city = 'Hồ Chí Minh', district = '') {
+  return `${id},${name},${city},${district},${url},cafe,100000,200000,per_person`;
+}
+
+beforeAll(async () => {
+  container = await new PostgreSqlContainer('postgis/postgis:16-3.4')
+    .withDatabase('gogo_import_administrative_test')
+    .start();
+  process.env.DATABASE_URL = container.getConnectionUri();
+  process.env.REDIS_URL = 'redis://localhost:6380';
+  process.env.NODE_ENV = 'test';
+  process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
+  process.env.GOOGLE_PLACES_API_KEY = '';
+  process.env.GOOGLE_SHEETS_API_KEY = '';
+
+  pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
+  pool.on('error', () => undefined);
+  db = drizzle(pool, { schema });
+  await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
+  for (const key of ['cafe', 'restaurant']) {
+    await db.insert(schema.taxonomies).values({ kind: 'category', key });
+  }
+
+  // #489 — a dataset import binds the boundary release loaded at the time.
+  await new AdministrativeBoundaryImportService(db).load({
+    role: 'boundaries-fixture',
+    boundaryVersion: 'fixture-v1',
+    archivePath: FIXTURE,
+  });
+  const report = await new AdministrativeImportService(db).importPinnedSnapshot();
+  datasetVersion = report.combinedDatasetVersion;
+  await db
+    .update(schema.administrativeDatasetVersions)
+    .set({ status: 'PUBLISHED', publishedAt: new Date(), boundarySourceVersion: BOUNDARY_VERSION })
+    .where(eq(schema.administrativeDatasetVersions.id, report.datasetVersionId));
+  await new AdministrativeBoundaryImportService(db).load({
+    role: 'boundaries-fixture',
+    boundaryVersion: BOUNDARY_VERSION,
+    archivePath: FIXTURE,
+  });
+
+  const drawn = await db.execute(sql`
+    select b.code, b.parent_code,
+           st_x(st_pointonsurface(b.geom)) as lng, st_y(st_pointonsurface(b.geom)) as lat
+    from administrative_unit_boundaries b
+    where b.boundary_version = ${BOUNDARY_VERSION} and b.level = 'COMMUNE'
+    order by b.code limit 1`);
+  const row = (
+    drawn as unknown as {
+      rows: { code: string; parent_code: string; lng: number; lat: number }[];
+    }
+  ).rows[0]!;
+  mapped = { communeCode: row.code, provinceCode: row.parent_code };
+  inside = { lng: Number(row.lng), lat: Number(row.lat) };
+
+  const { createApp } = await import('../src/main.js');
+  app = await createApp();
+  await app.init();
+  await api().ready();
+  places = app.get(PLACE_PROVIDER);
+  imports = app.get(PlaceImportJobService);
+}, 600_000);
+
+afterAll(async () => {
+  await app?.close();
+  await pool?.end();
+  await container?.stop();
+});
+
+describe('a spreadsheet row says which commune it lands in, before it lands', () => {
+  it('previews the identity on a resolved row and commits the same one', async () => {
+    const editor = await createAdmin('adm017-preview@gogo.local', 'editor');
+    const ops = await createAdmin('adm017-preview-ops@gogo.local', 'ops_admin');
+    places.seed({ providerPlaceId: 'adm017-a', name: 'Cà Phê Sương Sớm', ...inside });
+
+    const { job, rows } = await runImport(editor.token, [
+      rowFor('A-1', 'Cà Phê Sương Sớm', 'https://www.google.com/maps?place_id=adm017-a'),
+    ]);
+    expect(rows[0]!.status).toBe('ready');
+    const preview = rows[0]!.administrative!;
+    expect(preview).toMatchObject({
+      provinceCode: mapped.provinceCode,
+      communeCode: mapped.communeCode,
+      status: 'AUTO_MATCHED',
+      datasetVersion,
+      requiresReview: false,
+      // The claim an import screen is most tempted to make, and must not — and
+      // it is the shared policy saying so, in the policy's own words.
+      blocksPublication: true,
+      approvalBlock: { code: 'MAPPING_NOT_VERIFIED' },
+    });
+    expect(preview.communeName).toBeTruthy();
+
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+
+    const after = await rowsOf(job.id, editor.token);
+    expect(after[0]!.status).toBe('imported');
+    // What the operator was shown is what was stored. The two ran the same
+    // resolver over the same coordinate — separately, which is what makes the
+    // comparison worth making.
+    expect(after[0]!.administrative).toMatchObject({
+      provinceCode: preview.provinceCode,
+      communeCode: preview.communeCode,
+      status: preview.status,
+      datasetVersion: preview.datasetVersion,
+      // Correction 3: preview and result report the same publication verdict,
+      // because both read the same policy over the same stored columns.
+      blocksPublication: preview.blocksPublication,
+      approvalBlock: preview.approvalBlock,
+    });
+
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.id, after[0]!.matchedPlaceId!));
+    expect(place).toMatchObject({
+      provinceCode: mapped.provinceCode,
+      communeCode: mapped.communeCode,
+      administrativeMappingStatus: 'AUTO_MATCHED',
+      administrativeDatasetVersion: datasetVersion,
+    });
+  }, 180_000);
+
+  it('reports a row nothing can place as UNMAPPED rather than as a review task', async () => {
+    const editor = await createAdmin('adm017-unmapped@gogo.local', 'editor');
+    places.seed({ providerPlaceId: 'adm017-b', name: 'Bún Chả Hàng Quạt', ...outside });
+
+    // The city cell names no province either, so there is genuinely nothing to
+    // go on. A sheet that said "Hồ Chí Minh" would give the resolver a real
+    // piece of evidence — a province with no commune — and that is
+    // `NEEDS_REVIEW`, which is a different and correct answer.
+    const { rows } = await runImport(editor.token, [
+      rowFor(
+        'B-1',
+        'Bún Chả Hàng Quạt',
+        'https://www.google.com/maps?place_id=adm017-b',
+        'Vùng Chưa Xác Định',
+      ),
+    ]);
+    expect(rows[0]!.administrative).toMatchObject({
+      status: 'UNMAPPED',
+      provinceCode: null,
+      communeCode: null,
+      // Nothing is claimed, so no version is stamped.
+      datasetVersion: null,
+      requiresReview: false,
+      blocksPublication: true,
+      approvalBlock: { code: 'MAPPING_UNMAPPED' },
+    });
+  }, 180_000);
+
+  it('never calls an automatic match a publication', async () => {
+    const editor = await createAdmin('adm017-defer@gogo.local', 'editor');
+    const ops = await createAdmin('adm017-defer-ops@gogo.local', 'ops_admin');
+    places.seed({ providerPlaceId: 'adm017-c', name: 'Nhà Hàng Cây Đa', ...inside });
+
+    const { job } = await runImport(
+      editor.token,
+      [rowFor('C-1', 'Nhà Hàng Cây Đa', 'https://www.google.com/maps?place_id=adm017-c')],
+      'publish_approved',
+    );
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Nhà Hàng Cây Đa'));
+    // Mapped, and still not live: AUTO_MATCHED is the resolver's answer, and
+    // publication needs a person's.
+    expect(place!.administrativeMappingStatus).toBe('AUTO_MATCHED');
+    expect(place!.status).toBe('review');
+
+    const [ingestRow] = await db
+      .select()
+      .from(schema.placeIngestRows)
+      .where(eq(schema.placeIngestRows.jobId, job.id));
+    expect(ingestRow!.publicationOutcome).toBe('deferred_mapping_unverified');
+  }, 180_000);
+
+  it('keeps the sheet’s legacy city out of the identity', async () => {
+    const editor = await createAdmin('adm017-legacy@gogo.local', 'editor');
+    const ops = await createAdmin('adm017-legacy-ops@gogo.local', 'ops_admin');
+    places.seed({ providerPlaceId: 'adm017-d', name: 'Tiệm Bánh Mì Bà Tư', ...inside });
+
+    // The sheet says Hồ Chí Minh; the coordinate says Hà Nội, and the
+    // coordinate is the evidence anyone can check.
+    const { job, rows } = await runImport(editor.token, [
+      rowFor(
+        'D-1',
+        'Tiệm Bánh Mì Bà Tư',
+        'https://www.google.com/maps?place_id=adm017-d',
+        'Hồ Chí Minh',
+      ),
+    ]);
+    expect(rows[0]!.administrative!.communeCode).toBe(mapped.communeCode);
+
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Tiệm Bánh Mì Bà Tư'));
+    expect(place!.communeCode).toBe(mapped.communeCode);
+  }, 180_000);
+});
+
+describe('a sheet with a link needs no city (ADR-0019 §7b)', () => {
+  it('imports a row that carries a Google Maps link and no city at all', async () => {
+    const editor = await createAdmin('adm017-nocity@gogo.local', 'editor');
+    const ops = await createAdmin('adm017-nocity-ops@gogo.local', 'ops_admin');
+    places.seed({ providerPlaceId: 'adm017-nocity', name: 'Phở Gánh Hàng Chiếu', ...inside });
+
+    // No city cell, and no `defaultCity` either. The link names the place, so
+    // there is no text search to narrow — and the administrative identity comes
+    // from the coordinate the link resolves to, never from this column.
+    const body = multipart(
+      { mode: 'create_drafts' },
+      {
+        name: `adm017-nocity-${Math.random()}.csv`,
+        content: csv([
+          'NC-1,Phở Gánh Hàng Chiếu,,,https://www.google.com/maps?place_id=adm017-nocity,cafe,,,',
+        ]),
+      },
+    );
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(editor.token), ...body.headers },
+      payload: body.payload,
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const job = created.json();
+
+    // Not a blocking column, and not a per-row error.
+    expect(job.missingRequiredColumns ?? []).not.toContain('city');
+    expect(job.totals.failed).toBe(0);
+
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(job.id);
+
+    const rows = await rowsOf(job.id, editor.token);
+    expect(rows[0]!.status).toBe('ready');
+    expect(rows[0]!.administrative).toMatchObject({
+      provinceCode: mapped.provinceCode,
+      communeCode: mapped.communeCode,
+      status: 'AUTO_MATCHED',
+    });
+
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Phở Gánh Hàng Chiếu'));
+    expect(place!.communeCode).toBe(mapped.communeCode);
+  }, 180_000);
+
+  it('still asks for a city on a row with nothing to look the place up by', async () => {
+    // A row with no link and no query is a text search, and that is the one
+    // thing the city string is actually for.
+    const editor = await createAdmin('adm017-needscity@gogo.local', 'editor');
+    const body = multipart(
+      { mode: 'dry_run' },
+      {
+        name: `adm017-needscity-${Math.random()}.csv`,
+        content: Buffer.from(
+          ['source_row_id,name,city,category', 'NC-2,Quán Không Link,,cafe'].join('\n'),
+          'utf8',
+        ),
+      },
+    );
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(editor.token), ...body.headers },
+      payload: body.payload,
+    });
+    expect(created.statusCode, created.body).toBe(201);
+
+    const rows = await rowsOf(created.json().id as string, editor.token);
+    expect(rows[0]!.status).toBe('validation_failed');
+  }, 120_000);
+});
+
+describe('a row matching a verified place does not report itself blocked', () => {
+  it('reads the approval policy rather than asserting that a mapping blocks', async () => {
+    const editor = await createAdmin('adm017-verified@gogo.local', 'editor');
+    const moderator = await createAdmin('adm017-verified-mod@gogo.local', 'moderator');
+    const ops = await createAdmin('adm017-verified-ops@gogo.local', 'ops_admin');
+    places.seed({ providerPlaceId: 'adm017-dup', name: 'Cháo Sườn Ngõ Huyện', ...inside });
+
+    // Import it once so the catalogue holds it.
+    const first = await runImport(editor.token, [
+      rowFor('V-1', 'Cháo Sườn Ngõ Huyện', 'https://www.google.com/maps?place_id=adm017-dup'),
+    ]);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${first.job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Cháo Sườn Ngõ Huyện'));
+
+    // As imported: AUTO_MATCHED, and the shared guard blocks it.
+    expect(await evaluatePlaceApproval(db, place!)).toMatchObject({
+      code: 'MAPPING_NOT_VERIFIED',
+    });
+
+    // A moderator verifies the mapping the import produced.
+    const verified = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/places/${place!.id}/administrative-mapping/verify`,
+      remoteAddress: ip(),
+      headers: auth(moderator.token),
+      payload: {
+        provinceCode: mapped.provinceCode,
+        communeCode: mapped.communeCode,
+        expectedUpdatedAt: place!.updatedAt.toISOString(),
+      },
+    });
+    expect(verified.statusCode, verified.body).toBe(201);
+
+    const [after] = await db.select().from(schema.places).where(eq(schema.places.id, place!.id));
+    // The guard now permits it — the one mapping state that does.
+    expect(await evaluatePlaceApproval(db, after!)).toBeNull();
+
+    // Import the same Google id again. The row is about the place it matched,
+    // so it reports that place's mapping — and must agree with the guard above.
+    const second = await runImport(editor.token, [
+      rowFor('V-2', 'Cháo Sườn Ngõ Huyện', 'https://www.google.com/maps?place_id=adm017-dup'),
+    ]);
+    const duplicate = second.rows[0]!;
+    expect(duplicate.status).toBe('duplicate');
+    expect(duplicate.matchedPlaceId).toBe(place!.id);
+    expect(duplicate.administrative).toMatchObject({
+      status: 'VERIFIED',
+      provinceCode: mapped.provinceCode,
+      communeCode: mapped.communeCode,
+      requiresReview: false,
+      // The whole correction: `status !== null` would have said `true` here,
+      // contradicting the guard that decides what actually happens.
+      blocksPublication: false,
+      approvalBlock: null,
+    });
+  }, 240_000);
+
+  it('reports a blocked row with the policy’s own code, not a screen’s guess', async () => {
+    const editor = await createAdmin('adm017-blocked@gogo.local', 'editor');
+    places.seed({ providerPlaceId: 'adm017-blocked', name: 'Miến Lươn Chân Cầm', ...inside });
+
+    const { rows } = await runImport(editor.token, [
+      rowFor('BL-1', 'Miến Lươn Chân Cầm', 'https://www.google.com/maps?place_id=adm017-blocked'),
+    ]);
+    expect(rows[0]!.administrative).toMatchObject({
+      status: 'AUTO_MATCHED',
+      blocksPublication: true,
+      approvalBlock: { code: 'MAPPING_NOT_VERIFIED' },
+    });
+  }, 180_000);
+});
+
+describe('the Google-link create form opens on a real identity', () => {
+  it('answers a resolved link with both current levels', async () => {
+    const editor = await createAdmin('adm017-link@gogo.local', 'editor');
+    places.seed({ providerPlaceId: 'adm017-link-1', name: 'Trà Đá Vỉa Hè', ...inside });
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/places/resolve-link',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: { googlePlaceId: 'adm017-link-1' },
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    const body = res.json();
+    expect(body.status).toBe('RESOLVED');
+    expect(body.administrative).toMatchObject({
+      provinceCode: mapped.provinceCode,
+      communeCode: mapped.communeCode,
+      status: 'AUTO_MATCHED',
+      datasetVersion,
+    });
+    expect(body.administrative.communeName).toBeTruthy();
+  }, 120_000);
+
+  it('says UNMAPPED for a point no polygon claims, and stores nothing either way', async () => {
+    const editor = await createAdmin('adm017-link2@gogo.local', 'editor');
+    places.seed({ providerPlaceId: 'adm017-link-2', name: 'Lẩu Nấm Ngã Sáu', ...outside });
+
+    const before = await db.execute(sql`select count(*)::int as n from places`);
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/places/resolve-link',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: { googlePlaceId: 'adm017-link-2' },
+    });
+    expect(res.json().administrative).toMatchObject({
+      status: 'UNMAPPED',
+      provinceCode: null,
+      communeCode: null,
+    });
+
+    // A preview writes nothing — not a place, and not a mapping.
+    const after = await db.execute(sql`select count(*)::int as n from places`);
+    expect((after as unknown as { rows: { n: number }[] }).rows[0]!.n).toBe(
+      (before as unknown as { rows: { n: number }[] }).rows[0]!.n,
+    );
+  }, 120_000);
+});
+
+describe('mapping an import asks nobody', () => {
+  it('adds no Google request and no Redis command beyond the resolve it already made', async () => {
+    // ADR-0019 §10 / GoGo-BE#464: administrative codes are GoGo facts because
+    // no provider is asked for them. ADR-0019 §8: they are not in Upstash.
+    const editor = await createAdmin('adm017-quiet@gogo.local', 'editor');
+    places.seed({ providerPlaceId: 'adm017-e', name: 'Xôi Xéo Cổng Chợ', ...inside });
+    const { job } = await runImport(editor.token, [
+      rowFor('E-1', 'Xôi Xéo Cổng Chợ', 'https://www.google.com/maps?place_id=adm017-e'),
+    ]);
+
+    const google = await metricCount('places_provider_requests_total');
+    const redis = await metricCount('provider_requests_total', 'upstash');
+    // Re-reading the rows re-renders the identity from what is stored.
+    await rowsOf(job.id, editor.token);
+    expect(await metricCount('places_provider_requests_total')).toBe(google);
+    expect(await metricCount('provider_requests_total', 'upstash')).toBe(redis);
+  }, 180_000);
+});
+
+async function metricCount(metric: string, contains?: string): Promise<number> {
+  const metrics = await api().inject({
+    method: 'GET',
+    url: '/v1/metrics',
+    headers: { authorization: `Bearer ${process.env.METRICS_TOKEN ?? ''}` },
+  });
+  if (metrics.statusCode !== 200) {
+    throw new Error(
+      `metrics scrape failed with ${metrics.statusCode}; the assertion would be vacuous`,
+    );
+  }
+  return metrics.body
+    .split('\n')
+    .filter((line) => line.startsWith(metric) && (!contains || line.includes(contains)))
+    .reduce((total, line) => total + Number(line.split(' ').pop() ?? 0), 0);
+}

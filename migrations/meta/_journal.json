@@ -386,6 +386,13 @@
       "when": 1789776000000,
       "tag": "0056_administrative-override-sets",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1789862400000,
+      "tag": "0057_ingest-row-administrative-preview",
+      "breakpoints": true
     }
   ]
 }

@@ -16,6 +16,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { users } from './identity';
 import { places } from './places';
+import { administrativeMappingStatus } from './administrative';
 
 /**
  * PI-BE-002 — place ingestion (GOGO_PLACE_INGESTION_SPEC §8).
@@ -167,6 +168,20 @@ export const placeIngestRows = pgTable(
     matchReasons: jsonb('match_reasons').$type<string[]>().notNull().default([]),
     candidates: jsonb('candidates').$type<MatchCandidate[]>().notNull().default([]),
     status: ingestRowStatus('status').notNull().default('pending'),
+    /**
+     * ADM-017 — what this row would be mapped to, computed from the geometry
+     * the provider returned and stored so the review screen can show it.
+     *
+     * A preview, not a decision: nothing here has been verified by anybody, and
+     * the commit re-resolves against the geometry it actually writes. Null is
+     * the ordinary state — a row that has not resolved yet has no point to
+     * classify. The dataset version travels with the codes because a code is
+     * not an identity across releases.
+     */
+    administrativeProvinceCode: text('administrative_province_code'),
+    administrativeCommuneCode: text('administrative_commune_code'),
+    administrativeMappingStatus: administrativeMappingStatus('administrative_mapping_status'),
+    administrativeDatasetVersion: text('administrative_dataset_version'),
     errors: jsonb('errors').$type<IngestMessage[]>().notNull().default([]),
     warnings: jsonb('warnings').$type<IngestMessage[]>().notNull().default([]),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -176,6 +191,11 @@ export const placeIngestRows = pgTable(
     // Idempotency anchor: a retried chunk updates rows, never duplicates them.
     uniqueIndex('place_ingest_rows_job_source_unique').on(t.jobId, t.sourceRowId),
     index('place_ingest_rows_status_idx').on(t.jobId, t.status),
+    // ADM-017 — "how many rows in this job need a person" is the count an
+    // operator asks for first.
+    index('place_ingest_rows_administrative_status_idx')
+      .on(t.jobId, t.administrativeMappingStatus)
+      .where(sql`${t.administrativeMappingStatus} is not null`),
     check(
       'place_ingest_rows_confidence_range',
       sql`${t.matchConfidence} is null or (${t.matchConfidence} >= 0 and ${t.matchConfidence} <= 1)`,

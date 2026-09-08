@@ -4,6 +4,8 @@ import {
   CampaignDispatcher,
   DbUsageLedger,
   OutboxDispatcher,
+  AdministrativeResolverRepository,
+  AdministrativeResolverService,
   PlaceDedupService,
   PlaceImportJobService,
   PlaceRefreshService,
@@ -269,6 +271,10 @@ async function bootstrap(): Promise<void> {
     db,
     new PlaceResolverService(placeProvider, db, metrics),
     new PlaceDedupService(db),
+    // ADM-017 — the worker runs the same import path the API does, so it maps
+    // the places it creates the same way. Constructed by hand here because the
+    // worker has no Nest container.
+    new AdministrativeResolverService(db, new AdministrativeResolverRepository(db), metrics),
     sheetsKey ? new GoogleSheetsAdapter(sheetsKey, metrics) : new FakeSheets(),
     // Which deployment's `feature_flags` rows apply — the same value the API
     // resolves flags against, so a switch thrown in the CMS reaches both.

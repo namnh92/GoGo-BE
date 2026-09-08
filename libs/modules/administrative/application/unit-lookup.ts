@@ -1,6 +1,7 @@
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
+import type { ActiveCommune } from '../domain/approval-policy';
 import {
   validateCurrentPair,
   type UnitPairInput,
@@ -168,4 +169,83 @@ export async function assertCurrentPair(
     ]);
   }
   return names;
+}
+
+/**
+ * Names for a batch of codes, in one query.
+ *
+ * Built for a list: an import job page carries hundreds of rows over a handful
+ * of distinct units, and a lookup per row would turn one screen into hundreds
+ * of round trips. Latest period first, so a code whose unit has since ended
+ * still has a name — showing a bare code an editor cannot look up anywhere is
+ * the worse failure.
+ */
+export async function unitNames(
+  executor: Executor,
+  datasetVersionId: string,
+  codes: readonly string[],
+): Promise<Map<string, string>> {
+  const distinct = [...new Set(codes.filter((code) => code.length > 0))];
+  if (distinct.length === 0) return new Map();
+  const rows = await (executor as Db)
+    .select({
+      code: schema.administrativeUnits.code,
+      fullName: schema.administrativeUnits.fullName,
+      level: schema.administrativeUnits.level,
+    })
+    .from(schema.administrativeUnits)
+    .where(
+      and(
+        eq(schema.administrativeUnits.datasetVersionId, datasetVersionId),
+        inArray(schema.administrativeUnits.code, distinct),
+      ),
+    )
+    .orderBy(desc(schema.administrativeUnits.effectiveFrom));
+
+  const names = new Map<string, string>();
+  // A commune and a province can share a code string across levels, so the key
+  // carries the level and the caller asks for the one it means.
+  for (const row of rows) {
+    const key = `${row.level}:${row.code}`;
+    if (!names.has(key)) names.set(key, row.fullName);
+  }
+  return names;
+}
+
+/**
+ * The communes a batch of codes name **in the active dataset**, at their latest
+ * period, in the exact shape the approval policy asks for.
+ *
+ * Latest period, not the current one: `approvalBlock` needs to be able to say
+ * "this commune exists but is no longer current", and a lookup restricted to
+ * current units would hand it a null and report the unit as missing instead.
+ */
+export async function currentCommunes(
+  executor: Executor,
+  datasetVersionId: string,
+  codes: readonly string[],
+): Promise<Map<string, NonNullable<ActiveCommune>>> {
+  const distinct = [...new Set(codes.filter((code) => code.length > 0))];
+  const found = new Map<string, NonNullable<ActiveCommune>>();
+  if (distinct.length === 0) return found;
+
+  const rows = await (executor as Db)
+    .select({
+      code: schema.administrativeUnits.code,
+      parentCode: schema.administrativeUnits.parentCode,
+      status: schema.administrativeUnits.status,
+      effectiveTo: schema.administrativeUnits.effectiveTo,
+    })
+    .from(schema.administrativeUnits)
+    .where(
+      and(
+        eq(schema.administrativeUnits.datasetVersionId, datasetVersionId),
+        eq(schema.administrativeUnits.level, 'COMMUNE'),
+        inArray(schema.administrativeUnits.code, distinct),
+      ),
+    )
+    .orderBy(desc(schema.administrativeUnits.effectiveFrom));
+
+  for (const row of rows) if (!found.has(row.code)) found.set(row.code, row);
+  return found;
 }
