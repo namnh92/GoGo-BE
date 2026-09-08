@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import {
@@ -166,6 +166,47 @@ export async function assertCurrentPair(
     throw AppError.badRequest(issue.code, issue.message, [
       { field: issue.field, code: issue.code.toLowerCase(), message: issue.message },
     ]);
+  }
+  return names;
+}
+
+/**
+ * Names for a batch of codes, in one query.
+ *
+ * Built for a list: an import job page carries hundreds of rows over a handful
+ * of distinct units, and a lookup per row would turn one screen into hundreds
+ * of round trips. Latest period first, so a code whose unit has since ended
+ * still has a name — showing a bare code an editor cannot look up anywhere is
+ * the worse failure.
+ */
+export async function unitNames(
+  executor: Executor,
+  datasetVersionId: string,
+  codes: readonly string[],
+): Promise<Map<string, string>> {
+  const distinct = [...new Set(codes.filter((code) => code.length > 0))];
+  if (distinct.length === 0) return new Map();
+  const rows = await (executor as Db)
+    .select({
+      code: schema.administrativeUnits.code,
+      fullName: schema.administrativeUnits.fullName,
+      level: schema.administrativeUnits.level,
+    })
+    .from(schema.administrativeUnits)
+    .where(
+      and(
+        eq(schema.administrativeUnits.datasetVersionId, datasetVersionId),
+        inArray(schema.administrativeUnits.code, distinct),
+      ),
+    )
+    .orderBy(desc(schema.administrativeUnits.effectiveFrom));
+
+  const names = new Map<string, string>();
+  // A commune and a province can share a code string across levels, so the key
+  // carries the level and the caller asks for the one it means.
+  for (const row of rows) {
+    const key = `${row.level}:${row.code}`;
+    if (!names.has(key)) names.set(key, row.fullName);
   }
   return names;
 }

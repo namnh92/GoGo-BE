@@ -26,6 +26,9 @@ import {
 import { PlaceDedupService, type DedupVerdict } from './place-dedup.service';
 import { PlaceResolverService } from './place-resolver.service';
 import { writeAudit } from '../../shared/audit';
+import { AdministrativeResolverService } from '../../administrative/application/administrative-resolver.service';
+import { activeDataset, unitNames } from '../../administrative/application/unit-lookup';
+import type { MappingStatus } from '../../administrative/domain/mapping-status';
 
 export type ResolveLinkResponse = {
   status: 'RESOLVED' | 'ALREADY_EXISTS' | 'CANDIDATE_SELECTION' | 'UNRESOLVED';
@@ -54,6 +57,34 @@ export type ResolveLinkResponse = {
   };
   candidates?:
     { googlePlaceId: string; name: string; address: string; confidence: number }[] | undefined;
+  /**
+   * ADM-017 — the two current administrative levels the candidate's coordinate
+   * falls in, resolved against GoGo's pinned boundaries.
+   *
+   * A **preview**, and nothing is stored by this request. It exists so the
+   * console's create form can open on the province and commune the place is
+   * actually in, rather than on two empty boxes an editor has to guess at —
+   * and so a wrong answer is visible before a place is created rather than
+   * after.
+   *
+   * Absent when there is no published administrative dataset. A deployment
+   * without one still resolves links; it just cannot say anything about
+   * administrative units, and saying nothing is the honest form of that.
+   *
+   * Not verification. `AUTO_MATCHED` here is the resolver's answer and permits
+   * nothing; the place created from it is still `draft` and still needs a
+   * moderator before it can be published.
+   */
+  administrative?:
+    | {
+        provinceCode: string | null;
+        provinceName: string | null;
+        communeCode: string | null;
+        communeName: string | null;
+        status: MappingStatus;
+        datasetVersion: string | null;
+      }
+    | undefined;
 };
 
 /**
@@ -129,6 +160,12 @@ export class PlaceSubmissionService {
     @Inject(DB) private readonly db: Db,
     private readonly resolver: PlaceResolverService,
     private readonly dedup: PlaceDedupService,
+    /**
+     * ADM-017 — which commune the resolved point falls in, so the create form
+     * can open on a real administrative identity instead of two empty boxes.
+     * The same resolver the place will be mapped with when it is created.
+     */
+    private readonly administrative: AdministrativeResolverService,
     @Inject(APP_CONFIG)
     private readonly config: PlatformConfig & ResolutionAttestationConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
@@ -256,8 +293,53 @@ export class PlaceSubmissionService {
       matchConfidence: decision.best?.confidence,
       reasonCodes: decision.reasons,
       candidate,
+      ...(await this.administrativePreview(details)),
       ...(verdict.kind === 'MERGE_CANDIDATE' ? { existingPlaceId: verdict.placeId } : {}),
       ...(await this.mintAttestation(details)),
+    };
+  }
+
+  /**
+   * ADM-017 — the candidate's administrative identity, from its coordinate.
+   *
+   * Best-effort, and deliberately so: a deployment with no published dataset
+   * must still be able to resolve a link. The alternative — failing the whole
+   * resolution because GoGo cannot name a commune — would take add-by-link off
+   * the air for a question the caller did not ask.
+   *
+   * No provider is involved. The point comes from the Places answer this
+   * request already paid for; the classification is a point-in-polygon query
+   * against GoGo's own pinned boundaries (ADR-0019 §10), which is what makes
+   * the resulting codes GoGo facts rather than provider content.
+   */
+  private async administrativePreview(
+    details: ResolvedProviderPlace,
+  ): Promise<Pick<ResolveLinkResponse, 'administrative'>> {
+    const dataset = await activeDataset(this.db);
+    if (!dataset) return {};
+
+    const resolution = await this.administrative.resolveGeometry({
+      // No place exists yet; the Google id is what this answer is about.
+      subjectId: details.providerPlaceId,
+      geometry: { lng: details.lng, lat: details.lat },
+    });
+    const names = await unitNames(this.db, dataset.id, [
+      resolution.provinceCode ?? '',
+      resolution.communeCode ?? '',
+    ]);
+    return {
+      administrative: {
+        provinceCode: resolution.provinceCode,
+        provinceName: resolution.provinceCode
+          ? (names.get(`PROVINCE:${resolution.provinceCode}`) ?? null)
+          : null,
+        communeCode: resolution.communeCode,
+        communeName: resolution.communeCode
+          ? (names.get(`COMMUNE:${resolution.communeCode}`) ?? null)
+          : null,
+        status: resolution.status,
+        datasetVersion: resolution.status === 'UNMAPPED' ? null : resolution.datasetVersion,
+      },
     };
   }
 

@@ -6400,6 +6400,14 @@ export interface components {
             existingPlaceId?: string;
             /** @description Opaque, short-lived proof that this request verified the Google Place ID with the provider (#337). Present only when the answer came from a live provider check and the place is operational; send it back on `POST /place-submissions` to skip the duplicate verification fetch. It carries no provider content and authorises nothing — an expired or edited token is rejected with a retryable `RESOLUTION_TOKEN_INVALID` and the client resolves again. */
             resolutionToken?: string;
+            /**
+             * @description ADM-017 — the two current administrative levels the candidate's coordinate falls in, so a create form can open on a real identity instead of two empty boxes.
+             *
+             *     A preview: this request stores nothing, and the mapping is written when the place is created. Absent when the deployment has no published administrative dataset — a link still resolves, GoGo just cannot say anything about units, and saying nothing is the honest form of that.
+             *
+             *     `requiresReview` and `blocksPublication` mean what they mean everywhere: `AUTO_MATCHED` here permits nothing, and the place created from it is still a draft awaiting a moderator.
+             */
+            administrative?: components["schemas"]["ImportAdministrativeIdentity"] | null;
             candidate?: {
                 googlePlaceId?: string;
                 name?: string;
@@ -6549,6 +6557,28 @@ export interface components {
             lat?: number;
             lng?: number;
         };
+        /**
+         * @description ADM-017 — which of Vietnam's two current administrative levels a place falls in: a province/municipality and a ward/commune/special zone. The district tier was dissolved on 2025-07-01 and is not represented here at all; the legacy `city`/`district` cells of a spreadsheet are free text the resolver reads as evidence, not an identity.
+         *
+         *     Resolved from geometry against GoGo's pinned boundary release. No provider is asked — that is what makes these GoGo facts rather than provider content (ADR-0019 §10).
+         */
+        ImportAdministrativeIdentity: {
+            provinceCode?: string | null;
+            provinceName?: string | null;
+            communeCode?: string | null;
+            communeName?: string | null;
+            /**
+             * @description `AUTO_MATCHED` — the evidence decided it. `NEEDS_REVIEW` — the evidence disagreed with itself, or was ambiguous, and a person has to choose. `UNMAPPED` — nothing placed it. `null` — the row has not been resolved against the provider yet, so there is no coordinate to classify.
+             * @enum {string|null}
+             */
+            status: "UNMAPPED" | "AUTO_MATCHED" | "NEEDS_REVIEW" | "VERIFIED" | "REJECTED" | "STALE" | null;
+            /** @description The administrative release this was decided against. A code is not an identity across releases — 2,212 of the 3,321 current commune codes named a different unit before 2025-07-01 — so a mapping without its version cannot be compared with anything. */
+            datasetVersion?: string | null;
+            /** @description About the **mapping** rather than the place — the resolver could not decide, and a person has to. */
+            requiresReview: boolean;
+            /** @description About **publication**. True whenever a mapping exists here, because no import result is a verification: only a moderator's `VERIFIED` permits publishing a place, and an import has no path that writes it. A screen that renders `AUTO_MATCHED` as "đã xác minh" is claiming something the server will refuse to act on. */
+            blocksPublication: boolean;
+        };
         ImportRow: {
             /** Format: uuid */
             id?: string;
@@ -6566,6 +6596,12 @@ export interface components {
             matchReasons?: string[];
             /** @description Present on PLACE_MATCH_AMBIGUOUS rows (spec §10.4). */
             candidates?: components["schemas"]["ImportCandidate"][];
+            /**
+             * @description ADM-017 — the preview while the job is reviewable, and what was actually stored once the row is `imported`.
+             *
+             *     The two are produced by the same resolver over the same coordinate, which is what makes comparing them worth anything; a preview that agreed by construction would prove nothing. Null until the row has resolved against the provider, and on any deployment with no published administrative dataset.
+             */
+            administrative?: components["schemas"]["ImportAdministrativeIdentity"] | null;
             errors?: components["schemas"]["IngestMessage"][];
             warnings?: components["schemas"]["IngestMessage"][];
         };
@@ -6578,6 +6614,8 @@ export interface components {
             matchedPlaceId?: string | null;
             /** Format: float */
             matchConfidence?: number | null;
+            /** @description ADM-017 — the same identity the row carries in `listPlaceImportRows`. */
+            administrative?: components["schemas"]["ImportAdministrativeIdentity"] | null;
             errors?: components["schemas"]["IngestMessage"][];
             warnings?: components["schemas"]["IngestMessage"][];
         };

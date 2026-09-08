@@ -48,6 +48,12 @@ import {
   publicationOutcomeFor,
   type PublicationOutcome,
 } from '../../administrative/application/place-approval';
+import {
+  AdministrativeResolverService,
+  type PersistResult,
+} from '../../administrative/application/administrative-resolver.service';
+import { activeDataset, unitNames } from '../../administrative/application/unit-lookup';
+import type { MappingStatus } from '../../administrative/domain/mapping-status';
 
 export type ImportMode = 'dry_run' | 'create_drafts' | 'publish_approved' | 'update_existing';
 
@@ -95,6 +101,12 @@ export class PlaceImportJobService {
     @Inject(DB) private readonly db: Db,
     private readonly resolver: PlaceResolverService,
     private readonly dedup: PlaceDedupService,
+    /**
+     * ADM-017 — the one path from a coordinate to an administrative identity.
+     * The import previews with it and commits with it, which is what makes the
+     * two agree; a second classification here would be a second answer.
+     */
+    private readonly administrative: AdministrativeResolverService,
     @Inject(SHEETS_PROVIDER) private readonly sheets: SheetsPort,
     @Inject(APP_CONFIG) private readonly config: PlatformConfig & VerificationWindowConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
@@ -540,6 +552,7 @@ export class PlaceImportJobService {
       .limit(options.limit + 1)
       .offset(options.offset);
     const rows = page.slice(0, options.limit);
+    const administrative = await this.administrativeViews(rows);
 
     return {
       items: rows.map((r) => ({
@@ -552,6 +565,10 @@ export class PlaceImportJobService {
         matchedPlaceId: r.matchedPlaceId,
         matchConfidence: r.matchConfidence !== null ? Number(r.matchConfidence) : null,
         matchReasons: r.matchReasons,
+        // ADM-017 — which commune this row lands in, and whether a person has
+        // to look at it. Absent until the row has been resolved against the
+        // provider, because until then there is no point to classify.
+        administrative: administrative.get(r.id) ?? null,
         // Spec §10.4: the ambiguous-match error carries its candidates.
         candidates: r.candidates,
         errors: r.errors,
@@ -1018,6 +1035,54 @@ export class PlaceImportJobService {
     this.metrics.increment('place_identity_conflict_blocked_total', { path: 'ingest' });
   }
 
+  /**
+   * ADM-017 — the administrative preview for one resolved row.
+   *
+   * The same resolver, the same evidence order and the same adjudication the
+   * commit will run; only the subject differs, because at this point there is
+   * no place to name. That is the whole reason `resolveGeometry` exists: a
+   * preview computed by a second, simpler rule is a preview that will
+   * eventually disagree with what the import actually stores.
+   *
+   * Best-effort by design. A deployment with no published dataset still has to
+   * be able to run an import — the rows land `UNMAPPED`, which already blocks
+   * publication — so an absent dataset leaves the columns null rather than
+   * failing the row.
+   */
+  private async administrativePreview(
+    details: ResolvedProviderPlace,
+    normalized: NormalizedImportRow | null,
+  ): Promise<{
+    administrativeProvinceCode: string | null;
+    administrativeCommuneCode: string | null;
+    administrativeMappingStatus: MappingStatus | null;
+    administrativeDatasetVersion: string | null;
+  }> {
+    const empty = {
+      administrativeProvinceCode: null,
+      administrativeCommuneCode: null,
+      administrativeMappingStatus: null,
+      administrativeDatasetVersion: null,
+    };
+    if (!(await activeDataset(this.db))) return empty;
+
+    const resolution = await this.administrative.resolveGeometry({
+      // No place exists yet, so the row is what this answer is about.
+      subjectId: details.providerPlaceId,
+      geometry: { lng: details.lng, lat: details.lat },
+      // The sheet's own text, read as evidence exactly as it will be at commit.
+      city: normalized?.city ?? null,
+      district: normalized?.district ?? null,
+    });
+    return {
+      administrativeProvinceCode: resolution.provinceCode,
+      administrativeCommuneCode: resolution.communeCode,
+      administrativeMappingStatus: resolution.status,
+      administrativeDatasetVersion:
+        resolution.status === 'UNMAPPED' ? null : resolution.datasetVersion,
+    };
+  }
+
   private async applyResolved(
     rowId: string,
     details: ResolvedProviderPlace,
@@ -1045,6 +1110,10 @@ export class PlaceImportJobService {
       candidates: [] as MatchCandidate[],
       errors: [] as IngestMessage[],
       updatedAt: new Date(),
+      // ADM-017 — which commune this row lands in, answered now rather than at
+      // publish time. The review screen is the last point where an operator can
+      // still act on it, and it was the one screen that could not see it.
+      ...(await this.administrativePreview(details, context?.normalized ?? null)),
     };
 
     if (verdict.kind === 'IDENTITY_CONFLICT') {
@@ -1587,7 +1656,16 @@ export class PlaceImportJobService {
     const wantsPublication = mode === 'publish_approved';
     const status = wantsPublication ? 'review' : 'draft';
 
-    const placeId = await this.db.transaction(async (tx) => {
+    type CommittedMapping = {
+      provinceCode: string | null;
+      communeCode: string | null;
+      status: MappingStatus;
+      datasetVersion: string | null;
+    };
+
+    const stored = await this.db.transaction(async (tx) => {
+      let committedMapping: CommittedMapping | null = null;
+      let mappingWrite: PersistResult | null = null;
       const [place] = await tx
         .insert(schema.places)
         .values({
@@ -1652,8 +1730,38 @@ export class PlaceImportJobService {
             .onConflictDoNothing();
         }
       }
-      return place!.id;
+
+      /**
+       * ADM-017 — the mapping is written in the transaction that writes the
+       * place, from the geometry that transaction just stored.
+       *
+       * Not from the preview: the preview classified the coordinate the resolve
+       * step saw, and this classifies the one the catalogue actually holds. They
+       * are the same coordinate in every ordinary case, which is exactly why
+       * comparing them is worth something — a preview that agreed by
+       * construction would prove nothing.
+       *
+       * Nothing about the import authorises publication. `settlePublication`
+       * below still asks the shared invariant, and an `AUTO_MATCHED` row is
+       * deferred there like any other unverified mapping.
+       */
+      if (await activeDataset(tx)) {
+        const resolution = await this.administrative.resolvePlaceWithin(tx, place!.id);
+        mappingWrite = await this.administrative.persistWithin(tx, resolution, {
+          actor: { id: null, type: 'system' },
+        });
+        committedMapping = {
+          provinceCode: resolution.provinceCode,
+          communeCode: resolution.communeCode,
+          status: resolution.status,
+          datasetVersion: resolution.status === 'UNMAPPED' ? null : resolution.datasetVersion,
+        };
+      }
+      return { placeId: place!.id, committedMapping, mappingWrite };
     });
+
+    const { placeId, committedMapping } = stored;
+    if (stored.mappingWrite) this.administrative.countPersist(stored.mappingWrite);
 
     await this.dedup.upsertProviderSource({
       placeId,
@@ -1670,6 +1778,17 @@ export class PlaceImportJobService {
         status: 'imported',
         matchedPlaceId: placeId,
         ...(publication ? { publicationOutcome: publication } : {}),
+        // The row now reports what was actually stored, not what was predicted.
+        // An operator comparing the two is the point; a row that kept showing
+        // its prediction after the fact could never be checked against anything.
+        ...(committedMapping
+          ? {
+              administrativeProvinceCode: committedMapping.provinceCode,
+              administrativeCommuneCode: committedMapping.communeCode,
+              administrativeMappingStatus: committedMapping.status,
+              administrativeDatasetVersion: committedMapping.datasetVersion,
+            }
+          : {}),
         updatedAt: new Date(),
       })
       .where(eq(schema.placeIngestRows.id, row.id));
@@ -1824,18 +1943,67 @@ export class PlaceImportJobService {
     return row;
   }
 
+  /**
+   * ADM-017 — the administrative identity a row carries, for the review screen.
+   *
+   * Names are resolved in one batched query for the whole page: a job runs to
+   * hundreds of rows over a handful of distinct communes, and a lookup per row
+   * would turn one table render into hundreds of round trips.
+   *
+   * Two booleans, and they mean different things. `requiresReview` is about the
+   * **mapping**: the resolver could not decide, and a person has to. `blocks`
+   * is about **publication**: no import result is a verification, so a row that
+   * matched perfectly still cannot go live on that basis — which is the claim
+   * an import screen is most tempted to make and must not.
+   */
+  private async administrativeViews(
+    rows: readonly AdministrativeRowColumns[],
+  ): Promise<Map<string, AdministrativeRowView>> {
+    const views = new Map<string, AdministrativeRowView>();
+    const dataset = await activeDataset(this.db);
+    const names = dataset
+      ? await unitNames(this.db, dataset.id, [
+          ...rows.map((r) => r.administrativeProvinceCode ?? ''),
+          ...rows.map((r) => r.administrativeCommuneCode ?? ''),
+        ])
+      : new Map<string, string>();
+
+    for (const row of rows) {
+      const status = row.administrativeMappingStatus;
+      views.set(row.id, {
+        provinceCode: row.administrativeProvinceCode,
+        provinceName: row.administrativeProvinceCode
+          ? (names.get(`PROVINCE:${row.administrativeProvinceCode}`) ?? null)
+          : null,
+        communeCode: row.administrativeCommuneCode,
+        communeName: row.administrativeCommuneCode
+          ? (names.get(`COMMUNE:${row.administrativeCommuneCode}`) ?? null)
+          : null,
+        status,
+        datasetVersion: row.administrativeDatasetVersion,
+        requiresReview: status === 'NEEDS_REVIEW',
+        // Always true for an import: only a moderator's VERIFIED permits
+        // publication, and no path here can write that.
+        blocksPublication: status !== null,
+      });
+    }
+    return views;
+  }
+
   private async rowView(rowId: string) {
     const [row] = await this.db
       .select()
       .from(schema.placeIngestRows)
       .where(eq(schema.placeIngestRows.id, rowId))
       .limit(1);
+    const administrative = (await this.administrativeViews([row!])).get(row!.id) ?? null;
     return {
       id: row!.id,
       status: row!.status,
       resolvedGooglePlaceId: row!.resolvedGooglePlaceId,
       matchedPlaceId: row!.matchedPlaceId,
       matchConfidence: row!.matchConfidence !== null ? Number(row!.matchConfidence) : null,
+      administrative,
       errors: row!.errors,
       warnings: row!.warnings,
     };
@@ -1920,3 +2088,26 @@ function sheetError(err: unknown): AppError {
   }
   return AppError.badRequest('SHEET_UNAVAILABLE', 'Không đọc được Google Sheet');
 }
+
+/** The stored preview columns `administrativeViews` reads. */
+type AdministrativeRowColumns = {
+  id: string;
+  administrativeProvinceCode: string | null;
+  administrativeCommuneCode: string | null;
+  administrativeMappingStatus: MappingStatus | null;
+  administrativeDatasetVersion: string | null;
+};
+
+/** ADM-017 — what a preview row and a result row both say about the mapping. */
+type AdministrativeRowView = {
+  provinceCode: string | null;
+  provinceName: string | null;
+  communeCode: string | null;
+  communeName: string | null;
+  status: MappingStatus | null;
+  datasetVersion: string | null;
+  /** The resolver could not decide; a person has to. */
+  requiresReview: boolean;
+  /** No import result is a verification, so this is true whenever a mapping exists. */
+  blocksPublication: boolean;
+};
