@@ -12,7 +12,10 @@ import { schema } from '@gogo/database';
 /** Set before any import reads the environment; the config is parsed once. */
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 import {
-  AdministrativeBoundaryImportService, AdministrativeImportService, AdministrativeResolverService } from '@gogo/modules';
+  AdministrativeBoundaryImportService,
+  AdministrativeImportService,
+  AdministrativeResolverService,
+} from '@gogo/modules';
 
 /**
  * ADM-006 (#459) — the resolver against the real pinned dataset and real

@@ -82,10 +82,10 @@ export class BoundaryReleaseRequiredError extends Error {
     super(
       reason === 'missing'
         ? `no boundary release ${expectedVersion} has been loaded; load it first — ` +
-          `an administrative dataset is only publishable once its geometry is bound to it`
+            `an administrative dataset is only publishable once its geometry is bound to it`
         : `boundary release ${expectedVersion} is loaded from a different archive ` +
-          `(ledger has ${foundChecksum ?? 'unknown'}); the manifest pin and the loaded ` +
-          `release must be the same bytes`,
+            `(ledger has ${foundChecksum ?? 'unknown'}); the manifest pin and the loaded ` +
+            `release must be the same bytes`,
     );
     this.name = 'BoundaryReleaseRequiredError';
   }
@@ -353,7 +353,10 @@ export class AdministrativeImportService {
       .orderBy(desc(schema.administrativeBoundaryLoads.loadedAt));
 
     if (rows.length === 0) {
-      throw new BoundaryReleaseRequiredError(this.reader.source('current-boundaries').ref, 'missing');
+      throw new BoundaryReleaseRequiredError(
+        this.reader.source('current-boundaries').ref,
+        'missing',
+      );
     }
 
     // The real release wins over a fixture whenever both are loaded, so an

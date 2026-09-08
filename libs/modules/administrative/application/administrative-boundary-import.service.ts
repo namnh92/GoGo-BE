@@ -550,15 +550,16 @@ export class AdministrativeBoundaryImportService {
       ) on commit drop
     `);
 
-    const { data } = this.reader.readJson<Parameters<typeof parseCurrentUnits>[0]>(
-      'current-units',
-    );
+    const { data } = this.reader.readJson<Parameters<typeof parseCurrentUnits>[0]>('current-units');
     const { units } = parseCurrentUnits(data);
 
     for (let i = 0; i < units.length; i += REFERENCE_BATCH) {
       const batch = units.slice(i, i + REFERENCE_BATCH);
       const values = sql.join(
-        batch.map((u: (typeof units)[number]) => sql`(${u.code}, ${u.level}::administrative_level, ${u.parentCode ?? null})`),
+        batch.map(
+          (u: (typeof units)[number]) =>
+            sql`(${u.code}, ${u.level}::administrative_level, ${u.parentCode ?? null})`,
+        ),
         sql`, `,
       );
       await tx.execute(
@@ -566,9 +567,7 @@ export class AdministrativeBoundaryImportService {
       );
     }
 
-    await tx.execute(
-      sql`create index on pinned_reference_units (code, level)`,
-    );
+    await tx.execute(sql`create index on pinned_reference_units (code, level)`);
   }
 }
 

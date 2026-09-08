@@ -7,7 +7,10 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
 import {
-  AdministrativeBoundaryImportService, AdministrativeImportService, AdministrativeValidationService } from '@gogo/modules';
+  AdministrativeBoundaryImportService,
+  AdministrativeImportService,
+  AdministrativeValidationService,
+} from '@gogo/modules';
 
 /**
  * ADM-004 (#457) — the gates and the diff against the real pinned dataset.
