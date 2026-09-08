@@ -8,7 +8,7 @@
   },
   "packageManager": "pnpm@11.24.0",
   "scripts": {
-    "admin:backfill": "tsx scripts/backfill-administrative-mappings.ts",
+    "admin:backfill": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/backfill-administrative-mappings.ts",
     "api:check": "openapi-typescript openapi/gogo.v1.yaml -o /tmp/gogo.v1.d.ts && diff -q /tmp/gogo.v1.d.ts openapi/gogo.v1.d.ts",
     "api:routes": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/check-route-coverage.ts",
     "api:types": "openapi-typescript openapi/gogo.v1.yaml -o openapi/gogo.v1.d.ts",

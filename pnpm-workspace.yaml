@@ -1,6 +1,12 @@
 packages:
   - apps/*
   - libs/*
+  # #491 — the operational entry points. Not a library, but the commands a
+  # person runs on purpose, and until this line they were the only TypeScript in
+  # the repository nothing typechecked: `turbo run typecheck` walks the
+  # workspace, and scripts/ was not in it. The backfill CLI shipped calling
+  # `new LogMetrics()` with no argument and crashed on its first metric.
+  - scripts
 allowBuilds:
   esbuild: true
   msgpackr-extract: true

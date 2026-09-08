@@ -1,0 +1,24 @@
+{
+  "name": "@gogo/scripts",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Operational entry points: the commands a person runs on purpose.",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@gogo/database": "workspace:*",
+    "@gogo/modules": "workspace:*",
+    "@gogo/observability": "workspace:*",
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-fastify": "^11.0.0",
+    "drizzle-orm": "^0.44.7",
+    "pg": "^8.23.0",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "vitest": "^4.1.11"
+  }
+}
