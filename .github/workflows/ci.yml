@@ -93,3 +93,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Testcontainers spins up postgis/redis on the runner's Docker daemon.
       - run: pnpm test:integration
+
+  # #487 — the one defect class no other job here can see. Every test above runs
+  # against the checkout, where `resources/` is always present; the runtime image
+  # did not carry it, and DEV answered every administrative import with ENOENT
+  # after a deploy whose CI was fully green. This job builds the production image
+  # and asks PinnedSnapshotReader, inside it, with no bind mount, to resolve and
+  # checksum the pinned snapshots.
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/ci/docker-resources.test.sh

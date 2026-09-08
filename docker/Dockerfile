@@ -29,6 +29,17 @@ COPY apps ./apps
 COPY libs ./libs
 COPY migrations ./migrations
 COPY openapi ./openapi
+# The pinned administrative snapshots (ADM-002). 664 KB, and the import path
+# cannot start without them: PinnedSnapshotReader resolves
+# `<repo>/resources/administrative` from its own __dirname and reads
+# manifest.json before anything else, so a runtime image without this directory
+# answers every import with ENOENT — which is exactly what DEV did on #487.
+#
+# Same shape as the libs/cost-observability line above: the image built, the
+# tests passed because they run against the checkout, and only a container
+# showed the hole. scripts/ci/docker-resources.test.sh now proves this from
+# inside the built image rather than from the repository.
+COPY resources ./resources
 
 ENV NODE_ENV=production
 ENV SWC_NODE_PROJECT=/app/tsconfig.base.json
