@@ -156,7 +156,15 @@ async function runImport(token: string, rows: string[], mode = 'create_drafts') 
   return { job, rows: await rowsOf(job.id, token) };
 }
 
-function rowFor(id: string, name: string, url: string, city = 'Hồ Chí Minh', district = 'Quận 1') {
+/**
+ * Names share no token with each other on purpose.
+ *
+ * Every seeded place in this suite sits on the same coordinate, and the
+ * catalogue's duplicate rule is 150 m plus a name similarity over 0.5 — so
+ * "Quán A" and "Quán C" are a merge candidate, and the row under test would end
+ * as `duplicate` having created nothing.
+ */
+function rowFor(id: string, name: string, url: string, city = 'Hồ Chí Minh', district = '') {
   return `${id},${name},${city},${district},${url},cafe,100000,200000,per_person`;
 }
 
@@ -229,10 +237,10 @@ describe('a spreadsheet row says which commune it lands in, before it lands', ()
   it('previews the identity on a resolved row and commits the same one', async () => {
     const editor = await createAdmin('adm017-preview@gogo.local', 'editor');
     const ops = await createAdmin('adm017-preview-ops@gogo.local', 'ops_admin');
-    places.seed({ providerPlaceId: 'adm017-a', name: 'Quán A', ...inside });
+    places.seed({ providerPlaceId: 'adm017-a', name: 'Cà Phê Sương Sớm', ...inside });
 
     const { job, rows } = await runImport(editor.token, [
-      rowFor('A-1', 'Quán A', 'https://www.google.com/maps?place_id=adm017-a'),
+      rowFor('A-1', 'Cà Phê Sương Sớm', 'https://www.google.com/maps?place_id=adm017-a'),
     ]);
     expect(rows[0]!.status).toBe('ready');
     const preview = rows[0]!.administrative!;
@@ -281,10 +289,19 @@ describe('a spreadsheet row says which commune it lands in, before it lands', ()
 
   it('reports a row nothing can place as UNMAPPED rather than as a review task', async () => {
     const editor = await createAdmin('adm017-unmapped@gogo.local', 'editor');
-    places.seed({ providerPlaceId: 'adm017-b', name: 'Quán B', ...outside });
+    places.seed({ providerPlaceId: 'adm017-b', name: 'Bún Chả Hàng Quạt', ...outside });
 
+    // The city cell names no province either, so there is genuinely nothing to
+    // go on. A sheet that said "Hồ Chí Minh" would give the resolver a real
+    // piece of evidence — a province with no commune — and that is
+    // `NEEDS_REVIEW`, which is a different and correct answer.
     const { rows } = await runImport(editor.token, [
-      rowFor('B-1', 'Quán B', 'https://www.google.com/maps?place_id=adm017-b'),
+      rowFor(
+        'B-1',
+        'Bún Chả Hàng Quạt',
+        'https://www.google.com/maps?place_id=adm017-b',
+        'Vùng Chưa Xác Định',
+      ),
     ]);
     expect(rows[0]!.administrative).toMatchObject({
       status: 'UNMAPPED',
@@ -299,11 +316,11 @@ describe('a spreadsheet row says which commune it lands in, before it lands', ()
   it('never calls an automatic match a publication', async () => {
     const editor = await createAdmin('adm017-defer@gogo.local', 'editor');
     const ops = await createAdmin('adm017-defer-ops@gogo.local', 'ops_admin');
-    places.seed({ providerPlaceId: 'adm017-c', name: 'Quán C', ...inside });
+    places.seed({ providerPlaceId: 'adm017-c', name: 'Nhà Hàng Cây Đa', ...inside });
 
     const { job } = await runImport(
       editor.token,
-      [rowFor('C-1', 'Quán C', 'https://www.google.com/maps?place_id=adm017-c')],
+      [rowFor('C-1', 'Nhà Hàng Cây Đa', 'https://www.google.com/maps?place_id=adm017-c')],
       'publish_approved',
     );
     await api().inject({
@@ -314,7 +331,10 @@ describe('a spreadsheet row says which commune it lands in, before it lands', ()
       payload: {},
     });
 
-    const [place] = await db.select().from(schema.places).where(eq(schema.places.name, 'Quán C'));
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Nhà Hàng Cây Đa'));
     // Mapped, and still not live: AUTO_MATCHED is the resolver's answer, and
     // publication needs a person's.
     expect(place!.administrativeMappingStatus).toBe('AUTO_MATCHED');
@@ -327,20 +347,19 @@ describe('a spreadsheet row says which commune it lands in, before it lands', ()
     expect(ingestRow!.publicationOutcome).toBe('deferred_mapping_unverified');
   }, 180_000);
 
-  it('keeps the sheet’s legacy city and district out of the identity', async () => {
+  it('keeps the sheet’s legacy city out of the identity', async () => {
     const editor = await createAdmin('adm017-legacy@gogo.local', 'editor');
     const ops = await createAdmin('adm017-legacy-ops@gogo.local', 'ops_admin');
-    places.seed({ providerPlaceId: 'adm017-d', name: 'Quán D', ...inside });
+    places.seed({ providerPlaceId: 'adm017-d', name: 'Tiệm Bánh Mì Bà Tư', ...inside });
 
-    // The sheet says Hồ Chí Minh / Quận 1; the coordinate says otherwise, and
-    // the coordinate is the evidence that can be checked.
+    // The sheet says Hồ Chí Minh; the coordinate says Hà Nội, and the
+    // coordinate is the evidence anyone can check.
     const { job, rows } = await runImport(editor.token, [
       rowFor(
         'D-1',
-        'Quán D',
+        'Tiệm Bánh Mì Bà Tư',
         'https://www.google.com/maps?place_id=adm017-d',
         'Hồ Chí Minh',
-        'Quận 1',
       ),
     ]);
     expect(rows[0]!.administrative!.communeCode).toBe(mapped.communeCode);
@@ -352,7 +371,10 @@ describe('a spreadsheet row says which commune it lands in, before it lands', ()
       headers: auth(ops.token),
       payload: {},
     });
-    const [place] = await db.select().from(schema.places).where(eq(schema.places.name, 'Quán D'));
+    const [place] = await db
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.name, 'Tiệm Bánh Mì Bà Tư'));
     expect(place!.communeCode).toBe(mapped.communeCode);
   }, 180_000);
 });
@@ -360,7 +382,7 @@ describe('a spreadsheet row says which commune it lands in, before it lands', ()
 describe('the Google-link create form opens on a real identity', () => {
   it('answers a resolved link with both current levels', async () => {
     const editor = await createAdmin('adm017-link@gogo.local', 'editor');
-    places.seed({ providerPlaceId: 'adm017-link-1', name: 'Quán Link', ...inside });
+    places.seed({ providerPlaceId: 'adm017-link-1', name: 'Trà Đá Vỉa Hè', ...inside });
 
     const res = await api().inject({
       method: 'POST',
@@ -383,7 +405,7 @@ describe('the Google-link create form opens on a real identity', () => {
 
   it('says UNMAPPED for a point no polygon claims, and stores nothing either way', async () => {
     const editor = await createAdmin('adm017-link2@gogo.local', 'editor');
-    places.seed({ providerPlaceId: 'adm017-link-2', name: 'Quán Xa', ...outside });
+    places.seed({ providerPlaceId: 'adm017-link-2', name: 'Lẩu Nấm Ngã Sáu', ...outside });
 
     const before = await db.execute(sql`select count(*)::int as n from places`);
     const res = await api().inject({
@@ -412,9 +434,9 @@ describe('mapping an import asks nobody', () => {
     // ADR-0019 §10 / GoGo-BE#464: administrative codes are GoGo facts because
     // no provider is asked for them. ADR-0019 §8: they are not in Upstash.
     const editor = await createAdmin('adm017-quiet@gogo.local', 'editor');
-    places.seed({ providerPlaceId: 'adm017-e', name: 'Quán E', ...inside });
+    places.seed({ providerPlaceId: 'adm017-e', name: 'Xôi Xéo Cổng Chợ', ...inside });
     const { job } = await runImport(editor.token, [
-      rowFor('E-1', 'Quán E', 'https://www.google.com/maps?place_id=adm017-e'),
+      rowFor('E-1', 'Xôi Xéo Cổng Chợ', 'https://www.google.com/maps?place_id=adm017-e'),
     ]);
 
     const google = await metricCount('places_provider_requests_total');
