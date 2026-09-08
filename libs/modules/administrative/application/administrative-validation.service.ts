@@ -32,7 +32,7 @@ import { writeAudit } from '../../shared/audit';
 import { AUDIT_ACTION, AUDIT_RESOURCE } from './administrative-audit';
 import { TRANSITION_LOCK, TRANSITION_LOCK_TIMEOUT } from './administrative-transition';
 import { PinnedSnapshotReader, SnapshotChecksumError } from './pinned-snapshot.reader';
-import { snapshotFingerprint } from './snapshot-fingerprint';
+import { boundaryIdentity, snapshotFingerprint } from './snapshot-fingerprint';
 
 /**
  * ADM-004 (#457) — runs the gates and the diff for one staged dataset, and
@@ -121,6 +121,7 @@ export class AdministrativeValidationService {
       this.db,
       datasetVersionId,
       staged.overrideRevision,
+      await boundaryIdentity(this.db, staged),
     );
     const published = await this.publishedRow();
 
@@ -132,7 +133,7 @@ export class AdministrativeValidationService {
 
     // Recomputed from the pinned manifest, so a stored version string that no
     // longer matches its own components is caught rather than trusted.
-    const recomputed = this.recomputeCombined(staged);
+    const recomputed = this.recomputeCombined(staged, await boundaryIdentity(this.db, staged));
     const snapshotChecksumsVerified = recomputed !== null;
     const expected = recomputed ?? {
       combinedDatasetVersion: staged.combinedDatasetVersion,
@@ -230,6 +231,7 @@ export class AdministrativeValidationService {
           tx,
           datasetVersionId,
           locked.overrideRevision,
+          await boundaryIdentity(tx, locked),
         ),
       });
       if (drift) return { refusal: drift } as const;
@@ -282,6 +284,7 @@ export class AdministrativeValidationService {
    */
   recomputeCombined(
     row: DatasetRow,
+    boundary: { version: string; checksum: string } | null = null,
   ): { combinedDatasetVersion: string; combinedChecksum: string } | null {
     try {
       const components = {
@@ -296,7 +299,13 @@ export class AdministrativeValidationService {
           ? this.reader.source('change-mapping').sha256
           : null,
         boundarySourceVersion: row.boundarySourceVersion,
-        boundaryChecksum: null,
+        // #489 — from the manifest pin, exactly as the other three components
+        // are. It was hardcoded null, which was harmless only while import also
+        // wrote null: the moment a dataset carries a boundary the two
+        // disagreed, and every publish of a boundary-bound dataset would have
+        // been refused SNAPSHOT_CHECKSUM_MISMATCH against a checksum this
+        // function computed wrong. Null stays null for the pre-#489 dataset.
+        boundaryChecksum: boundary?.checksum ?? null,
         overrideRevision: row.overrideRevision,
       };
       this.reader.read(this.reader.source('current-units'));

@@ -6,7 +6,11 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
-import { AdministrativeImportService, AdministrativeValidationService } from '@gogo/modules';
+import {
+  AdministrativeBoundaryImportService,
+  AdministrativeImportService,
+  AdministrativeValidationService,
+} from '@gogo/modules';
 
 /**
  * ADM-004 (#457) — the gates and the diff against the real pinned dataset.
@@ -24,6 +28,21 @@ let service: AdministrativeValidationService;
 
 const MIGRATIONS = path.resolve(__dirname, '../../../migrations');
 
+// #489 — a dataset import binds the boundary release that is loaded, so every
+// fixture that imports must load one first. The five-entry fixture is real,
+// unmodified geometry from the pinned archive and needs no network.
+async function loadFixtureBoundaries(database: Parameters<typeof migrate>[0]): Promise<void> {
+  await new AdministrativeBoundaryImportService(database as never).load({
+    role: 'boundaries-fixture',
+    boundaryVersion: 'fixture-v1',
+    // The fixture is vendored and has no fetch URL, so the path is explicit.
+    archivePath: path.resolve(
+      __dirname,
+      '../../../resources/administrative/boundaries-fixture.v5.0.0.zip',
+    ),
+  });
+}
+
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgis/postgis:16-3.4')
     .withDatabase('gogo_administrative_validation_test')
@@ -32,6 +51,7 @@ beforeAll(async () => {
   pool.on('error', () => undefined);
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: MIGRATIONS });
+  await loadFixtureBoundaries(db);
   service = new AdministrativeValidationService(db);
 }, 300_000);
 

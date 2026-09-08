@@ -406,6 +406,7 @@ export {
 } from '../administrative/domain/snapshot';
 export {
   AdministrativeImportService,
+  BoundaryReleaseRequiredError,
   DuplicateImportError,
   type ImportReport,
 } from '../administrative/application/administrative-import.service';

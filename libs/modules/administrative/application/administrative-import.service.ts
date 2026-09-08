@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { schema, type Db } from '@gogo/database';
-import { eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
 import { AUDIT_ACTION, AUDIT_RESOURCE } from './administrative-audit';
@@ -59,6 +59,38 @@ export type ImportReport = {
   warnings: string[];
 };
 
+/**
+ * #489 — a publication candidate with no boundary release to bind to.
+ *
+ * Refused rather than imported as a `+none` dataset. The old behaviour produced
+ * a dataset whose boundary component was permanently absent, and because that
+ * component is part of the identity, no later import could ever attach one: the
+ * geometry loaded into PostgreSQL was real and the resolver could not reach it,
+ * since it looks the boundary version up on the dataset and got null.
+ *
+ * The one `+none` dataset that already exists on DEV predates this and is left
+ * exactly as it is — identities are immutable, and it is the rollback target
+ * until its boundary-bound successor is published.
+ */
+export class BoundaryReleaseRequiredError extends Error {
+  readonly code = 'BOUNDARY_RELEASE_REQUIRED';
+  constructor(
+    readonly expectedVersion: string,
+    readonly reason: 'missing' | 'checksum-mismatch',
+    readonly foundChecksum?: string,
+  ) {
+    super(
+      reason === 'missing'
+        ? `no boundary release ${expectedVersion} has been loaded; load it first — ` +
+            `an administrative dataset is only publishable once its geometry is bound to it`
+        : `boundary release ${expectedVersion} is loaded from a different archive ` +
+            `(ledger has ${foundChecksum ?? 'unknown'}); the manifest pin and the loaded ` +
+            `release must be the same bytes`,
+    );
+    this.name = 'BoundaryReleaseRequiredError';
+  }
+}
+
 export class DuplicateImportError extends Error {
   constructor(readonly existingVersion: string) {
     super(
@@ -96,6 +128,17 @@ export class AdministrativeImportService {
       this.reader.readJson<Parameters<typeof parseHistoricalUnits>[0]>('historical-units');
     const mapping = this.reader.readText('change-mapping');
 
+    // #489 — the boundary release is a separate pinned upstream (#460), loaded
+    // by its own operational step. Read it from the ledger and bind it, so the
+    // geometry is part of this dataset's identity rather than something that
+    // happens to be in the database beside it.
+    //
+    // Refused when absent. Importing without it produced a `+none` dataset whose
+    // boundary component could never be filled in afterwards — the component is
+    // part of the version, so a later import with a boundary is a *different*
+    // dataset, and the one already published stayed blind to geometry forever.
+    const boundary = await this.boundaryRelease();
+
     const components = {
       currentSourceVersion: current.source.ref,
       currentChecksum: current.source.sha256,
@@ -103,10 +146,8 @@ export class AdministrativeImportService {
       historicalChecksum: historical.source.sha256,
       mappingSourceCommit: mapping.source.commit,
       mappingChecksum: mapping.source.sha256,
-      // The boundary set is a separate pinned upstream (#460); until it is
-      // imported the component is absent rather than assumed.
-      boundarySourceVersion: null,
-      boundaryChecksum: null,
+      boundarySourceVersion: boundary.version,
+      boundaryChecksum: boundary.checksum,
       overrideRevision,
     };
     const version = combinedDatasetVersion(components);
@@ -271,5 +312,67 @@ export class AdministrativeImportService {
 
       return report;
     });
+  }
+
+  /**
+   * The loaded boundary release this import binds to.
+   *
+   * Read from `administrative_boundary_loads`, which only ever receives a row
+   * after validation passes inside the loader's transaction — a rejected or
+   * failed load rolls back before the insert, so a failed release is not
+   * selectable here by construction rather than by a status column anyone has
+   * to remember to check.
+   *
+   * Pinned, not "latest": the version and checksum must be the ones the manifest
+   * names. A ledger row under the right version but from different bytes is a
+   * refusal, not a warning — it means the geometry in the database is not the
+   * geometry the pin describes, and binding it would put a false identity on the
+   * dataset.
+   */
+  private async boundaryRelease(): Promise<{ version: string; checksum: string }> {
+    // Every boundary release the manifest pins. A ledger row is bindable only
+    // if its bytes are one of these — the version name is chosen by whoever ran
+    // the loader, so it identifies nothing on its own; the checksum is what says
+    // which pinned release actually sits in the table.
+    const pinned = new Set<string>();
+    for (const role of ['current-boundaries', 'boundaries-fixture'] as const) {
+      try {
+        pinned.add(this.reader.source(role).sha256);
+      } catch {
+        // A manifest without that role simply offers one fewer bindable release.
+      }
+    }
+    const production = this.reader.source('current-boundaries').sha256;
+
+    const rows = await this.db
+      .select({
+        boundaryVersion: schema.administrativeBoundaryLoads.boundaryVersion,
+        sourceChecksum: schema.administrativeBoundaryLoads.sourceChecksum,
+      })
+      .from(schema.administrativeBoundaryLoads)
+      .orderBy(desc(schema.administrativeBoundaryLoads.loadedAt));
+
+    if (rows.length === 0) {
+      throw new BoundaryReleaseRequiredError(
+        this.reader.source('current-boundaries').ref,
+        'missing',
+      );
+    }
+
+    // The real release wins over a fixture whenever both are loaded, so an
+    // environment that has the production geometry can never bind the five-entry
+    // test archive by accident of ordering.
+    const chosen =
+      rows.find((r) => r.sourceChecksum === production) ??
+      rows.find((r) => pinned.has(r.sourceChecksum));
+
+    if (!chosen) {
+      throw new BoundaryReleaseRequiredError(
+        this.reader.source('current-boundaries').ref,
+        'checksum-mismatch',
+        rows[0]!.sourceChecksum,
+      );
+    }
+    return { version: chosen.boundaryVersion, checksum: chosen.sourceChecksum };
   }
 }

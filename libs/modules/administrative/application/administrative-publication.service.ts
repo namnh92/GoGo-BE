@@ -18,11 +18,12 @@ import {
   type AdministrativeDatasetPort,
 } from './administrative-dataset.port';
 import { AUDIT_ACTION, AUDIT_RESOURCE } from './administrative-audit';
+import { PinnedSnapshotReader } from './pinned-snapshot.reader';
 import {
   AdministrativeValidationService,
   type DatasetRow,
 } from './administrative-validation.service';
-import { snapshotFingerprint } from './snapshot-fingerprint';
+import { boundaryIdentity, snapshotFingerprint } from './snapshot-fingerprint';
 
 /**
  * ADM-005 (#458) / ADR-0019 §3 — publishing and rolling back the active
@@ -110,6 +111,10 @@ export class AdministrativePublicationService {
     @Inject(ADMINISTRATIVE_DATASET) private readonly cache: AdministrativeDatasetPort,
     private readonly validation: AdministrativeValidationService,
     @Inject(METRICS) private readonly metrics: MetricsPort,
+    // #489 — the manifest pin for the boundary checksum. Defaulted so every
+    // existing construction site keeps working; the reader is stateless and
+    // reads only vendored bytes.
+    private readonly reader: PinnedSnapshotReader = new PinnedSnapshotReader(),
   ) {}
 
   /**
@@ -452,8 +457,13 @@ export class AdministrativePublicationService {
       combinedChecksum: row.combinedChecksum,
       overrideRevision: row.overrideRevision,
       validation: (row.validationReport as PersistedValidation | null) ?? null,
-      snapshotFingerprint: await snapshotFingerprint(executor, row.id, row.overrideRevision),
-      recomputed: this.validation.recomputeCombined(row),
+      snapshotFingerprint: await snapshotFingerprint(
+        executor,
+        row.id,
+        row.overrideRevision,
+        await boundaryIdentity(executor, row),
+      ),
+      recomputed: this.validation.recomputeCombined(row, await boundaryIdentity(executor, row)),
     });
   }
 
@@ -464,7 +474,12 @@ export class AdministrativePublicationService {
       combinedDatasetVersion: row.combinedDatasetVersion,
       publishedAt: row.publishedAt,
       validation: (row.validationReport as PersistedValidation | null) ?? null,
-      snapshotFingerprint: await snapshotFingerprint(executor, row.id, row.overrideRevision),
+      snapshotFingerprint: await snapshotFingerprint(
+        executor,
+        row.id,
+        row.overrideRevision,
+        await boundaryIdentity(executor, row),
+      ),
     });
   }
 
