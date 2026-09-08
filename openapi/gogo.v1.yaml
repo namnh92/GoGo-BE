@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.16
+  version: 1.0.0-alpha.17
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2999,6 +2999,29 @@ paths:
 
         The canonical `googleMapsUri` is whatever Google returns; the submitted
         URL is never stored or treated as canonical.
+
+
+        **GoGo-owned columns (PI-BE-025).** `phone`, `website`,
+        `avg_visit_minutes`, `is_lodging` and `curated_rank` are accepted and
+        persisted, validated by the same rules the console uses: phone
+        normalises to E.164, website to `http(s)`, `avg_visit_minutes` is
+        10–720. Every one of them fails the row explicitly rather than being
+        dropped on commit. Values from the file are recorded `editorial` in
+        `place_field_provenance`.
+
+
+        `places.suitability` is deliberately **not** an import column.
+        `audiences` is the operator-facing vocabulary for the same product
+        concept — who a place suits — and `suitability` is the weighted score
+        GoGo derives from it and from editorial curation. Asking a spreadsheet
+        to author both would be asking one person to write the same fact at two
+        levels of abstraction and keep them consistent. The column and every
+        other API path that writes it are unchanged.
+
+
+        `phone` and `website` are no longer retired mapping values; `address`
+        still is, because `address_text` is written from the provider's
+        formatted address and a sheet's own address string has no writer.
       requestBody:
         required: true
         content:
@@ -11985,6 +12008,11 @@ components:
         - vibes_raw
         - highlight
         - note
+        - phone
+        - website
+        - avg_visit_minutes
+        - is_lodging
+        - curated_rank
     ImportJob:
       allOf:
         - $ref: '#/components/schemas/ImportJobSummary'

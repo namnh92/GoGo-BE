@@ -586,17 +586,22 @@ describe('/v1 legacy mapping compatibility', () => {
     expect(viaLegacy).toEqual(viaCanonical);
   });
 
-  it('keeps accepting the three retired fields, mapping them nowhere', () => {
+  it('keeps accepting a retired field, mapping it nowhere', () => {
     // `/v1` answered 200 and ignored them. Turning that into a 400 would be a
     // behavioural break for the sake of tidiness.
-    const result = parseColumnMapping({ 'Địa chỉ': 'address', SĐT: 'phone', Web: 'website' });
+    const result = parseColumnMapping({ 'Địa chỉ': 'address' });
 
     expect(result.mapping).toEqual({});
-    expect(result.retired).toEqual([
-      { header: 'Địa chỉ', value: 'address' },
-      { header: 'SĐT', value: 'phone' },
-      { header: 'Web', value: 'website' },
-    ]);
+    expect(result.retired).toEqual([{ header: 'Địa chỉ', value: 'address' }]);
+  });
+
+  it('now stores what `phone` and `website` used to drop (PI-BE-025)', () => {
+    // The same client mapping that produced two skipped columns produces two
+    // written ones. Nothing about the request changed; the fields grew columns.
+    const result = parseColumnMapping({ SĐT: 'phone', Web: 'website' });
+
+    expect(result.retired).toEqual([]);
+    expect(result.mapping).toEqual({ SĐT: 'phone', Web: 'website' });
   });
 
   it('covers every retired field declared', () => {
@@ -750,6 +755,117 @@ describe('google_place_id', () => {
   it('names every way a row can fail to identify anything', () => {
     const { errors } = validateRow({ source_row_id: '1', city: 'Hà Nội', category: 'cafe' });
     expect(errors.map((e) => e.code)).toContain('NAME_REQUIRED');
+  });
+});
+
+/**
+ * PI-BE-025 — the columns a sheet may now carry for GoGo's own facts.
+ *
+ * Each one is validated by the rule that already governs it elsewhere, and each
+ * failure is an error rather than a warning: a value an operator typed that
+ * GoGo cannot store would otherwise vanish on commit, which is exactly the
+ * defect `price_unit` had.
+ */
+describe('GoGo-owned import columns', () => {
+  const ctx = { knownCategoryKeys: new Set(['cafe']) };
+  const base = { source_row_id: '1', google_place_id: 'ChIJabcdef', category: 'cafe' };
+
+  it('normalizes a phone the way the console does', () => {
+    const { normalized, errors } = validateRow({ ...base, phone: '028 3822 9999' }, ctx);
+    expect(errors).toEqual([]);
+    expect(normalized.phone).toBe('+842838229999');
+  });
+
+  it('upgrades a bare host to https and keeps the path', () => {
+    const { normalized, errors } = validateRow({ ...base, website: 'chaoban.vn/menu' }, ctx);
+    expect(errors).toEqual([]);
+    expect(normalized.website).toBe('https://chaoban.vn/menu');
+  });
+
+  it('refuses a javascript: URL', () => {
+    const { errors } = validateRow({ ...base, website: 'javascript:alert(1)' }, ctx);
+    expect(errors.map((e) => e.code)).toContain('WEBSITE_INVALID');
+  });
+
+  it('refuses a phone that is not one, rather than dropping it', () => {
+    const { errors, normalized } = validateRow({ ...base, phone: 'gọi cho Nam' }, ctx);
+    expect(errors.map((e) => e.code)).toContain('PHONE_INVALID');
+    expect(normalized.phone).toBeNull();
+  });
+
+  it('holds avg_visit_minutes to the same 10..720 floor the editor does', () => {
+    expect(validateRow({ ...base, avg_visit_minutes: '90' }, ctx).normalized.avgVisitMinutes).toBe(
+      90,
+    );
+    for (const bad of ['0', '9', '721', 'chín mươi']) {
+      const { errors } = validateRow({ ...base, avg_visit_minutes: bad }, ctx);
+      expect(
+        errors.map((e) => e.code),
+        bad,
+      ).toContain('AVG_VISIT_INVALID');
+    }
+  });
+
+  it('does not offer suitability as a column at all', () => {
+    /*
+     * PI-CMS-009 decision. `audiences` is the operator-facing vocabulary for
+     * who a place suits; `places.suitability` is the weighted score GoGo
+     * derives from it and from editorial curation. Asking one spreadsheet to
+     * author both would be asking one person to write the same fact at two
+     * levels of abstraction and keep them consistent.
+     *
+     * The column and every other API path that writes it are untouched — this
+     * is about what a file may say, not about what GoGo may store.
+     */
+    expect(CANONICAL_FIELDS as readonly string[]).not.toContain('suitability');
+    expect(CANONICAL_FIELDS).toContain('audiences');
+    // A header called "suitability" therefore maps nowhere rather than being
+    // read into a column the file has no business setting.
+    const { mapping, unmapped } = resolveMapping(['source_row_id', 'suitability', 'category']);
+    expect(mapping['suitability']).toBeUndefined();
+    expect(unmapped).toContain('suitability');
+  });
+
+  it('reads the booleans an operator actually types', () => {
+    for (const yes of ['true', '1', 'x', 'Có']) {
+      expect(validateRow({ ...base, is_lodging: yes }, ctx).normalized.isLodging, yes).toBe(true);
+    }
+    for (const no of ['false', '0', 'Không']) {
+      expect(validateRow({ ...base, is_lodging: no }, ctx).normalized.isLodging, no).toBe(false);
+    }
+    expect(validateRow({ ...base, is_lodging: 'có lẽ' }, ctx).errors.map((e) => e.code)).toContain(
+      'IS_LODGING_INVALID',
+    );
+  });
+
+  it('takes curated_rank as a non-negative integer', () => {
+    expect(validateRow({ ...base, curated_rank: '3' }, ctx).normalized.curatedRank).toBe(3);
+    expect(validateRow({ ...base, curated_rank: '-1' }, ctx).errors.map((e) => e.code)).toContain(
+      'CURATED_RANK_INVALID',
+    );
+  });
+
+  it('leaves every one of them null when the cell is empty', () => {
+    const { normalized, errors } = validateRow(base, ctx);
+    expect(errors).toEqual([]);
+    expect([
+      normalized.phone,
+      normalized.website,
+      normalized.avgVisitMinutes,
+      normalized.isLodging,
+      normalized.curatedRank,
+    ]).toEqual([null, null, null, null, null]);
+  });
+
+  it('offers phone and website as canonical fields instead of retiring them', () => {
+    expect(CANONICAL_FIELDS).toContain('phone');
+    expect(CANONICAL_FIELDS).toContain('website');
+    // `address` stays retired: `address_text` comes from the provider, and a
+    // sheet's own address string has no writer beside it.
+    expect(RETIRED_FIELDS).toEqual(['address']);
+    const { mapping } = resolveMapping(['source_row_id', 'Số điện thoại', 'website', 'category']);
+    expect(mapping['Số điện thoại']).toBe('phone');
+    expect(mapping['website']).toBe('website');
   });
 });
 

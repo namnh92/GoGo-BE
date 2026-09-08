@@ -1666,6 +1666,12 @@ export interface paths {
          *     `city` is required only in that last case. A row carrying an id or a link needs none: the administrative identity comes from the coordinate, not from a typed city, and `district` is never administrative evidence.
          *
          *     The canonical `googleMapsUri` is whatever Google returns; the submitted URL is never stored or treated as canonical.
+         *
+         *     **GoGo-owned columns (PI-BE-025).** `phone`, `website`, `avg_visit_minutes`, `is_lodging` and `curated_rank` are accepted and persisted, validated by the same rules the console uses: phone normalises to E.164, website to `http(s)`, `avg_visit_minutes` is 10–720. Every one of them fails the row explicitly rather than being dropped on commit. Values from the file are recorded `editorial` in `place_field_provenance`.
+         *
+         *     `places.suitability` is deliberately **not** an import column. `audiences` is the operator-facing vocabulary for the same product concept — who a place suits — and `suitability` is the weighted score GoGo derives from it and from editorial curation. Asking a spreadsheet to author both would be asking one person to write the same fact at two levels of abstraction and keep them consistent. The column and every other API path that writes it are unchanged.
+         *
+         *     `phone` and `website` are no longer retired mapping values; `address` still is, because `address_text` is written from the provider's formatted address and a sheet's own address string has no writer.
          */
         post: operations["createPlaceImport"];
         delete?: never;
@@ -6599,7 +6605,7 @@ export interface components {
          *     Request schemas keep `mapping` as a plain string map: narrowing an existing `/v1` request property to an enum is a breaking change (ADR-0005), so the vocabulary is published here rather than enforced in the wire type. `/v1` rejects no value — one outside this list leaves its column unmapped and is reported. Strict rejection belongs in `/v2`.
          * @enum {string}
          */
-        ImportCanonicalField: "source_row_id" | "name" | "city" | "district" | "google_maps_url" | "google_maps_query" | "google_place_id" | "category" | "category_raw" | "price_min" | "price_max" | "price_unit" | "price_raw" | "audiences" | "audiences_raw" | "vibes" | "vibes_raw" | "highlight" | "note";
+        ImportCanonicalField: "source_row_id" | "name" | "city" | "district" | "google_maps_url" | "google_maps_query" | "google_place_id" | "category" | "category_raw" | "price_min" | "price_max" | "price_unit" | "price_raw" | "audiences" | "audiences_raw" | "vibes" | "vibes_raw" | "highlight" | "note" | "phone" | "website" | "avg_visit_minutes" | "is_lodging" | "curated_rank";
         ImportJob: components["schemas"]["ImportJobSummary"] & {
             defaultCity?: string | null;
             rowsByStatus?: {

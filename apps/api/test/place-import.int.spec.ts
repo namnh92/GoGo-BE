@@ -2328,3 +2328,157 @@ describe('PI-BE-024 — Place ID identity', () => {
     expect(places.tiersRequested.length).toBe(before);
   });
 });
+
+/**
+ * PI-BE-025 — the GoGo-owned columns reach the catalogue.
+ *
+ * The audit's rule for this task: no accepted column may disappear during
+ * persistence. So the assertion is not that the parser read the value — it is
+ * that the row on `places` holds it after the publish.
+ */
+describe('PI-BE-025 — GoGo-owned columns persist', () => {
+  const HEADERS = [
+    'source_row_id',
+    'google_place_id',
+    'category',
+    'phone',
+    'website',
+    'avg_visit_minutes',
+    'is_lodging',
+    'curated_rank',
+    'highlight',
+  ];
+
+  it('writes every column the sheet supplied, and records who claimed them', async () => {
+    const editor = await createAdmin('gogo-cols@gogo.local', 'editor');
+    const ops = await createAdmin('gogo-cols-ops@gogo.local', 'ops_admin');
+    places.seed({
+      providerPlaceId: 'fake-gogo-cols',
+      name: 'Khách Sạn Nào Đó',
+      lat: 21.03,
+      lng: 105.81,
+      primaryType: 'cafe',
+      types: ['cafe'],
+    });
+
+    sheets.seed('GogoColsGogoColsGogoColsGogoCols01', 'C', [
+      HEADERS,
+      [
+        'R1',
+        'fake-gogo-cols',
+        'cafe',
+        '028 3822 9999',
+        'chaoban.vn/menu',
+        '90',
+        'true',
+        '3',
+        'Bar tầng thượng',
+      ],
+    ]);
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: 'GogoColsGogoColsGogoColsGogoCols01',
+        sheets: ['C'],
+        mode: 'create_drafts',
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const job = created.json();
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(job.id);
+
+    const published = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(published.statusCode, published.body).toBe(201);
+    expect(published.json().created).toBe(1);
+
+    const rows = await imports.listRows(job.id as string, { limit: 10, offset: 0 });
+    const placeId = rows.items[0]!.matchedPlaceId as string;
+    const [place] = await db.select().from(schema.places).where(eq(schema.places.id, placeId));
+
+    expect(place).toMatchObject({
+      phone: '+842838229999',
+      website: 'https://chaoban.vn/menu',
+      avgVisitMinutes: 90,
+      isLodging: true,
+      curatedRank: 3,
+      description: 'Bar tầng thượng',
+    });
+    // PI-CMS-009 — `suitability` is not an import column, so an imported place
+    // has whatever the schema defaults it to and nothing the file said.
+    expect(place!.suitability).toBeNull();
+
+    // The import wrote no provenance at all before this, so a field with no
+    // recorded origin was indistinguishable from one GoGo authored.
+    const provenance = await db
+      .select()
+      .from(schema.placeFieldProvenance)
+      .where(eq(schema.placeFieldProvenance.placeId, placeId));
+    const byField = new Map(provenance.map((row) => [row.field, row]));
+    for (const field of ['description', 'phone', 'website']) {
+      expect(byField.get(field), field).toMatchObject({ sourceType: 'editorial' });
+    }
+    // The sheet let the provider name the place, so it claimed no name.
+    expect(byField.has('name')).toBe(false);
+  });
+
+  it('fails the row instead of dropping a value it cannot store', async () => {
+    const editor = await createAdmin('gogo-cols-bad@gogo.local', 'editor');
+    places.seed({ providerPlaceId: 'fake-cols-bad', name: 'Quán Lỗi', lat: 21.02, lng: 105.8 });
+
+    sheets.seed('GogoColsBadGogoColsBadGogoColsBad1', 'C', [
+      HEADERS,
+      [
+        'R1',
+        'fake-cols-bad',
+        'cafe',
+        'gọi cho Nam',
+        'javascript:alert(1)',
+        '5',
+        'couple:0.9',
+        'có lẽ',
+        '-2',
+        '',
+      ],
+    ]);
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: {
+        spreadsheetUrl: 'GogoColsBadGogoColsBadGogoColsBad1',
+        sheets: ['C'],
+        mode: 'dry_run',
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+
+    const rows = await imports.listRows(created.json().id as string, { limit: 10, offset: 0 });
+    const codes = rows.items[0]!.errors.map((e: { code: string }) => e.code);
+    expect(rows.items[0]!.status).toBe('validation_failed');
+    for (const code of [
+      'PHONE_INVALID',
+      'WEBSITE_INVALID',
+      'AVG_VISIT_INVALID',
+      'IS_LODGING_INVALID',
+      'CURATED_RANK_INVALID',
+    ]) {
+      expect(codes, code).toContain(code);
+    }
+  });
+});

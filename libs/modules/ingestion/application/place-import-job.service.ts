@@ -1867,8 +1867,54 @@ export class PlaceImportJobService {
           priceLevel: details.priceLevel,
           confidence: '0.70',
           freshnessCheckedAt: new Date(),
+          /**
+           * PI-BE-025 — the GoGo-owned values the sheet carried.
+           *
+           * Written only where the file actually said something: `undefined`
+           * leaves the column at its default, which is what an empty cell
+           * means. They are normalized at parse time, so what lands here is the
+           * same shape the console would have written.
+           */
+          ...(normalized.phone !== null ? { phone: normalized.phone } : {}),
+          ...(normalized.website !== null ? { website: normalized.website } : {}),
+          ...(normalized.avgVisitMinutes !== null
+            ? { avgVisitMinutes: normalized.avgVisitMinutes }
+            : {}),
+          ...(normalized.isLodging !== null ? { isLodging: normalized.isLodging } : {}),
+          ...(normalized.curatedRank !== null ? { curatedRank: normalized.curatedRank } : {}),
         })
         .returning();
+
+      /**
+       * PI-BE-025 — provenance for what the file claimed.
+       *
+       * The import wrote no provenance row at all before this, so a place
+       * created from a sheet had columns with no recorded origin — and a field
+       * missing from that map is one the console must describe as unknown
+       * rather than default to "GoGo". A value an operator typed into a sheet
+       * is their claim, exactly as a value typed into the editor is, so it is
+       * recorded `editorial`.
+       *
+       * `name` is only claimed when the sheet supplied one: a row that let the
+       * provider name the place did not author that name.
+       */
+      const claimed: string[] = [
+        ...(normalized.name ? ['name'] : []),
+        ...(normalized.highlight ? ['description'] : []),
+        ...(normalized.phone !== null ? ['phone'] : []),
+        ...(normalized.website !== null ? ['website'] : []),
+      ];
+      if (claimed.length > 0) {
+        await tx.insert(schema.placeFieldProvenance).values(
+          claimed.map((field) => ({
+            placeId: place!.id,
+            field,
+            sourceType: 'editorial' as const,
+            sourceReference: null,
+            actorId: null,
+          })),
+        );
+      }
 
       for (const h of details.hours) {
         await tx.insert(schema.placeHours).values({

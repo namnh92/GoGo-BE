@@ -1,6 +1,7 @@
 import type { IngestMessage } from '@gogo/database';
 import { parseMapsUrl } from './maps-url';
 import { parseAudiences, parsePrice, parseVibes, type PriceUnit } from './normalize-row';
+import { normalizePhone, normalizeWebsite } from '../../shared/place-contact';
 import type { CanonicalField } from './column-mapping';
 import { INGEST_LIMITS } from './tabular/limits';
 
@@ -44,6 +45,19 @@ export type NormalizedImportRow = {
   vibes: string[];
   highlight: string | null;
   note: string | null;
+  /**
+   * PI-BE-025 — GoGo-owned values the file may now carry.
+   *
+   * Normalized here, at parse time, so a dry run tells an operator their phone
+   * column is wrong before a single provider request is spent on the job. The
+   * normalizers are the console's own (`shared/place-contact`), so one phone
+   * written three ways lands as one phone whichever door it came through.
+   */
+  phone: string | null;
+  website: string | null;
+  avgVisitMinutes: number | null;
+  isLodging: boolean | null;
+  curatedRank: number | null;
 };
 
 export type ValidatedRow = {
@@ -274,6 +288,74 @@ export function validateRow(
     warnings,
   );
 
+  /**
+   * PI-BE-025 — the GoGo-owned columns, validated by the rules that already
+   * govern them elsewhere rather than by a second set written for the import.
+   *
+   * Every failure below is an **error**, not a warning: a value the operator
+   * typed and GoGo cannot store is a value that would vanish silently on
+   * commit, which is the exact defect the price unit had.
+   */
+  let phone: string | null = null;
+  const rawPhone = raw.phone?.trim();
+  if (rawPhone) {
+    const normalizedPhone = normalizePhone(rawPhone);
+    if (normalizedPhone.ok) phone = normalizedPhone.value;
+    else errors.push(msg('PHONE_INVALID', 'phone', normalizedPhone.issue.message));
+  }
+
+  let website: string | null = null;
+  const rawWebsite = raw.website?.trim();
+  if (rawWebsite) {
+    const normalizedWebsite = normalizeWebsite(rawWebsite);
+    if (normalizedWebsite.ok) website = normalizedWebsite.value;
+    else errors.push(msg('WEBSITE_INVALID', 'website', normalizedWebsite.issue.message));
+  }
+
+  let avgVisitMinutes: number | null = null;
+  const rawVisit = raw.avg_visit_minutes?.trim();
+  if (rawVisit) {
+    const parsed = Number(rawVisit);
+    // The same 10..720 floor the console enforces: a place worth ten minutes is
+    // a typo, and `0` is what an empty number box used to send.
+    if (!Number.isInteger(parsed) || parsed < 10 || parsed > 720) {
+      errors.push(
+        msg(
+          'AVG_VISIT_INVALID',
+          'avg_visit_minutes',
+          `avg_visit_minutes phải là số nguyên 10–720 phút: ${rawVisit}`,
+        ),
+      );
+    } else avgVisitMinutes = parsed;
+  }
+
+  let curatedRank: number | null = null;
+  const rawRank = raw.curated_rank?.trim();
+  if (rawRank) {
+    const parsed = Number(rawRank);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      errors.push(
+        msg(
+          'CURATED_RANK_INVALID',
+          'curated_rank',
+          `curated_rank phải là số nguyên ≥ 0: ${rawRank}`,
+        ),
+      );
+    } else curatedRank = parsed;
+  }
+
+  let isLodging: boolean | null = null;
+  const rawLodging = raw.is_lodging?.trim().toLowerCase();
+  if (rawLodging) {
+    if (['true', '1', 'yes', 'x', 'có', 'co'].includes(rawLodging)) isLodging = true;
+    else if (['false', '0', 'no', 'không', 'khong'].includes(rawLodging)) isLodging = false;
+    else {
+      errors.push(
+        msg('IS_LODGING_INVALID', 'is_lodging', `is_lodging phải là true/false: ${rawLodging}`),
+      );
+    }
+  }
+
   for (const [field, value] of Object.entries(raw)) {
     if (value && value.length > INGEST_LIMITS.maxCellChars) {
       errors.push(msg('CELL_TOO_LONG', field, `Ô ${field} vượt quá độ dài cho phép`));
@@ -298,6 +380,11 @@ export function validateRow(
       vibes,
       highlight: raw.highlight?.trim() || null,
       note: raw.note?.trim() || null,
+      phone,
+      website,
+      avgVisitMinutes,
+      isLodging,
+      curatedRank,
     },
     errors,
     warnings,
