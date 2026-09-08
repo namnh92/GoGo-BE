@@ -20,6 +20,7 @@ import {
 } from '../domain/mapping-status';
 import { evaluateStaleness, type StaleVerdict } from '../domain/staleness';
 import { AdministrativeResolverRepository } from '../infrastructure/administrative-resolver.repository';
+import type { Executor } from './unit-lookup';
 
 /**
  * ADM-006 (#459) / ADR-0019 §7, §10 — the resolver, wired to the database.
@@ -54,7 +55,50 @@ export type ResolveOptions = {
   allowRematchRejected?: boolean;
 };
 
+/**
+ * ADM-015 — a point to be classified, with or without a place behind it.
+ *
+ * `subjectId` is only ever a label: it travels into `Resolution.placeId`, the
+ * audit row and the metric, and nothing dereferences it. For a stored place it
+ * is the place id; for an import row previewing what it would become, it is the
+ * row id — which is the honest answer to "what did this resolution describe",
+ * because at preview time no place exists to name.
+ */
+export type GeometrySubject = {
+  subjectId: string;
+  geometry: { lng: number; lat: number } | null;
+  city?: string | null;
+  district?: string | null;
+  /** Defaults to an unmapped subject: nothing claimed, nothing to protect. */
+  current?: CurrentMapping;
+};
+
+/** Nothing is claimed yet. Used for a preview and for an unbiased re-read. */
+export const NO_MAPPING: CurrentMapping = {
+  status: 'UNMAPPED',
+  provinceCode: null,
+  communeCode: null,
+  legacyDistrictCode: null,
+  method: null,
+  datasetVersion: null,
+  boundaryVersion: null,
+};
+
 export type PersistOutcome = 'written' | 'noop' | 'conflict' | 'blocked';
+
+export type PersistOptions = {
+  actor?: { id: string | null; type: 'admin' | 'system' };
+  /** Optimistic concurrency: the `updated_at` the caller last saw. */
+  expectedUpdatedAt?: Date;
+  allowRematchRejected?: boolean;
+  /**
+   * ADM-008: the enrichment run this write belongs to. Recorded on the audit
+   * row so a mapping can be traced back to the run that made it — which is what
+   * keeps a bulk run accountable without an audit row per place that was left
+   * alone.
+   */
+  runId?: string;
+};
 
 export type PersistResult = {
   outcome: PersistOutcome;
@@ -76,36 +120,89 @@ export class AdministrativeResolverService {
 
   /** Resolves one stored place against a dataset version. Writes nothing. */
   async resolvePlace(placeId: string, options: ResolveOptions = {}): Promise<Resolution> {
-    const startedAt = Date.now();
-    const place = await this.placeRow(placeId);
-    const dataset = await this.datasetFor(options.datasetVersionId);
+    return this.resolvePlaceWithin(this.db, placeId, options);
+  }
 
-    const current: CurrentMapping = {
-      status: place.administrativeMappingStatus,
-      provinceCode: place.provinceCode,
-      communeCode: place.communeCode,
-      legacyDistrictCode: place.legacyDistrictCode,
-      method: place.administrativeMappingSource,
-      datasetVersion: place.administrativeDatasetVersion,
-      boundaryVersion: place.administrativeBoundaryVersion,
-    };
+  /**
+   * ADM-015 — the same resolution, read through the caller's transaction.
+   *
+   * Create and edit resolve a place inside the transaction that just wrote it.
+   * Going through the pool instead would either miss the row altogether or read
+   * the geometry it had before the save, and classifying stale geometry is
+   * worse than not classifying at all: it produces a confident answer about a
+   * position the place no longer holds.
+   */
+  async resolvePlaceWithin(
+    executor: Executor,
+    placeId: string,
+    options: ResolveOptions = {},
+  ): Promise<Resolution> {
+    const place = await this.placeRow(executor, placeId);
+    return this.resolveSubject(
+      executor,
+      {
+        subjectId: placeId,
+        geometry: place.geom ? { lng: place.geom.x, lat: place.geom.y } : null,
+        city: place.city,
+        district: place.district,
+        current: {
+          status: place.administrativeMappingStatus,
+          provinceCode: place.provinceCode,
+          communeCode: place.communeCode,
+          legacyDistrictCode: place.legacyDistrictCode,
+          method: place.administrativeMappingSource,
+          datasetVersion: place.administrativeDatasetVersion,
+          boundaryVersion: place.administrativeBoundaryVersion,
+        },
+      },
+      options,
+    );
+  }
+
+  /**
+   * ADM-015 — classify a point that has no place row behind it.
+   *
+   * The import wizard has to show an operator which commune a row will land in
+   * *before* anything is created, and the create form has to show it for a
+   * Google link the editor has not yet saved. Both are the same question the
+   * backfill asks of a stored place, and answering them with a second, slightly
+   * different code path is how a preview starts disagreeing with the commit.
+   * Same evidence gathering, same `adjudicate`, same reasons.
+   */
+  async resolveGeometry(
+    subject: GeometrySubject,
+    options: ResolveOptions & { executor?: Executor } = {},
+  ): Promise<Resolution> {
+    const { executor, ...rest } = options;
+    return this.resolveSubject(executor ?? this.db, subject, rest);
+  }
+
+  private async resolveSubject(
+    executor: Executor,
+    subject: GeometrySubject,
+    options: ResolveOptions,
+  ): Promise<Resolution> {
+    const startedAt = Date.now();
+    const dataset = await this.datasetFor(executor, options.datasetVersionId);
+
+    const current = subject.current ?? NO_MAPPING;
     const boundaryVersion =
       options.boundaryVersion === undefined
         ? dataset.boundarySourceVersion
         : options.boundaryVersion;
 
-    const { evidence, reasons } = await this.gather({
+    const { evidence, reasons } = await this.gather(executor, {
       datasetVersionId: dataset.id,
       boundaryVersion,
-      geometry: place.geom,
-      city: place.city,
-      district: place.district,
+      geometry: subject.geometry,
+      city: subject.city ?? null,
+      district: subject.district ?? null,
       current,
       ...(options.trustedCodes === undefined ? {} : { trustedCodes: options.trustedCodes }),
     });
 
     const resolution = adjudicate({
-      placeId,
+      placeId: subject.subjectId,
       datasetVersion: dataset.combinedDatasetVersion,
       boundaryVersion,
       current,
@@ -146,8 +243,8 @@ export class AdministrativeResolverService {
    * and nothing here re-points a `VERIFIED` place.
    */
   async evaluateStalenessFor(placeId: string): Promise<StaleVerdict> {
-    const place = await this.placeRow(placeId);
-    const dataset = await this.datasetFor(undefined);
+    const place = await this.placeRow(this.db, placeId);
+    const dataset = await this.datasetFor(this.db, undefined);
     const current: CurrentMapping = {
       status: place.administrativeMappingStatus,
       provinceCode: place.provinceCode,
@@ -185,24 +282,32 @@ export class AdministrativeResolverService {
    * place and mark it `VERIFIED`, and an unattended run that overwrote that
    * would be exactly the failure the matrix exists to prevent.
    */
-  async persist(
+  async persist(resolution: Resolution, options: PersistOptions = {}): Promise<PersistResult> {
+    const result = await this.db.transaction((tx) => this.persistWithin(tx, resolution, options));
+    this.countPersist(result);
+    return result;
+  }
+
+  /**
+   * ADM-015 — the same write, inside the caller's transaction.
+   *
+   * Create, edit and import all write the mapping in the transaction that
+   * writes the place. Two transactions would mean a place that exists with no
+   * mapping, or a mapping row updated for a place whose save then rolled back.
+   *
+   * The metric is **not** recorded here: a caller's transaction can still roll
+   * back after this returns, and counting a write that never landed is worse
+   * than not counting it. Call {@link countPersist} once the outer transaction
+   * has committed — `persist` above is the shape to copy.
+   */
+  async persistWithin(
+    tx: Executor,
     resolution: Resolution,
-    options: {
-      actor?: { id: string | null; type: 'admin' | 'system' };
-      /** Optimistic concurrency: the `updated_at` the caller last saw. */
-      expectedUpdatedAt?: Date;
-      allowRematchRejected?: boolean;
-      /**
-       * ADM-008: the enrichment run this write belongs to. Recorded on the
-       * audit row so a mapping can be traced back to the run that made it —
-       * which is what keeps a bulk run accountable without an audit row per
-       * place that was left alone.
-       */
-      runId?: string;
-    } = {},
+    options: PersistOptions = {},
   ): Promise<PersistResult> {
-    const result = await this.db.transaction(async (tx) => {
-      const [row] = await tx
+    const executor = tx as Db;
+    {
+      const [row] = await executor
         .select()
         .from(schema.places)
         .where(eq(schema.places.id, resolution.placeId))
@@ -267,12 +372,12 @@ export class AdministrativeResolverService {
         };
       }
 
-      await tx
+      await executor
         .update(schema.places)
         .set({ ...next, updatedAt: new Date() })
         .where(eq(schema.places.id, resolution.placeId));
 
-      await writeAudit(tx, {
+      await writeAudit(executor, {
         actorType: options.actor?.type ?? 'system',
         actorId: options.actor?.id ?? null,
         action: 'administrative_mapping.resolve',
@@ -328,11 +433,17 @@ export class AdministrativeResolverService {
         placeId: resolution.placeId,
         status: resolution.status,
       };
-    });
+    }
+  }
 
-    // `conflict` and `blocked` are renamed at the metric boundary because the
-    // words matter on a dashboard: one is two writers racing, the other is the
-    // reviewer-owned rule holding.
+  /**
+   * Counts one committed mapping write.
+   *
+   * `conflict` and `blocked` are renamed at the metric boundary because the
+   * words matter on a dashboard: one is two writers racing, the other is the
+   * reviewer-owned rule holding.
+   */
+  countPersist(result: PersistResult): void {
     const outcome =
       result.outcome === 'conflict'
         ? 'concurrency_conflict'
@@ -340,7 +451,72 @@ export class AdministrativeResolverService {
           ? 'protected'
           : result.outcome;
     this.metrics.increment('administrative_mapping_writes_total', { outcome });
-    return result;
+  }
+
+  /**
+   * ADM-016 — a reviewer's verified mapping that the place has since moved away
+   * from.
+   *
+   * `STALE` is the state that already means "known invalid, not yet
+   * re-resolved", and it is the only honest place for a `VERIFIED` mapping
+   * whose geometry an editor has just contradicted. The codes stay, and so does
+   * `administrative_mapped_by`: that person really did verify those codes, and
+   * erasing them would lose the one fact a later reviewer needs — who to ask.
+   * What the row loses is the claim to permit publication, which `STALE`
+   * already blocks.
+   *
+   * Nothing here re-points a mapping. Choosing the new commune is a person's
+   * job, and this is the state that puts it in front of one.
+   */
+  async markStaleWithin(
+    tx: Executor,
+    placeId: string,
+    input: {
+      reason: string;
+      actor?: { id: string | null; type: 'admin' | 'system' } | undefined;
+      /** What the resolver would say now, recorded as the contradiction. */
+      proposal?: Pick<Resolution, 'provinceCode' | 'communeCode' | 'status' | 'method'> | undefined;
+    },
+  ): Promise<boolean> {
+    const executor = tx as Db;
+    const [row] = await executor
+      .select()
+      .from(schema.places)
+      .where(eq(schema.places.id, placeId))
+      .limit(1)
+      .for('update');
+    // Only a verified mapping goes stale this way. Anything else is either
+    // rewritable by the resolver or is `REJECTED`, which nothing may touch.
+    if (!row || row.administrativeMappingStatus !== 'VERIFIED') return false;
+
+    const now = new Date();
+    await executor
+      .update(schema.places)
+      .set({ administrativeMappingStatus: 'STALE', updatedAt: now })
+      .where(eq(schema.places.id, placeId));
+
+    await writeAudit(executor, {
+      actorType: input.actor?.type ?? 'system',
+      actorId: input.actor?.id ?? null,
+      action: 'administrative_mapping.stale',
+      resourceType: 'place',
+      resourceId: placeId,
+      diff: {
+        from: { status: 'VERIFIED', mappedBy: row.administrativeMappedBy },
+        // The reviewer keeps their row: the verification happened, and it is
+        // the place that moved out from under it.
+        to: { status: 'STALE', mappedBy: row.administrativeMappedBy },
+        keptCodes: {
+          provinceCode: row.provinceCode,
+          communeCode: row.communeCode,
+          legacyDistrictCode: row.legacyDistrictCode,
+        },
+        reason: input.reason,
+        ...(input.proposal ? { contradictedBy: input.proposal } : {}),
+      },
+    });
+    this.metrics.increment('administrative_mapping_writes_total', { outcome: 'staled' });
+    return true;
   }
 
   /**
@@ -351,22 +527,25 @@ export class AdministrativeResolverService {
    * and a disagreement between an explicit code and the geometry is the single
    * most useful thing this resolver can tell a reviewer.
    */
-  private async gather(input: {
-    datasetVersionId: string;
-    boundaryVersion: string | null;
-    geometry: { x: number; y: number } | null;
-    city: string | null;
-    district: string | null;
-    current: CurrentMapping;
-    trustedCodes?: ResolveOptions['trustedCodes'];
-  }): Promise<{ evidence: Evidence[]; reasons: ResolverReason[] }> {
+  private async gather(
+    executor: Executor,
+    input: {
+      datasetVersionId: string;
+      boundaryVersion: string | null;
+      geometry: { lng: number; lat: number } | null;
+      city: string | null;
+      district: string | null;
+      current: CurrentMapping;
+      trustedCodes?: ResolveOptions['trustedCodes'];
+    },
+  ): Promise<{ evidence: Evidence[]; reasons: ResolverReason[] }> {
     const evidence: Evidence[] = [];
     const reasons: ResolverReason[] = [];
 
-    await this.fromTrustedCodes(input, evidence);
-    await this.fromBoundary(input, evidence, reasons);
-    const provinceCode = await this.fromNames(input, evidence, reasons);
-    await this.fromHistory(input, provinceCode, evidence, reasons);
+    await this.fromTrustedCodes(executor, input, evidence);
+    await this.fromBoundary(executor, input, evidence, reasons);
+    const provinceCode = await this.fromNames(executor, input, evidence, reasons);
+    await this.fromHistory(executor, input, provinceCode, evidence, reasons);
 
     if (evidence.length === 0 && reasons.length === 0) reasons.push('NO_EVIDENCE');
     return { evidence, reasons };
@@ -374,6 +553,7 @@ export class AdministrativeResolverService {
 
   /** Precedence 2: codes an import or an editor asserted outright. */
   private async fromTrustedCodes(
+    executor: Executor,
     input: { datasetVersionId: string; trustedCodes?: ResolveOptions['trustedCodes'] },
     evidence: Evidence[],
   ): Promise<void> {
@@ -385,6 +565,7 @@ export class AdministrativeResolverService {
         input.datasetVersionId,
         trusted.communeCode,
         'COMMUNE',
+        executor,
       );
       const province = trusted.provinceCode ?? commune?.parentCode ?? null;
       evidence.push({
@@ -403,6 +584,7 @@ export class AdministrativeResolverService {
         input.datasetVersionId,
         trusted.provinceCode,
         'PROVINCE',
+        executor,
       );
       evidence.push({
         method: 'trusted_code',
@@ -418,6 +600,7 @@ export class AdministrativeResolverService {
       const periods = await this.repository.unitPeriods(
         input.datasetVersionId,
         trusted.legacyDistrictCode,
+        executor,
       );
       const district = periods.find((p) => p.level === 'LEGACY_DISTRICT');
       evidence.push({
@@ -434,10 +617,11 @@ export class AdministrativeResolverService {
 
   /** Precedence 3: containment against the pinned boundary release. */
   private async fromBoundary(
+    executor: Executor,
     input: {
       datasetVersionId: string;
       boundaryVersion: string | null;
-      geometry: { x: number; y: number } | null;
+      geometry: { lng: number; lat: number } | null;
     },
     evidence: Evidence[],
     reasons: ResolverReason[],
@@ -452,7 +636,7 @@ export class AdministrativeResolverService {
       this.metrics.increment('administrative_boundary_matches_total', { outcome: 'skipped' });
       return;
     }
-    const point = { lng: input.geometry.x, lat: input.geometry.y };
+    const point = input.geometry;
     if (!isUsablePoint(point)) {
       // Checked before the query, not after: a NaN reaches PostGIS as a
       // parameter and comes back as an error, and (0,0) is in the Gulf of
@@ -465,13 +649,18 @@ export class AdministrativeResolverService {
     }
 
     const pipStartedAt = Date.now();
-    const matches = await this.repository.containing(input.boundaryVersion, point);
+    const matches = await this.repository.containing(input.boundaryVersion, point, executor);
     this.metrics.observe('administrative_pip_duration_seconds', (Date.now() - pipStartedAt) / 1000);
     const communes = matches.filter((m) => m.level === 'COMMUNE');
 
     if (communes.length === 1) {
       const match = communes[0]!;
-      const unit = await this.repository.currentUnit(input.datasetVersionId, match.code, 'COMMUNE');
+      const unit = await this.repository.currentUnit(
+        input.datasetVersionId,
+        match.code,
+        'COMMUNE',
+        executor,
+      );
       evidence.push({
         method: 'boundary_point_in_polygon',
         // A unique commune implies its province; the polygon carries it.
@@ -544,6 +733,7 @@ export class AdministrativeResolverService {
    * pass can use it to narrow.
    */
   private async fromNames(
+    executor: Executor,
     input: { datasetVersionId: string; city: string | null; district: string | null },
     evidence: Evidence[],
     reasons: ResolverReason[],
@@ -554,6 +744,7 @@ export class AdministrativeResolverService {
         input.datasetVersionId,
         normalizeVietnamese(input.city),
         { level: 'PROVINCE', period: 'current' },
+        executor,
       );
       if (provinces.length === 1) provinceCode = provinces[0]!.code;
       else if (provinces.length > 1) reasons.push('AMBIGUOUS_NAME');
@@ -585,6 +776,7 @@ export class AdministrativeResolverService {
         // city the duplicates stay a review task.
         ...(provinceCode ? { parentCode: provinceCode } : {}),
       },
+      executor,
     );
 
     if (communes.length === 1) {
@@ -636,6 +828,7 @@ export class AdministrativeResolverService {
    * exactly one successor GoGo is willing to assert?
    */
   private async fromHistory(
+    executor: Executor,
     input: {
       datasetVersionId: string;
       district: string | null;
@@ -651,6 +844,7 @@ export class AdministrativeResolverService {
       const periods = await this.repository.unitPeriods(
         input.datasetVersionId,
         input.current.communeCode,
+        executor,
       );
       // A code is not an identity: 00004 has two periods, and only the ended
       // one is the unit this place was mapped to.
@@ -671,6 +865,7 @@ export class AdministrativeResolverService {
         input.datasetVersionId,
         normalized,
         { level: 'LEGACY_DISTRICT', period: 'historical' },
+        executor,
       );
       if (districts.length === 1) {
         evidence.push({
@@ -687,12 +882,13 @@ export class AdministrativeResolverService {
         input.datasetVersionId,
         normalized,
         { level: 'COMMUNE', period: 'historical' },
+        executor,
       );
       if (communes.length === 1) historicalCodes.add(communes[0]!.code);
     }
 
     for (const code of historicalCodes) {
-      const edges = await this.repository.successorsOf(input.datasetVersionId, code);
+      const edges = await this.repository.successorsOf(input.datasetVersionId, code, executor);
       const targets = [...new Set(edges.map((e) => e.newCode))];
 
       if (targets.length === 1) {
@@ -700,6 +896,7 @@ export class AdministrativeResolverService {
           input.datasetVersionId,
           targets[0]!,
           'COMMUNE',
+          executor,
         );
         evidence.push({
           method: 'change_mapping',
@@ -732,14 +929,14 @@ export class AdministrativeResolverService {
       // importer quarantined precisely because the upstream offers a default
       // target that ADR-0019 forbids anyone from trusting. Name similarity
       // cannot break the tie, so nothing here tries.
-      if ((await this.repository.quarantinedCount(input.datasetVersionId, code)) > 0) {
+      if ((await this.repository.quarantinedCount(input.datasetVersionId, code, executor)) > 0) {
         reasons.push('DIVIDED_CHANGE');
       }
     }
   }
 
-  private async placeRow(placeId: string) {
-    const [row] = await this.db
+  private async placeRow(executor: Executor, placeId: string) {
+    const [row] = await (executor as Db)
       .select()
       .from(schema.places)
       .where(eq(schema.places.id, placeId))
@@ -748,8 +945,8 @@ export class AdministrativeResolverService {
     return row;
   }
 
-  private async datasetFor(datasetVersionId: string | undefined) {
-    const rows = await this.db
+  private async datasetFor(executor: Executor, datasetVersionId: string | undefined) {
+    const rows = await (executor as Db)
       .select()
       .from(schema.administrativeDatasetVersions)
       .where(
