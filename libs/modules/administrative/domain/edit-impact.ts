@@ -59,16 +59,18 @@ export function contradictsStoredMapping(stored: StoredPair, machine: Resolution
 /**
  * Is there anything new for the resolver to look at?
  *
- * The resolver reads four things off a place: its geometry, its `city` text,
- * its `district` text, and whatever codes the request asserted. An edit that
- * touched none of them cannot produce a different answer, so re-running it
- * would be a point-in-polygon query bought for a phone number.
+ * The resolver reads exactly two things off a request: the place's geometry and
+ * whatever codes the request asserted (ADR-0019 §7b). An edit that touched
+ * neither cannot produce a different answer, so re-running it would be a
+ * point-in-polygon query bought for a phone number.
+ *
+ * `city` and `district` were listed here, back when the resolver read them. An
+ * edit to a legacy free-text field must not re-open an administrative question
+ * it can no longer influence.
  */
 export function isMaterialForMapping(input: {
   geometryMoved: boolean;
   codesAsserted: boolean;
-  cityChanged: boolean;
-  districtChanged: boolean;
 }): boolean {
-  return input.geometryMoved || input.codesAsserted || input.cityChanged || input.districtChanged;
+  return input.geometryMoved || input.codesAsserted;
 }

@@ -70,26 +70,19 @@ describe('contradictsStoredMapping', () => {
 
 describe('isMaterialForMapping', () => {
   it('is false for an edit that touched nothing the resolver reads', () => {
-    expect(
-      isMaterialForMapping({
-        geometryMoved: false,
-        codesAsserted: false,
-        cityChanged: false,
-        districtChanged: false,
-      }),
-    ).toBe(false);
+    expect(isMaterialForMapping({ geometryMoved: false, codesAsserted: false })).toBe(false);
   });
 
-  it('is true for each of the four inputs on its own', () => {
-    const off = {
-      geometryMoved: false,
-      codesAsserted: false,
-      cityChanged: false,
-      districtChanged: false,
-    };
+  it('is true for each of the two inputs on its own', () => {
+    const off = { geometryMoved: false, codesAsserted: false };
     expect(isMaterialForMapping({ ...off, geometryMoved: true })).toBe(true);
     expect(isMaterialForMapping({ ...off, codesAsserted: true })).toBe(true);
-    expect(isMaterialForMapping({ ...off, cityChanged: true })).toBe(true);
-    expect(isMaterialForMapping({ ...off, districtChanged: true })).toBe(true);
+  });
+
+  it('takes exactly two inputs — the resolver reads nothing else (ADR-0019 §7b)', () => {
+    // `city` and `district` were once here. The signature is the enforcement:
+    // a caller cannot re-open an administrative question with a free-text edit,
+    // because there is no argument left to say it with.
+    expect(Object.keys({ geometryMoved: false, codesAsserted: false })).toHaveLength(2);
   });
 });

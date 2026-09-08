@@ -338,20 +338,42 @@ describe('creating a place with canonical codes', () => {
     expect(after[0]!.n).toBe(before[0]!.n);
   });
 
-  it('keeps legacy free text without ever letting it choose a code', async () => {
+  it('keeps legacy free text and never reads it as evidence (ADR-0019 §7b)', async () => {
+    // No codes at all, and free text that names a different province and a
+    // dissolved district. If either were still evidence this would be a
+    // two-source conflict and a review task; the coordinate is the only source.
     const created = await createPlace({
       city: 'Thành phố Hồ Chí Minh',
       district: 'Quận 1',
-      provinceCode: mapped.provinceCode,
-      communeCode: mapped.communeCode,
     });
     const row = await placeRow(created.id);
-    // Stored exactly as written — and beaten, as evidence, by the code and the
-    // geometry that agree with each other.
     expect(row.city).toBe('Thành phố Hồ Chí Minh');
     expect(row.district).toBe('Quận 1');
-    expect(row.provinceCode).toBe(mapped.provinceCode);
-    expect(row.communeCode).toBe(mapped.communeCode);
+    expect(row).toMatchObject({
+      provinceCode: mapped.provinceCode,
+      communeCode: mapped.communeCode,
+      administrativeMappingStatus: 'AUTO_MATCHED',
+      administrativeMappingSource: 'boundary_point_in_polygon',
+      // Never derived from a district name — only ever asserted outright.
+      legacyDistrictCode: null,
+    });
+  });
+
+  it('leaves a place with only free text UNMAPPED', async () => {
+    // The coordinate is in no polygon and no codes were sent, so there is
+    // genuinely nothing to go on. Before §7b "Hà Nội" alone was a province.
+    const res = await send(
+      'POST',
+      '/v1/cms/places',
+      'editor',
+      createBody({ lat: outside.lat, lng: outside.lng, city: 'Hà Nội', district: 'Ba Đình' }),
+    );
+    expect(res.statusCode, res.body).toBe(201);
+    expect(await placeRow(res.json().id as string)).toMatchObject({
+      administrativeMappingStatus: 'UNMAPPED',
+      provinceCode: null,
+      communeCode: null,
+    });
   });
 });
 
@@ -418,6 +440,25 @@ describe('editing a place that already has a mapping', () => {
     expect(after.administrativeMappedAt).toEqual(before.administrativeMappedAt);
     // One audit row, from the create. A phone number must not buy a
     // point-in-polygon query, and must not look like a mapping decision.
+    expect(await auditRows('administrative_mapping.resolve', created.id)).toHaveLength(1);
+  });
+
+  it('does not re-resolve when only the legacy free text changed', async () => {
+    const created = await createPlace();
+    const before = await placeRow(created.id);
+
+    const res = await send('PATCH', `/v1/cms/places/${created.id}`, 'editor', {
+      city: 'Thành phố Hồ Chí Minh',
+      district: 'Quận 1',
+    });
+    expect(res.statusCode, res.body).toBe(200);
+
+    const after = await placeRow(created.id);
+    expect(after.city).toBe('Thành phố Hồ Chí Minh');
+    // The resolver cannot see those columns, so an edit to them cannot change
+    // its answer — and must not buy a point-in-polygon query to prove it.
+    expect(after.communeCode).toBe(before.communeCode);
+    expect(after.administrativeMappedAt).toEqual(before.administrativeMappedAt);
     expect(await auditRows('administrative_mapping.resolve', created.id)).toHaveLength(1);
   });
 

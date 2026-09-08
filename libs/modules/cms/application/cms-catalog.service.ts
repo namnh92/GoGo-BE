@@ -1136,12 +1136,9 @@ export class CmsCatalogService {
       input.lat !== undefined &&
       input.lng !== undefined &&
       (before.geom === null || before.geom.x !== input.lng || before.geom.y !== input.lat);
-    const material = isMaterialForMapping({
-      geometryMoved,
-      codesAsserted,
-      cityChanged: input.city !== undefined && (input.city ?? null) !== before.city,
-      districtChanged: input.district !== undefined && (input.district ?? null) !== before.district,
-    });
+    // ADR-0019 §7b — `city` and `district` are not resolver inputs any more, so
+    // editing them cannot change the answer and must not buy a re-resolve.
+    const material = isMaterialForMapping({ geometryMoved, codesAsserted });
     let mappingWrite: PersistResult | null = null;
 
     /**
@@ -1315,8 +1312,6 @@ export class CmsCatalogService {
       {
         subjectId: after.id,
         geometry: after.geom ? { lng: after.geom.x, lat: after.geom.y } : null,
-        city: after.city,
-        district: after.district,
       },
       { executor: tx, ...trusted },
     );
