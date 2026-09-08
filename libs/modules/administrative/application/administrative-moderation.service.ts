@@ -1,5 +1,5 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { and, asc, eq, gt, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, ne, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { DB } from '../../shared/tokens';
@@ -15,6 +15,12 @@ import type { MappingStatus } from '../domain/mapping-status';
 import type { StaleVerdict } from '../domain/staleness';
 import type { Candidate, Evidence, ResolverReason } from '../domain/resolver';
 import { AdministrativeResolverService } from './administrative-resolver.service';
+import {
+  assertCurrentPair,
+  currentUnit as currentUnitOf,
+  legacyDistrictUnit,
+  type Executor,
+} from './unit-lookup';
 
 /**
  * ADM-009 (#462) / ADR-0019 §7 — administrative mapping moderation.
@@ -316,41 +322,14 @@ export class AdministrativeModerationService {
     actor: ModerationActor,
   ): Promise<{ placeId: string; status: MappingStatus; datasetVersion: string }> {
     return this.decide(placeId, input.expectedUpdatedAt, actor, async (tx, place, dataset) => {
-      const commune = await this.currentUnit(dataset.id, input.communeCode, 'COMMUNE', tx);
-      if (!commune) {
-        throw AppError.badRequest(
-          'COMMUNE_NOT_CURRENT',
-          `${input.communeCode} is not a current commune in ${dataset.combinedDatasetVersion}`,
-        );
-      }
-      const province = await this.currentUnit(dataset.id, input.provinceCode, 'PROVINCE', tx);
-      if (!province) {
-        throw AppError.badRequest(
-          'PROVINCE_NOT_CURRENT',
-          `${input.provinceCode} is not a current province in ${dataset.combinedDatasetVersion}`,
-        );
-      }
-      if (commune.parentCode !== input.provinceCode) {
-        throw AppError.badRequest(
-          'HIERARCHY_INVALID',
-          `commune ${input.communeCode} belongs to ${commune.parentCode ?? 'no province'}, ` +
-            `not to ${input.provinceCode}`,
-        );
-      }
-      if (input.legacyDistrictCode) {
-        const legacy = await this.anyUnit(
-          dataset.id,
-          input.legacyDistrictCode,
-          'LEGACY_DISTRICT',
-          tx,
-        );
-        if (!legacy) {
-          throw AppError.badRequest(
-            'LEGACY_DISTRICT_UNKNOWN',
-            `${input.legacyDistrictCode} is not a district in the historical dataset`,
-          );
-        }
-      }
+      // ADM-015 — the same check the create form, the edit form and the import
+      // run. It used to live here as four inline throws, which is three copies
+      // away from where the next caller would have written its own.
+      await assertCurrentPair(tx, dataset, {
+        provinceCode: input.provinceCode,
+        communeCode: input.communeCode,
+        legacyDistrictCode: input.legacyDistrictCode ?? null,
+      });
 
       const now = new Date();
       await tx
@@ -766,33 +745,22 @@ export class AdministrativeModerationService {
     return row as DatasetRow;
   }
 
+  /**
+   * ADM-015 — one lookup, shared with every other caller that validates a pair.
+   *
+   * The `approvalBlock` policy needs `status` and `effectiveTo` as well as the
+   * parent, and `currentUnitOf` only returns units that are already active with
+   * no end date — so those two are constants here rather than columns. Saying
+   * so out loud beats a second query that could disagree with the first.
+   */
   private async currentUnit(
     datasetVersionId: string,
     code: string,
     level: 'PROVINCE' | 'COMMUNE',
-    tx?: Tx,
+    tx?: Executor,
   ) {
-    const executor = tx ?? this.db;
-    const [row] = await executor
-      .select({
-        code: schema.administrativeUnits.code,
-        fullName: schema.administrativeUnits.fullName,
-        parentCode: schema.administrativeUnits.parentCode,
-        status: schema.administrativeUnits.status,
-        effectiveTo: schema.administrativeUnits.effectiveTo,
-      })
-      .from(schema.administrativeUnits)
-      .where(
-        and(
-          eq(schema.administrativeUnits.datasetVersionId, datasetVersionId),
-          eq(schema.administrativeUnits.code, code),
-          eq(schema.administrativeUnits.level, level),
-          eq(schema.administrativeUnits.status, 'ACTIVE'),
-          isNull(schema.administrativeUnits.effectiveTo),
-        ),
-      )
-      .limit(1);
-    return row ?? null;
+    const row = await currentUnitOf(tx ?? this.db, datasetVersionId, code, level);
+    return row ? { ...row, status: 'ACTIVE' as const, effectiveTo: null as string | null } : null;
   }
 
   /**
@@ -800,23 +768,13 @@ export class AdministrativeModerationService {
    * period rather than among current units — asking for a *current* dissolved
    * district would never find one.
    */
-  private async anyUnit(datasetVersionId: string, code: string, level: 'LEGACY_DISTRICT', tx?: Tx) {
-    const executor = tx ?? this.db;
-    const [row] = await executor
-      .select({
-        code: schema.administrativeUnits.code,
-        fullName: schema.administrativeUnits.fullName,
-      })
-      .from(schema.administrativeUnits)
-      .where(
-        and(
-          eq(schema.administrativeUnits.datasetVersionId, datasetVersionId),
-          eq(schema.administrativeUnits.code, code),
-          eq(schema.administrativeUnits.level, level),
-        ),
-      )
-      .limit(1);
-    return row ?? null;
+  private async anyUnit(
+    datasetVersionId: string,
+    code: string,
+    _level: 'LEGACY_DISTRICT',
+    tx?: Executor,
+  ) {
+    return legacyDistrictUnit(tx ?? this.db, datasetVersionId, code);
   }
 
   private async reviewerOf(adminId: string) {

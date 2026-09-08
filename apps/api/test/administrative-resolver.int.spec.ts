@@ -418,10 +418,13 @@ describe('explicitly supplied codes', () => {
   });
 });
 
-describe('names already stored on the place', () => {
-  it('matches an unaccented district under a named city', async () => {
-    // `normalizeVietnamese` folds accents and case, so "ba dinh" and
-    // "Phường Bà Đình" meet in one space. One normalizer, not two.
+describe('ADR-0019 §7b: legacy free text is not evidence', () => {
+  it('does not turn a district name into a commune, however exactly it matches', async () => {
+    // "ba dinh" folds to exactly one current commune, and used to resolve to
+    // it. It must not: the district tier was dissolved on 2025-07-01, so a
+    // commune chosen because somebody typed a district name is a commune
+    // chosen from a hierarchy that no longer exists — and the resulting code is
+    // indistinguishable downstream from one the geometry supports.
     const place = await insertPlace({
       geom: { x: 108.5, y: 12.0 },
       city: 'Hà Nội',
@@ -429,44 +432,81 @@ describe('names already stored on the place', () => {
     });
     const result = await resolver.resolvePlace(place.id);
     expect(result).toMatchObject({
-      status: 'AUTO_MATCHED',
-      method: 'structured_components',
-      provinceCode: '01',
-      communeCode: '00004',
-      confidence: null,
+      status: 'UNMAPPED',
+      provinceCode: null,
+      communeCode: null,
+      method: null,
     });
   });
 
-  it('refuses a name that names several communes under different provinces', async () => {
+  it('does not turn a city name into a province', async () => {
+    // A city cell is what somebody typed to help find a place. It is a search
+    // hint, not a claim about which province the place is in.
+    const place = await insertPlace({ geom: { x: 108.5, y: 12.0 }, city: 'Hà Nội' });
+    const result = await resolver.resolvePlace(place.id);
+    expect(result).toMatchObject({ status: 'UNMAPPED', provinceCode: null, communeCode: null });
+  });
+
+  it('does not report AMBIGUOUS_NAME, because it no longer reads names', async () => {
     const place = await insertPlace({
       geom: { x: 108.5, y: 12.0 },
       district: duplicateName.normalized,
     });
     const result = await resolver.resolvePlace(place.id);
-    expect(result.status).toBe('NEEDS_REVIEW');
-    expect(result.reason).toBe('AMBIGUOUS_NAME');
-    expect(result.candidates.length).toBeGreaterThan(1);
+    expect(result.reason).not.toBe('AMBIGUOUS_NAME');
+    expect(result.status).toBe('UNMAPPED');
+    expect(result.candidates).toEqual([]);
   });
 
-  it('resolves the same name once a city narrows it to one province', async () => {
-    const [province] = await db
+  it('leaves the geometry answer alone when the free text disagrees with it', async () => {
+    // The pin is in Ba Đình, Hà Nội; the text says Hồ Chí Minh. Before §7b that
+    // was a two-source conflict and a review task. There is one source now.
+    const place = await insertPlace({
+      geom: { x: 105.82, y: 21.04 },
+      city: 'Hồ Chí Minh',
+      district: 'Quận 1',
+    });
+    const result = await resolver.resolvePlace(place.id);
+    expect(result).toMatchObject({
+      status: 'AUTO_MATCHED',
+      provinceCode: '01',
+      communeCode: '00004',
+      method: 'boundary_point_in_polygon',
+      reason: null,
+    });
+  });
+
+  it('does not derive a legacy district code from district text either', async () => {
+    // A dissolved district matched by name is still a name match. The only way
+    // a `legacy_district_code` is written is somebody asserting it outright.
+    const [district] = await db
       .select({ name: schema.administrativeUnits.name })
       .from(schema.administrativeUnits)
       .where(
         and(
           eq(schema.administrativeUnits.datasetVersionId, datasetId),
-          eq(schema.administrativeUnits.code, duplicateName.provinces[0]!),
-          eq(schema.administrativeUnits.level, 'PROVINCE'),
+          eq(schema.administrativeUnits.level, 'LEGACY_DISTRICT'),
         ),
-      );
-    const place = await insertPlace({
-      geom: { x: 108.5, y: 12.0 },
-      city: province!.name,
-      district: duplicateName.normalized,
-    });
+      )
+      .orderBy(schema.administrativeUnits.code)
+      .limit(1);
+    const place = await insertPlace({ geom: { x: 105.82, y: 21.04 }, district: district!.name });
     const result = await resolver.resolvePlace(place.id);
-    expect(result.status).toBe('AUTO_MATCHED');
-    expect(result.provinceCode).toBe(duplicateName.provinces[0]);
+    expect(result.legacyDistrictCode).toBeNull();
+  });
+
+  it('still reads the free text back out of the row, untouched', async () => {
+    // Not read as evidence is not the same as erased. ADR-0016 keeps the
+    // columns, and an editor's address survives every resolver run.
+    const place = await insertPlace({
+      geom: { x: 105.82, y: 21.04 },
+      city: 'Hồ Chí Minh',
+      district: 'Quận 1',
+    });
+    await resolver.persist(await resolver.resolvePlace(place.id));
+    const after = await placeRow(place.id);
+    expect(after.city).toBe('Hồ Chí Minh');
+    expect(after.district).toBe('Quận 1');
   });
 });
 
@@ -769,14 +809,20 @@ describe('confidence is definitional, against the real dataset', () => {
       confidence: 1,
     });
 
-    const byName = await insertPlace({
+    // The unnumbered case is now the change mapping: GoGo's own record of a
+    // legal change, trusted enough to resolve and not a measurement of this
+    // place. Name matching used to sit here and no longer resolves anything
+    // (ADR-0019 §7b).
+    const bySuccessor = await insertPlace({
       geom: { x: 108.5, y: 12.0 },
-      city: 'Hà Nội',
-      district: 'ba dinh',
+      communeCode: uniqueSuccessor.oldCode,
+      administrativeMappingStatus: 'AUTO_MATCHED',
+      administrativeMappingSource: 'exact_name',
+      administrativeDatasetVersion: 'legacy-import',
     });
-    expect(await resolver.resolvePlace(byName.id)).toMatchObject({
+    expect(await resolver.resolvePlace(bySuccessor.id)).toMatchObject({
       status: 'AUTO_MATCHED',
-      method: 'structured_components',
+      method: 'change_mapping',
       confidence: null,
     });
   });
@@ -801,8 +847,10 @@ describe('confidence is definitional, against the real dataset', () => {
 
     const unnumbered = await insertPlace({
       geom: { x: 108.5, y: 12.0 },
-      city: 'Hà Nội',
-      district: 'ba dinh',
+      communeCode: uniqueSuccessor.oldCode,
+      administrativeMappingStatus: 'AUTO_MATCHED',
+      administrativeMappingSource: 'exact_name',
+      administrativeDatasetVersion: 'legacy-import',
     });
     await resolver.persist(await resolver.resolvePlace(unnumbered.id));
     const row = await placeRow(unnumbered.id);
@@ -941,6 +989,203 @@ describe('reviewer attribution', () => {
     const after = await placeRow(place.id);
     expect(after.administrativeMappingStatus).toBe('UNMAPPED');
     expect(after.administrativeMappedBy).toBeNull();
+  });
+});
+
+describe('ADM-015: resolution without a place, and inside a caller transaction', () => {
+  it('classifies a bare point the same way it classifies a stored place', async () => {
+    // The import wizard has to show an operator which commune a row lands in
+    // before anything exists to look up. Answering that with a second code path
+    // is how a preview starts disagreeing with the commit, so it is the same
+    // one — and this is the assertion that says so.
+    const place = await insertPlace({ geom: { x: 105.82, y: 21.04 } });
+    const stored = await resolver.resolvePlace(place.id);
+    const bare = await resolver.resolveGeometry({
+      subjectId: 'preview-row-1',
+      geometry: { lng: 105.82, lat: 21.04 },
+    });
+
+    expect(bare).toMatchObject({
+      placeId: 'preview-row-1',
+      status: stored.status,
+      provinceCode: stored.provinceCode,
+      communeCode: stored.communeCode,
+      method: stored.method,
+      confidence: stored.confidence,
+      datasetVersion: stored.datasetVersion,
+      boundaryVersion: stored.boundaryVersion,
+    });
+  });
+
+  it('leaves a point in no polygon UNMAPPED rather than in a review queue', async () => {
+    const bare = await resolver.resolveGeometry({
+      subjectId: 'preview-row-2',
+      geometry: { lng: 108.5, lat: 12.0 },
+    });
+    expect(bare).toMatchObject({ status: 'UNMAPPED', reason: 'NO_BOUNDARY_MATCH' });
+  });
+
+  it('sends a point inside two overlapping polygons to review, with both candidates', async () => {
+    const bare = await resolver.resolveGeometry({
+      subjectId: 'preview-row-3',
+      geometry: { lng: 106.07, lat: 21.07 },
+    });
+    expect(bare.status).toBe('NEEDS_REVIEW');
+    expect(bare.reason).toBe('MULTIPLE_BOUNDARY_MATCHES');
+    expect(bare.candidates.map((c) => c.communeCode).sort()).toEqual(['00025', '00031']);
+  });
+
+  it('takes trusted codes on a bare point, the same evidence path a place uses', async () => {
+    const bare = await resolver.resolveGeometry(
+      { subjectId: 'preview-row-4', geometry: null },
+      { trustedCodes: { provinceCode: '01', communeCode: '00004' } },
+    );
+    expect(bare).toMatchObject({
+      status: 'AUTO_MATCHED',
+      provinceCode: '01',
+      communeCode: '00004',
+      method: 'trusted_code',
+      confidence: 1,
+    });
+  });
+
+  it('sees a place created in the same transaction, which the pool cannot', async () => {
+    await db
+      .transaction(async (tx) => {
+        const [created] = await tx
+          .insert(schema.places)
+          .values({
+            name: 'Quán Trong Giao Dịch',
+            nameNormalized: 'set-by-trigger',
+            geom: { x: 105.82, y: 21.04 },
+          })
+          .returning();
+
+        // The row is invisible outside this transaction, so this is the whole
+        // point of the executor parameter: without it the resolver would raise
+        // PLACE_NOT_FOUND for a place the caller has in its hand.
+        const resolution = await resolver.resolvePlaceWithin(tx, created!.id);
+        expect(resolution).toMatchObject({ status: 'AUTO_MATCHED', communeCode: '00004' });
+
+        const persisted = await resolver.persistWithin(tx, resolution, {
+          actor: { id: null, type: 'system' },
+        });
+        expect(persisted).toMatchObject({ outcome: 'written', status: 'AUTO_MATCHED' });
+
+        const [seen] = await tx
+          .select()
+          .from(schema.places)
+          .where(eq(schema.places.id, created!.id));
+        expect(seen).toMatchObject({ communeCode: '00004', provinceCode: '01' });
+        throw new Error('rollback');
+      })
+      .catch((error: unknown) => {
+        expect((error as Error).message).toBe('rollback');
+      });
+  });
+
+  it('rolls the mapping back with the place when the caller transaction fails', async () => {
+    let createdId = '';
+    await db
+      .transaction(async (tx) => {
+        const [created] = await tx
+          .insert(schema.places)
+          .values({
+            name: 'Quán Rollback',
+            nameNormalized: 'set-by-trigger',
+            geom: { x: 105.82, y: 21.04 },
+          })
+          .returning();
+        createdId = created!.id;
+        await resolver.persistWithin(tx, await resolver.resolvePlaceWithin(tx, createdId));
+        throw new Error('rollback');
+      })
+      .catch(() => undefined);
+
+    // Not "the mapping was rolled back" — the *place* was, and a mapping that
+    // outlived it would be a row pointing at nothing.
+    const [row] = await db.select().from(schema.places).where(eq(schema.places.id, createdId));
+    expect(row).toBeUndefined();
+  });
+
+  it('refuses to overwrite a VERIFIED mapping from inside a caller transaction', async () => {
+    const place = await insertPlace({
+      geom: { x: 105.82, y: 21.04 },
+      provinceCode: '79',
+      communeCode: duplicateName.codes[0]!,
+      administrativeMappingStatus: 'VERIFIED',
+      administrativeMappingSource: 'editor',
+      administrativeDatasetVersion: datasetVersion,
+      administrativeMappedBy: reviewer,
+    });
+
+    await db.transaction(async (tx) => {
+      const resolution = await resolver.resolvePlaceWithin(tx, place.id);
+      const result = await resolver.persistWithin(tx, resolution, {
+        actor: { id: opsAdmin, type: 'admin' },
+      });
+      expect(result).toMatchObject({ outcome: 'blocked', reason: 'REVIEWER_OWNED' });
+    });
+
+    const after = await placeRow(place.id);
+    expect(after.administrativeMappingStatus).toBe('VERIFIED');
+    expect(after.administrativeMappedBy).toBe(reviewer);
+  });
+
+  it('marks a contradicted VERIFIED mapping STALE, keeping its codes and its reviewer', async () => {
+    const place = await insertPlace({
+      geom: { x: 105.82, y: 21.04 },
+      provinceCode: '79',
+      communeCode: duplicateName.codes[0]!,
+      administrativeMappingStatus: 'VERIFIED',
+      administrativeMappingSource: 'editor',
+      administrativeDatasetVersion: datasetVersion,
+      administrativeMappedBy: reviewer,
+    });
+
+    await db.transaction(async (tx) => {
+      const staled = await resolver.markStaleWithin(tx, place.id, {
+        reason: 'GEOMETRY_CONTRADICTS_VERIFIED_MAPPING',
+        actor: { id: opsAdmin, type: 'admin' },
+      });
+      expect(staled).toBe(true);
+    });
+
+    const after = await placeRow(place.id);
+    expect(after).toMatchObject({
+      administrativeMappingStatus: 'STALE',
+      // The verification happened; it is the place that moved out from under
+      // it. Erasing the reviewer would lose the one person worth asking.
+      administrativeMappedBy: reviewer,
+      provinceCode: '79',
+      communeCode: duplicateName.codes[0]!,
+      administrativeMappingSource: 'editor',
+    });
+  });
+
+  it('leaves every non-VERIFIED status alone when asked to mark it stale', async () => {
+    for (const status of ['UNMAPPED', 'AUTO_MATCHED', 'NEEDS_REVIEW', 'REJECTED'] as const) {
+      const place = await insertPlace({
+        geom: { x: 105.82, y: 21.04 },
+        administrativeMappingStatus: status,
+        ...(status === 'UNMAPPED'
+          ? {}
+          : {
+              provinceCode: '01',
+              communeCode: '00004',
+              // `trusted_code`, not `boundary_point_in_polygon`:
+              // `places_administrative_boundary_version_present` requires a
+              // boundary version alongside a boundary-derived mapping, and this
+              // fixture is about the status, not about the evidence.
+              administrativeMappingSource: 'trusted_code',
+              administrativeDatasetVersion: datasetVersion,
+            }),
+      });
+      await db.transaction(async (tx) => {
+        expect(await resolver.markStaleWithin(tx, place.id, { reason: 'test' })).toBe(false);
+      });
+      expect((await placeRow(place.id)).administrativeMappingStatus).toBe(status);
+    }
   });
 });
 

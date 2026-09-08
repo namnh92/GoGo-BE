@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { DB } from '../../shared/tokens';
+import type { Executor } from '../application/unit-lookup';
 
 /**
  * ADM-006 (#459) — the targeted reads the resolver needs, one place at a time.
@@ -53,13 +54,26 @@ export type ChangeEdge = {
 export class AdministrativeResolverRepository {
   constructor(@Inject(DB) private readonly db: Db) {}
 
+  /**
+   * ADM-015 — every read takes an optional executor.
+   *
+   * Resolution now happens inside the transaction that creates or edits a
+   * place, and a repository that always reached for the pool would be reading a
+   * catalogue that does not yet contain the row it is being asked about.
+   * Omitting it keeps the original behaviour for the unattended paths.
+   */
+  private on(executor: Executor | undefined): Db {
+    return (executor ?? this.db) as Db;
+  }
+
   /** A unit that is current in this dataset: active, with no end date. */
   async currentUnit(
     datasetVersionId: string,
     code: string,
     level: 'PROVINCE' | 'COMMUNE',
+    executor?: Executor,
   ): Promise<UnitRecord | null> {
-    const [row] = await this.db
+    const [row] = await this.on(executor)
       .select(UNIT_COLUMNS)
       .from(schema.administrativeUnits)
       .where(
@@ -82,8 +96,12 @@ export class AdministrativeResolverRepository {
    * Phường Ba Đình after it, and a caller that asked for "unit 00004" without
    * saying when has asked an ambiguous question.
    */
-  async unitPeriods(datasetVersionId: string, code: string): Promise<UnitRecord[]> {
-    const rows = await this.db
+  async unitPeriods(
+    datasetVersionId: string,
+    code: string,
+    executor?: Executor,
+  ): Promise<UnitRecord[]> {
+    const rows = await this.on(executor)
       .select(UNIT_COLUMNS)
       .from(schema.administrativeUnits)
       .where(
@@ -117,6 +135,7 @@ export class AdministrativeResolverRepository {
       period: 'current' | 'historical' | 'any';
       parentCode?: string | null;
     },
+    executor?: Executor,
   ): Promise<UnitRecord[]> {
     const conditions = [
       eq(schema.administrativeUnits.datasetVersionId, datasetVersionId),
@@ -134,7 +153,7 @@ export class AdministrativeResolverRepository {
     if (options.parentCode) {
       conditions.push(eq(schema.administrativeUnits.parentCode, options.parentCode));
     }
-    const rows = await this.db
+    const rows = await this.on(executor)
       .select(UNIT_COLUMNS)
       .from(schema.administrativeUnits)
       .where(and(...conditions))
@@ -143,8 +162,12 @@ export class AdministrativeResolverRepository {
   }
 
   /** Canonical successors of a historical code. Quarantined rows are not here. */
-  async successorsOf(datasetVersionId: string, oldCode: string): Promise<ChangeEdge[]> {
-    const rows = await this.db
+  async successorsOf(
+    datasetVersionId: string,
+    oldCode: string,
+    executor?: Executor,
+  ): Promise<ChangeEdge[]> {
+    const rows = await this.on(executor)
       .select({
         oldCode: schema.administrativeUnitChanges.oldCode,
         newCode: schema.administrativeUnitChanges.newCode,
@@ -167,8 +190,12 @@ export class AdministrativeResolverRepository {
    * Whether this historical code sits in quarantine — overwhelmingly because it
    * was divided, which is the case ADR-0019 forbids anyone from guessing.
    */
-  async quarantinedCount(datasetVersionId: string, oldCode: string): Promise<number> {
-    const [row] = await this.db
+  async quarantinedCount(
+    datasetVersionId: string,
+    oldCode: string,
+    executor?: Executor,
+  ): Promise<number> {
+    const [row] = await this.on(executor)
       .select({ n: sql<number>`count(*)::int` })
       .from(schema.administrativeMappingQuarantine)
       .where(
@@ -195,8 +222,9 @@ export class AdministrativeResolverRepository {
   async containing(
     boundaryVersion: string,
     point: { lng: number; lat: number },
+    executor?: Executor,
   ): Promise<BoundaryMatch[]> {
-    const result = await this.db.execute(sql`
+    const result = await this.on(executor).execute(sql`
       select b.code, b.parent_code, b.level, b.name,
              st_intersects(st_boundary(b.geom), st_setsrid(st_makepoint(${point.lng}, ${point.lat}), 4326)) as on_edge
       from administrative_unit_boundaries b
