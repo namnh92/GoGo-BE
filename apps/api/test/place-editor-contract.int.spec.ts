@@ -66,8 +66,16 @@ async function makePlace(overrides: Partial<typeof schema.places.$inferInsert> =
 }
 
 let editor: { id: string; token: string };
-/** The fake bound in test: `seed()` decides what a link resolves to. */
-let places: { seed: (p: Record<string, unknown>) => void };
+/**
+ * The fake bound in test: `seed()` decides what a link resolves to,
+ * `tiersRequested` is what a flow would have been billed for, and `failing`
+ * models a provider that is up but not answering.
+ */
+let places: {
+  seed: (p: Record<string, unknown>) => void;
+  tiersRequested: string[];
+  failing: boolean;
+};
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgis/postgis:16-3.4')
@@ -759,8 +767,9 @@ describe('#465 add a place by Google Maps link', () => {
     expect(body.status).toBe('RESOLVED');
     expect(body.candidate.name).toBe('Cà Phê Bên Đường');
     expect(body.candidate.location).toMatchObject({ lat: 10.7743, lng: 106.7038 });
-    // Shown so the editor can tell two branches of a chain apart. Never stored:
-    // the create endpoint has no field that would accept it.
+    // Shown so the editor can tell two branches of a chain apart, and — since
+    // PI-BE-021 — stored as the provider's own figure when the place is created
+    // (ADR-0020). It is never GoGo's rating and never averaged with one.
     expect(body.candidate.googleRating).toBe(4.4);
     expect(body.candidate.attributions.length).toBeGreaterThan(0);
   });
@@ -986,5 +995,195 @@ describe('#465 add a place by Google Maps link', () => {
       .from(schema.placeSources)
       .where(eq(schema.placeSources.placeId, res.json().id));
     expect(sources).toHaveLength(0);
+  });
+});
+
+/**
+ * PI-BE-021 (#501) — the rest of the answer GoGo already paid for.
+ *
+ * The resolve fetches Place Details at `quality`; the candidate published four
+ * of its fields and threw away the canonical link, the week, the price level
+ * and the types. So a place created from a link had a name, an address and a
+ * coordinate, and Place Detail came back missing exactly what the editor had
+ * been shown a moment earlier.
+ */
+describe('#501 a link fills and keeps every compatible field', () => {
+  const seedRich = (providerPlaceId: string, overrides: Record<string, unknown> = {}) =>
+    places.seed({
+      providerPlaceId,
+      name: 'Lacaph Coffee',
+      addressText: '35 Nguyễn Trãi, Phường Bến Thành, Hồ Chí Minh',
+      lat: 10.7712,
+      lng: 106.6903,
+      rating: 4.6,
+      ratingCount: 1234,
+      priceLevel: 2,
+      primaryType: 'coffee_shop',
+      types: ['coffee_shop', 'cafe', 'food', 'point_of_interest'],
+      googleMapsUri: `https://maps.google.com/?cid=${providerPlaceId}`,
+      hours: [
+        { dayOfWeek: 1, openMinute: 420, closeMinute: 1320, isOvernight: false },
+        { dayOfWeek: 2, openMinute: 420, closeMinute: 1320, isOvernight: false },
+        { dayOfWeek: 6, openMinute: 1200, closeMinute: 120, isOvernight: true },
+      ],
+      ...overrides,
+    });
+
+  it('publishes every field the same Details response already carried', async () => {
+    // `categoryKey` is checked against the live taxonomy, not just proposed
+    // from the static type table — so the vocabulary has to exist.
+    await db
+      .insert(schema.taxonomies)
+      .values({ kind: 'category', key: 'cafe' })
+      .onConflictDoNothing();
+    seedRich('ChIJrich001');
+
+    const before = places.tiersRequested.length;
+    const res = await resolveLink({ url: 'https://www.google.com/maps?place_id=ChIJrich001' });
+    expect(res.statusCode).toBe(201);
+    const candidate = res.json().candidate;
+
+    expect(candidate.googleMapsUri).toBe('https://maps.google.com/?cid=ChIJrich001');
+    expect(candidate.priceLevel).toBe(2);
+    expect(candidate.primaryType).toBe('coffee_shop');
+    expect(candidate.types).toContain('coffee_shop');
+    // `coffee_shop` maps to the `cafe` taxonomy key, which the seeded catalog
+    // carries. A key the catalog did not have would be dropped, not offered.
+    expect(candidate.categoryKey).toBe('cafe');
+    expect(candidate.openingHours).toEqual([
+      { dayOfWeek: 1, openMinute: 420, closeMinute: 1320, isOvernight: false },
+      { dayOfWeek: 2, openMinute: 420, closeMinute: 1320, isOvernight: false },
+      { dayOfWeek: 6, openMinute: 1200, closeMinute: 120, isOvernight: true },
+    ]);
+
+    // The whole point: one Details call, the same one as before this change.
+    expect(places.tiersRequested.length - before).toBe(1);
+    expect(places.tiersRequested.at(-1)).toBe('quality');
+  });
+
+  it('leaves an optional the provider does not publish null, never zero', async () => {
+    places.seed({
+      providerPlaceId: 'ChIJsparse001',
+      name: 'Quán Không Đánh Giá',
+      lat: 10.78,
+      lng: 106.69,
+      rating: null,
+      ratingCount: 0,
+      priceLevel: null,
+      primaryType: null,
+      types: [],
+      googleMapsUri: null,
+      hours: [],
+    });
+
+    const res = await resolveLink({ url: 'https://www.google.com/maps?place_id=ChIJsparse001' });
+    const candidate = res.json().candidate;
+
+    expect(candidate.googleRating).toBeNull();
+    expect(candidate.googleMapsUri).toBeNull();
+    expect(candidate.priceLevel).toBeNull();
+    expect(candidate.primaryType).toBeNull();
+    // No category to propose is an answer, not a failure.
+    expect(candidate.categoryKey).toBeNull();
+    // An empty week means "the provider publishes none" — never "closed".
+    expect(candidate.openingHours).toEqual([]);
+  });
+
+  it('never mistakes the submitted short link for the canonical one', async () => {
+    seedRich('ChIJshort001', { googleMapsUri: 'https://maps.google.com/?cid=ChIJshort001' });
+
+    const res = await resolveLink({
+      url: 'https://www.google.com/maps?place_id=ChIJshort001&utm_source=share',
+    });
+
+    // What Google published, not what was pasted.
+    expect(res.json().candidate.googleMapsUri).toBe('https://maps.google.com/?cid=ChIJshort001');
+  });
+
+  it('stores the provider facts on the place it creates, and returns them again', async () => {
+    const googlePlaceId = `ChIJkeep${Date.now()}`;
+    seedRich(googlePlaceId);
+
+    const created = await create({
+      name: 'Lacaph Coffee',
+      addressText: '35 Nguyễn Trãi, Phường Bến Thành, Hồ Chí Minh',
+      lat: 10.7712,
+      lng: 106.6903,
+      googlePlaceId,
+      googleDerivedFields: ['name', 'addressText', 'lat', 'lng'],
+    });
+    expect(created.statusCode).toBe(201);
+    const body = created.json();
+    const placeId = body.id;
+
+    // The create response and Place Detail are the same document; asserting
+    // both is what catches a value that exists only in one of them.
+    for (const view of [body, (await detail(placeId)).json()]) {
+      expect(view.ratings.provider).toMatchObject({ rating: 4.6, count: 1234 });
+      // GoGo's own rating is a different population and stays empty.
+      expect(view.ratings.gogo.rating).toBeUndefined();
+      expect(view.priceLevel).toBe(2);
+      expect(view.hours).toHaveLength(3);
+      expect(view.hours.every((h: { source: string }) => h.source === 'provider')).toBe(true);
+      expect(view.hours[0]).toMatchObject({ dayOfWeek: 1, openMinute: 420, closeMinute: 1320 });
+      // The canonical Google link, on the source row that owns provenance.
+      const google = view.sources.find(
+        (s: { externalId: string }) => s.externalId === googlePlaceId,
+      );
+      expect(google.url).toBe(`https://maps.google.com/?cid=${googlePlaceId}`);
+      expect(google.attribution).toBeTruthy();
+    }
+
+    const [source] = await db
+      .select()
+      .from(schema.placeProviderSources)
+      .where(eq(schema.placeProviderSources.externalId, googlePlaceId));
+    expect(source).toMatchObject({
+      providerUri: `https://maps.google.com/?cid=${googlePlaceId}`,
+      ratingCount: 1234,
+      primaryType: 'coffee_shop',
+      fetchTier: 'quality',
+    });
+  });
+
+  it('creates the place anyway when the provider cannot answer', async () => {
+    const googlePlaceId = `ChIJdown${Date.now()}`;
+    // Seeded, then made unreachable: the id is real, the provider is not up.
+    seedRich(googlePlaceId);
+    places.failing = true;
+    try {
+      const created = await create({
+        name: 'Quán Khi Google Sập',
+        lat: 10.7688,
+        lng: 106.6812,
+        googlePlaceId,
+      });
+      expect(created.statusCode).toBe(201);
+      const view = created.json();
+      // No provider facts — and no invented ones.
+      expect(view.ratings.provider.rating).toBeUndefined();
+      expect(view.hours).toEqual([]);
+      // The identity is still stored: that is what dedup and refresh need.
+      const sources = await db
+        .select()
+        .from(schema.placeSources)
+        .where(eq(schema.placeSources.placeId, view.id));
+      expect(sources[0]).toMatchObject({ externalId: googlePlaceId });
+    } finally {
+      places.failing = false;
+    }
+  });
+
+  it('stores nothing from the provider for a place created without a link', async () => {
+    const created = await create({
+      name: `Quán Tự Gõ ${Date.now()}`,
+      lat: 10.7501,
+      lng: 106.6601,
+    });
+    expect(created.statusCode).toBe(201);
+    const view = created.json();
+    expect(view.ratings.provider.rating).toBeUndefined();
+    expect(view.hours).toEqual([]);
+    expect(view.sources).toEqual([]);
   });
 });

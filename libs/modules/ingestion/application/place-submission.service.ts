@@ -23,6 +23,7 @@ import {
   signResolutionAttestation,
   verifyResolutionAttestation,
 } from '../domain/resolution-attestation';
+import { deriveCategory } from '../domain/google-types';
 import { PlaceDedupService, type DedupVerdict } from './place-dedup.service';
 import { PlaceResolverService } from './place-resolver.service';
 import { writeAudit } from '../../shared/audit';
@@ -54,6 +55,45 @@ export type ResolveLinkResponse = {
     source: 'google_places';
     fetchedAt: string;
     attributions: string[];
+    /**
+     * PI-BE-021 — the rest of the answer this request already paid for.
+     *
+     * Every field below comes out of the same `quality` Details response that
+     * produced the four above. The mask has asked for `googleMapsUri`,
+     * `types`, `regularOpeningHours` and `priceLevel` since ADR-0006 §2; the
+     * candidate simply threw them away, so a console filling a create form
+     * from a link had a name, an address and a coordinate and nothing else —
+     * while GoGo had already been billed for the rest.
+     *
+     * Optional rather than nullable-required because one path genuinely
+     * cannot supply them: the DB-first answer (#337) is built from a stored
+     * row and never asked Google anything. Absent there means "this request
+     * did not look", which is a different fact from `null` ("Google looked and
+     * has none") and must not be written as one.
+     */
+    googleMapsUri?: string | null;
+    priceLevel?: number | null;
+    primaryType?: string | null;
+    types?: string[];
+    /**
+     * The GoGo category Google's types imply, **checked against the live
+     * taxonomy** before it is offered. `deriveCategory` proposes a key from a
+     * static table; a key the catalog does not carry would be a chip the
+     * console cannot resolve to a taxonomy id, so it is dropped here rather
+     * than sent and rejected on save.
+     */
+    categoryKey?: string | null;
+    /**
+     * Weekly hours in GoGo's own representation — the same shape `place_hours`
+     * stores and the same one the console's hours editor already renders. Not
+     * a second schedule model, and not Google's `periods` passed through.
+     */
+    openingHours?: {
+      dayOfWeek: number;
+      openMinute: number;
+      closeMinute: number;
+      isOvernight: boolean;
+    }[];
   };
   candidates?:
     { googlePlaceId: string; name: string; address: string; confidence: number }[] | undefined;
@@ -268,7 +308,7 @@ export class PlaceSubmissionService {
     this.dedup.reportIdMismatch(details, 'submission');
     const verdict = await this.dedup.check(details);
     const score = await this.resolver.scoreFor(details, cityHint ?? null, null);
-    const candidate = this.toCandidate(details, score);
+    const candidate = this.toCandidate(details, score, await this.offeredCategoryKey(details));
 
     if (verdict.kind === 'IDENTITY_CONFLICT') {
       // #334 — two places claim this Google ID and the conflict is still open.
@@ -455,7 +495,7 @@ export class PlaceSubmissionService {
     };
   }
 
-  private toCandidate(details: ResolvedProviderPlace, score: number) {
+  private toCandidate(details: ResolvedProviderPlace, score: number, categoryKey: string | null) {
     return {
       googlePlaceId: details.providerPlaceId,
       name: details.name,
@@ -468,7 +508,48 @@ export class PlaceSubmissionService {
       source: 'google_places' as const,
       fetchedAt: new Date().toISOString(),
       attributions: [normalizeGoogleAttribution(details.attribution)],
+      // PI-BE-021 — the rest of the same response. `googleMapsUri` is Google's
+      // own canonical link and is not the URL the editor pasted: a
+      // `maps.app.goo.gl` share link resolves to it, never replaces it.
+      googleMapsUri: details.googleMapsUri,
+      priceLevel: details.priceLevel,
+      primaryType: details.primaryType,
+      types: details.types,
+      categoryKey,
+      // Google returns no periods for a place whose hours it does not publish.
+      // That is an empty week, not a closed one — the console applies nothing
+      // and `place_hours` keeps its "unknown is the absence of a row" rule.
+      openingHours: details.hours.map((h) => ({
+        dayOfWeek: h.dayOfWeek,
+        openMinute: h.openMinute,
+        closeMinute: h.closeMinute,
+        isOvernight: h.isOvernight,
+      })),
     };
+  }
+
+  /**
+   * PI-BE-021 — the GoGo category Google's types imply, or null.
+   *
+   * Two gates, and both matter. `deriveCategory` is a static table and returns
+   * a *proposal*; `taxonomies` is the live vocabulary. A proposal the catalog
+   * does not carry is dropped here, because the console would otherwise be
+   * handed a key it cannot turn into the taxonomy id the save requires — a
+   * chip that looks applied and silently is not.
+   *
+   * Null is an ordinary answer: Google describes plenty of places in terms
+   * GoGo has no category for, and guessing one would put a wrong category on a
+   * place nobody chose it for.
+   */
+  private async offeredCategoryKey(details: ResolvedProviderPlace): Promise<string | null> {
+    const derived = deriveCategory({ primaryType: details.primaryType, types: details.types });
+    if (!derived) return null;
+    const { rows } = await this.db.execute(sql`
+      select 1 from taxonomies
+      where kind = 'category' and key = ${derived.key} and is_active = true
+      limit 1
+    `);
+    return rows.length > 0 ? derived.key : null;
   }
 
   /**
