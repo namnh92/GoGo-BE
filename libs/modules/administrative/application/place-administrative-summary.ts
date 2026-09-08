@@ -49,7 +49,15 @@ export type SummarySubject = {
   communeCode: string | null;
   administrativeMappingSource: MappingMethod | null;
   administrativeDatasetVersion: string | null;
-  administrativeMappedAt: Date | null;
+  /**
+   * `Date` from a drizzle select, a **string** from a raw `db.execute`.
+   *
+   * The CMS place detail reads through raw SQL, so this arrived as a string and
+   * `.toISOString()` was not a function — a 500 on every place that had a
+   * mapping, which is every place the resolver had ever touched. Accepting both
+   * is the fix; assuming one is what caused it.
+   */
+  administrativeMappedAt: Date | string | null;
 };
 
 export async function placeAdministrativeSummary(
@@ -62,7 +70,7 @@ export async function placeAdministrativeSummary(
     communeCode: place.communeCode,
     method: place.administrativeMappingSource,
     datasetVersion: place.administrativeDatasetVersion,
-    mappedAt: place.administrativeMappedAt?.toISOString() ?? null,
+    mappedAt: isoOf(place.administrativeMappedAt),
   };
 
   const dataset = await activeDataset(executor);
@@ -136,4 +144,11 @@ export async function placeAdministrativeSummary(
         : null,
     ),
   };
+}
+
+/** Both shapes the column arrives in, and null for anything unparseable. */
+function isoOf(value: Date | string | null): string | null {
+  if (value === null) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }

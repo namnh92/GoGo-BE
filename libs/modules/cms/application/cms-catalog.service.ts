@@ -263,7 +263,8 @@ type PlaceDetailRow = {
   administrative_mapping_status: MappingStatus;
   administrative_mapping_source: MappingMethod | null;
   administrative_dataset_version: string | null;
-  administrative_mapped_at: Date | null;
+  // Raw SQL: the driver hands this back as a string, not a Date.
+  administrative_mapped_at: Date | string | null;
   lat: number | string | null;
   lng: number | string | null;
   phone: string | null;
