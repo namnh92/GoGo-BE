@@ -1125,7 +1125,11 @@ describe('ADM-015: resolution without a place, and inside a caller transaction',
           : {
               provinceCode: '01',
               communeCode: '00004',
-              administrativeMappingSource: 'boundary_point_in_polygon',
+              // `trusted_code`, not `boundary_point_in_polygon`:
+              // `places_administrative_boundary_version_present` requires a
+              // boundary version alongside a boundary-derived mapping, and this
+              // fixture is about the status, not about the evidence.
+              administrativeMappingSource: 'trusted_code',
               administrativeDatasetVersion: datasetVersion,
             }),
       });
