@@ -178,6 +178,8 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // #199 — identity JWTs. `result` is `issued` or `unavailable` (no signing key
   // in this environment). Never the token, never the user.
   push_identity_tokens_total: ['result'],
+  /** #160 — result: confirmed | still_enabled | unreachable | error. */
+  push_identity_logout_confirm_total: ['result'],
   // #459 — the administrative address resolver. `status` is a mapping status,
   // `method` the evidence that decided it (or `none`). Deliberately **not**
   // labelled with the dataset or boundary version: those are minted per

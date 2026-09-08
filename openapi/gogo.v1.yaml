@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.10
+  version: 1.0.0-alpha.11
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3435,6 +3435,54 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503':
           description: No identity signing key in this environment (`PUSH_IDENTITY_UNAVAILABLE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /notifications/identity/logout:
+    post:
+      operationId: confirmDeviceUnsubscribed
+      tags: [me]
+      summary: Confirm this device's push subscription is no longer live for the caller (NTF-APP-004)
+      description: >
+        A **read**, asked while signing out: it disables nothing, deletes
+        nothing, and never touches the OneSignal user. The client cannot answer
+        this itself — it holds no provider credential, and the device SDK does
+        not report the disabled flag that Identity Verification logout sets, so
+        a logout that never reached the provider looks identical on the device
+        to one that did. The only user read is the caller's own, taken from the
+        session, so no field in the body can point this at another person's
+        devices. `confirmed` is true when the given subscription is absent from
+        the caller's user or present but not enabled. A client that gets
+        `confirmed: false`, or an error, must not clear its session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subscriptionId]
+              properties:
+                subscriptionId:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: The OneSignal subscription id of the device asking.
+      responses:
+        '200':
+          description: Whether this device is unsubscribed for the caller
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceUnsubscribeConfirmation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: >
+            No identity signing key (`PUSH_IDENTITY_UNAVAILABLE`), or the
+            provider could not be reached (`PUSH_UNSUBSCRIBE_UNCONFIRMED`,
+            `retryable: true`).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -11052,6 +11100,16 @@ components:
         targetType: { type: string, enum: [place, plan] }
         targetId: { type: string, format: uuid }
         savedAt: { type: string, format: date-time }
+    DeviceUnsubscribeConfirmation:
+      type: object
+      required: [confirmed]
+      properties:
+        confirmed:
+          type: boolean
+          description: >
+            True when the named subscription is absent from the caller's user or
+            present and not enabled. False means the provider still has it
+            enabled, and the caller must keep its session.
     PushIdentityToken:
       type: object
       required: [externalId, token, expiresAt]
