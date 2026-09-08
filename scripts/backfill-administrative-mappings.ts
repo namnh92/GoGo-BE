@@ -25,7 +25,7 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import { schema } from '@gogo/database';
-import { LogMetrics } from '@gogo/observability';
+import { createLogger, LogMetrics } from '@gogo/observability';
 import {
   AdministrativeBackfillService,
   AdministrativeResolverRepository,
@@ -45,7 +45,13 @@ async function main(): Promise<void> {
   const pool = new Pool({ connectionString, max: 4 });
   const db = drizzle(pool, { schema });
   try {
-    const metrics = new LogMetrics();
+    // #491 — the same wiring the API uses. This read `new LogMetrics()`, and
+    // LogMetrics needs an AppLogger for every method it has, so the CLI threw
+    // `Cannot read properties of undefined (reading 'info')` on its first metric
+    // — before touching the database, on every invocation.
+    const metrics = new LogMetrics(
+      createLogger({ level: process.env.LOG_LEVEL ?? 'info', name: 'gogo-admin-backfill' }),
+    );
     const resolver = new AdministrativeResolverService(
       db,
       new AdministrativeResolverRepository(db),

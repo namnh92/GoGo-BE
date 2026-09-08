@@ -45,9 +45,14 @@ async function main(): Promise<void> {
         `loaded      ${result.counts.provinces} provinces, ${result.counts.communes} communes`,
         `promoted    ${result.promotedToMultiPolygon} polygons to MultiPolygon`,
         `validation  ${result.validation.errors} errors, ${result.validation.warnings} warnings`,
+        // #491 — `.count`, not `.length`. These are `Anomaly` objects, so
+        // `.length` was undefined and this line printed "undefined overlaps,
+        // undefined outside the Vietnam envelope" on every real load. The
+        // numbers were measured correctly and thrown away at the last step;
+        // adding scripts/ to the typecheck graph is what surfaced it.
         `topology    ${result.topology.sharedBoundaryPairs} shared borders, ` +
-          `${result.topology.sameLevelOverlaps.length} overlaps, ` +
-          `${result.topology.outsideVietnamBbox.length} outside the Vietnam envelope`,
+          `${result.topology.sameLevelOverlaps.count} overlaps, ` +
+          `${result.topology.outsideVietnamBbox.count} outside the Vietnam envelope`,
         `duration    ${(result.durationMs / 1000).toFixed(1)}s`,
         '',
         ...result.validation.findings.map(
