@@ -120,7 +120,11 @@ describe('every path that can set a place status', () => {
 
   it('does not define the policy twice', () => {
     // `approvalBlock` is the policy itself. Only the shared guard and the
-    // moderation read model may call it; everything else goes through them.
+    // administrative read models may call it; everything else goes through
+    // them. A read model is allowed because it *reports* the policy rather than
+    // enforcing it — the console has to be able to say why a place cannot be
+    // published, and the alternative is the screen inventing its own rule and
+    // then disagreeing with the publish transaction.
     const callers = execFileSync(
       'grep',
       ['-rl', 'approvalBlock(', '--include=*.ts', 'libs', 'apps'],
@@ -133,6 +137,9 @@ describe('every path that can set a place status', () => {
     expect(callers).toEqual(
       [
         'libs/modules/administrative/application/administrative-moderation.service.ts',
+        // ADM-016 — the place detail summary the console's editors read. Same
+        // policy, reported rather than enforced.
+        'libs/modules/administrative/application/place-administrative-summary.ts',
         'libs/modules/administrative/application/place-approval.ts',
         'libs/modules/administrative/domain/approval-policy.ts',
       ].sort(),

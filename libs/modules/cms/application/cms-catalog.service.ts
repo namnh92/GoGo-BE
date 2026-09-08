@@ -12,6 +12,24 @@ import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
 import { writeOutbox } from '../../shared/outbox';
 import { assertPlaceApprovable } from '../../administrative/application/place-approval';
+import {
+  AdministrativeResolverService,
+  type PersistResult,
+} from '../../administrative/application/administrative-resolver.service';
+import {
+  activeDataset,
+  assertCurrentPair,
+  requireActiveDataset,
+  type DatasetRef,
+  type Executor,
+} from '../../administrative/application/unit-lookup';
+import { placeAdministrativeSummary } from '../../administrative/application/place-administrative-summary';
+import type { MappingMethod, MappingStatus } from '../../administrative/domain/mapping-status';
+import {
+  contradictsStoredMapping,
+  editPolicyFor,
+  isMaterialForMapping,
+} from '../../administrative/domain/edit-impact';
 import { validateWeek, type HoursEntry, type HoursEntryKind } from '../domain/place-hours';
 import { normalizePhone, normalizeWebsite } from '../domain/place-contact';
 
@@ -38,8 +56,32 @@ export type PlaceEditInput = {
   description?: string | null | undefined;
   addressText?: string | null | undefined;
   areaKey?: string | null | undefined;
+  /**
+   * ADR-0016 — legacy free text. Kept because an editor must be able to write
+   * an address a catalog does not carry, and because existing rows hold it.
+   * It is **not** the administrative identity and never selects a code:
+   * `provinceCode`/`communeCode` below are, and the resolver reads this only as
+   * one piece of evidence among five.
+   */
   city?: string | null | undefined;
+  /**
+   * Legacy only. District-level units were dissolved on 2025-07-01, so nothing
+   * current is expressed here; the column survives for rows that already carry
+   * it and as historical name evidence for the resolver (ADM-016).
+   */
   district?: string | null | undefined;
+  /**
+   * ADM-016 / ADR-0019 — the canonical administrative address, as codes.
+   *
+   * They travel as a pair or not at all: a province without a commune is not an
+   * address, and a commune without the province it belongs to is a code with no
+   * hierarchy to check it against. Both are validated against the dataset that
+   * is published at commit time, and both reach the mapping through the
+   * resolver's `trusted_code` evidence — there is no path that writes a code
+   * straight onto the row without adjudication.
+   */
+  provinceCode?: string | null | undefined;
+  communeCode?: string | null | undefined;
   phone?: string | null | undefined;
   website?: string | null | undefined;
   lat?: number | undefined;
@@ -216,6 +258,12 @@ type PlaceDetailRow = {
   area_key: string | null;
   city: string | null;
   district: string | null;
+  province_code: string | null;
+  commune_code: string | null;
+  administrative_mapping_status: MappingStatus;
+  administrative_mapping_source: MappingMethod | null;
+  administrative_dataset_version: string | null;
+  administrative_mapped_at: Date | null;
   lat: number | string | null;
   lng: number | string | null;
   phone: string | null;
@@ -394,6 +442,13 @@ export class CmsCatalogService {
      * away from the one dedup enforces.
      */
     private readonly dedup: PlaceDedupService,
+    /**
+     * ADM-016 — the one path that turns a coordinate into an administrative
+     * identity. Injected rather than reimplemented for the same reason `dedup`
+     * is: the evidence order, the transition matrix and the reviewer-owned rule
+     * are all in there, and a second copy would be a second answer.
+     */
+    private readonly resolver: AdministrativeResolverService,
     @Optional()
     @Inject(APP_CONFIG)
     private readonly config?: ProvenanceConfig & Partial<MediaConfig>,
@@ -536,6 +591,10 @@ export class CmsCatalogService {
       await this.db.execute(sql`
         select p.id, p.name, p.description, p.status, p.address_text, p.area_key,
                p.city, p.district,
+               -- ADM-016: the canonical administrative identity, as stored.
+               p.province_code, p.commune_code, p.administrative_mapping_status,
+               p.administrative_mapping_source, p.administrative_dataset_version,
+               p.administrative_mapped_at,
                ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
                p.phone, p.website, p.rating, p.rating_count, p.price_level,
                p.avg_visit_minutes, p.suitability, p.is_lodging, p.confidence,
@@ -597,6 +656,23 @@ export class CmsCatalogService {
 
     const gogoRow = gogo.rows[0] as { rating: string | null; count: number } | undefined;
 
+    /**
+     * ADM-016 — run after the parallel block, not inside it.
+     *
+     * `DB_POOL_MAX` defaults to 10 and the `Promise.all` above already checks
+     * out six connections; adding a seventh turned a busy moment into a connect
+     * timeout once already (#425). This is two indexed queries and no resolver
+     * work, so it costs less in series than it would in parallel.
+     */
+    const administrative = await placeAdministrativeSummary(this.db, {
+      administrativeMappingStatus: row.administrative_mapping_status,
+      provinceCode: row.province_code,
+      communeCode: row.commune_code,
+      administrativeMappingSource: row.administrative_mapping_source,
+      administrativeDatasetVersion: row.administrative_dataset_version,
+      administrativeMappedAt: row.administrative_mapped_at,
+    });
+
     return {
       id: row.id,
       name: row.name,
@@ -604,8 +680,16 @@ export class CmsCatalogService {
       status: row.status,
       addressText: row.address_text,
       areaKey: row.area_key,
+      /**
+       * ADR-0016 — legacy free text, returned as it was written. It is not the
+       * administrative identity (`administrative` below is), and the console
+       * must not render it as a current unit: `district` in particular names a
+       * level that was dissolved on 2025-07-01.
+       */
       city: row.city,
       district: row.district,
+      /** ADM-016 — the two current levels, their names and why publishing is blocked. */
+      administrative,
       lat: row.lat !== null ? Number(row.lat) : undefined,
       lng: row.lng !== null ? Number(row.lng) : undefined,
       phone: row.phone,
@@ -832,7 +916,31 @@ export class CmsCatalogService {
         : (input.googleDerivedFields ?? []).map((key) => PROVENANCE_COLUMN[key]!),
     );
 
+    const codes = {
+      provinceCode: input.provinceCode ?? null,
+      communeCode: input.communeCode ?? null,
+    };
+    const codesAsserted = codes.provinceCode !== null || codes.communeCode !== null;
+
+    let mappingWrite: PersistResult | null = null;
     const created = await this.db.transaction(async (tx) => {
+      /**
+       * ADM-016 — validated against the dataset that is published *now*, inside
+       * the transaction that stores the codes.
+       *
+       * Two different answers when there is no published dataset, and the
+       * difference is whether the request claimed anything. An editor who chose
+       * a province and a commune is asserting a fact, and there is nothing to
+       * check it against, so the honest answer is 503 rather than storing an
+       * unvalidated claim. An editor who chose neither is not asserting
+       * anything — the place is created `UNMAPPED`, which already blocks
+       * publication, and a fresh environment keeps working.
+       */
+      const dataset: DatasetRef | null = codesAsserted
+        ? await requireActiveDataset(tx)
+        : await activeDataset(tx);
+      if (codesAsserted) await assertCurrentPair(tx, dataset!, codes);
+
       const [place] = await tx
         .insert(schema.places)
         .values({
@@ -904,6 +1012,25 @@ export class CmsCatalogService {
         );
       }
 
+      /**
+       * The mapping is written in the transaction that wrote the place.
+       *
+       * The editor's codes go in as `trustedCodes`, which is evidence and not
+       * an instruction: they are weighed against the geometry the same request
+       * supplied, and two sources naming different communes produce
+       * `NEEDS_REVIEW` rather than whichever one the code happened to trust. A
+       * place with no codes still resolves — from its own position — which is
+       * how a place created by hand stops being invisible to the queue.
+       */
+      if (dataset) {
+        const resolution = await this.resolver.resolvePlaceWithin(tx, place!.id, {
+          ...(codesAsserted ? { trustedCodes: codes } : {}),
+        });
+        mappingWrite = await this.resolver.persistWithin(tx, resolution, {
+          actor: { id: adminId, type: 'admin' },
+        });
+      }
+
       await writeOutbox(tx, {
         eventType: 'place.created',
         resourceType: 'place',
@@ -916,6 +1043,10 @@ export class CmsCatalogService {
 
       return place!;
     });
+
+    // Counted only now: the write is real once the transaction that made it
+    // has committed.
+    if (mappingWrite) this.resolver.countPersist(mappingWrite);
 
     await this.audit(adminId, 'place.created', created.id, {
       name: created.name,
@@ -987,6 +1118,32 @@ export class CmsCatalogService {
     const { phone, website } = this.normalizeContact(input);
 
     /**
+     * ADM-016 — what the edit says about the administrative identity.
+     *
+     * The pair is read as a pair: an absent key means "leave it alone", so the
+     * stored value stands in for it. That is what makes a console sending only
+     * `communeCode` a cross-province error rather than a silent half-write.
+     */
+    const codesAsserted = input.provinceCode !== undefined || input.communeCode !== undefined;
+    const codes = {
+      provinceCode:
+        input.provinceCode !== undefined ? (input.provinceCode ?? null) : before.provinceCode,
+      communeCode:
+        input.communeCode !== undefined ? (input.communeCode ?? null) : before.communeCode,
+    };
+    const geometryMoved =
+      input.lat !== undefined &&
+      input.lng !== undefined &&
+      (before.geom === null || before.geom.x !== input.lng || before.geom.y !== input.lat);
+    const material = isMaterialForMapping({
+      geometryMoved,
+      codesAsserted,
+      cityChanged: input.city !== undefined && (input.city ?? null) !== before.city,
+      districtChanged: input.district !== undefined && (input.district ?? null) !== before.district,
+    });
+    let mappingWrite: PersistResult | null = null;
+
+    /**
      * One transaction for the whole save.
      *
      * Four writes make up an edit — the travel-cache invalidation, the row
@@ -1007,6 +1164,13 @@ export class CmsCatalogService {
       if (input.lat !== undefined && input.lng !== undefined) {
         await invalidateTravelOnMove(tx, placeId, { lat: input.lat, lng: input.lng });
       }
+
+      // Re-read inside the transaction that will store them: a dataset can
+      // publish between the console loading the form and this running.
+      const dataset: DatasetRef | null = codesAsserted
+        ? await requireActiveDataset(tx)
+        : await activeDataset(tx);
+      if (codesAsserted) await assertCurrentPair(tx, dataset!, codes);
 
       const [row] = await tx
         .update(schema.places)
@@ -1076,8 +1240,17 @@ export class CmsCatalogService {
           });
       }
 
+      if (material && dataset) {
+        mappingWrite = await this.settleMapping(tx, adminId, before, row!, {
+          codes,
+          codesAsserted,
+        });
+      }
+
       return row!;
     });
+
+    if (mappingWrite) this.resolver.countPersist(mappingWrite);
 
     // FR-CMS-008: before/after diff of the sensitive write.
     await this.audit(adminId, 'place.updated', placeId, {
@@ -1086,6 +1259,79 @@ export class CmsCatalogService {
       claimedFields: claimed,
     });
     return { id: after.id, status: after.status, updatedAt: after.updatedAt.toISOString() };
+  }
+
+  /**
+   * ADM-016 / ADR-0019 §7 — what this edit does to the mapping the place
+   * already carries.
+   *
+   * Three outcomes, decided by `editPolicyFor`, and the reason they are three
+   * is that editing a place is not moderating it. An editor who drags a pin has
+   * not ruled on an administrative question — but they can make somebody else's
+   * ruling untrue, and a published place claiming a commune it is no longer in
+   * is the failure this exists to prevent.
+   *
+   * Every branch runs in the caller's transaction, against the row the update
+   * has already written.
+   */
+  private async settleMapping(
+    tx: Executor,
+    adminId: string,
+    before: typeof schema.places.$inferSelect,
+    after: typeof schema.places.$inferSelect,
+    selection: {
+      codes: { provinceCode: string | null; communeCode: string | null };
+      codesAsserted: boolean;
+    },
+  ): Promise<PersistResult | null> {
+    const policy = editPolicyFor(before.administrativeMappingStatus);
+    const trusted = selection.codesAsserted ? { trustedCodes: selection.codes } : {};
+
+    // A rejection is a judgement that this place should not carry this mapping.
+    // An edit is not an appeal against it; the rematch in moderation is.
+    if (policy === 'PROTECTED') return null;
+
+    if (policy === 'RESOLVE') {
+      const resolution = await this.resolver.resolvePlaceWithin(tx, after.id, trusted);
+      return this.resolver.persistWithin(tx, resolution, {
+        actor: { id: adminId, type: 'admin' },
+      });
+    }
+
+    /**
+     * `VERIFIED`. The stored mapping is a person's decision, so it is never
+     * re-pointed here — but it can be contradicted, and the resolver has to be
+     * asked without being told what the answer already is.
+     *
+     * `NO_MAPPING` is what does that: `adjudicate` answers `REVIEWER_OWNED` and
+     * weighs nothing at all when it is handed a verified current state, which
+     * is exactly right for a write path and useless for a question. Passing a
+     * blank current state asks the machine what it would say about this place if
+     * nobody had ever decided — the only form of the question that can
+     * contradict anything.
+     */
+    const machine = await this.resolver.resolveGeometry(
+      {
+        subjectId: after.id,
+        geometry: after.geom ? { lng: after.geom.x, lat: after.geom.y } : null,
+        city: after.city,
+        district: after.district,
+      },
+      { executor: tx, ...trusted },
+    );
+    if (
+      contradictsStoredMapping(
+        { provinceCode: before.provinceCode, communeCode: before.communeCode },
+        machine,
+      )
+    ) {
+      await this.resolver.markStaleWithin(tx, after.id, {
+        reason: 'PLACE_EDITED_AWAY_FROM_VERIFIED_MAPPING',
+        actor: { id: adminId, type: 'admin' },
+        proposal: machine,
+      });
+    }
+    return null;
   }
 
   /**
