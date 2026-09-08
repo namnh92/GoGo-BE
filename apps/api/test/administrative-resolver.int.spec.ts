@@ -809,14 +809,20 @@ describe('confidence is definitional, against the real dataset', () => {
       confidence: 1,
     });
 
-    const byName = await insertPlace({
+    // The unnumbered case is now the change mapping: GoGo's own record of a
+    // legal change, trusted enough to resolve and not a measurement of this
+    // place. Name matching used to sit here and no longer resolves anything
+    // (ADR-0019 §7b).
+    const bySuccessor = await insertPlace({
       geom: { x: 108.5, y: 12.0 },
-      city: 'Hà Nội',
-      district: 'ba dinh',
+      communeCode: uniqueSuccessor.oldCode,
+      administrativeMappingStatus: 'AUTO_MATCHED',
+      administrativeMappingSource: 'exact_name',
+      administrativeDatasetVersion: 'legacy-import',
     });
-    expect(await resolver.resolvePlace(byName.id)).toMatchObject({
+    expect(await resolver.resolvePlace(bySuccessor.id)).toMatchObject({
       status: 'AUTO_MATCHED',
-      method: 'structured_components',
+      method: 'change_mapping',
       confidence: null,
     });
   });
@@ -841,8 +847,10 @@ describe('confidence is definitional, against the real dataset', () => {
 
     const unnumbered = await insertPlace({
       geom: { x: 108.5, y: 12.0 },
-      city: 'Hà Nội',
-      district: 'ba dinh',
+      communeCode: uniqueSuccessor.oldCode,
+      administrativeMappingStatus: 'AUTO_MATCHED',
+      administrativeMappingSource: 'exact_name',
+      administrativeDatasetVersion: 'legacy-import',
     });
     await resolver.persist(await resolver.resolvePlace(unnumbered.id));
     const row = await placeRow(unnumbered.id);
