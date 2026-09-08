@@ -46,9 +46,12 @@ type Role = 'editor' | 'moderator';
 
 /** Codes discovered from the fixture and the pinned dataset, never assumed. */
 let mapped: { communeCode: string; provinceCode: string };
+/** A second commune the fixture actually draws, for a real contradiction. */
+let neighbour: { communeCode: string; provinceCode: string };
 let otherProvince: string;
 let historicalCommune: string;
 let inside: { lng: number; lat: number };
+let neighbourInside: { lng: number; lat: number };
 let outside: { lng: number; lat: number };
 
 const get = (url: string, role: Role) =>
@@ -174,15 +177,21 @@ beforeAll(async () => {
     archivePath: FIXTURE,
   });
 
-  // A commune the fixture actually draws, and a point safely inside it.
-  const [drawn] = await rows<{ code: string; parent_code: string; lng: number; lat: number }>(sql`
+  // Two communes the fixture actually draws, and a point safely inside each.
+  const drawn = await rows<{ code: string; parent_code: string; lng: number; lat: number }>(sql`
     select b.code, b.parent_code,
            st_x(st_pointonsurface(b.geom)) as lng, st_y(st_pointonsurface(b.geom)) as lat
     from administrative_unit_boundaries b
     where b.boundary_version = ${BOUNDARY_VERSION} and b.level = 'COMMUNE'
-    order by b.code limit 1`);
-  mapped = { communeCode: drawn!.code, provinceCode: drawn!.parent_code };
-  inside = { lng: Number(drawn!.lng), lat: Number(drawn!.lat) };
+    order by b.code limit 2`);
+  mapped = { communeCode: drawn[0]!.code, provinceCode: drawn[0]!.parent_code };
+  inside = { lng: Number(drawn[0]!.lng), lat: Number(drawn[0]!.lat) };
+  // The contradiction has to be a *different commune the geometry actually
+  // says*. Sending different codes is not one: they disagree with the pin in
+  // the same request, and disagreement is `NEEDS_REVIEW` — which is the
+  // resolver saying it cannot tell, not evidence that the reviewer was wrong.
+  neighbour = { communeCode: drawn[1]!.code, provinceCode: drawn[1]!.parent_code };
+  neighbourInside = { lng: Number(drawn[1]!.lng), lat: Number(drawn[1]!.lat) };
 
   // Inside Vietnam's bounding box, inside no polygon this fixture carries. The
   // resolver must call that UNMAPPED, not invalid.
@@ -471,11 +480,13 @@ describe('an edit is not a moderation decision', () => {
     const created = await createPlace();
     await verifyMapping(created.id, mapped);
 
+    // The pin moves into a commune the boundaries really do claim, so the
+    // resolver has a definite answer that is not the verified one.
     const res = await send('PATCH', `/v1/cms/places/${created.id}`, 'editor', {
-      provinceCode: otherProvince,
-      communeCode: await otherProvinceCommune(),
+      lat: neighbourInside.lat,
+      lng: neighbourInside.lng,
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode, res.body).toBe(200);
 
     const row = await placeRow(created.id);
     expect(row).toMatchObject({
@@ -490,6 +501,26 @@ describe('an edit is not a moderation decision', () => {
 
     const detail = (await get(`/v1/cms/places/${created.id}`, 'editor')).json();
     expect(detail.administrative.approvalBlock.code).toBe('MAPPING_STALE');
+  });
+
+  it('does not demote a VERIFIED mapping on codes that merely disagree with the pin', async () => {
+    const created = await createPlace();
+    await verifyMapping(created.id, mapped);
+
+    // An editor typing codes that contradict the place's own geometry produces
+    // a disagreement, and a disagreement is the resolver saying it cannot tell.
+    // Demoting a person's decision on "I cannot tell" is how a catalogue
+    // empties itself every time a release loses a polygon.
+    const res = await send('PATCH', `/v1/cms/places/${created.id}`, 'editor', {
+      provinceCode: neighbour.provinceCode,
+      communeCode: neighbour.communeCode,
+    });
+    expect(res.statusCode, res.body).toBe(200);
+
+    const row = await placeRow(created.id);
+    expect(row.administrativeMappingStatus).toBe('VERIFIED');
+    expect(row.communeCode).toBe(mapped.communeCode);
+    expect(row.administrativeMappedBy).toBe(adminIds.moderator);
   });
 
   it('leaves a VERIFIED mapping alone when the edit does not contradict it', async () => {
@@ -571,16 +602,6 @@ describe('the create and edit paths ask nobody', () => {
     expect(await metricCount('provider_requests_total', 'upstash')).toBe(redis);
   });
 });
-
-/** A current commune of `otherProvince`, so a contradiction is a real pair. */
-async function otherProvinceCommune(): Promise<string> {
-  const [row] = await rows<{ code: string }>(sql`
-    select code from administrative_units
-    where dataset_version_id = ${datasetId} and level = 'COMMUNE'
-      and parent_code = ${otherProvince} and status = 'ACTIVE' and effective_to is null
-    order by code limit 1`);
-  return row!.code;
-}
 
 async function metricCount(metric: string, contains?: string): Promise<number> {
   const metrics = await api().inject({
