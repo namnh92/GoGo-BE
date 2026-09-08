@@ -657,6 +657,11 @@ export class PrivacyRequestsController {
  * console used to coerce that empty box to `0` and get a 400 on every save of
  * a place that had no visit duration.
  */
+const ADMINISTRATIVE_CODE = z
+  .string()
+  .trim()
+  .regex(/^[0-9]{2,5}$/, 'an administrative code is 2 to 5 digits');
+
 const placeEditSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   description: z.string().max(4000).nullable().optional(),
@@ -664,6 +669,17 @@ const placeEditSchema = z.object({
   areaKey: z.string().trim().max(64).nullable().optional(),
   city: z.string().trim().max(120).nullable().optional(),
   district: z.string().trim().max(120).nullable().optional(),
+  /**
+   * ADM-016 / ADR-0019 — the canonical administrative address.
+   *
+   * Two to five digits, which is what every level of the Vietnamese code
+   * system is; the pair is checked against the published dataset by
+   * `assertCurrentPair`, because a well-formed code and a real one are
+   * different claims. `null` clears the mapping the same way it clears any
+   * other field, and absence leaves it alone.
+   */
+  provinceCode: ADMINISTRATIVE_CODE.nullable().optional(),
+  communeCode: ADMINISTRATIVE_CODE.nullable().optional(),
   phone: z.string().trim().max(40).nullable().optional(),
   website: z.string().trim().max(500).nullable().optional(),
   lat: z.number().min(-90).max(90).optional(),

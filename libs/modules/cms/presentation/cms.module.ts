@@ -6,6 +6,10 @@ import { IdentityModule } from '../../identity/presentation/identity.module';
 // dependency on this module (it borrows `RequireRole`, a decorator), so the
 // import is one-way.
 import { IngestionModule } from '../../ingestion/presentation/ingestion.module';
+// ADM-016 — the console's create/edit forms now carry province and commune
+// codes, and the resolver is what turns them (and the geometry) into a mapping.
+// Administrative depends only on Identity, so the import is one-way.
+import { AdministrativeModule } from '../../administrative/presentation/administrative.module';
 import { SuggestionsModule } from '../../suggestions/presentation/suggestions.module';
 // #246 — the console reuses the consumer erase/export rather than growing a
 // second implementation of them.
@@ -55,7 +59,13 @@ import {
 } from './cms.controllers';
 
 @Module({
-  imports: [IdentityModule, IngestionModule, SuggestionsModule, ReviewsModule],
+  imports: [
+    IdentityModule,
+    IngestionModule,
+    SuggestionsModule,
+    ReviewsModule,
+    AdministrativeModule,
+  ],
   controllers: [
     CmsAreasController,
     CmsAuditController,
