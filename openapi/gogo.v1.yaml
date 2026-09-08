@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.15
+  version: 1.0.0-alpha.16
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2964,6 +2964,41 @@ paths:
         Re-uploading identical bytes in the same mode returns the existing job
         (`reused: true`) instead of re-billing the provider. `dry_run` validates
         only and never calls the provider.
+
+
+        **Row identity (PI-BE-024).** A row identifies its place with
+        `google_place_id`, `google_maps_url`, both, or neither:
+
+
+        - **id only** — Details is fetched for that id directly. No URL parsing,
+          no text search.
+
+        - **url only** — the link is parsed and a short link expanded; a link
+          carrying a Place ID resolves by it, otherwise the row falls to text
+          search.
+
+        - **both** — the two must agree, and agreement is established rather
+          than assumed. A URL carrying an explicit Places id (`place_id`,
+          `placeid`, `query_place_id`), including one a short link expands to,
+          is compared locally and costs no Places request. A URL carrying none —
+          which is most real share links, since `/maps/place/<name>/data=…`
+          holds a hex feature id and not a Places id — is resolved through the
+          ordinary provider path and the **resolved** id is compared instead.
+          A disagreement fails the row with `PLACE_ID_URL_MISMATCH`. A link
+          whose identity cannot be settled at all fails with
+          `PLACE_ID_URL_UNVERIFIABLE`: finding no second id is not agreement.
+
+        - **neither** — `google_maps_query`, or `name` plus `city`/`district` as
+          search hints.
+
+
+        `city` is required only in that last case. A row carrying an id or a
+        link needs none: the administrative identity comes from the coordinate,
+        not from a typed city, and `district` is never administrative evidence.
+
+
+        The canonical `googleMapsUri` is whatever Google returns; the submitted
+        URL is never stored or treated as canonical.
       requestBody:
         required: true
         content:
@@ -11937,6 +11972,7 @@ components:
         - district
         - google_maps_url
         - google_maps_query
+        - google_place_id
         - category
         - category_raw
         - price_min
