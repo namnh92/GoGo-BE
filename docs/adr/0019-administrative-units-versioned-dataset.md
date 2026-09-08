@@ -387,6 +387,40 @@ published there** — there is nothing to validate a mapping against otherwise,
 and the guard says so with `ADMINISTRATIVE_DATASET_UNAVAILABLE` rather than
 letting the place through.
 
+#### 7b. Amendment (ADM-015, #495): canonical codes come from codes and geometry only
+
+The precedence in §7 listed "exact normalized name with a unique parent" and
+"historical aliases" as resolvable evidence, and ADM-006 implemented both by
+reading `places.city` and `places.district`. Both are removed.
+
+**What changed.** The resolver now has exactly three evidence providers:
+trusted codes, point-in-polygon against the pinned boundaries, and the canonical
+change mapping applied to a commune **code** the place already carries. It is
+not given `city` or `district` at all — the input type has no field for them.
+
+**Why.** `district` names a tier dissolved on 2025-07-01. A commune selected
+because somebody typed "ba dinh" is a commune selected out of a hierarchy that
+no longer exists, and the code it produces is indistinguishable, everywhere
+downstream, from one the geometry actually supports. `city` is worse in a
+subtler way: on the bulk-import path it is a **provider search hint** — the
+string an operator wrote to help Google find the place — and treating it as a
+claim about which province the place is in gives a wrong answer a confident
+`AUTO_MATCHED`. §5 already said district is legacy-only and excluded by default;
+this closes the one place that still read it.
+
+**What did not change.** The columns stay (ADR-0016), are still stored, still
+returned, and are still what a place's address reads as. `legacy_district_code`
+is still writable — by an explicit `trustedCodes.legacyDistrictCode`, which is
+somebody asserting a code, not a name being turned into one. The transition
+matrix, the approval policy and the "never choose arbitrarily" rule are
+untouched.
+
+**Consequence.** Rows whose only signal was free text resolve `UNMAPPED` rather
+than `AUTO_MATCHED`. That is the intended outcome: `UNMAPPED` blocks
+publication and puts the place in front of somebody, where a name-derived code
+would have passed silently. The `exact_name` and `structured_components` methods
+remain in the enum because stored rows carry them; nothing writes them any more.
+
 #### 7a. What the resolver may write, and what belongs to a person (ADM-006, #459)
 
 `VERIFIED` and `REJECTED` are reviewer-owned. An unattended run may read them,

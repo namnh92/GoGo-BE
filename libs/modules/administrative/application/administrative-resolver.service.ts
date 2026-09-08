@@ -5,7 +5,6 @@ import { METRICS, type MetricsPort } from '@gogo/observability';
 import { DB } from '../../shared/tokens';
 import { AppError } from '../../shared/app-error';
 import { writeAudit } from '../../shared/audit';
-import { normalizeVietnamese } from '../../search/domain/normalize';
 import {
   adjudicate,
   type CurrentMapping,
@@ -32,14 +31,20 @@ import type { Executor } from './unit-lookup';
  * **No provider call is made here, ever.** Not Place Details, not a field mask,
  * not a cached provider payload. The evidence is: codes someone explicitly
  * supplied, `places.geom` that GoGo already stores, GoGo's pinned MIT
- * boundaries, the free text an editor or an import already wrote into
- * `city`/`district`, and GoGo's own pinned unit and change data. That list is
- * ADR-0019 §10 and GoGo-BE#464, and it is why the resulting codes are GoGo
- * facts rather than provider content.
+ * boundaries, and GoGo's own pinned change data. That list is ADR-0019 §10 and
+ * GoGo-BE#464, and it is why the resulting codes are GoGo facts rather than
+ * provider content.
+ *
+ * **`city` and `district` are not on that list** (ADR-0019 §7b). They are
+ * legacy free text: a district names a tier dissolved on 2025-07-01, and a city
+ * string is what somebody typed to help find a place, not a claim about which
+ * province it is in. Neither is given to this service at all — the input type
+ * has no field for them — because a rule enforced by remembering not to read
+ * something lasts until the next person adds a provider that does.
  *
  * Nothing outside the `administrative_*` columns is ever written. `name`,
- * `city`, `district`, `address_text` and `geom` are the evidence; a resolver
- * that edited its own inputs would make its next run unreproducible.
+ * `address_text` and `geom` are the inputs; a resolver that edited its own
+ * inputs would make its next run unreproducible.
  */
 
 export type ResolveOptions = {
@@ -67,8 +72,6 @@ export type ResolveOptions = {
 export type GeometrySubject = {
   subjectId: string;
   geometry: { lng: number; lat: number } | null;
-  city?: string | null;
-  district?: string | null;
   /** Defaults to an unmapped subject: nothing claimed, nothing to protect. */
   current?: CurrentMapping;
 };
@@ -143,8 +146,6 @@ export class AdministrativeResolverService {
       {
         subjectId: placeId,
         geometry: place.geom ? { lng: place.geom.x, lat: place.geom.y } : null,
-        city: place.city,
-        district: place.district,
         current: {
           status: place.administrativeMappingStatus,
           provinceCode: place.provinceCode,
@@ -195,8 +196,6 @@ export class AdministrativeResolverService {
       datasetVersionId: dataset.id,
       boundaryVersion,
       geometry: subject.geometry,
-      city: subject.city ?? null,
-      district: subject.district ?? null,
       current,
       ...(options.trustedCodes === undefined ? {} : { trustedCodes: options.trustedCodes }),
     });
@@ -526,6 +525,16 @@ export class AdministrativeResolverService {
    * stopping at the first hit would hide the case where two sources disagree,
    * and a disagreement between an explicit code and the geometry is the single
    * most useful thing this resolver can tell a reviewer.
+   *
+   * **Three providers, not five** (ADR-0019 §7b). The two that read `city` and
+   * `district` are gone. A commune chosen because somebody typed "Quận 1" is a
+   * commune chosen from a tier that no longer exists, and a province chosen
+   * because the sheet said "Hồ Chí Minh" is a province chosen from a search
+   * hint — both produced codes indistinguishable, downstream, from ones the
+   * geometry actually supports. Canonical codes now come from exactly two
+   * places: codes somebody asserted and had validated, and containment against
+   * the pinned boundaries. The change mapping below carries an existing code
+   * forward across releases; it does not invent one.
    */
   private async gather(
     executor: Executor,
@@ -533,8 +542,6 @@ export class AdministrativeResolverService {
       datasetVersionId: string;
       boundaryVersion: string | null;
       geometry: { lng: number; lat: number } | null;
-      city: string | null;
-      district: string | null;
       current: CurrentMapping;
       trustedCodes?: ResolveOptions['trustedCodes'];
     },
@@ -544,8 +551,7 @@ export class AdministrativeResolverService {
 
     await this.fromTrustedCodes(executor, input, evidence);
     await this.fromBoundary(executor, input, evidence, reasons);
-    const provinceCode = await this.fromNames(executor, input, evidence, reasons);
-    await this.fromHistory(executor, input, provinceCode, evidence, reasons);
+    await this.fromHistory(executor, input, evidence, reasons);
 
     if (evidence.length === 0 && reasons.length === 0) reasons.push('NO_EVIDENCE');
     return { evidence, reasons };
@@ -723,118 +729,23 @@ export class AdministrativeResolverService {
   }
 
   /**
-   * Precedence 4: the free text already stored on the place.
+   * Precedence 4: the canonical change mapping, from a code this place already
+   * carries.
    *
-   * `city` and `district` are read, never written. ADR-0016 keeps them free
-   * text because an editor must be able to type a unit the catalog does not
-   * carry; ADR-0019 adds codes beside them and changes nothing about them.
+   * One door in, not two. A stored commune code that is no longer current — the
+   * case a place mapped before 2025-07-01 is in — asks whether that old unit has
+   * exactly one successor GoGo is willing to assert. It is a **code** being
+   * carried forward across releases, not a name being turned into one.
    *
-   * Returns the province the city text resolved to, if any, so the historical
-   * pass can use it to narrow.
-   */
-  private async fromNames(
-    executor: Executor,
-    input: { datasetVersionId: string; city: string | null; district: string | null },
-    evidence: Evidence[],
-    reasons: ResolverReason[],
-  ): Promise<string | null> {
-    let provinceCode: string | null = null;
-    if (input.city) {
-      const provinces = await this.repository.unitsByNormalizedName(
-        input.datasetVersionId,
-        normalizeVietnamese(input.city),
-        { level: 'PROVINCE', period: 'current' },
-        executor,
-      );
-      if (provinces.length === 1) provinceCode = provinces[0]!.code;
-      else if (provinces.length > 1) reasons.push('AMBIGUOUS_NAME');
-    }
-
-    if (!input.district) {
-      if (provinceCode) {
-        evidence.push({
-          method: 'exact_name',
-          provinceCode,
-          communeCode: null,
-          hierarchyValid: true,
-          deterministic: true,
-          detail: `city text matched province ${provinceCode}`,
-        });
-      }
-      return provinceCode;
-    }
-
-    const normalized = normalizeVietnamese(input.district);
-    const communes = await this.repository.unitsByNormalizedName(
-      input.datasetVersionId,
-      normalized,
-      {
-        level: 'COMMUNE',
-        period: 'current',
-        // "Phường Tân Bình" exists under several provinces. Narrowing by the
-        // city text is what turns a duplicate name into an identity; without a
-        // city the duplicates stay a review task.
-        ...(provinceCode ? { parentCode: provinceCode } : {}),
-      },
-      executor,
-    );
-
-    if (communes.length === 1) {
-      evidence.push({
-        method: provinceCode ? 'structured_components' : 'exact_name',
-        provinceCode: communes[0]!.parentCode,
-        communeCode: communes[0]!.code,
-        hierarchyValid: true,
-        deterministic: true,
-        detail: `name "${input.district}" matched ${communes[0]!.fullName}`,
-      });
-      return provinceCode;
-    }
-
-    if (communes.length > 1) {
-      reasons.push('AMBIGUOUS_NAME');
-      for (const commune of communes) {
-        evidence.push({
-          method: 'exact_name',
-          provinceCode: commune.parentCode,
-          communeCode: commune.code,
-          hierarchyValid: true,
-          deterministic: false,
-          detail: `${commune.fullName} (${commune.code})`,
-        });
-      }
-      return provinceCode;
-    }
-
-    if (provinceCode) {
-      evidence.push({
-        method: 'exact_name',
-        provinceCode,
-        communeCode: null,
-        hierarchyValid: true,
-        deterministic: true,
-        detail: `city text matched province ${provinceCode}, district text matched no current commune`,
-      });
-    }
-    return provinceCode;
-  }
-
-  /**
-   * Precedence 5: historical names and the canonical change mapping.
-   *
-   * Two doors in. A stored commune code that is no longer current — the case a
-   * place mapped before 2025-07-01 is in — and a district name that names a
-   * dissolved unit. Both end at the same question: does this old unit have
-   * exactly one successor GoGo is willing to assert?
+   * The second door used to be a district name matching a dissolved unit. It is
+   * gone: see `gather`.
    */
   private async fromHistory(
     executor: Executor,
     input: {
       datasetVersionId: string;
-      district: string | null;
       current: CurrentMapping;
     },
-    provinceCode: string | null,
     evidence: Evidence[],
     reasons: ResolverReason[],
   ): Promise<void> {
@@ -859,34 +770,6 @@ export class AdministrativeResolverService {
       }
     }
 
-    if (input.district) {
-      const normalized = normalizeVietnamese(input.district);
-      const districts = await this.repository.unitsByNormalizedName(
-        input.datasetVersionId,
-        normalized,
-        { level: 'LEGACY_DISTRICT', period: 'historical' },
-        executor,
-      );
-      if (districts.length === 1) {
-        evidence.push({
-          method: 'exact_name',
-          provinceCode: null,
-          communeCode: null,
-          legacyDistrictCode: districts[0]!.code,
-          hierarchyValid: true,
-          deterministic: true,
-          detail: `district text matched dissolved ${districts[0]!.fullName} (${districts[0]!.code})`,
-        });
-      }
-      const communes = await this.repository.unitsByNormalizedName(
-        input.datasetVersionId,
-        normalized,
-        { level: 'COMMUNE', period: 'historical' },
-        executor,
-      );
-      if (communes.length === 1) historicalCodes.add(communes[0]!.code);
-    }
-
     for (const code of historicalCodes) {
       const edges = await this.repository.successorsOf(input.datasetVersionId, code, executor);
       const targets = [...new Set(edges.map((e) => e.newCode))];
@@ -902,8 +785,7 @@ export class AdministrativeResolverService {
           method: 'change_mapping',
           provinceCode: successor?.parentCode ?? null,
           communeCode: targets[0]!,
-          hierarchyValid:
-            Boolean(successor) && (provinceCode === null || successor!.parentCode === provinceCode),
+          hierarchyValid: Boolean(successor),
           deterministic: true,
           detail: `${code} became ${targets[0]!} (${edges[0]!.changeType})`,
         });

@@ -418,10 +418,13 @@ describe('explicitly supplied codes', () => {
   });
 });
 
-describe('names already stored on the place', () => {
-  it('matches an unaccented district under a named city', async () => {
-    // `normalizeVietnamese` folds accents and case, so "ba dinh" and
-    // "Phường Bà Đình" meet in one space. One normalizer, not two.
+describe('ADR-0019 §7b: legacy free text is not evidence', () => {
+  it('does not turn a district name into a commune, however exactly it matches', async () => {
+    // "ba dinh" folds to exactly one current commune, and used to resolve to
+    // it. It must not: the district tier was dissolved on 2025-07-01, so a
+    // commune chosen because somebody typed a district name is a commune
+    // chosen from a hierarchy that no longer exists — and the resulting code is
+    // indistinguishable downstream from one the geometry supports.
     const place = await insertPlace({
       geom: { x: 108.5, y: 12.0 },
       city: 'Hà Nội',
@@ -429,44 +432,81 @@ describe('names already stored on the place', () => {
     });
     const result = await resolver.resolvePlace(place.id);
     expect(result).toMatchObject({
-      status: 'AUTO_MATCHED',
-      method: 'structured_components',
-      provinceCode: '01',
-      communeCode: '00004',
-      confidence: null,
+      status: 'UNMAPPED',
+      provinceCode: null,
+      communeCode: null,
+      method: null,
     });
   });
 
-  it('refuses a name that names several communes under different provinces', async () => {
+  it('does not turn a city name into a province', async () => {
+    // A city cell is what somebody typed to help find a place. It is a search
+    // hint, not a claim about which province the place is in.
+    const place = await insertPlace({ geom: { x: 108.5, y: 12.0 }, city: 'Hà Nội' });
+    const result = await resolver.resolvePlace(place.id);
+    expect(result).toMatchObject({ status: 'UNMAPPED', provinceCode: null, communeCode: null });
+  });
+
+  it('does not report AMBIGUOUS_NAME, because it no longer reads names', async () => {
     const place = await insertPlace({
       geom: { x: 108.5, y: 12.0 },
       district: duplicateName.normalized,
     });
     const result = await resolver.resolvePlace(place.id);
-    expect(result.status).toBe('NEEDS_REVIEW');
-    expect(result.reason).toBe('AMBIGUOUS_NAME');
-    expect(result.candidates.length).toBeGreaterThan(1);
+    expect(result.reason).not.toBe('AMBIGUOUS_NAME');
+    expect(result.status).toBe('UNMAPPED');
+    expect(result.candidates).toEqual([]);
   });
 
-  it('resolves the same name once a city narrows it to one province', async () => {
-    const [province] = await db
+  it('leaves the geometry answer alone when the free text disagrees with it', async () => {
+    // The pin is in Ba Đình, Hà Nội; the text says Hồ Chí Minh. Before §7b that
+    // was a two-source conflict and a review task. There is one source now.
+    const place = await insertPlace({
+      geom: { x: 105.82, y: 21.04 },
+      city: 'Hồ Chí Minh',
+      district: 'Quận 1',
+    });
+    const result = await resolver.resolvePlace(place.id);
+    expect(result).toMatchObject({
+      status: 'AUTO_MATCHED',
+      provinceCode: '01',
+      communeCode: '00004',
+      method: 'boundary_point_in_polygon',
+      reason: null,
+    });
+  });
+
+  it('does not derive a legacy district code from district text either', async () => {
+    // A dissolved district matched by name is still a name match. The only way
+    // a `legacy_district_code` is written is somebody asserting it outright.
+    const [district] = await db
       .select({ name: schema.administrativeUnits.name })
       .from(schema.administrativeUnits)
       .where(
         and(
           eq(schema.administrativeUnits.datasetVersionId, datasetId),
-          eq(schema.administrativeUnits.code, duplicateName.provinces[0]!),
-          eq(schema.administrativeUnits.level, 'PROVINCE'),
+          eq(schema.administrativeUnits.level, 'LEGACY_DISTRICT'),
         ),
-      );
-    const place = await insertPlace({
-      geom: { x: 108.5, y: 12.0 },
-      city: province!.name,
-      district: duplicateName.normalized,
-    });
+      )
+      .orderBy(schema.administrativeUnits.code)
+      .limit(1);
+    const place = await insertPlace({ geom: { x: 105.82, y: 21.04 }, district: district!.name });
     const result = await resolver.resolvePlace(place.id);
-    expect(result.status).toBe('AUTO_MATCHED');
-    expect(result.provinceCode).toBe(duplicateName.provinces[0]);
+    expect(result.legacyDistrictCode).toBeNull();
+  });
+
+  it('still reads the free text back out of the row, untouched', async () => {
+    // Not read as evidence is not the same as erased. ADR-0016 keeps the
+    // columns, and an editor's address survives every resolver run.
+    const place = await insertPlace({
+      geom: { x: 105.82, y: 21.04 },
+      city: 'Hồ Chí Minh',
+      district: 'Quận 1',
+    });
+    await resolver.persist(await resolver.resolvePlace(place.id));
+    const after = await placeRow(place.id);
+    expect(after.city).toBe('Hồ Chí Minh');
+    expect(after.district).toBe('Quận 1');
   });
 });
 
