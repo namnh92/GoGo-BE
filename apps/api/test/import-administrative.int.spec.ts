@@ -15,6 +15,7 @@ import {
   AdministrativeBoundaryImportService,
   AdministrativeImportService,
   PlaceImportJobService,
+  evaluatePlaceApproval,
 } from '@gogo/modules';
 import { PLACE_PROVIDER } from '@gogo/providers';
 import type { FakePlaceProvider } from '@gogo/providers';
@@ -482,14 +483,13 @@ describe('a row matching a verified place does not report itself blocked', () =>
   it('reads the approval policy rather than asserting that a mapping blocks', async () => {
     const editor = await createAdmin('adm017-verified@gogo.local', 'editor');
     const moderator = await createAdmin('adm017-verified-mod@gogo.local', 'moderator');
+    const ops = await createAdmin('adm017-verified-ops@gogo.local', 'ops_admin');
     places.seed({ providerPlaceId: 'adm017-dup', name: 'Cháo Sườn Ngõ Huyện', ...inside });
 
-    // Import it once so the catalogue holds it, then have a moderator verify
-    // the mapping the import produced.
+    // Import it once so the catalogue holds it.
     const first = await runImport(editor.token, [
       rowFor('V-1', 'Cháo Sườn Ngõ Huyện', 'https://www.google.com/maps?place_id=adm017-dup'),
     ]);
-    const ops = await createAdmin('adm017-verified-ops@gogo.local', 'ops_admin');
     await api().inject({
       method: 'POST',
       url: `/v1/cms/place-imports/${first.job.id}/publish`,
@@ -501,6 +501,13 @@ describe('a row matching a verified place does not report itself blocked', () =>
       .select()
       .from(schema.places)
       .where(eq(schema.places.name, 'Cháo Sườn Ngõ Huyện'));
+
+    // As imported: AUTO_MATCHED, and the shared guard blocks it.
+    expect(await evaluatePlaceApproval(db, place!)).toMatchObject({
+      code: 'MAPPING_NOT_VERIFIED',
+    });
+
+    // A moderator verifies the mapping the import produced.
     const verified = await api().inject({
       method: 'POST',
       url: `/v1/cms/places/${place!.id}/administrative-mapping/verify`,
@@ -514,32 +521,43 @@ describe('a row matching a verified place does not report itself blocked', () =>
     });
     expect(verified.statusCode, verified.body).toBe(201);
 
-    // Now import the same Google id again. The row matches the existing place,
-    // whose mapping a person verified and which still holds — the one case a
-    // bulk row may legitimately publish.
-    const second = await runImport(
-      editor.token,
-      [rowFor('V-2', 'Cháo Sườn Ngõ Huyện', 'https://www.google.com/maps?place_id=adm017-dup')],
-      'publish_approved',
-    );
+    const [after] = await db.select().from(schema.places).where(eq(schema.places.id, place!.id));
+    // The guard now permits it — the one mapping state that does.
+    expect(await evaluatePlaceApproval(db, after!)).toBeNull();
+
+    // Import the same Google id again. The row is about the place it matched,
+    // so it reports that place's mapping — and must agree with the guard above.
+    const second = await runImport(editor.token, [
+      rowFor('V-2', 'Cháo Sườn Ngõ Huyện', 'https://www.google.com/maps?place_id=adm017-dup'),
+    ]);
     const duplicate = second.rows[0]!;
     expect(duplicate.status).toBe('duplicate');
     expect(duplicate.matchedPlaceId).toBe(place!.id);
-
-    // The old `status !== null` rule would have called this blocked while the
-    // server went on to publish it.
-    const publish = await api().inject({
-      method: 'POST',
-      url: `/v1/cms/place-imports/${second.job.id}/publish`,
-      remoteAddress: ip(),
-      headers: auth(ops.token),
-      payload: {},
+    expect(duplicate.administrative).toMatchObject({
+      status: 'VERIFIED',
+      provinceCode: mapped.provinceCode,
+      communeCode: mapped.communeCode,
+      requiresReview: false,
+      // The whole correction: `status !== null` would have said `true` here,
+      // contradicting the guard that decides what actually happens.
+      blocksPublication: false,
+      approvalBlock: null,
     });
-    expect(publish.statusCode).toBe(201);
-
-    const [after] = await db.select().from(schema.places).where(eq(schema.places.id, place!.id));
-    expect(after!.status).toBe('published');
   }, 240_000);
+
+  it('reports a blocked row with the policy’s own code, not a screen’s guess', async () => {
+    const editor = await createAdmin('adm017-blocked@gogo.local', 'editor');
+    places.seed({ providerPlaceId: 'adm017-blocked', name: 'Miến Lươn Chân Cầm', ...inside });
+
+    const { rows } = await runImport(editor.token, [
+      rowFor('BL-1', 'Miến Lươn Chân Cầm', 'https://www.google.com/maps?place_id=adm017-blocked'),
+    ]);
+    expect(rows[0]!.administrative).toMatchObject({
+      status: 'AUTO_MATCHED',
+      blocksPublication: true,
+      approvalBlock: { code: 'MAPPING_NOT_VERIFIED' },
+    });
+  }, 180_000);
 });
 
 describe('the Google-link create form opens on a real identity', () => {
