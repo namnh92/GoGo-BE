@@ -10,6 +10,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
 import {
+  AdministrativeBoundaryImportService,
   AdministrativeImportService,
   ADMINISTRATIVE_RESOURCES,
   DuplicateImportError,
@@ -41,11 +42,27 @@ async function scalar<T>(query: Parameters<typeof db.execute>[0], column: string
   return first[column] as T;
 }
 
+// #489 — a dataset import binds the boundary release that is loaded, so every
+// fixture that imports must load one first. The five-entry fixture is real,
+// unmodified geometry from the pinned archive and needs no network.
+async function loadFixtureBoundaries(database: Parameters<typeof migrate>[0]): Promise<void> {
+  await new AdministrativeBoundaryImportService(database as never).load({
+    role: 'boundaries-fixture',
+    boundaryVersion: 'fixture-v1',
+    // The fixture is vendored and has no fetch URL, so the path is explicit.
+    archivePath: path.resolve(
+      __dirname,
+      '../../../resources/administrative/boundaries-fixture.v5.0.0.zip',
+    ),
+  });
+}
+
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgis/postgis:16-3.4').start();
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: MIGRATIONS });
+  await loadFixtureBoundaries(db);
   service = new AdministrativeImportService(db);
 }, 240_000);
 
@@ -85,7 +102,7 @@ describe('importing the pinned snapshot set', () => {
 
     // The one known defect in v5.0.0, surfaced rather than silently repaired.
     expect(report.warnings).toEqual([expect.stringContaining('06325')]);
-    expect(report.combinedDatasetVersion).toBe('v5.0.0+v2.4.1+7fac8c45+none+r0');
+    expect(report.combinedDatasetVersion).toBe('v5.0.0+v2.4.1+7fac8c45+fixture-v1+r0');
   });
 
   it('writes a STAGED dataset and nothing published', async () => {

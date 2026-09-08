@@ -16,7 +16,8 @@ import {
   type BoundaryFeature,
   type ResolvedArchive,
 } from './boundary-archive.reader';
-import type { ManifestSource } from './pinned-snapshot.reader';
+import { PinnedSnapshotReader, type ManifestSource } from './pinned-snapshot.reader';
+import { parseCurrentUnits } from './unit-snapshot';
 
 /**
  * ADM-007 (#460) / ADR-0019 — loading a pinned boundary release.
@@ -92,6 +93,9 @@ export class BoundaryValidationError extends Error {
   }
 }
 
+/** #489 — rows per insert when staging the pinned reference units. */
+const REFERENCE_BATCH = 500;
+
 /** Rows per insert. Bounds the parameter payload; the archive expands to 629 MB. */
 const INSERT_BATCH = 20;
 
@@ -107,6 +111,9 @@ export class AdministrativeBoundaryImportService {
     @Inject(DB) private readonly db: Db,
     private readonly archives: BoundaryArchiveReader = new BoundaryArchiveReader(),
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+    // #489 — the pinned current-units snapshot the boundary codes are checked
+    // against. Stateless and reads only vendored bytes, so it is defaulted.
+    private readonly reader: PinnedSnapshotReader = new PinnedSnapshotReader(),
   ) {}
 
   /**
@@ -149,9 +156,23 @@ export class AdministrativeBoundaryImportService {
       };
     }
 
-    const datasetVersionId = await this.datasetVersionId(options.datasetVersionId);
-
     return this.db.transaction(async (tx) => {
+      // #489 — the codes boundaries are checked against come from the pinned
+      // current-units snapshot, not from a published dataset.
+      //
+      // Requiring an active dataset here made a fresh install impossible: the
+      // loader wanted a published dataset, and a dataset could only bind a
+      // boundary release that was already loaded. Nothing could go first. The
+      // units in a published dataset are parsed from this same snapshot anyway,
+      // so reading it directly checks the boundary release against exactly what
+      // it was pinned alongside — and does it for an environment with no dataset
+      // at all, which is the case that was unreachable.
+      //
+      // Materialised into a temporary table so the existing SQL gates keep
+      // working as SQL. `on commit drop` ties its life to this transaction, so a
+      // rejected load leaves nothing behind here either.
+      await this.stageReferenceUnits(tx);
+
       // Replacing a version is delete-then-insert inside the transaction, so no
       // reader ever sees the gap.
       await tx.execute(
@@ -181,7 +202,7 @@ export class AdministrativeBoundaryImportService {
       }
       await flush();
 
-      const measurements = await this.measure(tx, boundaryVersion, datasetVersionId, source, {
+      const measurements = await this.measure(tx, boundaryVersion, source, {
         provinces,
         communes,
       });
@@ -272,7 +293,6 @@ export class AdministrativeBoundaryImportService {
   private async measure(
     tx: Tx,
     boundaryVersion: string,
-    datasetVersionId: string,
     source: ManifestSource,
     counts: { provinces: number; communes: number },
   ): Promise<
@@ -324,15 +344,12 @@ export class AdministrativeBoundaryImportService {
       measured(boundaries(sql`b.level not in ('PROVINCE','COMMUNE')`)),
       measured(
         boundaries(sql`not exists (
-            select 1 from administrative_units u
-            where u.dataset_version_id = ${datasetVersionId} and u.code = b.code
-              and u.level = b.level and u.status = 'ACTIVE' and u.effective_to is null)`),
+            select 1 from pinned_reference_units u
+            where u.code = b.code and u.level = b.level)`),
       ),
       measured(
         sql`administrative_unit_boundaries b
-              join administrative_units u
-                on u.dataset_version_id = ${datasetVersionId} and u.code = b.code and u.level = b.level
-               and u.status = 'ACTIVE' and u.effective_to is null
+              join pinned_reference_units u on u.code = b.code and u.level = b.level
               where ${scope} and b.level = 'COMMUNE' and b.parent_code is distinct from u.parent_code`,
         sql`b.code || ': ' || coalesce(b.parent_code,'null') || ' -> ' || coalesce(u.parent_code,'null')`,
       ),
@@ -352,9 +369,8 @@ export class AdministrativeBoundaryImportService {
       !complete
         ? anomaly(0, [])
         : measured(
-            sql`administrative_units b
-                where b.dataset_version_id = ${datasetVersionId} and b.level = ${level}
-                  and b.status = 'ACTIVE' and b.effective_to is null
+            sql`pinned_reference_units b
+                where b.level = ${level}
                   and not exists (
                     select 1 from administrative_unit_boundaries x
                     where x.boundary_version = ${boundaryVersion} and x.code = b.code and x.level = b.level)`,
@@ -507,21 +523,52 @@ export class AdministrativeBoundaryImportService {
     return row ?? null;
   }
 
-  /** The dataset whose current units the boundary codes must resolve against. */
-  private async datasetVersionId(explicit?: string): Promise<string> {
-    if (explicit) return explicit;
-    const [row] = await this.db
-      .select({ id: schema.administrativeDatasetVersions.id })
-      .from(schema.administrativeDatasetVersions)
-      .where(eq(schema.administrativeDatasetVersions.status, 'PUBLISHED'))
-      .limit(1);
-    if (!row) {
-      throw new Error(
-        'no administrative dataset is published; boundary codes are validated against the ' +
-          'pinned current units, so there is nothing to validate them against yet',
+  /**
+   * #489 — the codes a boundary release is checked against, from the pinned
+   * current-units snapshot.
+   *
+   * A temporary table rather than an in-memory set: the gates in `measure` are
+   * SQL joins over 3,355 geometries, and pulling them into JavaScript to
+   * intersect with a `Set` would trade three indexed joins for a full read of
+   * the boundary table. `on commit drop` scopes it to the load transaction, so
+   * concurrent loads cannot see each other's staging and a rollback takes it
+   * with everything else.
+   *
+   * The checksum is verified by the reader before a byte is parsed, so what
+   * lands here is the pinned snapshot or nothing.
+   */
+  private async stageReferenceUnits(tx: Tx): Promise<void> {
+    await tx.execute(sql`
+      create temporary table pinned_reference_units (
+        code text not null,
+        -- The same enum the boundary table uses. Declared as text it compared
+        -- against administrative_unit_boundaries.level as text-vs-enum and
+        -- PostgreSQL answered 42883, "no operator matches" — a join that cannot
+        -- run rather than one that runs wrong, but still a failure at load time.
+        level administrative_level not null,
+        parent_code text
+      ) on commit drop
+    `);
+
+    const { data } = this.reader.readJson<Parameters<typeof parseCurrentUnits>[0]>(
+      'current-units',
+    );
+    const { units } = parseCurrentUnits(data);
+
+    for (let i = 0; i < units.length; i += REFERENCE_BATCH) {
+      const batch = units.slice(i, i + REFERENCE_BATCH);
+      const values = sql.join(
+        batch.map((u: (typeof units)[number]) => sql`(${u.code}, ${u.level}::administrative_level, ${u.parentCode ?? null})`),
+        sql`, `,
+      );
+      await tx.execute(
+        sql`insert into pinned_reference_units (code, level, parent_code) values ${values}`,
       );
     }
-    return row.id;
+
+    await tx.execute(
+      sql`create index on pinned_reference_units (code, level)`,
+    );
   }
 }
 

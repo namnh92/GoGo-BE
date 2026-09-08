@@ -29,6 +29,18 @@ export async function snapshotFingerprint(
   executor: Executor,
   datasetVersionId: string,
   overrideRevision: number,
+  /**
+   * #489 — the boundary release the dataset is bound to. Part of the
+   * fingerprint because the geometry is as much a component of what was
+   * validated as the units are: a dataset revalidated against a different
+   * boundary release is a different snapshot, and publishing it on the strength
+   * of the earlier validation would be publishing something nobody checked.
+   *
+   * `null` reproduces the pre-#489 hash for the one dataset that predates
+   * boundary binding, so the DEV `+none+r0` baseline still fingerprints to what
+   * is stored on it.
+   */
+  boundary: { version: string; checksum: string } | null = null,
 ): Promise<string> {
   const result = await executor.execute(sql`
     select
@@ -50,6 +62,9 @@ export async function snapshotFingerprint(
         ['changes', row.changes, row.change_count],
         ['quarantine', row.quarantine, row.quarantine_count],
         ['overrideRevision', overrideRevision],
+        // Appended, not inserted: a null boundary yields the original tuple, so
+        // datasets imported before #489 keep the fingerprint already stored.
+        ...(boundary ? [['boundary', boundary.version, boundary.checksum]] : []),
       ]),
     )
     .digest('hex');
@@ -63,3 +78,35 @@ type FingerprintRow = {
   change_count: number;
   quarantine_count: number;
 };
+
+/**
+ * #489 — the boundary identity a dataset row is bound to, in the shape
+ * `snapshotFingerprint` takes.
+ *
+ * The version comes from the row and the checksum from the manifest pin, the
+ * same asymmetry the other three components already use: the row records which
+ * release was bound, the manifest records what those bytes are, and a
+ * disagreement between them is what the checksum gates exist to catch.
+ *
+ * Null for a dataset imported before boundary binding, which keeps its stored
+ * fingerprint reproducible.
+ */
+export async function boundaryIdentity(
+  executor: Executor,
+  row: { boundarySourceVersion: string | null },
+): Promise<{ version: string; checksum: string } | null> {
+  if (!row.boundarySourceVersion) return null;
+  // From the ledger, not from a manifest role. The version name is chosen by
+  // whoever ran the loader — `fixture-v1` names no manifest entry — so only the
+  // ledger says which bytes that name refers to. The loader refuses to redefine
+  // an existing version with a different archive, which is what makes this
+  // stable enough to recompute an identity against; if the row is gone, the
+  // checksum resolves to null and every gate refuses, which is the honest
+  // answer for a dataset bound to a release the database no longer has.
+  const result = await executor.execute(sql`
+    select source_checksum from administrative_boundary_loads
+    where boundary_version = ${row.boundarySourceVersion} limit 1
+  `);
+  const found = (result as unknown as { rows: { source_checksum: string }[] }).rows[0];
+  return found ? { version: row.boundarySourceVersion, checksum: found.source_checksum } : null;
+}

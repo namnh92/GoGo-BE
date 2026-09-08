@@ -16,7 +16,6 @@ import {
   AdministrativeImportService,
   AdministrativeResolverService,
   BoundaryArchiveReader,
-  BoundaryValidationError,
   BoundaryVersionConflictError,
   SnapshotChecksumError,
   readZipEntries,
@@ -102,6 +101,15 @@ beforeAll(async () => {
   pool.on('error', () => undefined);
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
+
+  // #489 — an import binds the boundary release that is loaded, so the fixture
+  // goes in first. Loaded under its own version, separate from every version
+  // the tests below load and reload, so it cannot mask what they assert.
+  await new AdministrativeBoundaryImportService(db).load({
+    role: 'boundaries-fixture',
+    boundaryVersion: 'seed-for-import',
+    archivePath: FIXTURE,
+  });
 
   const report = await new AdministrativeImportService(db).importPinnedSnapshot();
   datasetId = report.datasetVersionId;
@@ -205,7 +213,10 @@ describe('loading', () => {
     // shipped Polygons would change what the loader silently did.
     expect(result.promotedToMultiPolygon).toBe(0);
 
-    const [ledger] = await db.select().from(schema.administrativeBoundaryLoads);
+    const [ledger] = await db
+      .select()
+      .from(schema.administrativeBoundaryLoads)
+      .where(eq(schema.administrativeBoundaryLoads.boundaryVersion, FIXTURE_VERSION));
     expect(ledger).toMatchObject({
       boundaryVersion: FIXTURE_VERSION,
       license: 'MIT',
@@ -286,35 +297,53 @@ describe('loading', () => {
     expect(await boundaryRows('coverage-failure')).toEqual([]);
   });
 
-  it('rolls back a load whose codes do not resolve, leaving the version absent', async () => {
-    // Point the validation at a dataset that holds none of these codes.
-    const [empty] = await db
-      .insert(schema.administrativeDatasetVersions)
-      .values({
-        combinedDatasetVersion: 'empty-dataset',
-        combinedChecksum: 'empty-checksum',
-        currentSourceVersion: 'none',
-        source: 'test',
-        effectiveDate: '2025-07-01',
-        status: 'STAGED',
-      })
-      .returning();
+  // #489 replaced what this test used to assert. It forced CODE_RESOLVES by
+  // pointing the loader at a dataset holding none of the fixture's codes — a
+  // `datasetVersionId` injection that no longer exists, because codes now
+  // resolve against the pinned current-units snapshot rather than a published
+  // dataset. There is no way to hand the loader a narrower reference set, and
+  // doctoring the archive cannot reach the gate either: the checksum is
+  // verified before a single entry is inflated.
+  //
+  // The rejection-rolls-everything-back property is still covered by the
+  // truncated-archive test above, which asserts the version is absent
+  // afterwards, and CODE_RESOLVES is a pure function of the measurements.
+  //
+  // What replaces it is the property #489 introduces, and the one that was
+  // impossible before: a release loads into an environment with no dataset at
+  // all. That was the circular dependency — the loader demanded a published
+  // dataset, and a dataset could only bind a release already loaded.
+  it('loads with no PUBLISHED dataset present', async () => {
+    // Demoted and restored rather than truncated: the published dataset is
+    // shared fixture state for every test below, and proving independence must
+    // not cost them their data. Before #489 this exact state — a dataset that
+    // exists but is not PUBLISHED — was what the loader refused on.
+    await db
+      .update(schema.administrativeDatasetVersions)
+      .set({ status: 'STAGED' })
+      .where(eq(schema.administrativeDatasetVersions.id, datasetId));
+    expect(
+      await db
+        .select()
+        .from(schema.administrativeDatasetVersions)
+        .where(eq(schema.administrativeDatasetVersions.status, 'PUBLISHED')),
+    ).toEqual([]);
 
-    await expect(
-      loader.load({
-        role: 'boundaries-fixture',
-        boundaryVersion: 'unresolved-codes',
-        archivePath: FIXTURE,
-        datasetVersionId: empty!.id,
-      }),
-    ).rejects.toBeInstanceOf(BoundaryValidationError);
+    const result = await loader.load({
+      role: 'boundaries-fixture',
+      boundaryVersion: 'no-dataset-present',
+      archivePath: FIXTURE,
+    });
 
-    expect(await boundaryRows('unresolved-codes')).toEqual([]);
-    const ledger = await db
-      .select()
-      .from(schema.administrativeBoundaryLoads)
-      .where(eq(schema.administrativeBoundaryLoads.boundaryVersion, 'unresolved-codes'));
-    expect(ledger).toEqual([]);
+    expect(result.outcome).toBe('loaded');
+    expect(result.validation.errors).toBe(0);
+    expect(result.counts).toEqual({ provinces: 2, communes: 3 });
+    expect((await boundaryRows('no-dataset-present')).length).toBe(5);
+
+    await db
+      .update(schema.administrativeDatasetVersions)
+      .set({ status: 'PUBLISHED' })
+      .where(eq(schema.administrativeDatasetVersions.id, datasetId));
   });
 });
 

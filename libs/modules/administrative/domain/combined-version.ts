@@ -42,7 +42,12 @@ export function combinedDatasetVersion(c: DatasetComponents): string {
     c.currentSourceVersion,
     c.historicalSourceVersion ?? 'none',
     short(c.mappingSourceCommit),
-    short(c.boundarySourceVersion),
+    // #489 — a version, not a commit, so it is not shortened. `short` exists to
+    // keep a 40-character SHA readable; applying it to a release name truncates
+    // meaning instead of noise — `fixture-v1` became `fixture-`, and two
+    // releases sharing an eight-character prefix would have rendered identically
+    // in the CMS and in audit rows while being different datasets.
+    c.boundarySourceVersion ?? 'none',
     `r${c.overrideRevision}`,
   ].join('+');
 }
