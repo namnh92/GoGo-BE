@@ -316,6 +316,38 @@ export const submissionStatus = pgEnum('place_submission_status', [
 ]);
 
 /** Mobile add-by-link proposals (FR-INGEST-010..012). */
+/**
+ * PI-BE-031 (#528) — the GoGo-owned fields a reviewer may supplement before
+ * approving a contribution.
+ *
+ * Deliberately the Place editor's own vocabulary and nothing beyond it: this
+ * is the same edit, made a step earlier, so a field that is not writable on a
+ * Place is not writable here either. Provider facts (rating, review count,
+ * opening hours) are absent by construction — they are the provider's and are
+ * never typed by a person.
+ *
+ * `undefined`/absent means "the reviewer said nothing about this field", which
+ * is different from `null` ("clear it"). Approval reads it that way.
+ */
+export type SubmissionReviewDraft = {
+  name?: string | undefined;
+  description?: string | null | undefined;
+  addressText?: string | null | undefined;
+  phone?: string | null | undefined;
+  website?: string | null | undefined;
+  avgVisitMinutes?: number | null | undefined;
+  /** Audience fit, the same 0..1 record the place row carries. */
+  suitability?: Record<string, number> | undefined;
+  /** Category, moods and every other taxonomy chip, as ids. */
+  taxonomyIds?: string[] | undefined;
+  isLodging?: boolean | undefined;
+  curatedRank?: number | null | undefined;
+  /** Editorial price, in integer minor units — replaces nothing the user sent. */
+  priceMin?: number | null | undefined;
+  priceMax?: number | null | undefined;
+  priceUnit?: string | null | undefined;
+};
+
 export const placeSubmissions = pgTable(
   'place_submissions',
   {
@@ -338,7 +370,18 @@ export const placeSubmissions = pgTable(
     resultPlaceId: uuid('result_place_id').references(() => places.id, { onDelete: 'set null' }),
     decidedByAdminId: uuid('decided_by_admin_id'),
     decisionReason: text('decision_reason'),
+    /**
+     * PI-BE-031 — the reviewer's edits to the GoGo-owned fields, kept apart
+     * from the contributor's own input above so neither erases the other.
+     * A draft: saving it decides nothing and creates no place. Holds no
+     * provider content.
+     */
+    reviewDraft: jsonb('review_draft').$type<SubmissionReviewDraft>(),
+    reviewedByAdminId: uuid('reviewed_by_admin_id'),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Moves on every review save and every decision — the concurrency token. */
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     decidedAt: timestamp('decided_at', { withTimezone: true }),
   },
   (t) => [

@@ -1,6 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
-import { schema, type Db } from '@gogo/database';
+import { schema, type Db, type SubmissionReviewDraft } from '@gogo/database';
 import {
   ProviderConfigurationError,
   ProviderQuotaExceededError,
@@ -27,9 +27,20 @@ import { deriveCategory } from '../domain/google-types';
 import { PlaceDedupService, type DedupVerdict } from './place-dedup.service';
 import { PlaceResolverService } from './place-resolver.service';
 import { writeAudit } from '../../shared/audit';
+import { GOOGLE_PROVIDER, GOOGLE_PROVIDER_PUBLIC } from '../../shared/google-provenance';
 import { AdministrativeResolverService } from '../../administrative/application/administrative-resolver.service';
 import { activeDataset, unitNames } from '../../administrative/application/unit-lookup';
 import type { MappingStatus } from '../../administrative/domain/mapping-status';
+
+/**
+ * `price_unit`, mirrored from the enum the column carries (#528).
+ *
+ * A price never leaves its unit behind, and a unit the database does not know
+ * is not a reason to store the wrong one — an unrecognised value falls back to
+ * `per_person`, which is what the contributor path has always defaulted to.
+ */
+const PRICE_UNITS = ['per_person', 'per_item', 'per_hour', 'per_night'] as const;
+type PriceUnit = (typeof PRICE_UNITS)[number];
 
 export type ResolveLinkResponse = {
   status: 'RESOLVED' | 'ALREADY_EXISTS' | 'CANDIDATE_SELECTION' | 'UNRESOLVED';
@@ -186,6 +197,30 @@ export function decodeSubmissionCursor(cursor: string): { createdAt: string; id:
     return { createdAt, id };
   } catch {
     throw AppError.badRequest('INVALID_CURSOR', 'Cursor is not valid');
+  }
+}
+
+/**
+ * #528 — the same optimistic-concurrency rule the place editor uses, with this
+ * resource's own name on the refusal.
+ *
+ * Omitting the field skips the check, which keeps the endpoint usable from a
+ * script and from a client that predates this contract.
+ */
+function assertSubmissionFresh(current: Date, expected?: string | undefined): void {
+  if (expected === undefined) return;
+  const parsed = new Date(expected);
+  if (Number.isNaN(parsed.getTime())) {
+    throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', [
+      { field: 'expectedUpdatedAt', code: 'invalid_datetime', message: 'Không phải thời điểm ISO' },
+    ]);
+  }
+  if (parsed.getTime() !== current.getTime()) {
+    throw AppError.conflict(
+      'SUBMISSION_MODIFIED',
+      'This submission changed after the form was loaded',
+      [{ field: 'updatedAt', code: 'stale', message: current.toISOString() }],
+    );
   }
 }
 
@@ -831,14 +866,43 @@ export class PlaceSubmissionService {
       where.push(sql`(s.created_at, s.id) < (${createdAt}::timestamptz, ${id}::uuid)`);
     }
 
+    /**
+     * #528 — the queue shows a place, not a Place ID.
+     *
+     * A moderator opening `/submissions` used to read a column of
+     * `ChIJ…` strings, which is not something anybody can prioritise by. The
+     * name comes from two places GoGo already holds and no provider request:
+     * a reviewer's own draft, and the catalogue row when this Google record
+     * already belongs to one. Neither exists for a fresh submission, and the
+     * honest answer there is that we do not have a name yet — the console says
+     * so and offers the review action, rather than spending a Details call per
+     * row to fill a list.
+     *
+     * `linked_place_id` doubles as the duplicate indicator: this Google record
+     * is already in the catalogue, which is the single most useful thing to
+     * know before opening a proposal.
+     */
     const rows = await this.db.execute(sql`
       select s.id, s.google_place_id, s.status, s.submission_count, s.category_key,
              s.price_min, s.price_max, s.price_unit, s.vibe_keys, s.note,
-             s.room_id, s.result_place_id, s.created_at, s.decided_at, s.decision_reason,
+             s.room_id, s.result_place_id, s.created_at, s.updated_at, s.decided_at,
+             s.decision_reason, s.review_draft, s.reviewed_at,
              (s.submitted_by_user_id is not null) as from_user,
-             p.name as result_place_name
+             p.name as result_place_name,
+             coalesce(pps.place_id, ps.place_id) as linked_place_id,
+             coalesce(lp.name, lps.name) as linked_place_name,
+             (pic.id is not null) as identity_conflict
       from place_submissions s
       left join places p on p.id = s.result_place_id
+      left join place_provider_sources pps
+        on pps.provider = ${GOOGLE_PROVIDER} and pps.external_id = s.google_place_id
+      left join place_sources ps
+        on ps.provider = ${GOOGLE_PROVIDER_PUBLIC} and ps.external_id = s.google_place_id
+      left join places lp on lp.id = pps.place_id
+      left join places lps on lps.id = ps.place_id
+      left join place_identity_conflicts pic
+        on pic.provider = ${GOOGLE_PROVIDER} and pic.external_id = s.google_place_id
+       and pic.resolved_at is null
       where ${sql.join(where, sql` and `)}
       order by s.created_at desc, s.id desc
       limit ${options.limit + 1}
@@ -859,9 +923,15 @@ export class PlaceSubmissionService {
       result_place_id: string | null;
       result_place_name: string | null;
       created_at: Date | string;
+      updated_at: Date | string;
       decided_at: Date | string | null;
       decision_reason: string | null;
+      review_draft: SubmissionReviewDraft | null;
+      reviewed_at: Date | string | null;
       from_user: boolean;
+      linked_place_id: string | null;
+      linked_place_name: string | null;
+      identity_conflict: boolean;
     };
     const page = rows.rows as Row[];
     const items = page.slice(0, options.limit);
@@ -889,14 +959,274 @@ export class PlaceSubmissionService {
         // not need the person's identity, only whether it came from an account.
         fromRegisteredUser: r.from_user,
         createdAt: iso(r.created_at)!,
+        updatedAt: iso(r.updated_at)!,
         decidedAt: iso(r.decided_at),
         decisionReason: r.decision_reason ?? undefined,
+        /**
+         * The best name GoGo can honestly give this row, and where it came
+         * from — so a console can render "chưa có tên" rather than a Place ID
+         * dressed up as one.
+         */
+        ...(r.review_draft?.name
+          ? { displayName: r.review_draft.name, displayNameSource: 'review' as const }
+          : r.linked_place_name
+            ? { displayName: r.linked_place_name, displayNameSource: 'catalogue' as const }
+            : {}),
+        reviewedAt: iso(r.reviewed_at),
+        hasReview: r.review_draft !== null,
+        linkedPlaceId: r.linked_place_id ?? undefined,
+        identityConflict: r.identity_conflict,
       })),
       nextCursor:
         page.length > options.limit && last
           ? encodeSubmissionCursor(last.created_at, last.id)
           : null,
     };
+  }
+
+  /**
+   * PI-BE-031 (#528) — everything a reviewer needs that GoGo already holds.
+   *
+   * No provider request. Google's name, address, rating and hours are not
+   * stored (ADR-0006 §9.5), so this cannot answer with them and does not
+   * pretend to — `providerPreview` is the explicit, separately-counted way to
+   * ask Google, and the console offers it as an action rather than making it
+   * on the reviewer's behalf when a list is opened.
+   *
+   * What is here is the whole of the rest: what the contributor sent, what a
+   * reviewer has supplemented so far, whether the catalogue already holds this
+   * Google record, and how the submission has been handled.
+   */
+  async getSubmissionForReview(id: string) {
+    const [row] = await this.db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, id))
+      .limit(1);
+    if (!row) throw AppError.notFound('SUBMISSION_NOT_FOUND', 'Submission not found');
+
+    const identity = await this.dedup.resolveGoogleIdentity(row.googlePlaceId);
+    const linkedPlaceId =
+      identity.kind === 'RESOLVED' ? identity.placeId : (row.resultPlaceId ?? null);
+    const place = linkedPlaceId ? await this.placeSummary(linkedPlaceId) : null;
+
+    /**
+     * The decisions taken on this submission, newest last, from the append-only
+     * audit log — the same rows the audit screen renders. A reviewer deciding
+     * now should be able to see that somebody already looked.
+     */
+    const history = await this.db.execute(sql`
+      select a.action, a.actor_id, a.created_at, a.diff,
+             coalesce(u.display_name, u.email) as actor_name
+      from audit_logs a
+      left join admin_users u on u.id = a.actor_id
+      where a.resource_type = 'place_submission' and a.resource_id = ${id}
+      order by a.created_at asc
+      limit 50
+    `);
+
+    return {
+      id: row.id,
+      status: row.status,
+      googlePlaceId: row.googlePlaceId,
+      googleMapsUrl: `https://www.google.com/maps/place/?q=place_id:${row.googlePlaceId}`,
+      submissionCount: row.submissionCount,
+      fromRegisteredUser: row.submittedByUserId !== null,
+      roomId: row.roomId ?? undefined,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      decidedAt: iso(row.decidedAt),
+      decisionReason: row.decisionReason ?? undefined,
+      // What the contributor sent, untouched by any review.
+      contribution: {
+        categoryKey: row.categoryKey ?? undefined,
+        estimatedPrice:
+          row.priceMin !== null && row.priceMax !== null
+            ? { min: row.priceMin, max: row.priceMax, unit: row.priceUnit ?? 'per_person' }
+            : undefined,
+        vibeKeys: row.vibeKeys,
+        note: row.note ?? undefined,
+      },
+      // What staff have supplemented, and who last did.
+      review: row.reviewDraft
+        ? {
+            draft: row.reviewDraft,
+            reviewedAt: iso(row.reviewedAt),
+            reviewedByAdminId: row.reviewedByAdminId ?? undefined,
+          }
+        : undefined,
+      /**
+       * The catalogue place this Google record already belongs to, if any.
+       * A duplicate before the decision and the result after it are the same
+       * question — "which place is this?" — so they are one field.
+       */
+      existingPlace: place ?? undefined,
+      identityConflict: identity.kind === 'CONFLICT' ? identity.placeIds : undefined,
+      history: (
+        history.rows as {
+          action: string;
+          actor_id: string | null;
+          actor_name: string | null;
+          created_at: Date | string;
+          diff: unknown;
+        }[]
+      ).map((h) => ({
+        action: h.action,
+        actorId: h.actor_id ?? undefined,
+        actorName: h.actor_name ?? undefined,
+        at: iso(h.created_at)!,
+        detail: h.diff ?? undefined,
+      })),
+    };
+  }
+
+  private async placeSummary(placeId: string) {
+    const { rows } = await this.db.execute(sql`
+      select id, name, status, address_text from places where id = ${placeId} limit 1
+    `);
+    const row = rows[0] as
+      { id: string; name: string; status: string; address_text: string | null } | undefined;
+    return row
+      ? {
+          id: row.id,
+          name: row.name,
+          status: row.status,
+          addressText: row.address_text ?? undefined,
+        }
+      : null;
+  }
+
+  /**
+   * PI-BE-031 (#528) — Google's current answer about this submission's place,
+   * shown and discarded.
+   *
+   * An explicit action with an explicit cost: one `quality` Details, counted
+   * under its own metric so preview spend can be told apart from the fetch
+   * that approval makes. It is not folded into `getSubmissionForReview`
+   * because opening a queue must not bill anybody, and it is not folded into
+   * the list because a page of twenty-five would be twenty-five requests.
+   *
+   * Nothing is stored. This is the same preview `POST /cms/places/resolve-link`
+   * gives an editor, addressed by submission so a moderator — who has no
+   * `place.write` — can see the place they are being asked to judge.
+   */
+  async providerPreview(id: string): Promise<ResolveLinkResponse> {
+    const [row] = await this.db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, id))
+      .limit(1);
+    if (!row) throw AppError.notFound('SUBMISSION_NOT_FOUND', 'Submission not found');
+
+    const outcome = await this.resolver
+      .resolveByProviderId(row.googlePlaceId, 'quality')
+      .catch((err: unknown) => {
+        this.metrics.increment('place_submission_provider_preview_total', {
+          result: 'unavailable',
+        });
+        throw placeProviderUnavailable(err);
+      });
+    if (outcome.status !== 'RESOLVED') {
+      this.metrics.increment('place_submission_provider_preview_total', { result: 'not_found' });
+      return undecided(outcome);
+    }
+    this.metrics.increment('place_submission_provider_preview_total', { result: 'fetched' });
+
+    const d = outcome.details;
+    const score = await this.resolver.scoreFor(d, null, row.categoryKey);
+    return {
+      status: 'RESOLVED',
+      matchConfidence: outcome.decision.best?.confidence,
+      reasonCodes: outcome.decision.reasons,
+      candidate: this.toCandidate(d, score, await this.offeredCategoryKey(d)),
+      ...(await this.administrativePreview(d)),
+    };
+  }
+
+  /**
+   * PI-BE-031 (#528) — save what a reviewer supplemented. Decides nothing.
+   *
+   * Separate from `decide` on purpose. A reviewer who is halfway through
+   * filling in a description should be able to keep it without approving, and
+   * a reviewer who approves should not discover that their unsaved edits went
+   * with the decision. The two actions are two requests and the console can
+   * refuse to navigate away from unsaved ones.
+   *
+   * `expectedUpdatedAt` is the same optimistic-concurrency rule the place
+   * editor uses: two moderators on the same submission is exactly the case
+   * where a silent last-write-wins loses somebody's work.
+   */
+  async saveReview(
+    adminId: string,
+    id: string,
+    draft: SubmissionReviewDraft,
+    expectedUpdatedAt?: string | undefined,
+  ) {
+    const [row] = await this.db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, id))
+      .limit(1);
+    if (!row) throw AppError.notFound('SUBMISSION_NOT_FOUND', 'Submission not found');
+    assertSubmissionFresh(row.updatedAt, expectedUpdatedAt);
+    // Editing what has already been decided would be a change to a place that
+    // exists, which is the place editor's job and has its own audit trail.
+    if (row.status !== 'pending') {
+      throw AppError.conflict('ALREADY_DECIDED', 'Submission already decided');
+    }
+    await this.assertTaxonomiesExist(draft.taxonomyIds);
+
+    const [updated] = await this.db
+      .update(schema.placeSubmissions)
+      .set({
+        reviewDraft: draft,
+        reviewedByAdminId: adminId,
+        reviewedAt: sql`now()`,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(schema.placeSubmissions.id, id))
+      .returning();
+
+    await writeAudit(this.db, {
+      actorType: 'admin',
+      actorId: adminId,
+      action: 'place_submission.reviewed',
+      resourceType: 'place_submission',
+      resourceId: id,
+      // The fields touched, not their values: the draft itself is on the row
+      // and the log is for who changed what, not a second copy of the content.
+      diff: { fields: Object.keys(draft).sort() },
+    });
+
+    return {
+      id,
+      draft: updated!.reviewDraft ?? {},
+      reviewedAt: iso(updated!.reviewedAt),
+      updatedAt: updated!.updatedAt.toISOString(),
+    };
+  }
+
+  /**
+   * A taxonomy id the catalogue does not carry would fail at approval — long
+   * after the reviewer left the form — so it fails at save instead.
+   */
+  private async assertTaxonomiesExist(ids: string[] | undefined): Promise<void> {
+    if (!ids || ids.length === 0) return;
+    const { rows } = await this.db.execute(sql`
+      select id from taxonomies
+      where is_active = true
+        and id in (${sql.join(
+          ids.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})
+    `);
+    const found = new Set((rows as { id: string }[]).map((r) => r.id));
+    const missing = ids.filter((id) => !found.has(id));
+    if (missing.length > 0) {
+      throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', [
+        { field: 'taxonomyIds', code: 'unknown', message: missing.join(', ') },
+      ]);
+    }
   }
 
   /** CMS moderation (PI-CMS-007 backend half). */
@@ -924,6 +1254,26 @@ export class PlaceSubmissionService {
       if (!mergeIntoPlaceId) {
         throw AppError.badRequest('MERGE_TARGET_REQUIRED', 'mergeIntoPlaceId is required');
       }
+      /**
+       * #528 — the target has to exist, and the refusal has to say so.
+       *
+       * `result_place_id` is a foreign key, so a target that does not exist
+       * already failed — as a constraint violation on the way out, which
+       * reaches the moderator as a 500 about our database rather than as
+       * "there is no such place". The console now picks a target by searching
+       * the catalogue, so a typed id should be rare; a rare error is still an
+       * error somebody has to read.
+       *
+       * Nothing about the target is written. Merging records where this
+       * proposal went; it does not copy the submission over the place, which
+       * is what "preserve existing merge semantics" means here.
+       */
+      const [target] = await this.db
+        .select({ id: schema.places.id })
+        .from(schema.places)
+        .where(eq(schema.places.id, mergeIntoPlaceId))
+        .limit(1);
+      if (!target) throw AppError.notFound('MERGE_TARGET_NOT_FOUND', 'Target place not found');
       resultPlaceId = mergeIntoPlaceId;
       await this.dedup.emitReindex(mergeIntoPlaceId, 'merged');
     }
@@ -935,6 +1285,7 @@ export class PlaceSubmissionService {
         decidedByAdminId: adminId,
         decisionReason: reason,
         decidedAt: sql`now()`,
+        updatedAt: sql`now()`,
         resultPlaceId,
       })
       .where(eq(schema.placeSubmissions.id, id));
@@ -985,16 +1336,63 @@ export class PlaceSubmissionService {
     let mappingWrite: Awaited<ReturnType<AdministrativeResolverService['persistWithin']>> | null =
       null;
 
+    /**
+     * #528 — what the reviewer supplemented, applied to the place their
+     * approval creates.
+     *
+     * Absent keys mean the reviewer said nothing, so the provider's answer
+     * stands; a key they set wins, including one set to `null` to clear a
+     * field. That distinction is why the draft is read with `in` rather than
+     * by truthiness: `description: null` is a decision and `description`
+     * missing is not.
+     *
+     * Price is the one field with two claimants. The contributor's estimate
+     * stays where it was written and is used when the reviewer proposed
+     * nothing; a reviewer's figure replaces it *on the place* at a higher
+     * confidence, because a person who moderates the catalogue checked it. The
+     * submission row keeps both, so the original suggestion is never lost.
+     */
+    const draft: SubmissionReviewDraft = row.reviewDraft ?? {};
+    const has = <K extends keyof SubmissionReviewDraft>(key: K): boolean =>
+      Object.prototype.hasOwnProperty.call(draft, key) && draft[key] !== undefined;
+
+    const price =
+      has('priceMin') || has('priceMax')
+        ? {
+            min: draft.priceMin ?? null,
+            max: draft.priceMax ?? null,
+            unit: draft.priceUnit ?? 'per_person',
+            confidence: '0.70',
+          }
+        : row.priceMin !== null && row.priceMax !== null
+          ? {
+              min: row.priceMin,
+              max: row.priceMax,
+              unit: row.priceUnit ?? 'per_person',
+              // User-supplied estimate — low confidence until an editor verifies.
+              confidence: '0.30',
+            }
+          : null;
+
     return this.db
       .transaction(async (tx) => {
         const [place] = await tx
           .insert(schema.places)
           .values({
-            name: d.name,
+            name: has('name') ? draft.name! : d.name,
             nameNormalized: 'set-by-trigger',
             status: 'community_submitted',
             geom: { x: d.lng, y: d.lat },
-            addressText: d.addressText,
+            addressText: has('addressText') ? draft.addressText : d.addressText,
+            ...(has('description') ? { description: draft.description } : {}),
+            ...(has('phone') ? { phone: draft.phone } : {}),
+            ...(has('website') ? { website: draft.website } : {}),
+            ...(has('avgVisitMinutes') ? { avgVisitMinutes: draft.avgVisitMinutes } : {}),
+            ...(has('suitability') ? { suitability: draft.suitability } : {}),
+            ...(has('isLodging') ? { isLodging: draft.isLodging } : {}),
+            ...(has('curatedRank') ? { curatedRank: draft.curatedRank } : {}),
+            // Provider aggregates, written as the provider's own figures. No
+            // reviewer can type these — see ADR-0020.
             rating: d.rating !== null ? d.rating.toFixed(2) : null,
             ratingCount: d.ratingCount,
             priceLevel: d.priceLevel,
@@ -1013,18 +1411,56 @@ export class PlaceSubmissionService {
             verifiedAt: new Date(),
           });
         }
-        if (row.priceMin !== null && row.priceMax !== null) {
+        if (price && price.min !== null && price.max !== null) {
           await tx.insert(schema.placePrices).values({
             placeId: place!.id,
-            priceMin: row.priceMin,
-            priceMax: row.priceMax,
+            priceMin: price.min,
+            priceMax: price.max,
             currency: 'VND',
-            unit: row.priceUnit === 'per_item' ? 'per_item' : 'per_person',
-            // User-supplied estimate — low confidence until an editor verifies.
-            confidence: '0.30',
+            unit: PRICE_UNITS.includes(price.unit as PriceUnit)
+              ? (price.unit as PriceUnit)
+              : 'per_person',
+            confidence: price.confidence,
             source: 'editor',
           });
         }
+        if (has('taxonomyIds') && draft.taxonomyIds!.length > 0) {
+          await tx
+            .insert(schema.placeTaxonomies)
+            .values(
+              draft.taxonomyIds!.map((taxonomyId: string) => ({ placeId: place!.id, taxonomyId })),
+            )
+            .onConflictDoNothing();
+        }
+
+        /**
+         * #528 — who owns each field on the place that just appeared.
+         *
+         * A value the reviewer typed is `editorial` and carries their id. A
+         * value left as Google answered it is `google_derived` with the Place
+         * ID as its reference, which is the record a later provider refresh
+         * reads before deciding whether it may overwrite anything. Without
+         * these rows every field on a community place was unattributed, and
+         * "a subsequent provider fetch must not silently overwrite a reviewer's
+         * edit" had nothing to stand on.
+         */
+        const provenance = [
+          { field: 'name' as const, edited: has('name') },
+          { field: 'address_text' as const, edited: has('addressText') },
+          { field: 'geom' as const, edited: false },
+          ...(has('description') ? [{ field: 'description' as const, edited: true }] : []),
+          ...(has('phone') ? [{ field: 'phone' as const, edited: true }] : []),
+          ...(has('website') ? [{ field: 'website' as const, edited: true }] : []),
+        ];
+        await tx.insert(schema.placeFieldProvenance).values(
+          provenance.map(({ field, edited }) => ({
+            placeId: place!.id,
+            field,
+            sourceType: edited ? ('editorial' as const) : ('google_derived' as const),
+            sourceReference: edited ? null : row.googlePlaceId,
+            actorId: adminId,
+          })),
+        );
 
         /**
          * ADM-017 (#525) — the mapping is written in the transaction that
