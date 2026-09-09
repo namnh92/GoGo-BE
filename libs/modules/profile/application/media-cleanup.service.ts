@@ -141,9 +141,7 @@ export class MediaCleanupService {
         const url = this.publicUrl(row.objectKey);
         if (url) await this.purge.purgeUrls([url]);
       }
-      await this.db
-        .delete(schema.mediaCleanupQueue)
-        .where(eq(schema.mediaCleanupQueue.id, row.id));
+      await this.db.delete(schema.mediaCleanupQueue).where(eq(schema.mediaCleanupQueue.id, row.id));
       this.metrics.increment('media_cleanup_attempt_total', { bucket, outcome: 'done' });
       return 'done';
     } catch (err) {

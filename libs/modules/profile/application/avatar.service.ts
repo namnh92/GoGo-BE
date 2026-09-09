@@ -134,7 +134,8 @@ export class AvatarService {
           .where(and(eq(schema.users.id, userId), eq(schema.users.status, 'active')))
           .for('update')
           .limit(1);
-        if (!current) throw AppError.unauthorized('ACCOUNT_UNAVAILABLE', 'Account is not available');
+        if (!current)
+          throw AppError.unauthorized('ACCOUNT_UNAVAILABLE', 'Account is not available');
         await tx
           .update(schema.users)
           .set({ avatarKey: publicKey, updatedAt: sql`now()` })
@@ -143,7 +144,11 @@ export class AvatarService {
           { bucket: 'private', objectKey: uploadKey, reason: 'avatar_original' },
         ];
         if (current.avatarKey) {
-          entries.push({ bucket: 'public', objectKey: current.avatarKey, reason: 'avatar_replaced' });
+          entries.push({
+            bucket: 'public',
+            objectKey: current.avatarKey,
+            reason: 'avatar_replaced',
+          });
         }
         const ids = await this.cleanup.enqueue(tx, entries);
         await writeAudit(tx, {

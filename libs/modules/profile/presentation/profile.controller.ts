@@ -5,7 +5,12 @@ import { IdentityRepository } from '../../identity/infrastructure/identity.repos
 import { CurrentActor, RateLimit } from '../../identity/presentation/decorators';
 import { AvatarService } from '../application/avatar.service';
 import { ProfileService } from '../application/profile.service';
-import { avatarPutSchema, profilePatchSchema, type AvatarPutDto, type ProfilePatchDto } from './dtos';
+import {
+  avatarPutSchema,
+  profilePatchSchema,
+  type AvatarPutDto,
+  type ProfilePatchDto,
+} from './dtos';
 
 /**
  * PROF-BE-002 (#532) — `/me` lives here for both verbs. The guest branch is

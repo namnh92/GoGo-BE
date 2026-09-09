@@ -446,8 +446,10 @@ describe('avatar pipeline (PROF-BE-004, ADR-0022)', () => {
 
   it('replacing schedules the old object away and purges its URL; removing does the same', async () => {
     const { token, userId } = await register('avatar-replace@gogo.id.vn');
-    const first = (await putAvatar(token, await upload(token, await photo()))).json().avatarUrl as string;
-    const second = (await putAvatar(token, await upload(token, await photo()))).json().avatarUrl as string;
+    const first = (await putAvatar(token, await upload(token, await photo()))).json()
+      .avatarUrl as string;
+    const second = (await putAvatar(token, await upload(token, await photo()))).json()
+      .avatarUrl as string;
     expect(second).toMatch(PUBLIC_URL);
     expect(second).not.toBe(first);
 
@@ -553,7 +555,8 @@ describe('avatar pipeline (PROF-BE-004, ADR-0022)', () => {
 
   it('a cleanup the edge refuses is retried by the worker path, not forgotten', async () => {
     const { token } = await register('avatar-purge@gogo.id.vn');
-    const first = (await putAvatar(token, await upload(token, await photo()))).json().avatarUrl as string;
+    const first = (await putAvatar(token, await upload(token, await photo()))).json()
+      .avatarUrl as string;
     const firstKey = first.replace('https://assets-test.local/', '');
 
     purge().failPurges = true;
