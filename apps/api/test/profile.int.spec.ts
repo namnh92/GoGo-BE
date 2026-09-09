@@ -889,3 +889,111 @@ describe('export and delete cover the profile (PROF-BE-007)', () => {
     expect(prefs).toHaveLength(0);
   });
 });
+
+describe('delayed cleanup can never take a live avatar (PROF-BE-004 regression)', () => {
+  const privateStore = () => app.get<FakeStorage>(STORAGE_PROVIDER);
+  const publicStore = () => app.get<FakeStorage>(PUBLIC_STORAGE_PROVIDER);
+  const purge = () => app.get<FakeCachePurge>(CACHE_PURGE);
+  const cleanup = () => app.get(MediaCleanupService);
+
+  async function seededUpload(token: string): Promise<string> {
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/uploads',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { purpose: 'avatar', contentType: 'image/png', contentLength: 100 },
+    });
+    const key = res.json().key as string;
+    privateStore().seed(
+      key,
+      new Uint8Array(
+        await sharp({ create: { width: 48, height: 48, channels: 3, background: '#f0f' } })
+          .png()
+          .toBuffer(),
+      ),
+      'image/png',
+    );
+    return key;
+  }
+
+  function putAvatar(token: string, uploadKey: string) {
+    return api().inject({
+      method: 'PUT',
+      url: '/v1/me/avatar',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { uploadKey },
+    });
+  }
+
+  async function runEverythingDue() {
+    await db.update(schema.mediaCleanupQueue).set({ nextAttemptAt: sql`now()` });
+    return cleanup().runDue(100);
+  }
+
+  it('a failed attempt, then a successful retry with the same key: the graced row removes the original only', async () => {
+    const { token, userId } = await register('avatar-retry@gogo.id.vn');
+    const key = await seededUpload(token);
+
+    publicStore().failWrites = true;
+    try {
+      expect((await putAvatar(token, key)).statusCode).toBe(503);
+    } finally {
+      publicStore().failWrites = false;
+    }
+    const graced = await db
+      .select()
+      .from(schema.mediaCleanupQueue)
+      .where(eq(schema.mediaCleanupQueue.objectKey, key));
+    expect(graced).toHaveLength(1);
+    expect(graced[0]!.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+
+    const retry = await putAvatar(token, key);
+    expect(retry.statusCode).toBe(200);
+    const url = retry.json().avatarUrl as string;
+    const publicKey = url.replace('https://assets-test.local/', '');
+    expect(publicStore().objects.has(publicKey)).toBe(true);
+
+    // The delayed cleanup fires. It may only take the original.
+    const report = await runEverythingDue();
+    expect(report.attempted).toBeGreaterThanOrEqual(1);
+    expect(privateStore().objects.has(key)).toBe(false);
+    expect(publicStore().objects.has(publicKey)).toBe(true);
+    expect(publicStore().deleted).not.toContain(publicKey);
+    expect(purge().purged).not.toContain(url);
+    const [user] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+    expect(user!.avatarKey).toBe(publicKey);
+    expect((await getMe(token)).json().avatarUrl).toBe(url);
+    expect(await db.select().from(schema.mediaCleanupQueue)).toHaveLength(0);
+  });
+
+  it('a queue row that names a live avatar is dropped, never deleted, even when due', async () => {
+    const { token } = await register('avatar-live@gogo.id.vn');
+    const url = (await putAvatar(token, await seededUpload(token))).json().avatarUrl as string;
+    const publicKey = url.replace('https://assets-test.local/', '');
+
+    // No code path writes this row; it stands in for the bug that would.
+    await db
+      .insert(schema.mediaCleanupQueue)
+      .values({ bucket: 'public', objectKey: publicKey, reason: 'regression_stale_row' });
+
+    const report = await runEverythingDue();
+    expect(report.skipped).toBe(1);
+    expect(publicStore().objects.has(publicKey)).toBe(true);
+    expect(publicStore().deleted).not.toContain(publicKey);
+    expect(purge().purged).not.toContain(url);
+    expect(
+      await db
+        .select()
+        .from(schema.mediaCleanupQueue)
+        .where(eq(schema.mediaCleanupQueue.objectKey, publicKey)),
+    ).toHaveLength(0);
+    expect((await getMe(token)).json().avatarUrl).toBe(url);
+
+    // The same key, once the profile has moved on, is removable again.
+    const next = (await putAvatar(token, await seededUpload(token))).json().avatarUrl as string;
+    expect(next).not.toBe(url);
+    expect(publicStore().deleted).toContain(publicKey);
+  });
+});
