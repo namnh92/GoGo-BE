@@ -61,5 +61,4 @@ export class SessionsController {
     clearAuthCookies(reply, this.config.COOKIE_SECURE);
     return { revoked: true };
   }
-
 }

@@ -107,7 +107,10 @@ export class ProfileService {
         .select({ key: schema.serviceAreas.key })
         .from(schema.serviceAreas)
         .where(
-          and(eq(schema.serviceAreas.key, patch.homeAreaKey), eq(schema.serviceAreas.isActive, true)),
+          and(
+            eq(schema.serviceAreas.key, patch.homeAreaKey),
+            eq(schema.serviceAreas.isActive, true),
+          ),
         )
         .limit(1);
       if (!area) {

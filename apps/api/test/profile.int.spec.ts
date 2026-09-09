@@ -255,7 +255,10 @@ describe('profile read and write (PROF-BE-002)', () => {
 
   it('audits which fields moved, never their values', async () => {
     const { token, userId } = await register('audit@gogo.id.vn');
-    await patchMe(token, { displayName: 'Bí Mật', usualBudget: { perPerson: 42, currency: 'VND' } });
+    await patchMe(token, {
+      displayName: 'Bí Mật',
+      usualBudget: { perPerson: 42, currency: 'VND' },
+    });
     const [row] = await db
       .select()
       .from(schema.auditLogs)
