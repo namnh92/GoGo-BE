@@ -1098,17 +1098,65 @@ export const COST_REGISTRY_DATA: RegistryData = {
         },
       ],
     },
-    planned('onesignal', 'OneSignal', [
-      {
-        name: 'push',
-        displayName: 'Push',
-        category: 'push',
-        meters: [
-          ['notifications', 'notification'],
-          ['subscribed_users', 'active_user'],
-        ],
-      },
-    ]),
+    /**
+     * COST-BE-031 (#517) — `planned` for cost, measured at runtime.
+     *
+     * Both halves matter and they are not the same half. OneSignal's cost is
+     * not collected: no collector, no SKU, #389 still open — so the status
+     * stays `planned` and the Cost Center still says "chưa nối", which about
+     * money is true.
+     *
+     * But `planned()` also stamps `runtime: 'none'` on every service, and that
+     * was false. `OneSignalPushAdapter` runs in the API and the worker and
+     * emits `push_provider_requests_total` and
+     * `push_provider_request_duration_seconds` on every send, so the push
+     * service is `in_process` and instrumented — runtime coverage FULL. It was
+     * reported as N/A, i.e. "nobody calls this", while it was the only thing
+     * standing between a campaign and a phone.
+     *
+     * Spelled out rather than built by `planned()` for exactly that reason: the
+     * helper's `runtime: 'none'` is an assumption about the deployment, and it
+     * does not hold here. Nothing below invents a price.
+     */
+    {
+      id: 'onesignal',
+      displayName: 'OneSignal',
+      status: 'planned',
+      capabilities: [],
+      services: [
+        {
+          id: 'onesignal.push',
+          providerId: 'onesignal',
+          displayName: 'Push',
+          category: 'push',
+          runtime: 'in_process',
+          capabilities: [],
+          operations: [
+            {
+              /**
+               * The registry's name for the send. It is **not** a label value:
+               * the adapter's series is `push_provider_requests_total{status}`,
+               * not `provider_requests_total{operation=...}`, because
+               * `libs/providers` depends on no `@gogo/*` package and so cannot
+               * use `recordRuntimeCall`. Same shape as Google, which is
+               * measured on `places_provider_requests_total{method}`. Do not
+               * write a query against an `operation` label here.
+               */
+              id: 'onesignal.push.create',
+              serviceId: 'onesignal.push',
+              displayName: 'Create notification',
+              instrumented: true,
+              /** No usage meter: the send is measured, the money is not. */
+              usageMeters: [],
+            },
+          ],
+          meters: [
+            serviceMeter('onesignal.push', 'notifications', 'notification'),
+            serviceMeter('onesignal.push', 'subscribed_users', 'active_user'),
+          ],
+        },
+      ],
+    },
     planned('tenjin', 'Tenjin', [
       {
         name: 'attribution',

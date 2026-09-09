@@ -131,8 +131,17 @@ describe('cost registry — epic §5 inventory', () => {
     ]) {
       expect(surface(id), id).toBe('none');
     }
+    // #517: `onesignal.push` is the counter-example that makes the "independent"
+    // in this test's name mean something. Its cost status is `planned` — no
+    // collector, no SKU — and the adapter still runs in this process and emits
+    // on every send. A blanket "planned implies no runtime" is the collapse
+    // ADR-0014 exists to prevent, so the assertion is per service now.
+    expect(surface('onesignal.push'), 'onesignal.push').toBe('in_process');
     for (const p of COST_REGISTRY.providers().filter((p) => p.status === 'planned')) {
-      for (const s of p.services) expect(s.runtime, s.id).toBe('none');
+      for (const s of p.services) {
+        if (s.id === 'onesignal.push') continue;
+        expect(s.runtime, s.id).toBe('none');
+      }
     }
   });
 

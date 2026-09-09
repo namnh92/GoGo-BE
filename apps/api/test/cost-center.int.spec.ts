@@ -501,10 +501,14 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
       runtime: { coverage: 'N/A' },
       cost: { kind: 'MANUAL', freshness: null },
     });
-    // Planned: nothing wired, nothing to measure, no way for money in.
+    // #517 — planned about money, measured at runtime, and the two do not have
+    // to agree. No collector and no SKU for OneSignal, so `planned` / `NONE`;
+    // the adapter is called on every push send and emits, so `FULL`. Reporting
+    // this row as N/A said "nothing calls this" about the one provider standing
+    // between a campaign and a phone.
     expect(byId['onesignal']).toMatchObject({
       status: 'planned',
-      runtime: { coverage: 'N/A' },
+      runtime: { coverage: 'FULL' },
       cost: { kind: 'NONE', freshness: null },
     });
     for (const p of body.providers) {
