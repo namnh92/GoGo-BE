@@ -508,7 +508,7 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     expect(row.status).toBe('active');
   });
 
-  it('an infrastructure provider this process calls is FULL at runtime (#414) and AUTO for cost; one it only signs for has no runtime; a fee is N/A and MANUAL; planned is N/A and NONE', () => {
+  it('an infrastructure provider this process calls is FULL at runtime (#414) and AUTO for cost; one it only signs for has no runtime; a fee is N/A and MANUAL; a planned provider we do call is FULL and NONE', () => {
     const upstash = buildProviderRow(provider('upstash'), registry, inputs());
     expect(upstash.runtime).toEqual({
       coverage: 'FULL',
@@ -539,9 +539,18 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     expect(apple.runtime.coverage).toBe('N/A');
     expect(apple.cost).toEqual({ kind: 'MANUAL', freshness: null });
 
+    // #517 — the case that shows the four dimensions are genuinely four.
+    // OneSignal costs nothing we collect and it is called on every push send,
+    // so "chưa nối" about money sits next to FULL about runtime. It used to
+    // report N/A here, which reads as "nothing calls this" about the one
+    // provider standing between a campaign and a phone.
     const onesignal = buildProviderRow(provider('onesignal'), registry, inputs());
     expect(onesignal.status).toBe('planned');
-    expect(onesignal.runtime.coverage).toBe('N/A');
+    expect(onesignal.runtime).toEqual({
+      coverage: 'FULL',
+      services: { full: 1, partial: 0, notInstrumented: 0 },
+      operations: { instrumented: 1, total: 1 },
+    });
     expect(onesignal.cost).toEqual({ kind: 'NONE', freshness: null });
 
     // Nothing calls GitHub Actions from here, and its bill still arrives by code.
