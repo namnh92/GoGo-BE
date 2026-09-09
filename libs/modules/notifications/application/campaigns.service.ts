@@ -15,7 +15,7 @@ import {
   type CampaignDestination,
   type CampaignStatus,
 } from '../domain/campaign';
-import { audiencePredicate } from './campaign-audience';
+import { audiencePredicate, respectsPushPreference } from './campaign-audience';
 
 /**
  * BE-CMS-G4e (#226) — campaigns, as far as the API is concerned.
@@ -394,8 +394,17 @@ export class CampaignsService {
   async estimateAudience(id: string) {
     const row = await this.requireRow(id);
     const predicate = audiencePredicate(row.audience_type, row.audience_filter);
+    // NTF-BE-013 (#523): the same two clauses the worker resolves with, in the
+    // same order. The estimate used to apply only the audience predicate, so
+    // the number shown immediately before an action that cannot be recalled
+    // counted every person who had turned campaign push off — and the send
+    // then quietly reached fewer, with nothing saying where the difference
+    // went. The header of `campaign-audience.ts` promises one definition used
+    // by both; this is the line that was making that untrue.
+    const preference = respectsPushPreference();
     const { rows } = await this.db.execute(sql`
-      select count(distinct u.id)::int as n from users u where ${predicate}
+      select count(distinct u.id)::int as n from users u
+      where ${predicate} and ${preference}
     `);
     return {
       campaignId: id,
