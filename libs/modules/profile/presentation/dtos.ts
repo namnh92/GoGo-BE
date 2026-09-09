@@ -29,3 +29,7 @@ export const profilePatchSchema = z
   })
   .strict();
 export type ProfilePatchDto = z.infer<typeof profilePatchSchema>;
+
+/** PUT /me/avatar — the key `POST /uploads { purpose: 'avatar' }` handed out. */
+export const avatarPutSchema = z.object({ uploadKey: z.string().min(1).max(300) }).strict();
+export type AvatarPutDto = z.infer<typeof avatarPutSchema>;

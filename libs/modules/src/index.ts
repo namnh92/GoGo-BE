@@ -205,6 +205,23 @@ export {
   type ProfilePatch,
   type UserProfile,
 } from '../profile/application/profile.service';
+export {
+  AvatarService,
+  AVATAR_CACHE_CONTROL,
+  AVATAR_FAILED_CLEANUP_DELAY_S,
+  AVATAR_MAX_CONCURRENT,
+  AVATAR_MAX_INPUT_PIXELS,
+  AVATAR_OUTPUT_SIZE,
+  AVATAR_PROCESS_TIMEOUT_S,
+  AVATAR_PUBLIC_PREFIX,
+} from '../profile/application/avatar.service';
+export {
+  MediaCleanupService,
+  MEDIA_CLEANUP_MAX_ATTEMPTS,
+  type CleanupBucket,
+  type CleanupEntry,
+  type CleanupRunReport,
+} from '../profile/application/media-cleanup.service';
 export { assertValidSelections, type TaxonomySelections } from '../shared/taxonomy-selections';
 export {
   UploadsService,

@@ -1,12 +1,21 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import { MediaCleanupService } from '@gogo/modules';
+import {
+  CACHE_PURGE,
+  PUBLIC_STORAGE_PROVIDER,
+  STORAGE_PROVIDER,
+  type FakeCachePurge,
+  type FakeStorage,
+} from '@gogo/providers';
+import sharp from 'sharp';
 
 /**
  * PROF-BE-002 (#532), ADR-0022 — the profile's read and write path: null
@@ -61,6 +70,8 @@ beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
   process.env.GOOGLE_PLACES_API_KEY = '';
+  // ADR-0022: a public base is what turns a stored key into a URL.
+  process.env.MEDIA_PUBLIC_BASE_URL = 'https://assets-test.local';
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
   pool.on('error', () => undefined);
@@ -344,5 +355,244 @@ describe('avatar upload authorization (PROF-BE-003)', () => {
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().code).toBe('USER_ONLY');
+  });
+});
+
+describe('avatar pipeline (PROF-BE-004, ADR-0022)', () => {
+  const PUBLIC_URL = /^https:\/\/assets-test\.local\/avatars\/[0-9a-f]{32}\.webp$/;
+  const privateStore = () => app.get<FakeStorage>(STORAGE_PROVIDER);
+  const publicStore = () => app.get<FakeStorage>(PUBLIC_STORAGE_PROVIDER);
+  const purge = () => app.get<FakeCachePurge>(CACHE_PURGE);
+  const cleanup = () => app.get(MediaCleanupService);
+
+  /** A real JPEG with EXIF metadata and a landscape shape, as a phone would send. */
+  async function photo(): Promise<Uint8Array> {
+    const out = await sharp({
+      create: { width: 800, height: 600, channels: 3, background: { r: 200, g: 40, b: 40 } },
+    })
+      .jpeg()
+      .withMetadata({ exif: { IFD0: { Copyright: 'EXIF must not survive' } } })
+      .toBuffer();
+    return new Uint8Array(out);
+  }
+
+  /** Presign, then stand in for the phone's PUT by seeding the private fake. */
+  async function upload(
+    token: string,
+    bytes: Uint8Array | null,
+    contentType = 'image/jpeg',
+  ): Promise<string> {
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/uploads',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { purpose: 'avatar', contentType, contentLength: bytes?.byteLength ?? 1024 },
+    });
+    expect(res.statusCode).toBe(201);
+    const key = res.json().key as string;
+    if (bytes) privateStore().seed(key, bytes, contentType);
+    return key;
+  }
+
+  function putAvatar(token: string, uploadKey: string) {
+    return api().inject({
+      method: 'PUT',
+      url: '/v1/me/avatar',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { uploadKey },
+    });
+  }
+
+  async function openQueueRows(objectKey: string) {
+    return db
+      .select()
+      .from(schema.mediaCleanupQueue)
+      .where(eq(schema.mediaCleanupQueue.objectKey, objectKey));
+  }
+
+  it('turns an upload into a public 512×512 WebP with no metadata, and answers its URL', async () => {
+    const { token, userId } = await register('avatar-ok@gogo.id.vn');
+    const key = await upload(token, await photo());
+
+    const res = await putAvatar(token, key);
+    expect(res.statusCode).toBe(200);
+    const url = res.json().avatarUrl as string;
+    expect(url).toMatch(PUBLIC_URL);
+    expect((await getMe(token)).json().avatarUrl).toBe(url);
+
+    const publicKey = url.replace('https://assets-test.local/', '');
+    const stored = publicStore().objects.get(publicKey);
+    expect(stored?.contentType).toBe('image/webp');
+    expect(stored?.cacheControl).toBe('public, max-age=86400');
+    const meta = await sharp(stored!.body).metadata();
+    expect([meta.format, meta.width, meta.height]).toEqual(['webp', 512, 512]);
+    expect(meta.exif).toBeUndefined();
+    expect(meta.icc).toBeUndefined();
+
+    // The original was ours once the key was attached, and it is gone now.
+    expect(privateStore().deleted).toContain(key);
+    expect(privateStore().objects.has(key)).toBe(false);
+    expect(await openQueueRows(key)).toHaveLength(0);
+    const [row] = await db
+      .select()
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.storageKey, key));
+    expect(row).toMatchObject({ status: 'attached', attachedToType: 'user', attachedToId: userId });
+    const [user] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+    expect(user!.avatarKey).toBe(publicKey);
+  });
+
+  it('replacing schedules the old object away and purges its URL; removing does the same', async () => {
+    const { token, userId } = await register('avatar-replace@gogo.id.vn');
+    const first = (await putAvatar(token, await upload(token, await photo()))).json().avatarUrl as string;
+    const second = (await putAvatar(token, await upload(token, await photo()))).json().avatarUrl as string;
+    expect(second).toMatch(PUBLIC_URL);
+    expect(second).not.toBe(first);
+
+    const firstKey = first.replace('https://assets-test.local/', '');
+    expect(publicStore().deleted).toContain(firstKey);
+    expect(purge().purged).toContain(first);
+    expect(await openQueueRows(firstKey)).toHaveLength(0);
+
+    const removed = await api().inject({
+      method: 'DELETE',
+      url: '/v1/me/avatar',
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json().avatarUrl).toBeNull();
+    const secondKey = second.replace('https://assets-test.local/', '');
+    expect(publicStore().deleted).toContain(secondKey);
+    expect(purge().purged).toContain(second);
+    const [user] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+    expect(user!.avatarKey).toBeNull();
+
+    // Removing again is not an error and enqueues nothing.
+    const again = await api().inject({
+      method: 'DELETE',
+      url: '/v1/me/avatar',
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(again.statusCode).toBe(200);
+    expect(again.json().avatarUrl).toBeNull();
+  });
+
+  it('refuses bytes it cannot read and schedules the original away with a grace period', async () => {
+    const { token } = await register('avatar-garbage@gogo.id.vn');
+    const key = await upload(token, new Uint8Array(4096).fill(7), 'image/png');
+    const res = await putAvatar(token, key);
+    expect(res.statusCode).toBe(422);
+    expect(res.json().code).toBe('AVATAR_UNPROCESSABLE');
+    expect((await getMe(token)).json().avatarUrl).toBeNull();
+
+    // Not deleted yet — a retry with the same key must still find the bytes —
+    // but scheduled, so an abandoned original does not wait for the lifecycle.
+    const rows = await openQueueRows(key);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.reason).toBe('avatar_failed_original');
+    expect(rows[0]!.nextAttemptAt.getTime()).toBeGreaterThan(Date.now() + 10 * 60 * 1000);
+    expect(privateStore().objects.has(key)).toBe(true);
+  });
+
+  it('refuses a declared type the bytes do not decode as', async () => {
+    const { token } = await register('avatar-mismatch@gogo.id.vn');
+    const png = new Uint8Array(
+      await sharp({ create: { width: 10, height: 10, channels: 3, background: '#0f0' } })
+        .png()
+        .toBuffer(),
+    );
+    const key = await upload(token, png, 'image/jpeg');
+    const res = await putAvatar(token, key);
+    expect(res.statusCode).toBe(422);
+    expect(res.json().code).toBe('AVATAR_UNPROCESSABLE');
+  });
+
+  it('refuses a key that is not yours, and one nothing was uploaded to', async () => {
+    const { token: owner } = await register('avatar-owner@gogo.id.vn');
+    const { token: thief } = await register('avatar-thief@gogo.id.vn');
+    const key = await upload(owner, await photo());
+
+    const stolen = await putAvatar(thief, key);
+    expect(stolen.statusCode).toBe(400);
+    expect(stolen.json().code).toBe('INVALID_UPLOAD_KEY');
+    // Nothing of the owner's was touched by the attempt.
+    expect(privateStore().objects.has(key)).toBe(true);
+    expect(await openQueueRows(key)).toHaveLength(0);
+
+    const empty = await upload(owner, null);
+    const missing = await putAvatar(owner, empty);
+    expect(missing.statusCode).toBe(400);
+    expect(missing.json().code).toBe('AVATAR_UPLOAD_MISSING');
+    expect(await openQueueRows(empty)).toHaveLength(0);
+  });
+
+  it('a public write failure is retryable and leaves nothing dangling', async () => {
+    const { token } = await register('avatar-outage@gogo.id.vn');
+    const key = await upload(token, await photo());
+    publicStore().failWrites = true;
+    try {
+      const res = await putAvatar(token, key);
+      expect(res.statusCode).toBe(503);
+      expect(res.json().code).toBe('AVATAR_STORAGE_UNAVAILABLE');
+      expect(res.json().retryable).toBe(true);
+    } finally {
+      publicStore().failWrites = false;
+    }
+    expect((await getMe(token)).json().avatarUrl).toBeNull();
+    expect((await openQueueRows(key)).map((r) => r.reason)).toEqual(['avatar_failed_original']);
+
+    // The same key retried once storage is back: the grace period kept the bytes.
+    const retry = await putAvatar(token, key);
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json().avatarUrl).toMatch(PUBLIC_URL);
+  });
+
+  it('a cleanup the edge refuses is retried by the worker path, not forgotten', async () => {
+    const { token } = await register('avatar-purge@gogo.id.vn');
+    const first = (await putAvatar(token, await upload(token, await photo()))).json().avatarUrl as string;
+    const firstKey = first.replace('https://assets-test.local/', '');
+
+    purge().failPurges = true;
+    try {
+      await putAvatar(token, await upload(token, await photo()));
+    } finally {
+      purge().failPurges = false;
+    }
+    const [pending] = await openQueueRows(firstKey);
+    expect(pending).toMatchObject({ bucket: 'public', attempts: 1 });
+    expect(pending!.failedAt).toBeNull();
+    expect(pending!.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+
+    // The worker's tick, with the row made due.
+    await db
+      .update(schema.mediaCleanupQueue)
+      .set({ nextAttemptAt: sql`now()` })
+      .where(eq(schema.mediaCleanupQueue.id, pending!.id));
+    const report = await cleanup().runDue();
+    expect(report).toMatchObject({ attempted: 1, done: 1, retried: 0, deadLettered: 0 });
+    expect(await openQueueRows(firstKey)).toHaveLength(0);
+    expect(purge().purged).toContain(first);
+  });
+
+  it('a guest cannot set or remove an avatar', async () => {
+    const join = await api().inject({
+      method: 'POST',
+      url: '/v1/sessions/guest',
+      remoteAddress: ip(),
+      payload: { roomCode, displayName: 'Khách Ảnh 2' },
+    });
+    const token = join.json().accessToken as string;
+    expect((await putAvatar(token, 'tmp/avatars/x/y.jpg')).statusCode).toBe(403);
+    const del = await api().inject({
+      method: 'DELETE',
+      url: '/v1/me/avatar',
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(del.statusCode).toBe(403);
   });
 });
