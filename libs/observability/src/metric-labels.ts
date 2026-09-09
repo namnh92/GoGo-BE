@@ -110,6 +110,10 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // the link's; `incomparable` means Google published none to compare; and
   // `not_found` means the search returned nothing at all.
   place_link_cid_lookup_total: ['result'],
+  // #528 — a moderator asked Google what this submission's place looks like.
+  // One `quality` Details each, counted apart from the fetch approval makes,
+  // so preview spend and approval spend are two numbers and not one.
+  place_submission_provider_preview_total: ['result'],
   // #505 — where a link resolution spends its time. `stage` is the fixed set
   // `expand | search | details`, so a slow resolution can be located instead
   // of guessed at: the only timing this path emitted before was per provider

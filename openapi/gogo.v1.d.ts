@@ -1613,6 +1613,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/place-submissions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Moderator/editor: everything a submission decision needs (PI-BE-031)
+         * @description GoGo-BE#528. The queue lists; this is what a decision is made on.
+         *
+         *     Stored facts only — the contributor's input, any reviewer supplement, whether the catalogue already holds this Google record, and how the submission has been handled. **No provider request**, so opening a submission costs nothing; ask Google explicitly with `POST /cms/place-submissions/{id}/provider-preview` when you need its name, address, rating or hours.
+         */
+        get: operations["cmsGetPlaceSubmission"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-submissions/{id}/provider-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moderator/editor: Google's current answer about this place (PI-BE-031)
+         * @description GoGo-BE#528. One `quality` Place Details, rendered and discarded — nothing is stored, in either the row or a cache (ADR-0006 §9.5).
+         *
+         *     An action rather than a side effect of opening a screen, because it costs money: it is counted under `place_submission_provider_preview_total`, separately from the fetch `decide` makes at approval, so preview spend and approval spend are two numbers. A page of the queue makes none of these calls.
+         *
+         *     Same roles as the rest of the queue. `POST /cms/places/resolve-link` returns the same shape but requires `editor`, and a moderator who cannot look at the place is not able to moderate it.
+         */
+        post: operations["cmsPreviewSubmissionProvider"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-submissions/{id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Moderator/editor: supplement a submission before deciding (PI-BE-031)
+         * @description GoGo-BE#528. Saves the reviewer's edits to the GoGo-owned fields and **decides nothing** — no place is created, no status changes.
+         *
+         *     Two requests rather than one because they are two intentions: a reviewer halfway through a description must be able to keep it without approving, and a reviewer who approves must not find their unsaved edits were applied as part of the decision. The console refuses to navigate away from unsaved edits.
+         *
+         *     The contributor's own input is never overwritten. Their category, price estimate, vibes and note stay on the submission exactly as sent; the draft is a separate record of what staff made of it, and the approval applies the draft over the provider's answer.
+         *
+         *     Only a `pending` submission accepts a review. Once decided, the place exists and `PATCH /cms/places/{id}` is where it is edited.
+         */
+        put: operations["cmsSavePlaceSubmissionReview"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/place-submissions/{id}/decide": {
         parameters: {
             query?: never;
@@ -1622,7 +1694,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Moderator/editor: approve, reject or merge a submission (PI-CMS-007) */
+        /**
+         * Moderator/editor: approve, reject or merge a submission (PI-CMS-007)
+         * @description `approved` creates the catalogue place and applies whatever a reviewer supplemented through `PUT /cms/place-submissions/{id}/review` over the provider's answer (GoGo-BE#528). Fields the reviewer typed are recorded `editorial` in `place_field_provenance` and carry their id; fields left as Google answered them are `google_derived` and carry the Place ID — so a later provider refresh can tell what it may overwrite.
+         *
+         *     `rejected` creates no place. `merged` points the proposal at an existing one and writes nothing to it.
+         *
+         *     Approval is not verification and not publication: the administrative mapping is resolved from the new place's own coordinate and is never `VERIFIED`, and the publication blocker stays until somebody confirms it (ADM-017, GoGo-BE#525).
+         */
         post: operations["decidePlaceSubmission"];
         delete?: never;
         options?: never;
@@ -6844,9 +6923,127 @@ export interface components {
             fromRegisteredUser?: boolean;
             /** Format: date-time */
             createdAt: string;
+            /**
+             * Format: date-time
+             * @description Moves on every review save and on the decision. Send it back as `expectedUpdatedAt` when saving a review (GoGo-BE#528).
+             */
+            updatedAt?: string;
             /** Format: date-time */
             decidedAt?: string;
             decisionReason?: string;
+            /**
+             * @description A human-readable name for the row, when GoGo has one (GoGo-BE#528).
+             *
+             *     Absent for a fresh proposal, and deliberately so: Google's name for a place is not stored (ADR-0006 §9.5), and fetching Details once per list row to fill a column would bill a page of twenty-five to open a queue. A console shows the Place ID and an honest "no name yet" with the review action beside it. `displayNameSource` says where the name came from when there is one.
+             */
+            displayName?: string;
+            /**
+             * @description `review` — a reviewer typed it on this submission. `catalogue` — the Google record already belongs to a GoGo place, and this is that place's name.
+             * @enum {string}
+             */
+            displayNameSource?: "review" | "catalogue";
+            /** @description Whether a reviewer has supplemented this submission. */
+            hasReview?: boolean;
+            /** Format: date-time */
+            reviewedAt?: string;
+            /**
+             * Format: uuid
+             * @description The catalogue place this Google record already belongs to, if any — the duplicate indicator, from GoGo's own rows and no provider call.
+             */
+            linkedPlaceId?: string;
+            /** @description Two GoGo places claim this Google id and the conflict is open. Approving would attach the proposal to an ambiguous identity. */
+            identityConflict?: boolean;
+        };
+        /**
+         * @description PI-BE-031 (GoGo-BE#528) — the GoGo-owned fields a reviewer may supplement before approving a contribution.
+         *
+         *     The Place editor's own vocabulary and nothing beyond it: the same fields, lengths and units `PATCH /cms/places/{id}` writes. Nothing provider-owned appears here — a rating or a review count is the provider's figure and is never typed by a person, and opening hours keep their editorial endpoint on the place once it exists.
+         *
+         *     An absent key means the reviewer said nothing about that field, and the provider's answer stands at approval. An explicit `null` clears it. That difference is load-bearing, so send only the fields you mean.
+         */
+        SubmissionReviewDraft: {
+            name?: string;
+            description?: string | null;
+            addressText?: string | null;
+            phone?: string | null;
+            /** Format: uri */
+            website?: string | null;
+            avgVisitMinutes?: number | null;
+            /** @description Audience fit, the same 0..1 record the place row carries. */
+            suitability?: {
+                [key: string]: number;
+            };
+            /** @description Category, moods and every other taxonomy chip, as ids. */
+            taxonomyIds?: string[];
+            isLodging?: boolean;
+            curatedRank?: number | null;
+            /** @description Editorial price, integer minor units. Replaces nothing the contributor sent — their estimate stays on the submission — but is what the place is created with, at editor confidence. */
+            priceMin?: number | null;
+            priceMax?: number | null;
+            /** @enum {string|null} */
+            priceUnit?: "per_person" | "per_item" | "per_hour" | "per_night" | null;
+        };
+        /** @description PI-BE-031 (GoGo-BE#528) — everything a decision needs that GoGo already holds. No provider request: this endpoint costs nothing to open, and `POST /cms/place-submissions/{id}/provider-preview` is the explicit, separately-counted way to ask Google. */
+        PlaceSubmissionDetail: {
+            /** Format: uuid */
+            id: string;
+            googlePlaceId: string;
+            /** @description The canonical `?q=place_id:…` link for this record, built from the id GoGo stores. Not the URL the contributor pasted, and not Google's `googleMapsUri` — that is provider content and arrives with the preview. */
+            googleMapsUrl?: string;
+            /** @enum {string} */
+            status: "pending" | "approved" | "rejected" | "merged";
+            submissionCount: number;
+            fromRegisteredUser?: boolean;
+            /** Format: uuid */
+            roomId?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: date-time */
+            decidedAt?: string;
+            decisionReason?: string;
+            /** @description What the contributor sent, untouched by any review. */
+            contribution: {
+                categoryKey?: string;
+                estimatedPrice?: {
+                    min?: number;
+                    max?: number;
+                    unit?: string;
+                };
+                vibeKeys?: string[];
+                note?: string;
+            };
+            /** @description What staff have supplemented so far, and who last did. */
+            review?: {
+                draft?: components["schemas"]["SubmissionReviewDraft"];
+                /** Format: date-time */
+                reviewedAt?: string;
+                /** Format: uuid */
+                reviewedByAdminId?: string;
+            };
+            /** @description The catalogue place this Google record belongs to — a duplicate before the decision, the result after it. Same question, one field. */
+            existingPlace?: {
+                /** Format: uuid */
+                id?: string;
+                name?: string;
+                status?: string;
+                addressText?: string;
+            };
+            /** @description Two GoGo places claim this Google id; merge before approving. */
+            identityConflict?: string[];
+            /** @description Decisions and review saves, oldest first, from the audit log. */
+            history: {
+                action: string;
+                /** Format: uuid */
+                actorId?: string;
+                actorName?: string;
+                /** Format: date-time */
+                at: string;
+                detail?: {
+                    [key: string]: unknown;
+                };
+            }[];
         };
         PlacePhoto: {
             /** Format: uuid */
@@ -10890,6 +11087,116 @@ export interface operations {
             403: components["responses"]["Forbidden"];
         };
     };
+    cmsGetPlaceSubmission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The submission, its review draft and its history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaceSubmissionDetail"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsPreviewSubmissionProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider facts plus the administrative preview for the coordinate. Nothing here is stored by this request. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveLinkResult"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description `PLACE_PROVIDER_UNAVAILABLE` — retryable; the submission is untouched. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsSavePlaceSubmissionReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    draft: components["schemas"]["SubmissionReviewDraft"];
+                    /**
+                     * Format: date-time
+                     * @description The submission's `updatedAt` when the form was loaded. When it no longer matches, another moderator has written since and the save is refused with `409 SUBMISSION_MODIFIED` rather than silently winning. Omitting it skips the check.
+                     */
+                    expectedUpdatedAt?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The stored draft and the new `updatedAt` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        id: string;
+                        draft: components["schemas"]["SubmissionReviewDraft"];
+                        /** Format: date-time */
+                        reviewedAt?: string;
+                        /** Format: date-time */
+                        updatedAt: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description `SUBMISSION_MODIFIED` — somebody wrote since the form was loaded; the current `updatedAt` is in `field_errors`. `ALREADY_DECIDED` — the submission is no longer pending. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     decidePlaceSubmission: {
         parameters: {
             query?: never;
@@ -10905,7 +11212,10 @@ export interface operations {
                     /** @enum {string} */
                     decision: "approved" | "rejected" | "merged";
                     reason: string;
-                    /** Format: uuid */
+                    /**
+                     * Format: uuid
+                     * @description Required for `merged`, and the place must exist — `404 MERGE_TARGET_NOT_FOUND` otherwise (GoGo-BE#528). Merging records where this proposal went; nothing about the target place is written.
+                     */
                     mergeIntoPlaceId?: string;
                 };
             };
@@ -10919,6 +11229,15 @@ export interface operations {
                 content?: never;
             };
             403: components["responses"]["Forbidden"];
+            /** @description `SUBMISSION_NOT_FOUND`, or `MERGE_TARGET_NOT_FOUND` for a merge. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             409: components["responses"]["Conflict"];
         };
     };

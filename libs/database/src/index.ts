@@ -1,4 +1,4 @@
 export { createDb, closeDb } from './client';
 export type { Db } from './client';
 export * as schema from './schema';
-export type { IngestMessage, MatchCandidate } from './schema/ingestion';
+export type { IngestMessage, MatchCandidate, SubmissionReviewDraft } from './schema/ingestion';

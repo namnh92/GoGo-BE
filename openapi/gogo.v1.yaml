@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.20
+  version: 1.0.0-alpha.21
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2963,6 +2963,139 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /cms/place-submissions/{id}:
+    get:
+      operationId: cmsGetPlaceSubmission
+      tags: [cms]
+      summary: 'Moderator/editor: everything a submission decision needs (PI-BE-031)'
+      description: >
+        GoGo-BE#528. The queue lists; this is what a decision is made on.
+
+
+        Stored facts only — the contributor's input, any reviewer supplement,
+        whether the catalogue already holds this Google record, and how the
+        submission has been handled. **No provider request**, so opening a
+        submission costs nothing; ask Google explicitly with
+        `POST /cms/place-submissions/{id}/provider-preview` when you need its
+        name, address, rating or hours.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The submission, its review draft and its history
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceSubmissionDetail' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/place-submissions/{id}/provider-preview:
+    post:
+      operationId: cmsPreviewSubmissionProvider
+      tags: [cms]
+      summary: "Moderator/editor: Google's current answer about this place (PI-BE-031)"
+      description: >
+        GoGo-BE#528. One `quality` Place Details, rendered and discarded —
+        nothing is stored, in either the row or a cache (ADR-0006 §9.5).
+
+
+        An action rather than a side effect of opening a screen, because it
+        costs money: it is counted under
+        `place_submission_provider_preview_total`, separately from the fetch
+        `decide` makes at approval, so preview spend and approval spend are two
+        numbers. A page of the queue makes none of these calls.
+
+
+        Same roles as the rest of the queue. `POST /cms/places/resolve-link`
+        returns the same shape but requires `editor`, and a moderator who cannot
+        look at the place is not able to moderate it.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: >-
+            Provider facts plus the administrative preview for the coordinate.
+            Nothing here is stored by this request.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolveLinkResult' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: '`PLACE_PROVIDER_UNAVAILABLE` — retryable; the submission is untouched.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/place-submissions/{id}/review:
+    put:
+      operationId: cmsSavePlaceSubmissionReview
+      tags: [cms]
+      summary: 'Moderator/editor: supplement a submission before deciding (PI-BE-031)'
+      description: >
+        GoGo-BE#528. Saves the reviewer's edits to the GoGo-owned fields and
+        **decides nothing** — no place is created, no status changes.
+
+
+        Two requests rather than one because they are two intentions: a reviewer
+        halfway through a description must be able to keep it without approving,
+        and a reviewer who approves must not find their unsaved edits were
+        applied as part of the decision. The console refuses to navigate away
+        from unsaved edits.
+
+
+        The contributor's own input is never overwritten. Their category, price
+        estimate, vibes and note stay on the submission exactly as sent; the
+        draft is a separate record of what staff made of it, and the approval
+        applies the draft over the provider's answer.
+
+
+        Only a `pending` submission accepts a review. Once decided, the place
+        exists and `PATCH /cms/places/{id}` is where it is edited.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [draft]
+              properties:
+                draft: { $ref: '#/components/schemas/SubmissionReviewDraft' }
+                expectedUpdatedAt:
+                  type: string
+                  format: date-time
+                  description: >
+                    The submission's `updatedAt` when the form was loaded. When
+                    it no longer matches, another moderator has written since
+                    and the save is refused with `409 SUBMISSION_MODIFIED`
+                    rather than silently winning. Omitting it skips the check.
+      responses:
+        '200':
+          description: The stored draft and the new `updatedAt`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, draft, updatedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  draft: { $ref: '#/components/schemas/SubmissionReviewDraft' }
+                  reviewedAt: { type: string, format: date-time }
+                  updatedAt: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >-
+            `SUBMISSION_MODIFIED` — somebody wrote since the form was loaded;
+            the current `updatedAt` is in `field_errors`. `ALREADY_DECIDED` —
+            the submission is no longer pending.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /cms/place-submissions/{id}/decide:
     post:
       operationId: decidePlaceSubmission
@@ -2980,10 +3113,39 @@ paths:
               properties:
                 decision: { type: string, enum: [approved, rejected, merged] }
                 reason: { type: string, minLength: 3, maxLength: 500 }
-                mergeIntoPlaceId: { type: string, format: uuid }
+                mergeIntoPlaceId:
+                  type: string
+                  format: uuid
+                  description: >
+                    Required for `merged`, and the place must exist —
+                    `404 MERGE_TARGET_NOT_FOUND` otherwise (GoGo-BE#528).
+                    Merging records where this proposal went; nothing about the
+                    target place is written.
+      description: >
+        `approved` creates the catalogue place and applies whatever a reviewer
+        supplemented through `PUT /cms/place-submissions/{id}/review` over the
+        provider's answer (GoGo-BE#528). Fields the reviewer typed are recorded
+        `editorial` in `place_field_provenance` and carry their id; fields left
+        as Google answered them are `google_derived` and carry the Place ID — so
+        a later provider refresh can tell what it may overwrite.
+
+
+        `rejected` creates no place. `merged` points the proposal at an existing
+        one and writes nothing to it.
+
+
+        Approval is not verification and not publication: the administrative
+        mapping is resolved from the new place's own coordinate and is never
+        `VERIFIED`, and the publication blocker stays until somebody confirms it
+        (ADM-017, GoGo-BE#525).
       responses:
         '201': { description: Decision applied; audited + reindex event emitted }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`SUBMISSION_NOT_FOUND`, or `MERGE_TARGET_NOT_FOUND` for a merge.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
 
   /cms/place-imports:
@@ -12497,8 +12659,170 @@ components:
           type: boolean
           description: Whether it came from an account rather than a guest session.
         createdAt: { type: string, format: date-time }
+        updatedAt:
+          type: string
+          format: date-time
+          description: >
+            Moves on every review save and on the decision. Send it back as
+            `expectedUpdatedAt` when saving a review (GoGo-BE#528).
         decidedAt: { type: string, format: date-time }
         decisionReason: { type: string }
+        displayName:
+          type: string
+          description: >
+            A human-readable name for the row, when GoGo has one (GoGo-BE#528).
+
+
+            Absent for a fresh proposal, and deliberately so: Google's name for
+            a place is not stored (ADR-0006 §9.5), and fetching Details once per
+            list row to fill a column would bill a page of twenty-five to open
+            a queue. A console shows the Place ID and an honest "no name yet"
+            with the review action beside it. `displayNameSource` says where the
+            name came from when there is one.
+        displayNameSource:
+          type: string
+          enum: [review, catalogue]
+          description: >
+            `review` — a reviewer typed it on this submission. `catalogue` — the
+            Google record already belongs to a GoGo place, and this is that
+            place's name.
+        hasReview:
+          type: boolean
+          description: Whether a reviewer has supplemented this submission.
+        reviewedAt: { type: string, format: date-time }
+        linkedPlaceId:
+          type: string
+          format: uuid
+          description: >
+            The catalogue place this Google record already belongs to, if any —
+            the duplicate indicator, from GoGo's own rows and no provider call.
+        identityConflict:
+          type: boolean
+          description: >
+            Two GoGo places claim this Google id and the conflict is open.
+            Approving would attach the proposal to an ambiguous identity.
+    SubmissionReviewDraft:
+      type: object
+      description: >
+        PI-BE-031 (GoGo-BE#528) — the GoGo-owned fields a reviewer may
+        supplement before approving a contribution.
+
+
+        The Place editor's own vocabulary and nothing beyond it: the same
+        fields, lengths and units `PATCH /cms/places/{id}` writes. Nothing
+        provider-owned appears here — a rating or a review count is the
+        provider's figure and is never typed by a person, and opening hours keep
+        their editorial endpoint on the place once it exists.
+
+
+        An absent key means the reviewer said nothing about that field, and the
+        provider's answer stands at approval. An explicit `null` clears it. That
+        difference is load-bearing, so send only the fields you mean.
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 4000, nullable: true }
+        addressText: { type: string, maxLength: 500, nullable: true }
+        phone: { type: string, maxLength: 40, nullable: true }
+        website: { type: string, format: uri, maxLength: 500, nullable: true }
+        avgVisitMinutes: { type: integer, minimum: 0, maximum: 1440, nullable: true }
+        suitability:
+          type: object
+          additionalProperties: { type: number, minimum: 0, maximum: 1 }
+          description: Audience fit, the same 0..1 record the place row carries.
+        taxonomyIds:
+          type: array
+          maxItems: 40
+          items: { type: string, format: uuid }
+          description: Category, moods and every other taxonomy chip, as ids.
+        isLodging: { type: boolean }
+        curatedRank: { type: integer, nullable: true }
+        priceMin:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            Editorial price, integer minor units. Replaces nothing the
+            contributor sent — their estimate stays on the submission — but is
+            what the place is created with, at editor confidence.
+        priceMax: { type: integer, minimum: 0, nullable: true }
+        priceUnit:
+          type: string
+          enum: [per_person, per_item, per_hour, per_night]
+          nullable: true
+    PlaceSubmissionDetail:
+      type: object
+      description: >
+        PI-BE-031 (GoGo-BE#528) — everything a decision needs that GoGo already
+        holds. No provider request: this endpoint costs nothing to open, and
+        `POST /cms/place-submissions/{id}/provider-preview` is the explicit,
+        separately-counted way to ask Google.
+      required:
+        [id, googlePlaceId, status, submissionCount, createdAt, updatedAt, contribution, history]
+      properties:
+        id: { type: string, format: uuid }
+        googlePlaceId: { type: string }
+        googleMapsUrl:
+          type: string
+          description: >
+            The canonical `?q=place_id:…` link for this record, built from the
+            id GoGo stores. Not the URL the contributor pasted, and not
+            Google's `googleMapsUri` — that is provider content and arrives with
+            the preview.
+        status: { type: string, enum: [pending, approved, rejected, merged] }
+        submissionCount: { type: integer }
+        fromRegisteredUser: { type: boolean }
+        roomId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
+        decisionReason: { type: string }
+        contribution:
+          type: object
+          description: What the contributor sent, untouched by any review.
+          properties:
+            categoryKey: { type: string }
+            estimatedPrice:
+              type: object
+              properties:
+                min: { type: integer }
+                max: { type: integer }
+                unit: { type: string }
+            vibeKeys: { type: array, items: { type: string } }
+            note: { type: string }
+        review:
+          type: object
+          description: What staff have supplemented so far, and who last did.
+          properties:
+            draft: { $ref: '#/components/schemas/SubmissionReviewDraft' }
+            reviewedAt: { type: string, format: date-time }
+            reviewedByAdminId: { type: string, format: uuid }
+        existingPlace:
+          type: object
+          description: >
+            The catalogue place this Google record belongs to — a duplicate
+            before the decision, the result after it. Same question, one field.
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            status: { type: string }
+            addressText: { type: string }
+        identityConflict:
+          type: array
+          items: { type: string, format: uuid }
+          description: Two GoGo places claim this Google id; merge before approving.
+        history:
+          type: array
+          description: Decisions and review saves, oldest first, from the audit log.
+          items:
+            type: object
+            required: [action, at]
+            properties:
+              action: { type: string }
+              actorId: { type: string, format: uuid }
+              actorName: { type: string }
+              at: { type: string, format: date-time }
+              detail: { type: object, additionalProperties: true }
     PlacePhoto:
       type: object
       required: [id, url, source]
