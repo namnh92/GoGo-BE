@@ -516,6 +516,90 @@ describe('rejecting the mapping is not rejecting the place', () => {
   });
 });
 
+/**
+ * PI-CMS-034 — the console's whole review surface is two answers: approve the
+ * pair the resolver proposed, or reject it and say which pair is right.
+ *
+ * Both halves are existing routes and this is what they leave behind. The
+ * assertion that matters is the audit: a rejection that names the codes it
+ * refused, and a verification that names the reviewer's own pair and the state
+ * it replaced — two rows, in order, attributable to the person who decided.
+ */
+describe('reject, choose the right unit, verify', () => {
+  it('records both decisions, in order, with the codes each one carried', async () => {
+    const place = await insertPlace({
+      provinceCode: '01',
+      communeCode: '00004',
+      administrativeMappingStatus: 'AUTO_MATCHED',
+      administrativeMappingSource: 'exact_name',
+      administrativeDatasetVersion: datasetVersion,
+    });
+
+    // 1. The proposal is wrong, and the reviewer says why.
+    const rejected = await send(
+      'POST',
+      `/v1/cms/places/${place.id}/administrative-mapping/reject`,
+      'moderator',
+      { reason: 'ranh giới phường sai', expectedUpdatedAt: place.updatedAt.toISOString() },
+    );
+    expect(rejected.statusCode).toBe(201);
+
+    const afterReject = await placeRow(place.id);
+    expect(afterReject.administrativeMappingStatus).toBe('REJECTED');
+    // The refused codes stay on the row: the next reviewer needs to see them.
+    expect(afterReject.communeCode).toBe('00004');
+
+    // 2. The same reviewer supplies the pair that is right.
+    const verified = await send(
+      'POST',
+      `/v1/cms/places/${place.id}/administrative-mapping/verify`,
+      'moderator',
+      {
+        provinceCode: '01',
+        communeCode: '00008',
+        expectedUpdatedAt: afterReject.updatedAt.toISOString(),
+      },
+    );
+    expect(verified.statusCode).toBe(201);
+
+    const afterVerify = await placeRow(place.id);
+    expect(afterVerify.administrativeMappingStatus).toBe('VERIFIED');
+    expect(afterVerify.communeCode).toBe('00008');
+    expect(afterVerify.administrativeMappedBy).toBe(adminIds.moderator);
+    // A person's judgement is not a probability, so nothing is scored.
+    expect(afterVerify.administrativeMappingConfidence).toBeNull();
+
+    const [rejectAudit] = await auditRows('administrative_mapping.reject', place.id);
+    const [verifyAudit] = await auditRows('administrative_mapping.verify', place.id);
+    const rejectDiff = rejectAudit!.diff as Record<string, any>;
+    const verifyDiff = verifyAudit!.diff as Record<string, any>;
+
+    expect(rejectAudit!.actorId).toBe(adminIds.moderator);
+    expect(rejectDiff.from.status).toBe('AUTO_MATCHED');
+    expect(rejectDiff.rejectedCodes).toMatchObject({ provinceCode: '01', communeCode: '00004' });
+    expect(rejectDiff.reason).toContain('ranh giới');
+
+    expect(verifyAudit!.actorId).toBe(adminIds.moderator);
+    // The verification replaced the rejection, not the resolver's proposal.
+    expect(verifyDiff.from.status).toBe('REJECTED');
+    expect(verifyDiff.to).toMatchObject({
+      status: 'VERIFIED',
+      provinceCode: '01',
+      communeCode: '00008',
+      source: 'editor',
+      mappedBy: adminIds.moderator,
+    });
+    expect(verifyDiff.reviewerSelection).toMatchObject({
+      provinceCode: '01',
+      communeCode: '00008',
+    });
+
+    // Two rows, in the order the decisions were taken. The rejection is not
+    // rewritten by what came after it.
+    expect(rejectAudit!.createdAt.getTime()).toBeLessThanOrEqual(verifyAudit!.createdAt.getTime());
+  });
+});
+
 describe('authenticated rematch', () => {
   it('reopens a rejected mapping, clears the reviewer, and keeps the history', async () => {
     const place = await insertPlace();
