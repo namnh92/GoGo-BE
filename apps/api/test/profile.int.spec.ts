@@ -274,3 +274,70 @@ describe('profile read and write (PROF-BE-002)', () => {
     expect(diff).not.toContain('42');
   });
 });
+
+describe('avatar upload authorization (PROF-BE-003)', () => {
+  async function presign(token: string, payload: Record<string, unknown>) {
+    return api().inject({
+      method: 'POST',
+      url: '/v1/uploads',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload,
+    });
+  }
+
+  it('a user gets a private, one-day key under the avatar prefix', async () => {
+    const { token, userId } = await register('avatar-presign@gogo.id.vn');
+    const res = await presign(token, {
+      purpose: 'avatar',
+      contentType: 'image/jpeg',
+      contentLength: 1024,
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().key).toMatch(new RegExp(`^tmp/avatars/${userId}/[0-9a-f-]{36}\\.jpg$`));
+    expect(res.json().uploadUrl).toContain('/upload/');
+
+    const [row] = await db
+      .select()
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.storageKey, res.json().key as string));
+    expect(row).toMatchObject({ actorType: 'user', actorId: userId, purpose: 'avatar', status: 'pending' });
+  });
+
+  it('refuses HEIC for an avatar, and says which types it takes', async () => {
+    const { token } = await register('avatar-heic@gogo.id.vn');
+    const res = await presign(token, {
+      purpose: 'avatar',
+      contentType: 'image/heic',
+      contentLength: 1024,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('UNSUPPORTED_CONTENT_TYPE');
+    expect(res.json().field_errors[0].message).toBe('allowed: image/jpeg, image/png, image/webp');
+
+    // The check-in purpose still takes HEIC: the rule is per purpose.
+    const checkin = await presign(token, {
+      purpose: 'checkin_photo',
+      contentType: 'image/heic',
+      contentLength: 1024,
+    });
+    expect(checkin.statusCode).toBe(201);
+    expect(checkin.json().key).toMatch(/^u\/user\//);
+  });
+
+  it('a guest cannot presign an avatar', async () => {
+    const join = await api().inject({
+      method: 'POST',
+      url: '/v1/sessions/guest',
+      remoteAddress: ip(),
+      payload: { roomCode, displayName: 'Khách Ảnh' },
+    });
+    const res = await presign(join.json().accessToken as string, {
+      purpose: 'avatar',
+      contentType: 'image/jpeg',
+      contentLength: 1024,
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe('USER_ONLY');
+  });
+});

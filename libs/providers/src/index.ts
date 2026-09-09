@@ -22,6 +22,7 @@ export {
 export {
   FakeAcquisitionLinkProvider,
   FakeAreaAutocomplete,
+  FakeCachePurge,
   FakePlaceProvider,
   FakePush,
   FakeSheets,
@@ -70,6 +71,12 @@ export {
 } from './onesignal-push.adapter';
 export { idempotencyKeyFrom } from './idempotency-key';
 export { R2StorageAdapter, type R2Config } from './r2-storage.adapter';
+export {
+  CLOUDFLARE_API_BASE,
+  CloudflareCachePurgeAdapter,
+  NoopCachePurge,
+  type CloudflareCachePurgeConfig,
+} from './cloudflare-cache-purge.adapter';
 export {
   CLOUDFLARE_GRAPHQL_ENDPOINT,
   CloudflareAnalyticsClient,

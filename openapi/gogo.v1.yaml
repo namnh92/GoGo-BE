@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.22
+  version: 1.0.0-alpha.23
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -926,6 +926,13 @@ paths:
         Content type and size are enforced server-side and the content type is
         part of what is signed, so storage refuses an upload that does not
         match what was authorized.
+
+
+        Purpose `avatar` (ADR-0022): users only, `image/jpeg`, `image/png`
+        or `image/webp` — never HEIC, which the client converts first. The
+        key lands in a private, one-day-lifetime prefix and is attached with
+        `PUT /me/avatar`, which processes it and publishes the result. Answers
+        503 where `GET /me` reports `capabilities.avatarUpload: unavailable`.
       requestBody:
         required: true
         content:
@@ -936,10 +943,11 @@ paths:
               properties:
                 purpose:
                   type: string
-                  enum: [checkin_photo, bill_photo, place_photo]
+                  enum: [checkin_photo, bill_photo, place_photo, avatar]
                 contentType:
                   type: string
                   enum: [image/jpeg, image/png, image/webp, image/heic]
+                  description: HEIC is refused for purpose `avatar`.
                 contentLength:
                   type: integer
                   description: Declared up front, so an oversized file is refused before a URL exists.
@@ -959,8 +967,9 @@ paths:
                   expiresAt: { type: string, format: date-time }
                   maxBytes: { type: integer }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '503':
-          description: Object storage is not configured in this environment
+          description: Object storage (or, for `avatar`, the public bucket) is not configured in this environment
 
   /administrative/version:
     get:

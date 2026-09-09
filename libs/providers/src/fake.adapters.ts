@@ -1,9 +1,16 @@
-import { ProviderQuotaExceededError, ProviderUnavailableError, SheetAccessError } from './ports';
+import {
+  ProviderQuotaExceededError,
+  ProviderUnavailableError,
+  SheetAccessError,
+  StorageObjectNotFoundError,
+  StorageObjectTooLargeError,
+} from './ports';
 import type {
   AcquisitionLinkInput,
   AcquisitionLinkPort,
   AreaAutocompletePort,
   AreaPrediction,
+  CachePurgePort,
   PlaceDescriptionTier,
   PlaceFetchTier,
   NotificationProviderPort,
@@ -255,12 +262,69 @@ export class FakePush implements NotificationProviderPort {
   }
 }
 
+/**
+ * An in-memory bucket. A test seeds the bytes a phone would have PUT through
+ * the presigned URL, the avatar pipeline reads, processes and writes them,
+ * and the test inspects what landed in the public instance.
+ */
 export class FakeStorage implements StoragePort {
+  readonly objects = new Map<
+    string,
+    { body: Uint8Array; contentType: string; cacheControl?: string | undefined }
+  >();
+  readonly deleted: string[] = [];
+  /** Set to make every write or delete fail, for the cleanup-queue paths. */
+  failWrites = false;
+
   async presignUpload(key: string): Promise<{ url: string; expiresInSeconds: number }> {
     return {
       url: `https://fake-storage.local/upload/${encodeURIComponent(key)}`,
       expiresInSeconds: 900,
     };
+  }
+
+  /** What a client PUT through the presigned URL; the API never sees that hop. */
+  seed(key: string, body: Uint8Array, contentType: string): void {
+    this.objects.set(key, { body, contentType });
+  }
+
+  async getObject(
+    key: string,
+    options: { maxBytes?: number } = {},
+  ): Promise<{ body: Uint8Array; contentType: string | null; contentLength: number }> {
+    const found = this.objects.get(key);
+    if (!found) throw new StorageObjectNotFoundError(key);
+    if (options.maxBytes !== undefined && found.body.byteLength > options.maxBytes) {
+      throw new StorageObjectTooLargeError(key, options.maxBytes);
+    }
+    return { body: found.body, contentType: found.contentType, contentLength: found.body.byteLength };
+  }
+
+  async putObject(
+    key: string,
+    body: Uint8Array,
+    contentType: string,
+    options: { cacheControl?: string } = {},
+  ): Promise<void> {
+    if (this.failWrites) throw new ProviderUnavailableError('fake-storage', 'failWrites');
+    this.objects.set(key, { body, contentType, cacheControl: options.cacheControl });
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    if (this.failWrites) throw new ProviderUnavailableError('fake-storage', 'failWrites');
+    this.objects.delete(key);
+    this.deleted.push(key);
+  }
+}
+
+/** Records what would have been purged at the edge. */
+export class FakeCachePurge implements CachePurgePort {
+  readonly purged: string[] = [];
+  failPurges = false;
+
+  async purgeUrls(urls: string[]): Promise<void> {
+    if (this.failPurges) throw new ProviderUnavailableError('fake-cache', 'failPurges');
+    this.purged.push(...urls);
   }
 }
 

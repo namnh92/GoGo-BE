@@ -9,3 +9,12 @@
  * can disable the control before a picker opens.
  */
 export const MEDIA_UPLOADS_CONFIGURED = 'MEDIA_UPLOADS_CONFIGURED';
+
+/**
+ * ADR-0022 — whether an avatar can be taken *and published* here: the private
+ * bucket for the original, the public bucket with its own credential for the
+ * processed object, and a public base URL to serve it from. What `GET /me`
+ * reports as `capabilities.avatarUpload`, and what `POST /uploads` enforces
+ * for purpose `avatar`.
+ */
+export const AVATAR_STORAGE_CONFIGURED = 'AVATAR_STORAGE_CONFIGURED';

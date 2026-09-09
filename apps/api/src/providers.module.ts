@@ -8,7 +8,10 @@ import {
 import {
   ACQUISITION_LINK_PROVIDER,
   AREA_AUTOCOMPLETE,
+  CACHE_PURGE,
+  CloudflareCachePurgeAdapter,
   FakeAreaAutocomplete,
+  FakeCachePurge,
   FakePlaceProvider,
   FakePush,
   FakeSheets,
@@ -20,7 +23,9 @@ import {
   METRICS_QUERY,
   OneSignalPushAdapter,
   NoAcquisitionLinkProvider,
+  NoopCachePurge,
   PLACE_PROVIDER,
+  PUBLIC_STORAGE_PROVIDER,
   PrometheusQueryAdapter,
   PUSH_PROVIDER,
   SHEETS_PROVIDER,
@@ -253,6 +258,39 @@ import { APP_CONFIG, type AppConfig } from './config/env';
           : new FakeStorage(),
       inject: [APP_CONFIG],
     },
+    {
+      // ADR-0022: the public bucket, under its own credential. The fake in
+      // every environment without one, so the avatar pipeline is exercisable
+      // end to end; `AVATAR_STORAGE_CONFIGURED` is what tells the contract
+      // whether this environment can actually publish an avatar.
+      provide: PUBLIC_STORAGE_PROVIDER,
+      useFactory: (config: AppConfig) =>
+        config.R2_PUBLIC_ACCESS_KEY_ID && config.R2_PUBLIC_SECRET_ACCESS_KEY && config.R2_PUBLIC_BUCKET
+          ? new R2StorageAdapter({
+              accountId: config.R2_ACCOUNT_ID,
+              accessKeyId: config.R2_PUBLIC_ACCESS_KEY_ID,
+              secretAccessKey: config.R2_PUBLIC_SECRET_ACCESS_KEY,
+              bucket: config.R2_PUBLIC_BUCKET,
+            })
+          : new FakeStorage(),
+      inject: [APP_CONFIG],
+    },
+    {
+      // ADR-0022: edge purge for a removed avatar. Cloudflare when the zone and
+      // token exist; the recording fake under test; otherwise a no-op, which
+      // means a removed object keeps answering for up to its cache lifetime.
+      provide: CACHE_PURGE,
+      useFactory: (config: AppConfig) =>
+        config.CF_ZONE_ID && config.CF_CACHE_PURGE_TOKEN
+          ? new CloudflareCachePurgeAdapter({
+              zoneId: config.CF_ZONE_ID,
+              token: config.CF_CACHE_PURGE_TOKEN,
+            })
+          : config.NODE_ENV === 'test'
+            ? new FakeCachePurge()
+            : new NoopCachePurge(),
+      inject: [APP_CONFIG],
+    },
   ],
   exports: [
     METRICS_REGISTRY,
@@ -270,6 +308,8 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     TRAVEL_TIME_PROVIDER,
     PUSH_PROVIDER,
     STORAGE_PROVIDER,
+    PUBLIC_STORAGE_PROVIDER,
+    CACHE_PURGE,
     ACQUISITION_LINK_PROVIDER,
     METRICS,
   ],

@@ -354,11 +354,68 @@ export interface FeedbackParserPort {
 
 export const FEEDBACK_PARSER = Symbol('FEEDBACK_PARSER');
 
+export type StoredObject = {
+  body: Uint8Array;
+  contentType: string | null;
+  contentLength: number;
+};
+
+/** The object is larger than the caller is willing to hold in memory. */
+export class StorageObjectTooLargeError extends Error {
+  constructor(
+    readonly key: string,
+    readonly maxBytes: number,
+  ) {
+    super(`object ${key} exceeds ${maxBytes} bytes`);
+    this.name = 'StorageObjectTooLargeError';
+  }
+}
+
+export class StorageObjectNotFoundError extends Error {
+  constructor(readonly key: string) {
+    super(`object ${key} not found`);
+    this.name = 'StorageObjectNotFoundError';
+  }
+}
+
+/**
+ * One bucket. The API binds two instances: the private bucket a phone
+ * presigns into, and the public bucket the edge serves (ADR-0022,
+ * GoGo-Infra ADR-0005). Which one a key belongs in is decided by the upload
+ * purpose on the server, never by a client-supplied key.
+ */
 export interface StoragePort {
   presignUpload(
     key: string,
     contentType: string,
   ): Promise<{ url: string; expiresInSeconds: number }>;
+  /**
+   * Server-side read. The bytes are processed here and never forwarded to a
+   * client; `maxBytes` refuses an object before it is held in memory.
+   */
+  getObject(
+    key: string,
+    options?: { maxBytes?: number; signal?: AbortSignal },
+  ): Promise<StoredObject>;
+  /** Server-side write; `cacheControl` is the header the object is served with. */
+  putObject(
+    key: string,
+    body: Uint8Array,
+    contentType: string,
+    options?: { cacheControl?: string; signal?: AbortSignal },
+  ): Promise<void>;
+  /** Idempotent: deleting an object that is already gone is a success. */
+  deleteObject(key: string, options?: { signal?: AbortSignal }): Promise<void>;
+}
+
+/**
+ * ADR-0022 — a removed public object is also purged at the edge, so the URL
+ * stops answering within the cache lifetime rather than a day later. Purging
+ * reaches the edge only: a copy a device already holds stays until that
+ * device's own cache expires, and nothing here pretends otherwise.
+ */
+export interface CachePurgePort {
+  purgeUrls(urls: string[], options?: { signal?: AbortSignal }): Promise<void>;
 }
 
 export class ProviderUnavailableError extends Error {
@@ -372,6 +429,9 @@ export const PLACE_PROVIDER = Symbol('PLACE_PROVIDER');
 export const AREA_AUTOCOMPLETE = Symbol('AREA_AUTOCOMPLETE');
 export const PUSH_PROVIDER = Symbol('PUSH_PROVIDER');
 export const STORAGE_PROVIDER = Symbol('STORAGE_PROVIDER');
+/** The public bucket, served by the edge. Write and delete only (ADR-0022). */
+export const PUBLIC_STORAGE_PROVIDER = Symbol('PUBLIC_STORAGE_PROVIDER');
+export const CACHE_PURGE = Symbol('CACHE_PURGE');
 
 export type SheetTab = { title: string; index: number };
 
