@@ -21,7 +21,7 @@ field can never be cleared. Room members see `displayName`, `role`,
 privacy baseline and the one this record keeps.
 
 What the spec asks for — avatar, home area, interests, usual budget, and using
-them as *defaults* when a room is created — runs into four facts about the
+them as _defaults_ when a room is created — runs into four facts about the
 codebase that a plan cannot paper over:
 
 1. **There is no read path for user images.** `StoragePort` presigns a PUT and
@@ -109,14 +109,14 @@ codebase that a plan cannot paper over:
 
 ## Data model (migration 0059, additive)
 
-| Column / table | Type | Notes |
-| --- | --- | --- |
-| `users.avatar_key` | text, null | key of the processed object in the public bucket |
-| `users.home_area_key` | text, null, FK → `service_areas.key` on delete set null | curated area only |
-| `users.usual_budget_per_person` | bigint, null | integer minor units, `>= 0` |
-| `users.usual_budget_currency` | char(3), not null, default `VND` | |
-| `user_profile_preferences` | `user_id` PK → `users` cascade, `selections` jsonb `{kind: keys[]}`, `updated_at` | validated by the taxonomy check room preferences use |
-| `media_cleanup_queue` | `id`, `bucket`, `object_key`, `reason`, `attempts`, `next_attempt_at`, `failed_at`, `last_error`, `created_at` | one row per object that must disappear |
+| Column / table                  | Type                                                                                                           | Notes                                                |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `users.avatar_key`              | text, null                                                                                                     | key of the processed object in the public bucket     |
+| `users.home_area_key`           | text, null, FK → `service_areas.key` on delete set null                                                        | curated area only                                    |
+| `users.usual_budget_per_person` | bigint, null                                                                                                   | integer minor units, `>= 0`                          |
+| `users.usual_budget_currency`   | char(3), not null, default `VND`                                                                               |                                                      |
+| `user_profile_preferences`      | `user_id` PK → `users` cascade, `selections` jsonb `{kind: keys[]}`, `updated_at`                              | validated by the taxonomy check room preferences use |
+| `media_cleanup_queue`           | `id`, `bucket`, `object_key`, `reason`, `attempts`, `next_attempt_at`, `failed_at`, `last_error`, `created_at` | one row per object that must disappear               |
 
 Rollback is `drop` of the new columns and tables; production is forward-only
 and a removal, if ever, is a later migration after a deprecation window.
@@ -125,10 +125,10 @@ and a removal, if ever, is a later migration after a deprecation window.
 
 ### Access model
 
-| Object | Bucket | Key | Readable by | Lifetime |
-| --- | --- | --- | --- | --- |
-| Original upload | `gogo-<env>-assets` (private) | `tmp/avatars/<userId>/<uuid>.<ext>` | nobody outside the API; the API reads it once with a server-side signed GET | presigned PUT valid 15 min; the existing `tmp/` lifecycle rule deletes it after one day |
-| Processed avatar | `gogo-<env>-public` | `avatars/<random128>.webp` — no user id, no timestamp | anyone holding the URL, via `assets-<env>.gogo.id.vn`, no authentication | until replaced or the account is deleted |
+| Object           | Bucket                        | Key                                                   | Readable by                                                                 | Lifetime                                                                                |
+| ---------------- | ----------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Original upload  | `gogo-<env>-assets` (private) | `tmp/avatars/<userId>/<uuid>.<ext>`                   | nobody outside the API; the API reads it once with a server-side signed GET | presigned PUT valid 15 min; the existing `tmp/` lifecycle rule deletes it after one day |
+| Processed avatar | `gogo-<env>-public`           | `avatars/<random128>.webp` — no user id, no timestamp | anyone holding the URL, via `assets-<env>.gogo.id.vn`, no authentication    | until replaced or the account is deleted                                                |
 
 The URL reaches a client only through `GET /me` for the owner and
 `RoomMember.avatarUrl` for people who share a live room with them. The
@@ -138,8 +138,7 @@ would 404.
 
 ### Ownership and purpose checks
 
-- `POST /uploads { purpose: 'avatar' }` requires a `user` actor; guests get
-  403. Allowed types: `image/jpeg`, `image/png`, `image/webp`. HEIC is refused
+- `POST /uploads { purpose: 'avatar' }` requires a `user` actor; guests get 403. Allowed types: `image/jpeg`, `image/png`, `image/webp`. HEIC is refused
   for this purpose because the prebuilt `sharp` cannot decode it; the client
   converts HEIC to JPEG before upload. Declared length ≤ 10 MB. The purpose
   decides the bucket and the prefix on the server; the client never chooses a
@@ -202,7 +201,7 @@ browser, a chat client that unfurled a link — each keeps the bytes it fetched
 until its own cache expires or is cleared, and no server-side action reaches
 into those caches. What deletion guarantees is narrower and must be stated
 that way to the user: the origin object is gone, the edge stops serving it
-within the cache lifetime, and no *new* fetch of that URL succeeds. That is
+within the cache lifetime, and no _new_ fetch of that URL succeeds. That is
 the same guarantee every public website makes about a removed image, and
 nothing stronger is promised here.
 
