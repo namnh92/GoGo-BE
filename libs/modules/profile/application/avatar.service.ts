@@ -182,8 +182,11 @@ export class AvatarService {
       await this.cleanup
         .enqueueNow(entries, { delaySeconds: AVATAR_FAILED_CLEANUP_DELAY_S })
         .catch(() => undefined);
+      // Three values, never the error code: a code is a closed set today and
+      // an unbounded label the day someone adds one without thinking of this.
       this.metrics.increment('avatar_set_total', {
-        outcome: err instanceof AppError ? err.code.toLowerCase() : 'error',
+        outcome:
+          err instanceof AppError ? (err.httpStatus >= 500 ? 'unavailable' : 'rejected') : 'error',
       });
       throw err;
     }

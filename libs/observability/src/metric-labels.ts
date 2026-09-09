@@ -315,6 +315,16 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   administrative_mappings: ['status'],
   administrative_remediation: ['category'],
   administrative_publication_enabled: [],
+
+  // --- profile / avatars (ADR-0022) ---------------------------------------
+  // `outcome` is a closed set: ok | rejected (4xx) | unavailable (5xx) | error.
+  avatar_set_total: ['outcome'],
+  avatar_set_duration_seconds: [],
+  avatar_removed_total: [],
+  // `bucket` is the logical bucket (private | public); `outcome` is
+  // done | retried | dead_lettered | referenced (a live avatar, refused).
+  media_cleanup_enqueued_total: [],
+  media_cleanup_attempt_total: ['bucket', 'outcome'],
 };
 
 /**
