@@ -869,6 +869,71 @@ describe('GoGo-owned import columns', () => {
   });
 });
 
+/**
+ * PI-BE-026 — a price with a unit GoGo cannot store must not pass silently.
+ *
+ * `place_prices.unit` is `per_person | per_item | per_hour | per_night`, and
+ * the import accepted `per_group` and `unknown` beside them. Both mapped to
+ * `null`, the insert was skipped, and a validated row with a real range
+ * produced a place with no price and no complaint.
+ */
+describe('price_unit values that cannot be stored', () => {
+  const ctx = { knownCategoryKeys: new Set(['cafe']) };
+  const priced = {
+    source_row_id: '1',
+    google_place_id: 'ChIJabcdef',
+    category: 'cafe',
+    price_min: '100000',
+    price_max: '250000',
+  };
+
+  it('refuses per_group rather than dropping the price', () => {
+    const { errors } = validateRow({ ...priced, price_unit: 'per_group' }, ctx);
+    expect(errors.map((e) => e.code)).toContain('PRICE_UNIT_UNSUPPORTED');
+  });
+
+  it('refuses a price that does not say what it is per', () => {
+    // `unknown` is also the default when the column is absent, which is how a
+    // sheet with a price column and no unit column used to lose every price.
+    expect(validateRow(priced, ctx).errors.map((e) => e.code)).toContain('PRICE_UNIT_REQUIRED');
+    expect(
+      validateRow({ ...priced, price_unit: 'unknown' }, ctx).errors.map((e) => e.code),
+    ).toContain('PRICE_UNIT_REQUIRED');
+  });
+
+  it('leaves a row with no price alone', () => {
+    const { errors } = validateRow(
+      { source_row_id: '1', google_place_id: 'ChIJabcdef', category: 'cafe' },
+      ctx,
+    );
+    expect(errors).toEqual([]);
+  });
+
+  it('still accepts every unit the price table can hold', () => {
+    for (const unit of ['per_person', 'per_item', 'free']) {
+      const { errors, normalized } = validateRow({ ...priced, price_unit: unit }, ctx);
+      expect(errors, unit).toEqual([]);
+      expect(normalized.priceUnit, unit).toBe(unit);
+    }
+  });
+
+  it('reads a unit out of the legacy free-text price column', () => {
+    // `price_raw` sets the unit as a side effect, so a legacy sheet that never
+    // had a `price_unit` column still passes.
+    const { errors, normalized } = validateRow(
+      {
+        source_row_id: '1',
+        google_place_id: 'ChIJabcdef',
+        category: 'cafe',
+        price_raw: '250k - 800k/món',
+      },
+      ctx,
+    );
+    expect(errors).toEqual([]);
+    expect(normalized.priceUnit).toBe('per_item');
+  });
+});
+
 describe('missing required columns', () => {
   it('names the required fields the HCM sheet has no header for', () => {
     // The real sheet from the failing import, verbatim.

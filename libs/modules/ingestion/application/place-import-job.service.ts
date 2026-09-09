@@ -2344,6 +2344,18 @@ function confidenceText(value: number | undefined): string | null {
 }
 
 /** The catalog only prices per person or per item; anything else needs an editor. */
+/**
+ * PI-BE-026 — the import's price unit, in the vocabulary `place_prices` has.
+ *
+ * `null` still means "nothing to store", but it can no longer be reached with a
+ * price beside it: `validateRow` fails a row whose unit is `per_group` or
+ * `unknown` while a minimum or maximum is present, so by the time this runs the
+ * only `null` left is a row that named no price at all.
+ *
+ * `free` maps to `per_person` because a free place is free per person; the
+ * amount is what says it is free, and `min = max = 0` is what the parser
+ * produces for "Miễn phí".
+ */
 function dbPriceUnit(unit: NormalizedImportRow['priceUnit']): 'per_person' | 'per_item' | null {
   if (unit === 'per_item') return 'per_item';
   if (unit === 'per_person' || unit === 'free') return 'per_person';

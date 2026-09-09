@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.17
+  version: 1.0.0-alpha.18
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3022,6 +3022,16 @@ paths:
         `phone` and `website` are no longer retired mapping values; `address`
         still is, because `address_text` is written from the provider's
         formatted address and a sheet's own address string has no writer.
+
+
+        **Price units (PI-BE-026).** `place_prices.unit` is `per_person`,
+        `per_item`, `per_hour` or `per_night`. A row that states a price must
+        state a unit this table can hold: `per_group` fails with
+        `PRICE_UNIT_UNSUPPORTED` and `unknown` — which is also the default when
+        the column is absent — fails with `PRICE_UNIT_REQUIRED`. Both used to be
+        accepted and then dropped the price on commit without a word. `free` is
+        stored as `per_person` with a zero amount. A row with no price at all is
+        unaffected.
       requestBody:
         required: true
         content:
