@@ -1453,6 +1453,21 @@ export class PlaceImportJobService {
     return 'BLOCKED';
   }
 
+  /**
+   * Which fields on this place a person owns, from `place_field_provenance`.
+   *
+   * Column names, not DTO names — the provenance table is keyed on the column
+   * (`address_text`, `geom`), which is what makes `lat`/`lng` one entry rather
+   * than two disagreeing ones.
+   */
+  private async editorialFields(placeId: string): Promise<Set<string>> {
+    const { rows } = await this.db.execute(sql`
+      select field from place_field_provenance
+      where place_id = ${placeId}::uuid and source_type = 'editorial'
+    `);
+    return new Set((rows as { field: string }[]).map((r) => r.field));
+  }
+
   private countRow(status: string, errorCode?: string): void {
     this.metrics.increment('place_import_rows_total', { status, error_code: errorCode });
   }
@@ -1495,9 +1510,24 @@ export class PlaceImportJobService {
       .where(eq(schema.places.id, placeId))
       .limit(1);
 
+    /**
+     * #528 — which fields a person owns on this place, and which the provider
+     * may still write.
+     *
+     * `place_field_provenance` records `editorial` for a value somebody typed
+     * and `google_derived` for one left as Google answered it. A row with no
+     * provenance at all predates that record and keeps the old behaviour:
+     * the provider writes, because nothing says otherwise.
+     */
+    const editorial = await this.editorialFields(placeId);
+
     const verdict = detectIdentityChange(
       {
-        name: snapshot?.name ?? details.name,
+        // A name an editor wrote is not evidence about whether the *business*
+        // changed hands — it is evidence about the editor. Comparing it to
+        // Google's would report every renamed place as a new owner, so the
+        // name simply abstains and the other three signals decide.
+        name: editorial.has('name') ? details.name : (snapshot?.name ?? details.name),
         ratingCount: snapshot?.ratingCount ?? null,
         primaryType: snapshot?.primaryType ?? null,
       },
@@ -1551,20 +1581,35 @@ export class PlaceImportJobService {
       // against the stored position, and once it is overwritten the move
       // cannot be seen. "The place may have been renamed or moved" was already
       // written on the line below; nothing acted on the second half of it.
-      const move = await invalidateTravelOnMove(tx, placeId, {
-        lat: details.lat,
-        lng: details.lng,
-      });
+      const move = editorial.has('geom')
+        ? null
+        : await invalidateTravelOnMove(tx, placeId, {
+            lat: details.lat,
+            lng: details.lng,
+          });
       if (move?.invalidated) {
         this.metrics.increment('place_relocation_invalidated_total', { source: 'cms_import' });
       }
       await tx
         .update(schema.places)
         .set({
-          // Provider owns these — the place may have been renamed or moved.
-          name: details.name,
-          addressText: details.addressText,
-          geom: { x: details.lng, y: details.lat },
+          /**
+           * The provider owns these *unless* a person took them.
+           *
+           * #528 — a reviewer supplementing a contribution, or an editor
+           * fixing a name in the console, writes `editorial` provenance
+           * against the field. Overwriting it here would undo their work on
+           * the next `update_existing` run and leave the audit trail claiming
+           * they still own a value Google had replaced. `GOGO_PRODUCT_DATA_-
+           * ARCHITECTURE.md` is explicit that copying does not transfer
+           * ownership; this is the same rule read in the other direction.
+           */
+          ...(editorial.has('name') ? {} : { name: details.name }),
+          ...(editorial.has('address_text') ? {} : { addressText: details.addressText }),
+          ...(editorial.has('geom') ? {} : { geom: { x: details.lng, y: details.lat } }),
+          // Provider aggregates are never a person's to own — nobody types a
+          // rating — so these are written unconditionally and stay attributed
+          // to Google (ADR-0020).
           rating: details.rating !== null ? details.rating.toFixed(2) : null,
           ratingCount: details.ratingCount,
           priceLevel: details.priceLevel,

@@ -9,6 +9,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
 import { PLACE_PROVIDER } from '@gogo/providers';
+import { PlaceImportJobService } from '@gogo/modules';
 import type { FakePlaceProvider } from '@gogo/providers';
 
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
@@ -162,6 +163,14 @@ beforeAll(async () => {
   pool.on('error', () => undefined);
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
+  // The import path derives a category from Google's type and checks it
+  // against the live taxonomy, so the vocabulary has to exist here too.
+  for (const key of ['cafe', 'restaurant']) {
+    await db.insert(schema.taxonomies).values({ kind: 'category', key });
+  }
+  for (const key of ['chill']) {
+    await db.insert(schema.taxonomies).values({ kind: 'mood', key });
+  }
 
   const { createApp } = await import('../src/main.js');
   app = await createApp();
@@ -626,5 +635,170 @@ describe('the decision applies what the reviewer wrote (#528)', () => {
     // #525 — the mapping is the resolver's answer, never a certification.
     expect(place[0]!.administrativeMappingStatus).not.toBe('VERIFIED');
     expect(place[0]!.administrativeMappedBy).toBeNull();
+  });
+});
+
+/**
+ * PI-BE-031 (#528) — a reviewer's edit survives the refresh that follows it.
+ *
+ * "Reviewer edits must survive approval and appear on the resulting Place. A
+ * subsequent provider fetch must not silently overwrite them." The first half
+ * is asserted above; this is the second, and it needs a refresh path that can
+ * actually write the fields in question. The scheduled liveness refresh cannot
+ * — it asks for `id` and `movedPlaceId` and writes neither a name nor an
+ * address — so proving anything with it would prove nothing.
+ *
+ * `update_existing` is that path. It re-fetches the place at `quality` and
+ * writes the provider's answer over the row, which is right for a shop that
+ * was renamed and wrong for a name a person chose. It found the reviewer's
+ * name and replaced it; `place_field_provenance` is what now stops it.
+ */
+describe('a reviewer’s edit outlives the next provider fetch (#528)', () => {
+  const CSV_HEADER =
+    'source_row_id,name,city,district,google_maps_url,category,price_min,price_max,price_unit';
+
+  function multipart(fields: Record<string, string>, file: { name: string; content: Buffer }) {
+    const boundary = `----gogo${Math.random().toString(16).slice(2)}`;
+    const parts: Buffer[] = [];
+    for (const [key, value] of Object.entries(fields)) {
+      parts.push(
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${value}\r\n`,
+        ),
+      );
+    }
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.name}"\r\n` +
+          'Content-Type: application/octet-stream\r\n\r\n',
+      ),
+      file.content,
+      Buffer.from('\r\n'),
+      Buffer.from(`--${boundary}--\r\n`),
+    );
+    return {
+      payload: Buffer.concat(parts),
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+    };
+  }
+
+  /** Re-import the same Google id in `update_existing`, end to end. */
+  async function refreshFromProvider(googlePlaceId: string): Promise<void> {
+    const content = Buffer.from(
+      [CSV_HEADER, `R-1,,Hà Nội,,https://www.google.com/maps?place_id=${googlePlaceId},,,,`].join(
+        '\n',
+      ),
+      'utf8',
+    );
+    const body = multipart(
+      { mode: 'update_existing' },
+      { name: `refresh-${googlePlaceId}.csv`, content },
+    );
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(tokens.editor), ...body.headers },
+      payload: body.payload,
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const jobId = created.json().id as string;
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${jobId}/start`,
+      remoteAddress: ip(),
+      headers: auth(tokens.editor),
+    });
+    await app.get(PlaceImportJobService).processJob(jobId);
+    // The refresh must actually have happened — an assertion about a value
+    // that was never written proves nothing.
+    const rowsRes = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${jobId}/rows`,
+      remoteAddress: ip(),
+      headers: auth(tokens.editor),
+    });
+    const [row] = rowsRes.json().items as { status: string; errors: unknown[] }[];
+    expect(row!.status, JSON.stringify(row!.errors)).toBe('imported');
+  }
+
+  it('keeps the name and address a reviewer wrote, and takes Google’s new rating', async () => {
+    const { submissionId, googlePlaceId } = await contribute({ name: 'Tên Google Ban Đầu' });
+    await saveReview(submissionId, {
+      draft: { name: 'Cà phê Ngọc Hà', addressText: '12 Ngọc Hà, Ba Đình, Hà Nội' },
+    });
+    const approved = await decide(submissionId, {
+      decision: 'approved',
+      reason: 'đủ thông tin',
+    });
+    const placeId = approved.json().placeId as string;
+
+    // Google's answer moves on: a new name, a new address, a new rating.
+    places.seed({
+      providerPlaceId: googlePlaceId,
+      name: 'Tên Google Đã Đổi',
+      addressText: 'Địa chỉ Google đã đổi',
+      lat: 21.02,
+      lng: 105.84,
+      rating: 4.9,
+      ratingCount: 2_000,
+      googleMapsUri: `https://maps.google.com/?cid=${1000000000000000000 + seq}`,
+    });
+
+    await refreshFromProvider(googlePlaceId);
+
+    const [after] = await db.select().from(schema.places).where(eq(schema.places.id, placeId));
+    // The reviewer's values are still there.
+    expect(after!.name).toBe('Cà phê Ngọc Hà');
+    expect(after!.addressText).toBe('12 Ngọc Hà, Ba Đình, Hà Nội');
+    // …and the provider's own figures did move, still attributed to it.
+    expect(Number(after!.rating)).toBeCloseTo(4.9, 2);
+    expect(after!.ratingCount).toBe(2_000);
+  });
+
+  it('lets the provider write a field nobody claimed', async () => {
+    const { submissionId, googlePlaceId } = await contribute({ name: 'Quán Chưa Ai Sửa' });
+    // Only the description is supplemented; the name is left as Google's.
+    await saveReview(submissionId, { draft: { description: 'Chỉ thêm mô tả.' } });
+    const approved = await decide(submissionId, { decision: 'approved', reason: 'đủ điều kiện' });
+    const placeId = approved.json().placeId as string;
+
+    // A rename, not a change of business: enough shared tokens and a rising
+    // review count, so the identity-change detector correctly stays quiet and
+    // the refresh reaches the write this case is about.
+    places.seed({
+      providerPlaceId: googlePlaceId,
+      name: 'Quán Chưa Ai Sửa - Cơ Sở 2',
+      addressText: 'Địa chỉ mới',
+      lat: 21.02,
+      lng: 105.84,
+      rating: 4.5,
+      ratingCount: 1_200,
+      googleMapsUri: `https://maps.google.com/?cid=${2000000000000000000 + seq}`,
+    });
+
+    await refreshFromProvider(googlePlaceId);
+
+    const [after] = await db.select().from(schema.places).where(eq(schema.places.id, placeId));
+    // Nobody claimed the name, so a rename is the provider's to report.
+    expect(after!.name).toBe('Quán Chưa Ai Sửa - Cơ Sở 2');
+    // The reviewer's description is theirs and stays.
+    expect(after!.description).toBe('Chỉ thêm mô tả.');
+  });
+
+  it('records the provenance the refresh reads, on the place itself', async () => {
+    const { submissionId } = await contribute();
+    await saveReview(submissionId, { draft: { name: 'Tên biên tập viên' } });
+    const approved = await decide(submissionId, { decision: 'approved', reason: 'đủ điều kiện' });
+
+    const provenance = await rows<{ field: string; source_type: string }>(sql`
+      select field, source_type from place_field_provenance
+      where place_id = ${approved.json().placeId as string}::uuid
+    `);
+    const byField = new Map(provenance.map((p) => [p.field, p.source_type]));
+    // This row is the whole mechanism: without it the refresh has no way to
+    // tell a name a person chose from one it fetched last month.
+    expect(byField.get('name')).toBe('editorial');
+    expect(byField.get('address_text')).toBe('google_derived');
   });
 });
