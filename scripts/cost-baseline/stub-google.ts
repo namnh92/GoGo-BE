@@ -112,7 +112,11 @@ export function installGoogleStub(catalog: GoogleCatalog): StubHandle {
     }
 
     if (url.startsWith('https://places.googleapis.com/v1/places/')) {
-      const id = decodeURIComponent(url.slice('https://places.googleapis.com/v1/places/'.length));
+      // Details takes `languageCode`/`regionCode` on the query string
+      // (GoGo-BE#505), so the id is the path segment and nothing after it.
+      const id = decodeURIComponent(
+        url.slice('https://places.googleapis.com/v1/places/'.length).split('?')[0]!,
+      );
       const place = catalog.places[id];
       const status = place ? 200 : 404;
       requests.push({ kind: 'details', url, method, ...(fieldMask ? { fieldMask } : {}), status });

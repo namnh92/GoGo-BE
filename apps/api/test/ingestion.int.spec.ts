@@ -947,3 +947,92 @@ describe('#339 — refusing a place says the true reason', () => {
     expect(res.json().code).toBe('PLACE_NOT_FOUND');
   });
 });
+
+/**
+ * GoGo-BE#505 — the two share-link shapes, over real HTTP.
+ *
+ * Both URLs are the real expansion of a real `maps.app.goo.gl` link, and the
+ * seeded provider rows carry the Vietnamese names and CIDs the live Places API
+ * returned on 2026-09-09 (the adapter now asks for `languageCode=vi`).
+ *
+ * What this proves that the unit tests cannot: the whole route — parse,
+ * search, score, dedup, administrative preview, envelope — answers the same
+ * for a link made in the application and one made in a browser.
+ */
+describe('Google Maps share links resolve from either client (#505)', () => {
+  const MUSEUM_ID = 'ChIJxwnWy6usNTERS_TY4hfsH2s';
+  const MUSEUM_FTID = '0x3135acabcbd609c7:0x6b1fec17e2d8f44b';
+  const MUSEUM_CID = '7719147873670591563';
+
+  const seedMuseum = () =>
+    places.seed({
+      providerPlaceId: MUSEUM_ID,
+      name: 'Bảo tàng Hà Nội',
+      addressText: 'Đường Phạm Hùng, Từ Liêm, Hà Nội 100000',
+      lat: 21.0055,
+      lng: 105.7823,
+      googleMapsUri: `https://maps.google.com/?cid=${MUSEUM_CID}&g_mp=X`,
+    });
+
+  const resolve = (url: string) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/places/resolve-google-maps-link',
+      remoteAddress: ip(),
+      payload: { url },
+    });
+
+  it('resolves the application shape — full address in q, identity in ftid', async () => {
+    seedMuseum();
+    const res = await resolve(
+      'https://maps.google.com?q=B%E1%BA%A3o+t%C3%A0ng+H%C3%A0+N%E1%BB%99i,+%C4%90%C6%B0%E1%BB%9Dng' +
+        '+Ph%E1%BA%A1m+H%C3%B9ng,+T%E1%BB%AB+Li%C3%AAm,+H%C3%A0+N%E1%BB%99i+100000,+Vi%E1%BB%87t+Nam' +
+        `&ftid=${MUSEUM_FTID}&entry=gps&g_st=ic`,
+    );
+
+    expect(res.statusCode, JSON.stringify(res.json())).toBe(201);
+    expect(res.json().status).toBe('RESOLVED');
+    expect(res.json().candidate.googlePlaceId).toBe(MUSEUM_ID);
+    expect(res.json().reasonCodes).toContain('CID_EXACT_MATCH');
+  });
+
+  it('resolves the browser shape for the same place, with no ftid to help it', async () => {
+    seedMuseum();
+    const res = await resolve(
+      'https://www.google.com/maps/place/B%E1%BA%A3o+t%C3%A0ng+H%C3%A0+N%E1%BB%99i/' +
+        '@21.0533,105.8159,15z/data=!4m6!3m5!8m2!3d21.0055!4d105.7823',
+    );
+
+    expect(res.statusCode, JSON.stringify(res.json())).toBe(201);
+    expect(res.json().status).toBe('RESOLVED');
+    expect(res.json().candidate.googlePlaceId).toBe(MUSEUM_ID);
+  });
+
+  it('refuses a link whose place_id and ftid name different places', async () => {
+    seedMuseum();
+    const res = await resolve(
+      `https://maps.google.com/?q=x&place_id=${MUSEUM_ID}&ftid=0x1:0x452419e97d6868e3`,
+    );
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().status).toBe('UNRESOLVED');
+    expect(res.json().reasonCodes).toContain('LINK_IDENTITY_CONFLICT');
+  });
+
+  it('does not lower the bar: an unidentified weak match is still refused', async () => {
+    places.seed({
+      providerPlaceId: 'ChIJ-unrelated',
+      name: 'Cộng Cà Phê Tây Hồ',
+      addressText: 'Tây Hồ, Hà Nội',
+      lat: 21.06,
+      lng: 105.82,
+      googleMapsUri: 'https://maps.google.com/?cid=1',
+    });
+
+    const res = await resolve(
+      'https://maps.google.com/?q=Ph%C3%AA+La+Xu%C3%A2n+Di%E1%BB%87u,+T%C3%A2y+H%E1%BB%93,+H%C3%A0+N%E1%BB%99i',
+    );
+
+    expect(res.json().status).toBe('UNRESOLVED');
+  });
+});

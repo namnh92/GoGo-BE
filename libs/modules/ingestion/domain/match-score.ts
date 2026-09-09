@@ -1,5 +1,5 @@
 import { categoryForGoogleType } from './google-types';
-import { normalizeVietnamese } from '../../search/domain/normalize';
+import { normalizeVietnamese, toSearchQuery } from '../../search/domain/normalize';
 import { haversineMeters } from '../../suggestions/domain/hard-filter';
 
 /**
@@ -27,7 +27,13 @@ export type MatchReason =
   | 'DISTRICT_MISMATCH'
   | 'CITY_MISMATCH'
   | 'TYPE_MISMATCH'
-  | 'LOW_CONFIDENCE';
+  | 'LOW_CONFIDENCE'
+  /** The link's Google feature id and this candidate's CID are the same place. */
+  | 'CID_EXACT_MATCH'
+  /** That candidate is not the one the text score ranked first. Recorded, not hidden. */
+  | 'CID_OVERRODE_SCORE'
+  /** The link names one place by id and a different one by CID. Nobody guesses. */
+  | 'CID_IDENTITY_CONFLICT';
 
 export type MatchInput = {
   /** Curated name — a CMS import column. Scored symmetrically. */
@@ -40,8 +46,24 @@ export type MatchInput = {
   city?: string | undefined;
   district?: string | undefined;
   categoryKey?: string | undefined;
+  /**
+   * Where the input says the place **is** — an exact coordinate, never a map
+   * viewport centre (#505). `place-resolver` fills this from `!8m2!3d…!4d…` or
+   * a typed `?q=<lat>,<lng>`; the `@lat,lng,z` in a browser link is the camera
+   * position and is used to bias the search, not to score a distance.
+   */
   lat?: number | undefined;
   lng?: number | undefined;
+  /**
+   * The CID half of the Google feature id the link carried, in decimal.
+   *
+   * Identity, not similarity: when a candidate's own `googleMapsUri` names the
+   * same CID, the two are the same Google record and no amount of name or
+   * distance scoring can say otherwise. This is what makes an application share
+   * link resolvable at all for a multi-branch brand, whose display name never
+   * covers the query.
+   */
+  featureCid?: string | undefined;
 };
 
 export type MatchTarget = {
@@ -51,20 +73,38 @@ export type MatchTarget = {
   lat: number;
   lng: number;
   primaryType?: string | undefined;
+  /**
+   * The CID out of this candidate's `googleMapsUri`, in decimal, or null when
+   * Google did not publish one. Compared against `MatchInput.featureCid`.
+   */
+  providerCid?: string | null | undefined;
 };
 
 /**
- * Matching tokens: unaccented words carrying at least one letter or digit.
+ * Matching tokens: unaccented words, punctuation removed, on both sides.
  *
  * Google display names routinely end in decoration — `Lacàph Coffee Experiences
  * Space 🇻🇳☕️` tokenises the emoji cluster as a word of its own — and counting
  * that as a token inflates the denominator of every comparison below (#311).
+ *
+ * #505 — the separator has to go too, and this is where the Google Maps
+ * *application* share link was lost. It writes `?q=<name>, <full address>`, so
+ * `normalizeVietnamese` (which folds accents and whitespace and nothing else)
+ * produced the token `west,` — which is not `west`. `Sheraton Hanoi West`
+ * against `Sheraton Hanoi West, 36 Lê Đức Thọ, Từ Liêm, Hà Nội, Việt Nam` came
+ * to 0.667 instead of 1.0, under the 0.70 floor, for a comma. A browser link
+ * escaped it only because `/maps/place/<Name>/` is one clean path segment.
+ *
+ * Punctuation is dropped rather than translated to a token boundary in one
+ * step: `toSearchQuery` already replaces every non-letter, non-digit with a
+ * space and collapses runs, which is exactly the same normalisation the SQL
+ * side applies, so query and candidate meet in one space (SE-002).
  */
 function tokens(value: string): Set<string> {
   return new Set(
-    normalizeVietnamese(value)
+    toSearchQuery(value)
       .split(' ')
-      .filter((t) => /[\p{L}\p{N}]/u.test(t)),
+      .filter((t) => t.length > 0),
   );
 }
 
@@ -267,6 +307,43 @@ export function decideMatch(
       (a, b) =>
         b.confidence - a.confidence || (a.target.googlePlaceId < b.target.googlePlaceId ? -1 : 1),
     );
+  /**
+   * #505 — identity first, similarity second.
+   *
+   * A Google Maps share link carries the place's feature id (`ftid=` from the
+   * application, `!1s0x…:0x…` from the browser) and Place Details answers with
+   * the same number inside `googleMapsUri`. When those agree the two are the
+   * same Google record — a fact, where every dimension above is an estimate.
+   *
+   * This is what a multi-branch brand needs. `Cafe Phê La` against the
+   * candidate Google actually returns, `Phê La Xuân Diệu`, covers two name
+   * tokens of four; the coordinate dimension carries 0.05 of the weight, so no
+   * honest scoring of *text* reaches 0.90 — and the alternative on the table
+   * was lowering the threshold, which would have let every weak match through
+   * to buy this one.
+   *
+   * The scored list is still computed, still returned, and the reasons still
+   * say when identity and score disagreed. Nothing is hidden; the ranking is
+   * simply not the thing being asked.
+   */
+  const cidMatches = input.featureCid
+    ? scored.filter((s) => s.target.providerCid && s.target.providerCid === input.featureCid)
+    : [];
+  if (cidMatches.length === 1) {
+    const identified = cidMatches[0]!;
+    const overrode = identified.target.googlePlaceId !== scored[0]!.target.googlePlaceId;
+    const reasons: MatchReason[] = [
+      'CID_EXACT_MATCH',
+      ...(overrode ? (['CID_OVERRODE_SCORE'] as const) : []),
+    ];
+    return {
+      outcome: 'RESOLVED_AUTOMATICALLY',
+      best: { target: identified.target, confidence: 1, reasons },
+      candidates: scored.slice(0, 5),
+      reasons,
+    };
+  }
+
   const best = scored[0]!;
   const runnerUp = scored[1];
   const ambiguous =

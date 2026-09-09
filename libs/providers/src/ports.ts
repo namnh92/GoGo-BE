@@ -155,6 +155,18 @@ export type ResolvedProviderPlace = {
   raw: unknown;
 };
 
+/**
+ * What a caller knows about *where* to look, on top of the text (#505).
+ *
+ * A **bias**, never a restriction: Google still returns places outside the
+ * circle, they simply rank lower. That distinction is the whole reason this is
+ * not `locationRestriction` — a share link's coordinate is strong evidence, but
+ * a restriction would turn a slightly-off coordinate into "no such place".
+ */
+export type PlaceSearchOptions = {
+  bias?: { lat: number; lng: number; radiusMeters: number } | undefined;
+};
+
 export interface PlaceProviderPort {
   /** Resolve a shared maps URL to a provider place id, or null when invalid. */
   resolveUrl(url: string): Promise<string | null>;
@@ -167,7 +179,11 @@ export interface PlaceProviderPort {
    * `MULTIPLE_BRANCHES` unreachable from a link and handed the user whichever
    * branch Google ranked first, silently (spec §6.2 steps 7/9, #311).
    */
-  searchCandidates(query: string, limit: number): Promise<string[]>;
+  searchCandidates(
+    query: string,
+    limit: number,
+    options?: PlaceSearchOptions | undefined,
+  ): Promise<string[]>;
   /**
    * Fetch canonical details; null when the place does not exist.
    *

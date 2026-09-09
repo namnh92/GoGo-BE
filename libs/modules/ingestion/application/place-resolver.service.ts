@@ -10,6 +10,7 @@ import {
   ProviderUnavailableError,
   type PlaceDescriptionTier,
   type PlaceProviderPort,
+  type PlaceSearchOptions,
   type ResolvedProviderPlace,
 } from '@gogo/providers';
 import { DB } from '../../shared/tokens';
@@ -21,6 +22,7 @@ import {
   type MatchTarget,
 } from '../domain/match-score';
 import {
+  cidFromGoogleMapsUri,
   expandShortLink,
   parseMapsUrl,
   type Fetcher,
@@ -120,7 +122,30 @@ export class PlaceResolverService {
     const parsed = parseMapsUrl(url);
     if (!parsed.ok) return parsed;
     if (!parsed.value.needsExpansion) return parsed;
-    return expandShortLink(url, this.fetcher);
+    return this.timed('expand', () => expandShortLink(url, this.fetcher));
+  }
+
+  /**
+   * #505 — how long each part of a resolution took, as a histogram.
+   *
+   * A link resolution that "took about four minutes" could not be located:
+   * the only timing this path emitted was per provider *request*, so a slow
+   * expansion, a slow search, three slow Details and a slow point-in-polygon
+   * were indistinguishable from each other and from the DB round trips
+   * between them. Three stages, one label, bounded cardinality.
+   *
+   * Failures are timed too. A stage that threw still consumed the time, and
+   * dropping it would make the graph read fastest exactly when it is worst.
+   */
+  private async timed<T>(stage: 'expand' | 'search' | 'details', fn: () => Promise<T>): Promise<T> {
+    const started = Date.now();
+    try {
+      return await fn();
+    } finally {
+      this.metrics.observe('place_link_resolution_stage_seconds', (Date.now() - started) / 1000, {
+        stage,
+      });
+    }
   }
 
   async resolveFromUrl(
@@ -163,23 +188,34 @@ export class PlaceResolverService {
       // Minh City" as the place's name and penalise every locality token in
       // it, so a correct link could not clear the threshold (#311).
       query: parsed.query,
-      lat: hints.lat ?? parsed.lat,
-      lng: hints.lng ?? parsed.lng,
+      // #505 — only a coordinate the URL states as *the place* is scored.
+      // `@lat,lng,z` is the map viewport and is 1.07 km from Sheraton Hanoi
+      // West on its own share link; it biases the search below and nothing
+      // else. A caller-supplied hint still wins: bulk import knows its row.
+      lat: hints.lat ?? parsed.placeLat,
+      lng: hints.lng ?? parsed.placeLng,
+      ...(parsed.featureId ? { featureCid: parsed.featureId.cid } : {}),
     };
 
     // Provider id in the URL is authoritative — no search, no ambiguity.
-    if (parsed.providerPlaceId) return this.resolveByProviderId(parsed.providerPlaceId, tier);
+    if (parsed.providerPlaceId) {
+      return this.resolveByProviderId(parsed.providerPlaceId, tier, parsed.featureId?.cid);
+    }
 
     const query = merged.name ?? merged.query;
     if (!query) return { status: 'UNRESOLVED', reasonCode: 'NO_QUERY' };
 
     const searchText = [query, merged.district, merged.city].filter(Boolean).join(' ');
-    const ids = await this.safeCandidates(searchText);
+    const ids = await this.timed('search', () =>
+      this.safeCandidates(searchText, searchBias(parsed, merged)),
+    );
     if (ids.length === 0) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
 
     // One unusable candidate does not sink the others: it drops out and the
     // rest are still scored.
-    const detailed = (await Promise.all(ids.map((id) => this.safeDetails(id, tier))))
+    const detailed = (
+      await this.timed('details', () => Promise.all(ids.map((id) => this.safeDetails(id, tier))))
+    )
       .filter((d): d is { ok: true; details: ResolvedProviderPlace } => d.ok)
       .map((d) => d.details);
     if (detailed.length === 0) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
@@ -207,11 +243,24 @@ export class PlaceResolverService {
   async resolveByProviderId(
     providerPlaceId: string,
     tier: PlaceDescriptionTier,
+    /**
+     * The CID the same URL carried, when it carried one (#505).
+     *
+     * A link that names one place by `place_id` and a different one by `ftid`
+     * is not a link anybody can act on, and picking whichever field was read
+     * first would be a silent choice between two identities. It is refused.
+     */
+    expectedCid?: string | undefined,
   ): Promise<ResolveOutcome> {
-    const looked = await this.safeDetails(providerPlaceId, tier);
+    const looked = await this.timed('details', () => this.safeDetails(providerPlaceId, tier));
     if (!looked.ok) return { status: 'UNRESOLVED', reasonCode: looked.reasonCode };
     const { details } = looked;
-    return { status: 'RESOLVED', decision: exactProviderMatch(toTarget(details)), details };
+    const target = toTarget(details);
+    if (expectedCid && target.providerCid && target.providerCid !== expectedCid) {
+      this.metrics.increment('place_link_identity_conflict_total', { source: 'cid_vs_place_id' });
+      return { status: 'UNRESOLVED', reasonCode: 'LINK_IDENTITY_CONFLICT' };
+    }
+    return { status: 'RESOLVED', decision: exactProviderMatch(target), details };
   }
 
   /**
@@ -240,9 +289,14 @@ export class PlaceResolverService {
     if (err instanceof ProviderUnavailableError) throw err;
   }
 
-  private async safeCandidates(query: string): Promise<string[]> {
+  private async safeCandidates(
+    query: string,
+    bias?: PlaceSearchOptions['bias'],
+  ): Promise<string[]> {
     try {
-      return await this.provider.searchCandidates(query, PlaceResolverService.CANDIDATE_LIMIT);
+      return await this.provider.searchCandidates(query, PlaceResolverService.CANDIDATE_LIMIT, {
+        ...(bias ? { bias } : {}),
+      });
     } catch (err) {
       PlaceResolverService.rethrowIfOperational(err);
       return [];
@@ -315,6 +369,48 @@ export class PlaceResolverService {
   }
 }
 
+/**
+ * How tightly to bias the Text Search, and on what (#505).
+ *
+ * Two radii because the URL states two different things and only one of them
+ * is about the place:
+ *
+ * - **An exact coordinate** (`!8m2!3d…!4d…`, or a `?q=<lat>,<lng>` the user
+ *   typed) gets a tight circle. Verified against the live API: `Cafe Phê La`
+ *   unbiased does not return the branch the link points at anywhere in its top
+ *   three; biased to that coordinate it comes back first.
+ * - **The viewport** (`@lat,lng,z`) gets a wide one. It is where the map was
+ *   centred, which is worth something as a hint about the city and nothing as
+ *   a claim about the address — a share link for Sheraton Hanoi West centres
+ *   1.07 km from the hotel.
+ *
+ * A caller-supplied coordinate (bulk import's own row) is treated as exact,
+ * because it is the row's own assertion rather than a screen position.
+ *
+ * `EXACT_BIAS_M` is deliberately larger than the coordinates are precise:
+ * Google's own point and the link's rounding disagree by tens of metres, and
+ * this is a bias, so being generous costs ranking rather than answers.
+ */
+const EXACT_BIAS_M = 250;
+const VIEWPORT_BIAS_M = 5_000;
+
+function searchBias(
+  parsed: MapsUrlHints,
+  merged: MatchInput,
+): PlaceSearchOptions['bias'] | undefined {
+  if (merged.lat !== undefined && merged.lng !== undefined) {
+    return { lat: merged.lat, lng: merged.lng, radiusMeters: EXACT_BIAS_M };
+  }
+  if (parsed.viewportLat !== undefined && parsed.viewportLng !== undefined) {
+    return {
+      lat: parsed.viewportLat,
+      lng: parsed.viewportLng,
+      radiusMeters: VIEWPORT_BIAS_M,
+    };
+  }
+  return undefined;
+}
+
 export function toTarget(d: ResolvedProviderPlace): MatchTarget {
   return {
     googlePlaceId: d.providerPlaceId,
@@ -322,5 +418,8 @@ export function toTarget(d: ResolvedProviderPlace): MatchTarget {
     address: d.addressText,
     lat: d.lat,
     lng: d.lng,
+    // #505 — the CID Google publishes for this place, so a share link's `ftid`
+    // has something authoritative to be compared against. Absent is ordinary.
+    providerCid: cidFromGoogleMapsUri(d.googleMapsUri),
   };
 }

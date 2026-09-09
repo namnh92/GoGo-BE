@@ -80,7 +80,9 @@ function stubFetch() {
         fieldMask: init?.headers?.['X-Goog-FieldMask'] ?? null,
       });
       const body = next.echo
-        ? { id: decodeURIComponent(url.split('/places/')[1] ?? '') }
+        ? // Details carries `languageCode`/`regionCode` on the query string
+          // (GoGo-BE#505); the id is the path segment, not what follows it.
+          { id: decodeURIComponent((url.split('/places/')[1] ?? '').split('?')[0]!) }
         : next.body;
       return {
         ok: next.status >= 200 && next.status < 300,
@@ -300,11 +302,9 @@ describe('due-row selection', () => {
     const report = await service().tick();
 
     expect(report).toMatchObject({ tick: 'ran', attempted: 3, succeeded: 3 });
-    expect(requests.map((r) => decodeURIComponent(r.url.split('/places/')[1] ?? ''))).toEqual([
-      'ChIJ-priority',
-      'ChIJ-old',
-      'ChIJ-recent',
-    ]);
+    expect(
+      requests.map((r) => decodeURIComponent((r.url.split('/places/')[1] ?? '').split('?')[0]!)),
+    ).toEqual(['ChIJ-priority', 'ChIJ-old', 'ChIJ-recent']);
   });
 
   it('reports nothing due without reserving budget or calling the provider', async () => {

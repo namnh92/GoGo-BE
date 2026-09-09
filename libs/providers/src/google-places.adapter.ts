@@ -10,6 +10,7 @@ import {
   type PlaceDescriptionTier,
   type PlaceFetchTier,
   type PlaceProviderPort,
+  type PlaceSearchOptions,
   type ProviderPlaceIdentity,
   type ProviderMetrics,
   type ProviderPhotoRef,
@@ -18,6 +19,26 @@ import {
 import { boundedReason, googleFailure, readGoogleError } from './google-error';
 import { expandShortLink, parseMapsUrl, type Fetcher, type UrlParseResult } from './maps-url';
 import { withResilience } from './resilience';
+
+/**
+ * GoGo is a Vietnamese product, and Google answers in whatever language it is
+ * asked in — so not asking is a choice, and it was the wrong one (#505).
+ *
+ * Unset, Place Details calls Bảo tàng Hà Nội "Hanoi Museum". A share link made
+ * on a phone carries the name the phone displayed, in Vietnamese, so the query
+ * and the candidate had no token in common and the match scored zero. Both are
+ * the same place; only the language differed.
+ *
+ * `regionCode` is a **formatting and ranking** preference here, not a filter:
+ * Text Search still returns places outside Vietnam, and address formatting
+ * follows local convention. The thing that restricts a search is
+ * `locationRestriction`, which this adapter does not send.
+ *
+ * Existing rows are untouched. This changes what a *new* fetch says, not what
+ * the catalogue already holds, and there is no second name column: the
+ * catalogue keeps one name, editorial once an editor writes it.
+ */
+const GOOGLE_LOCALE = { languageCode: 'vi', regionCode: 'VN' } as const;
 
 const RESILIENCE = {
   timeoutMs: 5000,
@@ -173,14 +194,42 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
    * Text Search (New), IDs-Only field mask — spec §6.2 step 6 keeps the search
    * itself cheap and pays for details only on the candidates it goes on to
    * score.
+   *
+   * `locationBias` is what makes a multi-branch brand resolvable (#505).
+   * Verified against the live API: `Cafe Phê La` unbiased returns Thành Thái,
+   * Lê Văn Lương and Huỳnh Thúc Kháng — the branch the link actually points at
+   * is not in the answer at all. Biased to the `!8m2!3d…!4d…` coordinate the
+   * same link carries, that branch comes back first.
+   *
+   * A bias and not a restriction, deliberately: a coordinate that is slightly
+   * off must cost ranking, not the whole answer.
    */
-  async searchCandidates(query: string, limit: number): Promise<string[]> {
+  async searchCandidates(
+    query: string,
+    limit: number,
+    options?: PlaceSearchOptions | undefined,
+  ): Promise<string[]> {
+    const bias = options?.bias;
     const data = await this.call<{ places?: { id?: string }[] }>(
       'google.searchText',
       'https://places.googleapis.com/v1/places:searchText',
       {
         method: 'POST',
-        body: JSON.stringify({ textQuery: query, maxResultCount: limit }),
+        body: JSON.stringify({
+          textQuery: query,
+          maxResultCount: limit,
+          ...GOOGLE_LOCALE,
+          ...(bias
+            ? {
+                locationBias: {
+                  circle: {
+                    center: { latitude: bias.lat, longitude: bias.lng },
+                    radius: bias.radiusMeters,
+                  },
+                },
+              }
+            : {}),
+        }),
         fieldMask: 'places.id',
       },
     );
@@ -230,7 +279,11 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
         // `google.details` label cannot be reconciled against an invoice that
         // bills Essentials, Pro and Enterprise separately.
         `google.details.${tier}`,
-        `https://places.googleapis.com/v1/places/${encodeURIComponent(providerPlaceId)}`,
+        // Locale as query parameters — Details takes them there, Text Search
+        // takes them in the body. Verified against the live API: the same id
+        // answers `Hanoi Museum` without them and `Bảo tàng Hà Nội` with.
+        `https://places.googleapis.com/v1/places/${encodeURIComponent(providerPlaceId)}` +
+          `?languageCode=${GOOGLE_LOCALE.languageCode}&regionCode=${GOOGLE_LOCALE.regionCode}`,
         { method: 'GET', fieldMask: PLACE_FIELD_MASKS[tier] },
       );
     } catch (err) {

@@ -6470,6 +6470,13 @@ export interface components {
              */
             status?: "RESOLVED" | "ALREADY_EXISTS" | "CANDIDATE_SELECTION" | "UNRESOLVED";
             matchConfidence?: number;
+            /**
+             * @description Why the answer is what it is. Open-ended by design — a client shows what it recognises and ignores the rest — but these are the ones a link resolution emits today.
+             *
+             *     Scoring: `EXACT_PROVIDER_ID`, `EXACT_NAME_CITY`, `MULTIPLE_BRANCHES`, `DISTRICT_MISMATCH`, `CITY_MISMATCH`, `TYPE_MISMATCH`, `LOW_CONFIDENCE`. Catalogue: `PLACE_ALREADY_LINKED`, `DB_FIRST`, `PLACE_IDENTITY_CONFLICT`, `NOT_FOUND`, `NO_QUERY`.
+             *
+             *     Identity, from the Google feature id a share link carries (GoGo-BE#505): `CID_EXACT_MATCH` — a candidate's own `googleMapsUri` names the same CID as the link, so the two are the same Google record and no name or distance score can say otherwise. `CID_OVERRODE_SCORE` accompanies it when that candidate was not the one the text score ranked first; the full `candidates` list is still returned, so the disagreement is visible rather than hidden. `LINK_IDENTITY_CONFLICT` (with `UNRESOLVED`) — the link names one place by `place_id` and a different one by `ftid`, which nobody can act on and nothing here guesses at.
+             */
             reasonCodes?: string[];
             /** Format: uuid */
             existingPlaceId?: string;
