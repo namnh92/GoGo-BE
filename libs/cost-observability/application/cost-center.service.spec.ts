@@ -500,7 +500,7 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     expect(row.runtime).toEqual({
       coverage: 'PARTIAL',
       services: { full: 3, partial: 0, notInstrumented: 2 },
-      operations: { instrumented: 10, total: 12 },
+      operations: { instrumented: 11, total: 13 },
     });
     // No cost row and no source in this input: never observed, said on its
     // own — and the runtime dimension above did not move.
@@ -741,7 +741,7 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     expect(places.runtime).toEqual({
       surface: 'in_process',
       coverage: 'FULL',
-      operations: { instrumented: 7, total: 7 },
+      operations: { instrumented: 8, total: 8 },
       connection: null,
     });
     expect(places.instrumented).toBe(true);

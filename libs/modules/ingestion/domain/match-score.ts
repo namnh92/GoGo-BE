@@ -201,12 +201,29 @@ function weightedConfidence(dimensions: Dimension[]): number {
 export function scoreMatch(input: MatchInput, target: MatchTarget): ScoredMatch {
   const reasons: MatchReason[] = [];
 
+  /**
+   * #505 — two namings of one place, and the candidate need only match one.
+   *
+   * `name` is a curated column: a CSV row, a sheet cell, something a person
+   * typed. `query` is the text Google itself put in the link. They are scored
+   * by different measures on purpose (see `nameCoverage`), and until now the
+   * curated one simply *replaced* the link's — so the same URL resolved
+   * through `POST /places/resolve-google-maps-link` and failed through
+   * `/cms/place-imports`, because the sheet spelled the place differently
+   * from Google. The same link, two answers, and neither path could see the
+   * other's evidence.
+   *
+   * The better of the two is the one that stands: a candidate whose name the
+   * editor wrote *or* whose name the link carried is evidence for the same
+   * conclusion, and requiring it to satisfy both makes a correct row fail for
+   * a spelling. It cannot promote a candidate that matches neither — the max
+   * of two low scores is still low — and the branch tests below hold.
+   */
   const named = Boolean(input.name ?? input.query);
-  const nameScore = input.name
-    ? nameSimilarity(input.name, target.name)
-    : input.query
-      ? nameCoverage(input.query, target.name)
-      : 0;
+  const nameScore = Math.max(
+    input.name ? nameSimilarity(input.name, target.name) : 0,
+    input.query ? nameCoverage(input.query, target.name) : 0,
+  );
 
   const districtHit = containsNormalized(target.address, input.district);
   if (input.district && !districtHit) reasons.push('DISTRICT_MISMATCH');
@@ -384,13 +401,24 @@ export function decideMatch(
   return { outcome, best, candidates: scored.slice(0, 5), reasons };
 }
 
-/** A provider id lifted straight from the URL always wins. */
-export function exactProviderMatch(target: MatchTarget): MatchDecision {
+/**
+ * An identity the URL stated, resolved without scoring anything.
+ *
+ * `EXACT_PROVIDER_ID` is a Place ID read straight out of the link.
+ * `CID_EXACT_MATCH` is the same strength of claim reached differently — the
+ * link's `ftid` and a search hit's own `googleMapsUri` name the same Google
+ * record — and the two are kept apart so a reader can tell which evidence the
+ * resolution stood on.
+ */
+export function exactProviderMatch(
+  target: MatchTarget,
+  via: 'EXACT_PROVIDER_ID' | 'CID_EXACT_MATCH' = 'EXACT_PROVIDER_ID',
+): MatchDecision {
   return {
     outcome: 'RESOLVED_AUTOMATICALLY',
-    best: { target, confidence: 1, reasons: ['EXACT_PROVIDER_ID'] },
-    candidates: [{ target, confidence: 1, reasons: ['EXACT_PROVIDER_ID'] }],
-    reasons: ['EXACT_PROVIDER_ID'],
+    best: { target, confidence: 1, reasons: [via] },
+    candidates: [{ target, confidence: 1, reasons: [via] }],
+    reasons: [via],
   };
 }
 

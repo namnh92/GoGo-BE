@@ -50,6 +50,30 @@ describe('pricing registry', () => {
     expect(listCostMicros('google.maps_sdk_ios', TODAY, 500)).toBeNull();
   });
 
+  it('prices the two Text Search SKUs apart — the field mask is the price', () => {
+    // GoGo-BE#505. `places.id` alone is Text Search Essentials (IDs Only),
+    // which Google caps as unlimited free; adding `places.googleMapsUri` — a
+    // Pro field — makes the identical endpoint Text Search Pro at $32/1,000.
+    // One operation label over both would report a free SKU and a paid one as
+    // one number, and no invoice could be reconciled against it.
+    expect(listCostMicros('google.searchText', TODAY, 1_000)).toBe(0);
+    expect(listCostMicros('google.searchText.identity', TODAY, 1_000)).toBe(32_000_000);
+    expect(pricingFor('google.searchText.identity', TODAY)?.googleSku).toBe(
+      'Places API (New) — Text Search Pro',
+    );
+
+    // Why it is bought at all, in the numbers that decided it: finding a hit
+    // Google ranks fifth costs five Enterprise Details on the free search, and
+    // one Pro search plus one Details this way.
+    const tenDetails = listCostMicros('google.details.quality', TODAY, 10)!;
+    const identityPath =
+      listCostMicros('google.searchText.identity', TODAY, 1)! +
+      listCostMicros('google.details.quality', TODAY, 1)!;
+    expect(identityPath).toBeLessThan(tenDetails);
+    // …and still under the three-candidate path it replaces.
+    expect(identityPath).toBeLessThan(listCostMicros('google.details.quality', TODAY, 3)!);
+  });
+
   it('keeps a measured zero at zero', () => {
     // Known-free is a different fact from unknown, and it must survive as a
     // number. IDs-Only Text Search is published at no charge.

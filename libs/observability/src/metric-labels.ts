@@ -105,6 +105,10 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // different one by `ftid`. `source` is the finite pair of fields that
   // disagreed; nothing about which places, which would be unbounded.
   place_link_identity_conflict_total: ['source'],
+  // #505 — what the paid identity search found. `matched` is the case it is
+  // bought for; `unmatched` means the link names a place the search did not
+  // return, and `not_found` means it returned nothing at all.
+  place_link_cid_lookup_total: ['result'],
   // #505 — where a link resolution spends its time. `stage` is the fixed set
   // `expand | search | details`, so a slow resolution can be located instead
   // of guessed at: the only timing this path emitted before was per provider

@@ -547,12 +547,16 @@ describe('#334 — the id that came back is not always the id we asked for', () 
  *   returns that branch first with a 200 m `locationBias.circle`.
  */
 describe('locale and location bias (#505)', () => {
-  type SpiedFetch = ReturnType<typeof vi.fn<(url: string, init?: { body?: string }) => unknown>>;
+  type SpiedFetch = ReturnType<
+    typeof vi.fn<
+      (url: string, init?: { body?: string; headers?: Record<string, string> }) => unknown
+    >
+  >;
   const bodyOf = (mock: SpiedFetch): Record<string, unknown> =>
     JSON.parse(String(mock.mock.calls[0]![1]?.body ?? '{}')) as Record<string, unknown>;
   const urlOf = (mock: SpiedFetch): string => String(mock.mock.calls[0]![0]);
   const jsonFetch = (payload: unknown): SpiedFetch =>
-    vi.fn((_url: string, _init?: { body?: string }) =>
+    vi.fn((_url: string, _init?: { body?: string; headers?: Record<string, string> }) =>
       Promise.resolve(new Response(JSON.stringify(payload), { status: 200 })),
     ) as SpiedFetch;
 
@@ -609,6 +613,30 @@ describe('locale and location bias (#505)', () => {
     expect(url).toContain('languageCode=vi');
     expect(url).toContain('regionCode=VN');
     expect(out?.name).toBe('Bảo tàng Hà Nội');
+  });
+
+  it('buys the Pro SKU only for the identity search, and says which it bought', async () => {
+    const fetchMock = jsonFetch({
+      places: [{ id: 'ChIJa', googleMapsUri: 'https://maps.google.com/?cid=1' }, { id: 'ChIJb' }],
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await new GooglePlacesAdapter(API_KEY).searchCandidateIdentities('x', 10, {
+      bias: { lat: 21, lng: 105, radiusMeters: 250 },
+    });
+
+    // The field mask *is* the price: `places.googleMapsUri` is a Pro field for
+    // Text Search, which is what moves this off the free IDs-Only SKU.
+    const mask = (fetchMock.mock.calls[0]![1] as unknown as { headers: Record<string, string> })
+      .headers['X-Goog-FieldMask'];
+    expect(mask).toBe('places.id,places.googleMapsUri');
+    expect(bodyOf(fetchMock)).toMatchObject({ maxResultCount: 10, languageCode: 'vi' });
+    expect(out).toEqual([
+      { providerPlaceId: 'ChIJa', googleMapsUri: 'https://maps.google.com/?cid=1' },
+      // Google publishing none is `null`, not an omission.
+      { providerPlaceId: 'ChIJb', googleMapsUri: null },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('spends one request per search — the locale is not a second call', async () => {

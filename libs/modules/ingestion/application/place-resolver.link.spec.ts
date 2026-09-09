@@ -206,8 +206,11 @@ describe('share links from the application and the browser (#505)', () => {
     );
 
     // The bias Google was asked for is the `!8m2` point, tight; never the `@`.
-    expect(provider.searches).toHaveLength(1);
-    expect(provider.searches[0]!.bias).toEqual({
+    // The link carries a CID, so the one search made is the paid identity
+    // search — and there is exactly one of it.
+    expect(provider.searches).toHaveLength(0);
+    expect(provider.identitySearches).toHaveLength(1);
+    expect(provider.identitySearches[0]!.bias).toEqual({
       lat: 21.0495428,
       lng: 105.8138058,
       radiusMeters: 250,
@@ -271,6 +274,87 @@ describe('share links from the application and the browser (#505)', () => {
     expect(out.status).toBe('RESOLVED');
     if (out.status !== 'RESOLVED') return;
     expect(out.decision.reasons).toContain('EXACT_PROVIDER_ID');
+  });
+
+  it('finds a place ranked below the scoring window, for one search and one Details', async () => {
+    // The real case: `Bến Bạch Đằng` is Google's fifth hit for its own name,
+    // behind a park, a pier and a water-bus stop within 300 m. Three
+    // candidates cannot contain it, and buying ten Enterprise Details to look
+    // is $200/1,000 — so the identity search reads ten `googleMapsUri`s in one
+    // Pro request ($32) and only the winner is fetched ($20).
+    const decoys = [
+      ['ChIJ-cong-vien', 'Công viên Bến Bạch Đằng', '6991131790925347073'],
+      ['ChIJ-ben-tau', 'Bến tàu Bạch Đằng', '8813553796661064786'],
+      ['ChIJ-waterbus', 'Saigon Waterbus Bạch Đằng', '4852626611537157215'],
+      ['ChIJ-ga-tau', 'Ga Tàu Thuỷ Bạch Đằng', '9973775818134137011'],
+    ] as const;
+    decoys.forEach(([id, name, cid], index) => {
+      provider.seed({
+        providerPlaceId: id,
+        name,
+        lat: 10.7752 - index / 10_000,
+        lng: 106.7071,
+        googleMapsUri: `https://maps.google.com/?cid=${cid}`,
+      });
+    });
+    provider.seed({
+      providerPlaceId: 'ChIJ-ben-bach-dang',
+      name: 'Bến Bạch Đằng',
+      addressText: 'Tôn Đức Thắng, Bến Nghé, Hồ Chí Minh',
+      // Farthest of the five, so nothing but the CID picks it out.
+      lat: 10.7,
+      lng: 106.7,
+      googleMapsUri: 'https://maps.google.com/?cid=15871080084204990604',
+    });
+
+    const out = await resolver.resolveFromUrl(
+      'https://www.google.com/maps/place/B%E1%BA%BFn+B%E1%BA%A1ch+%C4%90%E1%BA%B1ng/' +
+        '@10.7768556,106.7079177,17.4z/data=!4m6!3m5!1s0x31752fd0bb720ac3:0xdc41673f7cd0b08c' +
+        '!8m2!3d10.7755799!4d106.7071096!16s%2Fm%2F04cvvjr',
+      'quality',
+    );
+
+    expect(out.status).toBe('RESOLVED');
+    if (out.status !== 'RESOLVED') return;
+    expect(out.details.providerPlaceId).toBe('ChIJ-ben-bach-dang');
+    expect(out.decision.reasons).toContain('CID_EXACT_MATCH');
+    // One paid search, no free one, and exactly one Details.
+    expect(provider.identitySearches).toHaveLength(1);
+    expect(provider.searches).toHaveLength(0);
+    expect(provider.tiersRequested).toEqual(['quality']);
+  });
+
+  it('pays for the free search when the link states no identity', async () => {
+    seedBranches();
+    await resolver.resolveFromUrl(
+      'https://www.google.com/maps/place/Ph%C3%AA+La/@21.03,105.80,15z',
+      'quality',
+    );
+    // Nothing to compare a CID against, so nothing buys the Pro SKU.
+    expect(provider.identitySearches).toHaveLength(0);
+    expect(provider.searches).toHaveLength(1);
+  });
+
+  it('does not search twice when the identity search finds no match', async () => {
+    provider.seed({
+      providerPlaceId: 'ChIJ-other',
+      name: 'Phê La Núi Trúc',
+      googleMapsUri: 'https://maps.google.com/?cid=1',
+    });
+
+    const out = await resolver.resolveFromUrl(
+      'https://www.google.com/maps/place/Ph%C3%AA+La/@21.03,105.80,15z/' +
+        'data=!4m6!3m5!1s0x1:0x452419e97d6868e3!8m2!3d21.0495428!4d105.8138058',
+      'quality',
+    );
+
+    // The ids the paid search returned are scored rather than fetched again.
+    expect(provider.identitySearches).toHaveLength(1);
+    expect(provider.searches).toHaveLength(0);
+    expect(out.status).not.toBe('RESOLVED');
+    if (out.status === 'UNRESOLVED' || out.status === 'NEEDS_CONFIRMATION') {
+      expect(out.decision?.reasons).toContain('CID_NOT_IN_CANDIDATES');
+    }
   });
 
   it('still asks a person when two branches are alike and none is identified', async () => {

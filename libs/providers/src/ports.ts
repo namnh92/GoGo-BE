@@ -167,6 +167,21 @@ export type PlaceSearchOptions = {
   bias?: { lat: number; lng: number; radiusMeters: number } | undefined;
 };
 
+/**
+ * A search hit with enough of the provider's own answer to recognise it
+ * (#505), and nothing more.
+ *
+ * `googleMapsUri` carries the CID a Google Maps share link states in its
+ * `ftid`, which is the only thing a link and a search result can be compared
+ * on. Asking for it moves Text Search off the free IDs-Only SKU — see
+ * `searchCandidateIdentities` — so it is a separate method rather than a
+ * widened field mask on the cheap one.
+ */
+export type ProviderCandidateIdentity = {
+  providerPlaceId: string;
+  googleMapsUri: string | null;
+};
+
 export interface PlaceProviderPort {
   /** Resolve a shared maps URL to a provider place id, or null when invalid. */
   resolveUrl(url: string): Promise<string | null>;
@@ -184,6 +199,30 @@ export interface PlaceProviderPort {
     limit: number,
     options?: PlaceSearchOptions | undefined,
   ): Promise<string[]>;
+  /**
+   * The same search, answering with each hit's provider identity (#505).
+   *
+   * **Not free, where `searchCandidates` is.** Text Search bills by the field
+   * category asked for: `places.id` alone is the Essentials IDs-Only SKU with
+   * an unlimited free cap, and `places.googleMapsUri` is a Pro field, so this
+   * is Text Search Pro at $32/1,000. It exists because that is still the
+   * cheaper way to answer one specific question — *which* of these hits is the
+   * place the link names.
+   *
+   * Without it, finding a hit ranked fifth means buying five Enterprise Place
+   * Details ($20 each) to read five `googleMapsUri`s. With it, one Pro search
+   * plus one Details for the winner: $52/1,000 against $60 for three
+   * candidates, $200 for ten — and it is the only one of the three that finds
+   * a place Google ranks below third for its own name.
+   *
+   * Callers use it only when they hold an identity to compare against. A
+   * search with nothing to match is cheaper on the free method.
+   */
+  searchCandidateIdentities(
+    query: string,
+    limit: number,
+    options?: PlaceSearchOptions | undefined,
+  ): Promise<ProviderCandidateIdentity[]>;
   /**
    * Fetch canonical details; null when the place does not exist.
    *

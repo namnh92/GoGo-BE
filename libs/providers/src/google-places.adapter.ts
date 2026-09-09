@@ -11,6 +11,7 @@ import {
   type PlaceFetchTier,
   type PlaceProviderPort,
   type PlaceSearchOptions,
+  type ProviderCandidateIdentity,
   type ProviderPlaceIdentity,
   type ProviderMetrics,
   type ProviderPhotoRef,
@@ -101,6 +102,20 @@ export const PLACE_FIELD_MASKS: Readonly<Record<PlaceFetchTier, string>> = {
   quality: [...CORE_FIELDS, ...QUALITY_FIELDS].join(','),
   detail: [...CORE_FIELDS, ...QUALITY_FIELDS, ...DETAIL_FIELDS].join(','),
 };
+
+/** One shape for the circle both searches send; a bias, never a restriction. */
+function locationBiasOf(bias: PlaceSearchOptions['bias']): Record<string, unknown> {
+  return bias
+    ? {
+        locationBias: {
+          circle: {
+            center: { latitude: bias.lat, longitude: bias.lng },
+            radius: bias.radiusMeters,
+          },
+        },
+      }
+    : {};
+}
 
 /**
  * Google Places adapter (ADR-0004). Key stays server-side; attribution and
@@ -219,21 +234,49 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
           textQuery: query,
           maxResultCount: limit,
           ...GOOGLE_LOCALE,
-          ...(bias
-            ? {
-                locationBias: {
-                  circle: {
-                    center: { latitude: bias.lat, longitude: bias.lng },
-                    radius: bias.radiusMeters,
-                  },
-                },
-              }
-            : {}),
+          ...locationBiasOf(bias),
         }),
         fieldMask: 'places.id',
       },
     );
     return (data.places ?? []).map((p) => p.id).filter((id): id is string => Boolean(id));
+  }
+
+  /**
+   * Text Search **Pro** — the same query, with each hit's `googleMapsUri`.
+   *
+   * The field mask is the price. `places.id` alone is Text Search Essentials
+   * (IDs Only), which Google caps as unlimited free; `places.googleMapsUri` is
+   * a Pro field, so this request is Text Search Pro at $32/1,000. Counted
+   * under its own operation for exactly that reason — a single
+   * `google.searchText` label would report a free SKU and a paid one as one
+   * number, and no invoice could be reconciled against it.
+   *
+   * What it buys: the CID of every hit, before paying for any Place Details.
+   * The caller picks the one the link names and fetches Details once.
+   */
+  async searchCandidateIdentities(
+    query: string,
+    limit: number,
+    options?: PlaceSearchOptions | undefined,
+  ): Promise<ProviderCandidateIdentity[]> {
+    const data = await this.call<{ places?: { id?: string; googleMapsUri?: string }[] }>(
+      'google.searchText.identity',
+      'https://places.googleapis.com/v1/places:searchText',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          textQuery: query,
+          maxResultCount: limit,
+          ...GOOGLE_LOCALE,
+          ...locationBiasOf(options?.bias),
+        }),
+        fieldMask: 'places.id,places.googleMapsUri',
+      },
+    );
+    return (data.places ?? [])
+      .filter((p): p is { id: string; googleMapsUri?: string } => typeof p.id === 'string')
+      .map((p) => ({ providerPlaceId: p.id, googleMapsUri: p.googleMapsUri ?? null }));
   }
 
   async details(providerPlaceId: string, tier: 'liveness'): Promise<ProviderPlaceIdentity | null>;

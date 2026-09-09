@@ -46,7 +46,7 @@ describe('providerRuntime', () => {
     expect(providerRuntime(COST_REGISTRY.provider('google')!)).toEqual({
       coverage: 'PARTIAL',
       services: { full: 3, partial: 0, notInstrumented: 2 },
-      operations: { instrumented: 10, total: 12 },
+      operations: { instrumented: 11, total: 13 },
     });
   });
 

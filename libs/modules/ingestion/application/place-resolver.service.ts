@@ -11,6 +11,7 @@ import {
   type PlaceDescriptionTier,
   type PlaceProviderPort,
   type PlaceSearchOptions,
+  type ProviderCandidateIdentity,
   type ResolvedProviderPlace,
 } from '@gogo/providers';
 import { DB } from '../../shared/tokens';
@@ -206,9 +207,59 @@ export class PlaceResolverService {
     if (!query) return { status: 'UNRESOLVED', reasonCode: 'NO_QUERY' };
 
     const searchText = [query, merged.district, merged.city].filter(Boolean).join(' ');
-    const ids = await this.timed('search', () =>
-      this.safeCandidates(searchText, searchBias(parsed, merged)),
-    );
+    const bias = searchBias(parsed, merged);
+
+    /**
+     * #505 — when the link states an identity, buy the identity.
+     *
+     * The free Text Search answers with ids and nothing else, so the only way
+     * to learn which hit the link names is to fetch Place Details for each and
+     * read its `googleMapsUri` — three Enterprise Details at $20 apiece to
+     * find one place, and a place Google ranks fourth or fifth is simply
+     * unreachable. `Bến Bạch Đằng` in Ho Chi Minh City is the fifth result for
+     * its own name, behind a park, a pier and a water-bus stop within 300 m.
+     *
+     * Asking Text Search for `places.googleMapsUri` moves it to the Pro SKU
+     * ($32/1,000, verified 2026-09-09), and that one request answers the
+     * question for **ten** candidates at once. Total against the alternatives,
+     * per 1,000 resolutions:
+     *
+     *   free search + 3 Details   $0  + 3×$20 = $60   (misses rank 4+)
+     *   free search + 10 Details  $0  + 10×$20 = $200 (finds it)
+     *   Pro search  + 1 Details   $32 + 1×$20 = $52   (finds it)
+     *
+     * So it is cheaper *and* more correct — but only because there is a CID to
+     * compare against. A link without one has nothing to pick with, and pays
+     * the free search below.
+     *
+     * The window is bounded (`IDENTITY_CANDIDATE_LIMIT`), the ids are reused
+     * for scoring when no CID matches, and no second search is made either
+     * way.
+     */
+    const identified = merged.featureCid
+      ? await this.timed('search', () =>
+          this.safeIdentities(searchText, PlaceResolverService.IDENTITY_CANDIDATE_LIMIT, bias),
+        )
+      : null;
+    if (identified) {
+      const hit = identified.find(
+        (candidate) => cidFromGoogleMapsUri(candidate.googleMapsUri) === merged.featureCid,
+      );
+      if (hit) {
+        this.metrics.increment('place_link_cid_lookup_total', { result: 'matched' });
+        return this.resolveByProviderId(hit.providerPlaceId, tier, undefined, 'CID_EXACT_MATCH');
+      }
+      this.metrics.increment('place_link_cid_lookup_total', {
+        result: identified.length === 0 ? 'not_found' : 'unmatched',
+      });
+    }
+
+    const ids = identified
+      ? // Reuse what the paid search already returned rather than repeating it
+        // on the free SKU: the ranking is the same and a second request would
+        // be a second request.
+        identified.slice(0, PlaceResolverService.CANDIDATE_LIMIT).map((c) => c.providerPlaceId)
+      : await this.timed('search', () => this.safeCandidates(searchText, bias));
     if (ids.length === 0) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
 
     // One unusable candidate does not sink the others: it drops out and the
@@ -251,6 +302,8 @@ export class PlaceResolverService {
      * first would be a silent choice between two identities. It is refused.
      */
     expectedCid?: string | undefined,
+    /** How the id was learned, for the decision's own reasons. */
+    via: 'EXACT_PROVIDER_ID' | 'CID_EXACT_MATCH' = 'EXACT_PROVIDER_ID',
   ): Promise<ResolveOutcome> {
     const looked = await this.timed('details', () => this.safeDetails(providerPlaceId, tier));
     if (!looked.ok) return { status: 'UNRESOLVED', reasonCode: looked.reasonCode };
@@ -260,7 +313,7 @@ export class PlaceResolverService {
       this.metrics.increment('place_link_identity_conflict_total', { source: 'cid_vs_place_id' });
       return { status: 'UNRESOLVED', reasonCode: 'LINK_IDENTITY_CONFLICT' };
     }
-    return { status: 'RESOLVED', decision: exactProviderMatch(target), details };
+    return { status: 'RESOLVED', decision: exactProviderMatch(target, via), details };
   }
 
   /**
@@ -269,6 +322,15 @@ export class PlaceResolverService {
    * first few Google's own ranking is better evidence than our re-scoring.
    */
   private static readonly CANDIDATE_LIMIT = 3;
+
+  /**
+   * How wide the **identity** search looks. Larger than `CANDIDATE_LIMIT`
+   * because it costs nothing more: Text Search bills per request, not per
+   * result, and the candidates it returns are read rather than fetched. Ten
+   * is Google's own page size and reaches the rank-five case that prompted
+   * this; only the one that matches is ever paid for.
+   */
+  private static readonly IDENTITY_CANDIDATE_LIMIT = 10;
 
   /**
    * A provider that *answered* is an outcome (FR-INGEST-002): "Google looked
@@ -287,6 +349,27 @@ export class PlaceResolverService {
     if (err instanceof ProviderQuotaExceededError) throw err;
     if (err instanceof ProviderConfigurationError) throw err;
     if (err instanceof ProviderUnavailableError) throw err;
+  }
+
+  /**
+   * The paid identity search, with the same "a provider that answered is an
+   * outcome" split as `safeCandidates`. A failure here is not fatal: the
+   * caller falls back to scoring, so an outage costs precision, not the
+   * resolution.
+   */
+  private async safeIdentities(
+    query: string,
+    limit: number,
+    bias?: PlaceSearchOptions['bias'],
+  ): Promise<ProviderCandidateIdentity[]> {
+    try {
+      return await this.provider.searchCandidateIdentities(query, limit, {
+        ...(bias ? { bias } : {}),
+      });
+    } catch (err) {
+      PlaceResolverService.rethrowIfOperational(err);
+      return [];
+    }
   }
 
   private async safeCandidates(
