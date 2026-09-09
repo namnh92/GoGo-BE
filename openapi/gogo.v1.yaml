@@ -9894,13 +9894,23 @@ components:
         accessibilityKeys:
           type: array
           items: { type: string }
+    ServiceArea:
+      allOf:
+        - $ref: '#/components/schemas/HomeArea'
+        - type: object
+          required: [lat, lng]
+          properties:
+            lat:
+              type: number
+              description: Centre of the area — a map fact, so a client can set a room origin from it.
+            lng: { type: number }
     ServiceAreaList:
       type: object
       required: [areas]
       properties:
         areas:
           type: array
-          items: { $ref: '#/components/schemas/HomeArea' }
+          items: { $ref: '#/components/schemas/ServiceArea' }
     HomeArea:
       type: object
       description: A curated service area (`GET /service-areas`), never a provider prediction key.

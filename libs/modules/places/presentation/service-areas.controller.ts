@@ -28,6 +28,11 @@ export class ServiceAreasController {
         key: schema.serviceAreas.key,
         name: schema.serviceAreas.name,
         city: schema.serviceAreas.city,
+        // The area's centre, so a client that picks one as a room's starting
+        // point can set the origin the way the autocomplete fallback does.
+        // A curated area's centre is a map fact, not a person's location.
+        lat: schema.serviceAreas.centerLat,
+        lng: schema.serviceAreas.centerLng,
       })
       .from(schema.serviceAreas)
       .where(eq(schema.serviceAreas.isActive, true))

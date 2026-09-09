@@ -5202,8 +5202,13 @@ export interface components {
             dietaryKeys?: string[];
             accessibilityKeys?: string[];
         };
+        ServiceArea: components["schemas"]["HomeArea"] & {
+            /** @description Centre of the area — a map fact, so a client can set a room origin from it. */
+            lat: number;
+            lng: number;
+        };
         ServiceAreaList: {
-            areas: components["schemas"]["HomeArea"][];
+            areas: components["schemas"]["ServiceArea"][];
         };
         /** @description A curated service area (`GET /service-areas`), never a provider prediction key. */
         HomeArea: {

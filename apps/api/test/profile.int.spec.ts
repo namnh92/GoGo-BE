@@ -700,6 +700,8 @@ describe('what co-members see, and the curated areas (PROF-BE-005)', () => {
       key: 'hcm_q1',
       name: 'Quận 1',
       city: 'TP.HCM',
+      lat: 10.7769,
+      lng: 106.7009,
     });
   });
 });
