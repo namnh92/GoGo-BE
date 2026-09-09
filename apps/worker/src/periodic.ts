@@ -21,16 +21,43 @@
  * privacy sweep every few hours is the same work as running it nightly, and a
  * restart can delay it by at most one interval instead of skipping a day.
  */
+/**
+ * What a job is handed. Existing jobs written as `async () => {}` still
+ * satisfy this — a function may ignore arguments — so opting in is per job.
+ */
+export interface JobContext {
+  /**
+   * BE#539 — aborts when this tick's lease is lost. A job that touches
+   * anything another replica would also touch should check it between units of
+   * work; a job that finishes in one statement can ignore it.
+   */
+  signal: AbortSignal;
+}
+
 export interface PeriodicJob {
-  /** Names the log line and the advisory lock. */
+  /** Names the log line and the lease row. */
   name: string;
-  run: () => Promise<void>;
+  run: (ctx: JobContext) => Promise<void>;
   schedule: { everyMs: number };
 }
 
-/** Returns a release function when the lock was taken, null when someone else holds it. */
+/**
+ * BE#539 — a held lease, not a bare release function.
+ *
+ * The release function alone could not express the case that actually bit us:
+ * a lease that is gone *while the job is still running*. Carrying the signal
+ * lets the runner refuse to report success for work it no longer owned, and
+ * lets a job stop before doing something a second holder is already doing.
+ */
+export interface HeldJobLease {
+  readonly signal: AbortSignal;
+  isHeld(): boolean;
+  release(): Promise<void>;
+}
+
+/** Returns a held lease when taken, null when someone else holds it. */
 export interface JobLock {
-  tryAcquire(name: string): Promise<(() => Promise<void>) | null>;
+  tryAcquire(name: string): Promise<HeldJobLease | null>;
 }
 
 export interface PeriodicLogger {
@@ -83,7 +110,7 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
     );
   };
 
-  const record = (job: PeriodicJob, result: 'ok' | 'failed' | 'lock_skipped') => {
+  const record = (job: PeriodicJob, result: 'ok' | 'failed' | 'lock_skipped' | 'lease_lost') => {
     options.metrics?.increment('worker_periodic_runs_total', { job: job.name, result });
   };
 
@@ -92,11 +119,11 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
     if (stopping || inFlight.has(job.name)) return;
 
     const work = (async () => {
-      const release = await options.lock.tryAcquire(job.name).catch((err: unknown) => {
+      const lease = await options.lock.tryAcquire(job.name).catch((err: unknown) => {
         options.logger.error({ err, job: job.name }, 'periodic job could not reach the lock');
         return undefined;
       });
-      if (!release) {
+      if (!lease) {
         // Another replica has it this tick, or the lock was unreachable. Both
         // are "this process did not run the job", and a rate that never leaves
         // zero on every replica is how a lock nobody can take looks.
@@ -105,20 +132,39 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
       }
       const startedAt = Date.now();
       try {
-        await job.run();
-        record(job, 'ok');
+        await job.run({ signal: lease.signal });
+        // BE#539: finishing is not the same as having been entitled to finish.
+        // If the lease went while the job ran, another replica has been running
+        // it too, and reporting `ok` would hide that.
+        if (lease.isHeld()) record(job, 'ok');
+        else {
+          options.logger.warn(
+            { job: job.name },
+            'periodic job lost its lease while running — another replica may have run it too',
+          );
+          record(job, 'lease_lost');
+        }
       } catch (err) {
-        options.logger.error({ err, job: job.name }, 'periodic job failed');
-        record(job, 'failed');
+        if (lease.isHeld()) {
+          options.logger.error({ err, job: job.name }, 'periodic job failed');
+          record(job, 'failed');
+        } else {
+          // An abort caused by losing the lease is the job doing as it was
+          // told, not a fault.
+          options.logger.warn({ job: job.name }, 'periodic job stopped after losing its lease');
+          record(job, 'lease_lost');
+        }
       } finally {
         options.metrics?.observe(
           'worker_periodic_duration_seconds',
           (Date.now() - startedAt) / 1000,
           { job: job.name },
         );
-        await release().catch((err) =>
-          options.logger.warn({ err, job: job.name }, 'periodic job lock release failed'),
-        );
+        await lease
+          .release()
+          .catch((err: unknown) =>
+            options.logger.warn({ err, job: job.name }, 'periodic job lease release failed'),
+          );
       }
     })();
 
@@ -146,43 +192,13 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
 }
 
 /**
- * Session-level advisory lock. Held on one pooled connection for the duration
- * of the job and released on that same connection — advisory locks belong to
- * the session that took them, so the client cannot go back to the pool in
- * between.
+ * BE#539 — the lock is a row now, not a session.
+ *
+ * `AdvisoryLock` lived here and was wrong under PgBouncer: advisory locks
+ * belong to a session, transaction pooling moves statements between sessions,
+ * so the unlock missed and the lock leaked until someone terminated the backend
+ * by hand. `WorkerLease` in `@gogo/database` owns the SQL; this is the thin
+ * adapter that makes it a `JobLock`.
  */
-/** Structural slice of a pg Pool, so the worker does not depend on pg directly. */
-export interface LockPool {
-  connect(): Promise<{
-    query<T>(text: string, values?: unknown[]): Promise<{ rows: T[] }>;
-    release(): void;
-  }>;
-}
-
-export class AdvisoryLock implements JobLock {
-  constructor(private readonly pool: LockPool) {}
-
-  async tryAcquire(name: string): Promise<(() => Promise<void>) | null> {
-    const client = await this.pool.connect();
-    try {
-      const { rows } = await client.query<{ ok: boolean }>(
-        'select pg_try_advisory_lock(hashtext($1)) as ok',
-        [name],
-      );
-      if (!rows[0]?.ok) {
-        client.release();
-        return null;
-      }
-    } catch (err) {
-      client.release();
-      throw err;
-    }
-    return async () => {
-      try {
-        await client.query('select pg_advisory_unlock(hashtext($1))', [name]);
-      } finally {
-        client.release();
-      }
-    };
-  }
-}
+export type { HeldLease } from '@gogo/database';
+export { WorkerLease } from '@gogo/database';
