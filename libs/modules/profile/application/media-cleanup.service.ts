@@ -159,9 +159,7 @@ export class MediaCleanupService {
   ): Promise<'done' | 'retried' | 'deadLettered' | 'skipped'> {
     const bucket = row.bucket as CleanupBucket;
     if (bucket === 'public' && (await this.isLiveAvatar(row.objectKey))) {
-      await this.db
-        .delete(schema.mediaCleanupQueue)
-        .where(eq(schema.mediaCleanupQueue.id, row.id));
+      await this.db.delete(schema.mediaCleanupQueue).where(eq(schema.mediaCleanupQueue.id, row.id));
       this.metrics.increment('media_cleanup_attempt_total', { bucket, outcome: 'referenced' });
       return 'skipped';
     }
