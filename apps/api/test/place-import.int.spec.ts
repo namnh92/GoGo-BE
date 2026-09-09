@@ -1306,6 +1306,114 @@ describe('PI-BE-015/016 — processing, quota pause, publish RBAC', () => {
     ).not.toBe('active');
   });
 
+  /**
+   * PI-BE-028 — publish on the shape a real sheet has.
+   *
+   * The duplicate case was covered on its own, which is the easy half: one row,
+   * one answer. A file carries all of them at once, and the assertion that
+   * matters is arithmetic — the catalogue grows by the number of `ready` rows
+   * and by nothing else, however many other rows travelled with them.
+   */
+  it('publishes only the ready rows of a mixed job', async () => {
+    const editor = await createAdmin('mixed-editor@gogo.local', 'editor');
+    const ops = await createAdmin('mixed-ops@gogo.local', 'ops_admin');
+    /*
+     * Distinctive names, and coordinates well away from the other fixtures in
+     * this file: the duplicate detector scores geography and name together, so
+     * a second "Quán Ready" 30 metres from the first is a duplicate — correctly
+     * — and would make this test about the wrong thing.
+     */
+    places.seed({
+      providerPlaceId: 'fake-mix-ready',
+      name: 'Zyxw Mixready Riêngbiệt',
+      lat: 10.851,
+      lng: 106.621,
+    });
+    places.seed({
+      providerPlaceId: 'fake-mix-dup',
+      name: 'Wvuts Mixdup Riêngbiệt',
+      lat: 10.861,
+      lng: 106.631,
+    });
+
+    // The duplicate's place has to exist before the mixed sheet runs, so it is
+    // published by a sheet of its own first.
+    const seeding = await createJob(editor.token, [
+      'PRE-1,Wvuts Mixdup Riêngbiệt,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-mix-dup,cafe,,,',
+    ]);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${seeding.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(seeding.id);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${seeding.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+
+    const before = await db.select({ n: sql<number>`count(*)::int` }).from(schema.places);
+
+    const mixed = await createJob(editor.token, [
+      // ready: a Place ID the provider knows and the catalogue does not.
+      'MIX-1,Zyxw Mixready Riêngbiệt,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-mix-ready,cafe,,,',
+      // duplicate: the place published a moment ago.
+      'MIX-2,Wvuts Mixdup Riêngbiệt,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-mix-dup,cafe,,,',
+      // unresolved: a name the provider cannot pin down.
+      'MIX-3,Qrstu Khôngaibiết Ởđâu,Hồ Chí Minh,Quận 1,,cafe,,,',
+      // validation_failed: nothing to resolve from and no category to fall back on.
+      'MIX-4,,Hồ Chí Minh,Quận 1,,,,,',
+    ]);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${mixed.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(mixed.id);
+
+    const job = await imports.getJob(mixed.id);
+    expect(job.rowsByStatus.ready).toBe(1);
+    expect(job.rowsByStatus.duplicate).toBe(1);
+    expect(job.rowsByStatus.unresolved).toBe(1);
+    expect(job.rowsByStatus.validation_failed).toBe(1);
+
+    const published = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${mixed.id}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(published.statusCode).toBe(201);
+    expect(published.json().created, 'one ready row, one place').toBe(1);
+    expect(published.json().failed).toEqual([]);
+
+    const after = await db.select({ n: sql<number>`count(*)::int` }).from(schema.places);
+    expect(after[0]!.n - before[0]!.n, 'the catalogue grew by the ready row alone').toBe(1);
+
+    // And the rows publish left alone kept the status that explains why.
+    const rows = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${mixed.id}/rows`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    const byId = new Map<string, string>(
+      rows
+        .json()
+        .items.map((row: { sourceRowId: string; status: string }) => [row.sourceRowId, row.status]),
+    );
+    expect(byId.get('MIX-1')).toBe('imported');
+    expect(byId.get('MIX-2')).toBe('duplicate');
+    expect(byId.get('MIX-3')).toBe('unresolved');
+    expect(byId.get('MIX-4')).toBe('validation_failed');
+  });
+
   it('cancel stops pending work and retry re-queues failed rows', async () => {
     const editor = await createAdmin('cancel-editor@gogo.local', 'editor');
     const job = await createJob(editor.token, [
