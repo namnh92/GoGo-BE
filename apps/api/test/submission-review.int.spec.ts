@@ -802,3 +802,120 @@ describe('a reviewer’s edit outlives the next provider fetch (#528)', () => {
     expect(byField.get('address_text')).toBe('google_derived');
   });
 });
+
+/**
+ * What the whole journey costs, stage by stage (#505/#528).
+ *
+ * Not a performance test — a spend one. The two `quality` Details a moderator
+ * sees (preview, approval) are the CMS half and were being quoted as if they
+ * were the whole thing; the app pays for the resolution before either of them,
+ * and a link that carries an identity pays differently from one that does not.
+ *
+ * These are fixture call counts against `FakePlaceProvider`, not live Google
+ * measurements: they pin *how many* requests of *which* kind each stage makes,
+ * which is what a price is multiplied by. The prices themselves are in
+ * `pricing-rules.ts` and were read off Google's own page.
+ */
+describe('provider spend, per stage of the journey (#505/#528)', () => {
+  const spend = () => ({
+    freeSearches: places.searches.length,
+    identitySearches: places.identitySearches.length,
+    details: [...places.tiersRequested],
+  });
+
+  const reset = () => {
+    places.searches.length = 0;
+    places.identitySearches.length = 0;
+    places.tiersRequested.length = 0;
+  };
+
+  it('costs one Pro search and one Enterprise Details to resolve a link with an identity', async () => {
+    seq += 1;
+    const googlePlaceId = `fake-journey-${seq}`;
+    places.seed({
+      providerPlaceId: googlePlaceId,
+      name: 'Quán Hành Trình',
+      lat: 21.0495428,
+      lng: 105.8138058,
+      googleMapsUri: 'https://maps.google.com/?cid=4982135578400680163',
+    });
+    reset();
+
+    const resolved = await api().inject({
+      method: 'POST',
+      url: '/v1/places/resolve-google-maps-link',
+      remoteAddress: ip(),
+      payload: {
+        url:
+          'https://www.google.com/maps/place/Qu%C3%A1n+H%C3%A0nh+Tr%C3%ACnh/' +
+          '@21.0533,105.8159,16z/data=!4m6!3m5!1s0x3135ab85ff36dd35:0x452419e97d6868e3' +
+          '!8m2!3d21.0495428!4d105.8138058',
+      },
+    });
+
+    expect(resolved.statusCode, resolved.body).toBe(201);
+    expect(resolved.json().candidate.googlePlaceId).toBe(googlePlaceId);
+    // One Text Search Pro (the identity), no free search, one Details.
+    expect(spend()).toEqual({ freeSearches: 0, identitySearches: 1, details: ['quality'] });
+  });
+
+  it('costs one free search and up to three Details when the link states none', async () => {
+    seq += 1;
+    places.seed({
+      providerPlaceId: `fake-journey-noid-${seq}`,
+      name: 'Quán Không Định Danh',
+      lat: 21.02,
+      lng: 105.84,
+    });
+    reset();
+
+    await api().inject({
+      method: 'POST',
+      url: '/v1/places/resolve-google-maps-link',
+      remoteAddress: ip(),
+      payload: { url: 'https://maps.google.com/?q=Qu%C3%A1n+Kh%C3%B4ng+%C4%90%E1%BB%8Bnh+Danh' },
+    });
+
+    // Nothing to compare a CID against, so nothing buys the Pro SKU.
+    expect(spend().identitySearches).toBe(0);
+    expect(spend().freeSearches).toBe(1);
+    expect(spend().details.every((tier) => tier === 'quality')).toBe(true);
+    expect(spend().details.length).toBeLessThanOrEqual(3);
+  });
+
+  it('costs one Pro Details to submit, one Enterprise each to preview and to approve', async () => {
+    const { submissionId } = await contribute();
+    // `contribute` already submitted: that is the `core` fetch, Place Details
+    // Pro, and it is the app's cost rather than the console's.
+    expect(places.tiersRequested).toEqual(['core']);
+
+    reset();
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-submissions/${submissionId}/provider-preview`,
+      remoteAddress: ip(),
+      headers: auth(tokens.moderator),
+    });
+    expect(spend()).toEqual({ freeSearches: 0, identitySearches: 0, details: ['quality'] });
+
+    reset();
+    const approved = await decide(submissionId, { decision: 'approved', reason: 'đủ điều kiện' });
+    expect(approved.statusCode, approved.body).toBe(201);
+    expect(spend()).toEqual({ freeSearches: 0, identitySearches: 0, details: ['quality'] });
+  });
+
+  it('opening the queue and a submission costs nothing at all', async () => {
+    const { submissionId } = await contribute();
+    reset();
+
+    await api().inject({
+      method: 'GET',
+      url: '/v1/cms/place-submissions?status=pending',
+      remoteAddress: ip(),
+      headers: auth(tokens.moderator),
+    });
+    await detail(submissionId);
+
+    expect(spend()).toEqual({ freeSearches: 0, identitySearches: 0, details: [] });
+  });
+});
