@@ -1,6 +1,9 @@
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
+  char,
+  check,
   index,
   pgEnum,
   pgTable,
@@ -36,6 +39,19 @@ export const users = pgTable(
     status: userStatus('status').notNull().default('active'),
     // Pseudonymous identity used in analytics/events instead of the user id.
     analyticsId: uuid('analytics_id').notNull().defaultRandom(),
+    /**
+     * ADR-0022 — the profile's optional fields. `avatarKey` is the processed
+     * object in the public bucket, never the original upload; the URL is
+     * composed on the server. `homeAreaKey` is `service_areas.key`, with the
+     * foreign key declared in migration 0061 rather than here: this file
+     * cannot import `./places` without a cycle (`places` imports `users`).
+     * `usualBudgetPerPerson` is integer minor units, a create-room default,
+     * never a room constraint.
+     */
+    avatarKey: text('avatar_key'),
+    homeAreaKey: text('home_area_key'),
+    usualBudgetPerPerson: bigint('usual_budget_per_person', { mode: 'number' }),
+    usualBudgetCurrency: char('usual_budget_currency', { length: 3 }).notNull().default('VND'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
@@ -45,6 +61,10 @@ export const users = pgTable(
     uniqueIndex('users_email_unique')
       .on(sql`lower(${t.email})`)
       .where(sql`${t.status} <> 'deleted' and ${t.email} is not null`),
+    check(
+      'users_usual_budget_nonnegative',
+      sql`${t.usualBudgetPerPerson} is null or ${t.usualBudgetPerPerson} >= 0`,
+    ),
   ],
 );
 
