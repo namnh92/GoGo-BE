@@ -213,6 +213,50 @@ describe('#505 — CID decides identity, scoring does not have to', () => {
     expect(decision.reasons).toContain('MULTIPLE_BRANCHES');
   });
 
+  it('refuses to auto-resolve onto a place the link’s CID contradicts', () => {
+    // Real link: `Bến Bạch Đằng` is Google's fifth result for its own name,
+    // behind a park, a pier and a water-bus stop within 300 m — so a
+    // three-candidate window cannot contain it. Every candidate here publishes
+    // a CID and none is the link's, which is evidence, not silence.
+    const decision = decideMatch(
+      {
+        query: 'Bến Bạch Đằng',
+        featureCid: '15871080084204990604',
+        lat: 10.7755799,
+        lng: 106.7071096,
+      },
+      [
+        target({
+          googlePlaceId: 'ChIJ-ben-tau',
+          name: 'Bến tàu Bạch Đằng',
+          lat: 10.7752486,
+          lng: 106.7072626,
+          providerCid: '8813553796661064786',
+        }),
+        target({
+          googlePlaceId: 'ChIJ-cong-vien',
+          name: 'Công viên Bến Bạch Đằng',
+          lat: 10.7731999,
+          lng: 106.7067289,
+          providerCid: '6991131790925347073',
+        }),
+      ],
+    );
+    expect(decision.outcome).not.toBe('RESOLVED_AUTOMATICALLY');
+    expect(decision.reasons).toContain('CID_NOT_IN_CANDIDATES');
+    // The candidates are still returned: a person can pick, and the reason
+    // tells them why nobody picked for them.
+    expect(decision.candidates).toHaveLength(2);
+  });
+
+  it('says nothing about CIDs when no candidate publishes one', () => {
+    const decision = decideMatch({ query: 'Phê La', featureCid: '1' }, [
+      target({ googlePlaceId: 'ChIJ-a', name: 'Phê La', providerCid: null }),
+    ]);
+    // Nothing to compare is not a contradiction.
+    expect(decision.reasons).not.toContain('CID_NOT_IN_CANDIDATES');
+  });
+
   it('never lets a CID mismatch pass as a match', () => {
     const decision = decideMatch({ query: 'Phê La', featureCid: CID }, [
       target({ googlePlaceId: 'ChIJ-a', name: 'Phê La', providerCid: '1' }),

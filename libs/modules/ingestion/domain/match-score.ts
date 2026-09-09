@@ -33,7 +33,9 @@ export type MatchReason =
   /** That candidate is not the one the text score ranked first. Recorded, not hidden. */
   | 'CID_OVERRODE_SCORE'
   /** The link names one place by id and a different one by CID. Nobody guesses. */
-  | 'CID_IDENTITY_CONFLICT';
+  | 'CID_IDENTITY_CONFLICT'
+  /** The link named a place by CID and the search did not return it. */
+  | 'CID_NOT_IN_CANDIDATES';
 
 export type MatchInput = {
   /** Curated name — a CMS import column. Scored symmetrically. */
@@ -344,6 +346,26 @@ export function decideMatch(
     };
   }
 
+  /**
+   * The link named a place, and none of the candidates is it.
+   *
+   * At least one candidate published a CID, so the comparison was real and it
+   * failed — these are not the place the link points at, whatever they score.
+   * The honest answer is to hand them to a person rather than to auto-resolve
+   * onto an identity the link contradicts, which is the silent acceptance
+   * `CID_IDENTITY_CONFLICT` refuses one level up.
+   *
+   * Seen on a real link: `Bến Bạch Đằng` in Ho Chi Minh City is Google's
+   * *fifth* text-search result for its own name, behind a park, a pier and a
+   * water-bus stop within 300 m, so a three-candidate window cannot contain it.
+   * Widening the window costs a billed Details call per extra candidate, so
+   * what changes here is only that GoGo stops claiming to have found it.
+   */
+  const comparable = input.featureCid
+    ? scored.some((s) => s.target.providerCid !== null && s.target.providerCid !== undefined)
+    : false;
+  const missedByCid = Boolean(input.featureCid) && comparable && cidMatches.length === 0;
+
   const best = scored[0]!;
   const runnerUp = scored[1];
   const ambiguous =
@@ -351,10 +373,12 @@ export function decideMatch(
     scored.slice(1).some((other) => isShorterNamingOf(best.target.name, other.target.name));
   const reasons = [...best.reasons];
   if (ambiguous) reasons.unshift('MULTIPLE_BRANCHES');
+  if (missedByCid) reasons.unshift('CID_NOT_IN_CANDIDATES');
 
   let outcome: MatchOutcome;
-  if (best.confidence >= thresholds.auto && !ambiguous) outcome = 'RESOLVED_AUTOMATICALLY';
-  else if (best.confidence >= thresholds.confirm) outcome = 'NEEDS_CONFIRMATION';
+  if (best.confidence >= thresholds.auto && !ambiguous && !missedByCid) {
+    outcome = 'RESOLVED_AUTOMATICALLY';
+  } else if (best.confidence >= thresholds.confirm) outcome = 'NEEDS_CONFIRMATION';
   else outcome = 'UNRESOLVED';
 
   return { outcome, best, candidates: scored.slice(0, 5), reasons };

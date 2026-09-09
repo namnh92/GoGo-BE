@@ -11825,7 +11825,11 @@ components:
             returned, so the disagreement is visible rather than hidden.
             `LINK_IDENTITY_CONFLICT` (with `UNRESOLVED`) — the link names one
             place by `place_id` and a different one by `ftid`, which nobody can
-            act on and nothing here guesses at.
+            act on and nothing here guesses at. `CID_NOT_IN_CANDIDATES` — the
+            link named a place by CID, the candidates published CIDs of their
+            own, and none of them was it: the search did not return the place
+            the link points at, so a person picks rather than GoGo
+            auto-resolving onto an identity the link contradicts.
         existingPlaceId: { type: string, format: uuid }
         resolutionToken:
           type: string
