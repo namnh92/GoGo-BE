@@ -9,7 +9,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
-import { AdminAuthService } from '@gogo/modules';
+import { AdminAuthService, audiencePredicate, respectsPushPreference } from '@gogo/modules';
 
 /**
  * CMS-001..010 acceptance: RBAC enforced server-side, place workflow +
@@ -3082,7 +3082,10 @@ describe('notification campaigns (BE-CMS-G4e #226)', () => {
       .returning();
     placeId = place!.id;
 
-    // Two reachable accounts (a device each) and one with no device at all.
+    // Two reachable accounts (a confirmed push subscription each) and one with
+    // none at all. #515: reachability is a live `push_subscriptions` row, not a
+    // device token — the table the audience used to read had no writer.
+    //
     const users = await db
       .insert(schema.users)
       .values([
@@ -3092,9 +3095,9 @@ describe('notification campaigns (BE-CMS-G4e #226)', () => {
       ])
       .returning();
     recipients = users.map((u) => u.id);
-    await db.insert(schema.deviceTokens).values([
-      { userId: recipients[0]!, platform: 'ios', token: `tok-ios-${suffix()}` },
-      { userId: recipients[1]!, platform: 'android', token: `tok-android-${suffix()}` },
+    await db.insert(schema.pushSubscriptions).values([
+      { userId: recipients[0]!, platform: 'ios', subscriptionId: `sub-ios-${suffix()}` },
+      { userId: recipients[1]!, platform: 'android', subscriptionId: `sub-android-${suffix()}` },
     ]);
   });
 
@@ -3221,6 +3224,88 @@ describe('notification campaigns (BE-CMS-G4e #226)', () => {
     );
   });
 
+  it('counts a live push subscription as reachable, and a legacy device token as nothing', async () => {
+    // #515 regression. The audience used to be `exists (device_tokens)`, a
+    // table no runtime wrote to: on DEV its only rows were the mobile contract
+    // test's throwaway accounts, so campaign "AAA" reached three people who had
+    // never opened the app while every real user was excluded. Reachability is
+    // now a live `push_subscriptions` row, and only that.
+    const [legacyOnly, live, revoked] = await db
+      .insert(schema.users)
+      .values([
+        { email: `camp-legacy-${suffix()}@gogo.id.vn`, displayName: 'Legacy token only' },
+        { email: `camp-live-${suffix()}@gogo.id.vn`, displayName: 'Live subscription' },
+        { email: `camp-revoked-${suffix()}@gogo.id.vn`, displayName: 'Signed out' },
+      ])
+      .returning();
+
+    // Exactly the shape the mobile contract test leaves behind.
+    await db
+      .insert(schema.deviceTokens)
+      .values({ userId: legacyOnly!.id, platform: 'ios', token: `contract-${suffix()}` });
+    await db.insert(schema.pushSubscriptions).values([
+      { userId: live!.id, platform: 'ios', subscriptionId: `sub-live-${suffix()}` },
+      {
+        userId: revoked!.id,
+        platform: 'ios',
+        subscriptionId: `sub-revoked-${suffix()}`,
+        revokedAt: new Date(),
+      },
+    ]);
+
+    const platform = (
+      await post('', draft({ audienceType: 'platform', audienceFilter: { platform: 'ios' } }))
+    ).json();
+    const reached = await db.execute(sql`
+      select u.id from users u
+      where ${audiencePredicate('platform', { platform: 'ios' })}
+        and ${respectsPushPreference()}
+    `);
+    const ids = (reached.rows as { id: string }[]).map((r) => r.id);
+
+    expect(platform.audienceFilter).toEqual({ platform: 'ios' });
+    expect(ids).toContain(live!.id);
+    // A device token proves nothing about whether anyone can be delivered to.
+    expect(ids).not.toContain(legacyOnly!.id);
+    // A confirmed logout takes the person out of the audience.
+    expect(ids).not.toContain(revoked!.id);
+  });
+
+  it('drops a user from the audience once every subscription of theirs is revoked', async () => {
+    const [user] = await db
+      .insert(schema.users)
+      .values({ email: `camp-two-dev-${suffix()}@gogo.id.vn`, displayName: 'Two devices' })
+      .returning();
+    const phone = `sub-phone-${suffix()}`;
+    const tablet = `sub-tablet-${suffix()}`;
+    await db.insert(schema.pushSubscriptions).values([
+      { userId: user!.id, platform: 'ios', subscriptionId: phone },
+      { userId: user!.id, platform: 'ios', subscriptionId: tablet },
+    ]);
+
+    const reachable = async () => {
+      const { rows } = await db.execute(sql`
+        select u.id from users u where ${audiencePredicate('all', {})}
+      `);
+      return (rows as { id: string }[]).some((r) => r.id === user!.id);
+    };
+
+    expect(await reachable()).toBe(true);
+    // Signing out of one device leaves the other; one row does not speak for
+    // the account.
+    await db
+      .update(schema.pushSubscriptions)
+      .set({ revokedAt: new Date() })
+      .where(eq(schema.pushSubscriptions.subscriptionId, phone));
+    expect(await reachable()).toBe(true);
+
+    await db
+      .update(schema.pushSubscriptions)
+      .set({ revokedAt: new Date() })
+      .where(eq(schema.pushSubscriptions.subscriptionId, tablet));
+    expect(await reachable()).toBe(false);
+  });
+
   it('scheduling writes a row and dispatches nothing in the request path', async () => {
     const id = (await post('', draft())).json().id;
     const res = await post(`/${id}/schedule`);
@@ -3312,8 +3397,8 @@ describe('notification campaigns (BE-CMS-G4e #226)', () => {
       })
       .returning();
     await db
-      .insert(schema.deviceTokens)
-      .values({ userId: self!.id, platform: 'ios', token: `tok-self-${suffix()}` });
+      .insert(schema.pushSubscriptions)
+      .values({ userId: self!.id, platform: 'ios', subscriptionId: `sub-self-${suffix()}` });
 
     const queued = await post(`/${id}/test-send`);
     expect(queued.statusCode).toBe(201);
@@ -3410,9 +3495,9 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
       .values({ email: `disp-a-${suffix()}@gogo.id.vn`, displayName: 'Two devices' })
       .returning();
     userWithTwoDevices = twoDevices!.id;
-    await db.insert(schema.deviceTokens).values([
-      { userId: userWithTwoDevices, platform: 'ios', token: `disp-ios-${suffix()}` },
-      { userId: userWithTwoDevices, platform: 'android', token: `disp-and-${suffix()}` },
+    await db.insert(schema.pushSubscriptions).values([
+      { userId: userWithTwoDevices, platform: 'ios', subscriptionId: `disp-ios-${suffix()}` },
+      { userId: userWithTwoDevices, platform: 'android', subscriptionId: `disp-and-${suffix()}` },
     ]);
 
     const [optedOut] = await db
@@ -3421,8 +3506,8 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
       .returning();
     userOptedOut = optedOut!.id;
     await db
-      .insert(schema.deviceTokens)
-      .values({ userId: userOptedOut, platform: 'ios', token: `disp-out-${suffix()}` });
+      .insert(schema.pushSubscriptions)
+      .values({ userId: userOptedOut, platform: 'ios', subscriptionId: `disp-out-${suffix()}` });
     await db
       .insert(schema.notificationPreferences)
       .values({ userId: userOptedOut, channel: 'push', kind: 'campaign', enabled: false });
@@ -3929,8 +4014,8 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
       })
       .returning();
     await db
-      .insert(schema.deviceTokens)
-      .values({ userId: self!.id, platform: 'ios', token: `disp-self-${suffix()}` });
+      .insert(schema.pushSubscriptions)
+      .values({ userId: self!.id, platform: 'ios', subscriptionId: `disp-self-${suffix()}` });
 
     const created = await api().inject({
       method: 'POST',

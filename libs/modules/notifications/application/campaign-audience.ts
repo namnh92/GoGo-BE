@@ -10,17 +10,36 @@ import type { CampaignAudience } from '../domain/campaign';
  * ask. Two implementations would drift and the number shown before an
  * irreversible action would stop being the number it acts on.
  *
- * Every audience excludes deleted accounts and requires a registered device —
- * a "recipient" with nothing to receive on inflates the estimate and makes the
- * delivery counts unreadable.
+ * Every audience excludes deleted accounts and requires a live push
+ * subscription — a "recipient" with nothing to receive on inflates the estimate
+ * and makes the delivery counts unreadable.
+ *
+ * NTF-BE-011 (#515): that requirement used to read `device_tokens`, and no
+ * runtime ever wrote to it. `PUT /me/device-tokens` shipped with a mobile
+ * wrapper and hook that no screen called, so on DEV the table held exactly the
+ * three `contract-<timestamp>` rows the mobile contract test leaves behind —
+ * three throwaway accounts that had never opened the app. Campaign "AAA"
+ * (b04fa2bb) selected all three, OneSignal answered HTTP 200 with no message id
+ * for each ("nobody subscribed"), and every real user — who does have a
+ * verified OneSignal subscription — was excluded by the same predicate.
+ *
+ * `push_subscriptions` is the corrected source: rows the provider confirmed,
+ * revoked when a confirmed logout proves the device is gone. It is still not a
+ * routing table (ADR-0016) — the send is addressed to `external_id`.
  */
+function livePushSubscription(platform?: string): SQL {
+  const onPlatform = platform === undefined ? sql`` : sql` and ps.platform = ${platform}`;
+  return sql`exists (
+    select 1 from push_subscriptions ps
+    where ps.user_id = u.id and ps.revoked_at is null${onPlatform}
+  )`;
+}
+
 export function audiencePredicate(
   audienceType: CampaignAudience,
   filter: Record<string, unknown>,
 ): SQL {
-  const base = sql`u.status <> 'deleted' and exists (
-    select 1 from device_tokens dt where dt.user_id = u.id
-  )`;
+  const base = sql`u.status <> 'deleted' and ${livePushSubscription()}`;
 
   switch (audienceType) {
     case 'all':
@@ -38,10 +57,7 @@ export function audiencePredicate(
       )`;
 
     case 'platform':
-      return sql`u.status <> 'deleted' and exists (
-        select 1 from device_tokens dt
-        where dt.user_id = u.id and dt.platform = ${String(filter['platform'])}
-      )`;
+      return sql`u.status <> 'deleted' and ${livePushSubscription(String(filter['platform']))}`;
   }
 }
 

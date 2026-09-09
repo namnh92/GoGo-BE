@@ -77,6 +77,31 @@ export type DeviceUnsubscribeConfirmation = {
 /** How long the token minted for a confirmation read is good for. */
 const CONFIRM_TOKEN_TTL_SECONDS = 60;
 
+/** One device's push subscription, as the provider reports it. */
+export type ProviderSubscription = {
+  /** OneSignal's subscription id. Not an APNs or FCM token. */
+  id: string;
+  /** False for a device that holds the subscription but cannot be delivered to. */
+  enabled: boolean;
+};
+
+/**
+ * NTF-BE-011 (#515) — the provider's own answer to "what does this caller have
+ * subscribed", as the two endpoints that need it both see it.
+ *
+ * A result rather than an exception because the two callers disagree about
+ * what each outcome means: to a logout, `no_user` is a confirmation; to a
+ * registration it is a refusal. Neither judgement belongs in the read.
+ */
+export type OwnSubscriptionsRead =
+  | { kind: 'ok'; subscriptions: ProviderSubscription[] }
+  /** The provider holds no user at this external id — nothing is subscribed. */
+  | { kind: 'no_user' }
+  /** The provider could not be reached at all. */
+  | { kind: 'unreachable' }
+  /** Reached, and the answer was not usable: non-2xx, or unparseable. */
+  | { kind: 'error' };
+
 export type PushIdentityToken = {
   /** `users.id` — what the SDK logs in with. */
   externalId: string;
@@ -182,6 +207,56 @@ export class PushIdentityService {
     actor: Actor,
     subscriptionId: string,
   ): Promise<DeviceUnsubscribeConfirmation> {
+    const read = await this.readOwnSubscriptions(actor);
+
+    if (read.kind === 'no_user') {
+      // No user at that external id: nothing of theirs can be subscribed.
+      this.metrics.increment('push_identity_logout_confirm_total', { result: 'confirmed' });
+      return { confirmed: true };
+    }
+    if (read.kind === 'unreachable') {
+      this.metrics.increment('push_identity_logout_confirm_total', { result: 'unreachable' });
+      // Retryable: the client is still signed in and will ask again.
+      throw AppError.serviceUnavailable(
+        'PUSH_UNSUBSCRIBE_UNCONFIRMED',
+        'Could not reach the push provider to confirm unsubscription',
+        true,
+      );
+    }
+    if (read.kind === 'error') {
+      // A non-2xx, or a 200 we cannot parse, is not a confirmation. Same answer
+      // as an outage: say so, and let the client keep its session and ask again.
+      this.metrics.increment('push_identity_logout_confirm_total', { result: 'error' });
+      throw AppError.serviceUnavailable(
+        'PUSH_UNSUBSCRIBE_UNCONFIRMED',
+        'The push provider did not answer the unsubscription check',
+        true,
+      );
+    }
+
+    const match = read.subscriptions.find((s) => s.id === subscriptionId);
+    // Absent means it no longer belongs to this user; present-and-disabled
+    // means it does but cannot be delivered to. Either satisfies logout.
+    const confirmed = match === undefined || match.enabled !== true;
+    this.metrics.increment('push_identity_logout_confirm_total', {
+      result: confirmed ? 'confirmed' : 'still_enabled',
+    });
+    return { confirmed };
+  }
+
+  /**
+   * NTF-BE-011 (#515) — the caller's own devices, read from the provider.
+   *
+   * Scoped to the caller by construction: the external id in the URL is the
+   * guard-resolved actor's and there is no parameter that can name anyone
+   * else's, so nothing here can read — or be made to report on — another
+   * person's devices. A read only: it disables and deletes nothing.
+   *
+   * Counts nothing and throws nothing. Each caller decides what an outcome
+   * means for it and records its own metric, because `no_user` is a
+   * confirmation to a logout and a refusal to a registration.
+   */
+  async readOwnSubscriptions(actor: Actor): Promise<OwnSubscriptionsRead> {
     if (actor.type !== 'user') {
       throw AppError.forbidden('USER_ONLY', 'Push identity is issued to signed-in users only');
     }
@@ -203,49 +278,23 @@ export class PushIdentityService {
         headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
       });
     } catch {
-      this.metrics.increment('push_identity_logout_confirm_total', { result: 'unreachable' });
-      // Retryable: the client is still signed in and will ask again.
-      throw AppError.serviceUnavailable(
-        'PUSH_UNSUBSCRIBE_UNCONFIRMED',
-        'Could not reach the push provider to confirm unsubscription',
-        true,
-      );
+      return { kind: 'unreachable' };
     }
 
-    if (response.status === 404) {
-      // No user at that external id: nothing of theirs can be subscribed.
-      this.metrics.increment('push_identity_logout_confirm_total', { result: 'confirmed' });
-      return { confirmed: true };
-    }
-    if (!response.ok) {
-      this.metrics.increment('push_identity_logout_confirm_total', { result: 'error' });
-      throw AppError.serviceUnavailable(
-        'PUSH_UNSUBSCRIBE_UNCONFIRMED',
-        'The push provider did not answer the unsubscription check',
-        true,
-      );
-    }
+    if (response.status === 404) return { kind: 'no_user' };
+    if (!response.ok) return { kind: 'error' };
 
     let body: { subscriptions?: { id?: string; enabled?: boolean }[] };
     try {
       body = (await response.json()) as typeof body;
     } catch {
-      // A 200 we cannot parse is not a confirmation. Same answer as an outage:
-      // say so, and let the client keep its session and ask again.
-      this.metrics.increment('push_identity_logout_confirm_total', { result: 'error' });
-      throw AppError.serviceUnavailable(
-        'PUSH_UNSUBSCRIBE_UNCONFIRMED',
-        'The push provider returned an unreadable unsubscription check',
-        true,
-      );
+      return { kind: 'error' };
     }
-    const match = (body.subscriptions ?? []).find((s) => s.id === subscriptionId);
-    // Absent means it no longer belongs to this user; present-and-disabled
-    // means it does but cannot be delivered to. Either satisfies logout.
-    const confirmed = match === undefined || match.enabled !== true;
-    this.metrics.increment('push_identity_logout_confirm_total', {
-      result: confirmed ? 'confirmed' : 'still_enabled',
-    });
-    return { confirmed };
+    return {
+      kind: 'ok',
+      subscriptions: (body.subscriptions ?? [])
+        .filter((s): s is { id: string; enabled?: boolean } => typeof s.id === 'string')
+        .map((s) => ({ id: s.id, enabled: s.enabled === true })),
+    };
   }
 }

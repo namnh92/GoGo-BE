@@ -75,6 +75,14 @@ export {
 } from '../notifications/application/outbox-dispatcher';
 export { CampaignDispatcher } from '../notifications/application/campaign-dispatcher';
 export {
+  audiencePredicate,
+  respectsPushPreference,
+} from '../notifications/application/campaign-audience';
+export {
+  PushSubscriptionsService,
+  type PushSubscriptionRegistration,
+} from '../notifications/application/push-subscriptions.service';
+export {
   IDENTITY_TOKEN_MAX_TTL_SECONDS,
   PushIdentityService,
   parseIdentitySigningKey,

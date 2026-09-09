@@ -6,12 +6,16 @@ import { AppError } from '../../shared/app-error';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
-import { CurrentActor } from '../../identity/presentation/decorators';
+import { CurrentActor, RateLimit } from '../../identity/presentation/decorators';
+import { PushSubscriptionsService } from '../application/push-subscriptions.service';
 
-// eslint-disable-next-line no-useless-assignment -- used in decorator below
-const deviceTokenSchema = z.object({
+const pushSubscriptionSchema = z.object({
   platform: z.enum(['ios', 'android', 'web']),
-  token: z.string().min(10).max(4096),
+  /**
+   * OneSignal's subscription id for this device. Bounded like the one
+   * `POST /notifications/identity/logout` already accepts, and never logged.
+   */
+  subscriptionId: z.string().min(1).max(64),
 });
 
 function requireUser(actor: Actor): string {
@@ -21,7 +25,10 @@ function requireUser(actor: Actor): string {
 
 @Controller('me')
 export class NotificationsController {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    private readonly pushSubscriptions: PushSubscriptionsService,
+  ) {}
 
   @Get('notifications')
   async list(@CurrentActor() actor: Actor, @Query('cursor') cursor?: string) {
@@ -66,20 +73,24 @@ export class NotificationsController {
     return { read: true };
   }
 
-  @Put('device-tokens')
-  async registerDevice(
+  /**
+   * NTF-BE-011 (#515) — this device holds a live push subscription for me.
+   *
+   * Replaces `PUT /me/device-tokens`, which was the last thing in GoGo that
+   * looked like an APNs/FCM registry (spec §26). It carried no weight either:
+   * no screen ever called it, so the only rows it ever produced were the mobile
+   * contract test's, and those rows were the entire audience of every campaign.
+   *
+   * The subscription id is checked against the provider before anything is
+   * written — see `PushSubscriptionsService.register`.
+   */
+  @RateLimit({ action: 'me.push-subscriptions', limit: 30, windowSeconds: 60, keyBy: 'actor' })
+  @Put('push-subscriptions')
+  registerPushSubscription(
     @CurrentActor() actor: Actor,
-    @Body(new ZodValidationPipe(deviceTokenSchema))
-    body: { platform: 'ios' | 'android' | 'web'; token: string },
+    @Body(new ZodValidationPipe(pushSubscriptionSchema))
+    body: z.infer<typeof pushSubscriptionSchema>,
   ) {
-    const userId = requireUser(actor);
-    await this.db
-      .insert(schema.deviceTokens)
-      .values({ userId, platform: body.platform, token: body.token })
-      .onConflictDoUpdate({
-        target: schema.deviceTokens.token,
-        set: { userId, platform: body.platform, lastSeenAt: sql`now()` },
-      });
-    return { registered: true };
+    return this.pushSubscriptions.register(actor, body);
   }
 }
