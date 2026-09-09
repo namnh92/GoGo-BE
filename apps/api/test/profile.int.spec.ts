@@ -603,7 +603,9 @@ describe('avatar pipeline (PROF-BE-004, ADR-0022)', () => {
 describe('what co-members see, and the curated areas (PROF-BE-005)', () => {
   it('a co-member sees the avatar URL and nothing else from the profile', async () => {
     const { token: hostToken, userId: hostId } = await register('members-host@gogo.id.vn');
-    const { token: memberToken, userId: memberId } = await register('members-with-avatar@gogo.id.vn');
+    const { token: memberToken, userId: memberId } = await register(
+      'members-with-avatar@gogo.id.vn',
+    );
     await api().inject({
       method: 'PATCH',
       url: '/v1/me',
@@ -682,7 +684,11 @@ describe('what co-members see, and the curated areas (PROF-BE-005)', () => {
   });
 
   it('lists the active service areas, in order, publicly and cacheably', async () => {
-    const res = await api().inject({ method: 'GET', url: '/v1/service-areas', remoteAddress: ip() });
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/service-areas',
+      remoteAddress: ip(),
+    });
     expect(res.statusCode).toBe(200);
     expect(res.headers['cache-control']).toBe('public, max-age=3600');
     const keys = (res.json().areas as { key: string; name: string; city: string | null }[]).map(
