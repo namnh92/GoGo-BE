@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { expandShortLink, isAllowedMapsHost, parseMapsUrl } from './maps-url';
+import { expandShortLink, isAllowedMapsHost, parseMapsUrl, type Fetcher } from './maps-url';
 import {
   decideMatch,
   exactProviderMatch,
@@ -27,10 +27,13 @@ describe('maps URL parsing + SSRF guard (PI-BE-003, FR-INGEST-002)', () => {
     expect(r.ok && r.value.query).toBe('Lacaph Coffee');
   });
 
-  it('extracts name + coordinates from a canonical place URL', () => {
+  it('reads @lat,lng as the viewport, not as where the place is (#505)', () => {
     const r = parseMapsUrl('https://www.google.com/maps/place/FIGHT+STATION/@10.8012,106.7109,17z');
     expect(r.ok && r.value.query).toBe('FIGHT STATION');
-    expect(r.ok && r.value.lat).toBeCloseTo(10.8012);
+    expect(r.ok && r.value.viewportLat).toBeCloseTo(10.8012);
+    expect(r.ok && r.value.viewportLng).toBeCloseTo(106.7109);
+    // Nothing in this URL says where the place stands.
+    expect(r.ok && r.value.placeLat).toBeUndefined();
   });
 
   it('flags short links as needing expansion', () => {
@@ -407,5 +410,53 @@ describe('VN row normalization (PI-BE-014, spec §4.4)', () => {
     expect(mapLegacyHeader('Khoảng giá/người')).toBe('price_raw');
     expect(mapLegacyHeader('Vibe/Bầu không khí')).toBe('vibes_raw');
     expect(mapLegacyHeader('Cột lạ')).toBeUndefined();
+  });
+});
+
+/**
+ * GoGo-BE#505 — the redirect walk gets a budget, not just a per-hop timeout.
+ *
+ * Six hops at five seconds each is a thirty-second wait, and the mobile client
+ * gives up at fifteen and retries — so the tail of that wait was time spent on
+ * a link nobody was waiting for, and the retry paid for the search again.
+ */
+describe('short-link expansion budget (#505)', () => {
+  it('gives up on the budget instead of stacking every hop timeout', async () => {
+    const hops: string[] = [];
+    let clock = 0;
+    const fetcher: Fetcher = async (url) => {
+      hops.push(url);
+      clock += 4_000; // each hop is slow but under the per-hop timeout
+      vi.setSystemTime(new Date(clock));
+      return {
+        status: 302,
+        headers: { get: (n: string) => (n === 'location' ? 'https://maps.app.goo.gl/next' : null) },
+      };
+    };
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    try {
+      const out = await expandShortLink('https://maps.app.goo.gl/first', fetcher, 5, 10_000);
+      expect(out.ok).toBe(false);
+      // 10s of budget at 4s a hop: three hops, not the six the cap allows.
+      expect(hops).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still expands a link that answers promptly', async () => {
+    const fetcher: Fetcher = async () => ({
+      status: 302,
+      headers: {
+        get: (n: string) =>
+          n === 'location' ? 'https://maps.google.com/?q=Test&ftid=0x1:0x2' : null,
+      },
+    });
+
+    const out = await expandShortLink('https://maps.app.goo.gl/ok', fetcher);
+    expect(out.ok && out.value.query).toBe('Test');
+    expect(out.ok && out.value.featureId?.cid).toBe('2');
   });
 });

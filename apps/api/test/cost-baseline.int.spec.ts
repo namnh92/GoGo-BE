@@ -56,7 +56,10 @@ import {
  *
  *   COST_BASELINE_WRITE=1 pnpm vitest run --project integration cost-baseline
  *
- * PR7 will fail it again.
+ * PR7 will fail it again. GoGo-BE#505 did: it added scenario F, which is the
+ * first one to reach the paid Text Search SKU, so the freeze moved to
+ * `2026-09-09-after-be505-stub.json` and the PR5 one joined the superseded
+ * list rather than being rewritten.
  *
  * Two consecutive runs inside one boot are also compared, which is the plan's
  * own acceptance criterion ("agree within ±1 call per operation") — asserted
@@ -93,7 +96,7 @@ const ip = () => `10.91.${Math.floor(++ipc / 250)}.${(ipc % 250) + 1}`;
  */
 const ARTIFACT = path.resolve(
   __dirname,
-  '../../../docs/cost-baselines/2026-09-02-after-pr5-stub.json',
+  '../../../docs/cost-baselines/2026-09-09-after-be505-stub.json',
 );
 const BEFORE_FREEZE = path.resolve(
   __dirname,
@@ -108,8 +111,8 @@ const BEFORE_FREEZE = path.resolve(
  * superseded golden is therefore evidence too, and deleting one to tidy up
  * would erase the attribution.
  */
-const SUPERSEDED_FREEZES = ['2026-09-02-after-pr4-stub.json'].map((name) =>
-  path.resolve(__dirname, '../../../docs/cost-baselines', name),
+const SUPERSEDED_FREEZES = ['2026-09-02-after-pr4-stub.json', '2026-09-02-after-pr5-stub.json'].map(
+  (name) => path.resolve(__dirname, '../../../docs/cost-baselines', name),
 );
 const ENVIRONMENT = 'dev';
 
@@ -336,6 +339,45 @@ describe('#336 — frozen baseline, re-frozen by #338', () => {
       c2.operations.find((o) => o.operation === 'google.expand')?.callsAttempted,
       'the short-link hop is counted, not invisible (#336 instrumented the resolver walker)',
     ).toBe(options.fixtures.C2.urls.length);
+
+    /**
+     * GoGo-BE#505 — the paid identity search, priced where it is bought.
+     *
+     * Asserted rather than merely recorded, because the whole justification
+     * for buying Text Search Pro is arithmetic: one Pro search instead of up
+     * to ten Enterprise Details. If the search ever fanned out into Details
+     * again, or the miss started paying for candidates the link contradicts,
+     * the freeze would move and this says which of the two happened.
+     */
+    const f = first.scenarios.find((scenario) => scenario.id === 'F')!;
+    const identity = f.operations.find((o) => o.operation === 'google.searchText.identity');
+    const details = f.operations.find((o) => o.operation === 'google.details.quality');
+
+    expect(identity?.googleSku, 'the identity search is Text Search Pro, not the free SKU').toBe(
+      'Places API (New) — Text Search Pro',
+    );
+    // Two URLs, one search each: the match and the miss.
+    expect(identity?.callsAttempted, 'one identity search per link, never two').toBe(2);
+    // $32 per 1,000 × 2 = $0.064. The number, not "it is priced".
+    expect(identity?.estimatedCostMicros, 'priced at $32/1,000').toBe(64_000);
+
+    expect(details?.googleSku).toBe('Places API (New) — Place Details Enterprise');
+    // One, for the candidate the CID named. The miss buys none: candidates
+    // that publish CIDs and do not match are provably not the place.
+    expect(details?.callsAttempted, 'only the identified candidate is fetched').toBe(1);
+    expect(details?.estimatedCostMicros, 'priced at $20/1,000').toBe(20_000);
+
+    expect(
+      f.operations.find((o) => o.operation === 'google.searchText'),
+      'the free search is not also bought — one search, not two',
+    ).toBeUndefined();
+    expect(
+      f.operations
+        .filter((o) => o.provider === 'places')
+        .map((o) => o.operation)
+        .sort(),
+      'no other Places operation is reached',
+    ).toEqual(['google.details.quality', 'google.searchText.identity']);
 
     if (process.env.COST_BASELINE_WRITE === '1') {
       mkdirSync(path.dirname(ARTIFACT), { recursive: true });

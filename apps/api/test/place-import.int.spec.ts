@@ -5,7 +5,7 @@ import { eq, sql } from 'drizzle-orm';
 import argon2 from 'argon2';
 import path from 'node:path';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PlaceImportJobService } from '@gogo/modules';
@@ -2588,5 +2588,157 @@ describe('PI-BE-025 — GoGo-owned columns persist', () => {
     ]) {
       expect(codes, code).toContain(code);
     }
+  });
+});
+
+/**
+ * GoGo-BE#505 — one link, three doors, one identity.
+ *
+ * The three ways a Google place reaches GoGo — a contribution from the app, an
+ * editor pasting a link into the console, and a bulk sheet — all went through
+ * the same resolver and could still disagree about *which* Google place a URL
+ * named. Bulk import passes the sheet's own `name` and `city`, and the scorer
+ * replaced the link's name with the sheet's, so a row whose editor spelled the
+ * place differently from Google failed the same URL the other two doors
+ * resolved (recorded on #505 for `Aeon MaxValu Yên Hòa`: the resolve endpoint
+ * answered RESOLVED, the import job answered LOW_CONFIDENCE at 0.615).
+ *
+ * The response shapes differ legitimately — a preview, a preview, and a job
+ * row. The provider identity behind them may not.
+ */
+describe('the same link resolves to the same place at every door (#505)', () => {
+  const GOOGLE_ID = 'fake-crossdoor-1';
+  const CID = '4982135578400680163';
+  const URL_WITH_IDENTITY =
+    'https://www.google.com/maps/place/Ph%C3%AA+La+Xu%C3%A2n+Di%E1%BB%87u/' +
+    '@21.0533053,105.8159618,16.18z/data=!4m6!3m5!1s0x3135ab85ff36dd35:0x452419e97d6868e3' +
+    '!8m2!3d21.0495428!4d105.8138058';
+
+  let editor: { token: string };
+  let ops: { token: string };
+
+  beforeEach(async () => {
+    editor ??= await createAdmin('crossdoor-editor@gogo.local', 'editor');
+    ops ??= await createAdmin('crossdoor-ops@gogo.local', 'ops_admin');
+    places.registry.clear();
+    places.seed({
+      providerPlaceId: GOOGLE_ID,
+      // Google's own spelling, which is not the sheet's below.
+      name: 'Phê La Xuân Diệu',
+      addressText: '52 Xuân Diệu, Tây Hồ, Hà Nội',
+      lat: 21.0495428,
+      lng: 105.8138058,
+      googleMapsUri: `https://maps.google.com/?cid=${CID}`,
+    });
+    // A near neighbour of the same brand, so the choice is not trivial.
+    places.seed({
+      providerPlaceId: 'fake-crossdoor-2',
+      name: 'Phê La Núi Trúc',
+      addressText: 'Núi Trúc, Ba Đình, Hà Nội',
+      lat: 21.032,
+      lng: 105.82,
+      googleMapsUri: 'https://maps.google.com/?cid=1104002481301407055',
+    });
+  });
+
+  it('the app door and the console door name the same Google place', async () => {
+    const app = await api().inject({
+      method: 'POST',
+      url: '/v1/places/resolve-google-maps-link',
+      remoteAddress: ip(),
+      payload: { url: URL_WITH_IDENTITY },
+    });
+    const console_ = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/places/resolve-link',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: { url: URL_WITH_IDENTITY },
+    });
+
+    expect(app.statusCode, app.body).toBe(201);
+    expect(console_.statusCode, console_.body).toBe(201);
+    expect(app.json().candidate.googlePlaceId).toBe(GOOGLE_ID);
+    expect(console_.json().candidate.googlePlaceId).toBe(GOOGLE_ID);
+  });
+
+  it('a sheet’s own name does not displace the identity the link established', async () => {
+    // The row calls the place something else and names a city. Neither is
+    // evidence about which Google record the URL points at.
+    //
+    // `create_drafts`, not `dry_run`: a dry run validates and never asks the
+    // provider anything, so it cannot answer the question this case is about.
+    //
+    // The URL carries commas (`@lat,lng,zoom`), so it is a quoted CSV field —
+    // an unquoted one splits and the row resolves against half a link.
+    const content = csv([
+      `X-1,Phê La Tây Hồ (chi nhánh hồ),Hà Nội,,"${URL_WITH_IDENTITY}",cafe,,,`,
+    ]);
+    const body = multipart({ mode: 'create_drafts' }, { name: 'crossdoor.csv', content });
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(editor.token), ...body.headers },
+      payload: body.payload,
+    });
+    expect(res.statusCode, res.body).toBe(201);
+
+    // Upload parses; resolution is the processing step, and it is what this
+    // case is about.
+    const jobId = res.json().id as string;
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${jobId}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    await imports.processJob(jobId);
+
+    const rows = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/place-imports/${jobId}/rows`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    const [row] = rows.json().items as {
+      status: string;
+      resolvedGooglePlaceId?: string | null;
+      matchConfidence?: number | null;
+      errors: { code: string }[];
+    }[];
+
+    // Same URL, same Google place — whatever the sheet called it. This is the
+    // half that used to diverge: the resolve endpoints answered `fake-crossdoor-1`
+    // and the import answered LOW_CONFIDENCE, because the sheet's spelling
+    // replaced the link's instead of joining it.
+    expect(row!.resolvedGooglePlaceId, JSON.stringify(row)).toBe(GOOGLE_ID);
+    expect(row!.errors.map((e) => e.code)).not.toContain('LOW_CONFIDENCE');
+
+    // …and the sheet's wording is kept, as catalogue content rather than as
+    // identity. Two different jobs, both preserved.
+    // Publishing is what creates the place; processing only readies the row.
+    const published = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${jobId}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(published.statusCode, published.body).toBe(201);
+    expect(published.json().created).toBe(1);
+
+    const [created] = await db
+      .select({ name: schema.places.name })
+      .from(schema.places)
+      .innerJoin(
+        schema.placeProviderSources,
+        eq(schema.placeProviderSources.placeId, schema.places.id),
+      )
+      .where(eq(schema.placeProviderSources.externalId, GOOGLE_ID))
+      .limit(1);
+    expect(created?.name, 'the import created no place for this identity').toBe(
+      'Phê La Tây Hồ (chi nhánh hồ)',
+    );
   });
 });

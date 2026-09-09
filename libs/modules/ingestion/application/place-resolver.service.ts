@@ -10,6 +10,8 @@ import {
   ProviderUnavailableError,
   type PlaceDescriptionTier,
   type PlaceProviderPort,
+  type PlaceSearchOptions,
+  type ProviderCandidateIdentity,
   type ResolvedProviderPlace,
 } from '@gogo/providers';
 import { DB } from '../../shared/tokens';
@@ -21,6 +23,7 @@ import {
   type MatchTarget,
 } from '../domain/match-score';
 import {
+  cidFromGoogleMapsUri,
   expandShortLink,
   parseMapsUrl,
   type Fetcher,
@@ -120,7 +123,30 @@ export class PlaceResolverService {
     const parsed = parseMapsUrl(url);
     if (!parsed.ok) return parsed;
     if (!parsed.value.needsExpansion) return parsed;
-    return expandShortLink(url, this.fetcher);
+    return this.timed('expand', () => expandShortLink(url, this.fetcher));
+  }
+
+  /**
+   * #505 — how long each part of a resolution took, as a histogram.
+   *
+   * A link resolution that "took about four minutes" could not be located:
+   * the only timing this path emitted was per provider *request*, so a slow
+   * expansion, a slow search, three slow Details and a slow point-in-polygon
+   * were indistinguishable from each other and from the DB round trips
+   * between them. Three stages, one label, bounded cardinality.
+   *
+   * Failures are timed too. A stage that threw still consumed the time, and
+   * dropping it would make the graph read fastest exactly when it is worst.
+   */
+  private async timed<T>(stage: 'expand' | 'search' | 'details', fn: () => Promise<T>): Promise<T> {
+    const started = Date.now();
+    try {
+      return await fn();
+    } finally {
+      this.metrics.observe('place_link_resolution_stage_seconds', (Date.now() - started) / 1000, {
+        stage,
+      });
+    }
   }
 
   async resolveFromUrl(
@@ -163,23 +189,110 @@ export class PlaceResolverService {
       // Minh City" as the place's name and penalise every locality token in
       // it, so a correct link could not clear the threshold (#311).
       query: parsed.query,
-      lat: hints.lat ?? parsed.lat,
-      lng: hints.lng ?? parsed.lng,
+      // #505 — only a coordinate the URL states as *the place* is scored.
+      // `@lat,lng,z` is the map viewport and is 1.07 km from Sheraton Hanoi
+      // West on its own share link; it biases the search below and nothing
+      // else. A caller-supplied hint still wins: bulk import knows its row.
+      lat: hints.lat ?? parsed.placeLat,
+      lng: hints.lng ?? parsed.placeLng,
+      ...(parsed.featureId ? { featureCid: parsed.featureId.cid } : {}),
     };
 
     // Provider id in the URL is authoritative — no search, no ambiguity.
-    if (parsed.providerPlaceId) return this.resolveByProviderId(parsed.providerPlaceId, tier);
+    if (parsed.providerPlaceId) {
+      return this.resolveByProviderId(parsed.providerPlaceId, tier, parsed.featureId?.cid);
+    }
 
     const query = merged.name ?? merged.query;
     if (!query) return { status: 'UNRESOLVED', reasonCode: 'NO_QUERY' };
 
     const searchText = [query, merged.district, merged.city].filter(Boolean).join(' ');
-    const ids = await this.safeCandidates(searchText);
+    const bias = searchBias(parsed, merged);
+
+    /**
+     * #505 — when the link states an identity, buy the identity.
+     *
+     * The free Text Search answers with ids and nothing else, so the only way
+     * to learn which hit the link names is to fetch Place Details for each and
+     * read its `googleMapsUri` — three Enterprise Details at $20 apiece to
+     * find one place, and a place Google ranks fourth or fifth is simply
+     * unreachable. `Bến Bạch Đằng` in Ho Chi Minh City is the fifth result for
+     * its own name, behind a park, a pier and a water-bus stop within 300 m.
+     *
+     * Asking Text Search for `places.googleMapsUri` moves it to the Pro SKU
+     * ($32/1,000, verified 2026-09-09), and that one request answers the
+     * question for **ten** candidates at once. Total against the alternatives,
+     * per 1,000 resolutions:
+     *
+     *   free search + 3 Details   $0  + 3×$20 = $60   (misses rank 4+)
+     *   free search + 10 Details  $0  + 10×$20 = $200 (finds it)
+     *   Pro search  + 1 Details   $32 + 1×$20 = $52   (finds it)
+     *
+     * So it is cheaper *and* more correct — but only because there is a CID to
+     * compare against. A link without one has nothing to pick with, and pays
+     * the free search below.
+     *
+     * The window is bounded (`IDENTITY_CANDIDATE_LIMIT`), the ids are reused
+     * for scoring when no CID matches, and no second search is made either
+     * way.
+     */
+    const identified = merged.featureCid
+      ? await this.timed('search', () =>
+          this.safeIdentities(searchText, PlaceResolverService.IDENTITY_CANDIDATE_LIMIT, bias),
+        )
+      : null;
+    if (identified) {
+      const hit = identified.find(
+        (candidate) => cidFromGoogleMapsUri(candidate.googleMapsUri) === merged.featureCid,
+      );
+      if (hit) {
+        this.metrics.increment('place_link_cid_lookup_total', { result: 'matched' });
+        // The search said this hit carries the link's CID; the Details fetch
+        // says so again, from the same field, and a disagreement between the
+        // two is refused rather than resolved. Free — the answer is already
+        // paid for.
+        return this.resolveByProviderId(
+          hit.providerPlaceId,
+          tier,
+          merged.featureCid,
+          'CID_EXACT_MATCH',
+        );
+      }
+      /**
+       * The comparison happened and it failed: these candidates publish CIDs
+       * of their own and none is the link's, so they are provably not the
+       * place it names. Scoring them would buy three Enterprise Details to
+       * produce a list nobody should pick from — and `decideMatch` would
+       * refuse to auto-resolve on it anyway. The honest answer is free.
+       */
+      const comparable = identified.some(
+        (candidate) => cidFromGoogleMapsUri(candidate.googleMapsUri) !== null,
+      );
+      if (comparable) {
+        this.metrics.increment('place_link_cid_lookup_total', { result: 'unmatched' });
+        return { status: 'UNRESOLVED', reasonCode: 'CID_NOT_IN_CANDIDATES' };
+      }
+      // Google published no `googleMapsUri` at all, so nothing was compared.
+      // That is silence, not contradiction, and the ordinary scoring below
+      // still applies — over the ids this search already returned.
+      this.metrics.increment('place_link_cid_lookup_total', {
+        result: identified.length === 0 ? 'not_found' : 'incomparable',
+      });
+    }
+
+    const ids = identified
+      ? // Reuse what the paid search already returned rather than repeating it
+        // on the free SKU: the ranking is the same and a second request would
+        // be a second request.
+        identified.slice(0, PlaceResolverService.CANDIDATE_LIMIT).map((c) => c.providerPlaceId)
+      : await this.timed('search', () => this.safeCandidates(searchText, bias));
     if (ids.length === 0) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
 
     // One unusable candidate does not sink the others: it drops out and the
     // rest are still scored.
-    const detailed = (await Promise.all(ids.map((id) => this.safeDetails(id, tier))))
+    const detailed = (
+      await this.timed('details', () => Promise.all(ids.map((id) => this.safeDetails(id, tier))))
+    )
       .filter((d): d is { ok: true; details: ResolvedProviderPlace } => d.ok)
       .map((d) => d.details);
     if (detailed.length === 0) return { status: 'UNRESOLVED', reasonCode: 'NOT_FOUND' };
@@ -207,11 +320,26 @@ export class PlaceResolverService {
   async resolveByProviderId(
     providerPlaceId: string,
     tier: PlaceDescriptionTier,
+    /**
+     * The CID the same URL carried, when it carried one (#505).
+     *
+     * A link that names one place by `place_id` and a different one by `ftid`
+     * is not a link anybody can act on, and picking whichever field was read
+     * first would be a silent choice between two identities. It is refused.
+     */
+    expectedCid?: string | undefined,
+    /** How the id was learned, for the decision's own reasons. */
+    via: 'EXACT_PROVIDER_ID' | 'CID_EXACT_MATCH' = 'EXACT_PROVIDER_ID',
   ): Promise<ResolveOutcome> {
-    const looked = await this.safeDetails(providerPlaceId, tier);
+    const looked = await this.timed('details', () => this.safeDetails(providerPlaceId, tier));
     if (!looked.ok) return { status: 'UNRESOLVED', reasonCode: looked.reasonCode };
     const { details } = looked;
-    return { status: 'RESOLVED', decision: exactProviderMatch(toTarget(details)), details };
+    const target = toTarget(details);
+    if (expectedCid && target.providerCid && target.providerCid !== expectedCid) {
+      this.metrics.increment('place_link_identity_conflict_total', { source: 'cid_vs_place_id' });
+      return { status: 'UNRESOLVED', reasonCode: 'LINK_IDENTITY_CONFLICT' };
+    }
+    return { status: 'RESOLVED', decision: exactProviderMatch(target, via), details };
   }
 
   /**
@@ -220,6 +348,15 @@ export class PlaceResolverService {
    * first few Google's own ranking is better evidence than our re-scoring.
    */
   private static readonly CANDIDATE_LIMIT = 3;
+
+  /**
+   * How wide the **identity** search looks. Larger than `CANDIDATE_LIMIT`
+   * because it costs nothing more: Text Search bills per request, not per
+   * result, and the candidates it returns are read rather than fetched. Ten
+   * is Google's own page size and reaches the rank-five case that prompted
+   * this; only the one that matches is ever paid for.
+   */
+  private static readonly IDENTITY_CANDIDATE_LIMIT = 10;
 
   /**
    * A provider that *answered* is an outcome (FR-INGEST-002): "Google looked
@@ -240,9 +377,35 @@ export class PlaceResolverService {
     if (err instanceof ProviderUnavailableError) throw err;
   }
 
-  private async safeCandidates(query: string): Promise<string[]> {
+  /**
+   * The paid identity search, with the same "a provider that answered is an
+   * outcome" split as `safeCandidates`. A failure here is not fatal: the
+   * caller falls back to scoring, so an outage costs precision, not the
+   * resolution.
+   */
+  private async safeIdentities(
+    query: string,
+    limit: number,
+    bias?: PlaceSearchOptions['bias'],
+  ): Promise<ProviderCandidateIdentity[]> {
     try {
-      return await this.provider.searchCandidates(query, PlaceResolverService.CANDIDATE_LIMIT);
+      return await this.provider.searchCandidateIdentities(query, limit, {
+        ...(bias ? { bias } : {}),
+      });
+    } catch (err) {
+      PlaceResolverService.rethrowIfOperational(err);
+      return [];
+    }
+  }
+
+  private async safeCandidates(
+    query: string,
+    bias?: PlaceSearchOptions['bias'],
+  ): Promise<string[]> {
+    try {
+      return await this.provider.searchCandidates(query, PlaceResolverService.CANDIDATE_LIMIT, {
+        ...(bias ? { bias } : {}),
+      });
     } catch (err) {
       PlaceResolverService.rethrowIfOperational(err);
       return [];
@@ -315,6 +478,48 @@ export class PlaceResolverService {
   }
 }
 
+/**
+ * How tightly to bias the Text Search, and on what (#505).
+ *
+ * Two radii because the URL states two different things and only one of them
+ * is about the place:
+ *
+ * - **An exact coordinate** (`!8m2!3d…!4d…`, or a `?q=<lat>,<lng>` the user
+ *   typed) gets a tight circle. Verified against the live API: `Cafe Phê La`
+ *   unbiased does not return the branch the link points at anywhere in its top
+ *   three; biased to that coordinate it comes back first.
+ * - **The viewport** (`@lat,lng,z`) gets a wide one. It is where the map was
+ *   centred, which is worth something as a hint about the city and nothing as
+ *   a claim about the address — a share link for Sheraton Hanoi West centres
+ *   1.07 km from the hotel.
+ *
+ * A caller-supplied coordinate (bulk import's own row) is treated as exact,
+ * because it is the row's own assertion rather than a screen position.
+ *
+ * `EXACT_BIAS_M` is deliberately larger than the coordinates are precise:
+ * Google's own point and the link's rounding disagree by tens of metres, and
+ * this is a bias, so being generous costs ranking rather than answers.
+ */
+const EXACT_BIAS_M = 250;
+const VIEWPORT_BIAS_M = 5_000;
+
+function searchBias(
+  parsed: MapsUrlHints,
+  merged: MatchInput,
+): PlaceSearchOptions['bias'] | undefined {
+  if (merged.lat !== undefined && merged.lng !== undefined) {
+    return { lat: merged.lat, lng: merged.lng, radiusMeters: EXACT_BIAS_M };
+  }
+  if (parsed.viewportLat !== undefined && parsed.viewportLng !== undefined) {
+    return {
+      lat: parsed.viewportLat,
+      lng: parsed.viewportLng,
+      radiusMeters: VIEWPORT_BIAS_M,
+    };
+  }
+  return undefined;
+}
+
 export function toTarget(d: ResolvedProviderPlace): MatchTarget {
   return {
     googlePlaceId: d.providerPlaceId,
@@ -322,5 +527,8 @@ export function toTarget(d: ResolvedProviderPlace): MatchTarget {
     address: d.addressText,
     lat: d.lat,
     lng: d.lng,
+    // #505 — the CID Google publishes for this place, so a share link's `ftid`
+    // has something authoritative to be compared against. Absent is ordinary.
+    providerCid: cidFromGoogleMapsUri(d.googleMapsUri),
   };
 }

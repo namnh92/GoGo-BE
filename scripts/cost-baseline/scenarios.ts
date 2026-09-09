@@ -43,6 +43,13 @@ export type Fixtures = {
     publish: string;
     expect: string;
   };
+  F: {
+    title: string;
+    matchUrl: string;
+    matchesPlaceId: string;
+    missUrl: string;
+    expect: string;
+  };
 };
 
 export function loadFixtures(dir: string = FIXTURES_DIR): Fixtures {
@@ -519,6 +526,77 @@ export function multipart(
 }
 
 /** In plan order. A is first because it must run on an unpolluted catalog. */
+// ── F · resolve a link that states its identity ─────────────────────────────
+
+/**
+ * COST-BE-003 / GoGo-BE#505 — the paid identity search, priced.
+ *
+ * Every other scenario here hands the resolver a `?place_id=` URL, so none of
+ * them reaches the branch a real share link takes: a `ftid` the resolver has
+ * to *find* among Google's hits. That branch buys a different SKU — Text
+ * Search **Pro**, because `places.googleMapsUri` is a Pro field — and a paid
+ * SKU with no scenario is an unmeasured one.
+ *
+ * The pinned link names the **fifth** of ten hits, which is the case the whole
+ * mechanism exists for: three Enterprise Details cannot reach it and ten would
+ * cost $200/1,000. One Pro search reads all ten CIDs and one Details is bought.
+ *
+ * The second URL states a CID none of the ten carries. That is the failure
+ * path, and what it must cost is *one search and nothing else*: candidates
+ * that publish CIDs and do not match are provably not the place, so buying
+ * Details for them would be paying to build a list nobody should pick from.
+ */
+const scenarioF: Scenario = {
+  id: 'F',
+  title: 'resolve a share link by the identity it states (ftid → CID)',
+  pinnedInput: 'scenarios.json#F',
+  async run(ctx) {
+    const rec = new Recorder(ctx.http);
+
+    const matched = await rec.call({
+      method: 'POST',
+      url: '/v1/places/resolve-google-maps-link',
+      payload: { url: ctx.fixtures.F.matchUrl },
+    });
+    const match = matched.body as {
+      status?: string;
+      reasonCodes?: string[];
+      candidate?: { googlePlaceId?: string };
+    };
+    rec.expect('the link resolves', 'RESOLVED', match.status ?? '(none)');
+    rec.expect(
+      'to the place its CID names, not the one ranked first',
+      ctx.fixtures.F.matchesPlaceId,
+      match.candidate?.googlePlaceId ?? '(none)',
+    );
+    rec.expect(
+      'and says the identity is what decided it',
+      true,
+      (match.reasonCodes ?? []).includes('CID_EXACT_MATCH'),
+    );
+    if (match.status === 'RESOLVED') rec.rowsCreated += 1;
+
+    const missed = await rec.call({
+      method: 'POST',
+      url: '/v1/places/resolve-google-maps-link',
+      payload: { url: ctx.fixtures.F.missUrl },
+    });
+    const miss = missed.body as { status?: string; reasonCodes?: string[] };
+    rec.expect('a CID in none of the hits does not resolve', 'UNRESOLVED', miss.status ?? '(none)');
+    rec.expect(
+      'and says why, rather than offering places the link contradicts',
+      true,
+      (miss.reasonCodes ?? []).includes('CID_NOT_IN_CANDIDATES'),
+    );
+    if (miss.status !== 'RESOLVED') rec.rowsRejected += 1;
+
+    // Neither URL carries a `place_id`, so neither is a no-network resolution:
+    // the identity had to be looked up, which is what this scenario prices.
+    rec.expect('neither URL named a place id outright', 0, rec.noNetworkResolutions);
+    return rec.done();
+  },
+};
+
 export const SCENARIOS: readonly Scenario[] = [
   scenarioA,
   scenarioB,
@@ -526,6 +604,7 @@ export const SCENARIOS: readonly Scenario[] = [
   scenarioC2,
   scenarioD,
   scenarioE,
+  scenarioF,
 ];
 
 export { percentile };

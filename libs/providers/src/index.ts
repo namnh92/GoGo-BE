@@ -1,11 +1,15 @@
 export * from './ports';
 export {
   MAX_REDIRECTS,
+  MAX_EXPANSION_MS,
   REDIRECT_TIMEOUT_MS,
   expandShortLink,
   isAllowedMapsHost,
   parseMapsUrl,
+  parseFeatureId,
+  cidFromGoogleMapsUri,
   type Fetcher,
+  type MapsFeatureId,
   type MapsUrlHints,
   type UrlParseResult,
 } from './maps-url';

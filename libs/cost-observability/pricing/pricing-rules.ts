@@ -495,6 +495,17 @@ export const PRICING_RULES: readonly PricingRule[] = [
   }),
   googleRule({
     serviceId: 'google.places',
+    operationId: 'google.searchText.identity',
+    usageMetricId: 'google.searchText.identity/requests',
+    billingSkuId: 'places.textSearch.pro',
+    effectiveFrom: '2026-09-01',
+    pricingModel: 'PER_1K_REQUESTS',
+    unitPriceMicros: 32_000_000,
+    freeAllowance: null,
+    sourceReference: `${FETCHED}. Mask is \`places.id,places.googleMapsUri\` (google-places.adapter.ts). "Text Search Pro" is "$32.00" per 1,000 in the cap-100k band; \`places.googleMapsUri\` is listed in the Pro field category for Text Search (New), which is what moves the request off the unlimited-free "Text Search Essentials (IDs Only)" SKU that \`google.searchText\` sends. GoGo-BE#505 buys it only when a link states a CID, because it then replaces up to ten Place Details Enterprise ($20 each) with one.`,
+  }),
+  googleRule({
+    serviceId: 'google.places',
     operationId: 'google.details.liveness',
     usageMetricId: 'google.details.liveness/requests',
     billingSkuId: 'places.details.idsOnly',

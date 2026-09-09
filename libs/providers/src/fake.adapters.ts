@@ -8,6 +8,8 @@ import type {
   PlaceFetchTier,
   NotificationProviderPort,
   PlaceProviderPort,
+  PlaceSearchOptions,
+  ProviderCandidateIdentity,
   ProviderPlaceIdentity,
   PushSendResult,
   ResolvedProviderPlace,
@@ -42,6 +44,10 @@ export class FakePlaceProvider implements PlaceProviderPort {
   readonly movedTo = new Map<string, string>();
   /** Set to simulate provider outage. */
   failing = false;
+  /** Every search this provider was asked for, with the bias it was given. */
+  readonly searches: { query: string; bias?: PlaceSearchOptions['bias'] }[] = [];
+  /** Paid Text Search Pro calls, kept apart from the free IDs-only ones. */
+  readonly identitySearches: { query: string; bias?: PlaceSearchOptions['bias'] }[] = [];
   /** PI-QA-001: the two failure modes callers must handle differently — */
   /** quota parks a bulk job, a timeout is just an unresolved row. */
   quotaExhausted = false;
@@ -82,15 +88,49 @@ export class FakePlaceProvider implements PlaceProviderPort {
     return null;
   }
 
-  /** Seeded places whose name shares a token with the query, best first. */
-  async searchCandidates(query: string, limit: number): Promise<string[]> {
+  /**
+   * Seeded places whose name shares a token with the query, best first.
+   *
+   * With a `bias`, nearest-first — which is what Google does with
+   * `locationBias` and what #505's link resolution depends on: the branch a
+   * share link points at is often not in an unbiased answer at all.
+   */
+  async searchCandidates(
+    query: string,
+    limit: number,
+    options?: PlaceSearchOptions | undefined,
+  ): Promise<string[]> {
     this.guard();
     if (this.failing) throw new Error('fake provider down');
+    this.searches.push({ query, ...(options?.bias ? { bias: options.bias } : {}) });
     const wanted = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return [...this.registry.entries()]
-      .filter(([, place]) => wanted.some((w) => place.name.toLowerCase().includes(w)))
-      .slice(0, limit)
-      .map(([id]) => id);
+    const bias = options?.bias;
+    const hits = [...this.registry.entries()].filter(([, place]) =>
+      wanted.some((w) => place.name.toLowerCase().includes(w)),
+    );
+    if (bias) {
+      const d2 = (p: ResolvedProviderPlace) => (p.lat - bias.lat) ** 2 + (p.lng - bias.lng) ** 2;
+      hits.sort(([, a], [, b]) => d2(a) - d2(b));
+    }
+    return hits.slice(0, limit).map(([id]) => id);
+  }
+
+  /**
+   * The same ranking, with each hit's `googleMapsUri` — the paid Text Search
+   * the resolver uses when it holds a CID to compare against. Recorded
+   * separately so a test can assert which of the two SKUs was bought.
+   */
+  async searchCandidateIdentities(
+    query: string,
+    limit: number,
+    options?: PlaceSearchOptions | undefined,
+  ): Promise<ProviderCandidateIdentity[]> {
+    const ids = await this.searchCandidates(query, limit, options);
+    this.identitySearches.push(this.searches.pop()!);
+    return ids.map((id) => ({
+      providerPlaceId: id,
+      googleMapsUri: this.registry.get(id)?.googleMapsUri ?? null,
+    }));
   }
 
   async details(providerPlaceId: string, tier: 'liveness'): Promise<ProviderPlaceIdentity | null>;

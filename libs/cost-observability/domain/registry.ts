@@ -460,6 +460,13 @@ const GOOGLE_SKUS: readonly BillingSkuDefinition[] = [
     displayName: 'Places API (New) — Text Search Essentials IDs Only',
   },
   {
+    // #505 — the same endpoint at a different field category, and therefore a
+    // different SKU: `places.googleMapsUri` is a Pro field for Text Search.
+    id: 'places.textSearch.pro',
+    providerId: 'google',
+    displayName: 'Places API (New) — Text Search Pro',
+  },
+  {
     id: 'places.details.idsOnly',
     providerId: 'google',
     displayName: 'Places API (New) — Place Details Essentials IDs Only',
@@ -525,6 +532,20 @@ const GOOGLE: ProviderDefinition = {
           displayName: 'Text Search (IDs only)',
           instrumented: true,
           usageMeters: callMeters('google.searchText', PLACES, 'places.textSearch.idsOnly'),
+        },
+        {
+          /**
+           * #505 — the same Text Search, asked for `places.googleMapsUri` so a
+           * share link's `ftid` can be matched before any Place Details is
+           * bought. That field is a Pro field, so this is a different SKU from
+           * `google.searchText` and must be a different operation: one label
+           * over a free SKU and a paid one cannot be reconciled to an invoice.
+           */
+          id: 'google.searchText.identity',
+          serviceId: PLACES,
+          displayName: 'Text Search (identity)',
+          instrumented: true,
+          usageMeters: callMeters('google.searchText.identity', PLACES, 'places.textSearch.pro'),
         },
         {
           id: 'google.autocomplete',

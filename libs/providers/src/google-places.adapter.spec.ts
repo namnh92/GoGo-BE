@@ -530,3 +530,123 @@ describe('#334 — the id that came back is not always the id we asked for', () 
     expect(details?.requestedProviderPlaceId).toBeUndefined();
   });
 });
+
+/**
+ * GoGo-BE#505 — what the adapter now asks Google for.
+ *
+ * Both request options were verified against the live Places API on
+ * 2026-09-09 before being asserted here:
+ *
+ * - `GET /v1/places/ChIJxwnWy6usNTERS_TY4hfsH2s` answers `displayName.text`
+ *   "Hanoi Museum" with no locale and "Bảo tàng Hà Nội" with
+ *   `?languageCode=vi&regionCode=VN`. A share link made on a Vietnamese phone
+ *   carries the Vietnamese name, so without this the query and the candidate
+ *   had no token in common.
+ * - `places:searchText` for "Cafe Phê La" returns Thành Thái / Lê Văn Lương /
+ *   Huỳnh Thúc Kháng unbiased — not the branch the link points at — and
+ *   returns that branch first with a 200 m `locationBias.circle`.
+ */
+describe('locale and location bias (#505)', () => {
+  type SpiedFetch = ReturnType<
+    typeof vi.fn<
+      (url: string, init?: { body?: string; headers?: Record<string, string> }) => unknown
+    >
+  >;
+  const bodyOf = (mock: SpiedFetch): Record<string, unknown> =>
+    JSON.parse(String(mock.mock.calls[0]![1]?.body ?? '{}')) as Record<string, unknown>;
+  const urlOf = (mock: SpiedFetch): string => String(mock.mock.calls[0]![0]);
+  const jsonFetch = (payload: unknown): SpiedFetch =>
+    vi.fn((_url: string, _init?: { body?: string; headers?: Record<string, string> }) =>
+      Promise.resolve(new Response(JSON.stringify(payload), { status: 200 })),
+    ) as SpiedFetch;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetBreakers();
+  });
+
+  it('asks Text Search in Vietnamese, for Vietnam', async () => {
+    const fetchMock = jsonFetch({ places: [] });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new GooglePlacesAdapter(API_KEY).searchCandidates('Bảo tàng Hà Nội', 3);
+
+    expect(bodyOf(fetchMock)).toMatchObject({ languageCode: 'vi', regionCode: 'VN' });
+  });
+
+  it('sends a bias as a circle, and only when it has one', async () => {
+    const fetchMock = jsonFetch({ places: [] });
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new GooglePlacesAdapter(API_KEY);
+
+    await adapter.searchCandidates('Cafe Phê La', 3, {
+      bias: { lat: 21.0495428, lng: 105.8138058, radiusMeters: 250 },
+    });
+    expect(bodyOf(fetchMock)).toMatchObject({
+      locationBias: {
+        circle: { center: { latitude: 21.0495428, longitude: 105.8138058 }, radius: 250 },
+      },
+    });
+    // A bias, never a restriction: Google must still be free to answer with a
+    // place just outside the circle.
+    expect(bodyOf(fetchMock)).not.toHaveProperty('locationRestriction');
+
+    fetchMock.mockClear();
+    await adapter.searchCandidates('Cafe Phê La', 3);
+    expect(bodyOf(fetchMock)).not.toHaveProperty('locationBias');
+  });
+
+  it('asks Details in Vietnamese too, on the query string', async () => {
+    const fetchMock = jsonFetch({
+      id: 'ChIJxwnWy6usNTERS_TY4hfsH2s',
+      displayName: { text: 'Bảo tàng Hà Nội' },
+      location: { latitude: 21.0055, longitude: 105.7823 },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await new GooglePlacesAdapter(API_KEY).details(
+      'ChIJxwnWy6usNTERS_TY4hfsH2s',
+      'core',
+    );
+
+    const url = urlOf(fetchMock);
+    expect(url).toContain('languageCode=vi');
+    expect(url).toContain('regionCode=VN');
+    expect(out?.name).toBe('Bảo tàng Hà Nội');
+  });
+
+  it('buys the Pro SKU only for the identity search, and says which it bought', async () => {
+    const fetchMock = jsonFetch({
+      places: [{ id: 'ChIJa', googleMapsUri: 'https://maps.google.com/?cid=1' }, { id: 'ChIJb' }],
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await new GooglePlacesAdapter(API_KEY).searchCandidateIdentities('x', 10, {
+      bias: { lat: 21, lng: 105, radiusMeters: 250 },
+    });
+
+    // The field mask *is* the price: `places.googleMapsUri` is a Pro field for
+    // Text Search, which is what moves this off the free IDs-Only SKU.
+    const mask = (fetchMock.mock.calls[0]![1] as unknown as { headers: Record<string, string> })
+      .headers['X-Goog-FieldMask'];
+    expect(mask).toBe('places.id,places.googleMapsUri');
+    expect(bodyOf(fetchMock)).toMatchObject({ maxResultCount: 10, languageCode: 'vi' });
+    expect(out).toEqual([
+      { providerPlaceId: 'ChIJa', googleMapsUri: 'https://maps.google.com/?cid=1' },
+      // Google publishing none is `null`, not an omission.
+      { providerPlaceId: 'ChIJb', googleMapsUri: null },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('spends one request per search — the locale is not a second call', async () => {
+    const fetchMock = jsonFetch({ places: [] });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new GooglePlacesAdapter(API_KEY).searchCandidates('x', 3, {
+      bias: { lat: 21, lng: 105, radiusMeters: 250 },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

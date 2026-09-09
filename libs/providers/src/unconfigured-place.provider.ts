@@ -39,6 +39,10 @@ export class UnconfiguredPlaceProvider implements PlaceProviderPort, AreaAutocom
     this.refuse();
   }
 
+  async searchCandidateIdentities(_query: string, _limit: number): Promise<never> {
+    this.refuse();
+  }
+
   // One signature for both tier overloads: it never returns, and `never` is
   // assignable to every one of them.
   async details(_providerPlaceId: string, _tier: PlaceFetchTier): Promise<never> {

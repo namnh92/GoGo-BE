@@ -1,5 +1,5 @@
 import { categoryForGoogleType } from './google-types';
-import { normalizeVietnamese } from '../../search/domain/normalize';
+import { normalizeVietnamese, toSearchQuery } from '../../search/domain/normalize';
 import { haversineMeters } from '../../suggestions/domain/hard-filter';
 
 /**
@@ -27,7 +27,17 @@ export type MatchReason =
   | 'DISTRICT_MISMATCH'
   | 'CITY_MISMATCH'
   | 'TYPE_MISMATCH'
-  | 'LOW_CONFIDENCE';
+  | 'LOW_CONFIDENCE'
+  /** The link's Google feature id and this candidate's CID are the same place. */
+  | 'CID_EXACT_MATCH'
+  /** That candidate is not the one the text score ranked first. Recorded, not hidden. */
+  | 'CID_OVERRODE_SCORE'
+  /** The link names one place by id and a different one by CID. Nobody guesses. */
+  | 'CID_IDENTITY_CONFLICT'
+  /** The link named a place by CID and the search did not return it. */
+  | 'CID_NOT_IN_CANDIDATES'
+  /** The curated name and the link's own name point at different candidates. */
+  | 'NAME_SOURCES_DISAGREE';
 
 export type MatchInput = {
   /** Curated name — a CMS import column. Scored symmetrically. */
@@ -40,8 +50,24 @@ export type MatchInput = {
   city?: string | undefined;
   district?: string | undefined;
   categoryKey?: string | undefined;
+  /**
+   * Where the input says the place **is** — an exact coordinate, never a map
+   * viewport centre (#505). `place-resolver` fills this from `!8m2!3d…!4d…` or
+   * a typed `?q=<lat>,<lng>`; the `@lat,lng,z` in a browser link is the camera
+   * position and is used to bias the search, not to score a distance.
+   */
   lat?: number | undefined;
   lng?: number | undefined;
+  /**
+   * The CID half of the Google feature id the link carried, in decimal.
+   *
+   * Identity, not similarity: when a candidate's own `googleMapsUri` names the
+   * same CID, the two are the same Google record and no amount of name or
+   * distance scoring can say otherwise. This is what makes an application share
+   * link resolvable at all for a multi-branch brand, whose display name never
+   * covers the query.
+   */
+  featureCid?: string | undefined;
 };
 
 export type MatchTarget = {
@@ -51,20 +77,38 @@ export type MatchTarget = {
   lat: number;
   lng: number;
   primaryType?: string | undefined;
+  /**
+   * The CID out of this candidate's `googleMapsUri`, in decimal, or null when
+   * Google did not publish one. Compared against `MatchInput.featureCid`.
+   */
+  providerCid?: string | null | undefined;
 };
 
 /**
- * Matching tokens: unaccented words carrying at least one letter or digit.
+ * Matching tokens: unaccented words, punctuation removed, on both sides.
  *
  * Google display names routinely end in decoration — `Lacàph Coffee Experiences
  * Space 🇻🇳☕️` tokenises the emoji cluster as a word of its own — and counting
  * that as a token inflates the denominator of every comparison below (#311).
+ *
+ * #505 — the separator has to go too, and this is where the Google Maps
+ * *application* share link was lost. It writes `?q=<name>, <full address>`, so
+ * `normalizeVietnamese` (which folds accents and whitespace and nothing else)
+ * produced the token `west,` — which is not `west`. `Sheraton Hanoi West`
+ * against `Sheraton Hanoi West, 36 Lê Đức Thọ, Từ Liêm, Hà Nội, Việt Nam` came
+ * to 0.667 instead of 1.0, under the 0.70 floor, for a comma. A browser link
+ * escaped it only because `/maps/place/<Name>/` is one clean path segment.
+ *
+ * Punctuation is dropped rather than translated to a token boundary in one
+ * step: `toSearchQuery` already replaces every non-letter, non-digit with a
+ * space and collapses runs, which is exactly the same normalisation the SQL
+ * side applies, so query and candidate meet in one space (SE-002).
  */
 function tokens(value: string): Set<string> {
   return new Set(
-    normalizeVietnamese(value)
+    toSearchQuery(value)
       .split(' ')
-      .filter((t) => /[\p{L}\p{N}]/u.test(t)),
+      .filter((t) => t.length > 0),
   );
 }
 
@@ -159,12 +203,29 @@ function weightedConfidence(dimensions: Dimension[]): number {
 export function scoreMatch(input: MatchInput, target: MatchTarget): ScoredMatch {
   const reasons: MatchReason[] = [];
 
+  /**
+   * #505 — two namings of one place, and the candidate need only match one.
+   *
+   * `name` is a curated column: a CSV row, a sheet cell, something a person
+   * typed. `query` is the text Google itself put in the link. They are scored
+   * by different measures on purpose (see `nameCoverage`), and until now the
+   * curated one simply *replaced* the link's — so the same URL resolved
+   * through `POST /places/resolve-google-maps-link` and failed through
+   * `/cms/place-imports`, because the sheet spelled the place differently
+   * from Google. The same link, two answers, and neither path could see the
+   * other's evidence.
+   *
+   * The better of the two is the one that stands: a candidate whose name the
+   * editor wrote *or* whose name the link carried is evidence for the same
+   * conclusion, and requiring it to satisfy both makes a correct row fail for
+   * a spelling. It cannot promote a candidate that matches neither — the max
+   * of two low scores is still low — and the branch tests below hold.
+   */
   const named = Boolean(input.name ?? input.query);
-  const nameScore = input.name
-    ? nameSimilarity(input.name, target.name)
-    : input.query
-      ? nameCoverage(input.query, target.name)
-      : 0;
+  const nameScore = Math.max(
+    input.name ? nameSimilarity(input.name, target.name) : 0,
+    input.query ? nameCoverage(input.query, target.name) : 0,
+  );
 
   const districtHit = containsNormalized(target.address, input.district);
   if (input.district && !districtHit) reasons.push('DISTRICT_MISMATCH');
@@ -267,6 +328,87 @@ export function decideMatch(
       (a, b) =>
         b.confidence - a.confidence || (a.target.googlePlaceId < b.target.googlePlaceId ? -1 : 1),
     );
+  /**
+   * #505 — identity first, similarity second.
+   *
+   * A Google Maps share link carries the place's feature id (`ftid=` from the
+   * application, `!1s0x…:0x…` from the browser) and Place Details answers with
+   * the same number inside `googleMapsUri`. When those agree the two are the
+   * same Google record — a fact, where every dimension above is an estimate.
+   *
+   * This is what a multi-branch brand needs. `Cafe Phê La` against the
+   * candidate Google actually returns, `Phê La Xuân Diệu`, covers two name
+   * tokens of four; the coordinate dimension carries 0.05 of the weight, so no
+   * honest scoring of *text* reaches 0.90 — and the alternative on the table
+   * was lowering the threshold, which would have let every weak match through
+   * to buy this one.
+   *
+   * The scored list is still computed, still returned, and the reasons still
+   * say when identity and score disagreed. Nothing is hidden; the ranking is
+   * simply not the thing being asked.
+   */
+  const cidMatches = input.featureCid
+    ? scored.filter((s) => s.target.providerCid && s.target.providerCid === input.featureCid)
+    : [];
+  if (cidMatches.length === 1) {
+    const identified = cidMatches[0]!;
+    const overrode = identified.target.googlePlaceId !== scored[0]!.target.googlePlaceId;
+    const reasons: MatchReason[] = [
+      'CID_EXACT_MATCH',
+      ...(overrode ? (['CID_OVERRODE_SCORE'] as const) : []),
+    ];
+    return {
+      outcome: 'RESOLVED_AUTOMATICALLY',
+      best: { target: identified.target, confidence: 1, reasons },
+      candidates: scored.slice(0, 5),
+      reasons,
+    };
+  }
+
+  /**
+   * The link named a place, and none of the candidates is it.
+   *
+   * At least one candidate published a CID, so the comparison was real and it
+   * failed — these are not the place the link points at, whatever they score.
+   * The honest answer is to hand them to a person rather than to auto-resolve
+   * onto an identity the link contradicts, which is the silent acceptance
+   * `CID_IDENTITY_CONFLICT` refuses one level up.
+   *
+   * Seen on a real link: `Bến Bạch Đằng` in Ho Chi Minh City is Google's
+   * *fifth* text-search result for its own name, behind a park, a pier and a
+   * water-bus stop within 300 m, so a three-candidate window cannot contain it.
+   * Widening the window costs a billed Details call per extra candidate, so
+   * what changes here is only that GoGo stops claiming to have found it.
+   */
+  const comparable = input.featureCid
+    ? scored.some((s) => s.target.providerCid !== null && s.target.providerCid !== undefined)
+    : false;
+  const missedByCid = Boolean(input.featureCid) && comparable && cidMatches.length === 0;
+
+  /**
+   * #505 — the two namings disagree about *which* candidate, not about how
+   * well one matches.
+   *
+   * Scoring the better of the curated name and the link's own is what stopped
+   * a sheet's spelling from failing a correct row. It must not become a way
+   * for that spelling to *choose*: a sheet saying "Phê La Núi Trúc" against a
+   * link pointing at Xuân Diệu is two people naming two different places, and
+   * `max` would quietly hand the row to whichever scored higher.
+   *
+   * So when both sources are present and each ranks a different candidate
+   * first, nobody auto-resolves. The candidates are still returned and a
+   * person picks — the same treatment two branches of one brand already get,
+   * for the same reason: the input does not say which.
+   *
+   * This cannot fire when the link states an identity: a CID match returns
+   * above, and a CID that matched nothing has already blocked auto-resolution.
+   */
+  const namesDisagree =
+    input.name !== undefined &&
+    input.query !== undefined &&
+    bestBy(targets, (t) => nameSimilarity(input.name!, t.name)) !==
+      bestBy(targets, (t) => nameCoverage(input.query!, t.name));
+
   const best = scored[0]!;
   const runnerUp = scored[1];
   const ambiguous =
@@ -274,23 +416,60 @@ export function decideMatch(
     scored.slice(1).some((other) => isShorterNamingOf(best.target.name, other.target.name));
   const reasons = [...best.reasons];
   if (ambiguous) reasons.unshift('MULTIPLE_BRANCHES');
+  if (missedByCid) reasons.unshift('CID_NOT_IN_CANDIDATES');
+  if (namesDisagree) reasons.unshift('NAME_SOURCES_DISAGREE');
 
   let outcome: MatchOutcome;
-  if (best.confidence >= thresholds.auto && !ambiguous) outcome = 'RESOLVED_AUTOMATICALLY';
-  else if (best.confidence >= thresholds.confirm) outcome = 'NEEDS_CONFIRMATION';
+  if (best.confidence >= thresholds.auto && !ambiguous && !missedByCid && !namesDisagree) {
+    outcome = 'RESOLVED_AUTOMATICALLY';
+  } else if (best.confidence >= thresholds.confirm) outcome = 'NEEDS_CONFIRMATION';
   else outcome = 'UNRESOLVED';
 
   return { outcome, best, candidates: scored.slice(0, 5), reasons };
 }
 
-/** A provider id lifted straight from the URL always wins. */
-export function exactProviderMatch(target: MatchTarget): MatchDecision {
+/**
+ * An identity the URL stated, resolved without scoring anything.
+ *
+ * `EXACT_PROVIDER_ID` is a Place ID read straight out of the link.
+ * `CID_EXACT_MATCH` is the same strength of claim reached differently — the
+ * link's `ftid` and a search hit's own `googleMapsUri` name the same Google
+ * record — and the two are kept apart so a reader can tell which evidence the
+ * resolution stood on.
+ */
+export function exactProviderMatch(
+  target: MatchTarget,
+  via: 'EXACT_PROVIDER_ID' | 'CID_EXACT_MATCH' = 'EXACT_PROVIDER_ID',
+): MatchDecision {
   return {
     outcome: 'RESOLVED_AUTOMATICALLY',
-    best: { target, confidence: 1, reasons: ['EXACT_PROVIDER_ID'] },
-    candidates: [{ target, confidence: 1, reasons: ['EXACT_PROVIDER_ID'] }],
-    reasons: ['EXACT_PROVIDER_ID'],
+    best: { target, confidence: 1, reasons: [via] },
+    candidates: [{ target, confidence: 1, reasons: [via] }],
+    reasons: [via],
   };
+}
+
+/**
+ * Which candidate a single measure ranks first, by id so the answer is stable
+ * when two score the same. `null` when nothing scores above zero — a measure
+ * that recognises none of them has no opinion to disagree with.
+ */
+function bestBy(targets: MatchTarget[], score: (t: MatchTarget) => number): string | null {
+  let winner: MatchTarget | null = null;
+  let best = 0;
+  for (const t of targets) {
+    const value = score(t);
+    if (
+      value > best ||
+      (value === best && winner !== null && t.googlePlaceId < winner.googlePlaceId)
+    ) {
+      if (value > 0) {
+        best = value;
+        winner = t;
+      }
+    }
+  }
+  return winner?.googlePlaceId ?? null;
 }
 
 function round3(n: number): number {

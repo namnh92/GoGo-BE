@@ -101,6 +101,20 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // is recorded against two places and the conflict is still open. `path` is
   // the finite set of doors; a non-zero rate means the merge queue is behind.
   place_identity_conflict_blocked_total: ['path'],
+  // #505 — a share link that names one Google record by `place_id` and a
+  // different one by `ftid`. `source` is the finite pair of fields that
+  // disagreed; nothing about which places, which would be unbounded.
+  place_link_identity_conflict_total: ['source'],
+  // #505 — what the paid identity search found. `matched` is the case it is
+  // bought for; `unmatched` means the candidates published CIDs and none was
+  // the link's; `incomparable` means Google published none to compare; and
+  // `not_found` means the search returned nothing at all.
+  place_link_cid_lookup_total: ['result'],
+  // #505 — where a link resolution spends its time. `stage` is the fixed set
+  // `expand | search | details`, so a slow resolution can be located instead
+  // of guessed at: the only timing this path emitted before was per provider
+  // request, which cannot separate one slow search from three slow Details.
+  place_link_resolution_stage_seconds: ['stage'],
   // #337 — a Google Place ID answered from the catalogue instead of from
   // Google. `path` is the finite set of doors DB-first sits behind
   // (`resolve_link`, `submit`, `import`, `ingest`, `confirm`, `merge`); the hit
