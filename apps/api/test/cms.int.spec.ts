@@ -3876,11 +3876,14 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
       .select()
       .from(schema.notificationCampaigns)
       .where(eq(schema.notificationCampaigns.id, id));
-    // It completes rather than failing: the provider answered, it just had
-    // nobody to deliver to.
-    expect(row!.status).toBe('sent');
+    // #516: the provider answered and had nobody to deliver to, so nothing was
+    // sent — and the campaign says so. This used to record `sent`, which is how
+    // campaign AAA on DEV finished with a mint "Đã gửi" badge over 0 accepted
+    // and 3 failures.
+    expect(row!.status).toBe('failed');
     expect(row!.failedCount).toBeGreaterThan(0);
     expect(row!.sentCount).toBe(0);
+    expect(row!.lastError).toMatch(/^NO_SUBSCRIPTION_ACCEPTED:/);
 
     const { rows: owed } = await db.execute(sql`
       select count(*)::int as n from notifications
@@ -3888,19 +3891,41 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     `);
     expect((owed[0] as { n: number }).n).toBe(row!.failedCount);
 
-    // And `sent` has no outgoing transition, so neither door reopens: the
-    // count above is final and nothing retries those recipients.
-    for (const action of ['schedule', 'cancel']) {
-      const res = await api().inject({
-        method: 'POST',
-        url: `/v1/cms/campaigns/${id}/${action}`,
-        remoteAddress: ip(),
-        headers: auth(ops.token),
-        payload: {},
-      });
-      expect(res.statusCode, action).toBe(409);
-      expect(res.json().code, action).toBe('INVALID_STATUS_TRANSITION');
-    }
+    // And `failed` reopens, which is the whole reason for choosing it: the
+    // recipients counted above are the ones a reschedule attempts again.
+    const reschedule = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/campaigns/${id}/schedule`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(reschedule.statusCode).toBe(201);
+    expect(reschedule.json().status).toBe('scheduled');
+  });
+
+  it('an empty audience ends failed, not as a campaign that sent nothing to nobody', async () => {
+    // #516. `sent 0/0` reads as success; "this selected nobody" is precisely
+    // what an operator has to see before concluding the message went out.
+    const id = await scheduledCampaign({
+      audienceType: 'platform',
+      audienceFilter: { platform: 'web' },
+    });
+    const push = new CountingPush();
+    await (await dispatcher(push)).dispatchDue();
+
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(row!.recipientCount).toBe(0);
+    expect(row!.status).toBe('failed');
+    expect(row!.lastError).toMatch(/^EMPTY_AUDIENCE:/);
+    expect(row!.sentCount).toBe(0);
+    expect(row!.failedCount).toBe(0);
+    // Deliberately not asserted on `push.sent`: one tick claims up to five
+    // campaigns, so the fake carries whatever else this file left scheduled.
+    // `recipientCount = 0` is this campaign's own evidence that it sent nothing.
   });
 
   it('a failed campaign does retry its no-target recipients on an unchanged retry (R4)', async () => {
