@@ -394,7 +394,6 @@ paths:
         integer minor units, a create-room default, never a room constraint.
         Users only: a guest gets 403.
       requestBody:
-        required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/ProfilePatch' }
