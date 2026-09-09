@@ -36,8 +36,8 @@ export type GoogleCatalog = {
 };
 
 export type StubRequest = {
-  /** `searchText` | `details` | `expand` | `unmatched` */
-  kind: 'searchText' | 'details' | 'expand' | 'unmatched';
+  /** `searchText` | `searchTextIdentity` | `details` | `expand` | `unmatched` */
+  kind: 'searchText' | 'searchTextIdentity' | 'details' | 'expand' | 'unmatched';
   url: string;
   method: string;
   /** The field mask the caller sent, so a tier change is visible in the log. */
@@ -99,16 +99,37 @@ export function installGoogleStub(catalog: GoogleCatalog): StubHandle {
     const fieldMask = headers['X-Goog-FieldMask'];
 
     if (url.startsWith('https://places.googleapis.com/v1/places:searchText')) {
-      const body = JSON.parse(String(init?.body ?? '{}')) as { textQuery?: string };
-      const ids = catalog.searchText[body.textQuery ?? ''] ?? [];
+      const body = JSON.parse(String(init?.body ?? '{}')) as {
+        textQuery?: string;
+        maxResultCount?: number;
+      };
+      const ids = (catalog.searchText[body.textQuery ?? ''] ?? []).slice(
+        0,
+        body.maxResultCount ?? 20,
+      );
+      /**
+       * GoGo-BE#505 — the mask decides the SKU here as much as it does for
+       * Details, so the stub honours it rather than always answering with
+       * everything. `places.id` alone is Text Search Essentials (IDs Only);
+       * adding `places.googleMapsUri` — a Pro field — is what the identity
+       * search buys, and it must be visible in the recorded request.
+       */
+      const wantsIdentity = (fieldMask ?? '').includes('places.googleMapsUri');
       requests.push({
-        kind: 'searchText',
+        kind: wantsIdentity ? 'searchTextIdentity' : 'searchText',
         url,
         method,
         ...(fieldMask ? { fieldMask } : {}),
         status: 200,
       });
-      return json(200, { places: ids.map((id) => ({ id })) });
+      return json(200, {
+        places: ids.map((id) => ({
+          id,
+          ...(wantsIdentity && typeof catalog.places[id]?.['googleMapsUri'] === 'string'
+            ? { googleMapsUri: catalog.places[id]!['googleMapsUri'] }
+            : {}),
+        })),
+      });
     }
 
     if (url.startsWith('https://places.googleapis.com/v1/places/')) {

@@ -61,15 +61,32 @@ describe('#336 pinned fixtures', () => {
   });
 
   it('keys text search on the query the resolver actually composes', () => {
-    // place-import-job.service.ts builds `[name, district, city]`; a change to
-    // that composition must break here rather than silently return no
-    // candidates and quietly halve scenario E's cost.
+    // Two shapes, because two doors compose the query differently and both are
+    // pinned here.
+    //
+    // A sheet row is `[name, district, city]` (place-import-job.service.ts); a
+    // change to that composition must break here rather than silently return
+    // no candidates and quietly halve scenario E's cost.
+    //
+    // A share link supplies only its own name (GoGo-BE#505, scenario F): there
+    // is no district or city to append, and appending one would be inventing
+    // evidence the link did not carry.
+    const linkQueries = new Set([linkNameOf(fixtures.F.matchUrl)]);
     for (const query of Object.keys(catalog.searchText)) {
+      if (linkQueries.has(query)) continue;
       expect(query).toMatch(/ Quận 1 Hồ Chí Minh$/);
       const name = query.replace(/ Quận 1 Hồ Chí Minh$/, '');
       expect(loadSheet(fixtures).toString('utf8')).toContain(`${name},Hồ Chí Minh,Quận 1,,`);
     }
+    // …and the link's own key exists, or scenario F would search for nothing.
+    for (const query of linkQueries) expect(catalog.searchText[query]).toBeDefined();
   });
+
+  /** `/maps/place/<Name>/…` — what `parseMapsUrl` lifts out as the query. */
+  function linkNameOf(url: string): string {
+    const segment = /\/maps\/place\/([^/@]+)/.exec(new URL(url).pathname)?.[1] ?? '';
+    return decodeURIComponent(segment).replace(/\+/g, ' ').trim();
+  }
 
   it('stores no provider content — every fixture id is synthetic', () => {
     const ids = Object.keys(catalog.places);

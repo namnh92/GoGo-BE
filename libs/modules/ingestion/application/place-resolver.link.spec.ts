@@ -335,7 +335,7 @@ describe('share links from the application and the browser (#505)', () => {
     expect(provider.searches).toHaveLength(1);
   });
 
-  it('does not search twice when the identity search finds no match', async () => {
+  it('buys nothing further when the CID is in none of the candidates', async () => {
     provider.seed({
       providerPlaceId: 'ChIJ-other',
       name: 'Phê La Núi Trúc',
@@ -348,13 +348,101 @@ describe('share links from the application and the browser (#505)', () => {
       'quality',
     );
 
-    // The ids the paid search returned are scored rather than fetched again.
+    // These candidates publish CIDs and none is the link's, so they are
+    // provably not the place it names. Scoring them would buy Enterprise
+    // Details for a list nobody should pick from.
+    expect(out.status).toBe('UNRESOLVED');
+    if (out.status !== 'UNRESOLVED') return;
+    expect(out.reasonCode).toBe('CID_NOT_IN_CANDIDATES');
     expect(provider.identitySearches).toHaveLength(1);
     expect(provider.searches).toHaveLength(0);
+    expect(provider.tiersRequested).toEqual([]);
+  });
+
+  it('falls back to scoring when Google published no CIDs to compare', async () => {
+    provider.seed({
+      providerPlaceId: 'ChIJ-no-uri',
+      name: 'Cafe Phê La',
+      lat: 21.0495428,
+      lng: 105.8138058,
+      googleMapsUri: null,
+    });
+
+    const out = await resolver.resolveFromUrl(
+      'https://www.google.com/maps/place/Cafe+Ph%C3%AA+La/@21.03,105.80,15z/' +
+        'data=!4m6!3m5!1s0x1:0x452419e97d6868e3!8m2!3d21.0495428!4d105.8138058',
+      'quality',
+    );
+
+    // Silence is not contradiction: the ordinary scoring still applies, over
+    // the ids the one search already returned.
+    expect(provider.identitySearches).toHaveLength(1);
+    expect(provider.searches).toHaveLength(0);
+    expect(out.status).toBe('RESOLVED');
+  });
+
+  it('refuses to auto-resolve when a row’s name and the link name different branches', async () => {
+    seedBranches();
+    // No CID in this link — nothing authoritative to settle it — and the
+    // import row names a different branch from the one the link names.
+    const out = await resolver.resolveFromUrl(
+      'https://www.google.com/maps/place/Cafe+Ph%C3%AA+La/@21.0495,105.8138,17z',
+      'quality',
+      { name: 'Phê La Thành Thái' },
+    );
+
     expect(out.status).not.toBe('RESOLVED');
     if (out.status === 'UNRESOLVED' || out.status === 'NEEDS_CONFIRMATION') {
-      expect(out.decision?.reasons).toContain('CID_NOT_IN_CANDIDATES');
+      expect(out.decision?.reasons).toContain('NAME_SOURCES_DISAGREE');
     }
+  });
+
+  it('the same conflict resolves when the link carries a CID', async () => {
+    seedBranches();
+    const out = await resolver.resolveFromUrl(
+      'https://www.google.com/maps/place/Cafe+Ph%C3%AA+La/@21.0533,105.8159,16z/' +
+        'data=!4m6!3m5!1s0x3135ab85ff36dd35:0x452419e97d6868e3!8m2!3d21.0495428!4d105.8138058',
+      'quality',
+      { name: 'Phê La Thành Thái' },
+    );
+
+    expect(out.status).toBe('RESOLVED');
+    if (out.status !== 'RESOLVED') return;
+    // Identity beats both namings, including the one that disagreed.
+    expect(out.details.providerPlaceId).toBe('ChIJNd02_4WrNTER42hofekZJEU');
+    expect(out.decision.reasons).toContain('CID_EXACT_MATCH');
+  });
+
+  it('refuses a Details answer whose CID is not the one the link named', async () => {
+    // The search claimed this hit; Details says a different place. Two reads
+    // of the same field disagreeing is a refusal, not a resolution.
+    provider.seed({
+      providerPlaceId: 'ChIJ-swapped',
+      name: 'Quán Bị Đổi',
+      lat: 21.0495428,
+      lng: 105.8138058,
+      googleMapsUri: 'https://maps.google.com/?cid=999',
+    });
+    const original = provider.searchCandidateIdentities.bind(provider);
+    provider.searchCandidateIdentities = async () => {
+      provider.searchCandidateIdentities = original;
+      return [
+        {
+          providerPlaceId: 'ChIJ-swapped',
+          googleMapsUri: 'https://maps.google.com/?cid=4982135578400680163',
+        },
+      ];
+    };
+
+    const out = await resolver.resolveFromUrl(
+      'https://www.google.com/maps/place/X/@21.05,105.81,16z/' +
+        'data=!4m6!3m5!1s0x1:0x452419e97d6868e3!8m2!3d21.0495428!4d105.8138058',
+      'quality',
+    );
+
+    expect(out.status).toBe('UNRESOLVED');
+    if (out.status !== 'UNRESOLVED') return;
+    expect(out.reasonCode).toBe('LINK_IDENTITY_CONFLICT');
   });
 
   it('still asks a person when two branches are alike and none is identified', async () => {

@@ -63,11 +63,12 @@ matrix that can be frozen today, and says in `limitations` which half it is not.
 Produced by `apps/api/test/cost-baseline.int.spec.ts`, each named by the **UTC**
 day, because that is how `provider_usage_daily` is keyed.
 
-| File                             | What it records                                                    | Status                              |
-| -------------------------------- | ------------------------------------------------------------------ | ----------------------------------- |
-| `2026-09-01-before-stub.json`    | what every flow cost before any of PR4–PR7                         | **immutable** — PR9's BEFORE column |
-| `2026-09-02-after-pr4-stub.json` | after #337: same-execution reuse, DB-first, resolution attestation | superseded — PR9's per-PR column    |
-| `2026-09-02-after-pr5-stub.json` | after #338: Details tiered by what each call site actually reads   | the golden the spec checks          |
+| File                               | What it records                                                     | Status                              |
+| ---------------------------------- | ------------------------------------------------------------------- | ----------------------------------- |
+| `2026-09-01-before-stub.json`      | what every flow cost before any of PR4–PR7                          | **immutable** — PR9's BEFORE column |
+| `2026-09-02-after-pr4-stub.json`   | after #337: same-execution reuse, DB-first, resolution attestation  | superseded — PR9's per-PR column    |
+| `2026-09-02-after-pr5-stub.json`   | after #338: Details tiered by what each call site actually reads    | superseded — PR9's per-PR column    |
+| `2026-09-09-after-be505-stub.json` | after #505: scenario F, the paid identity search a share link needs | the golden the spec checks          |
 
 The newest file is a golden: the spec re-runs the scenarios and refuses any
 drift from it, so a behaviour change that moves a call count cannot land
@@ -86,6 +87,36 @@ not the current golden, so overwriting one fails the build rather than passing
 quietly. Attribution needs the intermediate files too: "quality fell by
 thirty-three" is a different claim from "PR4 took eighteen and PR5 took
 fifteen", and only the second can be checked against the PR that made it.
+
+### What #505 added, and why it is a scenario rather than a number
+
+Scenario F is the first one that reaches a **paid Text Search SKU**. Every
+scenario before it hands the resolver a `?place_id=` URL, so none of them takes
+the branch a real Google Maps share link takes: an `ftid` the resolver has to
+find among Google's hits.
+
+The mask is the price. `places.id` alone is Text Search Essentials (IDs Only),
+which Google caps as unlimited free; `places.googleMapsUri` is a Pro field, so
+the identity search is Text Search Pro at $32/1,000. It is its own operation
+(`google.searchText.identity`) and its own billing SKU
+(`places.textSearch.pro`) for the reason every other split here exists: one
+label over a free SKU and a paid one cannot be reconciled against an invoice.
+
+What F pins, per 1,000 resolutions of a link that states its identity:
+
+| Operation                    | SKU                      | Calls                   | Cost   |
+| ---------------------------- | ------------------------ | ----------------------- | ------ |
+| `google.searchText.identity` | Text Search Pro          | 2 (one match, one miss) | $0.064 |
+| `google.details.quality`     | Place Details Enterprise | 1                       | $0.020 |
+| `google.searchText`          | —                        | **0**                   | —      |
+
+The arithmetic that justifies buying it: the pinned link names Google's
+**fifth** hit for its own name. Reaching that with the free search costs ten
+Enterprise Details ($200/1,000); one Pro search reads all ten CIDs and buys one
+Details ($52/1,000). The miss — a CID none of the ten carries — costs the
+search and nothing else, because candidates that publish CIDs and do not match
+are provably not the place, and buying Details for them would be paying to
+build a list nobody should pick from.
 
 ### What #337 moved, and what it did not
 

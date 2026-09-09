@@ -106,8 +106,9 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // disagreed; nothing about which places, which would be unbounded.
   place_link_identity_conflict_total: ['source'],
   // #505 — what the paid identity search found. `matched` is the case it is
-  // bought for; `unmatched` means the link names a place the search did not
-  // return, and `not_found` means it returned nothing at all.
+  // bought for; `unmatched` means the candidates published CIDs and none was
+  // the link's; `incomparable` means Google published none to compare; and
+  // `not_found` means the search returned nothing at all.
   place_link_cid_lookup_total: ['result'],
   // #505 — where a link resolution spends its time. `stage` is the fixed set
   // `expand | search | details`, so a slow resolution can be located instead

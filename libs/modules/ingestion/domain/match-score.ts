@@ -35,7 +35,9 @@ export type MatchReason =
   /** The link names one place by id and a different one by CID. Nobody guesses. */
   | 'CID_IDENTITY_CONFLICT'
   /** The link named a place by CID and the search did not return it. */
-  | 'CID_NOT_IN_CANDIDATES';
+  | 'CID_NOT_IN_CANDIDATES'
+  /** The curated name and the link's own name point at different candidates. */
+  | 'NAME_SOURCES_DISAGREE';
 
 export type MatchInput = {
   /** Curated name — a CMS import column. Scored symmetrically. */
@@ -383,6 +385,30 @@ export function decideMatch(
     : false;
   const missedByCid = Boolean(input.featureCid) && comparable && cidMatches.length === 0;
 
+  /**
+   * #505 — the two namings disagree about *which* candidate, not about how
+   * well one matches.
+   *
+   * Scoring the better of the curated name and the link's own is what stopped
+   * a sheet's spelling from failing a correct row. It must not become a way
+   * for that spelling to *choose*: a sheet saying "Phê La Núi Trúc" against a
+   * link pointing at Xuân Diệu is two people naming two different places, and
+   * `max` would quietly hand the row to whichever scored higher.
+   *
+   * So when both sources are present and each ranks a different candidate
+   * first, nobody auto-resolves. The candidates are still returned and a
+   * person picks — the same treatment two branches of one brand already get,
+   * for the same reason: the input does not say which.
+   *
+   * This cannot fire when the link states an identity: a CID match returns
+   * above, and a CID that matched nothing has already blocked auto-resolution.
+   */
+  const namesDisagree =
+    input.name !== undefined &&
+    input.query !== undefined &&
+    bestBy(targets, (t) => nameSimilarity(input.name!, t.name)) !==
+      bestBy(targets, (t) => nameCoverage(input.query!, t.name));
+
   const best = scored[0]!;
   const runnerUp = scored[1];
   const ambiguous =
@@ -391,9 +417,10 @@ export function decideMatch(
   const reasons = [...best.reasons];
   if (ambiguous) reasons.unshift('MULTIPLE_BRANCHES');
   if (missedByCid) reasons.unshift('CID_NOT_IN_CANDIDATES');
+  if (namesDisagree) reasons.unshift('NAME_SOURCES_DISAGREE');
 
   let outcome: MatchOutcome;
-  if (best.confidence >= thresholds.auto && !ambiguous && !missedByCid) {
+  if (best.confidence >= thresholds.auto && !ambiguous && !missedByCid && !namesDisagree) {
     outcome = 'RESOLVED_AUTOMATICALLY';
   } else if (best.confidence >= thresholds.confirm) outcome = 'NEEDS_CONFIRMATION';
   else outcome = 'UNRESOLVED';
@@ -420,6 +447,29 @@ export function exactProviderMatch(
     candidates: [{ target, confidence: 1, reasons: [via] }],
     reasons: [via],
   };
+}
+
+/**
+ * Which candidate a single measure ranks first, by id so the answer is stable
+ * when two score the same. `null` when nothing scores above zero — a measure
+ * that recognises none of them has no opinion to disagree with.
+ */
+function bestBy(targets: MatchTarget[], score: (t: MatchTarget) => number): string | null {
+  let winner: MatchTarget | null = null;
+  let best = 0;
+  for (const t of targets) {
+    const value = score(t);
+    if (
+      value > best ||
+      (value === best && winner !== null && t.googlePlaceId < winner.googlePlaceId)
+    ) {
+      if (value > 0) {
+        best = value;
+        winner = t;
+      }
+    }
+  }
+  return winner?.googlePlaceId ?? null;
 }
 
 function round3(n: number): number {

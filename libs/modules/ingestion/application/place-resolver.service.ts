@@ -247,10 +247,36 @@ export class PlaceResolverService {
       );
       if (hit) {
         this.metrics.increment('place_link_cid_lookup_total', { result: 'matched' });
-        return this.resolveByProviderId(hit.providerPlaceId, tier, undefined, 'CID_EXACT_MATCH');
+        // The search said this hit carries the link's CID; the Details fetch
+        // says so again, from the same field, and a disagreement between the
+        // two is refused rather than resolved. Free — the answer is already
+        // paid for.
+        return this.resolveByProviderId(
+          hit.providerPlaceId,
+          tier,
+          merged.featureCid,
+          'CID_EXACT_MATCH',
+        );
       }
+      /**
+       * The comparison happened and it failed: these candidates publish CIDs
+       * of their own and none is the link's, so they are provably not the
+       * place it names. Scoring them would buy three Enterprise Details to
+       * produce a list nobody should pick from — and `decideMatch` would
+       * refuse to auto-resolve on it anyway. The honest answer is free.
+       */
+      const comparable = identified.some(
+        (candidate) => cidFromGoogleMapsUri(candidate.googleMapsUri) !== null,
+      );
+      if (comparable) {
+        this.metrics.increment('place_link_cid_lookup_total', { result: 'unmatched' });
+        return { status: 'UNRESOLVED', reasonCode: 'CID_NOT_IN_CANDIDATES' };
+      }
+      // Google published no `googleMapsUri` at all, so nothing was compared.
+      // That is silence, not contradiction, and the ordinary scoring below
+      // still applies — over the ids this search already returned.
       this.metrics.increment('place_link_cid_lookup_total', {
-        result: identified.length === 0 ? 'not_found' : 'unmatched',
+        result: identified.length === 0 ? 'not_found' : 'incomparable',
       });
     }
 

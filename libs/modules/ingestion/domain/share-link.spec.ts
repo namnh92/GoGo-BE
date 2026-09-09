@@ -264,6 +264,52 @@ describe('#505 — CID decides identity, scoring does not have to', () => {
     expect(decision.best?.reasons).not.toContain('CID_EXACT_MATCH');
   });
 
+  it('will not let a sheet’s name pick a different branch from the link’s', () => {
+    // The row calls it Núi Trúc; the link says Xuân Diệu. `max` of the two
+    // name measures is what stops a spelling from failing a correct row — it
+    // must not become a way for that spelling to choose between real places.
+    const decision = decideMatch({ name: 'Phê La Núi Trúc', query: 'Phê La Xuân Diệu' }, [
+      target({ googlePlaceId: 'ChIJ-xuan-dieu', name: 'Phê La Xuân Diệu' }),
+      target({ googlePlaceId: 'ChIJ-nui-truc', name: 'Phê La Núi Trúc' }),
+    ]);
+    expect(decision.outcome).not.toBe('RESOLVED_AUTOMATICALLY');
+    expect(decision.reasons).toContain('NAME_SOURCES_DISAGREE');
+    expect(decision.candidates).toHaveLength(2);
+  });
+
+  it('says nothing when the two namings agree on the same candidate', () => {
+    // Different spellings of one place is the case `max` exists for, and it
+    // still resolves.
+    const decision = decideMatch(
+      { name: 'Phê La - Xuân Diệu (Tây Hồ)', query: 'Phê La Xuân Diệu' },
+      [
+        target({ googlePlaceId: 'ChIJ-xuan-dieu', name: 'Phê La Xuân Diệu' }),
+        target({ googlePlaceId: 'ChIJ-nui-truc', name: 'Cộng Cà Phê Núi Trúc' }),
+      ],
+    );
+    expect(decision.reasons).not.toContain('NAME_SOURCES_DISAGREE');
+    expect(decision.best?.target.googlePlaceId).toBe('ChIJ-xuan-dieu');
+  });
+
+  it('lets the link’s identity win over a conflicting sheet name', () => {
+    // Same conflict, but the link states a CID. Identity is not an opinion,
+    // so there is nothing for the two namings to disagree about.
+    const decision = decideMatch(
+      { name: 'Phê La Núi Trúc', query: 'Phê La Xuân Diệu', featureCid: '4982135578400680163' },
+      [
+        target({
+          googlePlaceId: 'ChIJ-xuan-dieu',
+          name: 'Phê La Xuân Diệu',
+          providerCid: '4982135578400680163',
+        }),
+        target({ googlePlaceId: 'ChIJ-nui-truc', name: 'Phê La Núi Trúc', providerCid: '1' }),
+      ],
+    );
+    expect(decision.outcome).toBe('RESOLVED_AUTOMATICALLY');
+    expect(decision.best?.target.googlePlaceId).toBe('ChIJ-xuan-dieu');
+    expect(decision.reasons).toContain('CID_EXACT_MATCH');
+  });
+
   it('leaves the thresholds where they are', () => {
     // The fix must not be "let weaker matches through". A single candidate
     // whose name half-covers the query and carries no CID is still refused.

@@ -118,5 +118,12 @@
     },
     "publish": "all ready rows",
     "expect": "resolve: details.quality ×1 per direct-id row (13); name-only rows searchText ×1 + details.quality ×1 each (the pinned catalog answers one candidate, so the plan's ≤3 lands at its floor); invalid rows 0. Publish: details.quality ×1 per ready row"
+  },
+  "F": {
+    "title": "resolve a share link that states its identity (ftid → CID)",
+    "matchUrl": "https://www.google.com/maps/place/B%E1%BA%BFn+Baseline/@10.7768,106.7079,17z/data=!4m6!3m5!1s0x1:0x452419e97d6868e3!8m2!3d10.7755799!4d106.7071096",
+    "matchesPlaceId": "GOGOBASE_FID_05",
+    "missUrl": "https://www.google.com/maps/place/B%E1%BA%BFn+Baseline/@10.7768,106.7079,17z/data=!4m6!3m5!1s0x1:0x7fffffffffffffff!8m2!3d10.7755799!4d106.7071096",
+    "expect": "searchText.identity 1 + details.quality 1 for the match; searchText.identity 1 and no details for the miss"
   }
 }

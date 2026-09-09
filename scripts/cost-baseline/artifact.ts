@@ -31,8 +31,12 @@ import type {
 
 export const BASELINE_SCHEMA_VERSION = 1;
 
-/** The scenarios pinned in plan §4. C splits because C1 and C2 differ in `google.expand`. */
-export const SCENARIO_IDS = ['A', 'B', 'C1', 'C2', 'D', 'E'] as const;
+/**
+ * The scenarios pinned in plan §4. C splits because C1 and C2 differ in
+ * `google.expand`; F was added by GoGo-BE#505, which introduced a paid Text
+ * Search SKU that no `?place_id=` scenario reaches.
+ */
+export const SCENARIO_IDS = ['A', 'B', 'C1', 'C2', 'D', 'E', 'F'] as const;
 export type ScenarioId = (typeof SCENARIO_IDS)[number];
 
 /**
