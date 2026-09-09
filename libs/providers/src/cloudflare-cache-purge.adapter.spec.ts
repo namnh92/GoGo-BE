@@ -13,7 +13,11 @@ function stubFetch(status: number) {
 describe('Cloudflare cache purge (ADR-0022)', () => {
   it('posts the URLs to the zone purge endpoint with the bearer token', async () => {
     const { calls, fetcher } = stubFetch(200);
-    const purge = new CloudflareCachePurgeAdapter({ zoneId: 'zone1', token: 'tok', fetch: fetcher });
+    const purge = new CloudflareCachePurgeAdapter({
+      zoneId: 'zone1',
+      token: 'tok',
+      fetch: fetcher,
+    });
     await purge.purgeUrls(['https://assets-dev.gogo.id.vn/avatars/a.webp']);
 
     expect(calls).toHaveLength(1);
@@ -26,7 +30,9 @@ describe('Cloudflare cache purge (ADR-0022)', () => {
 
   it('sends nothing for an empty list', async () => {
     const { calls, fetcher } = stubFetch(200);
-    await new CloudflareCachePurgeAdapter({ zoneId: 'z', token: 't', fetch: fetcher }).purgeUrls([]);
+    await new CloudflareCachePurgeAdapter({ zoneId: 'z', token: 't', fetch: fetcher }).purgeUrls(
+      [],
+    );
     expect(calls).toHaveLength(0);
   });
 

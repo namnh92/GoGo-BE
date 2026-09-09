@@ -451,7 +451,11 @@ const envSchema = z
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
   })
   .superRefine((env, ctx) => {
-    const publicR2 = [env.R2_PUBLIC_BUCKET, env.R2_PUBLIC_ACCESS_KEY_ID, env.R2_PUBLIC_SECRET_ACCESS_KEY];
+    const publicR2 = [
+      env.R2_PUBLIC_BUCKET,
+      env.R2_PUBLIC_ACCESS_KEY_ID,
+      env.R2_PUBLIC_SECRET_ACCESS_KEY,
+    ];
     if (publicR2.some(Boolean) && !publicR2.every(Boolean)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

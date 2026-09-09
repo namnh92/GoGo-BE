@@ -45,9 +45,9 @@ const privateConfigured = (config: UploadsConfig) =>
         (privateConfigured(config) &&
           Boolean(
             config.R2_PUBLIC_BUCKET &&
-              config.R2_PUBLIC_ACCESS_KEY_ID &&
-              config.R2_PUBLIC_SECRET_ACCESS_KEY &&
-              config.MEDIA_PUBLIC_BASE_URL,
+            config.R2_PUBLIC_ACCESS_KEY_ID &&
+            config.R2_PUBLIC_SECRET_ACCESS_KEY &&
+            config.MEDIA_PUBLIC_BASE_URL,
           )),
       inject: [APP_CONFIG],
     },

@@ -265,7 +265,9 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       // whether this environment can actually publish an avatar.
       provide: PUBLIC_STORAGE_PROVIDER,
       useFactory: (config: AppConfig) =>
-        config.R2_PUBLIC_ACCESS_KEY_ID && config.R2_PUBLIC_SECRET_ACCESS_KEY && config.R2_PUBLIC_BUCKET
+        config.R2_PUBLIC_ACCESS_KEY_ID &&
+        config.R2_PUBLIC_SECRET_ACCESS_KEY &&
+        config.R2_PUBLIC_BUCKET
           ? new R2StorageAdapter({
               accountId: config.R2_ACCOUNT_ID,
               accessKeyId: config.R2_PUBLIC_ACCESS_KEY_ID,

@@ -46,11 +46,18 @@ describe('R2 presigned upload (#171)', () => {
 });
 
 /** Captures what the adapter sends, answers what the test says. */
-function stubFetch(answer: { status: number; body?: Uint8Array; headers?: Record<string, string> }) {
+function stubFetch(answer: {
+  status: number;
+  body?: Uint8Array;
+  headers?: Record<string, string>;
+}) {
   const calls: { url: string; init: RequestInit }[] = [];
   const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} });
-    return new Response(answer.body ?? null, { status: answer.status, headers: answer.headers ?? {} });
+    return new Response(answer.body ?? null, {
+      status: answer.status,
+      headers: answer.headers ?? {},
+    });
   }) as typeof fetch;
   return { calls, fetcher };
 }
@@ -106,18 +113,30 @@ describe('R2 server-side verbs (ADR-0022)', () => {
     });
     const signed = new R2StorageAdapter({ ...adapter['config'], fetch: fetcher });
     const found = await signed.getObject('k', { maxBytes: 5 });
-    expect(found).toEqual({ body: new Uint8Array([9, 9]), contentType: 'image/png', contentLength: 2 });
+    expect(found).toEqual({
+      body: new Uint8Array([9, 9]),
+      contentType: 'image/png',
+      contentLength: 2,
+    });
   });
 
   it('GET 404 is not-found; DELETE 404 is success', async () => {
-    const missing = new R2StorageAdapter({ ...adapter['config'], fetch: stubFetch({ status: 404 }).fetcher });
+    const missing = new R2StorageAdapter({
+      ...adapter['config'],
+      fetch: stubFetch({ status: 404 }).fetcher,
+    });
     await expect(missing.getObject('gone')).rejects.toThrow(/not found/);
     await expect(missing.deleteObject('gone')).resolves.toBeUndefined();
   });
 
   it('any other failure is the provider being unavailable, never a silent success', async () => {
-    const broken = new R2StorageAdapter({ ...adapter['config'], fetch: stubFetch({ status: 500 }).fetcher });
+    const broken = new R2StorageAdapter({
+      ...adapter['config'],
+      fetch: stubFetch({ status: 500 }).fetcher,
+    });
     await expect(broken.deleteObject('k')).rejects.toThrow(/unavailable/);
-    await expect(broken.putObject('k', new Uint8Array(1), 'image/webp')).rejects.toThrow(/unavailable/);
+    await expect(broken.putObject('k', new Uint8Array(1), 'image/webp')).rejects.toThrow(
+      /unavailable/,
+    );
   });
 });

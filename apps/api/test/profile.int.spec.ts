@@ -301,7 +301,12 @@ describe('avatar upload authorization (PROF-BE-003)', () => {
       .select()
       .from(schema.mediaUploads)
       .where(eq(schema.mediaUploads.storageKey, res.json().key as string));
-    expect(row).toMatchObject({ actorType: 'user', actorId: userId, purpose: 'avatar', status: 'pending' });
+    expect(row).toMatchObject({
+      actorType: 'user',
+      actorId: userId,
+      purpose: 'avatar',
+      status: 'pending',
+    });
   });
 
   it('refuses HEIC for an avatar, and says which types it takes', async () => {

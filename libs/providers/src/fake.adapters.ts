@@ -297,7 +297,11 @@ export class FakeStorage implements StoragePort {
     if (options.maxBytes !== undefined && found.body.byteLength > options.maxBytes) {
       throw new StorageObjectTooLargeError(key, options.maxBytes);
     }
-    return { body: found.body, contentType: found.contentType, contentLength: found.body.byteLength };
+    return {
+      body: found.body,
+      contentType: found.contentType,
+      contentLength: found.body.byteLength,
+    };
   }
 
   async putObject(

@@ -28,15 +28,18 @@ export class CloudflareCachePurgeAdapter implements CachePurgePort {
 
   async purgeUrls(urls: string[], options: { signal?: AbortSignal } = {}): Promise<void> {
     if (urls.length === 0) return;
-    const res = await this.fetcher(`${CLOUDFLARE_API_BASE}/zones/${this.config.zoneId}/purge_cache`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${this.config.token}`,
-        'content-type': 'application/json',
+    const res = await this.fetcher(
+      `${CLOUDFLARE_API_BASE}/zones/${this.config.zoneId}/purge_cache`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.config.token}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ files: urls }),
+        signal: options.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },
-      body: JSON.stringify({ files: urls }),
-      signal: options.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+    );
     if (!res.ok) throw new ProviderUnavailableError('cloudflare-cache', `purge ${res.status}`);
   }
 }

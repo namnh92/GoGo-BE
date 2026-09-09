@@ -40,8 +40,7 @@ const ALGORITHM = 'AWS4-HMAC-SHA256';
 const REQUEST_TIMEOUT_MS = 10_000;
 const EMPTY_PAYLOAD_HASH = createHash('sha256').update('').digest('hex');
 
-const sha256Hex = (value: string | Uint8Array) =>
-  createHash('sha256').update(value).digest('hex');
+const sha256Hex = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const hmac = (key: Buffer | string, value: string) =>
   createHmac('sha256', key).update(value, 'utf8').digest();
 
