@@ -3,6 +3,7 @@ import type { Db } from '@gogo/database';
 import { idempotencyKeyFrom, type NotificationProviderPort } from '@gogo/providers';
 import {
   campaignDedupeKey,
+  campaignOutcome,
   type CampaignAudience,
   type CampaignDestination,
 } from '../domain/campaign';
@@ -120,15 +121,27 @@ export class CampaignDispatcher {
         `);
       }
 
-      // `sent` is what the provider accepted. It is not "seen", and the column
-      // is named for what it can honestly claim.
+      // NTF-BE-012 (#516): the terminal status is decided by what the provider
+      // accepted, not by the loop having run to the end.
+      //
+      // It used to be `sent` unconditionally. Campaign AAA on DEV finished
+      // `sent` — mint badge, check glyph — with `sent_count = 0` and three
+      // no-target failures, and `sent` has no outgoing transition, so those
+      // three recipients could never be retried either. A campaign that reached
+      // nobody was indistinguishable from one that reached everybody.
+      //
+      // `failed` is the honest end for both empty cases, and it is a state an
+      // operator can act from: `failed → scheduled` reopens, and a re-run skips
+      // whoever already has `push_sent_at` set.
+      const outcome = campaignOutcome({ attempted: recipients.length, accepted: sent });
       await this.db.execute(sql`
         update notification_campaigns
-        set status = 'sent', completed_at = now(), sent_count = ${sent},
-            failed_count = ${failed}, updated_at = now()
+        set status = ${outcome.status}, completed_at = now(), sent_count = ${sent},
+            failed_count = ${failed}, last_error = ${outcome.lastError},
+            updated_at = now()
         where id = ${campaign.id}::uuid
       `);
-      this.metrics?.increment('campaign_dispatched_total', { result: 'sent' });
+      this.metrics?.increment('campaign_dispatched_total', { result: outcome.status });
     } catch (err) {
       // A provider outage must not leave the row in `sending` forever: `failed`
       // is a state an operator can re-schedule from, and the error is kept.
@@ -203,15 +216,13 @@ export class CampaignDispatcher {
     // subscription for this person right now — recorded in failed_count, as an
     // account with no registered device was before.
     //
-    // "Left retryable" is only half true, and the half that is not is worth
-    // stating (review finding R4). The row keeps `push_sent_at` null, so any
-    // later run of this dispatch does attempt it again — but a campaign that
-    // reaches the end of its recipient list finishes `sent`, and `sent` has no
-    // outgoing transition, so no later run happens. In practice: a no-target
-    // recipient is retried when an outage failed the campaign and an operator
-    // retries it, and never when the campaign completed. Both paths are
-    // asserted in `cms.int.spec.ts`. Changing that is a product decision about
-    // what an unsubscribed recipient means, not a dispatcher fix.
+    // The row keeps `push_sent_at` null, so any later run of this dispatch
+    // attempts it again — and since #516 a dispatch that accepted nothing
+    // finishes `failed`, which reopens, rather than `sent`, which does not.
+    // A no-target recipient of a campaign that did reach other people is still
+    // never retried: that campaign is `sent`, correctly, and what an
+    // unsubscribed recipient is owed after a partial send is a product
+    // decision, not a dispatcher fix (review finding R4).
     if (result.providerMessageId === null) return 'no_target';
     await this.db.execute(sql`
       update notifications

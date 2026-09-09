@@ -109,7 +109,14 @@ export function assertDestinationShape(
  * counted in `failed_count` and keeps `push_sent_at` null, but because nothing
  * can move a `sent` campaign back to `scheduled`, that recipient is never
  * attempted again. From `failed` the same recipient *is* retried, because that
- * status reopens. Recorded, not changed — see review finding R4.
+ * status reopens.
+ *
+ * That was review finding R4, recorded and not changed, and #516 is what
+ * happens when the unrecoverable branch is also the one taken by default: a
+ * dispatch that accepted nothing wrote `sent`, so *every* recipient was in the
+ * never-retried state and the campaign said it had gone out. `campaignOutcome`
+ * below is the fix — a dispatch only claims `sent` when the provider created at
+ * least one message, and the rest end `failed`, which reopens.
  */
 export const CAMPAIGN_TRANSITIONS: Record<CampaignStatus, CampaignStatus[]> = {
   draft: ['scheduled'],
@@ -130,6 +137,55 @@ export const CAMPAIGN_TRANSITIONS: Record<CampaignStatus, CampaignStatus[]> = {
  * that, because a failed campaign may have delivered to none or to half.
  */
 export const EDITABLE_STATUSES: CampaignStatus[] = ['draft', 'cancelled', 'failed'];
+
+/**
+ * NTF-BE-012 (#516) — how a dispatch that has finished walking its recipient
+ * list ends.
+ *
+ * The dispatcher used to write `sent` here unconditionally, which said only
+ * "the loop completed". Campaign AAA on DEV finished `sent` with zero messages
+ * accepted and three no-target failures, and the CMS rendered that as a mint
+ * badge with a check glyph. Worse, `sent` is terminal (`CAMPAIGN_TRANSITIONS`
+ * above), so the three recipients whose rows kept `push_sent_at = null` could
+ * never be attempted again — the R4 note above, reached by the one path that
+ * made it unrecoverable.
+ *
+ * The rule is that `sent` must be able to point at a message the provider
+ * created. Nothing accepted is `failed`: not a claim that the system broke, but
+ * the state an operator can act from — `failed → scheduled` reopens, and a
+ * re-run of the same dispatch key skips whoever already has `push_sent_at`.
+ *
+ * An empty audience ends the same way and for the same reason. `sent 0/0` reads
+ * as success, and "this campaign selected nobody" is exactly the thing an
+ * operator has to see before they conclude the message went out.
+ *
+ * Partial delivery stays `sent`: some people are holding the message, and no
+ * status can un-send it. The two counters carry the rest of the story.
+ */
+export type CampaignOutcome = {
+  status: Extract<CampaignStatus, 'sent' | 'failed'>;
+  /** Stable code first, so the CMS can translate rather than echo. */
+  lastError: string | null;
+};
+
+export function campaignOutcome(counts: {
+  /** Recipients the dispatch actually tried. */
+  attempted: number;
+  /** Of those, how many the provider created a message for. */
+  accepted: number;
+}): CampaignOutcome {
+  if (counts.accepted > 0) return { status: 'sent', lastError: null };
+  if (counts.attempted === 0) {
+    return {
+      status: 'failed',
+      lastError: 'EMPTY_AUDIENCE: no account matched this audience at send time',
+    };
+  }
+  return {
+    status: 'failed',
+    lastError: `NO_SUBSCRIPTION_ACCEPTED: the provider created no message for any of ${counts.attempted} recipients`,
+  };
+}
 
 /**
  * The dedupe key one recipient's message carries.

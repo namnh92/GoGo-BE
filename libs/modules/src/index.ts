@@ -74,6 +74,7 @@ export {
   RETRY_BACKOFF_SECONDS,
 } from '../notifications/application/outbox-dispatcher';
 export { CampaignDispatcher } from '../notifications/application/campaign-dispatcher';
+export { campaignOutcome, type CampaignOutcome } from '../notifications/domain/campaign';
 export {
   audiencePredicate,
   respectsPushPreference,
