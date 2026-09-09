@@ -9895,15 +9895,15 @@ components:
           type: array
           items: { type: string }
     ServiceArea:
-      allOf:
-        - $ref: '#/components/schemas/HomeArea'
-        - type: object
-          required: [lat, lng]
-          properties:
-            lat:
-              type: number
-              description: Centre of the area — a map fact, so a client can set a room origin from it.
-            lng: { type: number }
+      type: object
+      description: A curated service area with its centre — a map fact, so a client can set a room origin from it.
+      required: [key, name, lat, lng]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        city: { type: string, nullable: true }
+        lat: { type: number }
+        lng: { type: number }
     ServiceAreaList:
       type: object
       required: [areas]
