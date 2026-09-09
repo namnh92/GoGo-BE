@@ -4,7 +4,8 @@ import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
-import { APP_CONFIG, type PrivacyLedgerConfig } from '../../shared/config';
+import { APP_CONFIG, type MediaConfig, type PrivacyLedgerConfig } from '../../shared/config';
+import { publicMediaUrl } from '../../shared/media-url';
 import { recordSelfServiceRequest, slaConfigFrom } from '../../shared/privacy-ledger';
 import { pgArray } from '../../search/infrastructure/search.repository';
 import type { Actor } from '../../identity/domain/actor';
@@ -23,7 +24,7 @@ function requireUser(actor: Actor): string {
 export class UserContentService {
   constructor(
     @Inject(DB) private readonly db: Db,
-    @Inject(APP_CONFIG) private readonly config: PrivacyLedgerConfig,
+    @Inject(APP_CONFIG) private readonly config: PrivacyLedgerConfig & MediaConfig,
     private readonly cleanup: MediaCleanupService,
   ) {}
 
@@ -181,6 +182,23 @@ export class UserContentService {
     by: { actorType: 'user' | 'admin'; actorId: string; reason?: string },
   ) {
     const [user] = await this.db.select().from(schema.users).where(eq(schema.users.id, userId));
+    // ADR-0022: the profile's optional fields, resolved the way GET /me does.
+    const [homeArea] = user?.homeAreaKey
+      ? await this.db
+          .select({
+            key: schema.serviceAreas.key,
+            name: schema.serviceAreas.name,
+            city: schema.serviceAreas.city,
+          })
+          .from(schema.serviceAreas)
+          .where(eq(schema.serviceAreas.key, user.homeAreaKey))
+          .limit(1)
+      : [];
+    const [interests] = await this.db
+      .select({ selections: schema.userProfilePreferences.selections })
+      .from(schema.userProfilePreferences)
+      .where(eq(schema.userProfilePreferences.userId, userId))
+      .limit(1);
     const memberships = await this.db
       .select()
       .from(schema.roomMembers)
@@ -222,11 +240,20 @@ export class UserContentService {
 
     return {
       exportedAt: new Date().toISOString(),
+      // An explicit allowlist, never a spread of the row: the row also holds
+      // the password hash, and an export is the one document a person forwards.
       profile: {
         displayName: user?.displayName,
         email: user?.email,
         locale: user?.locale,
         createdAt: user?.createdAt.toISOString(),
+        avatarUrl: publicMediaUrl(this.config.MEDIA_PUBLIC_BASE_URL, user?.avatarKey),
+        homeArea: homeArea ?? null,
+        interests: { mood: interests?.selections?.mood ?? [] },
+        usualBudget:
+          user?.usualBudgetPerPerson === null || user?.usualBudgetPerPerson === undefined
+            ? null
+            : { perPerson: user.usualBudgetPerPerson, currency: user.usualBudgetCurrency },
       },
       memberships: memberships.map((m) => ({
         roomId: m.roomId,
@@ -284,10 +311,17 @@ export class UserContentService {
           passwordHash: null,
           displayName: 'Người dùng đã xóa',
           avatarKey: null,
+          homeAreaKey: null,
+          usualBudgetPerPerson: null,
           deletedAt: sql`now()`,
           updatedAt: sql`now()`,
         })
         .where(eq(schema.users.id, userId));
+      // The row is soft-deleted, so the cascade never fires; the interests go
+      // by hand, like the push subscriptions below.
+      await tx
+        .delete(schema.userProfilePreferences)
+        .where(eq(schema.userProfilePreferences.userId, userId));
       const cleanupIds = before?.avatarKey
         ? await this.cleanup.enqueue(tx, [
             { bucket: 'public', objectKey: before.avatarKey, reason: 'account_deleted' },

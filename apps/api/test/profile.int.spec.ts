@@ -802,3 +802,88 @@ describe('the picture leaves with the person; stale presigns leave on schedule (
     ).toHaveLength(1);
   });
 });
+
+describe('export and delete cover the profile (PROF-BE-007)', () => {
+  it('the export carries every profile field from an allowlist and no credential of any kind', async () => {
+    const { token } = await register('export-profile@gogo.id.vn', 'Người Xuất');
+    await api().inject({
+      method: 'PATCH',
+      url: '/v1/me',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        homeAreaKey: 'hcm_q1',
+        interests: { mood: ['lively'] },
+        usualBudget: { perPerson: 250_000, currency: 'VND' },
+      },
+    });
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/me/export',
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().profile).toEqual({
+      displayName: 'Người Xuất',
+      email: 'export-profile@gogo.id.vn',
+      locale: 'vi',
+      createdAt: expect.any(String),
+      avatarUrl: null,
+      homeArea: { key: 'hcm_q1', name: 'Quận 1', city: 'TP.HCM' },
+      interests: { mood: ['lively'] },
+      usualBudget: { perPerson: 250_000, currency: 'VND' },
+    });
+
+    // No key anywhere in the document may name a secret, and no value may
+    // look like one: the row holds an argon2 hash and this is the document a
+    // person forwards to whoever asked for it.
+    const walk = (node: unknown, path: string[]): string[] =>
+      node && typeof node === 'object'
+        ? Object.entries(node as Record<string, unknown>).flatMap(([k, v]) => [
+            ...(/hash|secret|token|cipher|hmac|password/i.test(k) ? [[...path, k].join('.')] : []),
+            ...walk(v, [...path, k]),
+          ])
+        : [];
+    expect(walk(res.json(), [])).toEqual([]);
+    expect(JSON.stringify(res.json())).not.toMatch(/\$argon2/);
+  });
+
+  it('deletion nulls every profile column and removes the interests row', async () => {
+    const { token, userId } = await register('delete-profile@gogo.id.vn');
+    await api().inject({
+      method: 'PATCH',
+      url: '/v1/me',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        homeAreaKey: 'hcm_q1',
+        interests: { mood: ['chill'] },
+        usualBudget: { perPerson: 99_000, currency: 'VND' },
+      },
+    });
+    const del = await api().inject({
+      method: 'DELETE',
+      url: '/v1/me',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {},
+    });
+    expect(del.statusCode).toBe(200);
+
+    const [user] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+    expect(user).toMatchObject({
+      status: 'deleted',
+      email: null,
+      passwordHash: null,
+      avatarKey: null,
+      homeAreaKey: null,
+      usualBudgetPerPerson: null,
+    });
+    const prefs = await db
+      .select()
+      .from(schema.userProfilePreferences)
+      .where(eq(schema.userProfilePreferences.userId, userId));
+    expect(prefs).toHaveLength(0);
+  });
+});

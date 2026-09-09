@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.25
+  version: 1.0.0-alpha.26
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2811,6 +2811,12 @@ paths:
       operationId: exportMyData
       tags: [me]
       summary: Export all actor-owned data (privacy rule)
+      description: >
+        Everything the account owns, as JSON, from an explicit allowlist:
+        profile (display name, email, locale, avatar URL, home area, interests,
+        usual budget — ADR-0022), memberships, preferences, votes, saved
+        items, reviews. Never a credential, a session, or an upload key.
+        Audit-logged and recorded in the privacy ledger.
       responses:
         '200': { description: JSON export; audit-logged }
         '429': { $ref: '#/components/responses/RateLimited' }

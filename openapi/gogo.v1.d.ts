@@ -1539,7 +1539,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Export all actor-owned data (privacy rule) */
+        /**
+         * Export all actor-owned data (privacy rule)
+         * @description Everything the account owns, as JSON, from an explicit allowlist: profile (display name, email, locale, avatar URL, home area, interests, usual budget — ADR-0022), memberships, preferences, votes, saved items, reviews. Never a credential, a session, or an upload key. Audit-logged and recorded in the privacy ledger.
+         */
         get: operations["exportMyData"];
         put?: never;
         post?: never;
