@@ -1638,6 +1638,34 @@ export interface paths {
         /**
          * Editor/ops: upload a CSV or XLSX bulk import (PI-BE-011)
          * @description multipart/form-data with one `file` part plus text fields. The format is decided by the file content, not the extension or mimetype: CSV must be UTF-8, XLSX must be a real workbook and macro-enabled workbooks are rejected. Limits: 20 MB, 5.000 data rows, 64 columns, 2.000 chars/cell. Re-uploading identical bytes in the same mode returns the existing job (`reused: true`) instead of re-billing the provider. `dry_run` validates only and never calls the provider.
+         *
+         *     **Row identity (PI-BE-024).** A row identifies its place with `google_place_id`, `google_maps_url`, both, or neither:
+         *
+         *     - **id only** — Details is fetched for that id directly. No URL parsing,
+         *       no text search.
+         *
+         *     - **url only** — the link is parsed and a short link expanded; a link
+         *       carrying a Place ID resolves by it, otherwise the row falls to text
+         *       search.
+         *
+         *     - **both** — the two must agree, and agreement is established rather
+         *       than assumed. A URL carrying an explicit Places id (`place_id`,
+         *       `placeid`, `query_place_id`), including one a short link expands to,
+         *       is compared locally and costs no Places request. A URL carrying none —
+         *       which is most real share links, since `/maps/place/<name>/data=…`
+         *       holds a hex feature id and not a Places id — is resolved through the
+         *       ordinary provider path and the **resolved** id is compared instead.
+         *       A disagreement fails the row with `PLACE_ID_URL_MISMATCH`. A link
+         *       whose identity cannot be settled at all fails with
+         *       `PLACE_ID_URL_UNVERIFIABLE`: finding no second id is not agreement.
+         *
+         *     - **neither** — `google_maps_query`, or `name` plus `city`/`district` as
+         *       search hints.
+         *
+         *
+         *     `city` is required only in that last case. A row carrying an id or a link needs none: the administrative identity comes from the coordinate, not from a typed city, and `district` is never administrative evidence.
+         *
+         *     The canonical `googleMapsUri` is whatever Google returns; the submitted URL is never stored or treated as canonical.
          */
         post: operations["createPlaceImport"];
         delete?: never;
@@ -6571,7 +6599,7 @@ export interface components {
          *     Request schemas keep `mapping` as a plain string map: narrowing an existing `/v1` request property to an enum is a breaking change (ADR-0005), so the vocabulary is published here rather than enforced in the wire type. `/v1` rejects no value — one outside this list leaves its column unmapped and is reported. Strict rejection belongs in `/v2`.
          * @enum {string}
          */
-        ImportCanonicalField: "source_row_id" | "name" | "city" | "district" | "google_maps_url" | "google_maps_query" | "category" | "category_raw" | "price_min" | "price_max" | "price_unit" | "price_raw" | "audiences" | "audiences_raw" | "vibes" | "vibes_raw" | "highlight" | "note";
+        ImportCanonicalField: "source_row_id" | "name" | "city" | "district" | "google_maps_url" | "google_maps_query" | "google_place_id" | "category" | "category_raw" | "price_min" | "price_max" | "price_unit" | "price_raw" | "audiences" | "audiences_raw" | "vibes" | "vibes_raw" | "highlight" | "note";
         ImportJob: components["schemas"]["ImportJobSummary"] & {
             defaultCity?: string | null;
             rowsByStatus?: {

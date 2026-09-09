@@ -22,6 +22,19 @@ export type NormalizedImportRow = {
   googleMapsUrl: string | null;
   /** Set when the sheet holds a place name instead of a link (spec §4.4). */
   googleMapsQuery: string | null;
+  /**
+   * PI-BE-024 — the Google Place ID the sheet named outright.
+   *
+   * The strongest identity a row can carry: no redirect hop, no text search, no
+   * scoring. It is also the provider dedup key, so a sheet that has one is
+   * saying exactly which catalogue row its place is or would be.
+   *
+   * Kept apart from `googleMapsUrl` rather than folded into it. An operator who
+   * has an id should write the id; making them wrap it in a
+   * `google.com/maps?place_id=…` URL to be understood was asking them to
+   * construct a fake link to state a plain fact.
+   */
+  googlePlaceId: string | null;
   categoryKey: string | null;
   categoryRaw: string | null;
   priceMin: number | null;
@@ -116,7 +129,20 @@ export function validateRow(
   const name = raw.name?.trim() || null;
   const city = raw.city?.trim() || ctx.defaultCity?.trim() || null;
 
-  // A row must be resolvable: either a maps link or a name to search with.
+  /**
+   * PI-BE-024 — the same shape `placeCreateSchema` accepts, and the same shape
+   * Google's own share links carry. Validated here rather than at resolve time
+   * so a typo costs no provider request.
+   */
+  let googlePlaceId: string | null = raw.google_place_id?.trim() || null;
+  if (googlePlaceId && !/^[\w-]{6,255}$/.test(googlePlaceId)) {
+    errors.push(
+      msg('PLACE_ID_INVALID', 'google_place_id', `Google Place ID không hợp lệ: ${googlePlaceId}`),
+    );
+    googlePlaceId = null;
+  }
+
+  // A row must be resolvable: a Place ID, a maps link, or a name to search with.
   let googleMapsUrl: string | null = null;
   let googleMapsQuery: string | null = raw.google_maps_query?.trim() || null;
   const rawUrl = raw.google_maps_url?.trim();
@@ -146,20 +172,23 @@ export function validateRow(
    * a row with no link and no explicit query — and not where the row carries a
    * Google Maps link that names the place by id.
    */
-  if (!city && !googleMapsUrl && !googleMapsQuery) {
+  if (!city && !googleMapsUrl && !googleMapsQuery && !googlePlaceId) {
     errors.push(
       msg(
         'CITY_REQUIRED',
         'city',
-        'city là bắt buộc khi dòng không có link Google Maps — nó là gợi ý để tìm địa điểm',
+        'city là bắt buộc khi dòng không có link Google Maps hoặc Google Place ID — ' +
+          'nó là gợi ý để tìm địa điểm',
       ),
     );
   }
-  // Anything the resolver can turn into a provider lookup: a link, an explicit
-  // query, or a name it can search for.
-  const resolvable = Boolean(googleMapsUrl || googleMapsQuery || name);
+  // Anything the resolver can turn into a provider lookup: an id, a link, an
+  // explicit query, or a name it can search for.
+  const resolvable = Boolean(googlePlaceId || googleMapsUrl || googleMapsQuery || name);
   if (!resolvable) {
-    errors.push(msg('NAME_REQUIRED', 'name', 'Cần name hoặc google_maps_url để resolve'));
+    errors.push(
+      msg('NAME_REQUIRED', 'name', 'Cần name, google_maps_url hoặc google_place_id để resolve'),
+    );
   }
 
   const categoryRaw = raw.category_raw?.trim() || null;
@@ -259,6 +288,7 @@ export function validateRow(
       district: raw.district?.trim() || null,
       googleMapsUrl,
       googleMapsQuery,
+      googlePlaceId,
       categoryKey,
       categoryRaw,
       priceMin,

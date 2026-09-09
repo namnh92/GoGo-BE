@@ -2020,3 +2020,311 @@ describe('PI-BE-023 — the sheet stops guessing the category', () => {
     expect(source!.primaryType).toBe('cafe');
   });
 });
+
+/**
+ * PI-BE-024 — a sheet identifies its places, and says so plainly.
+ *
+ * The audit found that the only way to state a Google Place ID was to wrap it
+ * in `https://www.google.com/maps?place_id=<ID>` so `parseMapsUrl` could unwrap
+ * it again. Every fixture above still does exactly that, which is the clearest
+ * evidence there was: the tests had adopted the workaround.
+ */
+describe('PI-BE-024 — Place ID identity', () => {
+  const HEADERS = ['source_row_id', 'name', 'google_maps_url', 'google_place_id', 'category'];
+
+  async function runRows(token: string, spreadsheetId: string, rows: string[][]) {
+    sheets.seed(spreadsheetId, 'ID', [HEADERS, ...rows]);
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports/google-sheet',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { spreadsheetUrl: spreadsheetId, sheets: ['ID'], mode: 'create_drafts' },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const job = created.json();
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    await imports.processJob(job.id);
+    const listed = await imports.listRows(job.id as string, { limit: 20, offset: 0 });
+    return { jobId: job.id as string, rows: listed.items };
+  }
+
+  it('resolves a row that carries only a Place ID, with no city and no link', async () => {
+    const editor = await createAdmin('id-only@gogo.local', 'editor');
+    places.seed({
+      providerPlaceId: 'fake-id-only',
+      name: 'Quán Chỉ Có ID',
+      lat: 10.78,
+      lng: 106.7,
+      primaryType: 'cafe',
+      types: ['cafe'],
+    });
+
+    const { rows } = await runRows(editor.token, 'IdOnlyIdOnlyIdOnlyIdOnly0123456789', [
+      ['R1', '', '', 'fake-id-only', 'cafe'],
+    ]);
+
+    expect(rows[0]!.status).toBe('ready');
+    expect(rows[0]!.errors).toEqual([]);
+    expect(rows[0]!.resolvedGooglePlaceId).toBe('fake-id-only');
+  });
+
+  it('accepts a link and an id that name the same place', async () => {
+    const editor = await createAdmin('id-agree@gogo.local', 'editor');
+    places.seed({
+      providerPlaceId: 'fake-agree',
+      name: 'Quán Khớp',
+      lat: 10.77,
+      lng: 106.69,
+      primaryType: 'cafe',
+      types: ['cafe'],
+    });
+
+    const { rows } = await runRows(editor.token, 'AgreeAgreeAgreeAgreeAgree012345678', [
+      ['R1', '', 'https://www.google.com/maps?place_id=fake-agree', 'fake-agree', 'cafe'],
+    ]);
+
+    expect(rows[0]!.status).toBe('ready');
+    expect(rows[0]!.resolvedGooglePlaceId).toBe('fake-agree');
+  });
+
+  it('compares an explicit query_place_id locally, spending nothing', async () => {
+    const editor = await createAdmin('id-querypid@gogo.local', 'editor');
+    places.seed({
+      providerPlaceId: 'fake-querypid',
+      name: 'Quán Query Place Id',
+      lat: 10.775,
+      lng: 106.695,
+      primaryType: 'cafe',
+      types: ['cafe'],
+    });
+
+    // The shape Google's Share button produces for a search result.
+    const before = places.tiersRequested.length;
+    const { rows } = await runRows(editor.token, 'QueryPidQueryPidQueryPidQueryPid01', [
+      [
+        'R1',
+        '',
+        'https://www.google.com/maps/search/?api=1&query=Qu%C3%A1n&query_place_id=fake-querypid',
+        'fake-querypid',
+        'cafe',
+      ],
+    ]);
+
+    expect(rows[0]!.status).toBe('ready');
+    expect(rows[0]!.resolvedGooglePlaceId).toBe('fake-querypid');
+    // One Details call for the place itself — none for establishing agreement,
+    // because two strings were compared.
+    expect(places.tiersRequested.length - before).toBe(1);
+  });
+
+  it('refuses a link and an id that name different places, before paying Google', async () => {
+    const editor = await createAdmin('id-mismatch@gogo.local', 'editor');
+    places.seed({ providerPlaceId: 'fake-left', name: 'Bên Trái', lat: 10.77, lng: 106.69 });
+    places.seed({ providerPlaceId: 'fake-right', name: 'Bên Phải', lat: 10.78, lng: 106.7 });
+
+    const before = places.tiersRequested.length;
+    const { rows } = await runRows(editor.token, 'MismatchMismatchMismatch0123456789', [
+      ['R1', '', 'https://www.google.com/maps?query_place_id=fake-left', 'fake-right', 'cafe'],
+    ]);
+
+    expect(rows[0]!.status).toBe('validation_failed');
+    expect(rows[0]!.errors.map((e: { code: string }) => e.code)).toEqual(['PLACE_ID_URL_MISMATCH']);
+    // The disagreement is arithmetic on two strings; nothing was bought to find
+    // it. Expanding the link is a redirect hop, not a Places request.
+    expect(places.tiersRequested.length).toBe(before);
+    expect(rows[0]!.matchedPlaceId).toBeNull();
+  });
+
+  /**
+   * The shape the audit found in the wild: `maps.app.goo.gl/<code>` expands to
+   * `/maps/place/<name>/data=!3m1!4b1!4m6…`, whose `data` blob holds a hex
+   * feature id — not a Places API Place ID. Nothing in that URL can be compared
+   * with the column, so agreement has to be resolved rather than parsed.
+   */
+  describe('a URL with no extractable Place ID', () => {
+    it('resolves the link and compares the resolved id', async () => {
+      const editor = await createAdmin('id-resolve-agree@gogo.local', 'editor');
+      places.seed({
+        providerPlaceId: 'fake-dataurl',
+        name: 'Zyxwv Quánduynhat',
+        lat: 10.7845,
+        lng: 106.6912,
+        primaryType: 'cafe',
+        types: ['cafe'],
+      });
+
+      const before = places.tiersRequested.length;
+      const { rows } = await runRows(editor.token, 'DataUrlDataUrlDataUrlDataUrl01234', [
+        [
+          'R1',
+          '',
+          'https://www.google.com/maps/place/Zyxwv+Qu%C3%A1nduynhat/@10.7845,106.6912,17z/data=!3m1!4b1!4m6!3m5!1s0x317529292e8d3dd1:0x123',
+          'fake-dataurl',
+          'cafe',
+        ],
+      ]);
+
+      expect(rows[0]!.status).toBe('ready');
+      expect(rows[0]!.resolvedGooglePlaceId).toBe('fake-dataurl');
+      // Exactly the resolution that established agreement — and no second
+      // fetch afterwards "using the supplied id", which would buy the same
+      // answer twice.
+      expect(places.tiersRequested.length - before).toBe(1);
+    });
+
+    it('refuses when the resolved id is not the declared one', async () => {
+      const editor = await createAdmin('id-resolve-clash@gogo.local', 'editor');
+      places.seed({
+        providerPlaceId: 'fake-resolved-other',
+        name: 'Wxyzq Khacbiet',
+        lat: 10.781,
+        lng: 106.688,
+        primaryType: 'cafe',
+        types: ['cafe'],
+      });
+      places.seed({
+        providerPlaceId: 'fake-declared-other',
+        name: 'Một Nơi Khác Hẳn',
+        lat: 21.02,
+        lng: 105.8,
+      });
+
+      const { rows } = await runRows(editor.token, 'DataClashDataClashDataClash012345', [
+        [
+          'R1',
+          '',
+          'https://www.google.com/maps/place/Wxyzq+Khacbiet/@10.781,106.688,17z/data=!4m6!3m5!1s0x31752:0x9',
+          'fake-declared-other',
+          'cafe',
+        ],
+      ]);
+
+      expect(rows[0]!.status).toBe('validation_failed');
+      expect(rows[0]!.errors.map((e: { code: string }) => e.code)).toEqual([
+        'PLACE_ID_URL_MISMATCH',
+      ]);
+    });
+
+    it('refuses when the link names nothing GoGo can resolve', async () => {
+      const editor = await createAdmin('id-unverifiable@gogo.local', 'editor');
+      places.seed({
+        providerPlaceId: 'fake-unverifiable',
+        name: 'Quán Có Thật',
+        lat: 10.79,
+        lng: 106.7,
+      });
+
+      // Nothing seeded answers this name, so resolution comes back UNRESOLVED.
+      const { rows } = await runRows(editor.token, 'UnverifiableUnverifiable01234567', [
+        [
+          'R1',
+          '',
+          'https://www.google.com/maps/place/Khong+Ai+Tim+Duoc+Cho+Nay+Dau/@1.0,1.0,17z/data=!4m2',
+          'fake-unverifiable',
+          'cafe',
+        ],
+      ]);
+
+      // The failure that matters: finding no second id is not agreement, so the
+      // row must not be filed under the declared one on the strength of it.
+      expect(rows[0]!.status).toBe('validation_failed');
+      expect(rows[0]!.errors.map((e: { code: string }) => e.code)).toEqual([
+        'PLACE_ID_URL_UNVERIFIABLE',
+      ]);
+      expect(rows[0]!.resolvedGooglePlaceId).toBeNull();
+    });
+  });
+
+  it('expands a maps.app.goo.gl short link and compares what it lands on', async () => {
+    const editor = await createAdmin('id-shortlink@gogo.local', 'editor');
+    places.seed({
+      providerPlaceId: 'fake-shortlink',
+      name: 'Quán Link Rút Gọn',
+      lat: 21.03,
+      lng: 105.81,
+      primaryType: 'cafe',
+      types: ['cafe'],
+    });
+
+    // The redirect walk is SSRF-guarded and goes through global fetch, so the
+    // hop is stubbed rather than the parser bypassed: this exercises the real
+    // `expandShortLink`, allowlist and all.
+    const realFetch = globalThis.fetch;
+    type FetchInput = Parameters<typeof fetch>[0];
+    globalThis.fetch = (async (input: FetchInput) => {
+      const target = String(input);
+      if (target.startsWith('https://maps.app.goo.gl/')) {
+        return {
+          status: 302,
+          url: target,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === 'location'
+                ? 'https://www.google.com/maps/search/?api=1&query=Qu%C3%A1n&query_place_id=fake-shortlink'
+                : null,
+          },
+        } as unknown as Response;
+      }
+      return realFetch(input);
+    }) as typeof fetch;
+
+    try {
+      const before = places.tiersRequested.length;
+      const { rows } = await runRows(editor.token, 'ShortLinkShortLinkShortLink01234', [
+        ['R1', '', 'https://maps.app.goo.gl/CpyF14zdX84AhCKw5', 'fake-shortlink', 'cafe'],
+      ]);
+
+      expect(rows[0]!.status).toBe('ready');
+      expect(rows[0]!.resolvedGooglePlaceId).toBe('fake-shortlink');
+      // The expansion lands on an explicit `query_place_id`, so agreement is
+      // still settled by comparing strings: one Details call, for the place.
+      expect(places.tiersRequested.length - before).toBe(1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('answers a Place ID the catalogue already holds without asking Google', async () => {
+    const editor = await createAdmin('id-duplicate@gogo.local', 'editor');
+    places.seed({
+      providerPlaceId: 'fake-dupe-id',
+      name: 'Quán Đã Có',
+      lat: 10.75,
+      lng: 106.67,
+      primaryType: 'cafe',
+      types: ['cafe'],
+    });
+
+    // First job creates it. Publishing is an ops decision, not an editor's.
+    const ops = await createAdmin('id-duplicate-ops@gogo.local', 'ops_admin');
+    const first = await runRows(editor.token, 'DupeFirstDupeFirstDupeFirst012345', [
+      ['R1', '', '', 'fake-dupe-id', 'cafe'],
+    ]);
+    const published = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${first.jobId}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(published.statusCode, published.body).toBe(201);
+    expect(published.json().created).toBe(1);
+
+    const before = places.tiersRequested.length;
+    const second = await runRows(editor.token, 'DupeSecondDupeSecondDupeSecond012', [
+      ['R1', '', '', 'fake-dupe-id', 'cafe'],
+    ]);
+
+    expect(second.rows[0]!.status).toBe('duplicate');
+    expect(second.rows[0]!.matchReasons).toContain('DB_FIRST');
+    // The whole point of resolving the id first: a decision already made costs
+    // no Details call.
+    expect(places.tiersRequested.length).toBe(before);
+  });
+});

@@ -819,10 +819,59 @@ export class PlaceImportJobService {
         [hints.name, hints.district, hints.city].filter(Boolean).join(' '),
       )}`;
 
+    /**
+     * PI-BE-024 — a row that carries both a link and an id is asserting they
+     * name the same place, and the assertion is checked rather than assumed.
+     *
+     * The first cut compared `identifyUrl`'s id with the column and let the row
+     * through whenever the parse produced none. That is most real links:
+     * Google's own share URLs are `/maps/place/<name>/data=!3m1!4b1!4m6…`, and
+     * the id inside that blob is not a Places API Place ID. So the check passed
+     * by finding nothing, which is not agreement — it is the absence of a
+     * second opinion, and the row went on to be filed under whichever id the
+     * column happened to hold.
+     */
+    if (normalized.googlePlaceId && normalized.googleMapsUrl) {
+      const verdict = await this.checkDeclaredIdentity(
+        normalized.googleMapsUrl,
+        normalized.googlePlaceId,
+        hints,
+        mode,
+      );
+      if (verdict.kind === 'MISMATCH') {
+        await this.failIdentity(rowId, 'PLACE_ID_URL_MISMATCH', {
+          field: 'google_place_id',
+          message:
+            `Link và Place ID trỏ tới hai địa điểm khác nhau: ` +
+            `link → ${verdict.fromUrl}, cột → ${normalized.googlePlaceId}`,
+        });
+        return;
+      }
+      if (verdict.kind === 'UNVERIFIABLE') {
+        await this.failIdentity(rowId, 'PLACE_ID_URL_UNVERIFIABLE', {
+          field: 'google_maps_url',
+          message:
+            `Không xác định được link này trỏ tới địa điểm nào (${verdict.reasonCode}), ` +
+            `nên không thể đối chiếu với google_place_id. Bỏ một trong hai cột đi.`,
+        });
+        return;
+      }
+      if (verdict.kind === 'AGREED_BY_RESOLUTION') {
+        /**
+         * Establishing agreement already cost the Details call, and it was made
+         * at this mode's tier for exactly this id. Fetching again to "use the
+         * supplied id" would buy the same answer twice.
+         */
+        await this.applyResolvedOutcome(rowId, verdict.outcome, mode, normalized, knownCategories);
+        return;
+      }
+      // AGREED_LOCALLY: the URL named the id outright and nothing was spent.
+    }
+
     const resolved = await this.metrics.time(
       'place_resolve_duration_seconds',
       { source: 'cms_import' },
-      () => this.identifyThenResolve(url, hints, mode),
+      () => this.identifyThenResolve(url, hints, mode, normalized.googlePlaceId),
     );
 
     // DB-first hit: the sheet named a Google id the catalogue already holds, so
@@ -868,7 +917,25 @@ export class PlaceImportJobService {
       return;
     }
 
-    const outcome = resolved.outcome;
+    await this.applyResolvedOutcome(rowId, resolved.outcome, mode, normalized, knownCategories);
+  }
+
+  /**
+   * Everything that happens once a provider outcome exists, wherever it came
+   * from.
+   *
+   * Two callers now reach it: the ordinary resolve, and the identity check that
+   * had to resolve a link in order to compare it with a declared Place ID. The
+   * second must not re-fetch what the first already bought, and it must not
+   * grow a second, slightly different copy of these four branches.
+   */
+  private async applyResolvedOutcome(
+    rowId: string,
+    outcome: ResolveOutcome,
+    mode: ImportMode,
+    normalized: NormalizedImportRow,
+    knownCategories?: ReadonlySet<string>,
+  ): Promise<void> {
     this.metrics.increment('place_resolve_confidence_bucket', {
       source: 'cms_import',
       bucket: confidenceBucket(
@@ -931,6 +998,80 @@ export class PlaceImportJobService {
   }
 
   /**
+   * PI-BE-024 — does the link name the same place the `google_place_id` column
+   * does?
+   *
+   * Four answers, and the third is the one the first cut got wrong.
+   *
+   *   1. The URL carries an explicit Places id (`place_id`, `placeid` or
+   *      `query_place_id`) — compare the two strings and spend nothing.
+   *   2. A short link expands to such a URL — the redirect walk is SSRF-guarded
+   *      and costs one hop, then case 1 applies.
+   *   3. The URL carries no Places id at all. This is most real links: Google's
+   *      Share button produces `/maps/place/<name>/data=!3m1!4b1!4m6…`, and the
+   *      hex feature id inside that blob is not a Places API Place ID. There is
+   *      nothing to compare, so the link is resolved through the ordinary
+   *      provider path and the id that comes back is compared instead.
+   *   4. Resolution cannot settle what the link names — ambiguous branches, or
+   *      nothing found. Then the row fails. Finding no second id is not
+   *      agreement; it is the absence of a second opinion, and treating it as
+   *      agreement is how a place gets filed under an id nobody checked.
+   */
+  private async checkDeclaredIdentity(
+    url: string,
+    declaredPlaceId: string,
+    hints: Parameters<PlaceResolverService['resolveIdentified']>[2],
+    mode: ImportMode,
+  ): Promise<
+    | { kind: 'AGREED_LOCALLY' }
+    | { kind: 'AGREED_BY_RESOLUTION'; outcome: ResolveOutcome }
+    | { kind: 'MISMATCH'; fromUrl: string }
+    | { kind: 'UNVERIFIABLE'; reasonCode: string }
+  > {
+    const identified = await this.resolver.identifyUrl(url);
+    if (!identified.ok) return { kind: 'UNVERIFIABLE', reasonCode: identified.reasonCode };
+
+    const fromUrl = identified.value.providerPlaceId;
+    if (fromUrl) {
+      return fromUrl === declaredPlaceId
+        ? { kind: 'AGREED_LOCALLY' }
+        : { kind: 'MISMATCH', fromUrl };
+    }
+
+    const outcome = await this.resolver.resolveIdentified(
+      identified.value,
+      resolveTierFor(mode),
+      hints,
+    );
+    if (outcome.status === 'RESOLVED') {
+      return outcome.details.providerPlaceId === declaredPlaceId
+        ? { kind: 'AGREED_BY_RESOLUTION', outcome }
+        : { kind: 'MISMATCH', fromUrl: outcome.details.providerPlaceId };
+    }
+    return {
+      kind: 'UNVERIFIABLE',
+      reasonCode: outcome.status === 'UNRESOLVED' ? outcome.reasonCode : 'NEEDS_CONFIRMATION',
+    };
+  }
+
+  /** One shape for both ways a declared identity can fail the row. */
+  private async failIdentity(
+    rowId: string,
+    code: string,
+    detail: { field: string; message: string },
+  ): Promise<void> {
+    await this.db
+      .update(schema.placeIngestRows)
+      .set({
+        status: 'validation_failed',
+        errors: [{ code, field: detail.field, message: detail.message }],
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.placeIngestRows.id, rowId));
+    this.countRow('validation_failed', code);
+  }
+
+  /**
    * URL → id → catalogue → (only if still needed) Google.
    *
    * The order is the whole of #337 item 3: the Google Place ID is the dedup
@@ -942,11 +1083,47 @@ export class PlaceImportJobService {
     url: string,
     hints: Parameters<PlaceResolverService['resolveIdentified']>[2],
     mode: ImportMode,
+    /** PI-BE-024 — the id the sheet named outright, when it named one. */
+    declaredPlaceId?: string | null,
   ): Promise<
     | { kind: 'DB_FIRST'; place: KnownProviderPlace }
     | { kind: 'DB_FIRST_CONFLICT'; googlePlaceId: string; placeIds: string[] }
     | { kind: 'RESOLVED'; outcome: ResolveOutcome }
   > {
+    /**
+     * PI-BE-024 — a declared Place ID skips URL parsing entirely.
+     *
+     * It is already the answer the parse exists to produce, and it is already
+     * the dedup key. Wrapping it in a `google.com/maps?place_id=…` string so
+     * that `parseMapsUrl` could unwrap it again was the workaround the audit
+     * found operators being asked to perform; the code was doing the same
+     * thing to itself.
+     *
+     * The catalogue is still asked first, and `resolveByProviderId` is still
+     * the only thing that spends a Details call.
+     */
+    if (declaredPlaceId) {
+      if (mode !== 'update_existing' && (await this.dbFirst())) {
+        const known = await this.dedup.knownProviderPlace(
+          declaredPlaceId,
+          this.verificationWindow(),
+        );
+        if (known.kind === 'CONFLICT') {
+          return {
+            kind: 'DB_FIRST_CONFLICT',
+            googlePlaceId: declaredPlaceId,
+            placeIds: known.placeIds,
+          };
+        }
+        if (known.kind === 'KNOWN') return { kind: 'DB_FIRST', place: known.place };
+        this.metrics.increment('place_dbfirst_miss_total', { reason: known.reason });
+      }
+      return {
+        kind: 'RESOLVED',
+        outcome: await this.resolver.resolveByProviderId(declaredPlaceId, resolveTierFor(mode)),
+      };
+    }
+
     const identified = await this.resolver.identifyUrl(url);
     if (!identified.ok) {
       return {

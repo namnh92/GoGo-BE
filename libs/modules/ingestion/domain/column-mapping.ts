@@ -14,6 +14,7 @@ export const CANONICAL_FIELDS = [
   'district',
   'google_maps_url',
   'google_maps_query',
+  'google_place_id',
   'category',
   'category_raw',
   'price_min',
@@ -173,6 +174,9 @@ const TEMPLATE_ALIASES: Record<string, CanonicalField> = {
   district: 'district',
   'google maps url': 'google_maps_url',
   'google maps': 'google_maps_url',
+  'google place id': 'google_place_id',
+  'place id': 'google_place_id',
+  'ma dia diem google': 'google_place_id',
   category: 'category',
   'gia min': 'price_min',
   'gia max': 'price_max',
@@ -234,14 +238,21 @@ export function resolveMapping(
 
   const covered = new Set(Object.values(mapping));
   /**
-   * ADR-0019 §7b — `city` is a search hint, and a sheet that carries a Google
-   * Maps link column has no text search to narrow.
+   * ADR-0019 §7b — `city` is a search hint, and a sheet that identifies its
+   * places outright has no text search to narrow.
    *
    * Requiring it there said, in the one screen an operator reads before
    * importing, that GoGo files places under a city. It does not: the
-   * administrative identity comes from the coordinate the link resolves to.
+   * administrative identity comes from the coordinate the identity resolves to.
+   *
+   * PI-BE-024 adds `google_place_id` to that set. A Place ID is the strongest
+   * identity a sheet can carry — it needs no search at all — so demanding a
+   * city beside it would be the same mistake, spelled differently.
    */
-  const linked = covered.has('google_maps_url') || covered.has('google_maps_query');
+  const linked =
+    covered.has('google_maps_url') ||
+    covered.has('google_maps_query') ||
+    covered.has('google_place_id');
   const required: CanonicalField[] = linked
     ? ['source_row_id', 'category']
     : ['source_row_id', 'city', 'category'];

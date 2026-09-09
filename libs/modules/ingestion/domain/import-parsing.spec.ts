@@ -691,6 +691,68 @@ describe('OpenAPI ImportCanonicalField', () => {
   });
 });
 
+/**
+ * PI-BE-024 — a sheet may name its place with a Google Place ID.
+ *
+ * Before this, the only way to state one was to wrap it in a
+ * `google.com/maps?place_id=…` URL so that `parseMapsUrl` could unwrap it
+ * again: a fake link, constructed by hand, to express the strongest identity a
+ * row can carry.
+ */
+describe('google_place_id', () => {
+  const categories = new Set(['cafe']);
+
+  it('is a canonical field, and Vietnamese headers find it', () => {
+    expect(CANONICAL_FIELDS).toContain('google_place_id');
+    const { mapping } = resolveMapping(['source_row_id', 'Place ID', 'category']);
+    expect(mapping['Place ID']).toBe('google_place_id');
+  });
+
+  it('accepts a row identified only by a Place ID, with no city', () => {
+    const { normalized, errors } = validateRow(
+      {
+        source_row_id: 'HN-0002',
+        google_place_id: 'ChIJne3U7GyrNTERehxJ0V09C6o',
+        category: 'cafe',
+      },
+      { knownCategoryKeys: categories },
+    );
+    expect(errors).toEqual([]);
+    expect(normalized.googlePlaceId).toBe('ChIJne3U7GyrNTERehxJ0V09C6o');
+    // The administrative identity comes from the coordinate, not from a typed
+    // city, so demanding one beside an id would be asking for a fact GoGo
+    // neither needs nor stores.
+    expect(normalized.city).toBeNull();
+  });
+
+  it('rejects a Place ID that is not one, before a request is spent on it', () => {
+    const { errors, normalized } = validateRow(
+      { source_row_id: '1', google_place_id: 'nope!', category: 'cafe' },
+      { knownCategoryKeys: categories },
+    );
+    expect(errors.map((e) => e.code)).toContain('PLACE_ID_INVALID');
+    expect(normalized.googlePlaceId).toBeNull();
+  });
+
+  it('still asks for a city when the row identifies nothing outright', () => {
+    const { errors } = validateRow(
+      { source_row_id: '1', name: 'Quán Nào Đó', category: 'cafe' },
+      { knownCategoryKeys: categories },
+    );
+    expect(errors.map((e) => e.code)).toContain('CITY_REQUIRED');
+  });
+
+  it('drops city from the required columns for a sheet that carries Place IDs', () => {
+    const { missing } = resolveMapping(['source_row_id', 'google_place_id', 'category']);
+    expect(missing).toEqual([]);
+  });
+
+  it('names every way a row can fail to identify anything', () => {
+    const { errors } = validateRow({ source_row_id: '1', city: 'Hà Nội', category: 'cafe' });
+    expect(errors.map((e) => e.code)).toContain('NAME_REQUIRED');
+  });
+});
+
 describe('missing required columns', () => {
   it('names the required fields the HCM sheet has no header for', () => {
     // The real sheet from the failing import, verbatim.
