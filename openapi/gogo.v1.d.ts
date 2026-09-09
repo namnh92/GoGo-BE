@@ -6966,7 +6966,6 @@ export interface components {
             description?: string | null;
             addressText?: string | null;
             phone?: string | null;
-            /** Format: uri */
             website?: string | null;
             avgVisitMinutes?: number | null;
             /** @description Audience fit, the same 0..1 record the place row carries. */

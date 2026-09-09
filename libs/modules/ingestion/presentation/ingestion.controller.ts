@@ -93,21 +93,23 @@ const decisionSchema = z.object({
  */
 const reviewDraftSchema = z
   .object({
+    // Every limit below is `placeEditSchema`'s, field for field. A reviewer
+    // supplementing a submission and an editor editing the place afterwards
+    // are the same edit at two moments, and a value one accepts and the other
+    // rejects would fail at approval — after the reviewer had left the form.
     name: z.string().trim().min(1).max(200),
     description: z.string().max(4000).nullable(),
-    addressText: z.string().max(500).nullable(),
-    phone: z.string().max(40).nullable(),
-    website: z.string().url().max(500).nullable(),
-    avgVisitMinutes: z
-      .number()
-      .int()
-      .min(0)
-      .max(24 * 60)
-      .nullable(),
+    addressText: z.string().max(400).nullable(),
+    phone: z.string().trim().max(40).nullable(),
+    // Shape is not checked here for the same reason it is not checked on the
+    // place: GoGo-BE normalises a website, and a second, slightly different
+    // rule in front of it would refuse values the normaliser accepts.
+    website: z.string().trim().max(500).nullable(),
+    avgVisitMinutes: z.number().int().min(10).max(720).nullable(),
     suitability: z.record(z.string(), z.number().min(0).max(1)),
-    taxonomyIds: z.array(z.string().uuid()).max(40),
+    taxonomyIds: z.array(z.string().uuid()).max(30),
     isLodging: z.boolean(),
-    curatedRank: z.number().int().nullable(),
+    curatedRank: z.number().int().min(0).nullable(),
     // Integer minor units, like every other amount in the contract.
     priceMin: z.number().int().min(0).nullable(),
     priceMax: z.number().int().min(0).nullable(),

@@ -12722,21 +12722,21 @@ components:
       properties:
         name: { type: string, minLength: 1, maxLength: 200 }
         description: { type: string, maxLength: 4000, nullable: true }
-        addressText: { type: string, maxLength: 500, nullable: true }
+        addressText: { type: string, maxLength: 400, nullable: true }
         phone: { type: string, maxLength: 40, nullable: true }
-        website: { type: string, format: uri, maxLength: 500, nullable: true }
-        avgVisitMinutes: { type: integer, minimum: 0, maximum: 1440, nullable: true }
+        website: { type: string, maxLength: 500, nullable: true }
+        avgVisitMinutes: { type: integer, minimum: 10, maximum: 720, nullable: true }
         suitability:
           type: object
           additionalProperties: { type: number, minimum: 0, maximum: 1 }
           description: Audience fit, the same 0..1 record the place row carries.
         taxonomyIds:
           type: array
-          maxItems: 40
+          maxItems: 30
           items: { type: string, format: uuid }
           description: Category, moods and every other taxonomy chip, as ids.
         isLodging: { type: boolean }
-        curatedRank: { type: integer, nullable: true }
+        curatedRank: { type: integer, minimum: 0, nullable: true }
         priceMin:
           type: integer
           minimum: 0

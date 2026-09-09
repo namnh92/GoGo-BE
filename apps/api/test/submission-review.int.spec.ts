@@ -359,6 +359,28 @@ describe('supplementing before the decision (#528)', () => {
     expect(ok.statusCode, ok.body).toBe(200);
   });
 
+  it('holds the reviewer to the same field rules the place editor uses', async () => {
+    const { submissionId } = await contribute();
+    // `avgVisitMinutes` is 10..720 on a place; a draft that accepted 0 would
+    // save here and be rejected at approval, after the reviewer had left.
+    const tooShort = await saveReview(submissionId, { draft: { avgVisitMinutes: 0 } });
+    expect(tooShort.statusCode).toBe(400);
+
+    const tooLong = await saveReview(submissionId, {
+      draft: { addressText: 'x'.repeat(401) },
+    });
+    expect(tooLong.statusCode).toBe(400);
+
+    // And a rating is not a field a person can type at all.
+    const notYours = await saveReview(submissionId, {
+      draft: { rating: 5 } as unknown as Record<string, unknown>,
+    });
+    expect(notYours.statusCode).toBe(400);
+
+    const ok = await saveReview(submissionId, { draft: { avgVisitMinutes: 60 } });
+    expect(ok.statusCode, ok.body).toBe(200);
+  });
+
   it('refuses a taxonomy id the catalogue does not carry, at save', async () => {
     const { submissionId } = await contribute();
     const res = await saveReview(submissionId, {
@@ -536,7 +558,10 @@ describe('the decision applies what the reviewer wrote (#528)', () => {
 
   it('merge points at the chosen place and creates no second one', async () => {
     const first = await contribute({ name: 'Quán Gốc' });
-    const approved = await decide(first.submissionId, { decision: 'approved', reason: 'đủ điều kiện' });
+    const approved = await decide(first.submissionId, {
+      decision: 'approved',
+      reason: 'đủ điều kiện',
+    });
     const targetId = approved.json().placeId as string;
 
     const second = await contribute();
@@ -577,7 +602,10 @@ describe('the decision applies what the reviewer wrote (#528)', () => {
     const first = await decide(submissionId, { decision: 'approved', reason: 'đủ điều kiện' });
     expect(first.statusCode).toBe(201);
 
-    const second = await decide(submissionId, { decision: 'approved', reason: 'duyệt lại lần nữa' });
+    const second = await decide(submissionId, {
+      decision: 'approved',
+      reason: 'duyệt lại lần nữa',
+    });
     expect(second.statusCode).toBe(409);
     expect(second.json().code).toBe('ALREADY_DECIDED');
 
