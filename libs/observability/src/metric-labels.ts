@@ -325,6 +325,9 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // done | retried | dead_lettered | referenced (a live avatar, refused).
   media_cleanup_enqueued_total: [],
   media_cleanup_attempt_total: ['bucket', 'outcome'],
+  // Worker gauges (ADR-0022): queue depth and dead-lettered rows, no labels.
+  media_cleanup_pending: [],
+  media_cleanup_dead_lettered: [],
 };
 
 /**
