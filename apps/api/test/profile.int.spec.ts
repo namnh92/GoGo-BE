@@ -7,7 +7,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
-import { MediaCleanupService } from '@gogo/modules';
+import { MediaCleanupService, PrivacyJobs } from '@gogo/modules';
 import {
   CACHE_PURGE,
   PUBLIC_STORAGE_PROVIDER,
@@ -701,5 +701,104 @@ describe('what co-members see, and the curated areas (PROF-BE-005)', () => {
       name: 'Quận 1',
       city: 'TP.HCM',
     });
+  });
+});
+
+describe('the picture leaves with the person; stale presigns leave on schedule (PROF-BE-006)', () => {
+  it('deleting the account schedules and removes the avatar in the same breath', async () => {
+    const { token, userId } = await register('avatar-delete@gogo.id.vn');
+    const privateStore = app.get<FakeStorage>(STORAGE_PROVIDER);
+    const publicStore = app.get<FakeStorage>(PUBLIC_STORAGE_PROVIDER);
+    const presign = await api().inject({
+      method: 'POST',
+      url: '/v1/uploads',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { purpose: 'avatar', contentType: 'image/png', contentLength: 100 },
+    });
+    const key = presign.json().key as string;
+    privateStore.seed(
+      key,
+      new Uint8Array(
+        await sharp({ create: { width: 32, height: 32, channels: 3, background: '#0ff' } })
+          .png()
+          .toBuffer(),
+      ),
+      'image/png',
+    );
+    const set = await api().inject({
+      method: 'PUT',
+      url: '/v1/me/avatar',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { uploadKey: key },
+    });
+    const publicKey = (set.json().avatarUrl as string).replace('https://assets-test.local/', '');
+    expect(publicStore.objects.has(publicKey)).toBe(true);
+
+    const del = await api().inject({
+      method: 'DELETE',
+      url: '/v1/me',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {},
+    });
+    expect(del.statusCode).toBe(200);
+
+    const [user] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+    expect(user!.status).toBe('deleted');
+    expect(user!.avatarKey).toBeNull();
+    expect(publicStore.deleted).toContain(publicKey);
+    expect(app.get<FakeCachePurge>(CACHE_PURGE).purged).toContain(
+      `https://assets-test.local/${publicKey}`,
+    );
+    const rows = await db
+      .select()
+      .from(schema.mediaCleanupQueue)
+      .where(eq(schema.mediaCleanupQueue.objectKey, publicKey));
+    expect(rows).toHaveLength(0);
+  });
+
+  it('the privacy job purges presign rows a day past expiry, and only those', async () => {
+    const { userId } = await register('stale-presign@gogo.id.vn');
+    const [stale] = await db
+      .insert(schema.mediaUploads)
+      .values({
+        storageKey: `tmp/avatars/${userId}/stale.jpg`,
+        actorType: 'user',
+        actorId: userId,
+        purpose: 'avatar',
+        contentType: 'image/jpeg',
+        contentLength: 10,
+        expiresAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+      })
+      .returning({ id: schema.mediaUploads.id });
+    const [fresh] = await db
+      .insert(schema.mediaUploads)
+      .values({
+        storageKey: `tmp/avatars/${userId}/fresh.jpg`,
+        actorType: 'user',
+        actorId: userId,
+        purpose: 'avatar',
+        contentType: 'image/jpeg',
+        contentLength: 10,
+        expiresAt: new Date(Date.now() - 60 * 1000),
+      })
+      .returning({ id: schema.mediaUploads.id });
+
+    const dry = await new PrivacyJobs(db).run(true);
+    expect(dry.mediaUploadsPurged).toBeGreaterThanOrEqual(1);
+    expect(
+      await db.select().from(schema.mediaUploads).where(eq(schema.mediaUploads.id, stale!.id)),
+    ).toHaveLength(1);
+
+    const report = await new PrivacyJobs(db).run(false);
+    expect(report.mediaUploadsPurged).toBeGreaterThanOrEqual(1);
+    expect(
+      await db.select().from(schema.mediaUploads).where(eq(schema.mediaUploads.id, stale!.id)),
+    ).toHaveLength(0);
+    expect(
+      await db.select().from(schema.mediaUploads).where(eq(schema.mediaUploads.id, fresh!.id)),
+    ).toHaveLength(1);
   });
 });
