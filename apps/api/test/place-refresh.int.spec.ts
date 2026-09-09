@@ -15,7 +15,7 @@ import {
   TRANSIENT_MAX_MINUTES,
   budgetLimitsFrom,
 } from '@gogo/modules';
-import { AdvisoryLock } from '../../worker/src/periodic';
+import { WorkerLease } from '@gogo/database';
 
 /**
  * PR7 / COST-BE-007 (#340) — the liveness refresh, against a real Postgres and
@@ -428,17 +428,36 @@ describe('bounds that stop the tick', () => {
     expect(requests).toHaveLength(0);
   });
 
-  it('one advisory lock keeps a second runner out of the same job', async () => {
-    const lock = new AdvisoryLock(pool as never);
-    const held = await lock.tryAcquire('gogo:worker:place-refresh');
+  it('one lease keeps a second runner out of the same job (BE#539)', async () => {
+    // This used to assert the same property through `pg_try_advisory_lock`,
+    // which held under a direct connection and leaked under the PgBouncer
+    // endpoint DEV actually uses — the lock was taken on one backend and the
+    // unlock ran on another. The property is unchanged; what enforces it is now
+    // a row whose predicate travels with every statement.
+    const held = await new WorkerLease(pool as never, {
+      ttlMs: 60_000,
+      renewEveryMs: 20_000,
+      workerId: 'a',
+    }).tryAcquire('gogo:worker:place-refresh');
     expect(held).not.toBeNull();
+
     expect(
-      await new AdvisoryLock(pool as never).tryAcquire('gogo:worker:place-refresh'),
+      await new WorkerLease(pool as never, {
+        ttlMs: 60_000,
+        renewEveryMs: 20_000,
+        workerId: 'b',
+      }).tryAcquire('gogo:worker:place-refresh'),
     ).toBeNull();
-    await held!();
-    const after = await new AdvisoryLock(pool as never).tryAcquire('gogo:worker:place-refresh');
+
+    await held!.release();
+
+    const after = await new WorkerLease(pool as never, {
+      ttlMs: 60_000,
+      renewEveryMs: 20_000,
+      workerId: 'c',
+    }).tryAcquire('gogo:worker:place-refresh');
     expect(after).not.toBeNull();
-    await after!();
+    await after!.release();
   });
 });
 

@@ -47,7 +47,8 @@ import {
   UnconfiguredPushProvider,
   pushProviderStatus,
 } from '@gogo/providers';
-import { AdvisoryLock, startPeriodic } from './periodic';
+import { startPeriodic } from './periodic';
+import { WorkerLease } from '@gogo/database';
 import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
 
 /**
@@ -73,6 +74,13 @@ const pollIntervalMs = (name: string, fallback: number): number => {
   return value;
 };
 
+/**
+ * BE#539 — how long a lease survives without renewal, i.e. how long a job is
+ * blocked if this process dies holding one. Comfortably above the longest tick
+ * so a healthy job never loses its lease, and short enough that a crash costs
+ * one interval rather than an incident.
+ */
+const LEASE_TTL_MS = 90_000;
 const OUTBOX_POLL_MS = pollIntervalMs('OUTBOX_POLL_MS', 5000);
 /**
  * COST-BE-016 (#368): how often the estimator re-prices this month's and last
@@ -531,7 +539,21 @@ async function bootstrap(): Promise<void> {
         },
       },
     ],
-    { lock: new AdvisoryLock(pool), logger, metrics },
+    {
+      // BE#539 — a lease row, not an advisory lock. DATABASE_URL is Neon's
+      // pooler, where advisory locks leak because the unlock can land on a
+      // different backend than the lock. The TTL is the blast radius of this
+      // process dying mid-job; renewal at a third of it survives one slow
+      // round trip without dropping a healthy lease.
+      lock: new WorkerLease(pool, {
+        ttlMs: LEASE_TTL_MS,
+        renewEveryMs: LEASE_TTL_MS / 3,
+        workerId: WORKER_ID,
+        report: (event, detail) => logger.warn(detail, event),
+      }),
+      logger,
+      metrics,
+    },
   );
 
   logger.info(

@@ -407,6 +407,13 @@
       "when": 1790035200000,
       "tag": "0059_submission-review-draft",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1790121600000,
+      "tag": "0060_worker-leases",
+      "breakpoints": true
     }
   ]
 }

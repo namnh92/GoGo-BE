@@ -160,3 +160,33 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
 });
+
+/**
+ * BE#539 — single-flight for periodic jobs, as a row rather than a session.
+ *
+ * `pg_try_advisory_lock` is session-scoped and `DATABASE_URL` goes through
+ * PgBouncer in transaction pooling, so the unlock could land on a different
+ * backend than the lock: it returned false silently and the lock leaked. Every
+ * operation on this table is one self-contained statement, so it does not care
+ * which backend runs it, and `expiresAt` means a worker that dies holding a
+ * lease blocks its job for a bounded time instead of forever.
+ */
+export const workerLeases = pgTable(
+  'worker_leases',
+  {
+    /** Job name — one row per job, for the life of the deployment. */
+    name: text('name').primaryKey(),
+    /**
+     * Fresh per acquisition, not per process. Renewal and release both match on
+     * it, so a worker that lost its lease cannot renew or release the lease its
+     * successor now holds.
+     */
+    holder: uuid('holder').notNull(),
+    /** Which process, for reading during an incident. Never decides ownership. */
+    workerId: text('worker_id'),
+    acquiredAt: timestamp('acquired_at', { withTimezone: true }).notNull().defaultNow(),
+    renewedAt: timestamp('renewed_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [index('worker_leases_expires_idx').on(t.expiresAt)],
+);

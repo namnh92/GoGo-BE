@@ -7,15 +7,35 @@ const logger: PeriodicLogger = {
   error: () => undefined,
 };
 
-function lock(granted = true): JobLock & { acquired: number; released: number } {
+/**
+ * BE#539 — a lease, not a bare release function. `lose()` simulates the case
+ * the advisory lock could not express: the lease going while the job runs.
+ */
+function lock(granted = true): JobLock & {
+  acquired: number;
+  released: number;
+  lose: () => void;
+} {
+  let controller: AbortController | null = null;
+  let held = true;
   const l = {
     acquired: 0,
     released: 0,
+    lose: () => {
+      held = false;
+      controller?.abort();
+    },
     async tryAcquire() {
       if (!granted) return null;
       l.acquired += 1;
-      return async () => {
-        l.released += 1;
+      controller = new AbortController();
+      held = true;
+      return {
+        signal: controller.signal,
+        isHeld: () => held,
+        release: async () => {
+          l.released += 1;
+        },
       };
     },
   };
@@ -167,6 +187,70 @@ describe('startPeriodic', () => {
       'worker_periodic_duration_seconds{refresh}',
       'worker_periodic_duration_seconds{refresh}',
     ]);
+    await handle.stop();
+  });
+
+  it('hands the job a signal that aborts when the lease is lost (BE#539)', async () => {
+    const l = lock();
+    let sawAbort = false;
+    const handle = startPeriodic(
+      [
+        {
+          name: 'j',
+          schedule: { everyMs: 1000 },
+          run: async (ctx) => {
+            l.lose();
+            // A job that touches shared work checks between units; this is the
+            // check the advisory lock could never offer, because a leaked lock
+            // looked identical to a held one.
+            sawAbort = ctx.signal.aborted;
+          },
+        },
+      ],
+      { lock: l, logger },
+    );
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sawAbort).toBe(true);
+    await handle.stop();
+  });
+
+  it('does not report success for a tick that lost its lease while running', async () => {
+    // Finishing is not the same as having been entitled to finish: another
+    // replica has been running it too, and `ok` would hide that.
+    const l = lock();
+    const metrics = recorder();
+    const handle = startPeriodic(
+      [{ name: 'j', schedule: { everyMs: 1000 }, run: async () => l.lose() }],
+      { lock: l, logger, metrics },
+    );
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(metrics.counts['worker_periodic_runs_total{j,lease_lost}']).toBe(1);
+    expect(metrics.counts['worker_periodic_runs_total{j,ok}']).toBeUndefined();
+    await handle.stop();
+  });
+
+  it('counts a run that threw after losing its lease as lease_lost, not failed', async () => {
+    const l = lock();
+    const metrics = recorder();
+    const handle = startPeriodic(
+      [
+        {
+          name: 'j',
+          schedule: { everyMs: 1000 },
+          run: async () => {
+            l.lose();
+            throw new Error('aborted');
+          },
+        },
+      ],
+      { lock: l, logger, metrics },
+    );
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(metrics.counts['worker_periodic_runs_total{j,lease_lost}']).toBe(1);
+    expect(metrics.counts['worker_periodic_runs_total{j,failed}']).toBeUndefined();
     await handle.stop();
   });
 
