@@ -27,6 +27,16 @@ export const CANONICAL_FIELDS = [
   'vibes_raw',
   'highlight',
   'note',
+  /**
+   * PI-BE-025 — GoGo-owned columns the schema has always had and the file could
+   * never set. An operator with a phone number had to create the place, open
+   * the editor and type it again, one place at a time.
+   */
+  'phone',
+  'website',
+  'avg_visit_minutes',
+  'is_lodging',
+  'curated_rank',
 ] as const;
 
 export type CanonicalField = (typeof CANONICAL_FIELDS)[number];
@@ -70,8 +80,15 @@ export const LEGACY_FIELD_ALIASES: Readonly<Record<string, CanonicalField>> = {
 };
 
 /**
- * The other three shipped values. These never had anywhere to go: no canonical
- * field, no column on `places`, nothing downstream that could store them.
+ * Shipped mapping values that never had anywhere to go: no canonical field, no
+ * column on `places`, nothing downstream that could store them.
+ *
+ * `phone` and `website` were here until PI-BE-025 and are not any more — they
+ * are canonical fields now, with columns, normalization and provenance, so
+ * mapping a header onto them stores a value instead of dropping one. `address`
+ * stays: `places.address_text` is written from the provider's formatted
+ * address, and a sheet's own address string has no writer and no meaning
+ * beside it.
  *
  * `/v1` answered 200 and ignored them, so turning them into a hard 400 would
  * be a behavioural break for the sake of tidiness. They stay accepted and the
@@ -79,7 +96,7 @@ export const LEGACY_FIELD_ALIASES: Readonly<Record<string, CanonicalField>> = {
  * the outcome is visible instead of silent. Whether GoGo should hold this data
  * at all is a catalog question, not an import one.
  */
-export const RETIRED_FIELDS: readonly string[] = ['address', 'phone', 'website'];
+export const RETIRED_FIELDS: readonly string[] = ['address'];
 
 export type ColumnMappingResult = {
   mapping: Record<string, CanonicalField>;
@@ -183,6 +200,13 @@ const TEMPLATE_ALIASES: Record<string, CanonicalField> = {
   'don vi gia': 'price_unit',
   'doi tuong': 'audiences',
   vibes: 'vibes',
+  'so dien thoai': 'phone',
+  'dien thoai': 'phone',
+  phone: 'phone',
+  website: 'website',
+  'thoi luong ghe': 'avg_visit_minutes',
+  'luu tru': 'is_lodging',
+  'thu tu tuyen chon': 'curated_rank',
   highlight: 'highlight',
   'ghi chu': 'note',
 };
