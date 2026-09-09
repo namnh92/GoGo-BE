@@ -393,6 +393,13 @@
       "when": 1789862400000,
       "tag": "0057_ingest-row-administrative-preview",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1789948800000,
+      "tag": "0058_push-subscriptions",
+      "breakpoints": true
     }
   ]
 }

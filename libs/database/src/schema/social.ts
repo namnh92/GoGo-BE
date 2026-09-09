@@ -166,6 +166,13 @@ export const notificationPreferences = pgTable(
 
 export const devicePlatform = pgEnum('device_platform', ['ios', 'android', 'web']);
 
+/**
+ * @deprecated NTF-BE-011 (#515) — nothing routes on this and nothing writes to
+ * it. `PUT /me/device-tokens` was removed in contract 1.0.0-alpha.19; the
+ * campaign audience now reads {@link pushSubscriptions}. The table is left in
+ * place so account deletion keeps clearing the rows that already exist; a
+ * separate migration drops it.
+ */
 export const deviceTokens = pgTable(
   'device_tokens',
   {
@@ -179,6 +186,47 @@ export const deviceTokens = pgTable(
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('device_tokens_token_unique').on(t.token)],
+);
+
+/**
+ * NTF-BE-011 (#515) — which of GoGo's users can be reached by a push, and on
+ * what platform.
+ *
+ * Not a routing table and not a device registry (OneSignal spec §26,
+ * ADR-0016): a push is addressed to `external_id = users.id` and the provider
+ * owns the device list. This exists because a campaign has to resolve an
+ * audience in one SQL predicate, and "can this person receive a push" is the
+ * one part of that question the provider cannot be asked once per campaign.
+ *
+ * `subscriptionId` is OneSignal's id for a device's push subscription, and
+ * every row was verified against the provider before it was written. It is not
+ * an APNs or FCM token; nothing here is ever used as a send target.
+ */
+export const pushSubscriptions = pgTable(
+  'push_subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    platform: devicePlatform('platform').notNull(),
+    subscriptionId: text('subscription_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Last time the provider agreed this device is subscribed for this user. */
+    lastConfirmedAt: timestamp('last_confirmed_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Set when a confirmed logout proved the device is no longer subscribed for
+     * this user. Kept rather than deleted so a device that signs back in is the
+     * same row, and so the audience can be explained after the fact.
+     */
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('push_subscriptions_subscription_unique').on(t.subscriptionId),
+    index('push_subscriptions_live_idx')
+      .on(t.userId, t.platform)
+      .where(sql`${t.revokedAt} is null`),
+  ],
 );
 
 // ------------------------------------------------------- campaigns (#226)

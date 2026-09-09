@@ -4,6 +4,7 @@ import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import type { Actor } from '../../identity/domain/actor';
 import { CurrentActor, RateLimit } from '../../identity/presentation/decorators';
 import { PushIdentityService } from '../application/push-identity.service';
+import { PushSubscriptionsService } from '../application/push-subscriptions.service';
 
 /**
  * NTF-BE-008 (#199) — `GET /v1/notifications/identity`.
@@ -20,7 +21,10 @@ const confirmUnsubscribedSchema = z.object({ subscriptionId: z.string().min(1).m
 
 @Controller('notifications')
 export class PushIdentityController {
-  constructor(private readonly identity: PushIdentityService) {}
+  constructor(
+    private readonly identity: PushIdentityService,
+    private readonly subscriptions: PushSubscriptionsService,
+  ) {}
 
   @RateLimit({ action: 'notifications.identity', limit: 30, windowSeconds: 60, keyBy: 'actor' })
   @Get('identity')
@@ -38,11 +42,17 @@ export class PushIdentityController {
    */
   @RateLimit({ action: 'notifications.identity', limit: 30, windowSeconds: 60, keyBy: 'actor' })
   @Post('identity/logout')
-  confirmUnsubscribed(
+  async confirmUnsubscribed(
     @CurrentActor() actor: Actor,
     @Body(new ZodValidationPipe(confirmUnsubscribedSchema))
     body: z.infer<typeof confirmUnsubscribedSchema>,
   ) {
-    return this.identity.confirmDeviceUnsubscribed(actor, body.subscriptionId);
+    const confirmation = await this.identity.confirmDeviceUnsubscribed(actor, body.subscriptionId);
+    // NTF-BE-011 (#515): the provider has just agreed this device can no longer
+    // be delivered to for this person, so they stop being reachable on it.
+    // Only on a confirmation — a device that is still enabled stays in the
+    // audience, and only the caller's own row is ever touched.
+    if (confirmation.confirmed) await this.subscriptions.revoke(actor, body.subscriptionId);
+    return confirmation;
   }
 }

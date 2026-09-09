@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.18
+  version: 1.0.0-alpha.19
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2721,31 +2721,66 @@ paths:
                     items: { $ref: '#/components/schemas/Notification' }
                   nextCursor: { type: [string, 'null'] }
 
-  /me/device-tokens:
+  /me/push-subscriptions:
     put:
-      operationId: registerDeviceToken
+      operationId: registerPushSubscription
       tags: [me]
-      summary: Register a push device token (BE-BFF-010) — deprecated
-      deprecated: true
+      summary: Record that this device holds a live push subscription (NTF-BE-011)
       description: >
-        NTF-BE-002 (#193): push is addressed by user id through the provider's
-        external_id alias; GoGo keeps no APNs/FCM token registry and nothing on
-        the delivery path reads this table any more. The route still accepts a
-        token so an older client does not break, but registering one has no
-        effect on delivery. Clients bind identity through the provider SDK
-        login (NTF-APP-004) instead. Removal is a separate, announced change.
+        #515. Replaces `PUT /me/device-tokens`, removed in 1.0.0-alpha.19. GoGo
+        keeps no APNs/FCM token registry (spec §26, ADR-0016) and a push is still
+        addressed to `external_id = users.id`; this records only *that* a user can
+        be reached and on what platform, which is what a campaign audience has to
+        resolve in one query.
+
+
+        The subscription id is the provider's own — the same id
+        `POST /notifications/identity/logout` takes — and is verified against the
+        provider before anything is written: it must belong to the calling user
+        and be enabled. A client cannot register someone else's device.
+
+
+        Idempotent on `subscriptionId`: reporting again refreshes the record, and
+        a device where a different account signs in moves to that account.
+
+
+        Called after the client has confirmed identity binding and the OS permits
+        notifications — never before, since an unconfirmed device is not reachable.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [platform, token]
+              required: [platform, subscriptionId]
               properties:
                 platform: { type: string, enum: [ios, android, web] }
-                token: { type: string }
+                subscriptionId:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: OneSignal subscription id for this device. Not a device token.
       responses:
-        '200': { description: Registered }
+        '200':
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [platform, registeredAt]
+                properties:
+                  platform: { type: string, enum: [ios, android, web] }
+                  registeredAt: { type: string, format: date-time }
+        '403':
+          description: >
+            PUSH_SUBSCRIPTION_NOT_CONFIRMED — the provider does not report this
+            subscription as enabled for the caller. One answer for "not yours"
+            and "yours but disabled", so the route cannot be used to probe
+            whether a subscription id exists.
+        '503':
+          description: >
+            PUSH_SUBSCRIPTION_UNVERIFIED — the provider could not be reached, so
+            the claim was not written. Retryable.
 
   /places/resolve-google-maps-link:
     post:

@@ -188,6 +188,13 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   push_identity_tokens_total: ['result'],
   /** #160 — result: confirmed | still_enabled | unreachable | error. */
   push_identity_logout_confirm_total: ['result'],
+  /**
+   * #515 — result: registered | refused | unverified | revoked. What the
+   * campaign audience is built from, so a drop in `registered` is the first
+   * sign a campaign is about to reach nobody. No user, device or subscription
+   * id is ever a label.
+   */
+  push_subscription_registrations_total: ['result'],
   // #459 — the administrative address resolver. `status` is a mapping status,
   // `method` the evidence that decided it (or `none`). Deliberately **not**
   // labelled with the dataset or boundary version: those are minted per

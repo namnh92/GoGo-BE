@@ -1510,7 +1510,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/me/device-tokens": {
+    "/me/push-subscriptions": {
         parameters: {
             query?: never;
             header?: never;
@@ -1519,11 +1519,16 @@ export interface paths {
         };
         get?: never;
         /**
-         * Register a push device token (BE-BFF-010) — deprecated
-         * @deprecated
-         * @description NTF-BE-002 (#193): push is addressed by user id through the provider's external_id alias; GoGo keeps no APNs/FCM token registry and nothing on the delivery path reads this table any more. The route still accepts a token so an older client does not break, but registering one has no effect on delivery. Clients bind identity through the provider SDK login (NTF-APP-004) instead. Removal is a separate, announced change.
+         * Record that this device holds a live push subscription (NTF-BE-011)
+         * @description #515. Replaces `PUT /me/device-tokens`, removed in 1.0.0-alpha.19. GoGo keeps no APNs/FCM token registry (spec §26, ADR-0016) and a push is still addressed to `external_id = users.id`; this records only *that* a user can be reached and on what platform, which is what a campaign audience has to resolve in one query.
+         *
+         *     The subscription id is the provider's own — the same id `POST /notifications/identity/logout` takes — and is verified against the provider before anything is written: it must belong to the calling user and be enabled. A client cannot register someone else's device.
+         *
+         *     Idempotent on `subscriptionId`: reporting again refreshes the record, and a device where a different account signs in moves to that account.
+         *
+         *     Called after the client has confirmed identity binding and the OS permits notifications — never before, since an unconfirmed device is not reachable.
          */
-        put: operations["registerDeviceToken"];
+        put: operations["registerPushSubscription"];
         post?: never;
         delete?: never;
         options?: never;
@@ -10665,7 +10670,7 @@ export interface operations {
             };
         };
     };
-    registerDeviceToken: {
+    registerPushSubscription: {
         parameters: {
             query?: never;
             header?: never;
@@ -10677,13 +10682,35 @@ export interface operations {
                 "application/json": {
                     /** @enum {string} */
                     platform: "ios" | "android" | "web";
-                    token: string;
+                    /** @description OneSignal subscription id for this device. Not a device token. */
+                    subscriptionId: string;
                 };
             };
         };
         responses: {
-            /** @description Registered */
+            /** @description Recorded */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        platform: "ios" | "android" | "web";
+                        /** Format: date-time */
+                        registeredAt: string;
+                    };
+                };
+            };
+            /** @description PUSH_SUBSCRIPTION_NOT_CONFIRMED — the provider does not report this subscription as enabled for the caller. One answer for "not yours" and "yours but disabled", so the route cannot be used to probe whether a subscription id exists. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description PUSH_SUBSCRIPTION_UNVERIFIED — the provider could not be reached, so the claim was not written. Retryable. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

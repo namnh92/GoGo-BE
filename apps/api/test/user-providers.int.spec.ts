@@ -357,11 +357,6 @@ describe('outbox dispatcher (BE-BFF-010)', () => {
       role: 'host',
       displayName: 'Host',
     });
-    await db.insert(schema.deviceTokens).values({
-      userId,
-      platform: 'ios',
-      token: `device-${Date.now()}`,
-    });
     await db.insert(schema.outboxEvents).values({
       eventType: 'plan.published',
       resourceType: 'room',
@@ -420,11 +415,6 @@ describe('outbox dispatcher (BE-BFF-010)', () => {
       userId,
       role: 'host',
       displayName: 'H',
-    });
-    await db.insert(schema.deviceTokens).values({
-      userId,
-      platform: 'android',
-      token: `device-oo-${Date.now()}`,
     });
     await db.insert(schema.outboxEvents).values({
       eventType: 'plan.published',
