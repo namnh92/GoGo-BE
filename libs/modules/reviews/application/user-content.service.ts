@@ -310,9 +310,7 @@ export class UserContentService {
       // fires and the subscription rows have to go by hand. The audience
       // already excludes `status = 'deleted'`, so this is about not keeping
       // them rather than about delivery.
-      await tx
-        .delete(schema.pushSubscriptions)
-        .where(eq(schema.pushSubscriptions.userId, userId));
+      await tx.delete(schema.pushSubscriptions).where(eq(schema.pushSubscriptions.userId, userId));
       await tx
         .update(schema.roomMembers)
         .set({ displayName: 'Đã rời' })

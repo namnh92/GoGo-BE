@@ -62,7 +62,10 @@ export class PushSubscriptionsService {
    * being reachable on a device they no longer hold, without a second endpoint
    * and without the client having to say so.
    */
-  async register(actor: Actor, input: PushSubscriptionRegistration): Promise<PushSubscriptionRecord> {
+  async register(
+    actor: Actor,
+    input: PushSubscriptionRegistration,
+  ): Promise<PushSubscriptionRecord> {
     const userId = requireUser(actor);
     const read = await this.identity.readOwnSubscriptions(actor);
 

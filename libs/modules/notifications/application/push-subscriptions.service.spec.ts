@@ -33,7 +33,9 @@ function fakeDb() {
         return {
           onConflictDoUpdate: () => ({
             returning: () =>
-              Promise.resolve([{ platform: 'ios', lastConfirmedAt: new Date('2026-09-09T00:00:00Z') }]),
+              Promise.resolve([
+                { platform: 'ios', lastConfirmedAt: new Date('2026-09-09T00:00:00Z') },
+              ]),
           }),
         };
       },
@@ -67,9 +69,7 @@ describe('PushSubscriptionsService.register', () => {
     const record = await svc.register(user, { platform: 'ios', subscriptionId: 'sub-1' });
 
     expect(record.platform).toBe('ios');
-    expect(inserted).toEqual([
-      { userId: user.id, platform: 'ios', subscriptionId: 'sub-1' },
-    ]);
+    expect(inserted).toEqual([{ userId: user.id, platform: 'ios', subscriptionId: 'sub-1' }]);
   });
 
   it('refuses a subscription id the provider does not list for this caller', async () => {
