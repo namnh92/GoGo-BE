@@ -15,8 +15,7 @@ export type MediaCleanupWiring = {
 };
 
 export type MediaCleanupWiringResult =
-  | { ok: true; wiring: MediaCleanupWiring }
-  | { ok: false; missing: string[] };
+  { ok: true; wiring: MediaCleanupWiring } | { ok: false; missing: string[] };
 
 /**
  * ADR-0022 — what the worker needs to retry the media cleanup queue, read
