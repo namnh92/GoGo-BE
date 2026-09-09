@@ -3,6 +3,7 @@ import { schema, type Db } from '@gogo/database';
 import type { CachePurgePort, StoragePort } from '@gogo/providers';
 import { NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { RETRY_BACKOFF_SECONDS } from '../../notifications/application/outbox-dispatcher';
+import { publicMediaUrl } from '../../shared/media-url';
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 type QueueWriter = Pick<Db | Tx, 'insert'>;
@@ -125,8 +126,7 @@ export class MediaCleanupService {
 
   /** The public URL an object was served from — what the edge is asked to forget. */
   publicUrl(key: string): string | null {
-    const base = this.mediaBaseUrl?.replace(/\/$/, '');
-    return base ? `${base}/${key.replace(/^\//, '')}` : null;
+    return publicMediaUrl(this.mediaBaseUrl, key);
   }
 
   private async attempt(

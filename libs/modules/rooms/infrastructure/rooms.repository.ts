@@ -242,6 +242,19 @@ export class RoomsRepository {
       .orderBy(asc(schema.roomMembers.joinedAt));
   }
 
+  /**
+   * ADR-0022 — the one profile fact a co-member may see. Keys, not URLs: the
+   * service composes the URL from the environment's public base.
+   */
+  async avatarKeysByUserId(userIds: string[]): Promise<Map<string, string | null>> {
+    if (userIds.length === 0) return new Map();
+    const rows = await this.db
+      .select({ id: schema.users.id, avatarKey: schema.users.avatarKey })
+      .from(schema.users)
+      .where(inArray(schema.users.id, userIds));
+    return new Map(rows.map((r) => [r.id, r.avatarKey]));
+  }
+
   getMemberById(memberId: string): Promise<MemberRow | undefined> {
     return this.db
       .select()

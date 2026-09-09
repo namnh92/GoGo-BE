@@ -1443,6 +1443,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/service-areas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The curated service areas — a profile's home area comes from here
+         * @description ADR-0022. The same table the areas autocomplete falls back to, whole, ordered for a picker and grouped by `city` on the client. Only active areas. No PII, no provider call, cached at the edge for an hour. A `homeAreaKey` sent to `PATCH /me` must be one of these keys.
+         */
+        get: operations["listServiceAreas"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/places/areas": {
         parameters: {
             query?: never;
@@ -5179,6 +5199,9 @@ export interface components {
             dietaryKeys?: string[];
             accessibilityKeys?: string[];
         };
+        ServiceAreaList: {
+            areas: components["schemas"]["HomeArea"][];
+        };
         /** @description A curated service area (`GET /service-areas`), never a provider prediction key. */
         HomeArea: {
             key: string;
@@ -5229,6 +5252,7 @@ export interface components {
             interests?: components["schemas"]["ProfileInterests"] | null;
             usualBudget?: components["schemas"]["UsualBudget"] | null;
         };
+        /** @description What co-members see of each other, and nothing more: no email, no home area, no interests, no budget (ADR-0022). `avatarUrl` is present for a user who set one and media hosting is configured; guests never carry one. */
         RoomMember: {
             /** Format: uuid */
             id: string;
@@ -5240,6 +5264,7 @@ export interface components {
             isGuest: boolean;
             /** Format: date-time */
             joinedAt?: string;
+            avatarUrl?: string | null;
         };
         /** @description Facts only — audience copy is composed client-side from type/participantCount/budgetMode. */
         RoomSummary: {
@@ -10861,6 +10886,29 @@ export interface operations {
                 content?: never;
             };
             403: components["responses"]["Forbidden"];
+        };
+    };
+    listServiceAreas: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active service areas in display order */
+            200: {
+                headers: {
+                    /** @description public, max-age=3600 */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceAreaList"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
         };
     };
     suggestAreas: {

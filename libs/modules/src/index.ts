@@ -223,6 +223,7 @@ export {
   type CleanupRunReport,
 } from '../profile/application/media-cleanup.service';
 export { assertValidSelections, type TaxonomySelections } from '../shared/taxonomy-selections';
+export { publicMediaUrl } from '../shared/media-url';
 export {
   UploadsService,
   UPLOAD_PURPOSES,

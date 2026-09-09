@@ -1,6 +1,8 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { AppError } from '../../shared/app-error';
+import { APP_CONFIG, type MediaConfig } from '../../shared/config';
+import { publicMediaUrl } from '../../shared/media-url';
 import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
 import type { Actor } from '../../identity/domain/actor';
 import { TokenService } from '../../identity/application/token.service';
@@ -65,6 +67,9 @@ export class RoomsService {
     private readonly identity: IdentityRepository,
     private readonly revocations: SessionRevocationService,
     @Inject(ROOM_EVENT_BUS) private readonly events: RoomEventBus,
+    // Optional so the unit tests that build this service by hand keep working;
+    // without it every member's avatarUrl is null, which is also honest.
+    @Optional() @Inject(APP_CONFIG) private readonly config?: MediaConfig,
   ) {}
 
   async createRoom(
@@ -282,6 +287,11 @@ export class RoomsService {
   async listMembers(actor: Actor, roomId: string) {
     await this.policy.requireMember(actor, roomId);
     const members = await this.repo.listMembers(roomId);
+    // ADR-0022: the avatar is the one profile fact a co-member may see. One
+    // lookup for the whole list; guests never carry one.
+    const avatarKeys = await this.repo.avatarKeysByUserId(
+      members.flatMap((m) => (m.userId ? [m.userId] : [])),
+    );
     // FR-PREF-005: progress only — never other members' selections.
     return members.map((m) => ({
       id: m.id,
@@ -290,6 +300,9 @@ export class RoomsService {
       selectionStatus: m.selectionStatus,
       isGuest: m.guestSessionId !== null,
       joinedAt: m.joinedAt.toISOString(),
+      avatarUrl: m.userId
+        ? publicMediaUrl(this.config?.MEDIA_PUBLIC_BASE_URL, avatarKeys.get(m.userId))
+        : null,
     }));
   }
 
