@@ -3540,6 +3540,46 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     return id;
   }
 
+  it('estimates exactly what the send will attempt, opt-outs included (#523)', async () => {
+    // The header of `campaign-audience.ts` promises one definition used by both
+    // the estimate and the worker, "because the whole point of an estimate is
+    // that it is the same question the send will ask". It was not: the estimate
+    // applied only `audiencePredicate`, so it counted `userOptedOut` — someone
+    // who had turned campaign push off — and the send then reached one fewer
+    // with nothing saying where the difference went.
+    //
+    // Asserted as an equality between the two numbers rather than against a
+    // constant. A hand-written expected count is exactly what drifts apart
+    // again the next time either side changes.
+    const id = await scheduledCampaign();
+
+    const estimate = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/campaigns/${id}/audience-estimate`,
+      headers: auth(ops.token),
+    });
+    expect(estimate.statusCode).toBe(200);
+    const estimated = estimate.json().estimatedRecipients as number;
+
+    await (await dispatcher(new CountingPush())).dispatchDue();
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+
+    // `recipient_count` is what the worker resolved and then acted on.
+    expect(row!.recipientCount).toBe(estimated);
+
+    // And the opted-out account is in neither number — the guard against both
+    // sides being consistently wrong.
+    const { rows: reached } = await db.execute(sql`
+      select count(*)::int as n from notifications
+      where kind = 'campaign' and payload->>'campaignId' = ${id}
+        and user_id = ${userOptedOut}::uuid
+    `);
+    expect((reached[0] as { n: number }).n).toBe(0);
+  });
+
   it('claims a due campaign, sends once per recipient, and records what it did', async () => {
     const id = await scheduledCampaign();
     const push = new CountingPush();
