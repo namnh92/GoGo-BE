@@ -3,6 +3,7 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { writeOutbox } from '../../shared/outbox';
+import { assertValidSelections as assertValidTaxonomySelections } from '../../shared/taxonomy-selections';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
 import { RoomPolicy } from '../../rooms/presentation/room-policy';
@@ -30,30 +31,9 @@ export class PreferencesService {
     }
   }
 
-  /** Validates that every selected key exists as an active taxonomy of its kind. */
-  private async assertValidSelections(selections: Record<string, string[]>): Promise<void> {
-    const kinds = Object.keys(selections);
-    if (kinds.length === 0) return;
-    const rows = await this.db
-      .select({ kind: schema.taxonomies.kind, key: schema.taxonomies.key })
-      .from(schema.taxonomies)
-      .where(eq(schema.taxonomies.isActive, true));
-    const valid = new Set(rows.map((r) => `${r.kind}:${r.key}`));
-    const errors: { field: string; code: string; message: string }[] = [];
-    for (const [kind, keys] of Object.entries(selections)) {
-      for (const key of keys) {
-        if (!valid.has(`${kind}:${key}`)) {
-          errors.push({
-            field: `selections.${kind}`,
-            code: 'unknown_key',
-            message: `unknown taxonomy key: ${key}`,
-          });
-        }
-      }
-    }
-    if (errors.length > 0) {
-      throw AppError.badRequest('INVALID_TAXONOMY_KEYS', 'Unknown taxonomy selections', errors);
-    }
+  /** FR-PREF-002 — the validator is shared with the profile's interests (ADR-0022). */
+  private assertValidSelections(selections: Record<string, string[]>): Promise<void> {
+    return assertValidTaxonomySelections(this.db, selections);
   }
 
   async getMine(actor: Actor, roomId: string) {

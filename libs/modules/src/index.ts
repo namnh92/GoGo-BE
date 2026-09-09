@@ -195,6 +195,17 @@ export {
 } from '../realtime/domain/room-event';
 
 export { UploadsModule } from '../uploads/presentation/uploads.module';
+export { MEDIA_UPLOADS_CONFIGURED } from '../uploads/application/tokens';
+
+// Profile (ADR-0022)
+export { ProfileModule } from '../profile/presentation/profile.module';
+export {
+  ProfileService,
+  PROFILE_INTEREST_KINDS,
+  type ProfilePatch,
+  type UserProfile,
+} from '../profile/application/profile.service';
+export { assertValidSelections, type TaxonomySelections } from '../shared/taxonomy-selections';
 export {
   UploadsService,
   UPLOAD_PURPOSES,

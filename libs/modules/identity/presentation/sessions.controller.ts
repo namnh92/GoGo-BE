@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Inject, Post, Res } from '@nestjs/common';
+import { Body, Controller, Delete, Inject, Post, Res } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
@@ -62,25 +62,4 @@ export class SessionsController {
     return { revoked: true };
   }
 
-  @Get('me')
-  async me(@CurrentActor() actor: Actor) {
-    if (actor.type === 'guest') {
-      const guest = await this.repo.findGuestSessionById(actor.id);
-      return {
-        actorType: 'guest',
-        id: actor.id,
-        roomId: actor.roomId,
-        displayName: guest?.displayName,
-        expiresAt: guest?.expiresAt?.toISOString(),
-      };
-    }
-    const user = await this.repo.findUserById(actor.id);
-    return {
-      actorType: 'user',
-      id: actor.id,
-      displayName: user?.displayName,
-      email: user?.email,
-      locale: user?.locale,
-    };
-  }
 }
