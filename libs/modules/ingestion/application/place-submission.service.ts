@@ -919,7 +919,7 @@ export class PlaceSubmissionService {
 
     let resultPlaceId: string | null = row.resultPlaceId;
     if (decision === 'approved') {
-      resultPlaceId = await this.createDraftFromSubmission(row);
+      resultPlaceId = await this.createDraftFromSubmission(row, adminId);
     } else if (decision === 'merged') {
       if (!mergeIntoPlaceId) {
         throw AppError.badRequest('MERGE_TARGET_REQUIRED', 'mergeIntoPlaceId is required');
@@ -964,6 +964,7 @@ export class PlaceSubmissionService {
 
   private async createDraftFromSubmission(
     row: typeof schema.placeSubmissions.$inferSelect,
+    adminId: string,
   ): Promise<string> {
     // The approve step re-verifies against Google on purpose: moderation delay
     // outlives any attestation, and this is the fetch that becomes the
@@ -981,6 +982,8 @@ export class PlaceSubmissionService {
     }
     const d = outcome.details;
     const score = await this.resolver.scoreFor(d, null, row.categoryKey);
+    let mappingWrite: Awaited<ReturnType<AdministrativeResolverService['persistWithin']>> | null =
+      null;
 
     return this.db
       .transaction(async (tx) => {
@@ -1022,9 +1025,43 @@ export class PlaceSubmissionService {
             source: 'editor',
           });
         }
+
+        /**
+         * ADM-017 (#525) — the mapping is written in the transaction that
+         * writes the place, from the geometry that transaction just stored.
+         *
+         * The three ways a place enters the catalogue — the console's link
+         * form, a bulk import and this one — resolve the same way, from the
+         * coordinate the catalogue holds. Approving a contribution used to skip
+         * it, so a place arrived `UNMAPPED`: blocked from publication with
+         * nothing for a reviewer to approve, while the same link through either
+         * other door arrived `AUTO_MATCHED`.
+         *
+         * Not from the resolve-link preview the app already showed, and not
+         * from anything the app or Google said about provinces: the resolver
+         * classifies the stored coordinate against the active dataset and its
+         * bound boundary release, and that is the only administrative claim
+         * this path makes.
+         *
+         * The resolver never writes `VERIFIED`. A moderator approving the
+         * *submission* has judged the place worth having, not certified where
+         * it is; the mapping still reaches them through the review queue, and
+         * `assertPlaceApprovable` still blocks publication until somebody
+         * confirms it.
+         */
+        if (await activeDataset(tx)) {
+          const resolution = await this.administrative.resolvePlaceWithin(tx, place!.id);
+          mappingWrite = await this.administrative.persistWithin(tx, resolution, {
+            actor: { id: adminId, type: 'admin' },
+          });
+        }
+
         return place!.id;
       })
       .then(async (placeId) => {
+        // Counted only now: the write is real once the transaction that made it
+        // has committed.
+        if (mappingWrite) this.administrative.countPersist(mappingWrite);
         await this.dedup.upsertProviderSource({
           placeId,
           details: d,
