@@ -39,6 +39,7 @@ import {
   pushProviderStatus,
   warnFakedProviders,
   resolveMetricsQueryConfig,
+  resolveR2AccountId,
 } from '@gogo/providers';
 import {
   LogMetrics,
@@ -250,7 +251,10 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       useFactory: (config: AppConfig) =>
         config.R2_ACCESS_KEY_ID && config.R2_SECRET_ACCESS_KEY && config.R2_BUCKET
           ? new R2StorageAdapter({
-              accountId: config.R2_ACCOUNT_ID,
+              accountId: resolveR2AccountId({
+                accountId: config.R2_ACCOUNT_ID,
+                endpoint: config.R2_ENDPOINT,
+              }),
               accessKeyId: config.R2_ACCESS_KEY_ID,
               secretAccessKey: config.R2_SECRET_ACCESS_KEY,
               bucket: config.R2_BUCKET,
@@ -269,7 +273,10 @@ import { APP_CONFIG, type AppConfig } from './config/env';
         config.R2_PUBLIC_SECRET_ACCESS_KEY &&
         config.R2_PUBLIC_BUCKET
           ? new R2StorageAdapter({
-              accountId: config.R2_ACCOUNT_ID,
+              accountId: resolveR2AccountId({
+                accountId: config.R2_ACCOUNT_ID,
+                endpoint: config.R2_ENDPOINT,
+              }),
               accessKeyId: config.R2_PUBLIC_ACCESS_KEY_ID,
               secretAccessKey: config.R2_PUBLIC_SECRET_ACCESS_KEY,
               bucket: config.R2_PUBLIC_BUCKET,

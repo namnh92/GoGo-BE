@@ -41,6 +41,44 @@ describe('loadEnv (FND-006 fail-fast config)', () => {
     );
   });
 
+  /**
+   * GoGo-BE#548 — an R2 credential with no resolvable account id used to boot
+   * fine and hand out presigned URLs for `.r2.cloudflarestorage.com`.
+   */
+  it('refuses an R2 credential with no account id and no endpoint', () => {
+    expect(() =>
+      loadEnv({
+        ...base,
+        R2_ACCESS_KEY_ID: 'key',
+        R2_SECRET_ACCESS_KEY: 'secret',
+        R2_BUCKET: 'gogo-dev-assets',
+      }),
+    ).toThrow(/R2_ACCOUNT_ID/);
+  });
+
+  it('accepts an R2 credential whose account id comes from the endpoint', () => {
+    const env = loadEnv({
+      ...base,
+      R2_ACCESS_KEY_ID: 'key',
+      R2_SECRET_ACCESS_KEY: 'secret',
+      R2_BUCKET: 'gogo-dev-assets',
+      R2_ENDPOINT: 'https://acc123.r2.cloudflarestorage.com',
+    });
+    expect(env.R2_ENDPOINT).toBe('https://acc123.r2.cloudflarestorage.com');
+  });
+
+  it('refuses an endpoint that is not R2, rather than signing for a wrong host', () => {
+    expect(() =>
+      loadEnv({
+        ...base,
+        R2_ACCESS_KEY_ID: 'key',
+        R2_SECRET_ACCESS_KEY: 'secret',
+        R2_BUCKET: 'gogo-dev-assets',
+        R2_ENDPOINT: 'https://storage.example.com',
+      }),
+    ).toThrow(/R2_ACCOUNT_ID/);
+  });
+
   it('splits CORS origins', () => {
     const env = loadEnv({ ...base, CORS_ORIGINS: 'https://a.example, https://b.example' });
     expect(env.CORS_ORIGINS).toEqual(['https://a.example', 'https://b.example']);

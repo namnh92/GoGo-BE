@@ -2,6 +2,7 @@ import {
   CloudflareCachePurgeAdapter,
   NoopCachePurge,
   R2StorageAdapter,
+  resolveR2AccountId,
   type CachePurgePort,
   type StoragePort,
 } from '@gogo/providers';
@@ -28,8 +29,15 @@ export type MediaCleanupWiringResult =
  * configured worker comes along.
  */
 export function mediaCleanupFromEnv(env: NodeJS.ProcessEnv): MediaCleanupWiringResult {
+  // GoGo-BE#548 — the account id may arrive as itself or inside R2_ENDPOINT;
+  // what the adapter needs is the resolved value, and a worker that cannot
+  // resolve one must not register the job.
+  const accountId = resolveR2AccountId({
+    accountId: env.R2_ACCOUNT_ID,
+    endpoint: env.R2_ENDPOINT,
+  });
   const required = {
-    R2_ACCOUNT_ID: env.R2_ACCOUNT_ID,
+    R2_ACCOUNT_ID: accountId,
     R2_ACCESS_KEY_ID: env.R2_ACCESS_KEY_ID,
     R2_SECRET_ACCESS_KEY: env.R2_SECRET_ACCESS_KEY,
     R2_BUCKET: env.R2_BUCKET,

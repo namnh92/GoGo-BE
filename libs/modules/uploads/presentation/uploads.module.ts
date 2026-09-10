@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { resolveR2AccountId } from '@gogo/providers';
 import { IdentityModule } from '../../identity/presentation/identity.module';
 import { APP_CONFIG } from '../../shared/config';
 import { AVATAR_STORAGE_CONFIGURED, MEDIA_UPLOADS_CONFIGURED } from '../application/tokens';
@@ -8,6 +9,8 @@ import { UploadsController } from './uploads.controller';
 type UploadsConfig = {
   R2_ACCESS_KEY_ID?: string;
   R2_BUCKET?: string;
+  R2_ACCOUNT_ID?: string;
+  R2_ENDPOINT?: string;
   R2_PUBLIC_BUCKET?: string;
   R2_PUBLIC_ACCESS_KEY_ID?: string;
   R2_PUBLIC_SECRET_ACCESS_KEY?: string;
@@ -15,8 +18,18 @@ type UploadsConfig = {
   NODE_ENV: string;
 };
 
+/**
+ * GoGo-BE#548 — the account id counts as configuration. Without it the adapter
+ * signs for `.r2.cloudflarestorage.com`, so `POST /uploads` would answer 200
+ * with a URL that cannot resolve; saying "not configured" is the truth.
+ */
 const privateConfigured = (config: UploadsConfig) =>
-  config.NODE_ENV === 'test' || Boolean(config.R2_ACCESS_KEY_ID && config.R2_BUCKET);
+  config.NODE_ENV === 'test' ||
+  Boolean(
+    config.R2_ACCESS_KEY_ID &&
+    config.R2_BUCKET &&
+    resolveR2AccountId({ accountId: config.R2_ACCOUNT_ID, endpoint: config.R2_ENDPOINT }),
+  );
 
 /**
  * Global so the writes that consume upload keys (check-in today) can claim

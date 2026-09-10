@@ -71,6 +71,7 @@ export {
 } from './onesignal-push.adapter';
 export { idempotencyKeyFrom } from './idempotency-key';
 export { R2StorageAdapter, type R2Config } from './r2-storage.adapter';
+export { resolveR2AccountId } from './r2-account';
 export {
   CLOUDFLARE_API_BASE,
   CloudflareCachePurgeAdapter,
