@@ -72,7 +72,14 @@ export type ServiceCategory =
   | 'errors'
   | 'internal'
   | 'platform_fee'
-  | 'hosting';
+  | 'hosting'
+  /**
+   * COST-BE-040 (#563) — work and tools paid for by hand: development, bug
+   * fixing, dev tooling. Not `platform_fee` (nobody's platform) and not
+   * `internal` — `internal` is the cost of monitoring (§21), and
+   * `costOfMonitoring` sums it.
+   */
+  | 'operations';
 
 /**
  * Units a meter can count in. A closed list so a pricing rule and a meter can
@@ -1009,6 +1016,20 @@ const GITHUB: ProviderDefinition = {
       operations: [],
       meters: [billedServiceMeter(GITHUB_ACTIONS, 'minutes', 'minute', 'actions.minutes')],
     },
+    {
+      // COST-BE-040 (#563): the GitHub plan — seats, Copilot — is a fee
+      // somebody types in. MANUAL_COST of its own under an AUTO provider,
+      // the Play Console pattern (#382): the provider declares nothing
+      // manual, so `github.actions` still refuses a manual item. No meter:
+      // nothing counts a seat.
+      id: 'github.subscription',
+      providerId: 'github',
+      displayName: 'Subscription (plan, Copilot)',
+      category: 'platform_fee',
+      runtime: 'none',
+      capabilities: ['MANUAL_COST'],
+      operations: [],
+    },
   ],
 };
 
@@ -1060,12 +1081,14 @@ function planned(
  * provider and each of its services declare `MANUAL_COST`, and nothing else,
  * so the Cost Center's manual-item form finds them by asking the registry
  * (`servicesWith('MANUAL_COST')`) and never by a status or id literal. No
- * runtime either: a fee has no request path.
+ * runtime either: a fee has no request path. `category` is `platform_fee`,
+ * the fee case, unless the provider is work rather than a fee (#563).
  */
 function manual(
   id: string,
   displayName: string,
   services: { name: string; displayName: string }[],
+  category: ServiceCategory = 'platform_fee',
 ): ProviderDefinition {
   return {
     id,
@@ -1078,7 +1101,7 @@ function manual(
       id: `${id}.${s.name}`,
       providerId: id,
       displayName: s.displayName,
-      category: 'platform_fee',
+      category,
       runtime: 'none',
       capabilities: ['MANUAL_COST'],
       operations: [],
@@ -1202,6 +1225,25 @@ export const COST_REGISTRY_DATA: RegistryData = {
     manual('registrar', 'Domain registrar', [
       { name: 'domain', displayName: 'Domain registration' },
     ]),
+    /**
+     * COST-BE-040 (#563) — what running GoGo costs in people and tools,
+     * entered by hand: development, bug fixing, and the dev tooling that
+     * has no provider of its own here (an IDE seat, an AI assistant, a
+     * design tool). Its own category, `operations`: neither a platform fee
+     * nor `internal` — `internal` is the cost of monitoring (§21) and
+     * `costOfMonitoring` sums it. A GitHub plan is not here; it is GitHub's
+     * fee, `github.subscription`.
+     */
+    manual(
+      'operations',
+      'Operations',
+      [
+        { name: 'development', displayName: 'Development — Code' },
+        { name: 'bugfix', displayName: 'Fixbug / maintenance' },
+        { name: 'tooling', displayName: 'Dev tooling & subscriptions' },
+      ],
+      'operations',
+    ),
   ],
 };
 

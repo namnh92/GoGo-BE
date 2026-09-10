@@ -92,7 +92,7 @@ describe('cost registry — epic §5 inventory', () => {
     }
     // Manual-only providers are integrated (the form exists), so they are
     // active; what makes them manual is the capability, and only that.
-    for (const id of ['apple', 'hosting', 'registrar']) {
+    for (const id of ['apple', 'hosting', 'registrar', 'operations']) {
       const p = COST_REGISTRY.provider(id)!;
       expect(p.status, id).toBe('active');
       expect(p.capabilities, id).toEqual(['MANUAL_COST']);
@@ -128,6 +128,8 @@ describe('cost registry — epic §5 inventory', () => {
       'cloudflare.workers',
       'gogo.cost_observability',
       'google.play_console',
+      'github.subscription',
+      'operations.development',
     ]) {
       expect(surface(id), id).toBe('none');
     }
@@ -145,24 +147,43 @@ describe('cost registry — epic §5 inventory', () => {
     }
   });
 
-  it('answers MANUAL_COST per service — manual providers wholesale, Play Console alone under Google (#382)', () => {
+  it('answers MANUAL_COST per service — manual providers wholesale, Play Console and the GitHub plan service-only (#382, #563)', () => {
     const manual = COST_REGISTRY.servicesWith('MANUAL_COST').map((s) => s.id);
     expect(manual).toEqual([
       'google.play_console',
+      'github.subscription',
       'apple.developer_program',
       'hosting.vps',
       'registrar.domain',
+      'operations.development',
+      'operations.bugfix',
+      'operations.tooling',
     ]);
     expect(COST_REGISTRY.serviceHasCapability('google.play_console', 'MANUAL_COST')).toBe(true);
     expect(COST_REGISTRY.serviceHasCapability('google.places', 'MANUAL_COST')).toBe(false);
     expect(COST_REGISTRY.hasCapability('google', 'MANUAL_COST')).toBe(false);
+    // #563: the GitHub plan is typed in, Actions is collected. The provider
+    // declares no MANUAL_COST of its own, so Actions still refuses an item.
+    expect(COST_REGISTRY.serviceHasCapability('github.subscription', 'MANUAL_COST')).toBe(true);
+    expect(COST_REGISTRY.serviceHasCapability('github.actions', 'MANUAL_COST')).toBe(false);
+    expect(COST_REGISTRY.hasCapability('github', 'MANUAL_COST')).toBe(false);
     expect(COST_REGISTRY.serviceHasCapability('hosting.vps', 'MANUAL_COST')).toBe(true);
     expect(COST_REGISTRY.serviceHasCapability('nope.nothing', 'MANUAL_COST')).toBe(false);
     expect(COST_REGISTRY.providersWith('MANUAL_COST').map((p) => p.id)).toEqual([
       'apple',
       'hosting',
       'registrar',
+      'operations',
     ]);
+  });
+
+  it('files operations under their own category — never `internal`, which is the cost of monitoring (§21, #563)', () => {
+    for (const id of ['operations.development', 'operations.bugfix', 'operations.tooling']) {
+      expect(COST_REGISTRY.service(id)!.category, id).toBe('operations');
+    }
+    expect(COST_REGISTRY.service('github.subscription')!.category).toBe('platform_fee');
+    const internal = COST_REGISTRY.services().filter((s) => s.category === 'internal');
+    expect(internal.map((s) => s.id)).toEqual(['gogo.cost_observability']);
   });
 });
 
