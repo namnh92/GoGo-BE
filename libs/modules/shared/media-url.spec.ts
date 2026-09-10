@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { isPublicKey, publicCatalogueUrl, publicMediaUrl } from './media-url';
+import {
+  PUBLIC_UPLOAD_PREFIXES,
+  isPublicKey,
+  publicCatalogueUrl,
+  publicMediaUrl,
+} from './media-url';
+import { CMS_UPLOAD_PURPOSES, UPLOAD_PURPOSES } from '../uploads/application/uploads.service';
 
 const BASE = 'https://assets-dev.gogo.id.vn';
 
@@ -76,5 +82,38 @@ describe('consumer place photos', () => {
 
   it('still returns nothing when media hosting is not configured', () => {
     expect(toPhotos([row('places/actor/one.jpg')], '')).toHaveLength(0);
+  });
+});
+
+/*
+ * ADR-0005's whole point is that the boundary is a bucket, and the prefix is
+ * what routes an upload to one. Adding a consumer purpose to this map would
+ * publish check-in and bill photos to the open internet with no error
+ * anywhere, so the map is asserted rather than trusted.
+ */
+describe('which purposes may be published', () => {
+  it('publishes exactly the three catalogue purposes', () => {
+    expect(Object.keys(PUBLIC_UPLOAD_PREFIXES).sort()).toEqual([
+      'banner_image',
+      'campaign_image',
+      'place_image',
+    ]);
+  });
+
+  it('never publishes a consumer purpose', () => {
+    for (const purpose of UPLOAD_PURPOSES) {
+      expect(PUBLIC_UPLOAD_PREFIXES[purpose], purpose).toBeUndefined();
+    }
+    // `place_photo` is the trap: the same kind of picture as `place_image`,
+    // uploaded by a member for their own check-in, and it stays private.
+    expect(PUBLIC_UPLOAD_PREFIXES.place_photo).toBeUndefined();
+    expect(PUBLIC_UPLOAD_PREFIXES.checkin_photo).toBeUndefined();
+    expect(PUBLIC_UPLOAD_PREFIXES.bill_photo).toBeUndefined();
+  });
+
+  it('publishes every staff catalogue purpose, so none silently 404s', () => {
+    for (const purpose of CMS_UPLOAD_PURPOSES) {
+      expect(PUBLIC_UPLOAD_PREFIXES[purpose], purpose).toBeDefined();
+    }
   });
 });
