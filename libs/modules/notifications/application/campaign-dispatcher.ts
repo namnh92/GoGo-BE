@@ -8,6 +8,7 @@ import {
   type CampaignDestination,
 } from '../domain/campaign';
 import { audiencePredicate, respectsPushPreference } from './campaign-audience';
+import { publicCatalogueUrl } from '../../shared/media-url';
 
 /**
  * BE-CMS-G4e (#226) — the half of a campaign that actually sends.
@@ -28,6 +29,7 @@ type DueCampaign = {
   id: string;
   title: string;
   body: string;
+  image_key: string | null;
   audience_type: CampaignAudience;
   audience_filter: Record<string, unknown>;
   destination_type: CampaignDestination;
@@ -43,7 +45,19 @@ export class CampaignDispatcher {
     private readonly db: Db,
     private readonly push: NotificationProviderPort,
     private readonly metrics?: { increment(name: string, labels?: Record<string, string>): void },
+    /**
+     * Where public media is readable in this environment. The provider fetches
+     * the picture itself at delivery time, so what it needs is the durable
+     * public URL — never the presigned upload URL, which is signed for PUT and
+     * has expired long before a campaign scheduled for next week goes out.
+     */
+    private readonly mediaPublicBaseUrl?: string,
   ) {}
+
+  /** Null for a text campaign, and for a key no public host will serve. */
+  private imageUrl(campaign: DueCampaign): string | null {
+    return publicCatalogueUrl(this.mediaPublicBaseUrl, campaign.image_key);
+  }
 
   /** One tick: due campaigns first, then any pending test send. */
   async tick(): Promise<{ campaigns: number; testSends: number }> {
@@ -71,7 +85,7 @@ export class CampaignDispatcher {
         limit ${limit}
         for update skip locked
       )
-      returning id, title, body, audience_type, audience_filter,
+      returning id, title, body, image_key, audience_type, audience_filter,
                 destination_type, destination_value, dispatch_key
     `);
 
@@ -199,9 +213,11 @@ export class CampaignDispatcher {
     // operator re-schedules from, not something to burn through 500 recipients
     // discovering. The row above stays without push_sent_at, which is exactly
     // what the reschedule retries.
+    const image = this.imageUrl(campaign);
     const result = await this.push.sendToUser(userId, {
       headings: { en: campaign.title },
       contents: { en: campaign.body },
+      ...(image ? { imageUrl: image } : {}),
       data: {
         campaignId: campaign.id,
         destinationType: campaign.destination_type,
@@ -249,8 +265,8 @@ export class CampaignDispatcher {
         limit ${limit}
         for update skip locked
       )
-      returning id, title, body, audience_type, audience_filter, destination_type,
-                destination_value, dispatch_key, test_send_user_id
+      returning id, title, body, image_key, audience_type, audience_filter,
+                destination_type, destination_value, dispatch_key, test_send_user_id
     `);
 
     for (const row of rows as (DueCampaign & { test_send_user_id: string })[]) {

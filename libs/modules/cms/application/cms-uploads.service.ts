@@ -4,6 +4,7 @@ import { writeAudit } from '../../shared/audit';
 import { DB } from '../../shared/tokens';
 import type { Db } from '@gogo/database';
 import type { Actor } from '../../identity/domain/actor';
+import { publicCatalogueUrl } from '../../shared/media-url';
 import {
   UploadsService,
   type CMS_UPLOAD_PURPOSES,
@@ -69,7 +70,6 @@ export class CmsUploadsService {
   }
 
   private readUrl(key: string): string | null {
-    const base = this.config?.MEDIA_PUBLIC_BASE_URL?.replace(/\/$/, '');
-    return base ? `${base}/${key.replace(/^\//, '')}` : null;
+    return publicCatalogueUrl(this.config?.MEDIA_PUBLIC_BASE_URL, key);
   }
 }

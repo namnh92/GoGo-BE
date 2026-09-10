@@ -70,6 +70,48 @@ describe('OneSignalPushAdapter', () => {
     expect(body).not.toHaveProperty('included_segments');
   });
 
+  /*
+   * BE-CMS-M3 — one picture, four field names.
+   *
+   * OneSignal has no single image field: `big_picture` on Android,
+   * `ios_attachments` keyed by an id on iOS, `huawei_big_picture` on Huawei,
+   * `chrome_web_image` on web. Sending all four is how the same image reaches
+   * whichever platform the recipient is on. The campaign image was stored and
+   * never sent at all before this — the field stopped at the CMS.
+   */
+  it('carries a campaign image as every platform’s image field', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { id: 'msg-1', errors: {} }));
+    const adapter = new OneSignalPushAdapter(config, undefined, fetchImpl as never);
+    const imageUrl = 'https://assets-dev.gogo.id.vn/campaigns/actor/one.jpg';
+
+    await adapter.sendToUsers(['u1'], { ...note, imageUrl });
+
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.big_picture).toBe(imageUrl);
+    expect(body.huawei_big_picture).toBe(imageUrl);
+    expect(body.chrome_web_image).toBe(imageUrl);
+    expect(body.ios_attachments).toEqual({ id: imageUrl });
+  });
+
+  it('leaves a text notification text-only', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { id: 'msg-1', errors: {} }));
+    const adapter = new OneSignalPushAdapter(config, undefined, fetchImpl as never);
+
+    await adapter.sendToUsers(['u1'], note);
+
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    for (const field of [
+      'big_picture',
+      'huawei_big_picture',
+      'chrome_web_image',
+      'ios_attachments',
+    ]) {
+      expect(body).not.toHaveProperty(field);
+    }
+  });
+
   it('reports ids the provider does not know instead of failing the batch', async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(200, { id: 'msg-2', errors: { invalid_aliases: { external_id: ['u2'] } } }),

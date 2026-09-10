@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
@@ -16,7 +16,9 @@ import {
   type CampaignStatus,
 } from '../domain/campaign';
 import { audiencePredicate, respectsPushPreference } from './campaign-audience';
-import { UploadsService } from '../../uploads/application/uploads.service';
+import { UploadsService, type Executor } from '../../uploads/application/uploads.service';
+import { publicCatalogueUrl } from '../../shared/media-url';
+import { APP_CONFIG, type MediaConfig } from '../../shared/config';
 import type { Actor } from '../../identity/domain/actor';
 
 /**
@@ -139,7 +141,12 @@ export class CampaignsService {
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly uploads: UploadsService,
+    @Optional() @Inject(APP_CONFIG) private readonly config?: MediaConfig,
   ) {}
+
+  private get mediaBaseUrl(): string | undefined {
+    return this.config?.MEDIA_PUBLIC_BASE_URL;
+  }
 
   /*
    * BE-CMS-M2 — a campaign image is an upload like any other.
@@ -151,12 +158,18 @@ export class CampaignsService {
    * forever, so nothing stopped a campaign from carrying a `place_image` key —
    * or one that had never been uploaded at all.
    */
-  private async attachImage(actor: Actor, campaignId: string, imageKey: string): Promise<void> {
-    await this.uploads.attach(actor, [imageKey], {
-      type: 'campaign',
-      id: campaignId,
-      purposes: ['campaign_image'],
-    });
+  private async attachImage(
+    actor: Actor,
+    campaignId: string,
+    imageKey: string,
+    executor: Executor,
+  ): Promise<void> {
+    await this.uploads.attach(
+      actor,
+      [imageKey],
+      { type: 'campaign', id: campaignId, purposes: ['campaign_image'] },
+      executor,
+    );
   }
 
   async list(query: CampaignListQuery) {
@@ -250,7 +263,7 @@ export class CampaignsService {
           throw this.nameConflict(err, input.name);
         });
 
-      if (input.imageKey) await this.attachImage(actor, rows[0]!.id, input.imageKey);
+      if (input.imageKey) await this.attachImage(actor, rows[0]!.id, input.imageKey, tx);
       return rows;
     });
   }
@@ -324,28 +337,30 @@ export class CampaignsService {
      * written, so a rejected key leaves the campaign pointing at the image it
      * already had rather than at one that was never uploaded.
      */
-    if (patch.imageKey && patch.imageKey !== before.image_key) {
-      await this.attachImage(actor, id, patch.imageKey);
-    }
+    await this.db.transaction(async (tx) => {
+      if (patch.imageKey && patch.imageKey !== before.image_key) {
+        await this.attachImage(actor, id, patch.imageKey, tx);
+      }
 
-    await this.db
-      .update(schema.notificationCampaigns)
-      .set({
-        name: merged.name,
-        title: merged.title,
-        body: merged.body,
-        imageKey: merged.imageKey ?? null,
-        ctaLabel: merged.ctaLabel ?? null,
-        audienceType: merged.audienceType,
-        audienceFilter: validated.audienceFilter,
-        destinationType: validated.destinationType,
-        destinationValue: validated.destinationValue,
-        updatedAt: sql`now()`,
-      })
-      .where(eq(schema.notificationCampaigns.id, id))
-      .catch((err: unknown) => {
-        throw this.nameConflict(err, merged.name);
-      });
+      await tx
+        .update(schema.notificationCampaigns)
+        .set({
+          name: merged.name,
+          title: merged.title,
+          body: merged.body,
+          imageKey: merged.imageKey ?? null,
+          ctaLabel: merged.ctaLabel ?? null,
+          audienceType: merged.audienceType,
+          audienceFilter: validated.audienceFilter,
+          destinationType: validated.destinationType,
+          destinationValue: validated.destinationValue,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(schema.notificationCampaigns.id, id))
+        .catch((err: unknown) => {
+          throw this.nameConflict(err, merged.name);
+        });
+    });
 
     await this.audit(adminId, 'campaign.updated', id, {
       before: {
@@ -613,6 +628,13 @@ export class CampaignsService {
       title: row.title,
       body: row.body,
       imageKey: row.image_key ?? undefined,
+      /*
+       * The same URL the push provider will fetch at delivery time, so the
+       * console previews exactly what a recipient sees. Null for a key that
+       * predates the public-bucket routing: those objects are in the private
+       * bucket and no public URL will make them appear.
+       */
+      imageUrl: publicCatalogueUrl(this.mediaBaseUrl, row.image_key),
       ctaLabel: row.cta_label ?? undefined,
       audienceType: row.audience_type,
       audienceFilter: row.audience_filter,

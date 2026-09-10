@@ -7,9 +7,10 @@ import { writeAudit } from '../../shared/audit';
 import { decodeKeysetCursor, encodeKeysetCursor, toIso } from '../../shared/cursor';
 import { assertExternalUrl } from '../../shared/external-url';
 import { APP_CONFIG, type MediaConfig } from '../../shared/config';
-import { UploadsService } from '../../uploads/application/uploads.service';
+import { UploadsService, type Executor } from '../../uploads/application/uploads.service';
 import type { Actor } from '../../identity/domain/actor';
 import type { ContentAudience } from '../../shared/audience';
+import { publicCatalogueUrl } from '../../shared/media-url';
 
 /**
  * BE-CMS-G4c (#224) — banners.
@@ -181,8 +182,10 @@ export class BannersService {
      * it binds to does not exist until the insert. Run bare, the insert
      * committed first and a rejected key returned 400 over a banner row that
      * was already there, pointing at an image nobody could ever load. The
-     * transaction is what makes the refusal leave nothing behind, which is
-     * what `CmsPlaceMediaService.attach` gets for free by attaching first.
+     * transaction is what makes the refusal leave nothing behind — and the
+     * claim is made on `tx`, so it commits with the banner or not at all.
+     * Attaching on a separate connection would decide correctly and still
+     * leave the upload marked `attached` to a banner the rollback removed.
      */
     const row = await this.db.transaction(async (tx) => {
       const [inserted] = await tx
@@ -207,7 +210,7 @@ export class BannersService {
           throw this.nameConflict(err, input.name);
         });
 
-      await this.attachImage(actor, inserted!.id, input.imageKey);
+      await this.attachImage(actor, inserted!.id, input.imageKey, tx);
       return inserted!;
     });
 
@@ -239,31 +242,33 @@ export class BannersService {
      * good image was gone from the record with no way to recover it. A failed
      * replacement must leave the banner exactly as it was.
      */
-    if (patch.imageKey && patch.imageKey !== before.image_key) {
-      await this.attachImage(actor, id, patch.imageKey);
-    }
+    await this.db.transaction(async (tx) => {
+      if (patch.imageKey && patch.imageKey !== before.image_key) {
+        await this.attachImage(actor, id, patch.imageKey, tx);
+      }
 
-    await this.db
-      .update(schema.banners)
-      .set({
-        ...(patch.name !== undefined ? { name: patch.name } : {}),
-        ...(patch.imageKey !== undefined ? { imageKey: patch.imageKey } : {}),
-        ...(patch.title !== undefined ? { title: patch.title } : {}),
-        ...(patch.subtitle !== undefined ? { subtitle: patch.subtitle } : {}),
-        ...(patch.ctaLabel !== undefined ? { ctaLabel: patch.ctaLabel } : {}),
-        ...(patch.audience !== undefined ? { audience: patch.audience } : {}),
-        ...(patch.placement !== undefined ? { placement: patch.placement } : {}),
-        ...(patch.startsAt !== undefined ? { startsAt: patch.startsAt } : {}),
-        ...(patch.endsAt !== undefined ? { endsAt: patch.endsAt } : {}),
-        ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
-        destinationType: destination.type,
-        destinationValue: destination.value,
-        updatedAt: sql`now()`,
-      })
-      .where(eq(schema.banners.id, id))
-      .catch((err: unknown) => {
-        throw this.nameConflict(err, patch.name ?? before.name);
-      });
+      await tx
+        .update(schema.banners)
+        .set({
+          ...(patch.name !== undefined ? { name: patch.name } : {}),
+          ...(patch.imageKey !== undefined ? { imageKey: patch.imageKey } : {}),
+          ...(patch.title !== undefined ? { title: patch.title } : {}),
+          ...(patch.subtitle !== undefined ? { subtitle: patch.subtitle } : {}),
+          ...(patch.ctaLabel !== undefined ? { ctaLabel: patch.ctaLabel } : {}),
+          ...(patch.audience !== undefined ? { audience: patch.audience } : {}),
+          ...(patch.placement !== undefined ? { placement: patch.placement } : {}),
+          ...(patch.startsAt !== undefined ? { startsAt: patch.startsAt } : {}),
+          ...(patch.endsAt !== undefined ? { endsAt: patch.endsAt } : {}),
+          ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+          destinationType: destination.type,
+          destinationValue: destination.value,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(schema.banners.id, id))
+        .catch((err: unknown) => {
+          throw this.nameConflict(err, patch.name ?? before.name);
+        });
+    });
 
     await this.audit(actor.id, 'banner.updated', id, {
       before: {
@@ -311,12 +316,18 @@ export class BannersService {
 
   // ---------------------------------------------------------------- internals
 
-  private async attachImage(actor: Actor, bannerId: string, imageKey: string): Promise<void> {
-    await this.uploads.attach(actor, [imageKey], {
-      type: 'banner',
-      id: bannerId,
-      purposes: ['banner_image'],
-    });
+  private async attachImage(
+    actor: Actor,
+    bannerId: string,
+    imageKey: string,
+    executor: Executor,
+  ): Promise<void> {
+    await this.uploads.attach(
+      actor,
+      [imageKey],
+      { type: 'banner', id: bannerId, purposes: ['banner_image'] },
+      executor,
+    );
   }
 
   private async validateDestination(
@@ -408,8 +419,7 @@ export class BannersService {
   }
 
   private imageUrl(key: string): string | null {
-    const base = this.config?.MEDIA_PUBLIC_BASE_URL?.replace(/\/$/, '');
-    return base ? `${base}/${key.replace(/^\//, '')}` : null;
+    return publicCatalogueUrl(this.config?.MEDIA_PUBLIC_BASE_URL, key);
   }
 
   private async requireRow(id: string): Promise<BannerRow> {

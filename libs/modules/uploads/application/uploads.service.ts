@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
-import { STORAGE_PROVIDER, type StoragePort } from '@gogo/providers';
+import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type StoragePort } from '@gogo/providers';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
+import { PUBLIC_UPLOAD_PREFIXES } from '../../shared/media-url';
 import { AVATAR_STORAGE_CONFIGURED, MEDIA_UPLOADS_CONFIGURED } from './tokens';
 
 /**
@@ -57,6 +58,17 @@ export const CMS_UPLOAD_PURPOSES = ['banner_image', 'campaign_image', 'place_ima
 export type UploadPurpose = (typeof UPLOAD_PURPOSES)[number] | (typeof CMS_UPLOAD_PURPOSES)[number];
 
 /**
+ * A `Db` or an open transaction on one — the same shape `unit-lookup` uses.
+ *
+ * `attach` takes one so the claim can be made *inside* the caller's
+ * transaction. Run on its own connection it decides correctly but commits
+ * separately, and a write that fails after it leaves the upload marked
+ * `attached` to a resource that does not reference it — the mirror image of
+ * the orphan row the ordering fix removed.
+ */
+export type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
+
+/**
  * Enforced server-side, not advertised. The content type is part of what gets
  * signed, so storage rejects a mismatch too — a client cannot ask for a JPEG
  * URL and PUT an executable through it.
@@ -78,6 +90,7 @@ export class UploadsService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(STORAGE_PROVIDER) private readonly storage: StoragePort,
+    @Inject(PUBLIC_STORAGE_PROVIDER) private readonly publicStorage: StoragePort,
     @Inject(MEDIA_UPLOADS_CONFIGURED) private readonly configured: boolean,
     @Inject(AVATAR_STORAGE_CONFIGURED) private readonly avatarConfigured: boolean,
   ) {}
@@ -136,10 +149,19 @@ export class UploadsService {
 
     // The actor is in the key, so an object is traceable to its uploader even
     // if the row is later pruned. It is not the authorization: that is the row.
+    //
+    // The prefix decides the bucket, so the object lands where the URL that
+    // will be handed out actually reads from (ADR-0005).
+    const publicPrefix = PUBLIC_UPLOAD_PREFIXES[input.purpose];
     const key = isAvatar
       ? `${AVATAR_ORIGINAL_PREFIX}/${actor.id}/${randomUUID()}.${extension}`
-      : `u/${actor.type}/${actor.id}/${randomUUID()}.${extension}`;
-    const presigned = await this.storage.presignUpload(key, input.contentType);
+      : publicPrefix
+        ? `${publicPrefix}/${actor.id}/${randomUUID()}.${extension}`
+        : `u/${actor.type}/${actor.id}/${randomUUID()}.${extension}`;
+    const presigned = await (publicPrefix ? this.publicStorage : this.storage).presignUpload(
+      key,
+      input.contentType,
+    );
     const expiresAt = new Date(Date.now() + UPLOAD_TTL_SECONDS * 1000);
 
     const [row] = await this.db
@@ -177,10 +199,12 @@ export class UploadsService {
     actor: Actor,
     keys: string[],
     target: { type: string; id: string; purposes: UploadPurpose[] },
+    executor: Executor = this.db,
   ): Promise<void> {
     if (keys.length === 0) return;
 
-    const rows = await this.db
+    const db = executor as Db;
+    const rows = await db
       .select()
       .from(schema.mediaUploads)
       .where(
@@ -212,7 +236,7 @@ export class UploadsService {
       ]);
     }
 
-    await this.db
+    await db
       .update(schema.mediaUploads)
       .set({
         status: 'attached',

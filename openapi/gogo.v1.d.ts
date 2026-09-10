@@ -7863,6 +7863,12 @@ export interface components {
             body: string;
             /** @description Key from `POST /cms/uploads`, purpose `campaign_image`. */
             imageKey?: string;
+            /**
+             * @description Where the image is readable, as `CmsBanner.imageUrl` is. Null when media hosting is not configured, and null for a key that predates the public-bucket routing (ADR-0005) and therefore is not on the public host — an honest absence rather than a URL that would 404.
+             *
+             *     This is also the URL the push provider fetches at delivery time, so it is durable by construction: never the presigned upload URL, which is signed for PUT and expires in fifteen minutes.
+             */
+            imageUrl?: string | null;
             ctaLabel?: string;
             audienceType: components["schemas"]["CampaignAudience"];
             /** @description Closed per audience type. `platform` takes `{ platform }`; the rest take `{}`. */

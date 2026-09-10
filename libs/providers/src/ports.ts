@@ -289,6 +289,18 @@ export type UserNotification = {
    * per attempt.
    */
   idempotencyKey?: string;
+  /**
+   * A picture for the expanded notification, as an absolute URL.
+   *
+   * The provider fetches it from its own servers when the notification is
+   * delivered, so it has to be durably readable by anyone — never a presigned
+   * upload URL, which is signed for PUT and expires in fifteen minutes, and
+   * never a private-bucket key. A campaign can be scheduled for next week; the
+   * URL has to still answer then.
+   *
+   * Absent means a text notification, which is the norm and stays untouched.
+   */
+  imageUrl?: string;
 };
 
 export type PushSendResult = {

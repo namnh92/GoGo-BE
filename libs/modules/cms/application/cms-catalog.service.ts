@@ -36,6 +36,7 @@ import {
 } from '../../administrative/domain/edit-impact';
 import { validateWeek, type HoursEntry, type HoursEntryKind } from '../domain/place-hours';
 import { normalizePhone, normalizeWebsite } from '../domain/place-contact';
+import { publicCatalogueUrl } from '../../shared/media-url';
 
 type PlaceStatus = (typeof schema.places.$inferSelect)['status'];
 
@@ -629,8 +630,7 @@ export class CmsCatalogService {
    * apart.
    */
   private mediaUrl(key: string): string | null {
-    const base = this.config?.MEDIA_PUBLIC_BASE_URL?.replace(/\/$/, '');
-    return base ? `${base}/${key.replace(/^\//, '')}` : null;
+    return publicCatalogueUrl(this.config?.MEDIA_PUBLIC_BASE_URL, key);
   }
 
   private async audit(adminId: string, action: string, resourceId: string, diff?: unknown) {
