@@ -683,6 +683,83 @@ describe('what co-members see, and the curated areas (PROF-BE-005)', () => {
     }
   });
 
+  /**
+   * GoGo-BE#552 — found by a real device, not by a test. The room screen reads
+   * `members` from `GET /rooms/{id}`, never from `/members`, so an avatar the
+   * members endpoint returned correctly still rendered as initials.
+   */
+  it('carries the same avatar on the room summary the screen actually reads', async () => {
+    const { token: hostToken, userId: hostId } = await register('summary-host@gogo.id.vn');
+    const { token: memberToken, userId: memberId } = await register('summary-member@gogo.id.vn');
+    const privateStore = app.get<FakeStorage>(STORAGE_PROVIDER);
+    const presign = await api().inject({
+      method: 'POST',
+      url: '/v1/uploads',
+      remoteAddress: ip(),
+      headers: auth(memberToken),
+      payload: { purpose: 'avatar', contentType: 'image/png', contentLength: 100 },
+    });
+    const key = presign.json().key as string;
+    privateStore.seed(
+      key,
+      new Uint8Array(
+        await sharp({ create: { width: 64, height: 64, channels: 3, background: '#0f0' } })
+          .png()
+          .toBuffer(),
+      ),
+      'image/png',
+    );
+    const set = await api().inject({
+      method: 'PUT',
+      url: '/v1/me/avatar',
+      remoteAddress: ip(),
+      headers: auth(memberToken),
+      payload: { uploadKey: key },
+    });
+    expect(set.statusCode).toBe(200);
+    const avatarUrl = set.json().avatarUrl as string;
+
+    const [room] = await db
+      .insert(schema.rooms)
+      .values({
+        code: 'SUMMARYROOM1',
+        type: 'group',
+        status: 'collecting',
+        decisionMode: 'vote',
+        hostUserId: hostId,
+        participantCount: 3,
+      })
+      .returning();
+    await db.insert(schema.roomMembers).values([
+      { roomId: room!.id, userId: hostId, role: 'host', displayName: 'summary-host' },
+      { roomId: room!.id, userId: memberId, role: 'member', displayName: 'summary-with-avatar' },
+    ]);
+
+    const res = await api().inject({
+      method: 'GET',
+      url: `/v1/rooms/${room!.id}`,
+      remoteAddress: ip(),
+      headers: auth(hostToken),
+    });
+    expect(res.statusCode).toBe(200);
+    const members = res.json().members as Record<string, unknown>[];
+    const byName = Object.fromEntries(members.map((m) => [m.displayName as string, m]));
+    expect(byName['summary-with-avatar']).toMatchObject({ avatarUrl });
+    expect(byName['summary-host']).toMatchObject({ avatarUrl: null });
+
+    // The two endpoints agree; the screen may read either.
+    const list = await api().inject({
+      method: 'GET',
+      url: `/v1/rooms/${room!.id}/members`,
+      remoteAddress: ip(),
+      headers: auth(hostToken),
+    });
+    const listed = Object.fromEntries(
+      (list.json() as Record<string, unknown>[]).map((m) => [m.displayName as string, m.avatarUrl]),
+    );
+    expect(listed['summary-with-avatar']).toBe(avatarUrl);
+  });
+
   it('lists the active service areas, in order, publicly and cacheably', async () => {
     const res = await api().inject({
       method: 'GET',

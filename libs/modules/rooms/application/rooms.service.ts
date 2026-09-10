@@ -176,6 +176,14 @@ export class RoomsService {
       this.repo.listMembers(roomId),
       this.repo.listSeedPlaces(roomId),
     ]);
+    // ADR-0022, GoGo-BE#552: the same avatar the members endpoint returns. The
+    // room screen reads `members` from this summary and nothing else, so
+    // omitting it here meant every co-member rendered as initials no matter
+    // what they had uploaded — while `RoomMember` in the contract promised the
+    // field either way.
+    const avatarKeys = await this.repo.avatarKeysByUserId(
+      members.flatMap((m) => (m.userId ? [m.userId] : [])),
+    );
     // Facts only — audience copy is composed client-side (api-contract rule).
     return {
       id: room.id,
@@ -211,6 +219,9 @@ export class RoomsService {
         selectionStatus: m.selectionStatus,
         isGuest: m.guestSessionId !== null,
         joinedAt: m.joinedAt.toISOString(),
+        avatarUrl: m.userId
+          ? publicMediaUrl(this.config?.MEDIA_PUBLIC_BASE_URL, avatarKeys.get(m.userId))
+          : null,
       })),
       seedPlaces: seedPlaces.map((s) => ({ placeId: s.placeId, name: s.name })),
     };
