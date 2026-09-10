@@ -18,6 +18,7 @@
     "cost:baseline": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/cost-baseline/index.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx libs/database/src/migrate.ts",
+    "config:check": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register apps/api/src/config/preflight-cli.ts",
     "db:boundaries": "tsx scripts/load-administrative-boundaries.ts",
     "db:seed": "tsx libs/database/src/seed.ts",
     "db:seed-admin": "tsx libs/database/src/seed-admin.ts",
