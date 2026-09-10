@@ -3,6 +3,7 @@ import {
   ONESIGNAL_APP_ID_PATTERN,
   ProviderConfigurationError,
   TenjinAcquisitionLinkProvider,
+  resolveR2AccountId,
 } from '@gogo/providers';
 import { EDGE_AUTH_TOKEN_MIN_LENGTH, parseIdentitySigningKey } from '@gogo/modules';
 
@@ -278,6 +279,13 @@ const envSchema = z
      */
     SHARE_LINK_EDGE_AUTH_TOKEN: z.string().default(''),
     R2_ACCOUNT_ID: z.string().default(''),
+    /**
+     * GoGo-BE#548 — the S3 endpoint GoGo-Infra renders from `r2/endpoint`. Its
+     * first label *is* the account id, so an environment that sets this needs
+     * no separate `R2_ACCOUNT_ID`. Declared here because until #548 nothing
+     * read it, while `.env` carried it in every environment.
+     */
+    R2_ENDPOINT: z.string().default(''),
     R2_ACCESS_KEY_ID: z.string().default(''),
     R2_SECRET_ACCESS_KEY: z.string().default(''),
     R2_BUCKET: z.string().default(''),
@@ -451,6 +459,24 @@ const envSchema = z
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
   })
   .superRefine((env, ctx) => {
+    // GoGo-BE#548: a credential with no resolvable account id signs for the
+    // host `.r2.cloudflarestorage.com`. Refusing at boot is the only place
+    // that failure is cheap — later it is a presigned URL a client trusts.
+    const r2Credentials = [env.R2_ACCESS_KEY_ID, env.R2_SECRET_ACCESS_KEY, env.R2_BUCKET];
+    if (
+      r2Credentials.some(Boolean) &&
+      !resolveR2AccountId({
+        accountId: env.R2_ACCOUNT_ID,
+        endpoint: env.R2_ENDPOINT,
+      })
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['R2_ACCOUNT_ID'],
+        message:
+          'R2 is configured but no account id can be resolved: set R2_ACCOUNT_ID, or R2_ENDPOINT as https://<account>.r2.cloudflarestorage.com',
+      });
+    }
     const publicR2 = [
       env.R2_PUBLIC_BUCKET,
       env.R2_PUBLIC_ACCESS_KEY_ID,
