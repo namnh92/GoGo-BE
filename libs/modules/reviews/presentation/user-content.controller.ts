@@ -26,11 +26,6 @@ const reviewPatchSchema = z.object({
   text: z.string().max(2000).optional(),
 });
 
-const profileSchema = z.object({
-  displayName: z.string().trim().min(1).max(50).optional(),
-  locale: z.enum(['vi', 'en']).optional(),
-});
-
 // eslint-disable-next-line no-useless-assignment -- used in decorator below
 const notifPrefSchema = z.object({
   channel: z.enum(['push', 'email']),
@@ -93,14 +88,6 @@ export class UserContentController {
   @Get('me/reviews')
   myReviews(@CurrentActor() actor: Actor) {
     return this.service.myReviews(actor);
-  }
-
-  @Patch('me')
-  updateProfile(
-    @CurrentActor() actor: Actor,
-    @Body(new ZodValidationPipe(profileSchema)) body: { displayName?: string; locale?: string },
-  ) {
-    return this.service.updateProfile(actor, body);
   }
 
   /** Privacy rule: users can export their data… */

@@ -100,9 +100,10 @@ codebase that a plan cannot paper over:
   `RoomMember` gains `avatarUrl` and nothing else. The CMS user detail does not
   expose home area, interests or budget: no operational reader exists.
 - **One module.** `libs/modules/profile` owns the profile columns,
-  `user_profile_preferences` and the avatar endpoints. Identity's `GET /me`
-  delegates its user branch; the reviews module keeps saved items, reviews and
-  the privacy operations.
+  `user_profile_preferences`, the avatar endpoints and both verbs of `/me`;
+  the guest branch of `GET /me` moved with the route so no second handler can
+  shadow the path. The reviews module keeps saved items, reviews and the
+  privacy operations.
 - **Deferred, not decided:** an optional avatar step after registration;
   interests beyond `mood`; an age field; Google/Apple sign-in and social
   linking.

@@ -147,25 +147,6 @@ export class UserContentService {
     }));
   }
 
-  // --- profile --------------------------------------------------------------
-
-  async updateProfile(
-    actor: Actor,
-    input: { displayName?: string | undefined; locale?: string | undefined },
-  ) {
-    const userId = requireUser(actor);
-    const [updated] = await this.db
-      .update(schema.users)
-      .set({
-        ...(input.displayName ? { displayName: input.displayName } : {}),
-        ...(input.locale ? { locale: input.locale } : {}),
-        updatedAt: sql`now()`,
-      })
-      .where(eq(schema.users.id, userId))
-      .returning();
-    return { displayName: updated!.displayName, locale: updated!.locale };
-  }
-
   // --- privacy (security rules: export + delete) ----------------------------
 
   /** Data export — every actor-owned row, JSON, no internal ids beyond needed. */

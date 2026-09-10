@@ -175,7 +175,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Current actor profile facts */
+        /**
+         * Current actor — the private profile for a user, session facts for a guest
+         * @description ADR-0022. A user receives the whole profile, including the fields nobody else ever sees (email, home area, interests, usual budget), and `capabilities.avatarUpload`, which says before a picker opens whether this environment can take an avatar at all. A guest receives its session facts: `roomId`, `displayName`, `expiresAt`.
+         */
         get: operations["getMe"];
         put?: never;
         post?: never;
@@ -183,7 +186,10 @@ export interface paths {
         delete: operations["deleteAccount"];
         options?: never;
         head?: never;
-        /** Update display name / locale */
+        /**
+         * Update the profile — null clears an optional field, omitted keeps it
+         * @description `displayName` and `locale` are never null. `homeAreaKey` must be an active service area. `interests` carries stable taxonomy keys by kind and only `mood` is accepted (ADR-0022); an unknown key or an unsupported kind is `INVALID_TAXONOMY_KEYS`. `usualBudget.perPerson` is integer minor units, a create-room default, never a room constraint. Users only: a guest gets 403.
+         */
         patch: operations["updateProfile"];
         trace?: never;
     };
@@ -5143,6 +5149,56 @@ export interface components {
             dietaryKeys?: string[];
             accessibilityKeys?: string[];
         };
+        /** @description A curated service area (`GET /service-areas`), never a provider prediction key. */
+        HomeArea: {
+            key: string;
+            name: string;
+            city?: string | null;
+        };
+        /** @description Stable taxonomy keys by kind. Only `mood` is accepted in this wave (ADR-0022). */
+        ProfileInterests: {
+            mood: string[];
+        };
+        /** @description Per-person upper bound in integer minor units. A create-room default, never a room constraint. */
+        UsualBudget: {
+            perPerson: number;
+            currency: string;
+        };
+        /** @description Shape depends on `actorType`. A user carries the private profile; a guest carries `roomId`, `displayName`, `expiresAt` and none of the profile fields. */
+        Me: {
+            /** @enum {string} */
+            actorType: "user" | "guest";
+            /** Format: uuid */
+            id: string;
+            displayName?: string;
+            email?: string;
+            locale?: string;
+            /** Format: uuid */
+            roomId?: string;
+            /** Format: date-time */
+            expiresAt?: string;
+            /** @description Null while media hosting is not configured, even if an avatar is stored. */
+            avatarUrl?: string | null;
+            homeArea?: components["schemas"]["HomeArea"] | null;
+            interests?: components["schemas"]["ProfileInterests"];
+            usualBudget?: components["schemas"]["UsualBudget"] | null;
+            capabilities?: {
+                /**
+                 * @description Known before a picker opens; the server still enforces it.
+                 * @enum {string}
+                 */
+                avatarUpload: "available" | "unavailable";
+            };
+        };
+        /** @description Omitted keeps a field, null clears it. `displayName` and `locale` cannot be null. */
+        ProfilePatch: {
+            displayName?: string;
+            /** @enum {string} */
+            locale?: "vi" | "en";
+            homeAreaKey?: string | null;
+            interests?: components["schemas"]["ProfileInterests"] | null;
+            usualBudget?: components["schemas"]["UsualBudget"] | null;
+        };
         RoomMember: {
             /** Format: uuid */
             id: string;
@@ -8478,19 +8534,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        /** @enum {string} */
-                        actorType: "user" | "guest";
-                        /** Format: uuid */
-                        id: string;
-                        displayName?: string;
-                        email?: string;
-                        locale?: string;
-                        /** Format: uuid */
-                        roomId?: string;
-                        /** Format: date-time */
-                        expiresAt?: string;
-                    };
+                    "application/json": components["schemas"]["Me"];
                 };
             };
             401: components["responses"]["Unauthorized"];
@@ -8523,21 +8567,23 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    displayName?: string;
-                    /** @enum {string} */
-                    locale?: "vi" | "en";
-                };
+                "application/json": components["schemas"]["ProfilePatch"];
             };
         };
         responses: {
-            /** @description Updated profile facts */
+            /** @description The updated profile */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
             };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
         };
     };
     listRooms: {

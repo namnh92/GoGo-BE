@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.21
+  version: 1.0.0-alpha.22
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -365,47 +365,54 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /me:
+    get:
+      operationId: getMe
+      tags: [me]
+      summary: Current actor — the private profile for a user, session facts for a guest
+      description: >
+        ADR-0022. A user receives the whole profile, including the fields
+        nobody else ever sees (email, home area, interests, usual budget), and
+        `capabilities.avatarUpload`, which says before a picker opens whether
+        this environment can take an avatar at all. A guest receives its
+        session facts: `roomId`, `displayName`, `expiresAt`.
+      responses:
+        '200':
+          description: Actor profile (shape depends on actorType)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
     patch:
       operationId: updateProfile
       tags: [me]
-      summary: Update display name / locale
+      summary: Update the profile — null clears an optional field, omitted keeps it
+      description: >
+        `displayName` and `locale` are never null. `homeAreaKey` must be an
+        active service area. `interests` carries stable taxonomy keys by kind
+        and only `mood` is accepted (ADR-0022); an unknown key or an
+        unsupported kind is `INVALID_TAXONOMY_KEYS`. `usualBudget.perPerson` is
+        integer minor units, a create-room default, never a room constraint.
+        Users only: a guest gets 403.
       requestBody:
         content:
           application/json:
-            schema:
-              type: object
-              properties:
-                displayName: { type: string, minLength: 1, maxLength: 50 }
-                locale: { type: string, enum: [vi, en] }
+            schema: { $ref: '#/components/schemas/ProfilePatch' }
       responses:
-        '200': { description: Updated profile facts }
+        '200':
+          description: The updated profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     delete:
       operationId: deleteAccount
       tags: [me]
       summary: Delete account — PII nulled, sessions revoked, content pseudonymized
       responses:
         '200': { description: '{ deleted: true }' }
-    get:
-      operationId: getMe
-      tags: [me]
-      summary: Current actor profile facts
-      responses:
-        '200':
-          description: Actor profile (shape depends on actorType)
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [actorType, id]
-                properties:
-                  actorType: { type: string, enum: [user, guest] }
-                  id: { type: string, format: uuid }
-                  displayName: { type: string }
-                  email: { type: string }
-                  locale: { type: string }
-                  roomId: { type: string, format: uuid }
-                  expiresAt: { type: string, format: date-time }
-        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /rooms:
     get:
@@ -9774,6 +9781,78 @@ components:
         accessibilityKeys:
           type: array
           items: { type: string }
+    HomeArea:
+      type: object
+      description: A curated service area (`GET /service-areas`), never a provider prediction key.
+      required: [key, name]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        city: { type: string, nullable: true }
+    ProfileInterests:
+      type: object
+      description: Stable taxonomy keys by kind. Only `mood` is accepted in this wave (ADR-0022).
+      required: [mood]
+      properties:
+        mood:
+          type: array
+          maxItems: 20
+          items: { type: string }
+    UsualBudget:
+      type: object
+      description: Per-person upper bound in integer minor units. A create-room default, never a room constraint.
+      required: [perPerson, currency]
+      properties:
+        perPerson: { type: integer, minimum: 0 }
+        currency: { type: string, minLength: 3, maxLength: 3 }
+    Me:
+      type: object
+      description: >
+        Shape depends on `actorType`. A user carries the private profile; a
+        guest carries `roomId`, `displayName`, `expiresAt` and none of the
+        profile fields.
+      required: [actorType, id]
+      properties:
+        actorType: { type: string, enum: [user, guest] }
+        id: { type: string, format: uuid }
+        displayName: { type: string }
+        email: { type: string }
+        locale: { type: string }
+        roomId: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+        avatarUrl:
+          type: string
+          nullable: true
+          description: Null while media hosting is not configured, even if an avatar is stored.
+        homeArea:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/HomeArea' }]
+        interests: { $ref: '#/components/schemas/ProfileInterests' }
+        usualBudget:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/UsualBudget' }]
+        capabilities:
+          type: object
+          required: [avatarUpload]
+          properties:
+            avatarUpload:
+              type: string
+              enum: [available, unavailable]
+              description: Known before a picker opens; the server still enforces it.
+    ProfilePatch:
+      type: object
+      description: Omitted keeps a field, null clears it. `displayName` and `locale` cannot be null.
+      additionalProperties: false
+      properties:
+        displayName: { type: string, minLength: 1, maxLength: 50 }
+        locale: { type: string, enum: [vi, en] }
+        homeAreaKey: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        interests:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/ProfileInterests' }]
+        usualBudget:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/UsualBudget' }]
     RoomMember:
       type: object
       required: [id, displayName, role, selectionStatus, isGuest]

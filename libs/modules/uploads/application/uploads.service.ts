@@ -6,6 +6,7 @@ import { STORAGE_PROVIDER, type StoragePort } from '@gogo/providers';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
+import { MEDIA_UPLOADS_CONFIGURED } from './tokens';
 
 /**
  * BE-BFF-016 (#171) — the upload path a client can actually use.
@@ -62,7 +63,7 @@ export class UploadsService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(STORAGE_PROVIDER) private readonly storage: StoragePort,
-    @Inject('MEDIA_UPLOADS_CONFIGURED') private readonly configured: boolean,
+    @Inject(MEDIA_UPLOADS_CONFIGURED) private readonly configured: boolean,
   ) {}
 
   async createUpload(
