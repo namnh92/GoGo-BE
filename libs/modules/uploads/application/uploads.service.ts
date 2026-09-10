@@ -7,7 +7,11 @@ import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
 import { PUBLIC_UPLOAD_PREFIXES } from '../../shared/media-url';
-import { AVATAR_STORAGE_CONFIGURED, MEDIA_UPLOADS_CONFIGURED } from './tokens';
+import {
+  AVATAR_STORAGE_CONFIGURED,
+  CATALOGUE_STORAGE_CONFIGURED,
+  MEDIA_UPLOADS_CONFIGURED,
+} from './tokens';
 
 /**
  * BE-BFF-016 (#171) — the upload path a client can actually use.
@@ -93,6 +97,7 @@ export class UploadsService {
     @Inject(PUBLIC_STORAGE_PROVIDER) private readonly publicStorage: StoragePort,
     @Inject(MEDIA_UPLOADS_CONFIGURED) private readonly configured: boolean,
     @Inject(AVATAR_STORAGE_CONFIGURED) private readonly avatarConfigured: boolean,
+    @Inject(CATALOGUE_STORAGE_CONFIGURED) private readonly catalogueConfigured: boolean,
   ) {}
 
   async createUpload(
@@ -153,6 +158,17 @@ export class UploadsService {
     // The prefix decides the bucket, so the object lands where the URL that
     // will be handed out actually reads from (ADR-0005).
     const publicPrefix = PUBLIC_UPLOAD_PREFIXES[input.purpose];
+    if (publicPrefix && !this.catalogueConfigured) {
+      // Without the public half the presigner falls back to the fake adapter,
+      // which answers with a `fake-storage.local` URL. Refusing here is the
+      // difference between "this environment cannot host catalogue images" and
+      // an upload that appears to be authorized and silently goes nowhere.
+      throw new AppError(
+        'UPLOAD_NOT_CONFIGURED',
+        'Public media storage is not configured in this environment',
+        503,
+      );
+    }
     const key = isAvatar
       ? `${AVATAR_ORIGINAL_PREFIX}/${actor.id}/${randomUUID()}.${extension}`
       : publicPrefix
