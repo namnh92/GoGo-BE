@@ -700,6 +700,8 @@ describe('what co-members see, and the curated areas (PROF-BE-005)', () => {
       key: 'hcm_q1',
       name: 'Quận 1',
       city: 'TP.HCM',
+      lat: 10.7769,
+      lng: 106.7009,
     });
   });
 });
@@ -800,5 +802,198 @@ describe('the picture leaves with the person; stale presigns leave on schedule (
     expect(
       await db.select().from(schema.mediaUploads).where(eq(schema.mediaUploads.id, fresh!.id)),
     ).toHaveLength(1);
+  });
+});
+
+describe('export and delete cover the profile (PROF-BE-007)', () => {
+  it('the export carries every profile field from an allowlist and no credential of any kind', async () => {
+    const { token } = await register('export-profile@gogo.id.vn', 'Người Xuất');
+    await api().inject({
+      method: 'PATCH',
+      url: '/v1/me',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        homeAreaKey: 'hcm_q1',
+        interests: { mood: ['lively'] },
+        usualBudget: { perPerson: 250_000, currency: 'VND' },
+      },
+    });
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/me/export',
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().profile).toEqual({
+      displayName: 'Người Xuất',
+      email: 'export-profile@gogo.id.vn',
+      locale: 'vi',
+      createdAt: expect.any(String),
+      avatarUrl: null,
+      homeArea: { key: 'hcm_q1', name: 'Quận 1', city: 'TP.HCM' },
+      interests: { mood: ['lively'] },
+      usualBudget: { perPerson: 250_000, currency: 'VND' },
+    });
+
+    // No key anywhere in the document may name a secret, and no value may
+    // look like one: the row holds an argon2 hash and this is the document a
+    // person forwards to whoever asked for it.
+    const walk = (node: unknown, path: string[]): string[] =>
+      node && typeof node === 'object'
+        ? Object.entries(node as Record<string, unknown>).flatMap(([k, v]) => [
+            ...(/hash|secret|token|cipher|hmac|password/i.test(k) ? [[...path, k].join('.')] : []),
+            ...walk(v, [...path, k]),
+          ])
+        : [];
+    expect(walk(res.json(), [])).toEqual([]);
+    expect(JSON.stringify(res.json())).not.toMatch(/\$argon2/);
+  });
+
+  it('deletion nulls every profile column and removes the interests row', async () => {
+    const { token, userId } = await register('delete-profile@gogo.id.vn');
+    await api().inject({
+      method: 'PATCH',
+      url: '/v1/me',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        homeAreaKey: 'hcm_q1',
+        interests: { mood: ['chill'] },
+        usualBudget: { perPerson: 99_000, currency: 'VND' },
+      },
+    });
+    const del = await api().inject({
+      method: 'DELETE',
+      url: '/v1/me',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {},
+    });
+    expect(del.statusCode).toBe(200);
+
+    const [user] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+    expect(user).toMatchObject({
+      status: 'deleted',
+      email: null,
+      passwordHash: null,
+      avatarKey: null,
+      homeAreaKey: null,
+      usualBudgetPerPerson: null,
+    });
+    const prefs = await db
+      .select()
+      .from(schema.userProfilePreferences)
+      .where(eq(schema.userProfilePreferences.userId, userId));
+    expect(prefs).toHaveLength(0);
+  });
+});
+
+describe('delayed cleanup can never take a live avatar (PROF-BE-004 regression)', () => {
+  const privateStore = () => app.get<FakeStorage>(STORAGE_PROVIDER);
+  const publicStore = () => app.get<FakeStorage>(PUBLIC_STORAGE_PROVIDER);
+  const purge = () => app.get<FakeCachePurge>(CACHE_PURGE);
+  const cleanup = () => app.get(MediaCleanupService);
+
+  async function seededUpload(token: string): Promise<string> {
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/uploads',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { purpose: 'avatar', contentType: 'image/png', contentLength: 100 },
+    });
+    const key = res.json().key as string;
+    privateStore().seed(
+      key,
+      new Uint8Array(
+        await sharp({ create: { width: 48, height: 48, channels: 3, background: '#f0f' } })
+          .png()
+          .toBuffer(),
+      ),
+      'image/png',
+    );
+    return key;
+  }
+
+  function putAvatar(token: string, uploadKey: string) {
+    return api().inject({
+      method: 'PUT',
+      url: '/v1/me/avatar',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { uploadKey },
+    });
+  }
+
+  async function runEverythingDue() {
+    await db.update(schema.mediaCleanupQueue).set({ nextAttemptAt: sql`now()` });
+    return cleanup().runDue(100);
+  }
+
+  it('a failed attempt, then a successful retry with the same key: the graced row removes the original only', async () => {
+    const { token, userId } = await register('avatar-retry@gogo.id.vn');
+    const key = await seededUpload(token);
+
+    publicStore().failWrites = true;
+    try {
+      expect((await putAvatar(token, key)).statusCode).toBe(503);
+    } finally {
+      publicStore().failWrites = false;
+    }
+    const graced = await db
+      .select()
+      .from(schema.mediaCleanupQueue)
+      .where(eq(schema.mediaCleanupQueue.objectKey, key));
+    expect(graced).toHaveLength(1);
+    expect(graced[0]!.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+
+    const retry = await putAvatar(token, key);
+    expect(retry.statusCode).toBe(200);
+    const url = retry.json().avatarUrl as string;
+    const publicKey = url.replace('https://assets-test.local/', '');
+    expect(publicStore().objects.has(publicKey)).toBe(true);
+
+    // The delayed cleanup fires. It may only take the original.
+    const report = await runEverythingDue();
+    expect(report.attempted).toBeGreaterThanOrEqual(1);
+    expect(privateStore().objects.has(key)).toBe(false);
+    expect(publicStore().objects.has(publicKey)).toBe(true);
+    expect(publicStore().deleted).not.toContain(publicKey);
+    expect(purge().purged).not.toContain(url);
+    const [user] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+    expect(user!.avatarKey).toBe(publicKey);
+    expect((await getMe(token)).json().avatarUrl).toBe(url);
+    expect(await db.select().from(schema.mediaCleanupQueue)).toHaveLength(0);
+  });
+
+  it('a queue row that names a live avatar is dropped, never deleted, even when due', async () => {
+    const { token } = await register('avatar-live@gogo.id.vn');
+    const url = (await putAvatar(token, await seededUpload(token))).json().avatarUrl as string;
+    const publicKey = url.replace('https://assets-test.local/', '');
+
+    // No code path writes this row; it stands in for the bug that would.
+    await db
+      .insert(schema.mediaCleanupQueue)
+      .values({ bucket: 'public', objectKey: publicKey, reason: 'regression_stale_row' });
+
+    const report = await runEverythingDue();
+    expect(report.skipped).toBe(1);
+    expect(publicStore().objects.has(publicKey)).toBe(true);
+    expect(publicStore().deleted).not.toContain(publicKey);
+    expect(purge().purged).not.toContain(url);
+    expect(
+      await db
+        .select()
+        .from(schema.mediaCleanupQueue)
+        .where(eq(schema.mediaCleanupQueue.objectKey, publicKey)),
+    ).toHaveLength(0);
+    expect((await getMe(token)).json().avatarUrl).toBe(url);
+
+    // The same key, once the profile has moved on, is removable again.
+    const next = (await putAvatar(token, await seededUpload(token))).json().avatarUrl as string;
+    expect(next).not.toBe(url);
+    expect(publicStore().deleted).toContain(publicKey);
   });
 });

@@ -21,6 +21,8 @@ export type CleanupRunReport = {
   done: number;
   retried: number;
   deadLettered: number;
+  /** Rows that named an object a profile still points at: dropped, never deleted. */
+  skipped: number;
 };
 
 /**
@@ -102,7 +104,13 @@ export class MediaCleanupService {
       )
       .orderBy(asc(schema.mediaCleanupQueue.nextAttemptAt))
       .limit(limit);
-    const report: CleanupRunReport = { attempted: 0, done: 0, retried: 0, deadLettered: 0 };
+    const report: CleanupRunReport = {
+      attempted: 0,
+      done: 0,
+      retried: 0,
+      deadLettered: 0,
+      skipped: 0,
+    };
     for (const row of rows) {
       report.attempted += 1;
       const outcome = await this.attempt(row);
@@ -129,10 +137,32 @@ export class MediaCleanupService {
     return publicMediaUrl(this.mediaBaseUrl, key);
   }
 
+  /**
+   * Whether a public object is the avatar some account points at right now.
+   * Keys are random per attempt, so a queue row can only name a live avatar
+   * through a bug upstream — and the answer to a bug upstream is to refuse the
+   * delete here, not to trust that the bug never happens. Read at attempt time,
+   * never at enqueue time: a retry that succeeded after the row was written is
+   * exactly the case this exists for.
+   */
+  private async isLiveAvatar(objectKey: string): Promise<boolean> {
+    const [referenced] = await this.db
+      .select({ id: schema.users.id })
+      .from(schema.users)
+      .where(eq(schema.users.avatarKey, objectKey))
+      .limit(1);
+    return referenced !== undefined;
+  }
+
   private async attempt(
     row: typeof schema.mediaCleanupQueue.$inferSelect,
-  ): Promise<'done' | 'retried' | 'deadLettered'> {
+  ): Promise<'done' | 'retried' | 'deadLettered' | 'skipped'> {
     const bucket = row.bucket as CleanupBucket;
+    if (bucket === 'public' && (await this.isLiveAvatar(row.objectKey))) {
+      await this.db.delete(schema.mediaCleanupQueue).where(eq(schema.mediaCleanupQueue.id, row.id));
+      this.metrics.increment('media_cleanup_attempt_total', { bucket, outcome: 'referenced' });
+      return 'skipped';
+    }
     try {
       await this.storage[bucket].deleteObject(row.objectKey);
       // The edge is asked after the origin is gone, so a purge that lands

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.25
+  version: 1.0.0-alpha.26
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2811,6 +2811,12 @@ paths:
       operationId: exportMyData
       tags: [me]
       summary: Export all actor-owned data (privacy rule)
+      description: >
+        Everything the account owns, as JSON, from an explicit allowlist:
+        profile (display name, email, locale, avatar URL, home area, interests,
+        usual budget — ADR-0022), memberships, preferences, votes, saved
+        items, reviews. Never a credential, a session, or an upload key.
+        Audit-logged and recorded in the privacy ledger.
       responses:
         '200': { description: JSON export; audit-logged }
         '429': { $ref: '#/components/responses/RateLimited' }
@@ -9888,13 +9894,23 @@ components:
         accessibilityKeys:
           type: array
           items: { type: string }
+    ServiceArea:
+      type: object
+      description: A curated service area with its centre — a map fact, so a client can set a room origin from it.
+      required: [key, name, lat, lng]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        city: { type: string, nullable: true }
+        lat: { type: number }
+        lng: { type: number }
     ServiceAreaList:
       type: object
       required: [areas]
       properties:
         areas:
           type: array
-          items: { $ref: '#/components/schemas/HomeArea' }
+          items: { $ref: '#/components/schemas/ServiceArea' }
     HomeArea:
       type: object
       description: A curated service area (`GET /service-areas`), never a provider prediction key.

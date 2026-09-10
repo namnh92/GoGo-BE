@@ -1539,7 +1539,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Export all actor-owned data (privacy rule) */
+        /**
+         * Export all actor-owned data (privacy rule)
+         * @description Everything the account owns, as JSON, from an explicit allowlist: profile (display name, email, locale, avatar URL, home area, interests, usual budget — ADR-0022), memberships, preferences, votes, saved items, reviews. Never a credential, a session, or an upload key. Audit-logged and recorded in the privacy ledger.
+         */
         get: operations["exportMyData"];
         put?: never;
         post?: never;
@@ -5199,8 +5202,16 @@ export interface components {
             dietaryKeys?: string[];
             accessibilityKeys?: string[];
         };
+        /** @description A curated service area with its centre — a map fact, so a client can set a room origin from it. */
+        ServiceArea: {
+            key: string;
+            name: string;
+            city?: string | null;
+            lat: number;
+            lng: number;
+        };
         ServiceAreaList: {
-            areas: components["schemas"]["HomeArea"][];
+            areas: components["schemas"]["ServiceArea"][];
         };
         /** @description A curated service area (`GET /service-areas`), never a provider prediction key. */
         HomeArea: {

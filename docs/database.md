@@ -84,8 +84,10 @@ erDiagram
 - `guest_sessions` purged after expiry + grace unless claimed.
 - `login_attempts` purged after 30 days.
 - `idempotency_keys` purged after `expires_at`.
-- Account deletion: `users.status='deleted'`, PII columns nulled, content
-  pseudonymized; export covers all actor-owned rows.
+- Account deletion: `users.status='deleted'`, PII columns nulled (email,
+  password hash, avatar key, home area, usual budget), the interests row
+  deleted, the avatar object enqueued for deletion, content pseudonymized;
+  export covers all actor-owned rows from an explicit allowlist.
 - `media_uploads` rows still `pending` one day past `expires_at` purged; the
   bytes under `tmp/` expire by R2 lifecycle (ADR-0022).
 - `media_cleanup_queue`: one row per object that must disappear, written in
