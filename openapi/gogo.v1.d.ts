@@ -193,6 +193,34 @@ export interface paths {
         patch: operations["updateProfile"];
         trace?: never;
     };
+    "/me/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Attach an uploaded original, process it, publish the avatar
+         * @description ADR-0022. `uploadKey` is what `POST /uploads { purpose: 'avatar' }` returned, after the bytes were PUT to its URL. The key must belong to this user, for this purpose, and be pending and unexpired — or already attached to this same user, so a retry is idempotent; every miss is `INVALID_UPLOAD_KEY` without saying which condition failed. The original is decoded under a 16-megapixel cap and a 3-second clock, oriented, centre-cropped to 512×512 WebP with all metadata dropped, and published under a random immutable key in the public bucket. The previous avatar and the original are scheduled for deletion in the same transaction that stores the new key.
+         *
+         *     A failed request is never left dangling: the original and any public object already written are scheduled away with a grace period, so a retry with the same `uploadKey` still works.
+         *
+         *     Users only; guests get 403. Five calls a minute per user.
+         */
+        put: operations["setAvatar"];
+        post?: never;
+        /**
+         * Remove the avatar — idempotent
+         * @description Clears the key and schedules the public object for deletion and an edge purge in the same transaction. A purge cannot revoke a copy a device already holds; what is guaranteed is that no new fetch of the old URL succeeds once the edge cache lifetime (one day) has passed.
+         */
+        delete: operations["removeAvatar"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/rooms": {
         parameters: {
             query?: never;
@@ -8583,6 +8611,79 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    setAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    uploadKey: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The profile with the new `avatarUrl` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            /** @description `INVALID_UPLOAD_KEY` (not yours, wrong purpose, expired), `AVATAR_UPLOAD_MISSING` (nothing was PUT to the key), `FILE_TOO_LARGE`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description `AVATAR_UNPROCESSABLE` — undecodable, over the pixel cap, over the clock, or not the type it was declared as. Choose another image. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description `AVATAR_BUSY` (retryable, too many concurrent processings) or `AVATAR_STORAGE_UNAVAILABLE` (retryable, storage not answering). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    removeAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The profile with `avatarUrl: null` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
