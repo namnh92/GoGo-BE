@@ -342,6 +342,19 @@ export class UserContentService {
       // already excludes `status = 'deleted'`, so this is about not keeping
       // them rather than about delivery.
       await tx.delete(schema.pushSubscriptions).where(eq(schema.pushSubscriptions.userId, userId));
+      // ADR-0023 — what erasure keeps is a short, named list: the technical
+      // account row, reviews, and photos contributed to a place. Everything
+      // else this person accumulated is theirs and goes: what they saved, the
+      // notifications addressed to them, and how they wanted to be notified.
+      // These are personal records, not contributions, and nothing in the
+      // product reads them for a deleted account.
+      await tx.delete(schema.savedItems).where(eq(schema.savedItems.userId, userId));
+      await tx.delete(schema.notifications).where(eq(schema.notifications.userId, userId));
+      await tx
+        .delete(schema.notificationPreferences)
+        .where(eq(schema.notificationPreferences.userId, userId));
+      // The membership row stays so a room still adds up for the people left
+      // in it; only the name a co-member could read goes.
       await tx
         .update(schema.roomMembers)
         .set({ displayName: 'Đã rời' })
