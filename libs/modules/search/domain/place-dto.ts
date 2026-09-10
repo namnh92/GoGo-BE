@@ -1,3 +1,4 @@
+import { isPublicKey } from '../../shared/media-url';
 /**
  * #169 — the boundary between a SQL row and the `/v1` contract.
  *
@@ -46,6 +47,13 @@ export function iso(value: unknown): string | undefined {
  * Photos are only offered when they can actually be loaded. With no public
  * media base configured the list is empty, so a client shows its placeholder
  * instead of a broken image — the honest failure of the two.
+ *
+ * The same reasoning excludes a key that is not on the public host. Catalogue
+ * uploads were presigned against the private bucket while this URL was
+ * composed against the public one (ADR-0005), so those objects answer 404 and
+ * no URL will make them appear. Handing one to a phone buys a broken tile in a
+ * search result; omitting it buys the placeholder this comment already
+ * promises.
  */
 export function toPhotos(
   rows: PlacePhotoRow[] | null | undefined,
@@ -54,14 +62,16 @@ export function toPhotos(
 ): PlacePhoto[] {
   if (!baseUrl || !rows) return [];
   const base = baseUrl.replace(/\/$/, '');
-  return rows.map((row) => ({
-    id: row.id,
-    url: `${base}/${row.storageKey.replace(/^\//, '')}`,
-    ...(row.width !== null ? { width: row.width } : {}),
-    ...(row.height !== null ? { height: row.height } : {}),
-    source: row.source,
-    // Provider imagery must be shown with its attribution; GoGo's own is not
-    // attributed to anyone.
-    ...(row.source !== 'manual' && attribution ? { attribution } : {}),
-  }));
+  return rows
+    .filter((row) => isPublicKey(row.storageKey))
+    .map((row) => ({
+      id: row.id,
+      url: `${base}/${row.storageKey.replace(/^\//, '')}`,
+      ...(row.width !== null ? { width: row.width } : {}),
+      ...(row.height !== null ? { height: row.height } : {}),
+      source: row.source,
+      // Provider imagery must be shown with its attribution; GoGo's own is not
+      // attributed to anyone.
+      ...(row.source !== 'manual' && attribution ? { attribution } : {}),
+    }));
 }

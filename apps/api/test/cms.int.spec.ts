@@ -3718,46 +3718,91 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
    * the adapter sent none. An editor uploaded a picture, saved it, and the
    * push went out as text with nothing saying so.
    *
-   * The URL handed to the provider must be the durable public one, because the
-   * provider fetches it when the campaign goes out — which for a scheduled
-   * campaign is days after the upload URL expired.
+   * Driven through the test-send path rather than `dispatchDue`, deliberately.
+   * A due-campaign tick claims up to five campaigns at once, so a test that
+   * calls it consumes whatever else the suite has left scheduled — which is
+   * how these two tests, written that way first, broke four unrelated ones.
+   * `deliverTestSends` claims by request, so this touches only its own row and
+   * still runs the same `deliver()` that a real send does.
    */
+  /*
+   * A composer of its own: a test send goes to the staff member's *consumer*
+   * account, matched by email, so the pair has to exist and be subscribed.
+   * Created here rather than in `beforeAll` so it cannot collide with the
+   * account the later test-send test inserts for the shared `ops` admin.
+   */
+  let imageComposer: { id: string; token: string } | undefined;
+  async function composer() {
+    if (imageComposer) return imageComposer;
+    const email = `dispatch226-image-${suffix()}@gogo.local`;
+    imageComposer = await createAdmin(email, 'ops_admin');
+    const [self] = await db
+      .insert(schema.users)
+      .values({ email, displayName: 'Image composer', emailVerifiedAt: new Date() })
+      .returning();
+    await db
+      .insert(schema.pushSubscriptions)
+      .values({ userId: self!.id, platform: 'ios', subscriptionId: `sub-img-${suffix()}` });
+    return imageComposer;
+  }
+
+  async function testSend(push: CountingPush, extra: Record<string, unknown>) {
+    const who = await composer();
+    const title = `Ảnh chiến dịch ${suffix()}`;
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/campaigns',
+      remoteAddress: ip(),
+      headers: auth(who.token),
+      payload: {
+        name: `Gửi thử ảnh ${suffix()}`,
+        title,
+        body: 'Mở app để xem gợi ý',
+        audienceType: 'all',
+        ...extra,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const id = created.json().id as string;
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/campaigns/${id}/test-send`,
+      remoteAddress: ip(),
+      headers: auth(who.token),
+      payload: {},
+    });
+    await (await dispatcher(push, 'https://assets-dev.gogo.id.vn')).deliverTestSends();
+    return { id, title, sent: push.sent.filter((entry) => entry.title === title) };
+  }
+
   it('delivers a campaign image as a durable public URL', async () => {
     const BASE = 'https://assets-dev.gogo.id.vn';
-    const key = await (async () => {
-      const res = await api().inject({
-        method: 'POST',
-        url: '/v1/cms/uploads',
-        remoteAddress: ip(),
-        headers: auth(ops.token),
-        payload: { purpose: 'campaign_image', contentType: 'image/jpeg', contentLength: 5_000 },
-      });
-      expect(res.statusCode).toBe(201);
-      return res.json().key as string;
-    })();
+    const authorized = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/uploads',
+      remoteAddress: ip(),
+      headers: auth((await composer()).token),
+      payload: { purpose: 'campaign_image', contentType: 'image/jpeg', contentLength: 5_000 },
+    });
+    expect(authorized.statusCode).toBe(201);
+    const key = authorized.json().key as string;
     // ADR-0005 routing: a campaign image lands on the public prefix, which is
     // what makes a public URL for it meaningful at all.
     expect(key).toMatch(/^campaigns\//);
 
-    // A title of its own: one tick claims up to five due campaigns, so the
-    // assertions have to be about this campaign's sends and not the batch's.
-    const title = `Ảnh chiến dịch ${suffix()}`;
-    const id = await scheduledCampaign({ imageKey: key, title });
-    const push = new CountingPush();
-    await (await dispatcher(push, BASE)).dispatchDue();
+    const { id, sent } = await testSend(new CountingPush(), { imageKey: key });
 
-    const mine = push.sent.filter((sent) => sent.title === title);
-    expect(mine.length).toBeGreaterThan(0);
-    for (const sent of mine) {
-      expect(sent.imageUrl).toBe(`${BASE}/${key}`);
+    expect(sent.length).toBeGreaterThan(0);
+    for (const entry of sent) {
+      expect(entry.imageUrl).toBe(`${BASE}/${key}`);
       // Never the presigned upload URL: it is signed for PUT and expires.
-      expect(sent.imageUrl).not.toContain('X-Amz-Signature');
+      expect(entry.imageUrl).not.toContain('X-Amz-Signature');
     }
 
     const detail = await api().inject({
       method: 'GET',
       url: `/v1/cms/campaigns/${id}`,
-      headers: auth(ops.token),
+      headers: auth((await composer()).token),
     });
     // The console previews the same URL the provider is given — where this
     // environment has media hosting at all. The API composes it from its own
@@ -3769,14 +3814,9 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
   });
 
   it('sends a text campaign without an image field', async () => {
-    const title = `Chỉ chữ ${suffix()}`;
-    await scheduledCampaign({ title });
-    const push = new CountingPush();
-    await (await dispatcher(push, 'https://assets-dev.gogo.id.vn')).dispatchDue();
-
-    const mine = push.sent.filter((sent) => sent.title === title);
-    expect(mine.length).toBeGreaterThan(0);
-    for (const sent of mine) expect(sent.imageUrl).toBeUndefined();
+    const { sent } = await testSend(new CountingPush(), {});
+    expect(sent.length).toBeGreaterThan(0);
+    for (const entry of sent) expect(entry.imageUrl).toBeUndefined();
   });
 
   it('estimates exactly what the send will attempt, opt-outs included (#523)', async () => {

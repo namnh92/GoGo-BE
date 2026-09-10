@@ -46,3 +46,35 @@ describe('catalogue URLs (ADR-0005)', () => {
     expect(publicCatalogueUrl(BASE, 'u/admin/actor/one.jpg')).toBeNull();
   });
 });
+
+/*
+ * The consumer path composes place photo URLs too (`toPhotos`), and it had the
+ * same shape of bug: a legacy key became a URL that 404s, which on a phone is a
+ * broken tile in a search result rather than a missing one.
+ */
+import { toPhotos } from '../search/domain/place-dto';
+
+describe('consumer place photos', () => {
+  const row = (storageKey: string) => ({
+    id: `m-${storageKey}`,
+    storageKey,
+    width: 100,
+    height: 100,
+    source: 'manual' as const,
+    moderation: 'approved',
+  });
+
+  it('offers a photo that is on the public host', () => {
+    const photos = toPhotos([row('places/actor/one.jpg')], BASE);
+    expect(photos).toHaveLength(1);
+    expect(photos[0]!.url).toBe(`${BASE}/places/actor/one.jpg`);
+  });
+
+  it('omits a legacy private-bucket photo rather than serving a dead URL', () => {
+    expect(toPhotos([row('u/admin/actor/one.jpg')], BASE)).toHaveLength(0);
+  });
+
+  it('still returns nothing when media hosting is not configured', () => {
+    expect(toPhotos([row('places/actor/one.jpg')], '')).toHaveLength(0);
+  });
+});
