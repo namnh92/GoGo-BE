@@ -599,3 +599,107 @@ describe('avatar pipeline (PROF-BE-004, ADR-0022)', () => {
     expect(del.statusCode).toBe(403);
   });
 });
+
+describe('what co-members see, and the curated areas (PROF-BE-005)', () => {
+  it('a co-member sees the avatar URL and nothing else from the profile', async () => {
+    const { token: hostToken, userId: hostId } = await register('members-host@gogo.id.vn');
+    const { token: memberToken, userId: memberId } = await register(
+      'members-with-avatar@gogo.id.vn',
+    );
+    await api().inject({
+      method: 'PATCH',
+      url: '/v1/me',
+      remoteAddress: ip(),
+      headers: auth(memberToken),
+      payload: { homeAreaKey: 'hcm_q1', usualBudget: { perPerson: 1, currency: 'VND' } },
+    });
+    const privateStore = app.get<FakeStorage>(STORAGE_PROVIDER);
+    const presign = await api().inject({
+      method: 'POST',
+      url: '/v1/uploads',
+      remoteAddress: ip(),
+      headers: auth(memberToken),
+      payload: { purpose: 'avatar', contentType: 'image/png', contentLength: 100 },
+    });
+    const key = presign.json().key as string;
+    privateStore.seed(
+      key,
+      new Uint8Array(
+        await sharp({ create: { width: 64, height: 64, channels: 3, background: '#00f' } })
+          .png()
+          .toBuffer(),
+      ),
+      'image/png',
+    );
+    const set = await api().inject({
+      method: 'PUT',
+      url: '/v1/me/avatar',
+      remoteAddress: ip(),
+      headers: auth(memberToken),
+      payload: { uploadKey: key },
+    });
+    expect(set.statusCode).toBe(200);
+    const avatarUrl = set.json().avatarUrl as string;
+
+    const [room] = await db
+      .insert(schema.rooms)
+      .values({
+        code: 'MEMBERSROOM1',
+        type: 'group',
+        status: 'collecting',
+        decisionMode: 'vote',
+        hostUserId: hostId,
+        participantCount: 3,
+      })
+      .returning();
+    await db.insert(schema.roomMembers).values([
+      { roomId: room!.id, userId: hostId, role: 'host', displayName: 'members-host' },
+      { roomId: room!.id, userId: memberId, role: 'member', displayName: 'members-with-avatar' },
+    ]);
+    const guest = await api().inject({
+      method: 'POST',
+      url: '/v1/sessions/guest',
+      remoteAddress: ip(),
+      payload: { roomCode: room!.code, displayName: 'Khách Thành Viên' },
+    });
+    expect(guest.statusCode).toBe(201);
+
+    const res = await api().inject({
+      method: 'GET',
+      url: `/v1/rooms/${room!.id}/members`,
+      remoteAddress: ip(),
+      headers: auth(hostToken),
+    });
+    expect(res.statusCode).toBe(200);
+    const members = res.json() as Record<string, unknown>[];
+    const byName = Object.fromEntries(members.map((m) => [m.displayName as string, m]));
+    expect(byName['members-with-avatar']).toMatchObject({ avatarUrl, isGuest: false });
+    expect(byName['members-host']).toMatchObject({ avatarUrl: null });
+    expect(byName['Khách Thành Viên']).toMatchObject({ avatarUrl: null, isGuest: true });
+    for (const m of members) {
+      expect(Object.keys(m).sort()).toEqual(
+        ['avatarUrl', 'displayName', 'id', 'isGuest', 'joinedAt', 'role', 'selectionStatus'].sort(),
+      );
+    }
+  });
+
+  it('lists the active service areas, in order, publicly and cacheably', async () => {
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/service-areas',
+      remoteAddress: ip(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['cache-control']).toBe('public, max-age=3600');
+    const keys = (res.json().areas as { key: string; name: string; city: string | null }[]).map(
+      (a) => a.key,
+    );
+    expect(keys).toContain('hcm_q1');
+    expect(keys).not.toContain('hcm_retired');
+    expect(res.json().areas.find((a: { key: string }) => a.key === 'hcm_q1')).toEqual({
+      key: 'hcm_q1',
+      name: 'Quận 1',
+      city: 'TP.HCM',
+    });
+  });
+});

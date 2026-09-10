@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.24
+  version: 1.0.0-alpha.25
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2703,6 +2703,29 @@ paths:
       responses:
         '200': { description: '{ id, status, reasonCode?, placeId? }' }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /service-areas:
+    get:
+      operationId: listServiceAreas
+      tags: [places]
+      summary: The curated service areas — a profile's home area comes from here
+      description: >
+        ADR-0022. The same table the areas autocomplete falls back to, whole,
+        ordered for a picker and grouped by `city` on the client. Only active
+        areas. No PII, no provider call, cached at the edge for an hour. A
+        `homeAreaKey` sent to `PATCH /me` must be one of these keys.
+      security: []
+      responses:
+        '200':
+          description: Active service areas in display order
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: 'public, max-age=3600'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceAreaList' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /places/areas:
     get:
@@ -9865,6 +9888,13 @@ components:
         accessibilityKeys:
           type: array
           items: { type: string }
+    ServiceAreaList:
+      type: object
+      required: [areas]
+      properties:
+        areas:
+          type: array
+          items: { $ref: '#/components/schemas/HomeArea' }
     HomeArea:
       type: object
       description: A curated service area (`GET /service-areas`), never a provider prediction key.
@@ -9939,6 +9969,11 @@ components:
           allOf: [{ $ref: '#/components/schemas/UsualBudget' }]
     RoomMember:
       type: object
+      description: >
+        What co-members see of each other, and nothing more: no email, no home
+        area, no interests, no budget (ADR-0022). `avatarUrl` is present for a
+        user who set one and media hosting is configured; guests never carry
+        one.
       required: [id, displayName, role, selectionStatus, isGuest]
       properties:
         id: { type: string, format: uuid }
@@ -9947,6 +9982,7 @@ components:
         selectionStatus: { type: string, enum: [pending, in_progress, completed] }
         isGuest: { type: boolean }
         joinedAt: { type: string, format: date-time }
+        avatarUrl: { type: string, nullable: true }
     RoomSummary:
       type: object
       description: Facts only — audience copy is composed client-side from type/participantCount/budgetMode.

@@ -6,6 +6,7 @@ import { AppError } from '../../shared/app-error';
 import { writeAudit } from '../../shared/audit';
 import { APP_CONFIG, type MediaConfig } from '../../shared/config';
 import { assertValidSelections } from '../../shared/taxonomy-selections';
+import { publicMediaUrl } from '../../shared/media-url';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
 import { AVATAR_STORAGE_CONFIGURED } from '../../uploads/application/tokens';
@@ -82,8 +83,7 @@ export class ProfileService {
    * beats a URL that would 404, and a client falls back to initials.
    */
   avatarUrl(key: string | null | undefined): string | null {
-    const base = this.config.MEDIA_PUBLIC_BASE_URL?.replace(/\/$/, '');
-    return base && key ? `${base}/${key.replace(/^\//, '')}` : null;
+    return publicMediaUrl(this.config.MEDIA_PUBLIC_BASE_URL, key);
   }
 
   async getProfile(actor: Actor): Promise<UserProfile> {
