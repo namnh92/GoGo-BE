@@ -44,6 +44,8 @@ erDiagram
     places ||--o{ place_taxonomies : tagged
     taxonomies ||--o{ taxonomy_labels : i18n
     taxonomies ||--o{ taxonomy_synonyms : search
+    users ||--o| user_profile_preferences : "private interests (ADR-0022)"
+    service_areas ||--o{ users : "home area default"
     users ||--o{ saved_items : saves
     users ||--o{ reviews : writes
     admin_users ||--o{ ranking_configs : versions
@@ -84,6 +86,11 @@ erDiagram
 - `idempotency_keys` purged after `expires_at`.
 - Account deletion: `users.status='deleted'`, PII columns nulled, content
   pseudonymized; export covers all actor-owned rows.
+- `media_uploads` rows still `pending` one day past `expires_at` purged; the
+  bytes under `tmp/` expire by R2 lifecycle (ADR-0022).
+- `media_cleanup_queue`: one row per object that must disappear, written in
+  the same transaction as the change that unreferenced it; the worker retries
+  the delete and dead-letters after six attempts (ADR-0022).
 
 ## Connection strategy (DB-002, #21)
 

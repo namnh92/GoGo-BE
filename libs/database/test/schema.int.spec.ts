@@ -243,4 +243,58 @@ describe('schema integrity', () => {
     );
     expect(res.rows.map((r: { name: string }) => r.name)).toContain('Near Ben Thanh');
   });
+
+  it('home area default is set null when the area is retired (ADR-0022)', async () => {
+    const key = `area-${Date.now()}`;
+    await db
+      .insert(schema.serviceAreas)
+      .values({ key, name: 'Khu thử', centerLat: 10.7, centerLng: 106.7, radiusM: 3000 });
+    const [user] = await db
+      .insert(schema.users)
+      .values({ displayName: 'Home', email: `home-${Date.now()}@x.vn`, homeAreaKey: key })
+      .returning();
+    await db.delete(schema.serviceAreas).where(sql`${schema.serviceAreas.key} = ${key}`);
+    const [after] = await db
+      .select({ homeAreaKey: schema.users.homeAreaKey })
+      .from(schema.users)
+      .where(sql`${schema.users.id} = ${user!.id}`);
+    expect(after!.homeAreaKey).toBeNull();
+  });
+
+  it('usual budget is never negative (ADR-0022)', async () => {
+    await expectConstraint(
+      db
+        .insert(schema.users)
+        .values({ displayName: 'Neg', email: `neg-${Date.now()}@x.vn`, usualBudgetPerPerson: -1 }),
+      'users_usual_budget_nonnegative',
+    );
+  });
+
+  it('media cleanup queue holds one live job per object (ADR-0022)', async () => {
+    const objectKey = `avatars/${Date.now()}.webp`;
+    const enqueue = () =>
+      db
+        .insert(schema.mediaCleanupQueue)
+        .values({ bucket: 'public', objectKey, reason: 'test' })
+        .onConflictDoNothing();
+    await enqueue();
+    await enqueue();
+    const live = await db
+      .select()
+      .from(schema.mediaCleanupQueue)
+      .where(sql`${schema.mediaCleanupQueue.objectKey} = ${objectKey}`);
+    expect(live).toHaveLength(1);
+
+    // A dead-lettered row no longer blocks a fresh attempt from being scheduled.
+    await db
+      .update(schema.mediaCleanupQueue)
+      .set({ failedAt: new Date() })
+      .where(sql`${schema.mediaCleanupQueue.objectKey} = ${objectKey}`);
+    await enqueue();
+    const all = await db
+      .select()
+      .from(schema.mediaCleanupQueue)
+      .where(sql`${schema.mediaCleanupQueue.objectKey} = ${objectKey}`);
+    expect(all).toHaveLength(2);
+  });
 });
