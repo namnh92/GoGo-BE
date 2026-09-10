@@ -1595,7 +1595,7 @@ export class CmsCampaignsController {
     @CurrentActor() actor: Actor,
     @Body(new ZodValidationPipe(campaignCreateSchema)) body: z.infer<typeof campaignCreateSchema>,
   ) {
-    return this.campaigns.create(actor.id, body);
+    return this.campaigns.create(actor, body);
   }
 
   @Get(':id')
@@ -1615,7 +1615,7 @@ export class CmsCampaignsController {
     @Param('id', Uuid) id: string,
     @Body(new ZodValidationPipe(campaignPatchSchema)) body: z.infer<typeof campaignPatchSchema>,
   ) {
-    return this.campaigns.update(actor.id, id, body);
+    return this.campaigns.update(actor, id, body);
   }
 
   /**

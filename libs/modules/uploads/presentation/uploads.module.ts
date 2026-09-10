@@ -2,7 +2,11 @@ import { Global, Module } from '@nestjs/common';
 import { resolveR2AccountId } from '@gogo/providers';
 import { IdentityModule } from '../../identity/presentation/identity.module';
 import { APP_CONFIG } from '../../shared/config';
-import { AVATAR_STORAGE_CONFIGURED, MEDIA_UPLOADS_CONFIGURED } from '../application/tokens';
+import {
+  AVATAR_STORAGE_CONFIGURED,
+  CATALOGUE_STORAGE_CONFIGURED,
+  MEDIA_UPLOADS_CONFIGURED,
+} from '../application/tokens';
 import { UploadsService } from '../application/uploads.service';
 import { UploadsController } from './uploads.controller';
 
@@ -31,6 +35,17 @@ const privateConfigured = (config: UploadsConfig) =>
     resolveR2AccountId({ accountId: config.R2_ACCOUNT_ID, endpoint: config.R2_ENDPOINT }),
   );
 
+/** The public half: a bucket of its own, its own credential, a host to serve from. */
+const publicConfigured = (config: UploadsConfig) =>
+  config.NODE_ENV === 'test' ||
+  (privateConfigured(config) &&
+    Boolean(
+      config.R2_PUBLIC_BUCKET &&
+      config.R2_PUBLIC_ACCESS_KEY_ID &&
+      config.R2_PUBLIC_SECRET_ACCESS_KEY &&
+      config.MEDIA_PUBLIC_BASE_URL,
+    ));
+
 /**
  * Global so the writes that consume upload keys (check-in today) can claim
  * them without importing the endpoint module.
@@ -53,18 +68,22 @@ const privateConfigured = (config: UploadsConfig) =>
       // An avatar needs both buckets and somewhere to serve from; the fakes
       // stand in under test so the pipeline runs end to end without either.
       provide: AVATAR_STORAGE_CONFIGURED,
-      useFactory: (config: UploadsConfig) =>
-        config.NODE_ENV === 'test' ||
-        (privateConfigured(config) &&
-          Boolean(
-            config.R2_PUBLIC_BUCKET &&
-            config.R2_PUBLIC_ACCESS_KEY_ID &&
-            config.R2_PUBLIC_SECRET_ACCESS_KEY &&
-            config.MEDIA_PUBLIC_BASE_URL,
-          )),
+      useFactory: publicConfigured,
+      inject: [APP_CONFIG],
+    },
+    {
+      // ADR-0005: catalogue media is written straight to the public bucket, so
+      // an environment without one cannot accept it.
+      provide: CATALOGUE_STORAGE_CONFIGURED,
+      useFactory: publicConfigured,
       inject: [APP_CONFIG],
     },
   ],
-  exports: [UploadsService, MEDIA_UPLOADS_CONFIGURED, AVATAR_STORAGE_CONFIGURED],
+  exports: [
+    UploadsService,
+    MEDIA_UPLOADS_CONFIGURED,
+    AVATAR_STORAGE_CONFIGURED,
+    CATALOGUE_STORAGE_CONFIGURED,
+  ],
 })
 export class UploadsModule {}

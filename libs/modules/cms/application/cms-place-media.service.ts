@@ -7,6 +7,7 @@ import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
 import { UploadsService } from '../../uploads/application/uploads.service';
 import type { Actor } from '../../identity/domain/actor';
+import { publicCatalogueUrl } from '../../shared/media-url';
 
 /**
  * BE-CMS-M1 (#191) — the place-photo write path the console did not have.
@@ -46,8 +47,7 @@ export class CmsPlaceMediaService {
    * thumbnail is missing instead of showing a broken image.
    */
   readUrl(key: string): string | null {
-    const base = this.config?.MEDIA_PUBLIC_BASE_URL?.replace(/\/$/, '');
-    return base ? `${base}/${key.replace(/^\//, '')}` : null;
+    return publicCatalogueUrl(this.config?.MEDIA_PUBLIC_BASE_URL, key);
   }
 
   private async place(placeId: string) {
@@ -162,12 +162,6 @@ export class CmsPlaceMediaService {
       throw AppError.conflict('PLACE_MEDIA_EXISTS', 'That image is already on this place');
     }
 
-    await this.uploads.attach(actor, [input.storageKey], {
-      type: 'place',
-      id: placeId,
-      purposes: ['place_image'],
-    });
-
     const [upload] = await this.db
       .select({ id: schema.mediaUploads.id })
       .from(schema.mediaUploads)
@@ -184,6 +178,19 @@ export class CmsPlaceMediaService {
       .then((r) => r.rows)) as [{ next: number }];
 
     const row = await this.db.transaction(async (tx) => {
+      /*
+       * The claim belongs to the same transaction as the row that references
+       * it. Attaching on its own connection decided correctly but committed
+       * separately, so a `place_media` insert that failed afterwards — a
+       * cover clash, a constraint — left the upload marked `attached` to a
+       * place holding no media row for it.
+       */
+      await this.uploads.attach(
+        actor,
+        [input.storageKey],
+        { type: 'place', id: placeId, purposes: ['place_image'] },
+        tx,
+      );
       if (input.isCover === true) await this.clearCover(tx, placeId, null);
       const [inserted] = await tx
         .insert(schema.placeMedia)

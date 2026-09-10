@@ -64,6 +64,22 @@ const RESILIENCE = {
   breakerCooldownMs: 30_000,
 } as const;
 
+/**
+ * One image, named once per platform, because OneSignal has no single field
+ * for it: `big_picture` on Android, `ios_attachments` keyed by an id on iOS,
+ * `huawei_big_picture` on Huawei, `chrome_web_image` on web. Sending all four
+ * is how the same picture reaches whichever platform the recipient is on;
+ * a field the platform does not use is ignored rather than refused.
+ */
+function imageFields(url: string): Record<string, unknown> {
+  return {
+    big_picture: url,
+    huawei_big_picture: url,
+    chrome_web_image: url,
+    ios_attachments: { id: url },
+  };
+}
+
 export class OneSignalPushAdapter implements NotificationProviderPort {
   private readonly baseUrl: string;
 
@@ -132,6 +148,7 @@ export class OneSignalPushAdapter implements NotificationProviderPort {
       headings: notification.headings,
       contents: notification.contents,
       ...(notification.data ? { data: notification.data } : {}),
+      ...(notification.imageUrl ? imageFields(notification.imageUrl) : {}),
       ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
     });
 

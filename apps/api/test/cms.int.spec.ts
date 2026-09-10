@@ -2219,9 +2219,11 @@ describe('CMS media upload (BE-CMS-G5 #227)', () => {
     expect(body.contentType).toBe('image/jpeg');
     expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now());
 
-    // Actor plus a UUID plus the extension of the declared type. Nothing the
-    // client sent reaches the key, so it cannot be steered at another object.
-    expect(body.key).toMatch(new RegExp(`^u/admin/${editor.id}/[0-9a-f-]{36}\\.jpg$`));
+    // ADR-0005: a banner is catalogue media, so the key carries the public
+    // prefix that decides which bucket it lands in. Actor plus a UUID plus the
+    // extension of the declared type — nothing the client sent reaches the
+    // key, so it cannot be steered at another object.
+    expect(body.key).toMatch(new RegExp(`^banners/${editor.id}/[0-9a-f-]{36}\\.jpg$`));
     expect(body.key).not.toContain('..');
 
     const [row] = await db
@@ -2232,6 +2234,32 @@ describe('CMS media upload (BE-CMS-G5 #227)', () => {
     expect(row!.actorId).toBe(editor.id);
     expect(row!.purpose).toBe('banner_image');
     expect(row!.status).toBe('pending');
+  });
+
+  /*
+   * ADR-0005 — the prefix is what decides the bucket, so it is the contract.
+   *
+   * Catalogue uploads were presigned against the *private* bucket while the
+   * read URL was composed against the public host, so every place photo,
+   * banner and campaign image resolved and returned 404. The prefix is what
+   * routes the PUT, and it is also what `publicCatalogueUrl` reads to decide
+   * whether a stored key is on the public host at all.
+   */
+  it('gives each catalogue purpose the public prefix that routes its bucket', async () => {
+    for (const [purpose, prefix] of [
+      ['place_image', 'places'],
+      ['banner_image', 'banners'],
+      ['campaign_image', 'campaigns'],
+    ] as const) {
+      const res = await upload({ purpose, contentType: 'image/png', contentLength: 1000 });
+      expect(res.statusCode, purpose).toBe(201);
+      expect(res.json().key as string, purpose).toMatch(new RegExp(`^${prefix}/`));
+      // Where media hosting is configured, the read URL is that public host
+      // plus this key — the pair that used to disagree. Where it is not, the
+      // honest answer is null rather than a URL that would 404.
+      const readUrl = res.json().readUrl as string | null;
+      if (readUrl !== null) expect(readUrl, purpose).toContain(res.json().key);
+    }
   });
 
   it('never hands back a storage credential, only a URL that expires', async () => {
@@ -3140,6 +3168,141 @@ describe('notification campaigns (BE-CMS-G4e #226)', () => {
     expect(row!.dispatchKey).toBeNull();
   });
 
+  /*
+   * BE-CMS-M2 — a campaign image is an upload like any other.
+   *
+   * `imageKey` used to be stored as whatever string arrived: never checked
+   * against the actor who uploaded it, never against the purpose it was
+   * issued for, never claimed. A campaign could carry a `place_image` key, or
+   * one that had never been uploaded at all, and the upload row stayed
+   * `pending` forever.
+   */
+  describe('the image key is an upload, not a string', () => {
+    const patchCampaign = (id: string, payload: unknown, token = ops.token) =>
+      api().inject({
+        method: 'PATCH',
+        url: `/v1/cms/campaigns/${id}`,
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: payload as object,
+      });
+
+    async function campaignKey(token = ops.token, purpose = 'campaign_image') {
+      const res = await api().inject({
+        method: 'POST',
+        url: '/v1/cms/uploads',
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: { purpose, contentType: 'image/jpeg', contentLength: 90_000 },
+      });
+      expect(res.statusCode).toBe(201);
+      return res.json().key as string;
+    }
+
+    it('binds a valid key to the campaign it was saved on', async () => {
+      const imageKey = await campaignKey();
+      const res = await post('', draft({ imageKey }));
+      expect(res.statusCode).toBe(201);
+
+      const [media] = await db
+        .select()
+        .from(schema.mediaUploads)
+        .where(eq(schema.mediaUploads.storageKey, imageKey));
+      expect(media!.status).toBe('attached');
+      expect(media!.attachedToType).toBe('campaign');
+      expect(media!.attachedToId).toBe(res.json().id);
+    });
+
+    it('refuses a key that was never uploaded, and leaves no campaign behind', async () => {
+      const name = `Chiến dịch mồ côi ${suffix()}`;
+      const res = await post('', draft({ name, imageKey: 'u/admin/never/uploaded.jpg' }));
+      expect(res.statusCode).toBe(400);
+      expect(res.json().code).toBe('INVALID_UPLOAD_KEY');
+
+      const rows = await db
+        .select()
+        .from(schema.notificationCampaigns)
+        .where(eq(schema.notificationCampaigns.name, name));
+      expect(rows).toHaveLength(0);
+    });
+
+    it('refuses a key issued for another purpose', async () => {
+      const bannerKey = await campaignKey(ops.token, 'banner_image');
+      const res = await post('', draft({ imageKey: bannerKey }));
+      expect(res.statusCode).toBe(400);
+      expect(res.json().code).toBe('INVALID_UPLOAD_KEY');
+    });
+
+    it('releases the image claim when the write fails after it', async () => {
+      const taken = await post('', draft({ imageKey: await campaignKey() }));
+      expect(taken.statusCode).toBe(201);
+
+      const campaign = await post('', draft({ imageKey: await campaignKey() }));
+      expect(campaign.statusCode).toBe(201);
+
+      // Good key, and a name the write will refuse: the claim must roll back
+      // with the update rather than burning a key the operator can still use.
+      const replacement = await campaignKey();
+      const refused = await patchCampaign(campaign.json().id, {
+        imageKey: replacement,
+        name: taken.json().name,
+      });
+      expect(refused.statusCode).toBe(409);
+
+      const [claim] = await db
+        .select()
+        .from(schema.mediaUploads)
+        .where(eq(schema.mediaUploads.storageKey, replacement));
+      expect(claim!.status).toBe('pending');
+      expect(claim!.attachedToId).toBeNull();
+    });
+
+    it('refuses an expired key', async () => {
+      const stale = await campaignKey();
+      await db
+        .update(schema.mediaUploads)
+        .set({ expiresAt: new Date(Date.now() - 60_000) })
+        .where(eq(schema.mediaUploads.storageKey, stale));
+
+      const res = await post('', draft({ imageKey: stale }));
+      expect(res.statusCode).toBe(400);
+      expect(res.json().code).toBe('INVALID_UPLOAD_KEY');
+    });
+
+    it('refuses a key belonging to another actor', async () => {
+      const foreign = await campaignKey(editor.token);
+      const res = await post('', draft({ imageKey: foreign }));
+      expect(res.statusCode).toBe(400);
+      expect(res.json().code).toBe('INVALID_UPLOAD_KEY');
+    });
+
+    it('leaves a text-only campaign alone', async () => {
+      const res = await post('', draft());
+      expect(res.statusCode).toBe(201);
+      expect(res.json().imageKey).toBeUndefined();
+
+      // And it stays text-only through an unrelated edit.
+      const edited = await patchCampaign(res.json().id, { title: 'Đổi tiêu đề' });
+      expect(edited.statusCode).toBe(200);
+      expect(edited.json().imageKey).toBeUndefined();
+    });
+
+    it('keeps the saved image when a replacement is refused', async () => {
+      const imageKey = await campaignKey();
+      const created = await post('', draft({ imageKey }));
+      expect(created.statusCode).toBe(201);
+
+      const refused = await patchCampaign(created.json().id, {
+        imageKey: 'u/admin/never/uploaded.jpg',
+      });
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json().code).toBe('INVALID_UPLOAD_KEY');
+
+      const after = await get(`/${created.json().id}`);
+      expect(after.json().imageKey).toBe(imageKey);
+    });
+  });
+
   it('validates the destination against real data, and refuses an unsafe URL', async () => {
     const ghost = '00000000-0000-4000-8000-000000000000';
     const missing = await post('', draft({ destinationType: 'place', destinationValue: ghost }));
@@ -3466,12 +3629,19 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
   /** Counts every push, so a double send is visible rather than inferred. */
   // #193: user-targeted, like the real provider — one entry per recipient.
   class CountingPush {
-    readonly sent: { userId: string; title: string }[] = [];
-    async sendToUser(userId: string, payload: { headings: { en: string } }) {
+    readonly sent: { userId: string; title: string; imageUrl?: string | undefined }[] = [];
+    async sendToUser(
+      userId: string,
+      payload: { headings: { en: string }; imageUrl?: string | undefined },
+    ) {
       return this.sendToUsers([userId], payload);
     }
-    async sendToUsers(userIds: readonly string[], payload: { headings: { en: string } }) {
-      for (const userId of userIds) this.sent.push({ userId, title: payload.headings.en });
+    async sendToUsers(
+      userIds: readonly string[],
+      payload: { headings: { en: string }; imageUrl?: string | undefined },
+    ) {
+      for (const userId of userIds)
+        this.sent.push({ userId, title: payload.headings.en, imageUrl: payload.imageUrl });
       const id = `fake-${this.sent.length}`;
       return {
         providerMessageId: id,
@@ -3482,9 +3652,9 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     }
   }
 
-  async function dispatcher(push: CountingPush) {
+  async function dispatcher(push: CountingPush, mediaBaseUrl?: string) {
     const { CampaignDispatcher } = await import('@gogo/modules');
-    return new CampaignDispatcher(db as never, push);
+    return new CampaignDispatcher(db as never, push, undefined, mediaBaseUrl);
   }
 
   beforeAll(async () => {
@@ -3539,6 +3709,115 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     expect(scheduled.statusCode).toBe(201);
     return id;
   }
+
+  /*
+   * BE-CMS-M3 — the image has to survive the whole way to the provider.
+   *
+   * It was stored on the campaign and stopped there: the dispatcher never
+   * selected `image_key`, the notification contract had no image field, and
+   * the adapter sent none. An editor uploaded a picture, saved it, and the
+   * push went out as text with nothing saying so.
+   *
+   * Driven through the test-send path rather than `dispatchDue`, deliberately.
+   * A due-campaign tick claims up to five campaigns at once, so a test that
+   * calls it consumes whatever else the suite has left scheduled — which is
+   * how these two tests, written that way first, broke four unrelated ones.
+   * `deliverTestSends` claims by request, so this touches only its own row and
+   * still runs the same `deliver()` that a real send does.
+   */
+  /*
+   * A composer of its own: a test send goes to the staff member's *consumer*
+   * account, matched by email, so the pair has to exist and be subscribed.
+   * Created here rather than in `beforeAll` so it cannot collide with the
+   * account the later test-send test inserts for the shared `ops` admin.
+   */
+  let imageComposer: { id: string; token: string } | undefined;
+  async function composer() {
+    if (imageComposer) return imageComposer;
+    const email = `dispatch226-image-${suffix()}@gogo.local`;
+    imageComposer = await createAdmin(email, 'ops_admin');
+    const [self] = await db
+      .insert(schema.users)
+      .values({ email, displayName: 'Image composer', emailVerifiedAt: new Date() })
+      .returning();
+    await db
+      .insert(schema.pushSubscriptions)
+      .values({ userId: self!.id, platform: 'ios', subscriptionId: `sub-img-${suffix()}` });
+    return imageComposer;
+  }
+
+  async function testSend(push: CountingPush, extra: Record<string, unknown>) {
+    const who = await composer();
+    const title = `Ảnh chiến dịch ${suffix()}`;
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/campaigns',
+      remoteAddress: ip(),
+      headers: auth(who.token),
+      payload: {
+        name: `Gửi thử ảnh ${suffix()}`,
+        title,
+        body: 'Mở app để xem gợi ý',
+        audienceType: 'all',
+        ...extra,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const id = created.json().id as string;
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/campaigns/${id}/test-send`,
+      remoteAddress: ip(),
+      headers: auth(who.token),
+      payload: {},
+    });
+    await (await dispatcher(push, 'https://assets-dev.gogo.id.vn')).deliverTestSends();
+    return { id, title, sent: push.sent.filter((entry) => entry.title === title) };
+  }
+
+  it('delivers a campaign image as a durable public URL', async () => {
+    const BASE = 'https://assets-dev.gogo.id.vn';
+    const authorized = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/uploads',
+      remoteAddress: ip(),
+      headers: auth((await composer()).token),
+      payload: { purpose: 'campaign_image', contentType: 'image/jpeg', contentLength: 5_000 },
+    });
+    expect(authorized.statusCode).toBe(201);
+    const key = authorized.json().key as string;
+    // ADR-0005 routing: a campaign image lands on the public prefix, which is
+    // what makes a public URL for it meaningful at all.
+    expect(key).toMatch(/^campaigns\//);
+
+    const { id, sent } = await testSend(new CountingPush(), { imageKey: key });
+
+    expect(sent.length).toBeGreaterThan(0);
+    for (const entry of sent) {
+      expect(entry.imageUrl).toBe(`${BASE}/${key}`);
+      // Never the presigned upload URL: it is signed for PUT and expires.
+      expect(entry.imageUrl).not.toContain('X-Amz-Signature');
+    }
+
+    const detail = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/campaigns/${id}`,
+      headers: auth((await composer()).token),
+    });
+    // The console previews the same URL the provider is given — where this
+    // environment has media hosting at all. The API composes it from its own
+    // config, which the integration app leaves unset, so the assertion is that
+    // the key is carried and never that a host appears from nowhere.
+    expect(detail.json().imageKey).toBe(key);
+    const previewed = detail.json().imageUrl as string | null;
+    if (previewed !== null) expect(previewed).toBe(`${BASE}/${key}`);
+  });
+
+  it('sends a text campaign without an image field', async () => {
+    const { sent } = await testSend(new CountingPush(), {});
+    expect(sent.length).toBeGreaterThan(0);
+    for (const entry of sent) expect(entry.imageUrl).toBeUndefined();
+  });
 
   it('estimates exactly what the send will attempt, opt-outs included (#523)', async () => {
     // The header of `campaign-audience.ts` promises one definition used by both
@@ -4134,6 +4413,13 @@ describe('banners (BE-CMS-G4c #224)', () => {
   let editor: { id: string; token: string };
   let otherEditor: { id: string; token: string };
   let moderator: { id: string; token: string };
+  /*
+   * `POST /cms/uploads` is rate-limited 30/60s per actor, so tests that mint
+   * extra keys get their own account. Sharing `editor` made the image tests
+   * spend the budget the rest of the suite was already counting on, and the
+   * failure landed on whichever test happened to run at number 31.
+   */
+  let imageEditor: { id: string; token: string };
   let placeId: string;
   let recommendationId: string;
   let campaignId: string;
@@ -4156,6 +4442,7 @@ describe('banners (BE-CMS-G4c #224)', () => {
     editor = await createAdmin('banner224@gogo.local', 'editor');
     otherEditor = await createAdmin('banner224-other@gogo.local', 'editor');
     moderator = await createAdmin('banner224-mod@gogo.local', 'moderator');
+    imageEditor = await createAdmin('banner224-image@gogo.local', 'editor');
     const ops = await createAdmin('banner224-ops@gogo.local', 'ops_admin');
 
     const [place] = await db
@@ -4217,10 +4504,10 @@ describe('banners (BE-CMS-G4c #224)', () => {
   const get = (path = '', token = editor.token) =>
     api().inject({ method: 'GET', url: `/v1/cms/banners${path}`, headers: auth(token) });
 
-  async function valid(extra: Record<string, unknown> = {}) {
+  async function valid(extra: Record<string, unknown> = {}, token = editor.token) {
     return {
       name: `Banner ${suffix()}`,
-      imageKey: await uploadKey(editor.token),
+      imageKey: await uploadKey(token),
       title: 'Cuối tuần này',
       placement: 'home_hero',
       priority: 10,
@@ -4264,6 +4551,137 @@ describe('banners (BE-CMS-G4c #224)', () => {
     const payload = await valid();
     const { imageKey: _dropped, ...withoutImage } = payload;
     expect((await post(withoutImage)).statusCode).toBe(400);
+  });
+
+  /*
+   * A refused image used to leave the banner behind.
+   *
+   * `create` inserted the row and attached afterwards, so a rejected key
+   * returned 400 over a banner that was already saved, pointing at an image
+   * nobody could load. The refusal has to leave nothing behind — the property
+   * `CmsPlaceMediaService.attach` gets by attaching before it writes.
+   */
+  it('leaves no banner behind when the image is refused', async () => {
+    const name = `Orphan check ${suffix()}`;
+    const foreign = await uploadKey(otherEditor.token);
+
+    const res = await post(
+      { ...(await valid({ name }, imageEditor.token)), imageKey: foreign },
+      imageEditor.token,
+    );
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('INVALID_UPLOAD_KEY');
+
+    const rows = await db.select().from(schema.banners).where(eq(schema.banners.name, name));
+    expect(rows).toHaveLength(0);
+  });
+
+  /*
+   * A refused replacement used to destroy the image it replaced.
+   *
+   * `update` wrote `imageKey` first and validated afterwards, so the rejected
+   * key was already saved when the 400 came back and the last good image was
+   * gone from the record with nothing to recover it from.
+   */
+  it('keeps the saved image when a replacement is refused', async () => {
+    const created = await post(await valid({}, imageEditor.token), imageEditor.token);
+    expect(created.statusCode).toBe(201);
+    const banner = created.json();
+
+    const foreign = await uploadKey(otherEditor.token);
+    const refused = await patch(banner.id, { imageKey: foreign }, imageEditor.token);
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().code).toBe('INVALID_UPLOAD_KEY');
+
+    const after = await get(`/${banner.id}`);
+    expect(after.json().imageKey).toBe(banner.imageKey);
+
+    // And the banner still resolves to the image it actually owns.
+    const [media] = await db
+      .select()
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.storageKey, banner.imageKey));
+    expect(media!.attachedToId).toBe(banner.id);
+  });
+
+  /*
+   * The other direction: a write that fails *after* the claim.
+   *
+   * Moving the attach earlier stops the rejected key from being saved, but on
+   * its own it does not make the pair atomic — `uploads.attach` ran on its own
+   * connection and committed separately, so a banner write that failed after
+   * it left the upload marked `attached` to a banner that never took the
+   * image. The claim now runs on the caller's transaction, so it rolls back
+   * with everything else. A duplicate name is the cheapest way to fail the
+   * write at exactly that point.
+   */
+  it('releases the image claim when the write fails after it', async () => {
+    const taken = await post(await valid({}, imageEditor.token), imageEditor.token);
+    expect(taken.statusCode).toBe(201);
+    const clashingName = taken.json().name;
+
+    const banner = await post(await valid({}, imageEditor.token), imageEditor.token);
+    expect(banner.statusCode).toBe(201);
+
+    // A good key, and a name the write will refuse.
+    const replacement = await uploadKey(imageEditor.token);
+    const refused = await patch(
+      banner.json().id,
+      { imageKey: replacement, name: clashingName },
+      imageEditor.token,
+    );
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().code).toBe('BANNER_NAME_TAKEN');
+
+    // The banner kept its own image...
+    expect((await get(`/${banner.json().id}`, imageEditor.token)).json().imageKey).toBe(
+      banner.json().imageKey,
+    );
+    // ...and the replacement key is still unclaimed, so it can be used again
+    // rather than being burnt by a request that changed nothing.
+    const [claim] = await db
+      .select()
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.storageKey, replacement));
+    expect(claim!.status).toBe('pending');
+    expect(claim!.attachedToId).toBeNull();
+
+    const reused = await patch(banner.json().id, { imageKey: replacement }, imageEditor.token);
+    expect(reused.statusCode).toBe(200);
+    expect(reused.json().imageKey).toBe(replacement);
+  });
+
+  it('re-saving the same image key is not a re-attach', async () => {
+    const created = await post(await valid({}, imageEditor.token), imageEditor.token);
+    expect(created.statusCode).toBe(201);
+    const banner = created.json();
+
+    // The key is already this banner's; saving the unchanged value must not
+    // trip the "already attached" refusal.
+    const again = await patch(banner.id, { imageKey: banner.imageKey }, imageEditor.token);
+    expect(again.statusCode).toBe(200);
+    expect(again.json().imageKey).toBe(banner.imageKey);
+
+    const [claim] = await db
+      .select()
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.storageKey, banner.imageKey));
+    expect(claim!.attachedToId).toBe(banner.id);
+  });
+
+  it('refuses an expired key', async () => {
+    const stale = await uploadKey(imageEditor.token);
+    await db
+      .update(schema.mediaUploads)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(schema.mediaUploads.storageKey, stale));
+
+    const res = await post(
+      { ...(await valid({}, imageEditor.token)), imageKey: stale },
+      imageEditor.token,
+    );
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('INVALID_UPLOAD_KEY');
   });
 
   it('cross-validates the destination against the type it names', async () => {

@@ -237,7 +237,9 @@ async function bootstrap(): Promise<void> {
   const dispatcher = new OutboxDispatcher(db, push, metrics);
   // BE-CMS-G4e (#226): campaigns are sent here, never from a request. Same
   // tick as the outbox rather than a schedule of their own.
-  const campaigns = new CampaignDispatcher(db, push, metrics);
+  // The public media host, so a campaign image reaches the provider as the
+  // durable URL it will still be able to fetch when the campaign goes out.
+  const campaigns = new CampaignDispatcher(db, push, metrics, process.env.MEDIA_PUBLIC_BASE_URL);
   const privacy = new PrivacyJobs(db);
   // ADR-0022: the retry half of media cleanup. Registered only with real
   // buckets — a fake here would mark rows done while the objects stayed.
