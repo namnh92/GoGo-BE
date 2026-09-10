@@ -124,6 +124,69 @@ describe('room lifecycle (BE-BFF-003)', () => {
     expect(room.members).toHaveLength(1);
   });
 
+  /**
+   * GoGo-BE#559 — a couple's budget is a total for two. Enforced on the server
+   * because a rule only the client keeps is a rule the next client forgets
+   * (RULE-CORE-005); MobileApp#189 stored per-person amounts for months and
+   * the per-person ceiling read back as double the intent.
+   */
+  it('refuses a per-person budget on a couple room, and takes a total', async () => {
+    const { token } = await registerUser('couple-budget@gogo.id.vn');
+    const refused = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        type: 'couple',
+        decisionMode: 'match',
+        participantCount: 2,
+        constraint: { ...baseConstraint, budgetMode: 'per_person' },
+      },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().code).toBe('INVALID_BUDGET_MODE');
+    expect(refused.json().field_errors?.[0]?.field).toBe('constraint.budgetMode');
+
+    const accepted = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        type: 'couple',
+        decisionMode: 'match',
+        participantCount: 2,
+        constraint: { ...baseConstraint, budgetMode: 'total', budgetAmount: 800_000 },
+      },
+    });
+    expect(accepted.statusCode).toBe(201);
+    expect(accepted.json().constraints).toMatchObject({
+      budgetMode: 'total',
+      budgetAmount: 800_000,
+    });
+  });
+
+  it('leaves a group host either unit', async () => {
+    const { token } = await registerUser('group-budget@gogo.id.vn');
+    for (const budgetMode of ['per_person', 'total'] as const) {
+      const res = await api().inject({
+        method: 'POST',
+        url: '/v1/rooms',
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: {
+          type: 'group',
+          decisionMode: 'vote',
+          participantCount: 4,
+          constraint: { ...baseConstraint, budgetMode },
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      expect(res.json().constraints.budgetMode).toBe(budgetMode);
+    }
+  });
+
   it('rejects couple rooms with vote mode or wrong participant count', async () => {
     const { token } = await registerUser('host2@gogo.id.vn');
     const badMode = await api().inject({
@@ -333,6 +396,84 @@ describe('permission matrix (SRS §15.7 — hand-crafted requests)', () => {
 });
 
 describe('constraints + staleness (core rule #6)', () => {
+  /**
+   * GoGo-BE#559 — the rule applies to an explicit constraint edit too, and a
+   * room stored before it keeps its value: nothing is converted behind the
+   * host's back, but the next edit has to name the right unit.
+   */
+  it('keeps a legacy per-person couple room readable, and makes its next edit state the unit', async () => {
+    const { token } = await registerUser('legacy-couple@gogo.id.vn');
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        type: 'couple',
+        decisionMode: 'match',
+        participantCount: 2,
+        constraint: { ...baseConstraint, budgetMode: 'total', budgetAmount: 600_000 },
+      },
+    });
+    const room = created.json();
+
+    // A row written before the rule existed. Reached through the database
+    // rather than the API, because the API is exactly what now refuses it.
+    await db
+      .update(schema.roomConstraints)
+      .set({ budgetMode: 'per_person', budgetAmount: 300_000 })
+      .where(eq(schema.roomConstraints.roomId, room.id));
+
+    const read = await api().inject({
+      method: 'GET',
+      url: `/v1/rooms/${room.id}`,
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.json().constraints).toMatchObject({
+      budgetMode: 'per_person',
+      budgetAmount: 300_000,
+    });
+
+    const refused = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/constraints`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        ...baseConstraint,
+        budgetMode: 'per_person',
+        expectedConstraintVersion: read.json().constraintVersion,
+      },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().code).toBe('INVALID_BUDGET_MODE');
+
+    // The refusal changed nothing.
+    const unchanged = await api().inject({
+      method: 'GET',
+      url: `/v1/rooms/${room.id}`,
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(unchanged.json().constraints.budgetMode).toBe('per_person');
+
+    const fixed = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/constraints`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        ...baseConstraint,
+        budgetMode: 'total',
+        budgetAmount: 600_000,
+        expectedConstraintVersion: unchanged.json().constraintVersion,
+      },
+    });
+    expect(fixed.statusCode).toBe(200);
+  });
+
   it('host edit bumps version and marks plans/scores stale; version conflict is 409', async () => {
     const { token } = await registerUser('host9@gogo.id.vn');
     const room = await createGroupRoom(token);

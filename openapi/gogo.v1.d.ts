@@ -5202,7 +5202,10 @@ export interface components {
             startAt?: string;
             /** Format: date-time */
             endAt?: string;
-            /** @enum {string} */
+            /**
+             * @description A couple room must be `total`: its budget is a total for two people and the client asks for it that way (GoGo-BE#559). `per_person` there is refused with `INVALID_BUDGET_MODE`, on create and on an explicit constraint edit alike. A group host picks either unit. Rooms stored as `per_person` before this rule keep their value and are never converted behind anyone's back.
+             * @enum {string}
+             */
             budgetMode: "total" | "per_person";
             /** @description Integer minor units, interpreted per budgetMode. */
             budgetAmount: number;

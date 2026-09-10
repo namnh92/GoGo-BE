@@ -41,6 +41,32 @@ export function assertDecisionMode(type: RoomType, mode: DecisionMode): void {
   }
 }
 
+/**
+ * GoGo-BE#559 — a couple's budget is a total for two.
+ *
+ * The couple flow asks "Ngân sách cho cả hai?" and the spec renders couple
+ * prices as "cho 2 người" (GOGO_FEATURE_IMPROVEMENT_SPEC §23.3, §94); only the
+ * group setup screen offers a unit. A couple room stored as `per_person` reads
+ * back through `budgetPerPerson` as the amount itself, so the effective ceiling
+ * is double what the person chose — MobileApp#189 shipped exactly that for
+ * months, and a rule the client alone enforces is a rule the next client
+ * forgets (RULE-CORE-005).
+ *
+ * Applied on write only. Rooms already stored as `per_person` keep their value
+ * and keep working; nothing is converted behind anyone's back.
+ */
+export function assertBudgetMode(type: RoomType, mode: 'total' | 'per_person'): void {
+  if (type === 'couple' && mode !== 'total') {
+    throw AppError.badRequest('INVALID_BUDGET_MODE', 'A couple budget is a total for two people', [
+      {
+        field: 'constraint.budgetMode',
+        code: 'invalid',
+        message: "must be 'total' for a couple room",
+      },
+    ]);
+  }
+}
+
 /** Constraint edits are allowed until the plan goes active (FR-ROOM-005). */
 export function assertConstraintsEditable(status: RoomStatus): void {
   if (!['draft', 'collecting', 'matching', 'ready'].includes(status)) {

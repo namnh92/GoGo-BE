@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.28
+  version: 1.0.0-alpha.29
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -9903,7 +9903,16 @@ components:
         radiusM: { type: integer, minimum: 100, maximum: 50000 }
         startAt: { type: string, format: date-time }
         endAt: { type: string, format: date-time }
-        budgetMode: { type: string, enum: [total, per_person] }
+        budgetMode:
+          type: string
+          enum: [total, per_person]
+          description: >
+            A couple room must be `total`: its budget is a total for two people
+            and the client asks for it that way (GoGo-BE#559). `per_person`
+            there is refused with `INVALID_BUDGET_MODE`, on create and on an
+            explicit constraint edit alike. A group host picks either unit.
+            Rooms stored as `per_person` before this rule keep their value and
+            are never converted behind anyone's back.
         budgetAmount:
           type: integer
           minimum: 0

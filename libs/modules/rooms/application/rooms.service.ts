@@ -9,6 +9,7 @@ import { TokenService } from '../../identity/application/token.service';
 import { IdentityRepository } from '../../identity/infrastructure/identity.repository';
 import { SessionRevocationService } from '../../identity/application/session-revocation.service';
 import {
+  assertBudgetMode,
   assertConstraintsEditable,
   assertDecisionMode,
   assertTransition,
@@ -88,6 +89,7 @@ export class RoomsService {
       throw AppError.forbidden('USER_ONLY', 'Guests cannot create rooms');
     }
     assertDecisionMode(input.type, input.decisionMode);
+    assertBudgetMode(input.type, input.constraint.budgetMode);
     if (input.type === 'couple' && input.participantCount !== 2) {
       throw AppError.badRequest('INVALID_PARTICIPANT_COUNT', 'Couple rooms have exactly 2 people', [
         { field: 'participantCount', code: 'invalid', message: 'must be 2 for couple rooms' },
@@ -237,6 +239,10 @@ export class RoomsService {
   ) {
     const { room, member } = await this.policy.requireHost(actor, roomId);
     assertConstraintsEditable(room.status as RoomStatus);
+    // #559: an explicit constraint write states the unit, so it is checked like
+    // any other write. A legacy `per_person` couple room is readable and
+    // editable — the edit just has to name the right unit.
+    assertBudgetMode(room.type as RoomType, input.budgetMode);
     if (room.type === 'couple' && input.participantCount && input.participantCount !== 2) {
       throw AppError.badRequest('INVALID_PARTICIPANT_COUNT', 'Couple rooms have exactly 2 people');
     }
