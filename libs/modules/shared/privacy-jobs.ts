@@ -7,6 +7,11 @@ export type PrivacyRunReport = {
   idempotencyKeysPurged: number;
   guestSessionsAnonymized: number;
   originsCleared: number;
+  /**
+   * ADR-0022 — presign rows nothing ever attached, a day past their expiry.
+   * The bytes under `tmp/` go by bucket lifecycle; this is the row.
+   */
+  mediaUploadsPurged: number;
   /** #255 — closed privacy requests past retention, hard-deleted. */
   privacyRequestsPurged: number;
   /**
@@ -31,6 +36,7 @@ export class PrivacyJobs {
       idempotencyKeysPurged: 0,
       guestSessionsAnonymized: 0,
       originsCleared: 0,
+      mediaUploadsPurged: 0,
       privacyRequestsPurged: 0,
       privacyHoldReviewsOverdue: 0,
     };
@@ -121,6 +127,20 @@ export class PrivacyJobs {
       await this.db.execute(sql`
         update room_constraints set origin_lat = null, origin_lng = null
         where id in (${sql.raw(originQ)})
+      `);
+    }
+
+    // Upload rows still pending a day past expiry: the presigned URL is long
+    // dead and nothing attached the key, so the row is a record of a phone
+    // that never PUT, or a request that failed before it could attach. The
+    // object, if one exists, is under a lifecycle prefix and leaves on its own.
+    const uploadsQ = `select id from media_uploads
+      where status = 'pending' and expires_at < now() - interval '1 day'`;
+    report.mediaUploadsPurged = await count(uploadsQ);
+    if (!dryRun && report.mediaUploadsPurged > 0) {
+      await this.db.execute(sql`
+        delete from media_uploads
+        where status = 'pending' and expires_at < now() - interval '1 day'
       `);
     }
 

@@ -27,6 +27,7 @@ import {
   githubActionsCollector,
   writeAudit,
   NEON_POSTGRES_OPERATIONS,
+  MediaCleanupService,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -49,6 +50,7 @@ import {
 } from '@gogo/providers';
 import { startPeriodic } from './periodic';
 import { WorkerLease } from '@gogo/database';
+import { mediaCleanupFromEnv } from './media-cleanup';
 import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
 
 /**
@@ -112,6 +114,13 @@ const INGEST_POLL_MS = pollIntervalMs('INGEST_POLL_MS', 5000);
  */
 const PLACE_REFRESH_POLL_MS = pollIntervalMs('PLACE_REFRESH_POLL_MS', 15 * 60 * 1000);
 const PRIVACY_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/**
+ * ADR-0022 — how often the media cleanup queue is retried. The API attempts
+ * every row right after the commit that created it, so this tick only sees
+ * what storage or the edge refused; a minute keeps a refused delete from
+ * lingering without polling a usually-empty table every few seconds.
+ */
+const MEDIA_CLEANUP_POLL_MS = pollIntervalMs('MEDIA_CLEANUP_POLL_MS', 60_000);
 /**
  * How often this process says it is alive. Its own job, on its own cadence:
  * tying it to a business tick would make "worker alive" mean "outbox tick
@@ -230,6 +239,34 @@ async function bootstrap(): Promise<void> {
   // tick as the outbox rather than a schedule of their own.
   const campaigns = new CampaignDispatcher(db, push, metrics);
   const privacy = new PrivacyJobs(db);
+  // ADR-0022: the retry half of media cleanup. Registered only with real
+  // buckets — a fake here would mark rows done while the objects stayed.
+  const mediaCleanupWiring = mediaCleanupFromEnv(process.env);
+  const mediaCleanup = mediaCleanupWiring.ok
+    ? new MediaCleanupService(
+        db,
+        {
+          private: mediaCleanupWiring.wiring.privateStorage,
+          public: mediaCleanupWiring.wiring.publicStorage,
+        },
+        mediaCleanupWiring.wiring.purge,
+        mediaCleanupWiring.wiring.mediaBaseUrl,
+        metrics,
+      )
+    : null;
+  if (mediaCleanupWiring.ok) {
+    logger.info(
+      { purgeConfigured: mediaCleanupWiring.wiring.purgeConfigured },
+      mediaCleanupWiring.wiring.purgeConfigured
+        ? 'media cleanup registered'
+        : 'media cleanup registered without edge purge — a removed avatar answers from the edge for up to a day',
+    );
+  } else {
+    logger.warn(
+      { missing: mediaCleanupWiring.missing },
+      'media cleanup NOT registered — queue rows wait for a worker with storage credentials',
+    );
+  }
 
   // PI-BE-015: bulk import chunks run here, not in the API process. The tick
   // polls for jobs an admin has started rather than consuming an enqueue, so a
@@ -526,6 +563,27 @@ async function bootstrap(): Promise<void> {
           }
         },
       },
+      ...(mediaCleanup
+        ? [
+            {
+              name: 'gogo:worker:media-cleanup',
+              schedule: { everyMs: MEDIA_CLEANUP_POLL_MS },
+              run: async () => {
+                const report = await mediaCleanup.runDue(50);
+                const counts = await mediaCleanup.pendingCount();
+                registry.gauge('media_cleanup_pending', counts.pending);
+                registry.gauge('media_cleanup_dead_lettered', counts.deadLettered);
+                if (report.attempted > 0) logger.info({ report }, 'media cleanup tick');
+                if (counts.deadLettered > 0) {
+                  logger.warn(
+                    { deadLettered: counts.deadLettered },
+                    'media cleanup rows dead-lettered — an object needs a person',
+                  );
+                }
+              },
+            },
+          ]
+        : []),
       {
         name: 'gogo:worker:heartbeat',
         schedule: { everyMs: HEARTBEAT_INTERVAL_MS },
@@ -562,6 +620,7 @@ async function bootstrap(): Promise<void> {
       ingestPollMs: INGEST_POLL_MS,
       placeRefreshPollMs: PLACE_REFRESH_POLL_MS,
       placeRefreshFlagDefault: process.env.FLAG_PLACE_REFRESH === 'true',
+      mediaCleanupPollMs: mediaCleanup ? MEDIA_CLEANUP_POLL_MS : null,
     },
     'worker booted: privacy sweep every 6h',
   );

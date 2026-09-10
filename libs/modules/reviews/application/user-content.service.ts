@@ -9,6 +9,7 @@ import { recordSelfServiceRequest, slaConfigFrom } from '../../shared/privacy-le
 import { pgArray } from '../../search/infrastructure/search.repository';
 import type { Actor } from '../../identity/domain/actor';
 import { writeAudit } from '../../shared/audit';
+import { MediaCleanupService } from '../../profile/application/media-cleanup.service';
 
 function requireUser(actor: Actor): string {
   if (actor.type !== 'user') {
@@ -23,6 +24,7 @@ export class UserContentService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(APP_CONFIG) private readonly config: PrivacyLedgerConfig,
+    private readonly cleanup: MediaCleanupService,
   ) {}
 
   // --- saved (FR-USER-001) --------------------------------------------------
@@ -265,7 +267,15 @@ export class UserContentService {
     userId: string,
     by: { actorType: 'user' | 'admin'; actorId: string; reason?: string },
   ) {
-    await this.db.transaction(async (tx) => {
+    const enqueued = await this.db.transaction(async (tx) => {
+      // ADR-0022: the picture leaves with the person. Read under the row lock
+      // so a concurrent avatar change cannot slip a new key past the null below.
+      const [before] = await tx
+        .select({ avatarKey: schema.users.avatarKey })
+        .from(schema.users)
+        .where(eq(schema.users.id, userId))
+        .for('update')
+        .limit(1);
       await tx
         .update(schema.users)
         .set({
@@ -273,10 +283,16 @@ export class UserContentService {
           email: null,
           passwordHash: null,
           displayName: 'Người dùng đã xóa',
+          avatarKey: null,
           deletedAt: sql`now()`,
           updatedAt: sql`now()`,
         })
         .where(eq(schema.users.id, userId));
+      const cleanupIds = before?.avatarKey
+        ? await this.cleanup.enqueue(tx, [
+            { bucket: 'public', objectKey: before.avatarKey, reason: 'account_deleted' },
+          ])
+        : [];
       await tx
         .update(schema.authSessions)
         .set({ revokedAt: sql`now()`, revokeReason: 'account_deleted' })
@@ -304,7 +320,11 @@ export class UserContentService {
         resourceId: userId,
         ...(by.reason ? { diff: { reason: by.reason } } : {}),
       });
+      return cleanupIds;
     });
+    // After the commit, never inside it: a provider call under a row lock is
+    // the rule this codebase does not break. The worker retries what fails.
+    await this.cleanup.attemptNow(enqueued);
     return { deleted: true };
   }
 
