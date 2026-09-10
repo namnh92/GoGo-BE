@@ -182,7 +182,16 @@ export interface paths {
         get: operations["getMe"];
         put?: never;
         post?: never;
-        /** Delete account — PII nulled, sessions revoked, content pseudonymized */
+        /**
+         * Delete account — login disabled, personal data removed, contributions kept
+         * @description ADR-0023. A soft delete with a named retention list, and clients must describe it as such rather than as erasing everything.
+         *
+         *     Removed: login (status `deleted`, email and password hash nulled, so no credential addresses the account again), every session, device tokens and push subscriptions, the profile (display name replaced, avatar, home area, usual budget, interests), the processed avatar in the public bucket and its edge cache entry, saved items, notifications and notification preferences. The name on room membership rows is replaced.
+         *
+         *     Kept: the technical account record and its id, reviews written by the account, and photos contributed to a place. A room keeps the membership row so it still adds up for the people left in it.
+         *
+         *     Irreversible from the application. Idempotent on an account already deleted.
+         */
         delete: operations["deleteAccount"];
         options?: never;
         head?: never;
@@ -2500,7 +2509,7 @@ export interface paths {
         put?: never;
         /**
          * Super admin: erase an account on its holder's behalf
-         * @description Runs the same erasure as the consumer `DELETE /me` — PII nulled, sessions revoked, content pseudonymized, address freed. One implementation, not two: two versions of "erase this person" drift, and the one that drifts is the one that leaves a table behind.
+         * @description Runs the same erasure as the consumer `DELETE /me`, with the same retention list (ADR-0023): login disabled, personal data removed, technical account record and contributions kept. One implementation, not two: two versions of "erase this person" drift, and the one that drifts is the one that leaves a table behind.
          *
          *     `super_admin` only. It is the only action here that cannot be undone, and the account it destroys belongs to someone else.
          */

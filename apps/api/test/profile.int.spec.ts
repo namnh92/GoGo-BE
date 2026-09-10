@@ -965,6 +965,76 @@ describe('export and delete cover the profile (PROF-BE-007)', () => {
       .where(eq(schema.userProfilePreferences.userId, userId));
     expect(prefs).toHaveLength(0);
   });
+
+  /**
+   * ADR-0023 — the retention list is the decision, so it is what the test
+   * states: personal records go, contributions stay. A device smoke found the
+   * first half missing while the copy promised everything would be deleted.
+   */
+  it('takes the personal records with it and leaves the contributions', async () => {
+    const { token, userId } = await register('delete-scope@gogo.id.vn');
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Quán kiểm thử xoá',
+        nameNormalized: 'quan kiem thu xoa',
+        geom: { x: 106.7009, y: 10.7769 },
+        addressText: '1 Nguyễn Huệ',
+      })
+      .returning();
+    await db.insert(schema.savedItems).values({ userId, targetType: 'place', targetId: place!.id });
+    await db
+      .insert(schema.notifications)
+      .values({ userId, kind: 'invite', payload: { roomId: place!.id } });
+    await db
+      .insert(schema.notificationPreferences)
+      .values({ userId, channel: 'push', kind: 'invite', enabled: true });
+    const [review] = await db
+      .insert(schema.reviews)
+      .values({ userId, placeId: place!.id, rating: 5, text: 'Đóng góp giữ lại' })
+      .returning();
+
+    const del = await api().inject({
+      method: 'DELETE',
+      url: '/v1/me',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {},
+    });
+    expect(del.statusCode).toBe(200);
+
+    // Personal records leave with the person.
+    expect(
+      await db.select().from(schema.savedItems).where(eq(schema.savedItems.userId, userId)),
+    ).toHaveLength(0);
+    expect(
+      await db.select().from(schema.notifications).where(eq(schema.notifications.userId, userId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(schema.notificationPreferences)
+        .where(eq(schema.notificationPreferences.userId, userId)),
+    ).toHaveLength(0);
+
+    // Contributions and the technical record stay, by decision.
+    const [keptReview] = await db
+      .select()
+      .from(schema.reviews)
+      .where(eq(schema.reviews.id, review!.id));
+    expect(keptReview).toMatchObject({ userId, text: 'Đóng góp giữ lại' });
+    const [row] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+    expect(row).toMatchObject({ id: userId, status: 'deleted' });
+
+    // Login is unusable rather than merely hidden.
+    const relogin = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      remoteAddress: ip(),
+      payload: { email: 'delete-scope@gogo.id.vn', password: 'Str0ng-Passw0rd!' },
+    });
+    expect(relogin.statusCode).toBe(401);
+  });
 });
 
 describe('delayed cleanup can never take a live avatar (PROF-BE-004 regression)', () => {
