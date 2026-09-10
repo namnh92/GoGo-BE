@@ -1104,3 +1104,81 @@ describe('room realtime stream (BE-BFF-013, #154)', () => {
     expect(JSON.stringify(changed!.data)).not.toContain('chill');
   });
 });
+
+describe('BE-BFF-020 current schedule in room summaries', () => {
+  it('lists constraint-only schedules and reflects a newer constraint version', async () => {
+    const user = await registerUser('schedule-current@example.com');
+    const startAt = '2026-09-10T12:00:00.000Z';
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(user.token),
+      payload: {
+        type: 'group',
+        decisionMode: 'vote',
+        participantCount: 4,
+        constraint: { ...baseConstraint, startAt },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const room = created.json();
+    expect(room.scheduledDate).toBe(startAt);
+    const read = async () =>
+      (
+        await api().inject({
+          method: 'GET',
+          url: '/v1/rooms',
+          remoteAddress: ip(),
+          headers: auth(user.token),
+        })
+      ).json();
+    expect(
+      (await read()).items.find((item: { id: string }) => item.id === room.id).scheduledDate,
+    ).toBe(startAt);
+    const next = '2026-09-12T12:00:00.000Z';
+    const updated = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/constraints`,
+      remoteAddress: ip(),
+      headers: auth(user.token),
+      payload: {
+        ...baseConstraint,
+        startAt: next,
+        expectedConstraintVersion: room.constraintVersion,
+      },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().scheduledDate).toBe(next);
+    expect(
+      (await read()).items.find((item: { id: string }) => item.id === room.id).scheduledDate,
+    ).toBe(next);
+  });
+
+  it('keeps a legacy scheduledDate when the constraint has no start time', async () => {
+    const user = await registerUser('schedule-legacy@example.com');
+    const scheduledDate = '2026-09-10T12:00:00.000Z';
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(user.token),
+      payload: {
+        type: 'group',
+        decisionMode: 'vote',
+        participantCount: 4,
+        scheduledDate,
+        constraint: baseConstraint,
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().scheduledDate).toBe(scheduledDate);
+    const list = await api().inject({
+      method: 'GET',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(user.token),
+    });
+    expect(list.json().items[0].scheduledDate).toBe(scheduledDate);
+  });
+});
