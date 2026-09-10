@@ -16,6 +16,8 @@ import {
   type CampaignStatus,
 } from '../domain/campaign';
 import { audiencePredicate, respectsPushPreference } from './campaign-audience';
+import { UploadsService } from '../../uploads/application/uploads.service';
+import type { Actor } from '../../identity/domain/actor';
 
 /**
  * BE-CMS-G4e (#226) — campaigns, as far as the API is concerned.
@@ -134,7 +136,28 @@ type CampaignRow = {
 
 @Injectable()
 export class CampaignsService {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    private readonly uploads: UploadsService,
+  ) {}
+
+  /*
+   * BE-CMS-M2 — a campaign image is an upload like any other.
+   *
+   * Banners and place photos both bind their key through `uploads.attach`,
+   * which is what refuses a key belonging to another actor, an expired one, or
+   * one issued for a different purpose. Campaigns stored whatever string
+   * arrived: the key was never checked, never claimed, and stayed `pending`
+   * forever, so nothing stopped a campaign from carrying a `place_image` key —
+   * or one that had never been uploaded at all.
+   */
+  private async attachImage(actor: Actor, campaignId: string, imageKey: string): Promise<void> {
+    await this.uploads.attach(actor, [imageKey], {
+      type: 'campaign',
+      id: campaignId,
+      purposes: ['campaign_image'],
+    });
+  }
 
   async list(query: CampaignListQuery) {
     const filters: SQL[] = [sql`true`];
@@ -179,37 +202,75 @@ export class CampaignsService {
     return this.toDto(await this.requireRow(id));
   }
 
-  async create(adminId: string, input: CampaignInput) {
+  async create(actor: Actor, input: CampaignInput) {
+    const adminId = actor.id;
     const { audienceFilter, destinationType, destinationValue } = await this.validate(input);
 
-    const [row] = await this.db
-      .insert(schema.notificationCampaigns)
-      .values({
-        name: input.name,
-        title: input.title,
-        body: input.body,
-        imageKey: input.imageKey ?? null,
-        ctaLabel: input.ctaLabel ?? null,
-        audienceType: input.audienceType,
-        audienceFilter,
-        destinationType,
-        destinationValue,
-        createdByAdminId: adminId,
-      })
-      .returning({ id: schema.notificationCampaigns.id })
-      .catch((err: unknown) => {
-        throw this.nameConflict(err, input.name);
-      });
+    const [row] = await this.insertCampaign(actor, input, {
+      audienceFilter,
+      destinationType,
+      destinationValue,
+      adminId,
+    });
+    return this.afterCreate(adminId, row!.id, input, destinationType);
+  }
 
-    await this.audit(adminId, 'campaign.created', row!.id, {
+  private async insertCampaign(
+    actor: Actor,
+    input: CampaignInput,
+    ctx: {
+      audienceFilter: Record<string, unknown>;
+      destinationType: CampaignDestination;
+      destinationValue: string | null;
+      adminId: string;
+    },
+  ) {
+    /*
+     * Insert and attach stand or fall together, as they do for a banner: the
+     * campaign id the key binds to does not exist until the insert, so a
+     * rejected key has to take the row with it.
+     */
+    return this.db.transaction(async (tx) => {
+      const rows = await tx
+        .insert(schema.notificationCampaigns)
+        .values({
+          name: input.name,
+          title: input.title,
+          body: input.body,
+          imageKey: input.imageKey ?? null,
+          ctaLabel: input.ctaLabel ?? null,
+          audienceType: input.audienceType,
+          audienceFilter: ctx.audienceFilter,
+          destinationType: ctx.destinationType,
+          destinationValue: ctx.destinationValue,
+          createdByAdminId: ctx.adminId,
+        })
+        .returning({ id: schema.notificationCampaigns.id })
+        .catch((err: unknown) => {
+          throw this.nameConflict(err, input.name);
+        });
+
+      if (input.imageKey) await this.attachImage(actor, rows[0]!.id, input.imageKey);
+      return rows;
+    });
+  }
+
+  private async afterCreate(
+    adminId: string,
+    id: string,
+    input: CampaignInput,
+    destinationType: CampaignDestination,
+  ) {
+    await this.audit(adminId, 'campaign.created', id, {
       name: input.name,
       audienceType: input.audienceType,
       destinationType,
     });
-    return this.get(row!.id);
+    return this.get(id);
   }
 
-  async update(adminId: string, id: string, patch: CampaignPatch) {
+  async update(actor: Actor, id: string, patch: CampaignPatch) {
+    const adminId = actor.id;
     const before = await this.requireRow(id);
     if (!EDITABLE_STATUSES.includes(before.status)) {
       // Editing a scheduled campaign silently changes what is about to go out.
@@ -257,6 +318,15 @@ export class CampaignsService {
     }
 
     const validated = await this.validate(merged);
+
+    /*
+     * Same order as a banner: the replacement is validated before it is
+     * written, so a rejected key leaves the campaign pointing at the image it
+     * already had rather than at one that was never uploaded.
+     */
+    if (patch.imageKey && patch.imageKey !== before.image_key) {
+      await this.attachImage(actor, id, patch.imageKey);
+    }
 
     await this.db
       .update(schema.notificationCampaigns)

@@ -173,39 +173,50 @@ export class BannersService {
     );
     this.assertWindow(input.startsAt, input.endsAt);
 
-    const [row] = await this.db
-      .insert(schema.banners)
-      .values({
-        name: input.name,
-        imageKey: input.imageKey,
-        title: input.title ?? null,
-        subtitle: input.subtitle ?? null,
-        ctaLabel: input.ctaLabel ?? null,
-        destinationType: destination.type,
-        destinationValue: destination.value,
-        audience: input.audience ?? null,
-        placement: input.placement,
-        startsAt: input.startsAt ?? null,
-        endsAt: input.endsAt ?? null,
-        priority: input.priority ?? 0,
-        createdByAdminId: actor.id,
-      })
-      .returning({ id: schema.banners.id })
-      .catch((err: unknown) => {
-        throw this.nameConflict(err, input.name);
-      });
+    /*
+     * The insert and the attach stand or fall together.
+     *
+     * `attachImage` is what refuses a key belonging to another actor, an
+     * expired one, or one issued for a different purpose — but the banner id
+     * it binds to does not exist until the insert. Run bare, the insert
+     * committed first and a rejected key returned 400 over a banner row that
+     * was already there, pointing at an image nobody could ever load. The
+     * transaction is what makes the refusal leave nothing behind, which is
+     * what `CmsPlaceMediaService.attach` gets for free by attaching first.
+     */
+    const row = await this.db.transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(schema.banners)
+        .values({
+          name: input.name,
+          imageKey: input.imageKey,
+          title: input.title ?? null,
+          subtitle: input.subtitle ?? null,
+          ctaLabel: input.ctaLabel ?? null,
+          destinationType: destination.type,
+          destinationValue: destination.value,
+          audience: input.audience ?? null,
+          placement: input.placement,
+          startsAt: input.startsAt ?? null,
+          endsAt: input.endsAt ?? null,
+          priority: input.priority ?? 0,
+          createdByAdminId: actor.id,
+        })
+        .returning({ id: schema.banners.id })
+        .catch((err: unknown) => {
+          throw this.nameConflict(err, input.name);
+        });
 
-    // Binds the upload to this banner through the same path check-in uses, so
-    // a key belonging to another actor, an expired one, or one issued for a
-    // different purpose is refused here rather than becoming a broken image.
-    await this.attachImage(actor, row!.id, input.imageKey);
+      await this.attachImage(actor, inserted!.id, input.imageKey);
+      return inserted!;
+    });
 
-    await this.audit(actor.id, 'banner.created', row!.id, {
+    await this.audit(actor.id, 'banner.created', row.id, {
       name: input.name,
       placement: input.placement,
       destinationType: destination.type,
     });
-    return this.get(row!.id);
+    return this.get(row.id);
   }
 
   async update(actor: Actor, id: string, patch: BannerPatch) {
@@ -218,6 +229,19 @@ export class BannersService {
       patch.startsAt ?? (before.starts_at ? new Date(before.starts_at) : undefined),
       patch.endsAt ?? (before.ends_at ? new Date(before.ends_at) : undefined),
     );
+
+    /*
+     * Validate the replacement before writing it.
+     *
+     * The update used to set `imageKey` first and attach afterwards, so a
+     * rejected key was already saved by the time the 400 came back: the banner
+     * kept pointing at an image that had never been uploaded, and the last
+     * good image was gone from the record with no way to recover it. A failed
+     * replacement must leave the banner exactly as it was.
+     */
+    if (patch.imageKey && patch.imageKey !== before.image_key) {
+      await this.attachImage(actor, id, patch.imageKey);
+    }
 
     await this.db
       .update(schema.banners)
@@ -240,10 +264,6 @@ export class BannersService {
       .catch((err: unknown) => {
         throw this.nameConflict(err, patch.name ?? before.name);
       });
-
-    if (patch.imageKey && patch.imageKey !== before.image_key) {
-      await this.attachImage(actor, id, patch.imageKey);
-    }
 
     await this.audit(actor.id, 'banner.updated', id, {
       before: {
