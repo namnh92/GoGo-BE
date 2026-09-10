@@ -13,7 +13,7 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
   });
 
   it('MANUAL when the manual-item form is the only way in; NONE when there is none', () => {
-    for (const id of ['apple', 'hosting', 'registrar']) {
+    for (const id of ['apple', 'hosting', 'registrar', 'operations']) {
       expect(providerCostSourceKind(provider(id)), id).toBe('MANUAL');
     }
     for (const id of ['onesignal', 'tenjin', 'grafana', 'sentry']) {
@@ -26,6 +26,10 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
     expect(serviceCostSourceKind(service('google.play_console'), google)).toBe('MANUAL');
     expect(serviceCostSourceKind(service('google.places'), google)).toBe('AUTO');
     expect(serviceCostSourceKind(service('google.maps_sdk_ios'), google)).toBe('AUTO');
+    // #563: the same rule for the GitHub plan under an AUTO GitHub.
+    const github = provider('github');
+    expect(serviceCostSourceKind(service('github.subscription'), github)).toBe('MANUAL');
+    expect(serviceCostSourceKind(service('github.actions'), github)).toBe('AUTO');
     expect(serviceCostSourceKind({ capabilities: [] }, { capabilities: [] })).toBe('NONE');
     // Estimating, quota, budget and test deltas are not a way for money in.
     expect(

@@ -38,6 +38,8 @@ Rules for reading it:
 | `sentry`                        | planned                        | `observability/sentry-dsn` declared; DSN only, no org/API token                                                                                    | —                                                                                                                                                                             |
 | `apple`, `hosting`, `registrar` | manual                         | Apple Developer Program, VPS (DEV host behind Cloudflare tunnel), domain `gogo.id.vn`                                                              | no amounts recorded anywhere yet (COST-BE-023)                                                                                                                                |
 | Google Play Console             | manual (`google.play_console`) | registration fee, one-time                                                                                                                         | as above                                                                                                                                                                      |
+| GitHub plan                     | manual (`github.subscription`) | Team seats / Copilot, entered by hand (COST-BE-040)                                                                                                | as above                                                                                                                                                                      |
+| `operations`                    | manual                         | development (code), bug fixing, dev tooling with no provider of its own — entered by hand (COST-BE-040)                                            | as above                                                                                                                                                                      |
 
 ## Per-service inventory
 
@@ -107,12 +109,16 @@ prints free-tier headroom and is **not** a ledger (it stores nothing).
 
 ### Manual / fixed
 
-| Item                             | Registry                  | Amount source           | Notes                                                    |
-| -------------------------------- | ------------------------- | ----------------------- | -------------------------------------------------------- |
-| Apple Developer Program          | `apple.developer_program` | manual entry (yearly)   | COST-BE-023                                              |
-| Google Play Console registration | `google.play_console`     | manual entry (one-time) | COST-BE-023                                              |
-| Domain `gogo.id.vn`              | `registrar.domain`        | manual entry (yearly)   | registrar not recorded in Infra docs — fill on entry     |
-| VPS (DEV host)                   | `hosting.vps`             | manual entry (monthly)  | provider/plan not recorded in Infra docs — fill on entry |
+| Item                             | Registry                  | Amount source                                   | Notes                                                                      |
+| -------------------------------- | ------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------- |
+| Apple Developer Program          | `apple.developer_program` | manual entry (yearly)                           | COST-BE-023                                                                |
+| Google Play Console registration | `google.play_console`     | manual entry (one-time)                         | COST-BE-023                                                                |
+| Domain `gogo.id.vn`              | `registrar.domain`        | manual entry (yearly)                           | registrar not recorded in Infra docs — fill on entry                       |
+| VPS (DEV host)                   | `hosting.vps`             | manual entry (monthly)                          | provider/plan not recorded in Infra docs — fill on entry                   |
+| GitHub plan (seats, Copilot)     | `github.subscription`     | manual entry (monthly)                          | COST-BE-040                                                                |
+| Development — code               | `operations.development`  | manual entry (one-time or monthly, as invoiced) | COST-BE-040                                                                |
+| Fixbug / maintenance             | `operations.bugfix`       | manual entry (one-time or monthly, as invoiced) | COST-BE-040                                                                |
+| Dev tooling & subscriptions      | `operations.tooling`      | manual entry (monthly / yearly)                 | COST-BE-040 — IDE seats, AI assistants, design tools with no provider here |
 
 ## What this changes downstream
 

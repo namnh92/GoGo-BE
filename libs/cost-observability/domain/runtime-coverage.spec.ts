@@ -80,7 +80,7 @@ describe('providerRuntime', () => {
     // `onesignal` is deliberately not on this list any more (#517): its cost is
     // still uncollected, and the adapter has always run in this process. See
     // the case below.
-    for (const id of ['aws', 'github', 'gogo', 'apple', 'hosting', 'registrar']) {
+    for (const id of ['aws', 'github', 'gogo', 'apple', 'hosting', 'registrar', 'operations']) {
       expect(providerRuntime(COST_REGISTRY.provider(id)!), id).toEqual({
         coverage: 'N/A',
         services: { full: 0, partial: 0, notInstrumented: 0 },

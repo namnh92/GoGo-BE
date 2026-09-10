@@ -284,8 +284,13 @@ schedule (`manualSchedule`). Per-test deltas are usage deltas and never include 
 (epic §27, "excluded by default").
 
 Who may carry one is the registry's answer: `serviceHasCapability(id, 'MANUAL_COST')`
-— `apple.*`, `hosting.*`, `registrar.*` (provider-wide) and `google.play_console`
-(service-only; `google` itself does not declare it, so `google.places` is refused).
+— `apple.*`, `hosting.*`, `registrar.*`, `operations.*` (provider-wide) and
+`google.play_console`, `github.subscription` (service-only; `google` and `github`
+themselves do not declare it, so `google.places` and `github.actions` are refused).
+`operations` (#563) is what running GoGo costs in people and tools — development,
+bug fixing, dev tooling with no provider of its own here — under its own category
+`operations`, never `internal` (that is the cost of monitoring, §21, and
+`costOfMonitoring` sums it).
 `servicesWith('MANUAL_COST')` is what the CMS form lists (`eligibleServices`): a new
 manual provider in `COST_REGISTRY_DATA` appears with no code change.
 
