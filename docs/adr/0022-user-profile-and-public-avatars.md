@@ -107,7 +107,7 @@ codebase that a plan cannot paper over:
   interests beyond `mood`; an age field; Google/Apple sign-in and social
   linking.
 
-## Data model (migration 0059, additive)
+## Data model (migration 0061, additive)
 
 | Column / table                  | Type                                                                                                           | Notes                                                |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
