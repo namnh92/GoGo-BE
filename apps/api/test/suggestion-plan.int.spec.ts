@@ -171,8 +171,11 @@ async function matchingRoom(
     decisionMode,
     participantCount: 2,
     constraint: {
-      budgetMode: 'per_person',
-      budgetAmount: 400_000,
+      // GoGo-BE#559: a couple budget is a total for two; only a group picks a
+      // unit. The amount is doubled for the couple so the per-person ceiling
+      // these cases rely on stays 400k either way.
+      budgetMode: type === 'couple' ? 'total' : 'per_person',
+      budgetAmount: type === 'couple' ? 800_000 : 400_000,
       currency: 'VND',
       originLat: 10.776,
       originLng: 106.7,
