@@ -287,6 +287,23 @@ const envSchema = z
      * image is worse than the neutral placeholder a client falls back to.
      */
     MEDIA_PUBLIC_BASE_URL: z.string().default(''),
+    /**
+     * ADR-0022 — the public bucket the edge serves (`assets-<env>`), with its
+     * own credential scoped to that bucket. The private credential above keeps
+     * no write access to it; a processed avatar is the only thing the API
+     * writes there. All three or none: a bucket with no credential, or a
+     * credential with no bucket, is a misconfiguration and refused at boot.
+     */
+    R2_PUBLIC_BUCKET: z.string().default(''),
+    R2_PUBLIC_ACCESS_KEY_ID: z.string().default(''),
+    R2_PUBLIC_SECRET_ACCESS_KEY: z.string().default(''),
+    /**
+     * ADR-0022 — purge-by-URL for a removed avatar. Both or neither. Empty
+     * means nothing is purged and a removed object keeps answering from the
+     * edge for up to its cache lifetime (one day); the API says so at boot.
+     */
+    CF_ZONE_ID: z.string().default(''),
+    CF_CACHE_PURGE_TOKEN: z.string().default(''),
     R2_BACKUP_BUCKET: z.string().default(''),
     SENTRY_DSN: z.string().default(''),
     /**
@@ -434,6 +451,26 @@ const envSchema = z
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
   })
   .superRefine((env, ctx) => {
+    const publicR2 = [
+      env.R2_PUBLIC_BUCKET,
+      env.R2_PUBLIC_ACCESS_KEY_ID,
+      env.R2_PUBLIC_SECRET_ACCESS_KEY,
+    ];
+    if (publicR2.some(Boolean) && !publicR2.every(Boolean)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['R2_PUBLIC_BUCKET'],
+        message:
+          'R2_PUBLIC_BUCKET, R2_PUBLIC_ACCESS_KEY_ID and R2_PUBLIC_SECRET_ACCESS_KEY must be set together or not at all',
+      });
+    }
+    if (Boolean(env.CF_ZONE_ID) !== Boolean(env.CF_CACHE_PURGE_TOKEN)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CF_ZONE_ID'],
+        message: 'CF_ZONE_ID and CF_CACHE_PURGE_TOKEN must be set together or not at all',
+      });
+    }
     if (env.NODE_ENV === 'production') {
       if (env.AUTH_JWT_SECRET.length < 32) {
         ctx.addIssue({

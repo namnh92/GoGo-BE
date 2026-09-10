@@ -6,7 +6,7 @@ import { STORAGE_PROVIDER, type StoragePort } from '@gogo/providers';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
-import { MEDIA_UPLOADS_CONFIGURED } from './tokens';
+import { AVATAR_STORAGE_CONFIGURED, MEDIA_UPLOADS_CONFIGURED } from './tokens';
 
 /**
  * BE-BFF-016 (#171) — the upload path a client can actually use.
@@ -15,7 +15,22 @@ import { MEDIA_UPLOADS_CONFIGURED } from './tokens';
  * storage and the API only ever handles the key. Image bytes through the API
  * would be the same bytes, an extra hop, and a memory cost per request.
  */
-export const UPLOAD_PURPOSES = ['checkin_photo', 'bill_photo', 'place_photo'] as const;
+export const UPLOAD_PURPOSES = ['checkin_photo', 'bill_photo', 'place_photo', 'avatar'] as const;
+
+/**
+ * ADR-0022 — an avatar is read back by the API and decoded with `sharp`, whose
+ * prebuilt binaries cannot decode HEIC. The client converts HEIC to JPEG
+ * before upload; the server refuses it here rather than at processing time,
+ * when the bytes would already have crossed the network.
+ */
+export const AVATAR_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+
+/**
+ * Where an avatar original lands: the private bucket, under `tmp/`, which the
+ * bucket's lifecycle rule empties after a day. The processed object lives in
+ * the public bucket under a key of its own; this one is never served.
+ */
+export const AVATAR_ORIGINAL_PREFIX = 'tmp/avatars';
 
 /**
  * BE-CMS-G5 (#227) — purposes only a staff account may ask for.
@@ -64,6 +79,7 @@ export class UploadsService {
     @Inject(DB) private readonly db: Db,
     @Inject(STORAGE_PROVIDER) private readonly storage: StoragePort,
     @Inject(MEDIA_UPLOADS_CONFIGURED) private readonly configured: boolean,
+    @Inject(AVATAR_STORAGE_CONFIGURED) private readonly avatarConfigured: boolean,
   ) {}
 
   async createUpload(
@@ -80,13 +96,35 @@ export class UploadsService {
       );
     }
 
-    const extension = ALLOWED_CONTENT_TYPES[input.contentType];
+    const isAvatar = input.purpose === 'avatar';
+    if (isAvatar) {
+      // A guest has no account to hang a picture on, and the client is told
+      // before the picker opens (`capabilities.avatarUpload`); this is the
+      // enforcement behind that promise.
+      if (actor.type !== 'user') {
+        throw AppError.forbidden('USER_ONLY', 'Register an account to use this feature');
+      }
+      if (!this.avatarConfigured) {
+        throw new AppError(
+          'UPLOAD_NOT_CONFIGURED',
+          'Avatar storage is not configured in this environment',
+          503,
+        );
+      }
+    }
+
+    const allowedTypes: readonly string[] = isAvatar
+      ? AVATAR_CONTENT_TYPES
+      : Object.keys(ALLOWED_CONTENT_TYPES);
+    const extension = allowedTypes.includes(input.contentType)
+      ? ALLOWED_CONTENT_TYPES[input.contentType]
+      : undefined;
     if (!extension) {
       throw AppError.badRequest('UNSUPPORTED_CONTENT_TYPE', 'That file type cannot be uploaded', [
         {
           field: 'contentType',
           code: 'unsupported',
-          message: `allowed: ${Object.keys(ALLOWED_CONTENT_TYPES).join(', ')}`,
+          message: `allowed: ${allowedTypes.join(', ')}`,
         },
       ]);
     }
@@ -98,7 +136,9 @@ export class UploadsService {
 
     // The actor is in the key, so an object is traceable to its uploader even
     // if the row is later pruned. It is not the authorization: that is the row.
-    const key = `u/${actor.type}/${actor.id}/${randomUUID()}.${extension}`;
+    const key = isAvatar
+      ? `${AVATAR_ORIGINAL_PREFIX}/${actor.id}/${randomUUID()}.${extension}`
+      : `u/${actor.type}/${actor.id}/${randomUUID()}.${extension}`;
     const presigned = await this.storage.presignUpload(key, input.contentType);
     const expiresAt = new Date(Date.now() + UPLOAD_TTL_SECONDS * 1000);
 

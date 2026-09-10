@@ -485,6 +485,8 @@ export interface paths {
          *     The returned key is bound to the actor that created it. Attaching a key belonging to another actor, an expired one, or one issued for a different purpose is rejected — the server does not distinguish those cases in its answer.
          *
          *     Content type and size are enforced server-side and the content type is part of what is signed, so storage refuses an upload that does not match what was authorized.
+         *
+         *     Purpose `avatar` (ADR-0022): users only, `image/jpeg`, `image/png` or `image/webp` — never HEIC, which the client converts first. The key lands in a private, one-day-lifetime prefix and is attached with `PUT /me/avatar`, which processes it and publishes the result. Answers 503 where `GET /me` reports `capabilities.avatarUpload: unavailable`.
          */
         post: operations["createUpload"];
         delete?: never;
@@ -9158,8 +9160,11 @@ export interface operations {
             content: {
                 "application/json": {
                     /** @enum {string} */
-                    purpose: "checkin_photo" | "bill_photo" | "place_photo";
-                    /** @enum {string} */
+                    purpose: "checkin_photo" | "bill_photo" | "place_photo" | "avatar";
+                    /**
+                     * @description HEIC is refused for purpose `avatar`.
+                     * @enum {string}
+                     */
                     contentType: "image/jpeg" | "image/png" | "image/webp" | "image/heic";
                     /** @description Declared up front, so an oversized file is refused before a URL exists. */
                     contentLength: number;
@@ -9184,7 +9189,8 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            /** @description Object storage is not configured in this environment */
+            403: components["responses"]["Forbidden"];
+            /** @description Object storage (or, for `avatar`, the public bucket) is not configured in this environment */
             503: {
                 headers: {
                     [name: string]: unknown;

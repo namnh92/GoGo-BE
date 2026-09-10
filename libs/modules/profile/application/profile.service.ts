@@ -8,7 +8,7 @@ import { APP_CONFIG, type MediaConfig } from '../../shared/config';
 import { assertValidSelections } from '../../shared/taxonomy-selections';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
-import { MEDIA_UPLOADS_CONFIGURED } from '../../uploads/application/tokens';
+import { AVATAR_STORAGE_CONFIGURED } from '../../uploads/application/tokens';
 
 /**
  * ADR-0022 — the taxonomy kinds a profile may hold. `mood` is the one kind a
@@ -73,7 +73,7 @@ export class ProfileService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(APP_CONFIG) private readonly config: MediaConfig,
-    @Inject(MEDIA_UPLOADS_CONFIGURED) private readonly uploadsConfigured: boolean,
+    @Inject(AVATAR_STORAGE_CONFIGURED) private readonly avatarConfigured: boolean,
   ) {}
 
   /**
@@ -209,7 +209,7 @@ export class ProfileService {
         user.usualBudgetPerPerson === null
           ? null
           : { perPerson: user.usualBudgetPerPerson, currency: user.usualBudgetCurrency },
-      capabilities: { avatarUpload: this.uploadsConfigured ? 'available' : 'unavailable' },
+      capabilities: { avatarUpload: this.avatarConfigured ? 'available' : 'unavailable' },
     };
   }
 }
