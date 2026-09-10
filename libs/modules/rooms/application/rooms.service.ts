@@ -196,7 +196,7 @@ export class RoomsService {
       participantCount: room.participantCount,
       constraintVersion: room.constraintVersion,
       title: room.title ?? undefined,
-      scheduledDate: room.scheduledDate?.toISOString(),
+      scheduledDate: (constraint?.startAt ?? room.scheduledDate)?.toISOString(),
       expiresAt: room.expiresAt?.toISOString(),
       myMemberId: member.id,
       myRole: member.role,
