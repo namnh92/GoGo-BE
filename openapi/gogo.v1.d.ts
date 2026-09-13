@@ -5243,6 +5243,20 @@ export interface components {
             perPerson: number;
             currency: string;
         };
+        AdministrativeAreaInput: {
+            datasetVersion: string;
+            provinceCode: string;
+            communeCode?: string | null;
+        };
+        AdministrativeArea: {
+            datasetVersion: string;
+            provinceCode: string;
+            communeCode: string | null;
+            provinceName: string;
+            communeName: string | null;
+            /** @enum {string} */
+            status: "current" | "needs_reselection";
+        };
         /** @description Shape depends on `actorType`. A user carries the private profile; a guest carries `roomId`, `displayName`, `expiresAt` and none of the profile fields. */
         Me: {
             /** @enum {string} */
@@ -5258,6 +5272,7 @@ export interface components {
             expiresAt?: string;
             /** @description Null while media hosting is not configured, even if an avatar is stored. */
             avatarUrl?: string | null;
+            homeAdministrativeArea?: components["schemas"]["AdministrativeArea"] | null;
             homeArea?: components["schemas"]["HomeArea"] | null;
             interests?: components["schemas"]["ProfileInterests"];
             usualBudget?: components["schemas"]["UsualBudget"] | null;
@@ -5274,6 +5289,8 @@ export interface components {
             displayName?: string;
             /** @enum {string} */
             locale?: "vi" | "en";
+            /** @description Canonical area; null clears. Cannot be sent with legacy homeAreaKey. A successful write clears the legacy field. */
+            homeAdministrativeArea?: components["schemas"]["AdministrativeAreaInput"] | null;
             homeAreaKey?: string | null;
             interests?: components["schemas"]["ProfileInterests"] | null;
             usualBudget?: components["schemas"]["UsualBudget"] | null;

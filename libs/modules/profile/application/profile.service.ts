@@ -1,3 +1,9 @@
+import {
+  validateAreaSelection,
+  type AdministrativeArea,
+  type AdministrativeAreaInput,
+} from '../../administrative/application/area-selection';
+import { activeDataset } from '../../administrative/application/unit-lookup';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
@@ -30,6 +36,7 @@ export type UserProfile = {
   /** Composed from MEDIA_PUBLIC_BASE_URL; null while that base is empty. */
   avatarUrl: string | null;
   homeArea: { key: string; name: string; city: string | null } | null;
+  homeAdministrativeArea: (AdministrativeArea & { status: 'current' | 'needs_reselection' }) | null;
   interests: ProfileInterests;
   /** Integer minor units, per person. A create-room default, never a constraint. */
   usualBudget: { perPerson: number; currency: string } | null;
@@ -44,6 +51,7 @@ export type ProfilePatch = {
   displayName?: string | undefined;
   locale?: 'vi' | 'en' | undefined;
   homeAreaKey?: string | null | undefined;
+  homeAdministrativeArea?: AdministrativeAreaInput | null | undefined;
   interests?: ProfileInterests | null | undefined;
   usualBudget?: { perPerson: number; currency: string } | null | undefined;
 };
@@ -127,7 +135,17 @@ export class ProfileService {
       const set: PgUpdateSetSource<typeof schema.users> = { updatedAt: sql`now()` };
       if (patch.displayName !== undefined) set.displayName = patch.displayName;
       if (patch.locale !== undefined) set.locale = patch.locale;
-      if (patch.homeAreaKey !== undefined) set.homeAreaKey = patch.homeAreaKey;
+      if (patch.homeAreaKey !== undefined) {
+        set.homeAreaKey = patch.homeAreaKey;
+        set.homeAdministrativeArea = null;
+      }
+      if (patch.homeAdministrativeArea !== undefined) {
+        set.homeAdministrativeArea =
+          patch.homeAdministrativeArea === null
+            ? null
+            : await validateAreaSelection(tx, patch.homeAdministrativeArea);
+        set.homeAreaKey = null;
+      }
       if (patch.usualBudget !== undefined) {
         set.usualBudgetPerPerson = patch.usualBudget?.perPerson ?? null;
         set.usualBudgetCurrency = patch.usualBudget?.currency ?? 'VND';
@@ -194,8 +212,9 @@ export class ProfileService {
     return row;
   }
 
-  private toDto(row: ProfileRow): UserProfile {
+  private async toDto(row: ProfileRow): Promise<UserProfile> {
     const { user, area, selections } = row;
+    const dataset = user.homeAdministrativeArea ? await activeDataset(this.db) : null;
     return {
       actorType: 'user',
       id: user.id,
@@ -204,6 +223,15 @@ export class ProfileService {
       locale: user.locale,
       avatarUrl: this.avatarUrl(user.avatarKey),
       homeArea: area ? { key: area.key, name: area.name, city: area.city } : null,
+      homeAdministrativeArea: user.homeAdministrativeArea
+        ? {
+            ...user.homeAdministrativeArea,
+            status:
+              dataset?.combinedDatasetVersion === user.homeAdministrativeArea.datasetVersion
+                ? 'current'
+                : 'needs_reselection',
+          }
+        : null,
       interests: { mood: selections?.mood ?? [] },
       usualBudget:
         user.usualBudgetPerPerson === null

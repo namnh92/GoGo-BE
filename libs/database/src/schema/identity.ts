@@ -5,6 +5,7 @@ import {
   char,
   check,
   index,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -50,6 +51,13 @@ export const users = pgTable(
      */
     avatarKey: text('avatar_key'),
     homeAreaKey: text('home_area_key'),
+    homeAdministrativeArea: jsonb('home_administrative_area').$type<{
+      datasetVersion: string;
+      provinceCode: string;
+      provinceName: string;
+      communeCode: string | null;
+      communeName: string | null;
+    }>(),
     usualBudgetPerPerson: bigint('usual_budget_per_person', { mode: 'number' }),
     usualBudgetCurrency: char('usual_budget_currency', { length: 3 }).notNull().default('VND'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -57,6 +65,15 @@ export const users = pgTable(
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (t) => [
+    check(
+      'users_home_administrative_area_object',
+      sql`${t.homeAdministrativeArea} is null or (
+      jsonb_typeof(${t.homeAdministrativeArea}) = 'object'
+      and ${t.homeAdministrativeArea} ?& array['datasetVersion', 'provinceCode', 'provinceName', 'communeCode', 'communeName']
+      and length(${t.homeAdministrativeArea}->>'datasetVersion') > 0
+      and ${t.homeAdministrativeArea}->>'provinceCode' ~ '^[0-9]{2,5}$'
+    )`,
+    ),
     // Unique only for live accounts so delete + re-register works.
     uniqueIndex('users_email_unique')
       .on(sql`lower(${t.email})`)
