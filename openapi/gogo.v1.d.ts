@@ -1244,7 +1244,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Run the deterministic suggestion pipeline (SG-002..005) */
+        /**
+         * Host-only: run the deterministic suggestion pipeline (SG-002..005)
+         * @description Requires at least two completed responses. Incomplete rooms must first enter matching with explicit host acknowledgement (ADR-0024).
+         */
         post: operations["generateSuggestions"];
         delete?: never;
         options?: never;
@@ -5312,6 +5315,14 @@ export interface components {
             myMemberId?: string;
             /** @enum {string} */
             myRole?: "host" | "member";
+            matching?: {
+                completedCount: number;
+                pendingCount: number;
+                canStart: boolean;
+                canStartWithIncomplete: boolean;
+                /** @enum {string|null} */
+                blockedReason: "HOST_ONLY" | "ROOM_NOT_MATCHING" | "MATCHING_QUORUM_REQUIRED" | null;
+            };
             constraints?: components["schemas"]["RoomConstraintInput"];
             members?: components["schemas"]["RoomMember"][];
             seedPlaces?: {
@@ -8883,6 +8894,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description Explicit host acknowledgement when at least two members completed and other joined members have not. */
+                    allowIncompletePreferences?: boolean;
                     /** @enum {string} */
                     status: "draft" | "collecting" | "matching" | "ready" | "active" | "completed" | "cancelled" | "expired";
                 };

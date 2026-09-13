@@ -110,7 +110,12 @@ export class RoomsController {
     @Param('id', UuidPipe) id: string,
     @Body(new ZodValidationPipe(transitionSchema)) body: TransitionDto,
   ) {
-    return this.rooms.transition(actor, id, body.status as RoomStatus);
+    return this.rooms.transition(
+      actor,
+      id,
+      body.status as RoomStatus,
+      body.allowIncompletePreferences,
+    );
   }
 
   @Get(':id/members')

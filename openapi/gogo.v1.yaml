@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.29
+  version: 1.0.0-alpha.30
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -645,6 +645,9 @@ paths:
               type: object
               required: [status]
               properties:
+                allowIncompletePreferences:
+                  type: boolean
+                  description: Explicit host acknowledgement when at least two members completed and other joined members have not.
                 status:
                   type: string
                   enum: [draft, collecting, matching, ready, active, completed, cancelled, expired]
@@ -2401,7 +2404,8 @@ paths:
     post:
       operationId: generateSuggestions
       tags: [suggestions]
-      summary: Run the deterministic suggestion pipeline (SG-002..005)
+      summary: 'Host-only: run the deterministic suggestion pipeline (SG-002..005)'
+      description: Requires at least two completed responses. Incomplete rooms must first enter matching with explicit host acknowledgement (ADR-0024).
       parameters:
         - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -10050,6 +10054,20 @@ components:
         expiresAt: { type: string, format: date-time }
         myMemberId: { type: string, format: uuid }
         myRole: { type: string, enum: [host, member] }
+        matching:
+          type: object
+          required: [completedCount, pendingCount, canStart, canStartWithIncomplete, blockedReason]
+          properties:
+            completedCount: { type: integer }
+            pendingCount: { type: integer }
+            canStart: { type: boolean }
+            canStartWithIncomplete: { type: boolean }
+            blockedReason:
+              {
+                type: string,
+                nullable: true,
+                enum: [HOST_ONLY, ROOM_NOT_MATCHING, MATCHING_QUORUM_REQUIRED, null],
+              }
         constraints:
           allOf:
             - $ref: '#/components/schemas/RoomConstraintInput'

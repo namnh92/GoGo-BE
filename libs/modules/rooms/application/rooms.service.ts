@@ -1,3 +1,4 @@
+import { matchingReadiness } from '../domain/matching-readiness';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { AppError } from '../../shared/app-error';
@@ -200,6 +201,7 @@ export class RoomsService {
       expiresAt: room.expiresAt?.toISOString(),
       myMemberId: member.id,
       myRole: member.role,
+      matching: matchingReadiness(room.status, member.role, members),
       constraints: constraint
         ? {
             budgetMode: constraint.budgetMode,
@@ -268,15 +270,25 @@ export class RoomsService {
     return this.getRoomSummary(actor, roomId);
   }
 
-  async transition(actor: Actor, roomId: string, to: RoomStatus) {
+  async transition(
+    actor: Actor,
+    roomId: string,
+    to: RoomStatus,
+    allowIncompletePreferences = false,
+  ) {
     const { room } = await this.policy.requireHost(actor, roomId);
     assertTransition(room.status as RoomStatus, to);
-    await this.repo.updateStatus(roomId, to, {
-      eventType: `room.status_${to}`,
-      resourceType: 'room',
-      resourceId: roomId,
-      payload: { from: room.status, to },
-    });
+    await this.repo.updateStatus(
+      roomId,
+      to,
+      {
+        eventType: `room.status_${to}`,
+        resourceType: 'room',
+        resourceId: roomId,
+        payload: { from: room.status, to, allowIncompletePreferences },
+      },
+      allowIncompletePreferences,
+    );
     // Realtime is a courtesy on top of a committed write: publishing after the
     // repository call means a dropped event costs a client one refetch, never
     // a room that moved for some members and not others.

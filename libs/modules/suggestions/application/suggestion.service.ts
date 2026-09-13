@@ -107,14 +107,13 @@ export class SuggestionService {
 
   /** SG-002..005 — run the deterministic pipeline and persist ranked scores. */
   async generate(actor: Actor, roomId: string) {
-    const { room } = await this.policy.requireMember(actor, roomId);
+    const { room } = await this.policy.requireHost(actor, roomId);
     if (!['matching', 'collecting'].includes(room.status)) {
       throw AppError.conflict('ROOM_NOT_MATCHING', 'Room is not ready for suggestions');
     }
 
     // Announced before the work, so a second member sees a spinner rather
     // than an unexplained pause while the pipeline runs.
-    await this.publish({ roomId, type: 'matching.started', payload: {} });
 
     const startedAt = Date.now();
     // SG-010: the room is the subject, never the member. Two people in one
@@ -123,6 +122,21 @@ export class SuggestionService {
     const assignment = await this.experiments.assignmentFor(RANKING_EXPERIMENT, roomId);
 
     const snapshot = await this.repo.buildSnapshot(roomId);
+    if ((snapshot.completedMemberCount ?? 0) < 2)
+      throw AppError.conflict(
+        'MATCHING_QUORUM_REQUIRED',
+        'At least two completed preferences are required',
+      );
+    if (
+      room.status === 'collecting' &&
+      snapshot.completedMemberCount !== snapshot.memberPreferences.length
+    ) {
+      throw AppError.conflict(
+        'PREFERENCES_INCOMPLETE',
+        'Host must explicitly start with incomplete preferences',
+      );
+    }
+    await this.publish({ roomId, type: 'matching.started', payload: {} });
     const { weights, version } = await this.activeWeights(assignment.variant);
     const run = await this.repo.createRun({
       roomId,
@@ -160,6 +174,7 @@ export class SuggestionService {
             weightsVersion: version,
           },
         },
+        snapshot,
       );
       const latencyMs = Date.now() - startedAt;
       await this.repo.finishRun(run.id, 'succeeded', undefined, latencyMs);
@@ -328,6 +343,12 @@ export class SuggestionService {
     const run = await this.repo.latestRun(roomId);
     if (!run) throw AppError.conflict('NO_SUGGESTIONS', 'Generate suggestions first');
     const scores = await this.repo.scoresForRun(run.id);
+    if (scores.some((score) => score.isStale) || run.constraintVersion !== room.constraintVersion) {
+      throw AppError.conflict(
+        'STALE_SUGGESTIONS',
+        'Regenerate suggestions after preference or constraint changes',
+      );
+    }
 
     let winner: string;
     let tie = false;

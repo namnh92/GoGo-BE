@@ -5,6 +5,8 @@ export type RoomSnapshot = {
   type: 'couple' | 'group';
   decisionMode: 'match' | 'vote' | 'host';
   participantCount: number;
+  completedMemberCount?: number;
+  preferenceRevision?: string;
   budget: { mode: 'total' | 'per_person'; amount: number; currency: string };
   timeWindow: { startAt: string | null; endAt: string | null };
   origin: { lat: number; lng: number } | null;

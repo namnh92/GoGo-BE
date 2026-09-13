@@ -1,3 +1,4 @@
+import { preferenceRevision } from '../domain/preference-revision';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -41,6 +42,8 @@ export class SuggestionsRepository {
         selections: schema.preferenceSelections.selections,
         weights: schema.preferenceSelections.weights,
         isDraft: schema.preferenceSelections.isDraft,
+        version: schema.preferenceSelections.version,
+        selectionStatus: schema.roomMembers.selectionStatus,
       })
       .from(schema.roomMembers)
       .leftJoin(
@@ -78,10 +81,16 @@ export class SuggestionsRepository {
       radiusM: constraint.radiusM,
       dietaryKeys: constraint.dietaryKeys,
       accessibilityKeys: constraint.accessibilityKeys,
+      preferenceRevision: preferenceRevision(members),
+      completedMemberCount: members.filter(
+        (m) => m.selectionStatus === 'completed' && m.isDraft === false,
+      ).length,
       memberPreferences: members.map((m) => ({
         memberId: m.memberId,
-        selections: m.selections ?? {},
-        weights: m.weights ?? null,
+        selections:
+          m.selectionStatus === 'completed' && m.isDraft === false ? (m.selections ?? {}) : {},
+        weights:
+          m.selectionStatus === 'completed' && m.isDraft === false ? (m.weights ?? null) : null,
       })),
       seedPlaceIds: seeds.map((s) => s.placeId),
     };
@@ -207,8 +216,45 @@ export class SuggestionsRepository {
       reasonCodes: string[];
     }[],
     event: DomainEventInput,
+    snapshot?: RoomSnapshot,
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
+      if (snapshot) {
+        const [room] = await tx
+          .select()
+          .from(schema.rooms)
+          .where(eq(schema.rooms.id, roomId))
+          .for('update');
+        const members = await tx
+          .select({
+            memberId: schema.roomMembers.id,
+            selectionStatus: schema.roomMembers.selectionStatus,
+            version: schema.preferenceSelections.version,
+            isDraft: schema.preferenceSelections.isDraft,
+          })
+          .from(schema.roomMembers)
+          .leftJoin(
+            schema.preferenceSelections,
+            eq(schema.preferenceSelections.memberId, schema.roomMembers.id),
+          )
+          .where(
+            and(
+              eq(schema.roomMembers.roomId, roomId),
+              sql`${schema.roomMembers.removedAt} is null`,
+            ),
+          );
+        if (
+          !room ||
+          !['matching', 'collecting'].includes(room.status) ||
+          room.constraintVersion !== snapshot.constraintVersion ||
+          preferenceRevision(members) !== snapshot.preferenceRevision
+        ) {
+          throw AppError.conflict(
+            'STALE_SUGGESTIONS',
+            'Room inputs changed during ranking; regenerate',
+          );
+        }
+      }
       // Older runs' scores go stale the moment a new ranking lands.
       await tx
         .update(schema.candidateScores)
