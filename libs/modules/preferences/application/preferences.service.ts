@@ -197,7 +197,10 @@ export class PreferencesService {
       // `draft` is accepted alongside `collecting` so a room created before
       // rooms opened in `collecting` is not stranded. `draft → collecting →
       // matching` is already legal, so no invariant moves here.
-      if (everyoneDone && ['draft', 'collecting'].includes(room.status)) {
+      // Decide on the locked row: the pre-lock `room` may say `collecting`
+      // while the host already moved the room to `matching` — no flip, and no
+      // `room.ready_for_matching` event for a flip that did not happen.
+      if (everyoneDone && ['draft', 'collecting'].includes(lockedRoom.status)) {
         await tx
           .update(schema.rooms)
           .set({ status: 'matching', updatedAt: sql`now()` })
@@ -253,6 +256,13 @@ export class PreferencesService {
     };
   }
 
+  /**
+   * A saved draft means the member is editing, whatever they were before. A
+   * completed member who saves again holds a draft, and ADR-0024 counts only
+   * completed, non-draft responses — so the member row must say so too, or
+   * `matchingReadiness` (member rows) and the ranking snapshot (selection
+   * rows) disagree about who is done. `complete` sets it back.
+   */
   private async markInProgress(
     tx: Db | Parameters<Parameters<Db['transaction']>[0]>[0],
     memberId: string,
@@ -260,11 +270,6 @@ export class PreferencesService {
     await tx
       .update(schema.roomMembers)
       .set({ selectionStatus: 'in_progress' })
-      .where(
-        and(
-          eq(schema.roomMembers.id, memberId),
-          sql`${schema.roomMembers.selectionStatus} = 'pending'`,
-        ),
-      );
+      .where(eq(schema.roomMembers.id, memberId));
   }
 }

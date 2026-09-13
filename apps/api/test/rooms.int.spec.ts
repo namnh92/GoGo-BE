@@ -1316,4 +1316,80 @@ describe('BE-BFF-017 partial preference matching', () => {
       expect(finalize.json().code).toBe('STALE_SUGGESTIONS');
     }
   });
+
+  it('stops counting a member as complete while they hold a new draft', async () => {
+    const host = await registerUser('partial-redraft@gogo.test');
+    const room = await createGroupRoom(host.token, 3);
+    const invite = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(host.token),
+      payload: { maxUses: 10 },
+    });
+    const join = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join/guest',
+      remoteAddress: ip(),
+      payload: { inviteCode: invite.json().code, displayName: 'Editor' },
+    });
+    expect(join.statusCode).toBe(201);
+    const guest: string = join.json().accessToken;
+    const save = (token: string, expectedVersion: number) =>
+      api().inject({
+        method: 'PUT',
+        url: `/v1/rooms/${room.id}/preferences/me`,
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: { expectedVersion, selections: { mood: ['chill'] } },
+      });
+    const complete = (token: string) =>
+      api().inject({
+        method: 'POST',
+        url: `/v1/rooms/${room.id}/preferences/complete`,
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: {},
+      });
+    const readiness = async () =>
+      (
+        await api().inject({
+          method: 'GET',
+          url: `/v1/rooms/${room.id}`,
+          headers: auth(host.token),
+        })
+      ).json();
+    for (const token of [host.token, guest]) {
+      expect((await save(token, 0)).statusCode).toBe(200);
+      expect((await complete(token)).statusCode).toBe(200);
+    }
+    expect((await readiness()).matching).toMatchObject({
+      completedCount: 2,
+      pendingCount: 0,
+      canStart: true,
+    });
+
+    // Re-saving turns the completed response back into a draft: the member row
+    // must follow, or the lobby offers a start the ranking would refuse.
+    expect((await save(guest, 1)).statusCode).toBe(200);
+    const editing = await readiness();
+    expect(editing.matching).toMatchObject({
+      completedCount: 1,
+      pendingCount: 1,
+      canStart: false,
+      canStartWithIncomplete: false,
+      blockedReason: 'MATCHING_QUORUM_REQUIRED',
+    });
+    expect(
+      editing.members.find((m: { displayName: string }) => m.displayName === 'Editor')
+        .selectionStatus,
+    ).toBe('in_progress');
+
+    expect((await complete(guest)).statusCode).toBe(200);
+    expect((await readiness()).matching).toMatchObject({
+      completedCount: 2,
+      pendingCount: 0,
+      canStart: true,
+    });
+  });
 });
