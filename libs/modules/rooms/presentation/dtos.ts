@@ -48,6 +48,7 @@ export const updateConstraintsSchema = z
 export type UpdateConstraintsDto = z.infer<typeof updateConstraintsSchema>;
 
 export const transitionSchema = z.object({
+  allowIncompletePreferences: z.boolean().optional(),
   status: z.enum([
     'draft',
     'collecting',

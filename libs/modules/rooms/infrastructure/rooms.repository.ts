@@ -1,3 +1,6 @@
+import { AppError } from '../../shared/app-error';
+import { assertTransition } from '../domain/room-state';
+import { assertMatchingReady } from '../domain/matching-readiness';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -225,8 +228,28 @@ export class RoomsRepository {
     });
   }
 
-  async updateStatus(roomId: string, status: RoomRow['status'], event: DomainEventInput) {
+  async updateStatus(
+    roomId: string,
+    status: RoomRow['status'],
+    event: DomainEventInput,
+    allowIncomplete = false,
+  ) {
     await this.db.transaction(async (tx) => {
+      const [room] = await tx
+        .select()
+        .from(schema.rooms)
+        .where(eq(schema.rooms.id, roomId))
+        .for('update');
+      if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
+      assertTransition(room.status, status);
+      if (status === 'matching') {
+        const members = await tx
+          .select({ selectionStatus: schema.roomMembers.selectionStatus })
+          .from(schema.roomMembers)
+          .where(and(eq(schema.roomMembers.roomId, roomId), isNull(schema.roomMembers.removedAt)))
+          .for('update');
+        assertMatchingReady(members, allowIncomplete || room.status === 'matching');
+      }
       await tx
         .update(schema.rooms)
         .set({ status, updatedAt: sql`now()` })

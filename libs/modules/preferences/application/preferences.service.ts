@@ -69,6 +69,13 @@ export class PreferencesService {
     await this.assertValidSelections(input.selections);
 
     const saved = await this.db.transaction(async (tx) => {
+      const [lockedRoom] = await tx
+        .select()
+        .from(schema.rooms)
+        .where(eq(schema.rooms.id, roomId))
+        .for('update');
+      if (!lockedRoom || !['draft', 'collecting', 'matching'].includes(lockedRoom.status))
+        throw AppError.conflict('ROOM_NOT_COLLECTING', 'Preferences are closed');
       const [existing] = await tx
         .select()
         .from(schema.preferenceSelections)
@@ -92,6 +99,12 @@ export class PreferencesService {
         return { version: 1, isDraft: true };
       }
 
+      if (lockedRoom.status === 'matching' && !existing.isDraft) {
+        await tx
+          .update(schema.candidateScores)
+          .set({ isStale: true })
+          .where(eq(schema.candidateScores.roomId, roomId));
+      }
       if (existing.version !== input.expectedVersion) {
         throw AppError.conflict('PREFERENCE_VERSION_CONFLICT', 'Draft changed elsewhere');
       }
@@ -137,6 +150,19 @@ export class PreferencesService {
     }
 
     const allCompleted = await this.db.transaction(async (tx) => {
+      const [lockedRoom] = await tx
+        .select()
+        .from(schema.rooms)
+        .where(eq(schema.rooms.id, roomId))
+        .for('update');
+      if (!lockedRoom || !['draft', 'collecting', 'matching'].includes(lockedRoom.status))
+        throw AppError.conflict('ROOM_NOT_COLLECTING', 'Preferences are closed');
+      if (lockedRoom.status === 'matching' && pref.isDraft) {
+        await tx
+          .update(schema.candidateScores)
+          .set({ isStale: true })
+          .where(eq(schema.candidateScores.roomId, roomId));
+      }
       await tx
         .update(schema.preferenceSelections)
         .set({ isDraft: false, completedAt: sql`now()`, updatedAt: sql`now()` })

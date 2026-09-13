@@ -1182,3 +1182,138 @@ describe('BE-BFF-020 current schedule in room summaries', () => {
     expect(list.json().items[0].scheduledDate).toBe(scheduledDate);
   });
 });
+
+describe('BE-BFF-017 partial preference matching', () => {
+  it('requires quorum and host acknowledgement, keeps membership/budget and accepts late completion', async () => {
+    const host = await registerUser('partial-host@gogo.test');
+    const room = await createGroupRoom(host.token, 3);
+    const inviteResponse = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(host.token),
+      payload: { maxUses: 10 },
+    });
+    const inviteCode = inviteResponse.json().code;
+    const guests: string[] = [];
+    for (const displayName of ['Complete', 'Late']) {
+      const join = await api().inject({
+        method: 'POST',
+        url: '/v1/rooms/join/guest',
+        remoteAddress: ip(),
+        payload: { inviteCode, displayName },
+      });
+      expect(join.statusCode).toBe(201);
+      guests.push(join.json().accessToken);
+    }
+    async function complete(token: string) {
+      const save = await api().inject({
+        method: 'PUT',
+        url: `/v1/rooms/${room.id}/preferences/me`,
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: { expectedVersion: 0, selections: { mood: ['chill'] } },
+      });
+      expect(save.statusCode).toBe(200);
+      const done = await api().inject({
+        method: 'POST',
+        url: `/v1/rooms/${room.id}/preferences/complete`,
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: {},
+      });
+      expect(done.statusCode).toBe(200);
+    }
+    const transition = (token: string, allowIncompletePreferences = false) =>
+      api().inject({
+        method: 'PATCH',
+        url: `/v1/rooms/${room.id}/status`,
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: { status: 'matching', allowIncompletePreferences },
+      });
+    await complete(host.token);
+    expect((await transition(host.token, true)).json().code).toBe('MATCHING_QUORUM_REQUIRED');
+    await complete(guests[0]!);
+    expect((await transition(host.token)).json().code).toBe('PREFERENCES_INCOMPLETE');
+    expect((await transition(guests[0]!, true)).statusCode).toBe(403);
+    const before = await api().inject({
+      method: 'GET',
+      url: `/v1/rooms/${room.id}`,
+      headers: auth(host.token),
+    });
+    expect(before.json().matching).toMatchObject({
+      canStartWithIncomplete: true,
+      pendingCount: 1,
+      completedCount: 2,
+    });
+    const started = await transition(host.token, true);
+    expect(started.statusCode).toBe(200);
+    expect(started.json()).toMatchObject({
+      status: 'matching',
+      participantCount: 3,
+      constraints: baseConstraint,
+    });
+    expect(started.json().members).toHaveLength(3);
+    const generation = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/suggestions`,
+      remoteAddress: ip(),
+      headers: auth(host.token),
+      payload: {},
+    });
+    expect(generation.statusCode).toBe(201);
+    const runId = generation.json().run.id;
+    const [run] = await db
+      .select()
+      .from(schema.suggestionRuns)
+      .where(eq(schema.suggestionRuns.id, runId));
+    const snapshot = run!.inputSnapshot as {
+      participantCount: number;
+      completedMemberCount: number;
+      memberPreferences: { selections: Record<string, string[]> }[];
+    };
+    expect(snapshot.participantCount).toBe(3);
+    expect(snapshot.completedMemberCount).toBe(2);
+    expect(snapshot.memberPreferences).toHaveLength(3);
+    expect(
+      snapshot.memberPreferences.filter((m) => Object.keys(m.selections).length === 0),
+    ).toHaveLength(1);
+    const { SuggestionsRepository } =
+      await import('../../../libs/modules/suggestions/infrastructure/suggestions.repository.js');
+    const repository = app.get(SuggestionsRepository);
+    const beforeLateCompletion = await repository.buildSnapshot(room.id);
+    await complete(guests[1]!);
+    await expect(
+      repository.persistScores(
+        runId,
+        room.id,
+        [],
+        {
+          eventType: 'suggestion.generated',
+          resourceType: 'room',
+          resourceId: room.id,
+          payload: {},
+        },
+        beforeLateCompletion,
+      ),
+    ).rejects.toThrow('Room inputs changed');
+    const current = await api().inject({
+      method: 'GET',
+      url: `/v1/rooms/${room.id}/suggestions/current`,
+      headers: auth(host.token),
+    });
+    expect(current.json().candidates.length).toBeGreaterThan(0);
+    {
+      expect(current.json().run.stale).toBe(true);
+      const finalize = await api().inject({
+        method: 'POST',
+        url: `/v1/rooms/${room.id}/votes/finalize`,
+        remoteAddress: ip(),
+        headers: auth(host.token),
+        payload: { placeId: current.json().candidates[0].placeId },
+      });
+      expect(finalize.json().code).toBe('STALE_SUGGESTIONS');
+    }
+  });
+});
