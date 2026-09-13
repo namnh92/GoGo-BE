@@ -1,13 +1,18 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, ne, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
-import { MediaCleanupService, PrivacyJobs } from '@gogo/modules';
+import {
+  AdministrativeBoundaryImportService,
+  AdministrativeImportService,
+  MediaCleanupService,
+  PrivacyJobs,
+} from '@gogo/modules';
 import {
   CACHE_PURGE,
   PUBLIC_STORAGE_PROVIDER,
@@ -145,6 +150,7 @@ describe('profile read and write (PROF-BE-002)', () => {
       locale: 'vi',
       avatarUrl: null,
       homeArea: null,
+      homeAdministrativeArea: null,
       interests: { mood: [] },
       usualBudget: null,
       // The test fake stands in for storage, so uploads are available here.
@@ -910,6 +916,7 @@ describe('export and delete cover the profile (PROF-BE-007)', () => {
       createdAt: expect.any(String),
       avatarUrl: null,
       homeArea: { key: 'hcm_q1', name: 'Quận 1', city: 'TP.HCM' },
+      homeAdministrativeArea: null,
       interests: { mood: ['lively'] },
       usualBudget: { perPerson: 250_000, currency: 'VND' },
     });
@@ -1142,5 +1149,146 @@ describe('delayed cleanup can never take a live avatar (PROF-BE-004 regression)'
     const next = (await putAvatar(token, await seededUpload(token))).json().avatarUrl as string;
     expect(next).not.toBe(url);
     expect(publicStore().deleted).toContain(publicKey);
+  });
+});
+
+describe('ADM-019 canonical profile area', () => {
+  let datasetVersion: string;
+  let provinceCode: string;
+  let communeCode: string;
+  let otherProvince: string;
+  beforeAll(async () => {
+    await new AdministrativeBoundaryImportService(db).load({
+      role: 'boundaries-fixture',
+      boundaryVersion: 'fixture-v1',
+      archivePath: path.resolve(
+        __dirname,
+        '../../../resources/administrative/boundaries-fixture.v5.0.0.zip',
+      ),
+    });
+    const report = await new AdministrativeImportService(db).importPinnedSnapshot();
+    datasetVersion = report.combinedDatasetVersion;
+    await db
+      .update(schema.administrativeDatasetVersions)
+      .set({ status: 'PUBLISHED', publishedAt: new Date() })
+      .where(eq(schema.administrativeDatasetVersions.id, report.datasetVersionId));
+    const [commune] = await db
+      .select()
+      .from(schema.administrativeUnits)
+      .where(
+        and(
+          eq(schema.administrativeUnits.datasetVersionId, report.datasetVersionId),
+          eq(schema.administrativeUnits.level, 'COMMUNE'),
+          eq(schema.administrativeUnits.status, 'ACTIVE'),
+          isNull(schema.administrativeUnits.effectiveTo),
+        ),
+      )
+      .limit(1);
+    communeCode = commune!.code;
+    provinceCode = commune!.parentCode!;
+    const [other] = await db
+      .select()
+      .from(schema.administrativeUnits)
+      .where(
+        and(
+          eq(schema.administrativeUnits.datasetVersionId, report.datasetVersionId),
+          eq(schema.administrativeUnits.level, 'PROVINCE'),
+          eq(schema.administrativeUnits.status, 'ACTIVE'),
+          ne(schema.administrativeUnits.code, provinceCode),
+          isNull(schema.administrativeUnits.effectiveTo),
+        ),
+      )
+      .limit(1);
+    otherProvince = other!.code;
+  });
+  it('sets/reads/clears a canonical area, supports whole province, and keeps omitted fields', async () => {
+    const user = await register('canonical-profile@gogo.test');
+    expect((await getMe(user.token)).json().homeAdministrativeArea).toBeNull();
+    await patchMe(user.token, { homeAreaKey: 'hcm_q1' });
+    const saved = await patchMe(user.token, {
+      homeAdministrativeArea: { datasetVersion, provinceCode, communeCode },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().homeArea).toBeNull();
+    expect(saved.json().homeAdministrativeArea).toMatchObject({
+      datasetVersion,
+      provinceCode,
+      communeCode,
+      status: 'current',
+    });
+    expect(saved.json().homeAdministrativeArea.provinceName.length).toBeGreaterThan(0);
+    const renamed = await patchMe(user.token, { displayName: 'Changed' });
+    expect(renamed.json().homeAdministrativeArea).toEqual(saved.json().homeAdministrativeArea);
+    const province = await patchMe(user.token, {
+      homeAdministrativeArea: { datasetVersion, provinceCode, communeCode: null },
+    });
+    expect(province.json().homeAdministrativeArea.communeCode).toBeNull();
+    const cleared = await patchMe(user.token, { homeAdministrativeArea: null });
+    expect(cleared.json().homeAdministrativeArea).toBeNull();
+  });
+  it('rejects wrong hierarchy, stale datasets, fake codes and conflicting legacy input', async () => {
+    const user = await register('invalid-canonical@gogo.test');
+    for (const homeAdministrativeArea of [
+      { datasetVersion, provinceCode: otherProvince, communeCode },
+      { datasetVersion, provinceCode: '99999', communeCode: null },
+    ])
+      expect((await patchMe(user.token, { homeAdministrativeArea })).statusCode).toBe(400);
+    const stale = await patchMe(user.token, {
+      homeAdministrativeArea: { datasetVersion: 'old-version', provinceCode, communeCode },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(
+      (await patchMe(user.token, { homeAdministrativeArea: null, homeAreaKey: null })).statusCode,
+    ).toBe(400);
+  });
+  it('preserves saved labels and requests reselection after a dataset change', async () => {
+    const user = await register('stale-canonical@gogo.test');
+    const saved = await patchMe(user.token, {
+      homeAdministrativeArea: { datasetVersion, provinceCode, communeCode },
+    });
+    expect(saved.statusCode).toBe(200);
+    await db
+      .update(schema.users)
+      .set({
+        homeAdministrativeArea: {
+          ...saved.json().homeAdministrativeArea,
+          datasetVersion: 'previous-dataset',
+        },
+      })
+      .where(eq(schema.users.id, user.userId));
+    const read = await getMe(user.token);
+    expect(read.statusCode).toBe(200);
+    expect(read.json().homeAdministrativeArea).toEqual({
+      ...saved.json().homeAdministrativeArea,
+      datasetVersion: 'previous-dataset',
+      status: 'needs_reselection',
+    });
+  });
+  it('exports the area and erases it on account deletion', async () => {
+    const user = await register('private-canonical@gogo.test');
+    await patchMe(user.token, {
+      homeAdministrativeArea: { datasetVersion, provinceCode, communeCode },
+    });
+    const exported = await api().inject({
+      method: 'GET',
+      url: '/v1/me/export',
+      remoteAddress: ip(),
+      headers: auth(user.token),
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json().profile.homeAdministrativeArea).toMatchObject({
+      datasetVersion,
+      provinceCode,
+      communeCode,
+    });
+    const deleted = await api().inject({
+      method: 'DELETE',
+      url: '/v1/me',
+      remoteAddress: ip(),
+      headers: auth(user.token),
+    });
+    expect(deleted.statusCode).toBeLessThan(300);
+    const [row] = await db.select().from(schema.users).where(eq(schema.users.id, user.userId));
+    expect(row!.homeAdministrativeArea).toBeNull();
   });
 });

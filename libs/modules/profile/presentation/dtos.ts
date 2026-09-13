@@ -1,3 +1,4 @@
+import { administrativeAreaInput } from '../../administrative/application/area-selection';
 import { z } from 'zod';
 
 /**
@@ -11,6 +12,7 @@ export const profilePatchSchema = z
   .object({
     displayName: z.string().trim().min(1).max(50).optional(),
     locale: z.enum(['vi', 'en']).optional(),
+    homeAdministrativeArea: administrativeAreaInput.nullable().optional(),
     homeAreaKey: z.string().trim().min(1).max(64).nullable().optional(),
     interests: z
       .object({ mood: z.array(z.string().trim().min(1).max(64)).max(20) })
@@ -27,7 +29,11 @@ export const profilePatchSchema = z
       .nullable()
       .optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) => value.homeAreaKey === undefined || value.homeAdministrativeArea === undefined,
+    { message: 'Send only one area representation', path: ['homeAdministrativeArea'] },
+  );
 export type ProfilePatchDto = z.infer<typeof profilePatchSchema>;
 
 /** PUT /me/avatar — the key `POST /uploads { purpose: 'avatar' }` handed out. */

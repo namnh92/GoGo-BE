@@ -249,6 +249,7 @@ export class UserContentService {
         createdAt: user?.createdAt.toISOString(),
         avatarUrl: publicMediaUrl(this.config.MEDIA_PUBLIC_BASE_URL, user?.avatarKey),
         homeArea: homeArea ?? null,
+        homeAdministrativeArea: user?.homeAdministrativeArea ?? null,
         interests: { mood: interests?.selections?.mood ?? [] },
         usualBudget:
           user?.usualBudgetPerPerson === null || user?.usualBudgetPerPerson === undefined
@@ -312,6 +313,7 @@ export class UserContentService {
           displayName: 'Người dùng đã xóa',
           avatarKey: null,
           homeAreaKey: null,
+          homeAdministrativeArea: null,
           usualBudgetPerPerson: null,
           deletedAt: sql`now()`,
           updatedAt: sql`now()`,

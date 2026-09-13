@@ -421,6 +421,13 @@
       "when": 1790208000000,
       "tag": "0061_user-profile-and-media-cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1790294400000,
+      "tag": "0062_profile-administrative-area",
+      "breakpoints": true
     }
   ]
 }
