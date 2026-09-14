@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.37
+  version: 1.0.0-alpha.38
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2498,6 +2498,32 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PlaceDetail' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /places/{id}/reviews:
+    get:
+      operationId: listPlaceReviews
+      tags: [places]
+      summary: Latest published GoGo reviews of a place (at most three)
+      description: >
+        BE-BFF-018. GoGo community reviews only, never Google's: the provider
+        rating stays on `PlaceDetail.rating`/`ratingCount` with its attribution
+        and is never merged with these. Only reviews a moderator published are
+        listed; `pending`, `rejected`, `removed` and emergency-`hidden` reviews
+        never appear. Ordered newest first by `createdAt`, ties broken by `id`
+        descending, so repeated reads agree. Answers for the same places
+        `getPlaceDetail` does (404 otherwise) and is served
+        `Cache-Control: no-store`, so a takedown holds on the next read.
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Up to three reviews; an empty list when none is published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceReviewPreview' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /rooms/{roomId}/suggestions:
     post:
@@ -13431,6 +13457,42 @@ components:
               actorName: { type: string }
               at: { type: string, format: date-time }
               detail: { type: object, additionalProperties: true }
+    PlaceReviewPreview:
+      type: object
+      required: [source, reviews]
+      properties:
+        source:
+          type: string
+          enum: [gogo]
+          description: >
+            Always `gogo`. These are GoGo community reviews; they never share a
+            number with a provider rating.
+        reviews:
+          type: array
+          maxItems: 3
+          items: { $ref: '#/components/schemas/PublicPlaceReview' }
+    PublicPlaceReview:
+      type: object
+      required: [id, rating, createdAt, author]
+      description: A published review as anyone may read it. Carries no user id, email or avatar.
+      properties:
+        id: { type: string, format: uuid }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        text: { type: string, description: Omitted when the review has no text. }
+        createdAt:
+          type: string
+          format: date-time
+          description: When the review was written. An edit keeps it.
+        author:
+          type: object
+          required: [displayName]
+          properties:
+            displayName:
+              type: string
+              nullable: true
+              description: >
+                The name the author shows other people; `null` once the account
+                is deleted (ADR-0023). Clients render their own label for it.
     PlacePhoto:
       type: object
       required: [id, url, source]
