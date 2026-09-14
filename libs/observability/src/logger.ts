@@ -1,4 +1,5 @@
 import pino, { type DestinationStream } from 'pino';
+import { REDACTED, redactCoordinateText, redactCoordinatesDeep } from './telemetry-redaction';
 
 /**
  * Security rule (.claude/rules/security.md): logs never contain tokens, secrets,
@@ -44,10 +45,17 @@ export type LogDestination = DestinationStream;
  */
 const CREDENTIAL_PATH_SEGMENTS: readonly RegExp[] = [/(\/share-links\/)[^/?#]+/g];
 
+/**
+ * A credential path segment, then every exact position the shared telemetry
+ * redaction recognises (#588): coordinate-named parameters such as `lat`/`lng`
+ * on `GET /search` and `GET /administrative/locate`, list-valued ones such as
+ * `bounds`, and coordinate pairs such as an encoded Google Maps `@lat,lng`. The
+ * parameter name stays so a line still shows that a position was sent.
+ */
 export function redactUrl(url: string): string {
   let out = url;
   for (const pattern of CREDENTIAL_PATH_SEGMENTS) out = out.replace(pattern, '$1[redacted]');
-  return out;
+  return redactCoordinateText(out);
 }
 
 type RequestLike = {
@@ -74,6 +82,21 @@ export function requestSerializer(req: RequestLike): Record<string, unknown> {
   };
 }
 
+/**
+ * #588 — Pino's standard error serializer, without exact coordinates. A
+ * `DrizzleQueryError` repeats its bound parameters both in `message`/`stack`
+ * (`params: 106.7,10.7,…`) and as an enumerable `params` array, and a failed
+ * search query binds the device position. The parameters carry no names to
+ * redact by, so the list is dropped whole; the query text keeps its
+ * placeholders for diagnosis.
+ */
+export function errorSerializer(err: unknown): unknown {
+  if (!(err instanceof Error)) return err;
+  const serialized = pino.stdSerializers.err(err) as unknown as Record<string, unknown>;
+  const withoutParams = 'params' in serialized ? { ...serialized, params: REDACTED } : serialized;
+  return redactCoordinatesDeep(withoutParams);
+}
+
 export function createLogger(opts: {
   level: string;
   name: string;
@@ -89,7 +112,7 @@ export function createLogger(opts: {
     formatters: {
       level: (label) => ({ level: label }),
     },
-    serializers: { req: requestSerializer },
+    serializers: { req: requestSerializer, err: errorSerializer },
     ...(opts.pretty
       ? { transport: { target: 'pino-pretty', options: { colorize: true, singleLine: true } } }
       : {}),
