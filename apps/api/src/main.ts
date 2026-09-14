@@ -12,6 +12,7 @@ import type { IncomingMessage } from 'node:http';
 import { CSRF_HEADER, createEdgeClientIpHook, runWithRequestContext } from '@gogo/modules';
 import { AppModule } from './app.module';
 import { loadEnv } from './config/env';
+import { sentryInitOptions } from './sentry';
 
 /** '1' → hop count, 'false' → no trust, otherwise a CIDR/IP allowlist. */
 function parseTrustProxy(value: string): boolean | number | string[] {
@@ -31,7 +32,8 @@ export async function createApp(
   if (config.SENTRY_DSN) {
     // Error monitoring (FND-007). captureException elsewhere is a safe no-op
     // until this init runs.
-    Sentry.init({ dsn: config.SENTRY_DSN, environment: config.NODE_ENV });
+    // #588: coordinates are redacted from every event and breadcrumb.
+    Sentry.init(sentryInitOptions({ dsn: config.SENTRY_DSN, environment: config.NODE_ENV }));
   }
   const logger = createLogger({
     level: config.LOG_LEVEL,

@@ -1,4 +1,16 @@
-export { createLogger, REDACT_PATHS, redactUrl, requestSerializer } from './logger';
+export {
+  createLogger,
+  errorSerializer,
+  REDACT_PATHS,
+  redactUrl,
+  requestSerializer,
+} from './logger';
+export {
+  isCoordinateKey,
+  REDACTED,
+  redactCoordinateText,
+  redactCoordinatesDeep,
+} from './telemetry-redaction';
 export type { AppLogger, LogDestination } from './logger';
 export { LogMetrics, NoopMetrics, METRICS, RUNTIME_METRICS } from './metrics';
 export type { MetricsPort, MetricLabels } from './metrics';
