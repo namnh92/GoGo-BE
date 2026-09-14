@@ -1,4 +1,4 @@
--- BE-BFF-019 (#571), ADR-0026 (PROPOSAL). One `helpful` reaction per person per
+-- BE-BFF-019 (#571), ADR-0026 (accepted 2026-09-14). One `helpful` reaction per person per
 -- review. Additive: a new table only; `reviews` is not rewritten or locked.
 -- Application rollback leaves the table unused. Rehearsal-only down:
 -- DROP TABLE review_reactions;
