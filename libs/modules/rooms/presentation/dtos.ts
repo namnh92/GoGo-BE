@@ -68,6 +68,16 @@ export const transitionSchema = z.object({
 });
 export type TransitionDto = z.infer<typeof transitionSchema>;
 
+/**
+ * BE-BFF-022 (#579). Same bounds as a name given at creation. `title` must be
+ * present so an empty body cannot silently clear a name; an empty string after
+ * trimming, or `null`, clears it.
+ */
+export const renameRoomSchema = z.object({
+  title: z.string().trim().max(80).nullable(),
+});
+export type RenameRoomDto = z.infer<typeof renameRoomSchema>;
+
 export const createInviteSchema = z.object({
   maxUses: z.number().int().min(1).max(100).optional(),
 });

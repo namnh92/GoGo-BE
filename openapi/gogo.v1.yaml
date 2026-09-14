@@ -659,6 +659,42 @@ paths:
               schema: { $ref: '#/components/schemas/RoomSummary' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /rooms/{id}/title:
+    patch:
+      operationId: renameRoom
+      tags: [rooms]
+      summary: 'Host-only: rename the room or clear its name'
+      description: >
+        BE-BFF-022. Allowed while the room is `draft`, `collecting`, `matching`
+        or `ready` — the same window as constraint edits; any other state
+        answers `409 ROOM_NOT_EDITABLE`. The title is trimmed and limited to 80
+        characters like a name given at creation; an empty string or `null`
+        clears it, and clients show their own untitled fallback. A name is not a
+        constraint: suggestions and plans are not marked stale and
+        `constraintVersion` does not move. Last write wins — there is no
+        version to send.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, nullable: true, maxLength: 80 }
+      responses:
+        '200':
+          description: Renamed; the updated summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /rooms/{id}/events:
     get:
       operationId: streamRoomEvents

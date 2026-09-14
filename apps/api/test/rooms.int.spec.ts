@@ -1393,3 +1393,100 @@ describe('BE-BFF-017 partial preference matching', () => {
     });
   });
 });
+
+describe('BE-BFF-022 rename a room (#579)', () => {
+  it('lets only the host rename or clear a room while it is being planned', async () => {
+    const host = await registerUser('rename-host@gogo.test');
+    const member = await registerUser('rename-member@gogo.test');
+    const room = await createGroupRoom(host.token);
+    const invite = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(host.token),
+      payload: { maxUses: 10 },
+    });
+    const inviteCode = invite.json().code;
+    const joined = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join',
+      remoteAddress: ip(),
+      headers: auth(member.token),
+      payload: { inviteCode },
+    });
+    expect(joined.statusCode).toBe(201);
+    const guest = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join/guest',
+      remoteAddress: ip(),
+      payload: { inviteCode, displayName: 'Khách' },
+    });
+    expect(guest.statusCode).toBe(201);
+    const rename = (token: string, payload: Record<string, unknown>) =>
+      api().inject({
+        method: 'PATCH',
+        url: `/v1/rooms/${room.id}/title`,
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload,
+      });
+
+    const renamed = await rename(host.token, { title: '  Cà phê cuối tuần  ' });
+    expect(renamed.statusCode).toBe(200);
+    // Trimmed, and a name is not a constraint: no new constraint version.
+    expect(renamed.json()).toMatchObject({
+      title: 'Cà phê cuối tuần',
+      constraintVersion: room.constraintVersion,
+    });
+    const list = await api().inject({ method: 'GET', url: '/v1/rooms', headers: auth(host.token) });
+    expect(list.json().items.find((item: { id: string }) => item.id === room.id).title).toBe(
+      'Cà phê cuối tuần',
+    );
+
+    // Server-enforced, whatever the client hides.
+    const byMember = await rename(member.token, { title: 'Không phải host' });
+    expect(byMember.statusCode).toBe(403);
+    expect(byMember.json().code).toBe('HOST_ONLY');
+    expect((await rename(guest.json().accessToken, { title: 'Khách đổi tên' })).statusCode).toBe(
+      403,
+    );
+    expect((await rename(host.token, { title: 'a'.repeat(81) })).statusCode).toBe(400);
+    // An empty body must not read as "clear the name".
+    expect((await rename(host.token, {})).statusCode).toBe(400);
+    const unchanged = await api().inject({
+      method: 'GET',
+      url: `/v1/rooms/${room.id}`,
+      headers: auth(host.token),
+    });
+    expect(unchanged.json().title).toBe('Cà phê cuối tuần');
+
+    const blank = await rename(host.token, { title: '   ' });
+    expect(blank.statusCode).toBe(200);
+    expect(blank.json().title).toBeUndefined();
+    expect((await rename(host.token, { title: 'Lần nữa' })).json().title).toBe('Lần nữa');
+    const cleared = await rename(host.token, { title: null });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().title).toBeUndefined();
+
+    // One outbox record per accepted rename, none for refusals, never the text.
+    const events = await db
+      .select()
+      .from(schema.outboxEvents)
+      .where(eq(schema.outboxEvents.resourceId, room.id));
+    const renames = events.filter((event) => event.eventType === 'room.renamed');
+    expect(renames).toHaveLength(4);
+    expect(JSON.stringify(renames.map((event) => event.payload))).not.toContain('Cà phê');
+
+    const cancel = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/status`,
+      remoteAddress: ip(),
+      headers: auth(host.token),
+      payload: { status: 'cancelled' },
+    });
+    expect(cancel.statusCode).toBe(200);
+    const refused = await rename(host.token, { title: 'Quá muộn' });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().code).toBe('ROOM_NOT_EDITABLE');
+  });
+});

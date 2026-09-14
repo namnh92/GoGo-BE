@@ -5,7 +5,11 @@ import {
   type AdministrativeAreaInput,
 } from '../../administrative/application/area-selection';
 import { activeDataset } from '../../administrative/application/unit-lookup';
-import { assertConstraintsEditable, assertTransition } from '../domain/room-state';
+import {
+  assertConstraintsEditable,
+  assertRoomDetailsEditable,
+  assertTransition,
+} from '../domain/room-state';
 import { assertMatchingReady } from '../domain/matching-readiness';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -309,6 +313,25 @@ export class RoomsRepository {
         .where(eq(schema.plans.roomId, input.roomId));
       await writeOutbox(tx, input.event);
       return version;
+    });
+  }
+
+  async renameRoom(roomId: string, title: string | null, event: DomainEventInput) {
+    await this.db.transaction(async (tx) => {
+      const [room] = await tx
+        .select()
+        .from(schema.rooms)
+        .where(eq(schema.rooms.id, roomId))
+        .for('update');
+      if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
+      // Re-checked under the lock: a transition that commits between the
+      // policy read and this write wins, and the rename is refused.
+      assertRoomDetailsEditable(room.status);
+      await tx
+        .update(schema.rooms)
+        .set({ title, updatedAt: sql`now()` })
+        .where(eq(schema.rooms.id, roomId));
+      await writeOutbox(tx, event);
     });
   }
 

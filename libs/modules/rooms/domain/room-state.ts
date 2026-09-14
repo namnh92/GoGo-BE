@@ -67,12 +67,29 @@ export function assertBudgetMode(type: RoomType, mode: 'total' | 'per_person'): 
   }
 }
 
+/** The window in which a room is still being planned, and so still editable. */
+const PLANNING_STATUSES: readonly string[] = ['draft', 'collecting', 'matching', 'ready'];
+
 /** Constraint edits are allowed until the plan goes active (FR-ROOM-005). */
 export function assertConstraintsEditable(status: RoomStatus): void {
-  if (!['draft', 'collecting', 'matching', 'ready'].includes(status)) {
+  if (!PLANNING_STATUSES.includes(status)) {
     throw AppError.conflict(
       'ROOM_NOT_EDITABLE',
       `Constraints cannot change while room is ${status}`,
+    );
+  }
+}
+
+/**
+ * BE-BFF-022 (#579): a room's name follows the same window as its constraints.
+ * Renaming an active or finished plan would rewrite what members agreed to go
+ * to, and a cancelled or expired room has no one left to read it.
+ */
+export function assertRoomDetailsEditable(status: RoomStatus): void {
+  if (!PLANNING_STATUSES.includes(status)) {
+    throw AppError.conflict(
+      'ROOM_NOT_EDITABLE',
+      `Room details cannot change while room is ${status}`,
     );
   }
 }

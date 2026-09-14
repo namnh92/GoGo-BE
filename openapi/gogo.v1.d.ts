@@ -302,6 +302,26 @@ export interface paths {
         patch: operations["transitionRoom"];
         trace?: never;
     };
+    "/rooms/{id}/title": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Host-only: rename the room or clear its name
+         * @description BE-BFF-022. Allowed while the room is `draft`, `collecting`, `matching` or `ready` — the same window as constraint edits; any other state answers `409 ROOM_NOT_EDITABLE`. The title is trimmed and limited to 80 characters like a name given at creation; an empty string or `null` clears it, and clients show their own untitled fallback. A name is not a constraint: suggestions and plans are not marked stale and `constraintVersion` does not move. Last write wins — there is no version to send.
+         */
+        patch: operations["renameRoom"];
+        trace?: never;
+    };
     "/rooms/{id}/events": {
         parameters: {
             query?: never;
@@ -8957,6 +8977,38 @@ export interface operations {
                     "application/json": components["schemas"]["RoomSummary"];
                 };
             };
+            409: components["responses"]["Conflict"];
+        };
+    };
+    renameRoom: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    title: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Renamed; the updated summary */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoomSummary"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
         };
     };

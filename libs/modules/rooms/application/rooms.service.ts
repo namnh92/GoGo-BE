@@ -18,6 +18,7 @@ import {
   type DecisionMode,
   type RoomStatus,
   type RoomType,
+  assertRoomDetailsEditable,
 } from '../domain/room-state';
 import { RoomPolicy } from '../presentation/room-policy';
 import {
@@ -292,6 +293,25 @@ export class RoomsService {
         'Constraints changed concurrently — reload and retry',
       );
     }
+    return this.getRoomSummary(actor, roomId);
+  }
+
+  /**
+   * BE-BFF-022 (#579) — host-only rename while the room is being planned.
+   * A name is not a constraint, so nothing goes stale and no version is
+   * required: last write wins, the same as creation.
+   */
+  async renameRoom(actor: Actor, roomId: string, title: string | null) {
+    const { room } = await this.policy.requireHost(actor, roomId);
+    assertRoomDetailsEditable(room.status as RoomStatus);
+    const next = title && title.length > 0 ? title : null;
+    await this.repo.renameRoom(roomId, next, {
+      eventType: 'room.renamed',
+      resourceType: 'room',
+      resourceId: roomId,
+      // Whether a name exists, never the name itself.
+      payload: { cleared: next === null },
+    });
     return this.getRoomSummary(actor, roomId);
   }
 
