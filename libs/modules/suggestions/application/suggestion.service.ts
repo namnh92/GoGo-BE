@@ -136,6 +136,9 @@ export class SuggestionService {
         'Host must explicitly start with incomplete preferences',
       );
     }
+    // Checked before anything is announced or recorded, so a stale room area
+    // is a clear 409 for the host rather than a failed run in the history.
+    await this.repo.assertAdministrativeAreaCurrent(snapshot);
     await this.publish({ roomId, type: 'matching.started', payload: {} });
     const { weights, version } = await this.activeWeights(assignment.variant);
     const run = await this.repo.createRun({

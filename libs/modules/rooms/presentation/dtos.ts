@@ -1,8 +1,14 @@
 import { z } from 'zod';
+import { administrativeAreaInput } from '../../administrative/application/area-selection';
 
 export const uuidSchema = z.string().uuid();
 
 const constraintFields = {
+  // ADM-020 (#567): codes only — labels always come from the server. `strip`
+  // rather than the account picker's `strict`, because clients spread
+  // RoomSummary.constraints (which carries provinceName/communeName/status)
+  // straight back into a constraint PATCH; those keys are dropped, not refused.
+  administrativeArea: administrativeAreaInput.strip().nullable().optional(),
   originText: z.string().trim().max(200).optional(),
   originLat: z.number().min(-90).max(90).optional(),
   originLng: z.number().min(-180).max(180).optional(),

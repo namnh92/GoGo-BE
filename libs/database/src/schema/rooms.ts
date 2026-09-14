@@ -84,6 +84,13 @@ export const roomConstraints = pgTable(
     originLat: doublePrecision('origin_lat'),
     originLng: doublePrecision('origin_lng'),
     areaKey: text('area_key'),
+    administrativeArea: jsonb('administrative_area').$type<{
+      datasetVersion: string;
+      provinceCode: string;
+      provinceName: string;
+      communeCode: string | null;
+      communeName: string | null;
+    }>(),
     radiusM: integer('radius_m'),
     startAt: timestamp('start_at', { withTimezone: true }),
     endAt: timestamp('end_at', { withTimezone: true }),
@@ -99,6 +106,15 @@ export const roomConstraints = pgTable(
   (t) => [
     uniqueIndex('room_constraints_room_version_unique').on(t.roomId, t.version),
     check('room_constraints_budget_positive', sql`${t.budgetAmount} >= 0`),
+    check(
+      'room_constraints_administrative_area_object',
+      sql`${t.administrativeArea} is null or (
+      jsonb_typeof(${t.administrativeArea}) = 'object'
+      and ${t.administrativeArea} ?& array['datasetVersion', 'provinceCode', 'provinceName', 'communeCode', 'communeName']
+      and length(${t.administrativeArea}->>'datasetVersion') > 0
+      and ${t.administrativeArea}->>'provinceCode' ~ '^[0-9]{2,5}$'
+    )`,
+    ),
     check(
       'room_constraints_time_order',
       sql`${t.startAt} is null or ${t.endAt} is null or ${t.startAt} < ${t.endAt}`,

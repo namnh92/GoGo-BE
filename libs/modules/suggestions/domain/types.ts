@@ -10,6 +10,11 @@ export type RoomSnapshot = {
   budget: { mode: 'total' | 'per_person'; amount: number; currency: string };
   timeWindow: { startAt: string | null; endAt: string | null };
   origin: { lat: number; lng: number } | null;
+  administrativeArea?: {
+    datasetVersion: string;
+    provinceCode: string;
+    communeCode: string | null;
+  } | null;
   radiusM: number | null;
   dietaryKeys: string[];
   accessibilityKeys: string[];

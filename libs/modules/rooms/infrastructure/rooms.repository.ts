@@ -1,5 +1,11 @@
 import { AppError } from '../../shared/app-error';
-import { assertTransition } from '../domain/room-state';
+import {
+  validateAreaSelection,
+  type AdministrativeArea,
+  type AdministrativeAreaInput,
+} from '../../administrative/application/area-selection';
+import { activeDataset } from '../../administrative/application/unit-lookup';
+import { assertConstraintsEditable, assertTransition } from '../domain/room-state';
 import { assertMatchingReady } from '../domain/matching-readiness';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -14,7 +20,21 @@ export type MemberRow = typeof schema.roomMembers.$inferSelect;
 export type InviteRow = typeof schema.roomInvites.$inferSelect;
 export type PreferenceRow = typeof schema.preferenceSelections.$inferSelect;
 
+/** Same selection: dataset, province and commune. Labels are not identity. */
+function sameArea(
+  a: Pick<AdministrativeAreaInput, 'datasetVersion' | 'provinceCode' | 'communeCode'>,
+  b: Pick<AdministrativeArea, 'datasetVersion' | 'provinceCode' | 'communeCode'>,
+): boolean {
+  return (
+    a.datasetVersion === b.datasetVersion &&
+    a.provinceCode === b.provinceCode &&
+    (a.communeCode ?? null) === (b.communeCode ?? null)
+  );
+}
+
 export type NewConstraint = {
+  /** ADM-020: omitted on update keeps the stored area; null clears it. */
+  administrativeArea?: AdministrativeAreaInput | null;
   originText?: string | null;
   originLat?: number | null;
   originLng?: number | null;
@@ -118,6 +138,12 @@ export class RoomsRepository {
     event: DomainEventInput | null;
   }): Promise<{ room: RoomRow; member: MemberRow }> {
     return this.db.transaction(async (tx) => {
+      const { administrativeArea: requestedArea, ...constraint } = input.constraint;
+      // Validated inside the write transaction (the dataset row is share-locked),
+      // so a publication cannot slip between the check and the insert.
+      const administrativeArea = requestedArea
+        ? await validateAreaSelection(tx, requestedArea)
+        : null;
       const [room] = await tx
         .insert(schema.rooms)
         .values({
@@ -148,7 +174,11 @@ export class RoomsRepository {
       await tx.insert(schema.roomConstraints).values({
         roomId: room!.id,
         version: 1,
-        ...input.constraint,
+        ...constraint,
+        administrativeArea,
+        // A canonical area replaces the legacy service-area key; it is never
+        // derived from it, and the two are not kept side by side.
+        ...(administrativeArea ? { areaKey: null } : {}),
         createdByMemberId: member!.id,
       });
       if (input.seedPlaceIds.length > 0) {
@@ -166,6 +196,11 @@ export class RoomsRepository {
       }
       return { room: room!, member: member! };
     });
+  }
+
+  /** The published administrative dataset's combined version, if any. */
+  async publishedAdministrativeDatasetVersion(): Promise<string | null> {
+    return (await activeDataset(this.db))?.combinedDatasetVersion ?? null;
   }
 
   getCurrentConstraint(roomId: string, version: number): Promise<ConstraintRow | undefined> {
@@ -193,6 +228,53 @@ export class RoomsRepository {
     event: DomainEventInput;
   }): Promise<number> {
     return this.db.transaction(async (tx) => {
+      const [room] = await tx
+        .select()
+        .from(schema.rooms)
+        .where(eq(schema.rooms.id, input.roomId))
+        .for('update');
+      if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
+      if (room.constraintVersion !== input.expectedVersion) return -1;
+      assertConstraintsEditable(room.status);
+      const [member] = await tx
+        .select()
+        .from(schema.roomMembers)
+        .where(
+          and(
+            eq(schema.roomMembers.id, input.memberId),
+            eq(schema.roomMembers.roomId, input.roomId),
+            eq(schema.roomMembers.role, 'host'),
+            isNull(schema.roomMembers.removedAt),
+          ),
+        );
+      if (!member) throw AppError.forbidden('HOST_ONLY', 'Only the host can edit constraints');
+      const [previous] = await tx
+        .select()
+        .from(schema.roomConstraints)
+        .where(
+          and(
+            eq(schema.roomConstraints.roomId, input.roomId),
+            eq(schema.roomConstraints.version, input.expectedVersion),
+          ),
+        );
+      // ADM-020 (#567) write semantics, decided here under the room lock:
+      // - omitted: keep the stored area (clients that predate the field send
+      //   budget edits without it, and must not erase it);
+      // - null: clear;
+      // - the same dataset/province/commune as stored: keep the stored snapshot
+      //   untouched, labels included, even when that dataset is no longer
+      //   published — a client echoing RoomSummary.constraints to change the
+      //   budget must neither fail nor silently re-map the area;
+      // - anything else is a new choice, validated against the published dataset.
+      const { administrativeArea: requestedArea, ...constraint } = input.constraint;
+      const storedArea = previous?.administrativeArea ?? null;
+      const administrativeArea =
+        requestedArea === undefined ||
+        (requestedArea && storedArea && sameArea(requestedArea, storedArea))
+          ? storedArea
+          : requestedArea === null
+            ? null
+            : await validateAreaSelection(tx, requestedArea);
       const updated = await tx
         .update(schema.rooms)
         .set({
@@ -212,7 +294,9 @@ export class RoomsRepository {
       await tx.insert(schema.roomConstraints).values({
         roomId: input.roomId,
         version,
-        ...input.constraint,
+        ...constraint,
+        administrativeArea,
+        ...(administrativeArea ? { areaKey: null } : {}),
         createdByMemberId: input.memberId,
       });
       await tx

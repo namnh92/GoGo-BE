@@ -1,3 +1,4 @@
+import type { AdministrativeAreaInput } from '../../administrative/application/area-selection';
 import { matchingReadiness } from '../domain/matching-readiness';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
@@ -28,6 +29,7 @@ import {
 const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
 
 export type ConstraintInput = {
+  administrativeArea?: AdministrativeAreaInput | null | undefined;
   originText?: string | undefined;
   originLat?: number | undefined;
   originLng?: number | undefined;
@@ -44,6 +46,9 @@ export type ConstraintInput = {
 
 function toNewConstraint(input: ConstraintInput): NewConstraint {
   return {
+    ...(input.administrativeArea !== undefined
+      ? { administrativeArea: input.administrativeArea }
+      : {}),
     originText: input.originText ?? null,
     originLat: input.originLat ?? null,
     originLng: input.originLng ?? null,
@@ -187,6 +192,13 @@ export class RoomsService {
     const avatarKeys = await this.repo.avatarKeysByUserId(
       members.flatMap((m) => (m.userId ? [m.userId] : [])),
     );
+    // ADM-020: a stored area names the dataset that produced it. When that is
+    // no longer the published one the client is told to reselect; the saved
+    // labels stay readable and nothing is re-mapped behind the host's back.
+    const storedArea = constraint?.administrativeArea ?? null;
+    const publishedVersion = storedArea
+      ? await this.repo.publishedAdministrativeDatasetVersion()
+      : null;
     // Facts only — audience copy is composed client-side (api-contract rule).
     return {
       id: room.id,
@@ -209,6 +221,19 @@ export class RoomsService {
             currency: constraint.currency,
             originText: constraint.originText ?? undefined,
             areaKey: constraint.areaKey ?? undefined,
+            administrativeArea: storedArea
+              ? {
+                  datasetVersion: storedArea.datasetVersion,
+                  provinceCode: storedArea.provinceCode,
+                  provinceName: storedArea.provinceName,
+                  communeCode: storedArea.communeCode ?? null,
+                  communeName: storedArea.communeName ?? null,
+                  status:
+                    publishedVersion === storedArea.datasetVersion
+                      ? 'current'
+                      : 'needs_reselection',
+                }
+              : null,
             radiusM: constraint.radiusM ?? undefined,
             startAt: constraint.startAt?.toISOString(),
             endAt: constraint.endAt?.toISOString(),

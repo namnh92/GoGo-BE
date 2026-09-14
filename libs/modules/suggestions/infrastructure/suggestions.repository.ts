@@ -1,3 +1,4 @@
+import { activeDataset } from '../../administrative/application/unit-lookup';
 import { preferenceRevision } from '../domain/preference-revision';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, sql } from 'drizzle-orm';
@@ -79,6 +80,7 @@ export class SuggestionsRepository {
           ? { lat: constraint.originLat, lng: constraint.originLng }
           : null,
       radiusM: constraint.radiusM,
+      administrativeArea: constraint.administrativeArea ?? null,
       dietaryKeys: constraint.dietaryKeys,
       accessibilityKeys: constraint.accessibilityKeys,
       preferenceRevision: preferenceRevision(members),
@@ -96,8 +98,41 @@ export class SuggestionsRepository {
     };
   }
 
+  /**
+   * ADM-020 (#567). Place codes mean something only within the dataset that
+   * produced them, so a room area from a dataset that is no longer published
+   * cannot be matched against today's mapping: refuse, and let the host choose
+   * again, instead of returning an empty or confidently wrong pool.
+   */
+  async assertAdministrativeAreaCurrent(snapshot: RoomSnapshot): Promise<void> {
+    const area = snapshot.administrativeArea;
+    if (!area) return;
+    if ((await activeDataset(this.db))?.combinedDatasetVersion !== area.datasetVersion) {
+      throw AppError.conflict(
+        'ADMINISTRATIVE_VERSION_CHANGED',
+        'The room area belongs to an administrative dataset that is no longer published; reselect it',
+      );
+    }
+  }
+
   /** Candidate retrieval — verified published places with aggregated facts. */
   async retrieveCandidates(snapshot: RoomSnapshot, limit = 200): Promise<Candidate[]> {
+    // Every caller (generate, finalize, regenerate, CMS replay) gets the same
+    // area rule; the CMS replay already records a throw as a skipped run.
+    await this.assertAdministrativeAreaCurrent(snapshot);
+    const area = snapshot.administrativeArea;
+    // The area is a hard scope, applied alongside (never instead of) the
+    // origin/radius filter: a place must carry codes from the same dataset, from
+    // a VERIFIED mapping — the same bar publication uses (approval-policy: an
+    // AUTO_MATCHED result "is not an approval"). Unmapped, auto-matched,
+    // under-review, rejected and stale mappings are outside every area rather
+    // than guessed into one.
+    const areaFilter = area
+      ? sql`and p.administrative_mapping_status = 'VERIFIED'
+        and p.administrative_dataset_version = ${area.datasetVersion}
+        and p.province_code = ${area.provinceCode}
+        ${area.communeCode ? sql`and p.commune_code = ${area.communeCode}` : sql``}`
+      : sql``;
     const geoFilter =
       snapshot.origin && snapshot.radiusM
         ? sql`and ST_DWithin(p.geom::geography,
@@ -146,6 +181,7 @@ export class SuggestionsRepository {
           where ps.place_id = p.id and ps.source_status in ('closed', 'temporarily_closed')
         )
         ${geoFilter}
+        ${areaFilter}
       order by ${seedOrder} p.rating desc nulls last, p.rating_count desc
       limit ${limit}
     `);
