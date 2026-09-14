@@ -652,6 +652,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/administrative/locate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The current commune or province containing a position
+         * @description ADM-022 (#569). Point-in-polygon against the boundary release bound to the published dataset. A single containing commune whose unit agrees with its polygon's province is `commune`; a point claimed by one province only (including a shared commune edge inside it) is `province`; anything else is `unknown`, never a guess. The position is not stored, and the answer is `Cache-Control: private, no-store`.
+         */
+        get: operations["locateAdministrativeArea"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/administrative/units/{code}": {
         parameters: {
             query?: never;
@@ -1519,7 +1539,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Saved places/plans (FR-USER-001) */
+        /**
+         * Saved places/plans (FR-USER-001)
+         * @description The whole list, newest first, each with ADM-022 area facts (see SavedItemArea). Grouping and ordering are the client's, over the full list rather than a page.
+         */
         get: operations["listSaved"];
         put?: never;
         post?: never;
@@ -6511,11 +6534,33 @@ export interface components {
         };
         SavedItem: {
             /** @enum {string} */
-            targetType?: "place" | "plan";
+            targetType: "place" | "plan";
             /** Format: uuid */
-            targetId?: string;
+            targetId: string;
             /** Format: date-time */
-            savedAt?: string;
+            savedAt: string;
+            area: components["schemas"]["SavedItemArea"];
+        };
+        /** @description ADM-022 (#569) — facts to group a saved item by, never a composed label. A place is `commune` only through a VERIFIED mapping in the published dataset. A plan is `commune` when every stop is in one commune, `province` when every stop is in one province across communes, `multiple_provinces` when stops span provinces, and `unknown` when any stop has no such mapping (a plan is never placed by its first stop). Labels come from the published dataset. */
+        SavedItemArea: {
+            /** @enum {string} */
+            scope: "commune" | "province" | "multiple_provinces" | "unknown";
+            datasetVersion: string | null;
+            provinceCode: string | null;
+            provinceName: string | null;
+            communeCode: string | null;
+            communeName: string | null;
+        };
+        AdministrativeLocation: {
+            datasetVersion: string;
+            area: {
+                /** @enum {string} */
+                scope: "commune" | "province" | "unknown";
+                provinceCode: string | null;
+                provinceName: string | null;
+                communeCode: string | null;
+                communeName: string | null;
+            };
         };
         DeviceUnsubscribeConfirmation: {
             /** @description True when the named subscription is absent from the caller's user or present and not enabled. False means the provider still has it enabled, and the caller must keep its session. */
@@ -9680,6 +9725,32 @@ export interface operations {
             };
             304: components["responses"]["NotModified"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["AdministrativeUnavailable"];
+        };
+    };
+    locateAdministrativeArea: {
+        parameters: {
+            query: {
+                lat: number;
+                lng: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The containing area, or unknown */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeLocation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            429: components["responses"]["RateLimited"];
             503: components["responses"]["AdministrativeUnavailable"];
         };
     };

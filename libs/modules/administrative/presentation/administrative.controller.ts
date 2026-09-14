@@ -11,6 +11,7 @@ import {
   type UnitDto,
 } from '../application/administrative-query.service';
 import { administrativeEtag, ifNoneMatchSatisfied } from '../application/administrative-etag';
+import { AdministrativeLocateService } from '../application/administrative-locate.service';
 import { NoPublishedDatasetError } from '../application/administrative-dataset.port';
 import type { DatasetSnapshot } from '../domain/snapshot';
 
@@ -73,10 +74,35 @@ const searchQuery = z.object({
   ...pagination,
 });
 const resolveQuery = z.object({ code: CODE, at: AT_DATE.optional() });
+const locateQuery = z.object({
+  lat: z.coerce.number().min(-90).max(90),
+  lng: z.coerce.number().min(-180).max(180),
+});
 
 @Controller('administrative')
 export class AdministrativeController {
-  constructor(private readonly service: AdministrativeQueryService) {}
+  constructor(
+    private readonly service: AdministrativeQueryService,
+    private readonly locator: AdministrativeLocateService,
+  ) {}
+
+  /** The published snapshot, or the operational 503 every endpoint here answers with. */
+  private async activeSnapshot(): Promise<DatasetSnapshot> {
+    try {
+      return await this.service.snapshot();
+    } catch (error) {
+      if (error instanceof NoPublishedDatasetError) {
+        // Not an empty list. An empty list would read as "Vietnam has no
+        // provinces"; this is an operational fault and says so, loudly enough
+        // for the alert in #463 to key on.
+        throw AppError.serviceUnavailable(
+          'ADMINISTRATIVE_DATASET_UNAVAILABLE',
+          'no administrative dataset is published',
+        );
+      }
+      throw error;
+    }
+  }
 
   /**
    * Every handler goes through here, so no endpoint can forget its
@@ -93,21 +119,7 @@ export class AdministrativeController {
     parts: Record<string, string | number | boolean | null | undefined>,
     body: (snapshot: DatasetSnapshot) => T,
   ): Promise<(T & { datasetVersion: string }) | undefined> {
-    let snapshot: DatasetSnapshot;
-    try {
-      snapshot = await this.service.snapshot();
-    } catch (error) {
-      if (error instanceof NoPublishedDatasetError) {
-        // Not an empty list. An empty list would read as "Vietnam has no
-        // provinces"; this is an operational fault and says so, loudly enough
-        // for the alert in #463 to key on.
-        throw AppError.serviceUnavailable(
-          'ADMINISTRATIVE_DATASET_UNAVAILABLE',
-          'no administrative dataset is published',
-        );
-      }
-      throw error;
-    }
+    const snapshot = await this.activeSnapshot();
 
     const etag = administrativeEtag(snapshot.datasetVersion, route, parts);
     void reply.header('ETag', etag);
@@ -204,6 +216,25 @@ export class AdministrativeController {
     return this.answer(reply, ifNoneMatch, 'resolve', { code: q.code, at: q.at ?? null }, (s) =>
       this.service.resolve(s, q.code, q.at ?? null),
     );
+  }
+
+  /**
+   * ADM-022 (#569) — the commune or province containing a position. A position
+   * is personal, so the answer carries no ETag and must not sit in a shared cache.
+   */
+  @Public()
+  @RateLimit({ action: 'administrative.read', limit: 120, windowSeconds: 60, keyBy: 'ip' })
+  @Get('locate')
+  async locate(
+    @Res({ passthrough: true }) reply: FastifyReply,
+    @Query(new ZodValidationPipe(locateQuery)) q: z.infer<typeof locateQuery>,
+  ) {
+    const snapshot = await this.activeSnapshot();
+    void reply.header('Cache-Control', 'private, no-store');
+    return {
+      datasetVersion: snapshot.datasetVersion,
+      area: await this.locator.locate(snapshot, { lat: q.lat, lng: q.lng }),
+    };
   }
 
   /**

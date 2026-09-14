@@ -10,6 +10,7 @@ import { AdministrativeOverrideService } from '../application/administrative-ove
 import { AdministrativePublicationService } from '../application/administrative-publication.service';
 import { AdministrativeResolverService } from '../application/administrative-resolver.service';
 import { AdministrativeQueryService } from '../application/administrative-query.service';
+import { AdministrativeLocateService } from '../application/administrative-locate.service';
 import { AdministrativeValidationService } from '../application/administrative-validation.service';
 import { ADMINISTRATIVE_DATASET } from '../application/administrative-dataset.port';
 import {
@@ -54,6 +55,7 @@ import {
     { provide: ADMINISTRATIVE_REPOSITORY, useClass: DrizzleAdministrativeRepository },
     { provide: ADMINISTRATIVE_DATASET, useClass: InProcessAdministrativeDatasetCache },
     AdministrativeQueryService,
+    AdministrativeLocateService,
     AdministrativeValidationService,
     AdministrativeImportService,
     AdministrativeOverrideService,

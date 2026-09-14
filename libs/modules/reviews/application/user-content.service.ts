@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { writeOutbox } from '../../shared/outbox';
@@ -12,6 +12,16 @@ import type { Actor } from '../../identity/domain/actor';
 import { writeAudit } from '../../shared/audit';
 import { MediaCleanupService } from '../../profile/application/media-cleanup.service';
 import { pushAllowed } from '../../notifications/application/push-preference';
+import { activeDataset } from '../../administrative/application/unit-lookup';
+import {
+  UNKNOWN_AREA,
+  codesToLabel,
+  placeArea,
+  planArea,
+  withLabels,
+  type SavedAreaCodes,
+  type SavedItemArea,
+} from '../domain/saved-area';
 
 /** The kinds the per-kind contract (`NotificationKind`) exposes; campaigns never had a toggle. */
 const LEGACY_PUSH_KINDS = [
@@ -96,11 +106,96 @@ export class UserContentService {
       .from(schema.savedItems)
       .where(eq(schema.savedItems.userId, userId))
       .orderBy(desc(schema.savedItems.createdAt));
+    const areas = await this.savedAreas(
+      rows.filter((r) => r.targetType === 'place').map((r) => r.targetId),
+      rows.filter((r) => r.targetType === 'plan').map((r) => r.targetId),
+    );
     return rows.map((r) => ({
       targetType: r.targetType,
       targetId: r.targetId,
       savedAt: r.createdAt.toISOString(),
+      area: areas.get(`${r.targetType}:${r.targetId}`) ?? UNKNOWN_AREA,
     }));
+  }
+
+  /**
+   * ADM-022 (#569) — area facts for the whole saved list in five queries
+   * whatever its length: the published dataset, plan stops, place mappings,
+   * unit labels. The list is not paginated, so a client groups all of it, not a
+   * page of it. No published dataset means every item is `unknown`, not an error.
+   */
+  private async savedAreas(
+    placeIds: string[],
+    planIds: string[],
+  ): Promise<Map<string, SavedItemArea>> {
+    const result = new Map<string, SavedItemArea>();
+    if (placeIds.length === 0 && planIds.length === 0) return result;
+    const dataset = await activeDataset(this.db);
+    if (!dataset) return result;
+
+    const stops =
+      planIds.length > 0
+        ? await this.db
+            .select({ planId: schema.planStops.planId, placeId: schema.planStops.placeId })
+            .from(schema.planStops)
+            .where(inArray(schema.planStops.planId, planIds))
+        : [];
+    const allPlaceIds = [...new Set([...placeIds, ...stops.map((s) => s.placeId)])];
+    const mappings =
+      allPlaceIds.length > 0
+        ? await this.db
+            .select({
+              id: schema.places.id,
+              provinceCode: schema.places.provinceCode,
+              communeCode: schema.places.communeCode,
+              status: schema.places.administrativeMappingStatus,
+              datasetVersion: schema.places.administrativeDatasetVersion,
+            })
+            .from(schema.places)
+            .where(inArray(schema.places.id, allPlaceIds))
+        : [];
+    const mappingById = new Map(mappings.map((m) => [m.id, m]));
+    const areaOf = (placeId: string) =>
+      placeArea(mappingById.get(placeId), dataset.combinedDatasetVersion);
+
+    const codesByItem = new Map<string, SavedAreaCodes>();
+    for (const id of placeIds) {
+      const codes = areaOf(id);
+      codesByItem.set(`place:${id}`, codes ? { scope: 'commune', ...codes } : { scope: 'unknown' });
+    }
+    const stopsByPlan = new Map<string, string[]>();
+    for (const stop of stops) {
+      stopsByPlan.set(stop.planId, [...(stopsByPlan.get(stop.planId) ?? []), stop.placeId]);
+    }
+    for (const id of planIds) {
+      codesByItem.set(`plan:${id}`, planArea((stopsByPlan.get(id) ?? []).map(areaOf)));
+    }
+
+    const codes = codesToLabel(codesByItem.values());
+    const units =
+      codes.length > 0
+        ? await this.db
+            .select({
+              code: schema.administrativeUnits.code,
+              level: schema.administrativeUnits.level,
+              fullName: schema.administrativeUnits.fullName,
+              parentCode: schema.administrativeUnits.parentCode,
+            })
+            .from(schema.administrativeUnits)
+            .where(
+              and(
+                eq(schema.administrativeUnits.datasetVersionId, dataset.id),
+                inArray(schema.administrativeUnits.code, codes),
+                eq(schema.administrativeUnits.status, 'ACTIVE'),
+                isNull(schema.administrativeUnits.effectiveTo),
+              ),
+            )
+        : [];
+    const unitByKey = new Map(units.map((u) => [`${u.level}:${u.code}`, u]));
+    for (const [key, itemCodes] of codesByItem) {
+      result.set(key, withLabels(itemCodes, dataset.combinedDatasetVersion, unitByKey));
+    }
+    return result;
   }
 
   async save(actor: Actor, targetType: 'place' | 'plan', targetId: string) {
