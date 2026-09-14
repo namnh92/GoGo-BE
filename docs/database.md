@@ -85,7 +85,8 @@ erDiagram
 - `login_attempts` purged after 30 days.
 - `idempotency_keys` purged after `expires_at`.
 - Account deletion: `users.status='deleted'`, PII columns nulled (email,
-  password hash, avatar key, home area, usual budget), the interests row
+  password hash, avatar key, home area, usual budget, date of birth), the
+  interests row
   deleted, the avatar object enqueued for deletion, content pseudonymized;
   export covers all actor-owned rows from an explicit allowlist.
 - `media_uploads` rows still `pending` one day past `expires_at` purged; the

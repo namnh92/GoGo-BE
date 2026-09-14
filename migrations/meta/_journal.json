@@ -442,6 +442,13 @@
       "when": 1790467200000,
       "tag": "0064_notification-master-switch",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1790553600000,
+      "tag": "0065_profile-date-of-birth",
+      "breakpoints": true
     }
   ]
 }

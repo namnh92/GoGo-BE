@@ -4,6 +4,7 @@ import {
   boolean,
   char,
   check,
+  date,
   index,
   jsonb,
   pgEnum,
@@ -60,6 +61,12 @@ export const users = pgTable(
     }>(),
     usualBudgetPerPerson: bigint('usual_budget_per_person', { mode: 'number' }),
     usualBudgetCurrency: char('usual_budget_currency', { length: 3 }).notNull().default('VND'),
+    /**
+     * PROF-BE-013 (#573) — optional, owner-only. A calendar date read and
+     * written as `YYYY-MM-DD` text, never a timestamp. Private to `/me`, the
+     * export and deletion; no summary, audit value, log or event carries it.
+     */
+    dateOfBirth: date('date_of_birth', { mode: 'string' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),

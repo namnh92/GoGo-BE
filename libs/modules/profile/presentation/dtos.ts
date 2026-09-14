@@ -1,5 +1,10 @@
 import { administrativeAreaInput } from '../../administrative/application/area-selection';
 import { z } from 'zod';
+import {
+  isAfterTodayInVietnam,
+  isCalendarDate,
+  todayInVietnam,
+} from '../application/date-of-birth';
 
 /**
  * PATCH /me (ADR-0022). `null` clears an optional field, an omitted field is
@@ -26,6 +31,34 @@ export const profilePatchSchema = z
         currency: z.string().regex(/^[A-Z]{3}$/),
       })
       .strict()
+      .nullable()
+      .optional(),
+    /**
+     * PROF-BE-013 (#573) — `YYYY-MM-DD`, a date that exists, not after today in
+     * Asia/Ho_Chi_Minh. The issue code names the reason; the message never
+     * echoes the value, since a validation error is the one place it could.
+     */
+    dateOfBirth: z
+      .string()
+      .superRefine((value, ctx) => {
+        if (!isCalendarDate(value)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.invalid_date,
+            message: 'must be a real calendar date as YYYY-MM-DD',
+          });
+          return;
+        }
+        const now = new Date();
+        if (isAfterTodayInVietnam(value, now)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.too_big,
+            type: 'date',
+            maximum: Date.parse(`${todayInVietnam(now)}T00:00:00Z`),
+            inclusive: true,
+            message: 'cannot be after today in Asia/Ho_Chi_Minh',
+          });
+        }
+      })
       .nullable()
       .optional(),
   })

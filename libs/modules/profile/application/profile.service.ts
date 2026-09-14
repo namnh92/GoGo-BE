@@ -40,6 +40,8 @@ export type UserProfile = {
   interests: ProfileInterests;
   /** Integer minor units, per person. A create-room default, never a constraint. */
   usualBudget: { perPerson: number; currency: string } | null;
+  /** PROF-BE-013 — calendar date `YYYY-MM-DD`, owner-only, never a timestamp. */
+  dateOfBirth: string | null;
   capabilities: { avatarUpload: 'available' | 'unavailable' };
 };
 
@@ -54,6 +56,8 @@ export type ProfilePatch = {
   homeAdministrativeArea?: AdministrativeAreaInput | null | undefined;
   interests?: ProfileInterests | null | undefined;
   usualBudget?: { perPerson: number; currency: string } | null | undefined;
+  /** Already a real, non-future calendar date: the DTO refuses anything else. */
+  dateOfBirth?: string | null | undefined;
 };
 
 function requireUser(actor: Actor): string {
@@ -150,6 +154,7 @@ export class ProfileService {
         set.usualBudgetPerPerson = patch.usualBudget?.perPerson ?? null;
         set.usualBudgetCurrency = patch.usualBudget?.currency ?? 'VND';
       }
+      if (patch.dateOfBirth !== undefined) set.dateOfBirth = patch.dateOfBirth;
       const updated = await tx
         .update(schema.users)
         .set(set)
@@ -237,6 +242,7 @@ export class ProfileService {
         user.usualBudgetPerPerson === null
           ? null
           : { perPerson: user.usualBudgetPerPerson, currency: user.usualBudgetCurrency },
+      dateOfBirth: user.dateOfBirth ?? null,
       capabilities: { avatarUpload: this.avatarConfigured ? 'available' : 'unavailable' },
     };
   }

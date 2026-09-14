@@ -29,7 +29,8 @@ Deletion is a **soft delete with a named retention list**. It:
   no credential can address the account again;
 - revokes every session and removes device tokens and push subscriptions;
 - clears personal profile data: display name (replaced with a fixed string),
-  avatar key, home area, usual budget, and the interests row;
+  avatar key, home area, usual budget, date of birth (PROF-BE-013), and the
+  interests row;
 - deletes the processed avatar from the public bucket and purges its URL;
 - deletes personal records that are not contributions: saved items,
   notifications, notification preferences;
