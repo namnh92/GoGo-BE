@@ -87,16 +87,19 @@ beforeAll(async () => {
   pool.on('error', () => undefined);
   db = drizzle(pool, { schema });
 
-  // Everything before 0064, filtered by tag so another migration landing in
-  // between does not change what "before" means.
+  // Everything before 0064 in journal order. Dropping only 0064 would apply
+  // later migrations (0065, 0066, ...) first, and Drizzle would then skip 0064:
+  // it applies only journal entries newer than the last one applied.
   const migrations = path.resolve(__dirname, '../../../migrations');
   snapshot = await mkdtemp(path.join(tmpdir(), 'gogo-before-0064-'));
   await cp(migrations, snapshot, { recursive: true });
   const journalPath = path.join(snapshot, 'meta/_journal.json');
   const journal = JSON.parse(await readFile(journalPath, 'utf8'));
-  journal.entries = journal.entries.filter(
-    (entry: { tag: string }) => entry.tag !== '0064_notification-master-switch',
+  const at = journal.entries.findIndex(
+    (entry: { tag: string }) => entry.tag === '0064_notification-master-switch',
   );
+  if (at < 0) throw new Error('0064_notification-master-switch is missing from the journal');
+  journal.entries = journal.entries.slice(0, at);
   await writeFile(journalPath, JSON.stringify(journal));
   await migrate(db, { migrationsFolder: snapshot });
 
