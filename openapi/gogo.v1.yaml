@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.36
+  version: 1.0.0-alpha.37
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -371,7 +371,8 @@ paths:
       summary: Current actor — the private profile for a user, session facts for a guest
       description: >
         ADR-0022. A user receives the whole profile, including the fields
-        nobody else ever sees (email, home area, interests, usual budget), and
+        nobody else ever sees (email, home area, interests, usual budget, date
+        of birth), and
         `capabilities.avatarUpload`, which says before a picker opens whether
         this environment can take an avatar at all. A guest receives its
         session facts: `roomId`, `displayName`, `expiresAt`.
@@ -392,6 +393,12 @@ paths:
         and only `mood` is accepted (ADR-0022); an unknown key or an
         unsupported kind is `INVALID_TAXONOMY_KEYS`. `usualBudget.perPerson` is
         integer minor units, a create-room default, never a room constraint.
+        `dateOfBirth` (PROF-BE-013) is a calendar date `YYYY-MM-DD`: a date
+        that does not exist is `VALIDATION_FAILED` with field error code
+        `invalid_date`, and a date after today in `Asia/Ho_Chi_Minh` is
+        `VALIDATION_FAILED` with field error code `too_big`; today itself is
+        accepted. No minimum age applies. It is returned only on the owner's
+        `/me` and export, never in a member or public summary.
         Users only: a guest gets 403.
       requestBody:
         content:
@@ -419,7 +426,7 @@ paths:
         Removed: login (status `deleted`, email and password hash nulled, so no
         credential addresses the account again), every session, device tokens
         and push subscriptions, the profile (display name replaced, avatar,
-        home area, usual budget, interests), the processed avatar in the public
+        home area, usual budget, interests, date of birth), the processed avatar in the public
         bucket and its edge cache entry, saved items, notifications and
         notification preferences. The name on room membership rows is replaced.
 
@@ -2934,9 +2941,10 @@ paths:
       description: >
         Everything the account owns, as JSON, from an explicit allowlist:
         profile (display name, email, locale, avatar URL, home area, interests,
-        usual budget — ADR-0022), memberships, preferences, votes, saved
-        items, reviews, and the push switch (`notificationSettings`, ADR-0025).
-        Never a credential, a session, or an upload key.
+        usual budget — ADR-0022, date of birth — PROF-BE-013), memberships,
+        preferences, votes, saved items, reviews, and the push switch
+        (`notificationSettings`, ADR-0025). Never a credential, a session, or
+        an upload key.
         Audit-logged and recorded in the privacy ledger.
       responses:
         '200': { description: JSON export; audit-logged }
@@ -10256,6 +10264,13 @@ components:
         usualBudget:
           nullable: true
           allOf: [{ $ref: '#/components/schemas/UsualBudget' }]
+        dateOfBirth:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            PROF-BE-013. Calendar date `YYYY-MM-DD`, never shifted by a time
+            zone; null when unset. Owner-only; a guest carries no such field.
         capabilities:
           type: object
           required: [avatarUpload]
@@ -10276,6 +10291,14 @@ components:
           description: Canonical area; null clears. Cannot be sent with legacy homeAreaKey. A successful write clears the legacy field.
           allOf: [{ $ref: '#/components/schemas/AdministrativeAreaInput' }]
         homeAreaKey: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        dateOfBirth:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            PROF-BE-013. Calendar date `YYYY-MM-DD`; null clears, omitted keeps.
+            It must exist (`2027-02-29` is `invalid_date`) and must not be after
+            today in Asia/Ho_Chi_Minh (`too_big`). No minimum age.
         interests:
           nullable: true
           allOf: [{ $ref: '#/components/schemas/ProfileInterests' }]

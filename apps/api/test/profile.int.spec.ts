@@ -153,6 +153,7 @@ describe('profile read and write (PROF-BE-002)', () => {
       homeAdministrativeArea: null,
       interests: { mood: [] },
       usualBudget: null,
+      dateOfBirth: null,
       // The test fake stands in for storage, so uploads are available here.
       capabilities: { avatarUpload: 'available' },
     });
@@ -919,6 +920,7 @@ describe('export and delete cover the profile (PROF-BE-007)', () => {
       homeAdministrativeArea: null,
       interests: { mood: ['lively'] },
       usualBudget: { perPerson: 250_000, currency: 'VND' },
+      dateOfBirth: null,
     });
 
     // No key anywhere in the document may name a secret, and no value may
@@ -1290,5 +1292,190 @@ describe('ADM-019 canonical profile area', () => {
     expect(deleted.statusCode).toBeLessThan(300);
     const [row] = await db.select().from(schema.users).where(eq(schema.users.id, user.userId));
     expect(row!.homeAdministrativeArea).toBeNull();
+  });
+});
+
+/**
+ * PROF-BE-013 (#573) — an optional date of birth: a calendar date that exists,
+ * not after today in Asia/Ho_Chi_Minh, private to its owner, exported, erased.
+ */
+describe('date of birth (PROF-BE-013)', () => {
+  // An oracle independent of the server's helper: Hanoi's calendar date now.
+  const hanoiToday = () => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const get = (type: string) => parts.find((p) => p.type === type)!.value;
+    return `${get('year')}-${get('month')}-${get('day')}`;
+  };
+  const addDays = (iso: string, days: number) => {
+    const [y, m, d] = iso.split('-').map(Number) as [number, number, number];
+    return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+  };
+
+  it('an account that never set one reads null; the column is nullable with no default', async () => {
+    const { token, userId } = await register('dob-unset@gogo.id.vn');
+    expect((await getMe(token)).json().dateOfBirth).toBeNull();
+    const [row] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+    expect(row!.dateOfBirth).toBeNull();
+    // Additive with no default and no backfill, so a pre-migration row reads null too.
+    const { rows } = await pool.query(
+      `select data_type, is_nullable, column_default from information_schema.columns
+        where table_name = 'users' and column_name = 'date_of_birth'`,
+    );
+    expect(rows).toEqual([{ data_type: 'date', is_nullable: 'YES', column_default: null }]);
+  });
+
+  it('sets, reads back unshifted, keeps when omitted, and clears with null', async () => {
+    const { token, userId } = await register('dob-set@gogo.id.vn');
+    const set = await patchMe(token, { dateOfBirth: '1990-05-17' });
+    expect(set.statusCode).toBe(200);
+    expect(set.json().dateOfBirth).toBe('1990-05-17');
+    expect((await getMe(token)).json().dateOfBirth).toBe('1990-05-17');
+    const stored = await pool.query(`select date_of_birth::text as dob from users where id = $1`, [
+      userId,
+    ]);
+    expect(stored.rows[0].dob).toBe('1990-05-17');
+
+    const renamed = await patchMe(token, { displayName: 'Vẫn Giữ Ngày Sinh' });
+    expect(renamed.json().dateOfBirth).toBe('1990-05-17');
+
+    const cleared = await patchMe(token, { dateOfBirth: null });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().dateOfBirth).toBeNull();
+    expect((await getMe(token)).json().dateOfBirth).toBeNull();
+  });
+
+  it('accepts a real leap day and refuses a date that does not exist or is malformed', async () => {
+    const { token } = await register('dob-leap@gogo.id.vn');
+    const leap = await patchMe(token, { dateOfBirth: '2024-02-29' });
+    expect(leap.statusCode).toBe(200);
+    expect(leap.json().dateOfBirth).toBe('2024-02-29');
+
+    const invalid: unknown[] = [
+      '2027-02-29',
+      '2026-13-01',
+      '1990-04-31',
+      '0000-01-01',
+      '1990-5-17',
+      '17/05/1990',
+      '1990-05-17T00:00:00Z',
+      '',
+      19900517,
+      true,
+    ];
+    for (const dateOfBirth of invalid) {
+      const res = await patchMe(token, { dateOfBirth });
+      expect(res.statusCode, JSON.stringify(dateOfBirth)).toBe(400);
+      expect(res.json().code).toBe('VALIDATION_FAILED');
+      expect(res.json().field_errors[0].field).toBe('dateOfBirth');
+      if (typeof dateOfBirth === 'string') {
+        expect(res.json().field_errors[0].code).toBe('invalid_date');
+        // The error names the rule, never echoes the value.
+        if (dateOfBirth) expect(JSON.stringify(res.json())).not.toContain(dateOfBirth);
+      }
+    }
+    // Nothing refused above touched the stored value.
+    expect((await getMe(token)).json().dateOfBirth).toBe('2024-02-29');
+  });
+
+  it('refuses a date after today in Asia/Ho_Chi_Minh and accepts today there', async () => {
+    const { token } = await register('dob-future@gogo.id.vn');
+    const today = hanoiToday();
+    for (const dateOfBirth of [addDays(today, 1), '2999-01-01']) {
+      const res = await patchMe(token, { dateOfBirth });
+      expect(res.statusCode, dateOfBirth).toBe(400);
+      expect(res.json().field_errors[0]).toMatchObject({ field: 'dateOfBirth', code: 'too_big' });
+    }
+    expect((await getMe(token)).json().dateOfBirth).toBeNull();
+    const ok = await patchMe(token, { dateOfBirth: today });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().dateOfBirth).toBe(today);
+  });
+
+  it('is the owner’s alone: guests cannot set it, co-members never see it, audit names the field only', async () => {
+    const join = await api().inject({
+      method: 'POST',
+      url: '/v1/sessions/guest',
+      remoteAddress: ip(),
+      payload: { roomCode, displayName: 'Khách Ngày Sinh' },
+    });
+    expect(join.statusCode).toBe(201);
+    const guestToken = join.json().accessToken as string;
+    const guestPatch = await patchMe(guestToken, { dateOfBirth: '1990-05-17' });
+    expect(guestPatch.statusCode).toBe(403);
+    expect(guestPatch.json().code).toBe('USER_ONLY');
+    expect((await getMe(guestToken)).json()).not.toHaveProperty('dateOfBirth');
+
+    const { token: hostToken, userId: hostId } = await register('dob-host@gogo.id.vn');
+    const { token: memberToken, userId: memberId } = await register('dob-member@gogo.id.vn');
+    expect((await patchMe(memberToken, { dateOfBirth: '1985-11-03' })).statusCode).toBe(200);
+    const [room] = await db
+      .insert(schema.rooms)
+      .values({
+        code: 'DOBROOM00001',
+        type: 'group',
+        status: 'collecting',
+        decisionMode: 'vote',
+        hostUserId: hostId,
+        participantCount: 3,
+      })
+      .returning();
+    await db.insert(schema.roomMembers).values([
+      { roomId: room!.id, userId: hostId, role: 'host', displayName: 'dob-host' },
+      { roomId: room!.id, userId: memberId, role: 'member', displayName: 'dob-member' },
+    ]);
+    for (const url of [`/v1/rooms/${room!.id}/members`, `/v1/rooms/${room!.id}`]) {
+      const res = await api().inject({
+        method: 'GET',
+        url,
+        remoteAddress: ip(),
+        headers: auth(hostToken),
+      });
+      expect(res.statusCode, url).toBe(200);
+      expect(res.body, url).not.toContain('1985-11-03');
+      expect(res.body, url).not.toContain('dateOfBirth');
+    }
+
+    const [audit] = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(
+        and(
+          eq(schema.auditLogs.resourceId, memberId),
+          eq(schema.auditLogs.action, 'user.profile_updated'),
+        ),
+      )
+      .orderBy(desc(schema.auditLogs.createdAt))
+      .limit(1);
+    const diff = JSON.stringify(audit?.diff);
+    expect(diff).toContain('dateOfBirth');
+    expect(diff).not.toContain('1985');
+  });
+
+  it('is in the authenticated export and erased on account deletion', async () => {
+    const { token, userId } = await register('dob-private@gogo.id.vn');
+    await patchMe(token, { dateOfBirth: '1979-01-31' });
+    const exported = await api().inject({
+      method: 'GET',
+      url: '/v1/me/export',
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json().profile.dateOfBirth).toBe('1979-01-31');
+
+    const deleted = await api().inject({
+      method: 'DELETE',
+      url: '/v1/me',
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(deleted.statusCode).toBeLessThan(300);
+    const [row] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+    expect(row).toMatchObject({ status: 'deleted', dateOfBirth: null });
   });
 });

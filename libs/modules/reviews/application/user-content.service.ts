@@ -411,6 +411,7 @@ export class UserContentService {
           user?.usualBudgetPerPerson === null || user?.usualBudgetPerPerson === undefined
             ? null
             : { perPerson: user.usualBudgetPerPerson, currency: user.usualBudgetCurrency },
+        dateOfBirth: user?.dateOfBirth ?? null,
       },
       memberships: memberships.map((m) => ({
         roomId: m.roomId,
@@ -475,6 +476,7 @@ export class UserContentService {
           homeAreaKey: null,
           homeAdministrativeArea: null,
           usualBudgetPerPerson: null,
+          dateOfBirth: null,
           deletedAt: sql`now()`,
           updatedAt: sql`now()`,
         })
