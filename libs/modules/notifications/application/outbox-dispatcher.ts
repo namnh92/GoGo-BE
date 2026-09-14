@@ -33,10 +33,22 @@ export const RETRY_BACKOFF_SECONDS = (attempts: number): number =>
 export const MAX_DELIVERY_ATTEMPTS = 6;
 
 /**
+ * #584 — the inbox dedupe key names the recipient as well as the event. The
+ * unique index on `notifications.dedupe_key` is global (0026, shared with
+ * campaigns), so one key for every recipient let only the first row in.
+ *
+ * One recipient per event still carries the bare event id, the key the previous
+ * release wrote (see `fanOut`). Everyone else carries this one.
+ */
+export const outboxDedupeKey = (eventId: string, userId: string): string =>
+  `outbox:${eventId}:${userId}`;
+
+/**
  * Outbox consumer: at-least-once, so fan-out has to be repeatable rather than
- * merely rare. Every notification carries the event id as a dedupe key, which
- * makes a redelivery a no-op instead of a duplicate in someone's inbox, and
- * every push carries it as the provider's idempotency key for the same reason.
+ * merely rare. Every notification carries the event and its recipient as a
+ * dedupe key, which makes a redelivery a no-op instead of a duplicate in
+ * someone's inbox, and every push carries the event id as the provider's
+ * idempotency key for the same reason.
  *
  * Plain class — the worker process wires it without Nest.
  */
@@ -139,14 +151,51 @@ export class OutboxDispatcher {
       prefs.filter((p) => p.channel === 'push' && !p.enabled).map((p) => p.userId),
     );
 
+    // #584 — one inbox row per recipient, whichever release writes it.
+    //
+    // The previous release wrote every recipient under the bare event id, so
+    // only its first insert landed. It can still run this event: after a
+    // rollback, or when a worker it lost its lease to is still finishing. So one
+    // recipient keeps the bare event id, written first. Once that row exists,
+    // every insert the previous release makes for this event conflicts on the
+    // global index and writes nothing, and whoever owns the row — this release's
+    // pick or the previous release's first recipient — is that person's row.
+    // Everyone else gets a key of their own.
+    const payload = { eventType: event.eventType, roomId, resourceId: event.resourceId };
+    const existing = await this.db
+      .select({ userId: schema.notifications.userId })
+      .from(schema.notifications)
+      .where(
+        inArray(schema.notifications.dedupeKey, [
+          event.id,
+          ...userIds.map((userId) => outboxDedupeKey(event.id, userId)),
+        ]),
+      );
+    const withRow = new Set(existing.map((row) => row.userId));
+    // Never someone who already has a row: the bare key must not become a
+    // second row for them.
+    const legacyCandidate = userIds.find((userId) => !withRow.has(userId));
+    if (legacyCandidate) {
+      await this.db
+        .insert(schema.notifications)
+        .values({ userId: legacyCandidate, kind: mapping.kind, payload, dedupeKey: event.id })
+        .onConflictDoNothing();
+    }
+    const [legacyOwner] = await this.db
+      .select({ userId: schema.notifications.userId })
+      .from(schema.notifications)
+      .where(eq(schema.notifications.dedupeKey, event.id))
+      .limit(1);
+
     for (const userId of userIds) {
+      if (userId === legacyOwner?.userId) continue;
       await this.db
         .insert(schema.notifications)
         .values({
           userId,
           kind: mapping.kind,
-          payload: { eventType: event.eventType, roomId, resourceId: event.resourceId },
-          dedupeKey: event.id,
+          payload,
+          dedupeKey: outboxDedupeKey(event.id, userId),
         })
         // Redelivery must not put the same notification in an inbox twice.
         .onConflictDoNothing();

@@ -656,7 +656,120 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
       .from(schema.notifications)
       .where(eq(schema.notifications.userId, userId));
     expect(notifications).toHaveLength(1);
+    // A sole recipient holds the bare event id: the key the previous release
+    // wrote, kept so that release cannot add a second row after a rollback.
     expect(notifications[0]!.dedupeKey).toBe(event.id);
+  });
+
+  /**
+   * #584 — one event, several recipients. The inbox rows used to share the
+   * event id as their dedupe key, and the global `notifications_dedupe_unique`
+   * index (0026) let only the first of them in.
+   */
+  async function roomWithMembers(prefix: string, members: number) {
+    const host = await roomWithHost(`${prefix}-host@gogo.id.vn`);
+    const userIds = [host.userId];
+    for (let i = 0; i < members; i++) {
+      const { userId } = await register(`${prefix}-m${i}@gogo.id.vn`);
+      await db.insert(schema.roomMembers).values({
+        roomId: host.roomId,
+        userId,
+        role: 'member',
+        displayName: `Member ${i}`,
+      });
+      userIds.push(userId);
+    }
+    return { roomId: host.roomId, userIds };
+  }
+
+  async function inboxCounts(userIds: string[], resourceId: string) {
+    const rows = await db
+      .select({ userId: schema.notifications.userId })
+      .from(schema.notifications)
+      .where(sql`${schema.notifications.payload}->>'resourceId' = ${resourceId}`);
+    return userIds.map((id) => rows.filter((row) => row.userId === id).length);
+  }
+
+  it('every member of a members event gets exactly one inbox row (#584)', async () => {
+    const { roomId, userIds } = await roomWithMembers('outbox-fanout', 2);
+    await queueEvent(roomId);
+    const push = new FakePush();
+    await new OutboxDispatcher(db as never, push).dispatchBatch();
+
+    expect(await inboxCounts(userIds, roomId)).toEqual([1, 1, 1]);
+    // Still one provider call for the whole event, addressed to all three.
+    expect(push.sent).toHaveLength(1);
+    expect([...push.sent[0]!.userIds].sort()).toEqual([...userIds].sort());
+  });
+
+  it('a redelivery after a complete fan-out adds no row for anyone (#584)', async () => {
+    const { roomId, userIds } = await roomWithMembers('outbox-refan', 2);
+    const event = await queueEvent(roomId);
+    const dispatcher = new OutboxDispatcher(db as never, new FakePush());
+    await dispatcher.dispatchBatch();
+    await db
+      .update(schema.outboxEvents)
+      .set({ publishedAt: null })
+      .where(eq(schema.outboxEvents.id, event.id));
+    await dispatcher.dispatchBatch();
+
+    expect(await inboxCounts(userIds, roomId)).toEqual([1, 1, 1]);
+  });
+
+  it('a fan-out that crashed part-way is completed by the retry, one row each (#584)', async () => {
+    const { roomId, userIds } = await roomWithMembers('outbox-partial', 2);
+    const event = await queueEvent(roomId);
+    // The first inbox write lands, the second fails: a worker dying mid-loop.
+    let inserts = 0;
+    const flaky = new Proxy(db as object, {
+      get(target, prop, receiver) {
+        if (prop === 'insert') {
+          return (...args: unknown[]) => {
+            inserts += 1;
+            if (inserts > 1) throw new Error('connection lost');
+            return (db.insert as (...a: unknown[]) => unknown)(...args);
+          };
+        }
+        return Reflect.get(target, prop, receiver) as unknown;
+      },
+    });
+    await new OutboxDispatcher(flaky as never, new FakePush()).dispatchBatch();
+    expect((await inboxCounts(userIds, roomId)).reduce((a, b) => a + b, 0)).toBe(1);
+
+    await db
+      .update(schema.outboxEvents)
+      .set({ nextAttemptAt: null })
+      .where(eq(schema.outboxEvents.id, event.id));
+    await new OutboxDispatcher(db as never, new FakePush()).dispatchBatch();
+
+    expect(await inboxCounts(userIds, roomId)).toEqual([1, 1, 1]);
+  });
+
+  it('an event retried across the deploy keeps the row the old key wrote, adding none (#584)', async () => {
+    const { roomId, userIds } = await roomWithMembers('outbox-legacy', 2);
+    const event = await queueEvent(roomId);
+    // What the previous release left behind: the first recipient's row keyed by
+    // the bare event id, the others missing.
+    await db.insert(schema.notifications).values({
+      userId: userIds[0]!,
+      kind: 'plan_ready',
+      payload: { eventType: 'plan.published', roomId, resourceId: roomId },
+      dedupeKey: event.id,
+    });
+    await new OutboxDispatcher(db as never, new FakePush()).dispatchBatch();
+
+    expect(await inboxCounts(userIds, roomId)).toEqual([1, 1, 1]);
+  });
+
+  it('two dispatchers racing on one event still write one row per member (#584)', async () => {
+    const { roomId, userIds } = await roomWithMembers('outbox-race', 3);
+    await queueEvent(roomId);
+    await Promise.all([
+      new OutboxDispatcher(db as never, new FakePush()).dispatchBatch(),
+      new OutboxDispatcher(db as never, new FakePush()).dispatchBatch(),
+    ]);
+
+    expect(await inboxCounts(userIds, roomId)).toEqual([1, 1, 1, 1]);
   });
 
   it('backs off instead of retrying a broken event every tick', async () => {
