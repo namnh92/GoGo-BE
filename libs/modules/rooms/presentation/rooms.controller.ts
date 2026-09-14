@@ -11,6 +11,7 @@ import {
   createRoomSchema,
   guestJoinSchema,
   joinRoomSchema,
+  renameRoomSchema,
   seedPlacesSchema,
   transitionSchema,
   updateConstraintsSchema,
@@ -19,6 +20,7 @@ import {
   type CreateRoomDto,
   type GuestJoinDto,
   type JoinRoomDto,
+  type RenameRoomDto,
   type SeedPlacesDto,
   type TransitionDto,
   type UpdateConstraintsDto,
@@ -116,6 +118,15 @@ export class RoomsController {
       body.status as RoomStatus,
       body.allowIncompletePreferences,
     );
+  }
+
+  @Patch(':id/title')
+  rename(
+    @CurrentActor() actor: Actor,
+    @Param('id', UuidPipe) id: string,
+    @Body(new ZodValidationPipe(renameRoomSchema)) body: RenameRoomDto,
+  ) {
+    return this.rooms.renameRoom(actor, id, body.title);
   }
 
   @Get(':id/members')
