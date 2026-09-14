@@ -84,21 +84,22 @@ Codes worth explicit UI: `INVALID_CREDENTIALS`, `SESSION_REVOKED`,
 
 ## 7. Flow cheat-sheet
 
-| Screen       | Calls                                                                                          |
-| ------------ | ---------------------------------------------------------------------------------------------- |
-| Create room  | `POST /rooms` → `PATCH /rooms/{id}/status` `collecting`                                        |
-| Invite sheet | `POST /rooms/{id}/invites` → share `code` (returned once — never re-fetchable)                 |
-| Guest join   | `POST /rooms/join/guest` `{ inviteCode, displayName }`                                         |
-| Preferences  | `GET/PUT /rooms/{id}/preferences/me` (autosave w/ `expectedVersion`) → `POST …/complete`       |
-| Lobby        | `GET /rooms/{id}/members` (progress only — never other members' selections)                    |
-| Search       | `GET /places/search` (q, geo, `openAt`, `categories`, price/person, `suitedFor`, cursor)       |
-| Place detail | `GET /places/{id}`                                                                             |
-| Add by link  | `POST /places/resolve-google-maps-link` → preview → `POST /place-submissions`                  |
-| Matching     | `POST /rooms/{id}/suggestions` → `GET …/suggestions/current`                                   |
-| Vote         | `PUT /rooms/{id}/votes/{placeId}` → host `POST …/votes/finalize`                               |
-| Plan         | `GET /rooms/{id}/plans/current`, `PATCH /plans/{id}`, `POST /plans/{id}/regenerate`, lock stop |
-| Active date  | `PATCH /rooms/{id}/status` `active` → `POST /plans/{id}/stops/{stopId}/complete` → `…/checkin` |
-| Profile      | `GET/PATCH /me`, `/me/saved`, `/me/reviews`, `/me/notifications`, `PUT /me/device-tokens`      |
+| Screen       | Calls                                                                                           |
+| ------------ | ----------------------------------------------------------------------------------------------- |
+| Create room  | `POST /rooms` → `PATCH /rooms/{id}/status` `collecting`                                         |
+| Invite sheet | `POST /rooms/{id}/invites` → share `code` (returned once — never re-fetchable)                  |
+| Guest join   | `POST /rooms/join/guest` `{ inviteCode, displayName }`                                          |
+| Preferences  | `GET/PUT /rooms/{id}/preferences/me` (autosave w/ `expectedVersion`) → `POST …/complete`        |
+| Lobby        | `GET /rooms/{id}/members` (progress only — never other members' selections)                     |
+| Search       | `GET /places/search` (q, geo, `openAt`, `categories`, price/person, `suitedFor`, cursor)        |
+| Place detail | `GET /places/{id}`                                                                              |
+| Reviews      | `GET /places/{id}/reviews` — latest 3 published GoGo reviews, never merged with Google's rating |
+| Add by link  | `POST /places/resolve-google-maps-link` → preview → `POST /place-submissions`                   |
+| Matching     | `POST /rooms/{id}/suggestions` → `GET …/suggestions/current`                                    |
+| Vote         | `PUT /rooms/{id}/votes/{placeId}` → host `POST …/votes/finalize`                                |
+| Plan         | `GET /rooms/{id}/plans/current`, `PATCH /plans/{id}`, `POST /plans/{id}/regenerate`, lock stop  |
+| Active date  | `PATCH /rooms/{id}/status` `active` → `POST /plans/{id}/stops/{stopId}/complete` → `…/checkin`  |
+| Profile      | `GET/PATCH /me`, `/me/saved`, `/me/reviews`, `/me/notifications`, `PUT /me/device-tokens`       |
 
 Directions: build the universal URL client-side —
 `https://www.google.com/maps/dir/?api=1&destination=<lat,lng|address>`. No

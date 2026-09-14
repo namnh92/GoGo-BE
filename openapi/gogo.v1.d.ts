@@ -1275,6 +1275,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/places/{id}/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Latest published GoGo reviews of a place (at most three)
+         * @description BE-BFF-018. GoGo community reviews only, never Google's: the provider rating stays on `PlaceDetail.rating`/`ratingCount` with its attribution and is never merged with these. Only reviews a moderator published are listed; `pending`, `rejected`, `removed` and emergency-`hidden` reviews never appear. Ordered newest first by `createdAt`, ties broken by `id` descending, so repeated reads agree. Answers for the same places `getPlaceDetail` does (404 otherwise) and is served `Cache-Control: no-store`, so a takedown holds on the next read.
+         */
+        get: operations["listPlaceReviews"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/rooms/{roomId}/suggestions": {
         parameters: {
             query?: never;
@@ -7368,6 +7388,31 @@ export interface components {
                 };
             }[];
         };
+        PlaceReviewPreview: {
+            /**
+             * @description Always `gogo`. These are GoGo community reviews; they never share a number with a provider rating.
+             * @enum {string}
+             */
+            source: "gogo";
+            reviews: components["schemas"]["PublicPlaceReview"][];
+        };
+        /** @description A published review as anyone may read it. Carries no user id, email or avatar. */
+        PublicPlaceReview: {
+            /** Format: uuid */
+            id: string;
+            rating: number;
+            /** @description Omitted when the review has no text. */
+            text?: string;
+            /**
+             * Format: date-time
+             * @description When the review was written. An edit keeps it.
+             */
+            createdAt: string;
+            author: {
+                /** @description The name the author shows other people; `null` once the account is deleted (ADR-0023). Clients render their own label for it. */
+                displayName: string | null;
+            };
+        };
         PlacePhoto: {
             /** Format: uuid */
             id: string;
@@ -10796,6 +10841,30 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    listPlaceReviews: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Up to three reviews; an empty list when none is published */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaceReviewPreview"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
         };
     };
     generateSuggestions: {
