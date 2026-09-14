@@ -33,10 +33,19 @@ export const RETRY_BACKOFF_SECONDS = (attempts: number): number =>
 export const MAX_DELIVERY_ATTEMPTS = 6;
 
 /**
+ * #584 — the inbox dedupe key names the recipient as well as the event. The
+ * unique index on `notifications.dedupe_key` is global (0026, shared with
+ * campaigns), so one key for every recipient let only the first row in.
+ */
+export const outboxDedupeKey = (eventId: string, userId: string): string =>
+  `outbox:${eventId}:${userId}`;
+
+/**
  * Outbox consumer: at-least-once, so fan-out has to be repeatable rather than
- * merely rare. Every notification carries the event id as a dedupe key, which
- * makes a redelivery a no-op instead of a duplicate in someone's inbox, and
- * every push carries it as the provider's idempotency key for the same reason.
+ * merely rare. Every notification carries the event and its recipient as a
+ * dedupe key, which makes a redelivery a no-op instead of a duplicate in
+ * someone's inbox, and every push carries the event id as the provider's
+ * idempotency key for the same reason.
  *
  * Plain class — the worker process wires it without Nest.
  */
@@ -139,14 +148,24 @@ export class OutboxDispatcher {
       prefs.filter((p) => p.channel === 'push' && !p.enabled).map((p) => p.userId),
     );
 
+    // Rows written before #584 carry the bare event id and belong to one
+    // recipient. A retry across the deploy must not give that person a second
+    // row under the new key.
+    const legacyRows = await this.db
+      .select({ userId: schema.notifications.userId })
+      .from(schema.notifications)
+      .where(eq(schema.notifications.dedupeKey, event.id));
+    const alreadyInInbox = new Set(legacyRows.map((row) => row.userId));
+
     for (const userId of userIds) {
+      if (alreadyInInbox.has(userId)) continue;
       await this.db
         .insert(schema.notifications)
         .values({
           userId,
           kind: mapping.kind,
           payload: { eventType: event.eventType, roomId, resourceId: event.resourceId },
-          dedupeKey: event.id,
+          dedupeKey: outboxDedupeKey(event.id, userId),
         })
         // Redelivery must not put the same notification in an inbox twice.
         .onConflictDoNothing();
