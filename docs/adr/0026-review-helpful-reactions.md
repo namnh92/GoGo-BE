@@ -1,6 +1,6 @@
 # ADR-0026: One "helpful" reaction on published reviews, and a helpful-first preview
 
-- **Status:** proposed — every decision below is a PROPOSAL awaiting product confirmation
+- **Status:** accepted — the product owner approved the reaction policy on 2026-09-14 (see _Owner approval_)
 - **Date:** 2026-09-14
 - **Deciders:** product owner (policy), backend (contract, migration)
 
@@ -15,7 +15,7 @@ Nothing in the product documents settles them. `GOGO_SRS.md` defines reviews
 (FR-PLAN-007/008, FR-USER-002) and their moderation (FR-CMS-005), and no
 reaction, "helpful", "hữu ích" or like of any kind. The Mobile consumer is
 GoGo-MobileApp#219 (APP-060). This record therefore proposes a policy; nothing
-here was previously decided.
+here was previously decided. The product owner approved it on 2026-09-14.
 
 ## Options considered
 
@@ -27,7 +27,24 @@ here was previously decided.
 3. **Up/down votes** — a down vote is a moderation signal in disguise and needs
    abuse rules of its own; reports already exist for that.
 
-## Decision (PROPOSAL)
+## Owner approval (2026-09-14)
+
+The product owner approved, in these words' substance:
+
+- Helpful reactions require sign-in.
+- At most one mark per account per review.
+- Marking your own review is prohibited.
+- A mark can be removed.
+- Ranking is by mark count descending, then the newest review creation date.
+
+Those settle decisions 1, 2, 3, 5 and 8 below. `id desc` stays in decision 8 only
+as the final tie-break for two reviews created at the same instant, so the order
+is deterministic; it never outranks count or creation date. Decisions 4, 6, 7, 9
+and 10 apply rules that already existed — moderation (FR-CMS-005), the
+per-action rate limits in `.claude/rules/security.md`, and ADR-0023's retention
+list — and the owner did not rule on them separately.
+
+## Decision
 
 1. **Type.** One reaction, `helpful`. Stored as text with a CHECK, so adding a
    type is a deliberate migration plus a new decision, never a silent enum value.
@@ -70,7 +87,7 @@ reactedByMe }`; a double tap, a retry or a replayed request never counts twice.
   are additive.
 - Ranking costs one correlated count per candidate review of one place; fine at
   current volume, revisited with decision 6 if it is not.
-- Product must confirm decisions 1–4, 9 and 10 before the issue closes.
+- The owner-approved policy is the acceptance bar for GoGo-BE#571 and GoGo-MobileApp#219; the issues close only after DEV and device acceptance.
 
 ## Migration & rollback
 
