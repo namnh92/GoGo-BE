@@ -20,11 +20,15 @@
  * - by shape: a decimal coordinate pair with at least three decimals on both
  *   sides separated by `,` or `%2C` (Google Maps `@lat,lng`, `q=lat,lng`, CSV
  *   cells), Google Maps data parameters `!3d…!4d…`, WKT/EWKT geometries
- *   (`POINT(…)`, `SRID=4326;POLYGON((…))`), Drizzle's unnamed `params:` list,
- *   and PostgreSQL row echoes (`Failing row contains (…)`, `Key (…)=(…)`).
+ *   (`POINT(…)`, `SRID=4326;POLYGON((…))`, to the end of the line when cut
+ *   off), Drizzle's unnamed `params:` list, and PostgreSQL row echoes
+ *   (`Failing row contains (…)`, `Key (…)=(…)`).
  *
  * Not redacted: a lone number with no coordinate name and no partner (`10.77`
  * in free text), and pairs coarser than three decimals (about 110 m).
+ *
+ * Cost: every pattern and scanner here is linear in the input; the performance
+ * test in `telemetry-redaction.spec.ts` feeds 100 kB adversarial strings.
  */
 
 export const REDACTED = '[redacted]';
@@ -67,9 +71,15 @@ const JSON_MEMBER =
 const JSON_KEY = /"([A-Za-z_]\w*)"\s*:\s*/g;
 /** Drizzle's `DrizzleQueryError` message: `Failed query: …\nparams: 106.7,10.7`. */
 const DRIZZLE_PARAMS = /(\bparams:[ \t]*)[^\n]*/g;
-/** `POINT(106.7 10.7)`, `SRID=4326;POINT Z (…)`, `MULTIPOLYGON(((…)))`. */
-const WKT_GEOMETRY =
-  /\b((?:SRID=\d+;\s*)?(?:MULTI)?(?:POINT|LINESTRING|POLYGON|GEOMETRYCOLLECTION)\s*(?:ZM|Z|M)?\s*)\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/gi;
+/**
+ * The head of a WKT/EWKT geometry up to its opening parenthesis: `POINT(`,
+ * `SRID=4326;POINT Z (`, `MULTIPOLYGON(`. Every quantifier is bounded, so a
+ * failed attempt costs a constant; the parenthesised body is measured by
+ * {@link balancedEnd}, which is linear. (An unbounded `\s*(?:ZM|Z|M)?\s*` took
+ * 16 s on 100 kB of spaces after `POINT`.)
+ */
+const WKT_HEAD =
+  /\b(?:SRID=\d{1,10};[ \t]{0,8})?(?:MULTI)?(?:POINT|LINESTRING|POLYGON|GEOMETRYCOLLECTION)(?:[ \t]{0,8}(?:ZM|Z|M))?[ \t]{0,8}\(/gi;
 /** Google Maps data parameters: `…!8m2!3d10.7769!4d106.7009`. */
 const MAPS_DATA_POSITION = /!3d-?\d+(?:\.\d+)?!4d-?\d+(?:\.\d+)?/g;
 /**
@@ -80,11 +90,11 @@ const COORDINATE_PAIR =
   /(?:(?<=%40)|(?<![\w.]))-?\d{1,3}\.\d{3,}\s*(?:,|%2C)\s*-?\d{1,3}\.\d{3,}(?![\w.])/gi;
 /** PostgreSQL detail for a NOT NULL/CHECK violation echoes the whole row. */
 const PG_FAILING_ROW = /(\bFailing row contains )\([^\n]*/g;
-/** PostgreSQL detail for a unique/foreign-key violation echoes the key values. */
-const PG_KEY_VALUES = /(\bKey \((?:[^()]|\([^()]*\))*\)=)\((?:[^()]|\([^()]*\))*\)/g;
+/** PostgreSQL detail for a unique/foreign-key violation: `Key (cols)=(values)`. */
+const PG_KEY_HEAD = /\bKey \(/g;
 
 export function redactCoordinateText(text: string): string {
-  return redactJsonContainers(text)
+  const named = redactJsonContainers(text)
     .replace(QUERY_PARAMETER, (match, lead: string, name: string) =>
       isRedactedName(name) ? `${lead}${name}=${REDACTED}` : match,
     )
@@ -92,11 +102,79 @@ export function redactCoordinateText(text: string): string {
       isCoordinateKey(name) ? `"${name}"${colon}"${REDACTED}"` : match,
     )
     .replace(DRIZZLE_PARAMS, `$1${REDACTED}`)
-    .replace(WKT_GEOMETRY, `$1(${REDACTED})`)
     .replace(MAPS_DATA_POSITION, `!3d${REDACTED}!4d${REDACTED}`)
     .replace(COORDINATE_PAIR, REDACTED)
-    .replace(PG_FAILING_ROW, `$1(${REDACTED})`)
-    .replace(PG_KEY_VALUES, `$1(${REDACTED})`);
+    .replace(PG_FAILING_ROW, `$1(${REDACTED})`);
+  return redactPgKeyValues(redactWktGeometries(named));
+}
+
+/**
+ * The index just past the `)` that closes the `(` at `open`, or `-1` when the
+ * line ends first. One pass over the characters, so linear.
+ */
+function balancedEnd(text: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\n') return -1;
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+function lineEnd(text: string, from: number): number {
+  const newline = text.indexOf('\n', from);
+  return newline < 0 ? text.length : newline;
+}
+
+/**
+ * `POINT(106.7 10.7)` → `POINT([redacted])`. A geometry cut off before its
+ * closing parenthesis is redacted to the end of its line. The search resumes
+ * after whatever was consumed, so the whole pass stays linear.
+ */
+function redactWktGeometries(text: string): string {
+  let out = '';
+  let last = 0;
+  WKT_HEAD.lastIndex = 0;
+  for (let match = WKT_HEAD.exec(text); match; match = WKT_HEAD.exec(text)) {
+    const open = match.index + match[0].length - 1;
+    const end = balancedEnd(text, open);
+    const stop = end < 0 ? lineEnd(text, open) : end;
+    out += `${text.slice(last, open)}(${REDACTED}${end < 0 ? '' : ')'}`;
+    last = stop;
+    WKT_HEAD.lastIndex = Math.max(stop, match.index + 1);
+  }
+  return out + text.slice(last);
+}
+
+/** `Key (lat, lng)=(10.7, 106.7)` → `Key (lat, lng)=([redacted])`, linearly. */
+function redactPgKeyValues(text: string): string {
+  let out = '';
+  let last = 0;
+  PG_KEY_HEAD.lastIndex = 0;
+  for (let match = PG_KEY_HEAD.exec(text); match; match = PG_KEY_HEAD.exec(text)) {
+    const columnsOpen = match.index + match[0].length - 1;
+    const columnsEnd = balancedEnd(text, columnsOpen);
+    if (columnsEnd < 0) {
+      PG_KEY_HEAD.lastIndex = lineEnd(text, columnsOpen);
+      continue;
+    }
+    if (text[columnsEnd] !== '=' || text[columnsEnd + 1] !== '(') {
+      PG_KEY_HEAD.lastIndex = columnsEnd;
+      continue;
+    }
+    const valuesOpen = columnsEnd + 1;
+    const valuesEnd = balancedEnd(text, valuesOpen);
+    const stop = valuesEnd < 0 ? lineEnd(text, valuesOpen) : valuesEnd;
+    out += `${text.slice(last, valuesOpen)}(${REDACTED}${valuesEnd < 0 ? '' : ')'}`;
+    last = stop;
+    PG_KEY_HEAD.lastIndex = Math.max(stop, match.index + 1);
+  }
+  return out + text.slice(last);
 }
 
 /** `"coordinates": [[106.7, 10.7], …]` and `"bounds": {…}` in JSON text, whole value. */

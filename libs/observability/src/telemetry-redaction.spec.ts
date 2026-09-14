@@ -248,3 +248,58 @@ describe('redactCoordinatesDeep containers (#588)', () => {
     expect(redactCoordinatesDeep([['bounds', '1,2,3,4']])).toEqual([['bounds', REDACTED]]);
   });
 });
+
+describe('redactCoordinateText on cut-off and malformed echoes (#588)', () => {
+  it('redacts a geometry or key value cut off before its closing parenthesis, to the end of the line', () => {
+    expect(redactCoordinateText('bad geometry POINT(106.700981 10.776912\nnext line kept')).toBe(
+      'bad geometry POINT([redacted]\nnext line kept',
+    );
+    expect(redactCoordinateText('Key (lat, lng)=(10.776912, 106.7009')).toBe(
+      'Key (lat, lng)=([redacted]',
+    );
+  });
+
+  it('leaves text that only looks like the start of an echo alone', () => {
+    for (const text of [
+      'Key (a) missing',
+      'Key (a',
+      'POINTS(1 2) is not WKT',
+      'no POINT here (1 2)',
+    ]) {
+      expect(redactCoordinateText(text)).toBe(text);
+    }
+  });
+});
+
+describe('redaction cost stays linear on adversarial input (#588)', () => {
+  const SIZE = 100_000;
+  const fill = (unit: string) => unit.repeat(Math.ceil(SIZE / unit.length)).slice(0, SIZE);
+  // Before this test existed, 'POINT then spaces' took 16 s at 100 kB.
+  const inputs: Record<string, string> = {
+    'many (': fill('('),
+    'many )': fill(')'),
+    'POINT( no close': `POINT(${fill('1 2,')}`,
+    'repeated POINT(': fill('POINT('),
+    'POINT then spaces': `POINT${fill(' ')}x`,
+    'POINT( nested': `POINT(${fill('((a')}`,
+    'repeated Key (': fill('Key ('),
+    'Key ( no close': `Key (${fill('a')}`,
+    'Key (a)=( nested': `Key (a)=(${fill('(b')}`,
+    'SRID digits': `SRID=${fill('1')}`,
+    'pair then spaces': `1.2345${fill(' ')}y`,
+    'digit runs': fill('1.2345,'),
+    'open JSON string': `"lat":"${fill('a')}`,
+    'repeated "bounds":': fill('"bounds":'),
+    'open coordinates array': `{"coordinates":${fill('[')}`,
+    'space then name, no =': ` ${fill('a')}`,
+    'Failing row': fill('Failing row contains ('),
+  };
+
+  for (const [name, input] of Object.entries(inputs)) {
+    it(`${name}: 100 kB in under 500 ms`, () => {
+      const started = performance.now();
+      redactCoordinateText(input);
+      expect(performance.now() - started).toBeLessThan(500);
+    });
+  }
+});

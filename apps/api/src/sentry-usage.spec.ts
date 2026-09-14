@@ -11,7 +11,10 @@ import { describe, expect, it } from 'vitest';
 
 const ROOT = path.resolve(__dirname, '../../..');
 const ALLOWED: Record<string, RegExp[]> = {
-  'apps/api/src/sentry.ts': [/Sentry\.httpIntegration\(\{ maxIncomingRequestBodySize: 'none' \}\)/],
+  'apps/api/src/sentry.ts': [
+    /Sentry\.getDefaultIntegrations\(\{\}\)/,
+    /Sentry\.httpIntegration\(\{ maxIncomingRequestBodySize: 'none' \}\)/,
+  ],
   'apps/api/src/main.ts': [/Sentry\.init\(sentryInitOptions\(/],
   'apps/api/src/common/filters/app-exception.filter.ts': [
     /Sentry\.captureException\(exception, \{ extra: \{ request_id: requestId \} \}\)/,
