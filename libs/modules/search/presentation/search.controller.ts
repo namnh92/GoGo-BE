@@ -41,6 +41,17 @@ const searchQuerySchema = z
       .enum(['true', 'false'])
       .transform((v) => v === 'true')
       .optional(),
+    // ADM-021 (#568): a canonical area as the fallback scope when the client
+    // has no usable position. Codes only; labels come back in meta.location.
+    datasetVersion: z.string().trim().min(1).max(200).optional(),
+    provinceCode: z
+      .string()
+      .regex(/^\d{2,5}$/)
+      .optional(),
+    communeCode: z
+      .string()
+      .regex(/^\d{2,5}$/)
+      .optional(),
     sort: z.enum(['relevance', 'distance', 'rating', 'price', 'curated']).default('relevance'),
     cursor: z.string().max(200).optional(),
     limit: z.coerce.number().int().min(1).max(50).default(20),
@@ -48,6 +59,14 @@ const searchQuerySchema = z
   .refine((v) => v.sort !== 'distance' || (v.lat !== undefined && v.lng !== undefined), {
     message: 'distance sort requires lat/lng',
     path: ['sort'],
+  })
+  .refine((v) => (v.provinceCode === undefined) === (v.datasetVersion === undefined), {
+    message: 'provinceCode and datasetVersion go together',
+    path: ['provinceCode'],
+  })
+  .refine((v) => v.communeCode === undefined || v.provinceCode !== undefined, {
+    message: 'communeCode requires provinceCode',
+    path: ['communeCode'],
   });
 
 type SearchQueryDto = z.infer<typeof searchQuerySchema>;
@@ -75,6 +94,15 @@ export class SearchController {
       dietary: query.dietary,
       accessibility: query.accessibility,
       includeLodging: query.includeLodging,
+      ...(query.provinceCode && query.datasetVersion
+        ? {
+            administrativeArea: {
+              datasetVersion: query.datasetVersion,
+              provinceCode: query.provinceCode,
+              communeCode: query.communeCode ?? null,
+            },
+          }
+        : {}),
       sort: query.sort,
       limit: query.limit,
       cursor,

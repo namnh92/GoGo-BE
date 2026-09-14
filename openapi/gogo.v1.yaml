@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.34
+  version: 1.0.0-alpha.35
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2368,6 +2368,13 @@ paths:
         tolerance + synonym expansion; hard filters in SQL; weighted versioned
         ranking (meta.weightsVersion); stable keyset cursor. Lodging excluded
         unless requested. Zero-results emit telemetry without raw PII.
+        ADM-021: scope by a position (lat/lng, radiusM defaults to 10 km) or by a
+        canonical area (datasetVersion + provinceCode, optional communeCode for a
+        single commune). A position wins when both are sent; the two are never
+        intersected, and meta.location says which one scoped the results. An
+        area matches only places with a VERIFIED mapping from the same dataset.
+        A code that is not current or not under its province is 400; a dataset
+        that is not the published one is 409 ADMINISTRATIVE_VERSION_CHANGED.
       security: []
       parameters:
         - { name: q, in: query, schema: { type: string, maxLength: 200 } }
@@ -2389,6 +2396,18 @@ paths:
             ALL required,
           }
         - { name: includeLodging, in: query, schema: { type: boolean } }
+        - name: datasetVersion
+          in: query
+          description: Administrative dataset of provinceCode/communeCode. Required with provinceCode.
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - name: provinceCode
+          in: query
+          description: Canonical province code. Ignored when lat/lng are sent.
+          schema: { type: string, pattern: '^[0-9]{2,5}$' }
+        - name: communeCode
+          in: query
+          description: Canonical commune code under provinceCode; omit for the whole province.
+          schema: { type: string, pattern: '^[0-9]{2,5}$' }
         - name: sort
           in: query
           schema:
@@ -2417,7 +2436,9 @@ paths:
                     properties:
                       weightsVersion: { type: string }
                       sort: { type: string }
+                      location: { $ref: '#/components/schemas/SearchLocation' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
   /places/{id}:
@@ -10130,6 +10151,25 @@ components:
       properties:
         perPerson: { type: integer, minimum: 0 }
         currency: { type: string, minLength: 3, maxLength: 3 }
+    SearchLocation:
+      type: object
+      description: >
+        ADM-021 — the scope that produced the results. gps: the request's
+        position. administrative_area: the canonical area, with server labels.
+        none: neither was sent, so results are not location-scoped.
+      required: [source]
+      properties:
+        source: { type: string, enum: [gps, administrative_area, none] }
+        area:
+          type: object
+          description: Present only when source is administrative_area.
+          required: [datasetVersion, provinceCode, provinceName, communeCode, communeName]
+          properties:
+            datasetVersion: { type: string }
+            provinceCode: { type: string }
+            provinceName: { type: string }
+            communeCode: { type: [string, 'null'] }
+            communeName: { type: [string, 'null'] }
     AdministrativeAreaInput:
       type: object
       additionalProperties: false
