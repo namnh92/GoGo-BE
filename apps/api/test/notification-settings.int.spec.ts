@@ -338,9 +338,19 @@ describe('delivery honours the switch', () => {
     const onDespiteRow = await register('campaign-on');
     await putSettings(off.token, { pushEnabled: false });
     await putSettings(onDespiteRow.token, { pushEnabled: true });
+    // The switch wrote every per-kind row as on; a later off row behind it (for
+    // example written by a rolled-back release) still cannot override it here.
     await db
       .insert(schema.notificationPreferences)
-      .values({ userId: onDespiteRow.userId, channel: 'push', kind: 'campaign', enabled: false });
+      .values({ userId: onDespiteRow.userId, channel: 'push', kind: 'campaign', enabled: false })
+      .onConflictDoUpdate({
+        target: [
+          schema.notificationPreferences.userId,
+          schema.notificationPreferences.channel,
+          schema.notificationPreferences.kind,
+        ],
+        set: { enabled: false },
+      });
     // A per-kind campaign opt-out written without a switch row — a legacy write
     // racing the deploy — stays off rather than silently back on.
     const racing = await register('campaign-racing');
@@ -394,6 +404,138 @@ describe('privacy', () => {
     });
     expect(deleted.statusCode).toBe(200);
     expect(await storedSettings(userId)).toBeNull();
+  });
+});
+
+/**
+ * Rollback to the release before this change (ADR-0025, Migration & rollback).
+ * These are that release's delivery rules, copied from develop da6a89e:
+ *
+ * - outbox, `libs/modules/notifications/application/outbox-dispatcher.ts:128-140`:
+ *   the push for an event of kind K skips an account holding a `push` row for K
+ *   with `enabled = false`;
+ * - campaign estimate and send, `libs/modules/notifications/application/campaign-audience.ts:72-78`
+ *   (`respectsPushPreference`, called from `campaigns.service.ts:489` and
+ *   `campaign-dispatcher.ts:101`).
+ */
+const PUSH_KINDS = [
+  'invite',
+  'preference_reminder',
+  'plan_ready',
+  'plan_changed',
+  'date_reminder',
+  'moderation_update',
+  'campaign',
+] as const;
+
+async function previousReleaseOutboxPushes(userId: string, kind: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    'select channel, enabled from notification_preferences where user_id = any($1::uuid[]) and kind = $2',
+    [[userId], kind],
+  );
+  const optedOutOfPush = (rows as { channel: string; enabled: boolean }[]).some(
+    (p) => p.channel === 'push' && !p.enabled,
+  );
+  return !optedOutOfPush;
+}
+
+async function previousReleaseCampaignIncludes(userId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `select not exists (
+      select 1 from notification_preferences np
+      where np.user_id = u.id and np.channel = 'push'
+        and np.kind = 'campaign' and np.enabled = false
+    ) as included
+    from users u where u.id = $1`,
+    [userId],
+  );
+  return rows[0].included as boolean;
+}
+
+/** Every kind the previous release would push to this account, campaigns last. */
+async function previousReleasePushes(userId: string): Promise<string[]> {
+  const kinds: string[] = [];
+  for (const kind of PUSH_KINDS) {
+    if (await previousReleaseOutboxPushes(userId, kind)) kinds.push(kind);
+  }
+  if (await previousReleaseCampaignIncludes(userId)) kinds.push('campaign audience');
+  return kinds;
+}
+
+const EVERYTHING = [...PUSH_KINDS, 'campaign audience'];
+
+async function thisReleaseAllows(userId: string): Promise<boolean> {
+  const { rows } = await db.execute(sql`
+    select u.id from users u where u.id = ${userId}::uuid and ${respectsPushPreference()}
+  `);
+  return rows.length === 1;
+}
+
+describe('rollback to the previous release keeps every opt-out (ADR-0025)', () => {
+  it('an explicit off stops every kind and every campaign in the previous release', async () => {
+    const { token, userId } = await register('rollback-off');
+    expect((await putSettings(token, { pushEnabled: false })).statusCode).toBe(200);
+    expect(await thisReleaseAllows(userId)).toBe(false);
+    expect(await previousReleasePushes(userId)).toEqual([]);
+  });
+
+  it('off, on, off again: the previous release follows the last choice', async () => {
+    const { token, userId } = await register('rollback-toggle');
+    await putSettings(token, { pushEnabled: false });
+    await putSettings(token, { pushEnabled: true });
+    expect(await thisReleaseAllows(userId)).toBe(true);
+    expect(await previousReleasePushes(userId)).toEqual(EVERYTHING);
+    await putSettings(token, { pushEnabled: false });
+    expect(await thisReleaseAllows(userId)).toBe(false);
+    expect(await previousReleasePushes(userId)).toEqual([]);
+  });
+
+  it('a legacy opt-in while push is off changes nothing in either release', async () => {
+    const { token, userId } = await register('rollback-legacy-on');
+    await putSettings(token, { pushEnabled: false });
+    expect(
+      (await legacyPut(token, { channel: 'push', kind: 'invite', enabled: true })).statusCode,
+    ).toBe(200);
+    expect((await getSettings(token)).json()).toMatchObject({ pushEnabled: false });
+    expect(await previousReleasePushes(userId)).toEqual([]);
+  });
+
+  it('a legacy opt-out of one kind stops every kind in both releases', async () => {
+    const { token, userId } = await register('rollback-legacy-off');
+    expect(
+      (await legacyPut(token, { channel: 'push', kind: 'plan_ready', enabled: false })).statusCode,
+    ).toBe(200);
+    expect(await thisReleaseAllows(userId)).toBe(false);
+    expect(await previousReleasePushes(userId)).toEqual([]);
+  });
+
+  it('an explicit on is what the previous release reads too, leftover opt-outs included', async () => {
+    const { token, userId } = await register('rollback-on-over-leftover');
+    await db
+      .insert(schema.notificationPreferences)
+      .values({ userId, channel: 'push', kind: 'campaign', enabled: false });
+    await putSettings(token, { pushEnabled: true });
+    expect(await thisReleaseAllows(userId)).toBe(true);
+    expect(await previousReleasePushes(userId)).toEqual(EVERYTHING);
+  });
+
+  it('racing writes never leave the previous release pushing where this one does not', async () => {
+    for (let round = 0; round < 6; round += 1) {
+      const { token, userId } = await register(`rollback-race-${round}`);
+      const writes = [
+        () => putSettings(token, { pushEnabled: false }),
+        () => putSettings(token, { pushEnabled: true }),
+        () => legacyPut(token, { channel: 'push', kind: 'invite', enabled: true }),
+        () => legacyPut(token, { channel: 'push', kind: 'plan_ready', enabled: false }),
+        () => putSettings(token, { pushEnabled: round % 2 === 0 }),
+      ];
+      const order = round % 2 === 0 ? writes : [...writes].reverse();
+      const results = await Promise.all(order.map((write) => write()));
+      expect(results.map((res) => res.statusCode)).toEqual([200, 200, 200, 200, 200]);
+
+      const allowed = await thisReleaseAllows(userId);
+      expect(await previousReleasePushes(userId)).toEqual(allowed ? EVERYTHING : []);
+    }
   });
 });
 
