@@ -314,9 +314,8 @@ describe('delivery honours the switch', () => {
     const off = await register('deliver-off');
     await putSettings(off.token, { pushEnabled: false });
 
-    // One room per person for the inbox half: today every recipient of one
-    // event shares the event id as dedupe key, which is a fan-out question,
-    // not a switch question.
+    // One room per person keeps the inbox half about the switch alone; how
+    // one event fans out to several recipients is covered by #584's tests.
     const offPush = await publish(await roomWith([off.userId]));
     expect(offPush.sent).toHaveLength(0);
     const onPush = await publish(await roomWith([on.userId]));
