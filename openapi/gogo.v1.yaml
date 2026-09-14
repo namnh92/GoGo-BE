@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.35
+  version: 1.0.0-alpha.36
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1257,6 +1257,41 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/AdministrativeUnavailable' }
 
+  /administrative/locate:
+    get:
+      operationId: locateAdministrativeArea
+      tags: [administrative]
+      summary: The current commune or province containing a position
+      description: >
+        ADM-022 (#569). Point-in-polygon against the boundary release bound to
+        the published dataset. A single containing commune whose unit agrees
+        with its polygon's province is `commune`; a point claimed by one
+        province only (including a shared commune edge inside it) is
+        `province`; anything else is `unknown`, never a guess. The position is
+        not stored, and the answer is `Cache-Control: private, no-store`.
+      security: []
+      parameters:
+        - {
+            name: lat,
+            in: query,
+            required: true,
+            schema: { type: number, minimum: -90, maximum: 90 },
+          }
+        - {
+            name: lng,
+            in: query,
+            required: true,
+            schema: { type: number, minimum: -180, maximum: 180 },
+          }
+      responses:
+        '200':
+          description: The containing area, or unknown
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeLocation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AdministrativeUnavailable' }
   /administrative/units/{code}:
     get:
       operationId: getAdministrativeUnit
@@ -2834,6 +2869,10 @@ paths:
       operationId: listSaved
       tags: [me]
       summary: Saved places/plans (FR-USER-001)
+      description: >
+        The whole list, newest first, each with ADM-022 area facts (see
+        SavedItemArea). Grouping and ordering are the client's, over the full
+        list rather than a page.
       responses:
         '200':
           description: Saved items
@@ -12090,10 +12129,44 @@ components:
         createdAt: { type: string, format: date-time }
     SavedItem:
       type: object
+      required: [targetType, targetId, savedAt, area]
       properties:
         targetType: { type: string, enum: [place, plan] }
         targetId: { type: string, format: uuid }
         savedAt: { type: string, format: date-time }
+        area: { $ref: '#/components/schemas/SavedItemArea' }
+    SavedItemArea:
+      type: object
+      description: >
+        ADM-022 (#569) — facts to group a saved item by, never a composed label.
+        A place is `commune` only through a VERIFIED mapping in the published
+        dataset. A plan is `commune` when every stop is in one commune,
+        `province` when every stop is in one province across communes,
+        `multiple_provinces` when stops span provinces, and `unknown` when any
+        stop has no such mapping (a plan is never placed by its first stop).
+        Labels come from the published dataset.
+      required: [scope, datasetVersion, provinceCode, provinceName, communeCode, communeName]
+      properties:
+        scope: { type: string, enum: [commune, province, multiple_provinces, unknown] }
+        datasetVersion: { type: [string, 'null'] }
+        provinceCode: { type: [string, 'null'] }
+        provinceName: { type: [string, 'null'] }
+        communeCode: { type: [string, 'null'] }
+        communeName: { type: [string, 'null'] }
+    AdministrativeLocation:
+      type: object
+      required: [datasetVersion, area]
+      properties:
+        datasetVersion: { type: string }
+        area:
+          type: object
+          required: [scope, provinceCode, provinceName, communeCode, communeName]
+          properties:
+            scope: { type: string, enum: [commune, province, unknown] }
+            provinceCode: { type: [string, 'null'] }
+            provinceName: { type: [string, 'null'] }
+            communeCode: { type: [string, 'null'] }
+            communeName: { type: [string, 'null'] }
     DeviceUnsubscribeConfirmation:
       type: object
       required: [confirmed]
