@@ -656,7 +656,9 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
       .from(schema.notifications)
       .where(eq(schema.notifications.userId, userId));
     expect(notifications).toHaveLength(1);
-    expect(notifications[0]!.dedupeKey).toBe(`outbox:${event.id}:${userId}`);
+    // A sole recipient holds the bare event id: the key the previous release
+    // wrote, kept so that release cannot add a second row after a rollback.
+    expect(notifications[0]!.dedupeKey).toBe(event.id);
   });
 
   /**
