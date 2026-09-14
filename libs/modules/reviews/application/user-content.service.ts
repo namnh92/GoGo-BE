@@ -11,6 +11,65 @@ import { pgArray } from '../../search/infrastructure/search.repository';
 import type { Actor } from '../../identity/domain/actor';
 import { writeAudit } from '../../shared/audit';
 import { MediaCleanupService } from '../../profile/application/media-cleanup.service';
+import { pushAllowed } from '../../notifications/application/push-preference';
+
+/** The kinds the per-kind contract (`NotificationKind`) exposes; campaigns never had a toggle. */
+const LEGACY_PUSH_KINDS = [
+  'invite',
+  'preference_reminder',
+  'plan_ready',
+  'plan_changed',
+  'date_reminder',
+  'moderation_update',
+] as const;
+
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
+
+/**
+ * One account's notification writes run one at a time. The switch and the
+ * per-kind rows below must agree when a transaction commits; two writers
+ * interleaving could otherwise leave the switch off and a per-kind row on.
+ * `for no key update` does not block the foreign-key checks of rows that
+ * reference the account (inbox, subscriptions).
+ */
+async function lockNotificationChoices(tx: Tx, userId: string): Promise<void> {
+  await tx.execute(sql`select 1 from users where id = ${userId}::uuid for no key update`);
+}
+
+/**
+ * ADR-0025, rollback compatibility. The release before the switch decides push
+ * from per-kind `push` rows alone: the outbox skips a kind whose row is off, and
+ * campaigns skip a `campaign` row that is off. Writing the switch's value into
+ * every kind's row, campaign included, means a rolled-back release pushes to
+ * this account exactly when this release does. This release ignores these rows
+ * once a switch row exists, so they cannot override the switch here.
+ */
+async function mirrorPushChoice(tx: Tx, userId: string, enabled: boolean): Promise<void> {
+  await tx
+    .insert(schema.notificationPreferences)
+    .values(
+      schema.notificationKind.enumValues.map((kind) => ({
+        userId,
+        channel: 'push' as const,
+        kind,
+        enabled,
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [
+        schema.notificationPreferences.userId,
+        schema.notificationPreferences.channel,
+        schema.notificationPreferences.kind,
+      ],
+      set: { enabled },
+    });
+}
+
+export type NotificationSettingsView = {
+  pushEnabled: boolean;
+  source: 'default' | 'explicit' | 'migrated' | 'legacy';
+  updatedAt: string | null;
+};
 
 function requireUser(actor: Actor): string {
   if (actor.type !== 'user') {
@@ -229,6 +288,8 @@ export class UserContentService {
       .from(schema.reviews)
       .where(eq(schema.reviews.userId, userId));
 
+    const notificationSettings = await this.notificationSettingsFor(userId);
+
     await writeAudit(this.db, {
       actorType: by.actorType,
       actorId: by.actorId,
@@ -265,6 +326,10 @@ export class UserContentService {
       votes: votes.map((v) => ({ roomId: v.roomId, placeId: v.targetPlaceId, value: v.value })),
       saved: saved.map((s) => ({ type: s.targetType, id: s.targetId })),
       reviews: reviews.map((r) => ({ rating: r.rating, text: r.text, status: r.status })),
+      notificationSettings: {
+        pushEnabled: notificationSettings.pushEnabled,
+        source: notificationSettings.source,
+      },
     };
   }
 
@@ -355,6 +420,9 @@ export class UserContentService {
       await tx
         .delete(schema.notificationPreferences)
         .where(eq(schema.notificationPreferences.userId, userId));
+      await tx
+        .delete(schema.notificationSettings)
+        .where(eq(schema.notificationSettings.userId, userId));
       // The membership row stays so a room still adds up for the people left
       // in it; only the name a co-member could read goes.
       await tx
@@ -377,33 +445,140 @@ export class UserContentService {
     return { deleted: true };
   }
 
-  // --- notification preferences (FR-USER-004) ------------------------------
+  // --- notification settings (NTF-BE-014, ADR-0025) -------------------------
 
-  async getNotificationPreferences(actor: Actor) {
-    const userId = requireUser(actor);
-    const rows = await this.db
-      .select()
-      .from(schema.notificationPreferences)
-      .where(eq(schema.notificationPreferences.userId, userId));
-    return rows.map((r) => ({ channel: r.channel, kind: r.kind, enabled: r.enabled }));
+  /** The one app-level push switch for this account. */
+  async getNotificationSettings(actor: Actor): Promise<NotificationSettingsView> {
+    return this.notificationSettingsFor(requireUser(actor));
   }
 
+  async setNotificationSettings(
+    actor: Actor,
+    input: { pushEnabled: boolean },
+  ): Promise<NotificationSettingsView> {
+    const userId = requireUser(actor);
+    await this.db.transaction(async (tx) => {
+      await lockNotificationChoices(tx, userId);
+      await tx
+        .insert(schema.notificationSettings)
+        .values({ userId, pushEnabled: input.pushEnabled, source: 'explicit' })
+        .onConflictDoUpdate({
+          target: schema.notificationSettings.userId,
+          set: { pushEnabled: input.pushEnabled, source: 'explicit', updatedAt: sql`now()` },
+        });
+      await mirrorPushChoice(tx, userId, input.pushEnabled);
+    });
+    return this.notificationSettingsFor(userId);
+  }
+
+  /**
+   * No row means never chosen: on, unless an older client left a push opt-out
+   * behind — the rule migration 0064 backfilled with, reported as `legacy` so
+   * the client can tell a default from a choice it has not seen yet.
+   */
+  private async notificationSettingsFor(userId: string): Promise<NotificationSettingsView> {
+    const [row] = await this.db
+      .select()
+      .from(schema.notificationSettings)
+      .where(eq(schema.notificationSettings.userId, userId))
+      .limit(1);
+    if (row) {
+      return {
+        pushEnabled: row.pushEnabled,
+        source: row.source,
+        updatedAt: row.updatedAt.toISOString(),
+      };
+    }
+    const { rows } = await this.db.execute(
+      sql`select ${pushAllowed(sql`${userId}::uuid`)} as allowed`,
+    );
+    const allowed = (rows[0] as { allowed: boolean }).allowed;
+    return { pushEnabled: allowed, source: allowed ? 'default' : 'legacy', updatedAt: null };
+  }
+
+  // --- legacy per-kind preferences (FR-USER-004, older clients) -------------
+
+  /**
+   * ADR-0025: push is one switch now, so every push kind reads as that switch.
+   * An older client showing a kind as on while nothing is pushed would be
+   * telling the person something untrue. Email rows come back as stored.
+   */
+  async getNotificationPreferences(actor: Actor) {
+    const userId = requireUser(actor);
+    const [settings, rows] = await Promise.all([
+      this.notificationSettingsFor(userId),
+      this.db
+        .select()
+        .from(schema.notificationPreferences)
+        .where(eq(schema.notificationPreferences.userId, userId)),
+    ]);
+    return [
+      ...LEGACY_PUSH_KINDS.map((kind) => ({
+        channel: 'push' as const,
+        kind,
+        enabled: settings.pushEnabled,
+      })),
+      ...rows
+        .filter((r) => r.channel === 'email')
+        .map((r) => ({ channel: r.channel, kind: r.kind, enabled: r.enabled })),
+    ];
+  }
+
+  /**
+   * An older client can still write one kind. The row is kept — a rollback
+   * reads it — but only an opt-out moves push: "stop sending me this" can only
+   * be honoured now by stopping push, while "send me this" does not say the
+   * person wants every other kind too. Turning push back on is the switch's job.
+   */
   async setNotificationPreference(
     actor: Actor,
     input: { channel: 'push' | 'email'; kind: string; enabled: boolean },
   ) {
     const userId = requireUser(actor);
-    await this.db
-      .insert(schema.notificationPreferences)
-      .values({ userId, channel: input.channel, kind: input.kind as never, enabled: input.enabled })
-      .onConflictDoUpdate({
-        target: [
-          schema.notificationPreferences.userId,
-          schema.notificationPreferences.channel,
-          schema.notificationPreferences.kind,
-        ],
-        set: { enabled: input.enabled },
-      });
+    await this.db.transaction(async (tx) => {
+      await lockNotificationChoices(tx, userId);
+      const row = {
+        userId,
+        channel: input.channel,
+        kind: input.kind as never,
+        enabled: input.enabled,
+      };
+      const upsertRow = () =>
+        tx
+          .insert(schema.notificationPreferences)
+          .values(row)
+          .onConflictDoUpdate({
+            target: [
+              schema.notificationPreferences.userId,
+              schema.notificationPreferences.channel,
+              schema.notificationPreferences.kind,
+            ],
+            set: { enabled: input.enabled },
+          });
+
+      if (input.channel === 'email') {
+        await upsertRow();
+        return;
+      }
+      if (!input.enabled) {
+        await tx
+          .insert(schema.notificationSettings)
+          .values({ userId, pushEnabled: false, source: 'legacy' })
+          .onConflictDoUpdate({
+            target: schema.notificationSettings.userId,
+            set: { pushEnabled: false, source: 'legacy', updatedAt: sql`now()` },
+          });
+        await mirrorPushChoice(tx, userId, false);
+        return;
+      }
+      // A push opt-in is stored only while push is allowed. Stored while push is
+      // off, it would make a rolled-back release push a kind this release does
+      // not — the one outcome ADR-0025 rules out.
+      const { rows } = await tx.execute(
+        sql`select ${pushAllowed(sql`${userId}::uuid`)} as allowed`,
+      );
+      if ((rows[0] as { allowed: boolean }).allowed) await upsertRow();
+    });
     return { updated: true };
   }
 }
