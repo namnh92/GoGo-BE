@@ -6,6 +6,7 @@ export {
   requestSerializer,
 } from './logger';
 export {
+  isCoordinateContainerKey,
   isCoordinateKey,
   REDACTED,
   redactCoordinateText,

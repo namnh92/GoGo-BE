@@ -130,3 +130,35 @@ describe('logged errors never carry query parameters (#588)', () => {
     expect(errorSerializer('boom')).toBe('boom');
   });
 });
+
+describe('request log and errors by shape (#588)', () => {
+  it('redacts list-valued and encoded positions in the URL', () => {
+    expect(
+      redactUrl(
+        '/v1/cms/places?bounds=10.70,106.60,10.85,106.80&next=%4010.7769%2C106.7009%2C17z&page=2',
+      ),
+    ).toBe('/v1/cms/places?bounds=[redacted]&next=%40[redacted]%2C17z&page=2');
+  });
+
+  it('a logged PostgreSQL error keeps its code and constraint but not the echoed row or geometry', () => {
+    const cause = new Error('parse error - invalid geometry: POINT(106.700981 10.776912)');
+    const err = Object.assign(
+      new Error('null value in column "name" violates not-null constraint', { cause }),
+      {
+        code: '23502',
+        constraint: 'places_name_not_null',
+        detail: 'Failing row contains (a1, null, 10.776912, 106.700981).',
+      },
+    );
+    const { lines, sink } = capture();
+    const logger = createLogger({ level: 'info', name: 'test', destination: sink });
+    logger.error({ err, request_id: 'req-588' }, 'unhandled error');
+    const out = lines.join('');
+    expect(out).toContain('"code":"23502"');
+    expect(out).toContain('places_name_not_null');
+    expect(out).toContain('Failing row contains ([redacted]');
+    expect(out).toContain('POINT([redacted])');
+    expect(out).not.toContain('10.776912');
+    expect(out).not.toContain('106.700981');
+  });
+});

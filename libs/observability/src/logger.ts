@@ -1,5 +1,5 @@
 import pino, { type DestinationStream } from 'pino';
-import { REDACTED, redactCoordinatesDeep } from './telemetry-redaction';
+import { REDACTED, redactCoordinateText, redactCoordinatesDeep } from './telemetry-redaction';
 
 /**
  * Security rule (.claude/rules/security.md): logs never contain tokens, secrets,
@@ -46,18 +46,16 @@ export type LogDestination = DestinationStream;
 const CREDENTIAL_PATH_SEGMENTS: readonly RegExp[] = [/(\/share-links\/)[^/?#]+/g];
 
 /**
- * Query parameters that carry an exact position. `GET /search` and
- * `GET /administrative/locate` (ADM-022, #569) take the device's coordinates in
- * the query string, and the request log would otherwise record where a user
- * stood on every call. The parameter name stays so a line still shows that a
- * position was sent.
+ * A credential path segment, then every exact position the shared telemetry
+ * redaction recognises (#588): coordinate-named parameters such as `lat`/`lng`
+ * on `GET /search` and `GET /administrative/locate`, list-valued ones such as
+ * `bounds`, and coordinate pairs such as an encoded Google Maps `@lat,lng`. The
+ * parameter name stays so a line still shows that a position was sent.
  */
-const EXACT_LOCATION_QUERY = /([?&](?:lat|lng|latitude|longitude)=)[^&#]*/gi;
-
 export function redactUrl(url: string): string {
   let out = url;
   for (const pattern of CREDENTIAL_PATH_SEGMENTS) out = out.replace(pattern, '$1[redacted]');
-  return out.replace(EXACT_LOCATION_QUERY, '$1[redacted]');
+  return redactCoordinateText(out);
 }
 
 type RequestLike = {

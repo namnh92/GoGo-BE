@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isCoordinateContainerKey,
   isCoordinateKey,
   REDACTED,
   redactCoordinatesDeep,
@@ -119,5 +120,131 @@ describe('redactCoordinatesDeep (#588)', () => {
     const out = redactCoordinatesDeep(cyclic);
     expect(out.lat).toBe(REDACTED);
     expect(out.sdkProcessingMetadata).toBe(metadata);
+  });
+});
+
+describe('isCoordinateContainerKey (#588)', () => {
+  it('names keys whose whole value is a position', () => {
+    for (const name of [
+      'coordinates',
+      'bbox',
+      'bounds',
+      'Viewport',
+      'latLng',
+      'll',
+      'geom',
+      'geometry',
+      'point',
+    ]) {
+      expect(isCoordinateContainerKey(name)).toBe(true);
+    }
+    for (const name of ['points', 'pointsTotal', 'boundary', 'llm', 'geoCode']) {
+      expect(isCoordinateContainerKey(name)).toBe(false);
+    }
+  });
+});
+
+describe('redactCoordinateText by shape (#588)', () => {
+  const LAT = '10.776912';
+  const LNG = '106.700981';
+
+  it('redacts a coordinate pair in a Google Maps URL, an encoded parameter and a CSV row', () => {
+    expect(
+      redactCoordinateText(
+        `https://www.google.com/maps/place/Cafe/@10.7769,106.7009,17z/data=!3m1!4b1!8m2!3d${LAT}!4d${LNG}`,
+      ),
+    ).toBe(
+      'https://www.google.com/maps/place/Cafe/@[redacted],17z/data=!3m1!4b1!8m2!3d[redacted]!4d[redacted]',
+    );
+    expect(redactCoordinateText('next=%4010.7769%2C106.7009%2C17z')).toBe(
+      'next=%40[redacted]%2C17z',
+    );
+    expect(redactCoordinateText(`row 3: "Quán A",${LAT},${LNG},cafe`)).toBe(
+      'row 3: "Quán A",[redacted],cafe',
+    );
+    expect(redactCoordinateText(`maps?q=${LAT},${LNG}`)).toBe('maps?q=[redacted]');
+  });
+
+  it('redacts list-valued position parameters by name', () => {
+    expect(redactCoordinateText('/v1/cms/places?bounds=10.70,106.60,10.85,106.80&page=2')).toBe(
+      '/v1/cms/places?bounds=[redacted]&page=2',
+    );
+    expect(redactCoordinateText('viewport=1,2,3,4&ll=10.7,106.7')).toBe(
+      'viewport=[redacted]&ll=[redacted]',
+    );
+  });
+
+  it('redacts WKT and EWKT geometries and keeps the geometry type', () => {
+    expect(redactCoordinateText(`invalid geometry: POINT(${LNG} ${LAT}) near position 5`)).toBe(
+      'invalid geometry: POINT([redacted]) near position 5',
+    );
+    expect(redactCoordinateText(`params: x\nSRID=4326;POINT Z (${LNG} ${LAT} 3)`)).toContain(
+      'SRID=4326;POINT Z ([redacted])',
+    );
+    expect(redactCoordinateText('MULTIPOLYGON(((1 2,3 4,5 6,1 2)),((7 8,9 10,11 12,7 8)))')).toBe(
+      'MULTIPOLYGON([redacted])',
+    );
+  });
+
+  it('redacts GeoJSON coordinate arrays in JSON text, even when truncated', () => {
+    expect(
+      redactCoordinateText(
+        `{"type":"Feature","geometry":{"type":"Point","coordinates":[${LNG},${LAT}]},"properties":{"name":"Quán A"}}`,
+      ),
+    ).toBe('{"type":"Feature","geometry":"[redacted]","properties":{"name":"Quán A"}}');
+    expect(redactCoordinateText(`{"coordinates":[[${LNG},${LAT}],[106.7011,10.777`)).toBe(
+      '{"coordinates":"[redacted]"',
+    );
+    expect(redactCoordinateText('{"bounds":{"north":10.8,"south":10.7},"q":"cafe"}')).toBe(
+      '{"bounds":"[redacted]","q":"cafe"}',
+    );
+  });
+
+  it('redacts the row and key values PostgreSQL echoes and keeps the rest', () => {
+    expect(
+      redactCoordinateText(
+        `null value in column "name" violates not-null constraint\nFailing row contains (a1, null, ${LAT}, ${LNG}).`,
+      ),
+    ).toContain('Failing row contains ([redacted]');
+    expect(redactCoordinateText(`Key (lat, lng)=(${LAT}, ${LNG}) already exists.`)).toBe(
+      'Key (lat, lng)=([redacted]) already exists.',
+    );
+  });
+
+  it('leaves versions, money, identifiers, timestamps and coarse pairs alone', () => {
+    for (const text of [
+      'GoGo/0.1.0 (build 1.2.3,4.5.6)',
+      'budget 1.500.000,2.500.000 VND',
+      '8d0d2f52-0000-4000-8000-000000000001',
+      '2026-09-14T10:47:12.345Z',
+      'select * from places where id = $1 and score > 0.75',
+      'area 10.77,106.70 (two decimals)',
+      'took 12.345ms of 67.890ms',
+    ]) {
+      expect(redactCoordinateText(text)).toBe(text);
+    }
+  });
+});
+
+describe('redactCoordinatesDeep containers (#588)', () => {
+  it('replaces container values whatever their shape', () => {
+    expect(
+      redactCoordinatesDeep({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [106.7, 10.7] },
+        properties: { name: 'Quán A', coordinates: [[1, 2]] },
+        viewport: { north: 10.8, south: 10.7, east: 106.8, west: 106.6 },
+        place: { location: { latitude: 10.7, longitude: 106.7 } },
+        bbox: null,
+      }),
+    ).toEqual({
+      type: 'Feature',
+      geometry: REDACTED,
+      properties: { name: 'Quán A', coordinates: REDACTED },
+      viewport: REDACTED,
+      place: { location: { latitude: REDACTED, longitude: REDACTED } },
+      bbox: null,
+    });
+    expect(redactCoordinatesDeep([['bounds', '1,2,3,4']])).toEqual([['bounds', REDACTED]]);
   });
 });
