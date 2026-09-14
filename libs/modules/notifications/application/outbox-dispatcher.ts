@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { ProviderUnavailableError, type NotificationProviderPort } from '@gogo/providers';
+import { pushAllowed } from './push-preference';
 
 type NotificationKind = (typeof schema.notifications.$inferSelect)['kind'];
 
@@ -137,19 +138,15 @@ export class OutboxDispatcher {
     if (targets.length === 0) return;
 
     const userIds = targets.map((t) => t.userId!) as string[];
-    // FR-USER-004: respect per-kind opt-outs (default enabled).
-    const prefs = await this.db
-      .select()
-      .from(schema.notificationPreferences)
+    // NTF-BE-014 (#572), ADR-0025: one switch per account decides push for
+    // every kind. The in-app row below is written regardless of it.
+    const pushOff = await this.db
+      .select({ id: schema.users.id })
+      .from(schema.users)
       .where(
-        and(
-          inArray(schema.notificationPreferences.userId, userIds),
-          eq(schema.notificationPreferences.kind, mapping.kind),
-        ),
+        and(inArray(schema.users.id, userIds), sql`not ${pushAllowed(sql`${schema.users.id}`)}`),
       );
-    const optedOutOfPush = new Set(
-      prefs.filter((p) => p.channel === 'push' && !p.enabled).map((p) => p.userId),
-    );
+    const optedOutOfPush = new Set(pushOff.map((row) => row.id));
 
     // #584 — one inbox row per recipient, whichever release writes it.
     //

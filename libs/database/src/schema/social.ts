@@ -164,6 +164,37 @@ export const notificationPreferences = pgTable(
   (t) => [uniqueIndex('notification_preferences_unique').on(t.userId, t.channel, t.kind)],
 );
 
+/**
+ * NTF-BE-014 (#572), ADR-0025 — the one application-level push switch.
+ *
+ * No row means the person never chose, which is on — exactly what an account
+ * without per-kind rows already meant. Once a row exists it alone decides
+ * whether GoGo asks the provider to push to this account; the per-kind rows in
+ * `notification_preferences` stay (rollback reads them, email keeps them) and no
+ * longer gate push. The in-app inbox is written either way.
+ *
+ * An app preference and nothing more: not the OS permission on any device, not
+ * a registered subscription, never evidence that anything was delivered.
+ */
+export const notificationSettings = pgTable(
+  'notification_settings',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    pushEnabled: boolean('push_enabled').notNull(),
+    /**
+     * `explicit` — set through the switch; `migrated` — the 0064 backfill;
+     * `legacy` — an older client turned one kind off, which turns push off.
+     */
+    source: text('source').$type<'explicit' | 'migrated' | 'legacy'>().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('notification_settings_source', sql`${t.source} in ('explicit', 'migrated', 'legacy')`),
+  ],
+);
+
 export const devicePlatform = pgEnum('device_platform', ['ios', 'android', 'web']);
 
 /**

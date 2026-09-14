@@ -1,5 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { CampaignAudience } from '../domain/campaign';
+import { pushAllowed } from './push-preference';
 
 /**
  * BE-CMS-G4e (#226) — who a campaign reaches, as one SQL predicate over
@@ -64,15 +65,12 @@ export function audiencePredicate(
 /**
  * Respecting the recipient's own switch.
  *
- * A campaign is marketing; `notification_preferences` is where someone said
- * they did not want it. The default is on — a row only exists once a preference
- * was expressed — so this excludes the people who turned it off rather than
- * requiring everyone to opt in.
+ * NTF-BE-014 (#572): a campaign follows the same single push switch as every
+ * other kind (ADR-0025). The default is still on — nobody is required to opt in
+ * — and anyone who turned push off is excluded. A per-kind `campaign` opt-out
+ * still excludes an account that has no switch row, but it can no longer
+ * override someone who turned push on through the switch.
  */
 export function respectsPushPreference(): SQL {
-  return sql`not exists (
-    select 1 from notification_preferences np
-    where np.user_id = u.id and np.channel = 'push'
-      and np.kind = 'campaign' and np.enabled = false
-  )`;
+  return pushAllowed(sql`u.id`);
 }

@@ -1573,7 +1573,7 @@ export interface paths {
         };
         /**
          * Export all actor-owned data (privacy rule)
-         * @description Everything the account owns, as JSON, from an explicit allowlist: profile (display name, email, locale, avatar URL, home area, interests, usual budget — ADR-0022), memberships, preferences, votes, saved items, reviews. Never a credential, a session, or an upload key. Audit-logged and recorded in the privacy ledger.
+         * @description Everything the account owns, as JSON, from an explicit allowlist: profile (display name, email, locale, avatar URL, home area, interests, usual budget — ADR-0022), memberships, preferences, votes, saved items, reviews, and the push switch (`notificationSettings`, ADR-0025). Never a credential, a session, or an upload key. Audit-logged and recorded in the privacy ledger.
          */
         get: operations["exportMyData"];
         put?: never;
@@ -2207,10 +2207,40 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Per-channel, per-kind notification opt-ins */
+        /**
+         * Per-channel, per-kind notification opt-ins (legacy clients)
+         * @description Kept for clients released before NTF-BE-014 (#572). Push is now one switch per account (`GET /me/notification-settings`, ADR-0025), so every push kind here reports that switch's value; email rows are returned as stored. New clients read the settings resource instead.
+         */
         get: operations["getNotificationPreferences"];
-        /** Opt in/out of one notification kind on one channel */
+        /**
+         * Opt in/out of one notification kind on one channel (legacy clients)
+         * @description Kept for clients released before NTF-BE-014 (#572). The row is stored, but only a push opt-out changes delivery: it turns the account's push switch off (`source: legacy`), since a single kind can no longer be stopped on its own. `enabled: true` never turns push back on — that is `PUT /me/notification-settings`.
+         */
         put: operations["setNotificationPreference"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/notification-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The account's one push switch (NTF-BE-014)
+         * @description ADR-0025. `pushEnabled` is what this account asked GoGo to do and nothing more: it is not this device's OS notification permission, not a registered push subscription (`PUT /me/push-subscriptions`), and never evidence that anything was delivered. The in-app inbox is written whatever it says.
+         */
+        get: operations["getNotificationSettings"];
+        /**
+         * Turn every push notification kind on or off
+         * @description Idempotent. `true` allows every push kind GoGo sends, CMS campaigns included; `false` stops all of them. Once set, per-kind rows written by older clients no longer affect delivery (ADR-0025). A client should keep showing the previous value until this returns, and restore it on failure.
+         */
+        put: operations["setNotificationSettings"];
         post?: never;
         delete?: never;
         options?: never;
@@ -6431,6 +6461,21 @@ export interface components {
             /** @enum {string} */
             decision: "published" | "rejected" | "approved" | "actioned" | "dismissed";
             reason: string;
+        };
+        /** @description ADR-0025. One app-level push switch per account. Deliberately carries no OS permission, subscription or delivery field: the device knows its own permission, `PUT /me/push-subscriptions` records reachability, and only the provider knows about delivery. */
+        NotificationSettings: {
+            /** @description Whether GoGo may ask the provider to push to this account, for every kind. */
+            pushEnabled: boolean;
+            /**
+             * @description `default` — never chosen, so on. `explicit` — set through `PUT /me/notification-settings`. `migrated` — derived once by migration 0064 from per-kind choices: on only if every stored push kind was on. `legacy` — an older client turned one kind off, which turns push off.
+             * @enum {string}
+             */
+            source: "default" | "explicit" | "migrated" | "legacy";
+            /**
+             * Format: date-time
+             * @description When the switch was last stored; null while it is the default.
+             */
+            updatedAt: string | null;
         };
         /** @enum {string} */
         NotificationKind: "invite" | "preference_reminder" | "plan_ready" | "plan_changed" | "date_reminder" | "moderation_update";
@@ -12259,7 +12304,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Preferences (absent rows default to enabled) */
+            /** @description Every push kind carrying the switch's value, then stored email rows */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12295,6 +12340,67 @@ export interface operations {
         responses: {
             /** @description { updated: true } */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getNotificationSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The switch as the server applies it */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationSettings"];
+                };
+            };
+            /** @description USER_ONLY — guests have no account to hold a switch. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    setNotificationSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    pushEnabled: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description The switch as stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description USER_ONLY — guests have no account to hold a switch. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

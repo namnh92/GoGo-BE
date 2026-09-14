@@ -26,6 +26,9 @@ const reviewPatchSchema = z.object({
   text: z.string().max(2000).optional(),
 });
 
+/** NTF-BE-014 (#572) — the one push switch; nothing else is accepted. */
+const notifSettingsSchema = z.object({ pushEnabled: z.boolean() }).strict();
+
 // eslint-disable-next-line no-useless-assignment -- used in decorator below
 const notifPrefSchema = z.object({
   channel: z.enum(['push', 'email']),
@@ -101,6 +104,20 @@ export class UserContentController {
   @Delete('me')
   deleteAccount(@CurrentActor() actor: Actor) {
     return this.service.deleteAccount(actor);
+  }
+
+  /** NTF-BE-014 (#572), ADR-0025 — one app-level push switch. */
+  @Get('me/notification-settings')
+  notificationSettings(@CurrentActor() actor: Actor) {
+    return this.service.getNotificationSettings(actor);
+  }
+
+  @Put('me/notification-settings')
+  setNotificationSettings(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(notifSettingsSchema)) body: { pushEnabled: boolean },
+  ) {
+    return this.service.setNotificationSettings(actor, body);
   }
 
   @Get('me/notification-preferences')

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.33
+  version: 1.0.0-alpha.34
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2875,7 +2875,8 @@ paths:
         Everything the account owns, as JSON, from an explicit allowlist:
         profile (display name, email, locale, avatar URL, home area, interests,
         usual budget — ADR-0022), memberships, preferences, votes, saved
-        items, reviews. Never a credential, a session, or an upload key.
+        items, reviews, and the push switch (`notificationSettings`, ADR-0025).
+        Never a credential, a session, or an upload key.
         Audit-logged and recorded in the privacy ledger.
       responses:
         '200': { description: JSON export; audit-logged }
@@ -4047,10 +4048,15 @@ paths:
     get:
       operationId: getNotificationPreferences
       tags: [me]
-      summary: Per-channel, per-kind notification opt-ins
+      summary: Per-channel, per-kind notification opt-ins (legacy clients)
+      description: >
+        Kept for clients released before NTF-BE-014 (#572). Push is now one
+        switch per account (`GET /me/notification-settings`, ADR-0025), so every
+        push kind here reports that switch's value; email rows are returned as
+        stored. New clients read the settings resource instead.
       responses:
         '200':
-          description: Preferences (absent rows default to enabled)
+          description: Every push kind carrying the switch's value, then stored email rows
           content:
             application/json:
               schema:
@@ -4064,7 +4070,13 @@ paths:
     put:
       operationId: setNotificationPreference
       tags: [me]
-      summary: Opt in/out of one notification kind on one channel
+      summary: Opt in/out of one notification kind on one channel (legacy clients)
+      description: >
+        Kept for clients released before NTF-BE-014 (#572). The row is stored,
+        but only a push opt-out changes delivery: it turns the account's push
+        switch off (`source: legacy`), since a single kind can no longer be
+        stopped on its own. `enabled: true` never turns push back on — that is
+        `PUT /me/notification-settings`.
       requestBody:
         required: true
         content:
@@ -4079,6 +4091,55 @@ paths:
       responses:
         '200':
           description: '{ updated: true }'
+
+  /me/notification-settings:
+    get:
+      operationId: getNotificationSettings
+      tags: [me]
+      summary: The account's one push switch (NTF-BE-014)
+      description: >
+        ADR-0025. `pushEnabled` is what this account asked GoGo to do and
+        nothing more: it is not this device's OS notification permission, not a
+        registered push subscription (`PUT /me/push-subscriptions`), and never
+        evidence that anything was delivered. The in-app inbox is written
+        whatever it says.
+      responses:
+        '200':
+          description: The switch as the server applies it
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationSettings' }
+        '403':
+          description: USER_ONLY — guests have no account to hold a switch.
+    put:
+      operationId: setNotificationSettings
+      tags: [me]
+      summary: Turn every push notification kind on or off
+      description: >
+        Idempotent. `true` allows every push kind GoGo sends, CMS campaigns
+        included; `false` stops all of them. Once set, per-kind rows written by
+        older clients no longer affect delivery (ADR-0025). A client should keep
+        showing the previous value until this returns, and restore it on
+        failure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [pushEnabled]
+              properties:
+                pushEnabled: { type: boolean }
+      responses:
+        '200':
+          description: The switch as stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403':
+          description: USER_ONLY — guests have no account to hold a switch.
 
   /docs:
     get:
@@ -11944,6 +12005,31 @@ components:
       properties:
         decision: { type: string, enum: [published, rejected, approved, actioned, dismissed] }
         reason: { type: string, minLength: 3, maxLength: 500 }
+    NotificationSettings:
+      type: object
+      description: >
+        ADR-0025. One app-level push switch per account. Deliberately carries no
+        OS permission, subscription or delivery field: the device knows its own
+        permission, `PUT /me/push-subscriptions` records reachability, and only
+        the provider knows about delivery.
+      required: [pushEnabled, source, updatedAt]
+      properties:
+        pushEnabled:
+          type: boolean
+          description: Whether GoGo may ask the provider to push to this account, for every kind.
+        source:
+          type: string
+          enum: [default, explicit, migrated, legacy]
+          description: >
+            `default` — never chosen, so on. `explicit` — set through
+            `PUT /me/notification-settings`. `migrated` — derived once by
+            migration 0064 from per-kind choices: on only if every stored push
+            kind was on. `legacy` — an older client turned one kind off, which
+            turns push off.
+        updatedAt:
+          type: [string, 'null']
+          format: date-time
+          description: When the switch was last stored; null while it is the default.
     NotificationKind:
       type: string
       enum:
