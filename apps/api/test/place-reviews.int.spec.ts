@@ -152,7 +152,7 @@ describe('how many reviews a place shows (#570)', () => {
     const res = await read(placeId);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ source: 'gogo', reviews: [] });
+    expect(res.json()).toEqual({ source: 'gogo', order: 'latest', reviews: [] });
     expect(res.headers['cache-control']).toBe('no-store');
   });
 
@@ -337,7 +337,14 @@ describe('what a stranger learns about the author (#570)', () => {
     const res = await read(placeId);
     const [item] = res.json().reviews;
 
-    expect(Object.keys(item).sort()).toEqual(['author', 'createdAt', 'id', 'rating', 'text']);
+    expect(Object.keys(item).sort()).toEqual([
+      'author',
+      'createdAt',
+      'helpfulCount',
+      'id',
+      'rating',
+      'text',
+    ]);
     expect(item.author).toEqual({ displayName: 'Minh' });
     expect(item.createdAt).toBe(minutesAgo(3).toISOString());
     expect(res.body).not.toContain(author.userId);

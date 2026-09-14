@@ -7,6 +7,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   smallint,
   text,
   timestamp,
@@ -74,6 +75,31 @@ export const reviews = pgTable(
     ),
     index('reviews_place_idx').on(t.placeId, t.status),
     index('reviews_user_idx').on(t.userId),
+  ],
+);
+
+/**
+ * ADR-0026 (BE-BFF-019, #571, PROPOSAL) — one reaction per person per review
+ * per type. `type` is text with a CHECK, not an enum: a second type is a new
+ * decision and a migration, never a value slipped in. Counts are derived from
+ * these rows and never stored beside them, so there is nothing to drift.
+ */
+export const reviewReactions = pgTable(
+  'review_reactions',
+  {
+    reviewId: uuid('review_id')
+      .notNull()
+      .references(() => reviews.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    type: text('type').$type<'helpful'>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.reviewId, t.userId, t.type] }),
+    check('review_reactions_type', sql`${t.type} in ('helpful')`),
+    index('review_reactions_user_idx').on(t.userId),
   ],
 );
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.38
+  version: 1.0.0-alpha.39
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2503,7 +2503,7 @@ paths:
     get:
       operationId: listPlaceReviews
       tags: [places]
-      summary: Latest published GoGo reviews of a place (at most three)
+      summary: Latest or most helpful published GoGo reviews of a place (at most three)
       description: >
         BE-BFF-018. GoGo community reviews only, never Google's: the provider
         rating stays on `PlaceDetail.rating`/`ratingCount` with its attribution
@@ -2513,9 +2513,19 @@ paths:
         descending, so repeated reads agree. Answers for the same places
         `getPlaceDetail` does (404 otherwise) and is served
         `Cache-Control: no-store`, so a takedown holds on the next read.
+
+
+        BE-BFF-019 (ADR-0026, proposal): `order=helpful` ranks by
+        `helpfulCount` descending, then the same newest-first order, so with no
+        reactions it answers exactly what `latest` does. Counts only; no
+        response names who reacted.
       security: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - name: order
+          in: query
+          required: false
+          schema: { type: string, enum: [latest, helpful], default: latest }
       responses:
         '200':
           description: Up to three reviews; an empty list when none is published
@@ -2968,9 +2978,9 @@ paths:
         Everything the account owns, as JSON, from an explicit allowlist:
         profile (display name, email, locale, avatar URL, home area, interests,
         usual budget — ADR-0022, date of birth — PROF-BE-013), memberships,
-        preferences, votes, saved items, reviews, and the push switch
-        (`notificationSettings`, ADR-0025). Never a credential, a session, or
-        an upload key.
+        preferences, votes, saved items, reviews, review reactions given
+        (ADR-0026), and the push switch (`notificationSettings`, ADR-0025).
+        Never a credential, a session, or an upload key.
         Audit-logged and recorded in the privacy ledger.
       responses:
         '200': { description: JSON export; audit-logged }
@@ -3938,6 +3948,69 @@ paths:
               schema: { $ref: '#/components/schemas/Review' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /reviews/{id}/reactions/helpful:
+    put:
+      operationId: markReviewHelpful
+      tags: [me]
+      summary: Mark a published review helpful (idempotent; ADR-0026 proposal)
+      description: >
+        BE-BFF-019. One `helpful` per account per review: repeating the call
+        changes nothing and answers the same state. Signed-in accounts only
+        (guests get `403 USER_ONLY`), never on your own review
+        (`403 OWN_REVIEW`). A review that is not published on a place Place
+        Detail opens answers `404 REVIEW_NOT_FOUND`, exactly like a missing one.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The state this request produced
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewReactionState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    delete:
+      operationId: unmarkReviewHelpful
+      tags: [me]
+      summary: Remove your helpful mark from a review (idempotent; ADR-0026 proposal)
+      description: >
+        BE-BFF-019. Removing a mark that is not there changes nothing and
+        answers the same state. Same permissions and not-found rule as marking.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The state this request produced
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewReactionState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /me/review-reactions:
+    get:
+      operationId: listMyReviewReactions
+      tags: [me]
+      summary: Which published reviews of a place the caller marked helpful
+      description: >
+        BE-BFF-019. The caller's own marks only — how a client shows its toggle
+        state while the public list stays free of reactor identities. Signed-in
+        accounts only (guests get `403 USER_ONLY`).
+      parameters:
+        - { name: placeId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Review ids, most recent mark first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyReviewReactions' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /me/notifications/{id}/read:
     post:
@@ -13457,10 +13530,30 @@ components:
               actorName: { type: string }
               at: { type: string, format: date-time }
               detail: { type: object, additionalProperties: true }
+    ReviewReactionState:
+      type: object
+      required: [reviewId, helpfulCount, reactedByMe]
+      properties:
+        reviewId: { type: string, format: uuid }
+        helpfulCount: { type: integer, minimum: 0 }
+        reactedByMe: { type: boolean }
+    MyReviewReactions:
+      type: object
+      required: [placeId, helpful]
+      properties:
+        placeId: { type: string, format: uuid }
+        helpful:
+          type: array
+          description: Ids of the place's published reviews the caller marked helpful. Never anyone else's marks.
+          items: { type: string, format: uuid }
     PlaceReviewPreview:
       type: object
-      required: [source, reviews]
+      required: [source, order, reviews]
       properties:
+        order:
+          type: string
+          enum: [latest, helpful]
+          description: The order the server applied, echoing the request (default `latest`).
         source:
           type: string
           enum: [gogo]
@@ -13473,11 +13566,15 @@ components:
           items: { $ref: '#/components/schemas/PublicPlaceReview' }
     PublicPlaceReview:
       type: object
-      required: [id, rating, createdAt, author]
+      required: [id, rating, createdAt, author, helpfulCount]
       description: A published review as anyone may read it. Carries no user id, email or avatar.
       properties:
         id: { type: string, format: uuid }
         rating: { type: integer, minimum: 1, maximum: 5 }
+        helpfulCount:
+          type: integer
+          minimum: 0
+          description: How many accounts marked this review helpful. A count only (ADR-0026).
         text: { type: string, description: Omitted when the review has no text. }
         createdAt:
           type: string
