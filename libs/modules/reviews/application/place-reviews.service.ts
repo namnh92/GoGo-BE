@@ -1,30 +1,25 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import {
   PLACE_REVIEW_PREVIEW_LIMIT,
   PUBLIC_REVIEW_STATUS,
+  READABLE_PLACE_STATUSES,
   toPublicReview,
+  type ReviewOrder,
 } from '../domain/public-review';
 
 /**
- * The statuses Place Detail answers for (`search.repository.ts` placeDetail).
- * A place nobody can open has no public reviews either, so a suspended place
- * answers 404 here exactly as it does there.
+ * BE-BFF-018 (#570) — the latest published GoGo reviews of one place.
+ * BE-BFF-019 (#571) — or the most helpful ones (ADR-0026, PROPOSAL).
  */
-const READABLE_PLACE_STATUSES: ('published' | 'community_submitted')[] = [
-  'published',
-  'community_submitted',
-];
-
-/** BE-BFF-018 (#570) — the latest published GoGo reviews of one place. */
 @Injectable()
 export class PlaceReviewsService {
   constructor(@Inject(DB) private readonly db: Db) {}
 
-  async latest(placeId: string) {
+  async preview(placeId: string, order: ReviewOrder = 'latest') {
     const [place] = await this.db
       .select({ id: schema.places.id })
       .from(schema.places)
@@ -34,6 +29,12 @@ export class PlaceReviewsService {
       .limit(1);
     if (!place) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
 
+    // Derived, never stored: a count cannot disagree with the rows it counts.
+    const helpfulCount = sql<number>`(
+      select count(*)::int from ${schema.reviewReactions} rr
+      where rr.review_id = ${schema.reviews.id} and rr.type = 'helpful'
+    )`.mapWith(Number);
+
     const rows = await this.db
       .select({
         id: schema.reviews.id,
@@ -42,6 +43,7 @@ export class PlaceReviewsService {
         createdAt: schema.reviews.createdAt,
         authorDisplayName: schema.users.displayName,
         authorStatus: schema.users.status,
+        helpfulCount,
       })
       .from(schema.reviews)
       .innerJoin(schema.users, eq(schema.users.id, schema.reviews.userId))
@@ -50,11 +52,17 @@ export class PlaceReviewsService {
       )
       // Newest first; two reviews written in the same instant break on id, so
       // two reads of the same data can never disagree about which three show.
-      .orderBy(desc(schema.reviews.createdAt), desc(schema.reviews.id))
+      // `helpful` puts the count in front of exactly that order, so with no
+      // reactions at all it answers what `latest` does.
+      .orderBy(
+        ...(order === 'helpful' ? [desc(helpfulCount)] : []),
+        desc(schema.reviews.createdAt),
+        desc(schema.reviews.id),
+      )
       .limit(PLACE_REVIEW_PREVIEW_LIMIT);
 
     // `source` is a fact, not decoration: these are GoGo community reviews and
     // never share a number with the provider rating on Place Detail (rule 14).
-    return { source: 'gogo' as const, reviews: rows.map(toPublicReview) };
+    return { source: 'gogo' as const, order, reviews: rows.map(toPublicReview) };
   }
 }

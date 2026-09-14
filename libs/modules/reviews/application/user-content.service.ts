@@ -81,7 +81,7 @@ export type NotificationSettingsView = {
   updatedAt: string | null;
 };
 
-function requireUser(actor: Actor): string {
+export function requireUser(actor: Actor): string {
   if (actor.type !== 'user') {
     throw AppError.forbidden('USER_ONLY', 'Register an account to use this feature');
   }
@@ -382,6 +382,11 @@ export class UserContentService {
       .select()
       .from(schema.reviews)
       .where(eq(schema.reviews.userId, userId));
+    // ADR-0026 — the reactions this person gave, never anyone else's.
+    const reviewReactions = await this.db
+      .select()
+      .from(schema.reviewReactions)
+      .where(eq(schema.reviewReactions.userId, userId));
 
     const notificationSettings = await this.notificationSettingsFor(userId);
 
@@ -426,6 +431,11 @@ export class UserContentService {
         pushEnabled: notificationSettings.pushEnabled,
         source: notificationSettings.source,
       },
+      reviewReactions: reviewReactions.map((r) => ({
+        reviewId: r.reviewId,
+        type: r.type,
+        createdAt: r.createdAt.toISOString(),
+      })),
     };
   }
 
@@ -513,6 +523,10 @@ export class UserContentService {
       // These are personal records, not contributions, and nothing in the
       // product reads them for a deleted account.
       await tx.delete(schema.savedItems).where(eq(schema.savedItems.userId, userId));
+      // ADR-0026: a reaction is a personal signal, not a contribution, and is not
+      // on ADR-0023's retention list; the counts it added are derived and drop
+      // with it.
+      await tx.delete(schema.reviewReactions).where(eq(schema.reviewReactions.userId, userId));
       await tx.delete(schema.notifications).where(eq(schema.notifications.userId, userId));
       await tx
         .delete(schema.notificationPreferences)

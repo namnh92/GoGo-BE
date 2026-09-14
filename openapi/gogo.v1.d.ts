@@ -1283,8 +1283,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Latest published GoGo reviews of a place (at most three)
+         * Latest or most helpful published GoGo reviews of a place (at most three)
          * @description BE-BFF-018. GoGo community reviews only, never Google's: the provider rating stays on `PlaceDetail.rating`/`ratingCount` with its attribution and is never merged with these. Only reviews a moderator published are listed; `pending`, `rejected`, `removed` and emergency-`hidden` reviews never appear. Ordered newest first by `createdAt`, ties broken by `id` descending, so repeated reads agree. Answers for the same places `getPlaceDetail` does (404 otherwise) and is served `Cache-Control: no-store`, so a takedown holds on the next read.
+         *
+         *     BE-BFF-019 (ADR-0026, proposal): `order=helpful` ranks by `helpfulCount` descending, then the same newest-first order, so with no reactions it answers exactly what `latest` does. Counts only; no response names who reacted.
          */
         get: operations["listPlaceReviews"];
         put?: never;
@@ -1616,7 +1618,7 @@ export interface paths {
         };
         /**
          * Export all actor-owned data (privacy rule)
-         * @description Everything the account owns, as JSON, from an explicit allowlist: profile (display name, email, locale, avatar URL, home area, interests, usual budget — ADR-0022, date of birth — PROF-BE-013), memberships, preferences, votes, saved items, reviews, and the push switch (`notificationSettings`, ADR-0025). Never a credential, a session, or an upload key. Audit-logged and recorded in the privacy ledger.
+         * @description Everything the account owns, as JSON, from an explicit allowlist: profile (display name, email, locale, avatar URL, home area, interests, usual budget — ADR-0022, date of birth — PROF-BE-013), memberships, preferences, votes, saved items, reviews, review reactions given (ADR-0026), and the push switch (`notificationSettings`, ADR-0025). Never a credential, a session, or an upload key. Audit-logged and recorded in the privacy ledger.
          */
         get: operations["exportMyData"];
         put?: never;
@@ -2140,6 +2142,50 @@ export interface paths {
         head?: never;
         /** Edit own review — goes back to moderation (owner only) */
         patch: operations["updateReview"];
+        trace?: never;
+    };
+    "/reviews/{id}/reactions/helpful": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Mark a published review helpful (idempotent; ADR-0026 proposal)
+         * @description BE-BFF-019. One `helpful` per account per review: repeating the call changes nothing and answers the same state. Signed-in accounts only (guests get `403 USER_ONLY`), never on your own review (`403 OWN_REVIEW`). A review that is not published on a place Place Detail opens answers `404 REVIEW_NOT_FOUND`, exactly like a missing one.
+         */
+        put: operations["markReviewHelpful"];
+        post?: never;
+        /**
+         * Remove your helpful mark from a review (idempotent; ADR-0026 proposal)
+         * @description BE-BFF-019. Removing a mark that is not there changes nothing and answers the same state. Same permissions and not-found rule as marking.
+         */
+        delete: operations["unmarkReviewHelpful"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/review-reactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Which published reviews of a place the caller marked helpful
+         * @description BE-BFF-019. The caller's own marks only — how a client shows its toggle state while the public list stays free of reactor identities. Signed-in accounts only (guests get `403 USER_ONLY`).
+         */
+        get: operations["listMyReviewReactions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/me/notifications/{id}/read": {
@@ -7388,7 +7434,24 @@ export interface components {
                 };
             }[];
         };
+        ReviewReactionState: {
+            /** Format: uuid */
+            reviewId: string;
+            helpfulCount: number;
+            reactedByMe: boolean;
+        };
+        MyReviewReactions: {
+            /** Format: uuid */
+            placeId: string;
+            /** @description Ids of the place's published reviews the caller marked helpful. Never anyone else's marks. */
+            helpful: string[];
+        };
         PlaceReviewPreview: {
+            /**
+             * @description The order the server applied, echoing the request (default `latest`).
+             * @enum {string}
+             */
+            order: "latest" | "helpful";
             /**
              * @description Always `gogo`. These are GoGo community reviews; they never share a number with a provider rating.
              * @enum {string}
@@ -7401,6 +7464,8 @@ export interface components {
             /** Format: uuid */
             id: string;
             rating: number;
+            /** @description How many accounts marked this review helpful. A count only (ADR-0026). */
+            helpfulCount: number;
             /** @description Omitted when the review has no text. */
             text?: string;
             /**
@@ -10845,7 +10910,9 @@ export interface operations {
     };
     listPlaceReviews: {
         parameters: {
-            query?: never;
+            query?: {
+                order?: "latest" | "helpful";
+            };
             header?: never;
             path: {
                 id: string;
@@ -12261,6 +12328,82 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    markReviewHelpful: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The state this request produced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewReactionState"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    unmarkReviewHelpful: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The state this request produced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewReactionState"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    listMyReviewReactions: {
+        parameters: {
+            query: {
+                placeId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Review ids, most recent mark first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyReviewReactions"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     markNotificationRead: {

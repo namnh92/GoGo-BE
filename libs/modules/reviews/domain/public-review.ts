@@ -16,6 +16,24 @@ export const PLACE_REVIEW_PREVIEW_LIMIT = 3;
 
 export const PUBLIC_REVIEW_STATUS = 'published' as const;
 
+/**
+ * The place statuses Place Detail answers for (`search.repository.ts`
+ * placeDetail). A place nobody can open has no public reviews, and its reviews
+ * take no reactions.
+ */
+export const READABLE_PLACE_STATUSES: ('published' | 'community_submitted')[] = [
+  'published',
+  'community_submitted',
+];
+
+/**
+ * ADR-0026 (PROPOSAL). `latest` is BE-BFF-018's order and the default;
+ * `helpful` ranks by helpful count, then newest, then id — so with no reactions
+ * at all it is exactly `latest`, which is the fallback.
+ */
+export const REVIEW_ORDERS = ['latest', 'helpful'] as const;
+export type ReviewOrder = (typeof REVIEW_ORDERS)[number];
+
 export type PublicReviewRow = {
   id: string;
   rating: number;
@@ -23,6 +41,7 @@ export type PublicReviewRow = {
   createdAt: Date;
   authorDisplayName: string;
   authorStatus: 'active' | 'suspended' | 'banned' | 'deleted';
+  helpfulCount: number;
 };
 
 export type PublicReview = {
@@ -31,6 +50,8 @@ export type PublicReview = {
   text?: string;
   createdAt: string;
   author: { displayName: string | null };
+  /** A count only — who reacted is never public (ADR-0026). */
+  helpfulCount: number;
 };
 
 export function toPublicReview(row: PublicReviewRow): PublicReview {
@@ -40,5 +61,6 @@ export function toPublicReview(row: PublicReviewRow): PublicReview {
     ...(row.text?.trim() ? { text: row.text } : {}),
     createdAt: row.createdAt.toISOString(),
     author: { displayName: row.authorStatus === 'deleted' ? null : row.authorDisplayName },
+    helpfulCount: row.helpfulCount,
   };
 }
