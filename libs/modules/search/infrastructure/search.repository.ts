@@ -46,6 +46,12 @@ export type SearchFilters = {
   scoredAt: Date;
   /** Category keys resolved from synonym expansion of the query (SE-001). */
   synonymCategoryKeys?: string[] | undefined;
+  /**
+   * ADM-021 (#568) — a canonical area scope. The service applies it only when
+   * the request carries no position, so the two are never intersected.
+   */
+  administrativeArea?:
+    { datasetVersion: string; provinceCode: string; communeCode: string | null } | undefined;
 };
 
 export type SearchRow = {
@@ -163,6 +169,19 @@ export class SearchRepository {
         sql`(p.search_tsv @@ websearch_to_tsquery('simple', ${q})
              or similarity(p.name_normalized, ${q}) > 0.2${synonymArm})`,
       );
+    }
+
+    // A place is inside an area only through a VERIFIED mapping from the same
+    // dataset — the bar publication uses; auto-matched, unreviewed, rejected,
+    // stale and unmapped places are outside every area rather than guessed in.
+    if (f.administrativeArea) {
+      const area = f.administrativeArea;
+      conditions.push(
+        sql`p.administrative_mapping_status = 'VERIFIED'`,
+        sql`p.administrative_dataset_version = ${area.datasetVersion}`,
+        sql`p.province_code = ${area.provinceCode}`,
+      );
+      if (area.communeCode) conditions.push(sql`p.commune_code = ${area.communeCode}`);
     }
 
     const hasGeo = f.lat !== undefined && f.lng !== undefined;

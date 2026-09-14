@@ -8,6 +8,7 @@ import { normalizeGoogleAttribution } from '../../shared/attribution';
 import { iso, num, toPhotos, type PlacePhotoRow } from '../domain/place-dto';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
+import { validateAreaSelection } from '../../administrative/application/area-selection';
 import { normalizeVietnamese } from '../domain/normalize';
 import {
   SearchRepository,
@@ -75,6 +76,24 @@ export function openStateAt(hours: HoursRow[], at: Date): OpenState {
 function encodeCursor(v: number, id: string, scoredAt: Date): string {
   return Buffer.from(JSON.stringify([v, id, scoredAt.toISOString()])).toString('base64url');
 }
+
+/**
+ * ADM-021 (#568) — which location actually scoped the results, so a client can
+ * say "near you" or "in {area}" truthfully, or ask for an area when neither.
+ */
+export type SearchLocationMeta =
+  | { source: 'gps' }
+  | {
+      source: 'administrative_area';
+      area: {
+        datasetVersion: string;
+        provinceCode: string;
+        provinceName: string;
+        communeCode: string | null;
+        communeName: string | null;
+      };
+    }
+  | { source: 'none' };
 
 export function decodeCursor(cursor: string): { v: number; id: string; scoredAt: Date } {
   try {
@@ -144,11 +163,40 @@ export class SearchService {
 
   async search(filters: SearchFilters, actorAnalyticsId?: string) {
     const startedAt = Date.now();
+    // Precedence: a position the client sends wins; an area applies only
+    // without one; the two are never intersected into an empty page. The
+    // client decides whether its fix is fresh enough to send.
+    const hasPosition = filters.lat !== undefined && filters.lng !== undefined;
+    let location: SearchLocationMeta = hasPosition ? { source: 'gps' } : { source: 'none' };
+    let administrativeArea: SearchFilters['administrativeArea'];
+    if (!hasPosition && filters.administrativeArea) {
+      // 400 for a code that is not current or not under its province, 409
+      // ADMINISTRATIVE_VERSION_CHANGED for a dataset that is not published.
+      const area = await validateAreaSelection(this.db, filters.administrativeArea);
+      administrativeArea = {
+        datasetVersion: area.datasetVersion,
+        provinceCode: area.provinceCode,
+        communeCode: area.communeCode ?? null,
+      };
+      location = {
+        source: 'administrative_area',
+        area: {
+          datasetVersion: area.datasetVersion,
+          provinceCode: area.provinceCode,
+          provinceName: area.provinceName,
+          communeCode: area.communeCode ?? null,
+          communeName: area.communeName ?? null,
+        },
+      };
+    }
     const { weights, version } = await this.repo.activeWeights();
     const synonymCategoryKeys = filters.q
       ? await this.repo.synonymCategoryKeys(normalizeVietnamese(filters.q))
       : [];
-    const rows = await this.repo.search({ ...filters, synonymCategoryKeys }, weights);
+    const rows = await this.repo.search(
+      { ...filters, administrativeArea, synonymCategoryKeys },
+      weights,
+    );
     const hasMore = rows.length > filters.limit;
     const page = rows.slice(0, filters.limit);
 
@@ -189,6 +237,8 @@ export class SearchService {
             priceMaxPerPerson: filters.priceMaxPerPerson ?? null,
             suitedFor: filters.suitedFor ?? null,
             openAt: filters.openAt?.toISOString() ?? null,
+            // Which kind of scope, never the coordinates or the codes.
+            locationSource: location.source,
           },
         },
       });
@@ -198,7 +248,7 @@ export class SearchService {
     return {
       results,
       nextCursor: hasMore && last ? encodeCursor(last.sort_value, last.id, filters.scoredAt) : null,
-      meta: { weightsVersion: version, sort: filters.sort },
+      meta: { weightsVersion: version, sort: filters.sort, location },
     };
   }
 

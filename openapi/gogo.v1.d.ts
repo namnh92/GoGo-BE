@@ -1227,7 +1227,7 @@ export interface paths {
         };
         /**
          * Place search — Vietnamese-normalized text, filters, ranking, cursor
-         * @description FR-SEARCH-001..004/009 + SE-010. Accent-insensitive FTS + trigram typo tolerance + synonym expansion; hard filters in SQL; weighted versioned ranking (meta.weightsVersion); stable keyset cursor. Lodging excluded unless requested. Zero-results emit telemetry without raw PII.
+         * @description FR-SEARCH-001..004/009 + SE-010. Accent-insensitive FTS + trigram typo tolerance + synonym expansion; hard filters in SQL; weighted versioned ranking (meta.weightsVersion); stable keyset cursor. Lodging excluded unless requested. Zero-results emit telemetry without raw PII. ADM-021: scope by a position (lat/lng, radiusM defaults to 10 km) or by a canonical area (datasetVersion + provinceCode, optional communeCode for a single commune). A position wins when both are sent; the two are never intersected, and meta.location says which one scoped the results. An area matches only places with a VERIFIED mapping from the same dataset. A code that is not current or not under its province is 400; a dataset that is not the published one is 409 ADMINISTRATIVE_VERSION_CHANGED.
          */
         get: operations["searchPlaces"];
         put?: never;
@@ -5321,6 +5321,19 @@ export interface components {
         UsualBudget: {
             perPerson: number;
             currency: string;
+        };
+        /** @description ADM-021 — the scope that produced the results. gps: the request's position. administrative_area: the canonical area, with server labels. none: neither was sent, so results are not location-scoped. */
+        SearchLocation: {
+            /** @enum {string} */
+            source: "gps" | "administrative_area" | "none";
+            /** @description Present only when source is administrative_area. */
+            area?: {
+                datasetVersion: string;
+                provinceCode: string;
+                provinceName: string;
+                communeCode: string | null;
+                communeName: string | null;
+            };
         };
         AdministrativeAreaInput: {
             datasetVersion: string;
@@ -10642,6 +10655,12 @@ export interface operations {
                 /** @description CSV */
                 accessibility?: string;
                 includeLodging?: boolean;
+                /** @description Administrative dataset of provinceCode/communeCode. Required with provinceCode. */
+                datasetVersion?: string;
+                /** @description Canonical province code. Ignored when lat/lng are sent. */
+                provinceCode?: string;
+                /** @description Canonical commune code under provinceCode; omit for the whole province. */
+                communeCode?: string;
                 sort?: "relevance" | "distance" | "rating" | "price" | "curated";
                 /** @description Opaque cursor from a previous page. */
                 cursor?: components["parameters"]["Cursor"];
@@ -10665,11 +10684,13 @@ export interface operations {
                         meta: {
                             weightsVersion?: string;
                             sort?: string;
+                            location?: components["schemas"]["SearchLocation"];
                         };
                     };
                 };
             };
             400: components["responses"]["BadRequest"];
+            409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
         };
     };
