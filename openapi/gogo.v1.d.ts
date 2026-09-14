@@ -5199,6 +5199,35 @@ export interface components {
             originText?: string;
             originLat?: number;
             originLng?: number;
+            /** @description ADM-020 — the room's canonical area: a province with an optional commune (a null commune means the whole province), validated against the published administrative dataset. On create, omitted or null means no area. On a constraint update, omitted keeps the stored area, null clears it, and the same datasetVersion/provinceCode/communeCode as stored keeps the stored snapshot unchanged even when that dataset is no longer published; any other value is a new selection and must name the published dataset (409 ADMINISTRATIVE_VERSION_CHANGED otherwise, 400 for a code that is not current or not under its province). The server ignores provinceName/communeName/status echoed from RoomSummary. Independent of originLat/originLng/radiusM: no position is ever inferred from the area. Setting an area replaces areaKey. */
+            administrativeArea?: components["schemas"]["AdministrativeAreaInput"] | null;
+            /** @description Legacy service-area key. Cleared and ignored while administrativeArea is set. */
+            areaKey?: string;
+            radiusM?: number;
+            /** Format: date-time */
+            startAt?: string;
+            /** Format: date-time */
+            endAt?: string;
+            /**
+             * @description A couple room must be `total`: its budget is a total for two people and the client asks for it that way (GoGo-BE#559). `per_person` there is refused with `INVALID_BUDGET_MODE`, on create and on an explicit constraint edit alike. A group host picks either unit. Rooms stored as `per_person` before this rule keep their value and are never converted behind anyone's back.
+             * @enum {string}
+             */
+            budgetMode: "total" | "per_person";
+            /** @description Integer minor units, interpreted per budgetMode. */
+            budgetAmount: number;
+            /** @default VND */
+            currency: string;
+            dietaryKeys?: string[];
+            accessibilityKeys?: string[];
+        };
+        /** @description A room's current constraint version as read back (RoomSummary.constraints). */
+        RoomConstraints: {
+            originText?: string;
+            originLat?: number;
+            originLng?: number;
+            /** @description ADM-020 — the stored canonical area with the labels saved when it was chosen, or null. status is needs_reselection when its dataset is no longer the published one; the room keeps its labels, and suggestions are refused with 409 ADMINISTRATIVE_VERSION_CHANGED until the host chooses again or clears it. */
+            administrativeArea: components["schemas"]["AdministrativeArea"] | null;
+            /** @description Legacy service-area key. Cleared and ignored while administrativeArea is set. */
             areaKey?: string;
             radiusM?: number;
             /** Format: date-time */
@@ -5340,7 +5369,7 @@ export interface components {
                 /** @enum {string|null} */
                 blockedReason: "HOST_ONLY" | "ROOM_NOT_MATCHING" | "MATCHING_QUORUM_REQUIRED" | null;
             };
-            constraints?: components["schemas"]["RoomConstraintInput"];
+            constraints?: components["schemas"]["RoomConstraints"];
             members?: components["schemas"]["RoomMember"][];
             seedPlaces?: {
                 /** Format: uuid */

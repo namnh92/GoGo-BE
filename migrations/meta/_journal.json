@@ -428,6 +428,13 @@
       "when": 1790294400000,
       "tag": "0062_profile-administrative-area",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1790380800000,
+      "tag": "0063_room-administrative-area",
+      "breakpoints": true
     }
   ]
 }

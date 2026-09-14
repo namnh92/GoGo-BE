@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.31
+  version: 1.0.0-alpha.32
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -9903,7 +9903,71 @@ components:
         originText: { type: string, maxLength: 200 }
         originLat: { type: number, minimum: -90, maximum: 90 }
         originLng: { type: number, minimum: -180, maximum: 180 }
-        areaKey: { type: string }
+        administrativeArea:
+          oneOf:
+            - $ref: '#/components/schemas/AdministrativeAreaInput'
+            - type: 'null'
+          description: >
+            ADM-020 — the room's canonical area: a province with an optional
+            commune (a null commune means the whole province), validated against
+            the published administrative dataset. On create, omitted or null means
+            no area. On a constraint update, omitted keeps the stored area, null
+            clears it, and the same datasetVersion/provinceCode/communeCode as
+            stored keeps the stored snapshot unchanged even when that dataset is
+            no longer published; any other value is a new selection and must name
+            the published dataset (409 ADMINISTRATIVE_VERSION_CHANGED otherwise,
+            400 for a code that is not current or not under its province). The
+            server ignores provinceName/communeName/status echoed from
+            RoomSummary. Independent of originLat/originLng/radiusM: no position
+            is ever inferred from the area. Setting an area replaces areaKey.
+        areaKey:
+          type: string
+          description: Legacy service-area key. Cleared and ignored while administrativeArea is set.
+        radiusM: { type: integer, minimum: 100, maximum: 50000 }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, format: date-time }
+        budgetMode:
+          type: string
+          enum: [total, per_person]
+          description: >
+            A couple room must be `total`: its budget is a total for two people
+            and the client asks for it that way (GoGo-BE#559). `per_person`
+            there is refused with `INVALID_BUDGET_MODE`, on create and on an
+            explicit constraint edit alike. A group host picks either unit.
+            Rooms stored as `per_person` before this rule keep their value and
+            are never converted behind anyone's back.
+        budgetAmount:
+          type: integer
+          minimum: 0
+          description: Integer minor units, interpreted per budgetMode.
+        currency: { type: string, minLength: 3, maxLength: 3, default: VND }
+        dietaryKeys:
+          type: array
+          items: { type: string }
+        accessibilityKeys:
+          type: array
+          items: { type: string }
+    RoomConstraints:
+      type: object
+      description: A room's current constraint version as read back (RoomSummary.constraints).
+      required: [budgetMode, budgetAmount, administrativeArea]
+      properties:
+        originText: { type: string, maxLength: 200 }
+        originLat: { type: number, minimum: -90, maximum: 90 }
+        originLng: { type: number, minimum: -180, maximum: 180 }
+        administrativeArea:
+          oneOf:
+            - $ref: '#/components/schemas/AdministrativeArea'
+            - type: 'null'
+          description: >
+            ADM-020 — the stored canonical area with the labels saved when it was
+            chosen, or null. status is needs_reselection when its dataset is no
+            longer the published one; the room keeps its labels, and suggestions
+            are refused with 409 ADMINISTRATIVE_VERSION_CHANGED until the host
+            chooses again or clears it.
+        areaKey:
+          type: string
+          description: Legacy service-area key. Cleared and ignored while administrativeArea is set.
         radiusM: { type: integer, minimum: 100, maximum: 50000 }
         startAt: { type: string, format: date-time }
         endAt: { type: string, format: date-time }
@@ -10093,9 +10157,7 @@ components:
                 nullable: true,
                 enum: [HOST_ONLY, ROOM_NOT_MATCHING, MATCHING_QUORUM_REQUIRED, null],
               }
-        constraints:
-          allOf:
-            - $ref: '#/components/schemas/RoomConstraintInput'
+        constraints: { $ref: '#/components/schemas/RoomConstraints' }
         members:
           type: array
           items: { $ref: '#/components/schemas/RoomMember' }
