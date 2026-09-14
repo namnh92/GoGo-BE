@@ -177,7 +177,7 @@ export interface paths {
         };
         /**
          * Current actor — the private profile for a user, session facts for a guest
-         * @description ADR-0022. A user receives the whole profile, including the fields nobody else ever sees (email, home area, interests, usual budget), and `capabilities.avatarUpload`, which says before a picker opens whether this environment can take an avatar at all. A guest receives its session facts: `roomId`, `displayName`, `expiresAt`.
+         * @description ADR-0022. A user receives the whole profile, including the fields nobody else ever sees (email, home area, interests, usual budget, date of birth), and `capabilities.avatarUpload`, which says before a picker opens whether this environment can take an avatar at all. A guest receives its session facts: `roomId`, `displayName`, `expiresAt`.
          */
         get: operations["getMe"];
         put?: never;
@@ -186,7 +186,7 @@ export interface paths {
          * Delete account — login disabled, personal data removed, contributions kept
          * @description ADR-0023. A soft delete with a named retention list, and clients must describe it as such rather than as erasing everything.
          *
-         *     Removed: login (status `deleted`, email and password hash nulled, so no credential addresses the account again), every session, device tokens and push subscriptions, the profile (display name replaced, avatar, home area, usual budget, interests), the processed avatar in the public bucket and its edge cache entry, saved items, notifications and notification preferences. The name on room membership rows is replaced.
+         *     Removed: login (status `deleted`, email and password hash nulled, so no credential addresses the account again), every session, device tokens and push subscriptions, the profile (display name replaced, avatar, home area, usual budget, interests, date of birth), the processed avatar in the public bucket and its edge cache entry, saved items, notifications and notification preferences. The name on room membership rows is replaced.
          *
          *     Kept: the technical account record and its id, reviews written by the account, and photos contributed to a place. A room keeps the membership row so it still adds up for the people left in it.
          *
@@ -197,7 +197,7 @@ export interface paths {
         head?: never;
         /**
          * Update the profile — null clears an optional field, omitted keeps it
-         * @description `displayName` and `locale` are never null. `homeAreaKey` must be an active service area. `interests` carries stable taxonomy keys by kind and only `mood` is accepted (ADR-0022); an unknown key or an unsupported kind is `INVALID_TAXONOMY_KEYS`. `usualBudget.perPerson` is integer minor units, a create-room default, never a room constraint. Users only: a guest gets 403.
+         * @description `displayName` and `locale` are never null. `homeAreaKey` must be an active service area. `interests` carries stable taxonomy keys by kind and only `mood` is accepted (ADR-0022); an unknown key or an unsupported kind is `INVALID_TAXONOMY_KEYS`. `usualBudget.perPerson` is integer minor units, a create-room default, never a room constraint. `dateOfBirth` (PROF-BE-013) is a calendar date `YYYY-MM-DD`: a date that does not exist is `VALIDATION_FAILED` with field error code `invalid_date`, and a date after today in `Asia/Ho_Chi_Minh` is `VALIDATION_FAILED` with field error code `too_big`; today itself is accepted. No minimum age applies. It is returned only on the owner's `/me` and export, never in a member or public summary. Users only: a guest gets 403.
          */
         patch: operations["updateProfile"];
         trace?: never;
@@ -1596,7 +1596,7 @@ export interface paths {
         };
         /**
          * Export all actor-owned data (privacy rule)
-         * @description Everything the account owns, as JSON, from an explicit allowlist: profile (display name, email, locale, avatar URL, home area, interests, usual budget — ADR-0022), memberships, preferences, votes, saved items, reviews, and the push switch (`notificationSettings`, ADR-0025). Never a credential, a session, or an upload key. Audit-logged and recorded in the privacy ledger.
+         * @description Everything the account owns, as JSON, from an explicit allowlist: profile (display name, email, locale, avatar URL, home area, interests, usual budget — ADR-0022, date of birth — PROF-BE-013), memberships, preferences, votes, saved items, reviews, and the push switch (`notificationSettings`, ADR-0025). Never a credential, a session, or an upload key. Audit-logged and recorded in the privacy ledger.
          */
         get: operations["exportMyData"];
         put?: never;
@@ -5391,6 +5391,11 @@ export interface components {
             homeArea?: components["schemas"]["HomeArea"] | null;
             interests?: components["schemas"]["ProfileInterests"];
             usualBudget?: components["schemas"]["UsualBudget"] | null;
+            /**
+             * Format: date
+             * @description PROF-BE-013. Calendar date `YYYY-MM-DD`, never shifted by a time zone; null when unset. Owner-only; a guest carries no such field.
+             */
+            dateOfBirth?: string | null;
             capabilities?: {
                 /**
                  * @description Known before a picker opens; the server still enforces it.
@@ -5407,6 +5412,11 @@ export interface components {
             /** @description Canonical area; null clears. Cannot be sent with legacy homeAreaKey. A successful write clears the legacy field. */
             homeAdministrativeArea?: components["schemas"]["AdministrativeAreaInput"] | null;
             homeAreaKey?: string | null;
+            /**
+             * Format: date
+             * @description PROF-BE-013. Calendar date `YYYY-MM-DD`; null clears, omitted keeps. It must exist (`2027-02-29` is `invalid_date`) and must not be after today in Asia/Ho_Chi_Minh (`too_big`). No minimum age.
+             */
+            dateOfBirth?: string | null;
             interests?: components["schemas"]["ProfileInterests"] | null;
             usualBudget?: components["schemas"]["UsualBudget"] | null;
         };
