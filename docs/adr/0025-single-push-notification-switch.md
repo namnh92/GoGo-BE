@@ -109,19 +109,43 @@ Invariant, tested against that release's predicates copied verbatim into
 the earlier release pushes a kind to the account if and only if this release
 pushes to it.
 
-### What rollback preserves, and what it cannot
+### Accepted rollback boundary
 
-- **Preserved:** every choice made after the deploy through the switch or an
-  older client — an opt-out stays an opt-out for every kind and for campaigns.
-- **Restored as before the deploy:** accounts that made no notification write
-  after the deploy. Migration 0064 does not modify per-kind rows, so such an
-  account rolls back to exactly its pre-deploy per-kind behaviour. For a mixed
-  legacy account (for example only `plan_ready` off) that means the other kinds
-  and campaigns resume after a rollback, as they did before the deploy; the
-  kind the person turned off stays off.
-- **Not preserved:** the `source` of a choice and its timestamp (the earlier
-  release has no such fields), and an explicit "on" that cleared an earlier
-  per-kind opt-out stays cleared.
+A rollback restores the previous release's rules, which read only the per-kind
+rows. Whether it resumes a notification category depends on whether the account
+wrote anything after the deploy:
+
+| Account state at rollback                         | This release      | Previous release after rollback                                                          |
+| ------------------------------------------------- | ----------------- | ---------------------------------------------------------------------------------------- |
+| Any switch or legacy write after the deploy       | as chosen         | the same (per-kind rows mirror the switch)                                               |
+| Untouched, every push row on, or no push rows     | push on           | push on                                                                                  |
+| Untouched, every push row off                     | push off          | push off for those kinds; kinds that never had a row and campaigns follow their own rows |
+| Untouched, **mixed** (e.g. only `plan_ready` off) | push off (policy) | **other kinds and campaigns resume**; `plan_ready` stays off                             |
+| Untouched, only `campaign` off                    | push off (policy) | every kind resumes; campaigns stay off                                                   |
+
+So **yes: a rollback resumes categories that only the migration policy turned
+off**, for accounts that made no notification write after the deploy. It never
+resumes a category the person turned off themselves. The owner decision "any
+legacy opt-out disables all push" is a rule of this release; by default a
+rollback returns those accounts to the choices they had actually recorded.
+
+Accepted boundary (2026-09-14):
+
+- **Always preserved:** every opt-out a person recorded, before or after the
+  deploy, through any client.
+- **Preserved by default only for accounts that wrote after the deploy:** the
+  all-off policy. Untouched mixed accounts return to their pre-deploy per-kind
+  behaviour.
+- **Optional hold:** if the policy must keep holding while rolled back, run
+  `scripts/ops/ntf-0064-rollback-hold.sql` after stopping this release and
+  before starting the previous one. It writes a `false` push row for every kind
+  to each account this release does not push to, so the previous release pushes
+  nothing to any account this release does not push to (tested), and leaves
+  every other account as it was. Its cost is permanent: it overwrites the per-kind rows
+  that recorded which single kind a person had turned off.
+- **Never preserved:** the `source` and timestamp of a choice (the previous
+  release has no such fields); an explicit "on" that cleared an earlier per-kind
+  opt-out stays cleared.
 
 ## Consequences
 
@@ -156,10 +180,13 @@ that has already run a later migration would skip this one silently.
 
 Rollback procedure:
 
-1. Deploy the previous application revision. No down-migration is needed: the
+1. Stop this release's api and worker. Decide whether the all-off policy must
+   hold while rolled back (see Accepted rollback boundary); if it must, run
+   `scripts/ops/ntf-0064-rollback-hold.sql` now.
+2. Deploy the previous application revision. No down-migration is needed: the
    table is additive, and the per-kind rows already carry every post-deploy
    choice (see Rollback compatibility).
-2. Leave `notification_settings` in place. Rolling forward again reads it as it
+3. Leave `notification_settings` in place. Rolling forward again reads it as it
    was; choices made on the older release through the per-kind API while rolled
    back are then judged by the predicate's rules (an opt-out turns push off).
-3. `DROP TABLE notification_settings` is for a migration rehearsal only.
+4. `DROP TABLE notification_settings` is for a migration rehearsal only.

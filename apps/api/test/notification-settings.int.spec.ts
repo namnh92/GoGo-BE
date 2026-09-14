@@ -577,3 +577,47 @@ function legacyGetPush(response: { json(): unknown }) {
     (row) => row.channel === 'push',
   );
 }
+
+describe('rollback boundary for accounts that wrote nothing after the deploy (ADR-0025)', () => {
+  const EVERY_KIND_BUT = (...left: string[]) => EVERYTHING.filter((kind) => !left.includes(kind));
+
+  it('a mixed legacy account is off here, and rolls back to its own per-kind choices', async () => {
+    expect(await thisReleaseAllows(legacy.mixed!)).toBe(false);
+    expect(await previousReleasePushes(legacy.mixed!)).toEqual(EVERY_KIND_BUT('plan_ready'));
+  });
+
+  it('a campaign-only opt-out is off here, and rolls back to everything but campaigns', async () => {
+    expect(await thisReleaseAllows(legacy.campaignOnlyOff!)).toBe(false);
+    expect(await previousReleasePushes(legacy.campaignOnlyOff!)).toEqual(
+      EVERY_KIND_BUT('campaign', 'campaign audience'),
+    );
+  });
+
+  it('the optional rollback hold stops the previous release for every account this one does not push to', async () => {
+    const hold = await readFile(
+      path.resolve(__dirname, '../../../scripts/ops/ntf-0064-rollback-hold.sql'),
+      'utf8',
+    );
+    const { rows } = await pool.query('select id from users');
+    const ids = (rows as { id: string }[]).map((row) => row.id);
+    const before = new Map<string, string[]>();
+    for (const id of ids) before.set(id, await previousReleasePushes(id));
+
+    await pool.query(hold);
+    await pool.query(hold);
+
+    for (const id of ids) {
+      const previous = await previousReleasePushes(id);
+      if (await thisReleaseAllows(id)) {
+        // The hold never touches an account this release pushes to.
+        expect({ id, previous }).toEqual({ id, previous: before.get(id) });
+      } else {
+        expect({ id, previous }).toEqual({ id, previous: [] });
+      }
+    }
+    expect(await previousReleasePushes(legacy.mixed!)).toEqual([]);
+    expect(await previousReleasePushes(legacy.campaignOnlyOff!)).toEqual([]);
+    expect(await previousReleasePushes(legacy.allOn!)).toEqual(EVERYTHING);
+    expect(await previousReleasePushes(legacy.neverChose!)).toEqual(EVERYTHING);
+  });
+});
