@@ -914,6 +914,90 @@ describe('plan cost scope (GoGo-BE#593)', () => {
     return place!.id;
   }
 
+  async function placeWithoutPrice(name: string, lat: number) {
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name,
+        nameNormalized: 'x',
+        status: 'published',
+        geom: { x: 106.7, y: lat },
+        rating: '4.40',
+        ratingCount: 500,
+        suitability: { couple: 0.9, group: 0.9 },
+        avgVisitMinutes: 60,
+        confidence: '0.9',
+        freshnessCheckedAt: new Date(),
+      })
+      .returning();
+    return place!.id;
+  }
+
+  async function finalizedPlan() {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    const cur = await get(hostToken, `/v1/rooms/${roomId}/suggestions/current`);
+    await put(hostToken, `/v1/rooms/${roomId}/votes/${cur.json().candidates[0].placeId}`, {
+      value: 'yes',
+    });
+    const fin = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`);
+    const plan = (await get(hostToken, `/v1/plans/${fin.json().planId}`)).json();
+    return { hostToken, plan };
+  }
+
+  it('keeps a locked unpriced stop through regenerate, and the totals say they are an estimate', async () => {
+    const unpriced = await placeWithoutPrice('Chỗ Chưa Có Giá', 10.853);
+    const { hostToken, plan } = await finalizedPlan();
+
+    const edited = await patch(hostToken, `/v1/plans/${plan.id}`, {
+      expectedVersion: plan.version,
+      stops: [{ placeId: unpriced, isLocked: true }],
+    });
+    expect(edited.statusCode).toBe(200);
+    expect(edited.json().totals.uncertain).toBe(true);
+
+    // The device path: the host regenerates a plan whose locked stop has no price.
+    const regen = await post(hostToken, `/v1/plans/${edited.json().id}/regenerate`, {});
+    expect(regen.statusCode).toBe(201);
+    const next = regen.json();
+    const kept = next.stops.find((s: { placeId: string }) => s.placeId === unpriced);
+    expect(kept).toMatchObject({
+      isLocked: true,
+      costMin: null,
+      costMax: null,
+      costScope: 'per_person',
+    });
+    expect(next.totals).toMatchObject({ costScope: 'per_person', uncertain: true });
+  });
+
+  it('reads a plan stored before the rule as an estimate when a stop has no price', async () => {
+    const unpriced = await placeWithoutPrice('Chỗ Cũ Chưa Có Giá', 10.854);
+    const { hostToken, plan } = await finalizedPlan();
+    const edited = (
+      await patch(hostToken, `/v1/plans/${plan.id}`, {
+        expectedVersion: plan.version,
+        stops: [{ placeId: unpriced, isLocked: false }],
+      })
+    ).json();
+
+    // What a plan written before this change looks like on disk (DEV 94b894df):
+    // an unpriced stop, and totals that call a 0 certain.
+    const [row] = await db.select().from(schema.plans).where(eq(schema.plans.id, edited.id));
+    await db
+      .update(schema.plans)
+      .set({ totals: { ...row!.totals, costMin: 0, costMax: 0, uncertain: false } })
+      .where(eq(schema.plans.id, edited.id));
+
+    const read = (await get(hostToken, `/v1/plans/${edited.id}`)).json();
+    expect(read.stops[0]).toMatchObject({ costMin: null, costMax: null });
+    expect(read.totals).toMatchObject({
+      costMin: 0,
+      costMax: 0,
+      costScope: 'per_person',
+      uncertain: true,
+    });
+  });
+
   it('declares every plan cost per person: free counts as 0, a per_item price is not summed', async () => {
     const perPerson = await placePricedAs(
       'Quán Theo Người',

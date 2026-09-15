@@ -78,6 +78,12 @@ export class PlansService {
       return undefined;
     };
     const reasons = new Map(stops.map((s) => [s.id, unavailableReason(s.placeId)]));
+    // GoGo-BE#593 — a stop with no per-person price makes the totals an
+    // estimate. Derived here, at read time, so plans stored before the optimizer
+    // said so (DEV plan 94b894df, `uncertain: false` with an unpriced stop)
+    // read correctly without a migration.
+    const uncertain =
+      plan.totals.uncertain || stops.some((s) => s.costMin === null || s.costMax === null);
 
     return {
       id: plan.id,
@@ -86,7 +92,7 @@ export class PlansService {
       status: plan.status,
       isStale: plan.isStale,
       constraintVersion: plan.constraintVersion,
-      totals: { ...plan.totals, costScope: PLAN_COST_SCOPE },
+      totals: { ...plan.totals, uncertain, costScope: PLAN_COST_SCOPE },
       createdAt: plan.createdAt.toISOString(),
       // Plan-level flag so a client can show one banner without scanning stops.
       hasUnavailableStops: [...reasons.values()].some((r) => r !== undefined),
