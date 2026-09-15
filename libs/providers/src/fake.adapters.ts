@@ -224,6 +224,9 @@ export class FakePush implements NotificationProviderPort {
     userIds: string[];
     title: string;
     body: string;
+    /** Every locale the call carried, so a test can read what a phone would pick. */
+    headings: UserNotification['headings'];
+    contents: UserNotification['contents'];
     data?: Record<string, string>;
     idempotencyKey?: string;
   }[] = [];
@@ -246,6 +249,8 @@ export class FakePush implements NotificationProviderPort {
       userIds: ids,
       title: notification.headings.en,
       body: notification.contents.en,
+      headings: notification.headings,
+      contents: notification.contents,
       ...(notification.data ? { data: notification.data } : {}),
       ...(notification.idempotencyKey ? { idempotencyKey: notification.idempotencyKey } : {}),
     });
