@@ -796,6 +796,61 @@ describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
     expect(rows.filter((row) => row.userId === member.userId)).toHaveLength(1);
   });
 
+  it('a member the host removed is refused when reopening the invite, spending nothing (GoGo-BE#597)', async () => {
+    const host = await registerUser('host597rm@gogo.id.vn');
+    const member = await registerUser('member597rm@gogo.id.vn');
+    const room = await createGroupRoom(host.token);
+    await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/status`,
+      remoteAddress: ip(),
+      headers: auth(host.token),
+      payload: { status: 'collecting' },
+    });
+    const { inviteId, code } = (
+      await api().inject({
+        method: 'POST',
+        url: `/v1/rooms/${room.id}/invites`,
+        remoteAddress: ip(),
+        headers: auth(host.token),
+        payload: { maxUses: 5 },
+      })
+    ).json();
+    const useCount = async () =>
+      (await db.select().from(schema.roomInvites).where(eq(schema.roomInvites.id, inviteId)))[0]!
+        .useCount;
+    const join = () =>
+      api().inject({
+        method: 'POST',
+        url: '/v1/rooms/join',
+        remoteAddress: ip(),
+        headers: auth(member.token),
+        payload: { inviteCode: code },
+      });
+
+    const joined = await join();
+    expect(joined.statusCode).toBe(201);
+    expect(await useCount()).toBe(1);
+
+    const removed = await api().inject({
+      method: 'DELETE',
+      url: `/v1/rooms/${room.id}/members/${joined.json().memberId}`,
+      remoteAddress: ip(),
+      headers: auth(host.token),
+    });
+    expect(removed.statusCode).toBe(200);
+    await db.update(schema.rooms).set({ status: 'ready' }).where(eq(schema.rooms.id, room.id));
+
+    const again = await join();
+    expect(again.statusCode).toBe(410);
+    expect(again.json().code).toBe('ROOM_NOT_JOINABLE');
+    expect(await useCount()).toBe(1);
+    const active = (
+      await db.select().from(schema.roomMembers).where(eq(schema.roomMembers.roomId, room.id))
+    ).filter((row) => row.userId === member.userId && row.removedAt === null);
+    expect(active).toHaveLength(0);
+  });
+
   it('host can remove a member; removed guest session is revoked', async () => {
     const { token } = await registerUser('host12@gogo.id.vn');
     const room = await createGroupRoom(token);
