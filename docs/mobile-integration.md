@@ -67,6 +67,10 @@ server-side: a member calling a host action gets `403 HOST_ONLY`, a guest
 touching another room gets `403 ROOM_SCOPE_VIOLATION`. Hide the button _and_
 handle the error — the API is the enforcement layer.
 
+Re-sending the state a room is already in — `collecting`, `matching` or
+`active` — answers `200` with the current summary, so a retry after a timeout
+is safe. A repeated `active` does not notify members a second time (#600).
+
 Optimistic concurrency: `preferences` (`expectedVersion`), `constraints`
 (`expectedConstraintVersion`), `plans` (`expectedVersion`). On `409` reload and
 re-apply — do not retry blindly.

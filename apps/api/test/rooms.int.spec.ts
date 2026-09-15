@@ -1490,3 +1490,108 @@ describe('BE-BFF-022 rename a room (#579)', () => {
     expect(refused.json().code).toBe('ROOM_NOT_EDITABLE');
   });
 });
+
+describe('a repeated start is idempotent (#600, SRS §7.2)', () => {
+  const setStatus = (token: string, roomId: string, status: string) =>
+    api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${roomId}/status`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { status },
+    });
+
+  /** `room.status_active` fans out a `date_reminder` push to every member. */
+  const startEvents = async (roomId: string) =>
+    (
+      await db.select().from(schema.outboxEvents).where(eq(schema.outboxEvents.resourceId, roomId))
+    ).filter((event) => event.eventType === 'room.status_active');
+
+  async function readyRoomWithMember(tag: string) {
+    const host = await registerUser(`start-host-${tag}@gogo.id.vn`);
+    const member = await registerUser(`start-member-${tag}@gogo.id.vn`);
+    const room = await createGroupRoom(host.token);
+    const invite = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(host.token),
+      payload: {},
+    });
+    const join = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join',
+      remoteAddress: ip(),
+      headers: auth(member.token),
+      payload: { inviteCode: invite.json().code },
+    });
+    expect(join.statusCode).toBe(201);
+    // Reaching `ready` for real takes suggestions and a finalized vote, which
+    // suggestion-plan.int.spec.ts walks; the transition under test starts here.
+    await db.update(schema.rooms).set({ status: 'ready' }).where(eq(schema.rooms.id, room.id));
+    return { host, member, room };
+  }
+
+  it('the host starting twice gets 200 both times and members are notified once', async () => {
+    const { host, room } = await readyRoomWithMember('twice');
+
+    const first = await setStatus(host.token, room.id, 'active');
+    expect(first.statusCode).toBe(200);
+    expect(first.json().status).toBe('active');
+    const [afterFirst] = await db
+      .select({ status: schema.rooms.status, updatedAt: schema.rooms.updatedAt })
+      .from(schema.rooms)
+      .where(eq(schema.rooms.id, room.id));
+
+    const second = await setStatus(host.token, room.id, 'active');
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({ id: room.id, status: 'active' });
+    expect(Object.keys(second.json()).sort()).toEqual(Object.keys(first.json()).sort());
+
+    // The repeat wrote nothing: same row, one event, so one push per member.
+    const [afterSecond] = await db
+      .select({ status: schema.rooms.status, updatedAt: schema.rooms.updatedAt })
+      .from(schema.rooms)
+      .where(eq(schema.rooms.id, room.id));
+    expect(afterSecond).toEqual(afterFirst);
+    expect(afterSecond!.status).toBe('active');
+    expect(await startEvents(room.id)).toHaveLength(1);
+  });
+
+  it('two starts racing from ready both succeed and write one event', async () => {
+    const { host, room } = await readyRoomWithMember('race');
+    const results = await Promise.all([
+      setStatus(host.token, room.id, 'active'),
+      setStatus(host.token, room.id, 'active'),
+    ]);
+    expect(results.map((res) => res.statusCode)).toEqual([200, 200]);
+    expect(results.map((res) => res.json().status)).toEqual(['active', 'active']);
+    expect(await startEvents(room.id)).toHaveLength(1);
+  });
+
+  it('a member still cannot start the date, before or after the host has', async () => {
+    const { host, member, room } = await readyRoomWithMember('member');
+
+    const early = await setStatus(member.token, room.id, 'active');
+    expect(early.statusCode).toBe(403);
+    expect(early.json().code).toBe('HOST_ONLY');
+
+    expect((await setStatus(host.token, room.id, 'active')).statusCode).toBe(200);
+
+    const late = await setStatus(member.token, room.id, 'active');
+    expect(late.statusCode).toBe(403);
+    expect(late.json().code).toBe('HOST_ONLY');
+    expect(await startEvents(room.id)).toHaveLength(1);
+  });
+
+  it('a finished date cannot be started again', async () => {
+    const { host, room } = await readyRoomWithMember('finished');
+    expect((await setStatus(host.token, room.id, 'active')).statusCode).toBe(200);
+    expect((await setStatus(host.token, room.id, 'completed')).statusCode).toBe(200);
+
+    const restart = await setStatus(host.token, room.id, 'active');
+    expect(restart.statusCode).toBe(409);
+    expect(restart.json().code).toBe('INVALID_ROOM_TRANSITION');
+    expect(await startEvents(room.id)).toHaveLength(1);
+  });
+});

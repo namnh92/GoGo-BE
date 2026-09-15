@@ -14,7 +14,10 @@ const TRANSITIONS: Record<RoomStatus, RoomStatus[]> = {
   // twice — a retry after a timeout — must not be an error.
   matching: ['ready', 'collecting', 'matching', 'cancelled'],
   ready: ['active', 'matching', 'cancelled'],
-  active: ['completed', 'cancelled'],
+  // #600: "start the date" sent again — a retry, a second tap, a second
+  // device — answers with the room as it is (SRS §7.2: every transition has an
+  // idempotent response). See `isNoOpTransition` for why it writes nothing.
+  active: ['completed', 'active', 'cancelled'],
   completed: [],
   cancelled: [],
   expired: [],
@@ -24,6 +27,24 @@ export function assertTransition(from: RoomStatus, to: RoomStatus): void {
   if (!TRANSITIONS[from]?.includes(to)) {
     throw AppError.conflict('INVALID_ROOM_TRANSITION', `Cannot move room from ${from} to ${to}`);
   }
+}
+
+/**
+ * #600 — self-loops that change nothing and so must record nothing.
+ *
+ * `room.status_active` is the event that fans out a `date_reminder` push to
+ * every member. A repeated start that wrote it again would notify the whole
+ * room a second time about a date that had already begun. Only `active` is
+ * listed; the `collecting` and `matching` repeats keep their existing
+ * behaviour.
+ *
+ * The repository decides this under the row lock, not the caller: two starts
+ * racing from `ready` both pass the policy read, and only one of them may write.
+ */
+const NO_OP_SELF_LOOPS: readonly RoomStatus[] = ['active'];
+
+export function isNoOpTransition(from: RoomStatus, to: RoomStatus): boolean {
+  return from === to && NO_OP_SELF_LOOPS.includes(to);
 }
 
 /** FR-ROOM-002 — decision mode must match the room type. */

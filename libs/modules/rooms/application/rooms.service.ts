@@ -323,7 +323,7 @@ export class RoomsService {
   ) {
     const { room } = await this.policy.requireHost(actor, roomId);
     assertTransition(room.status as RoomStatus, to);
-    await this.repo.updateStatus(
+    const moved = await this.repo.updateStatus(
       roomId,
       to,
       {
@@ -336,12 +336,15 @@ export class RoomsService {
     );
     // Realtime is a courtesy on top of a committed write: publishing after the
     // repository call means a dropped event costs a client one refetch, never
-    // a room that moved for some members and not others.
-    await this.publish({
-      roomId,
-      type: 'room.status_changed',
-      payload: { from: room.status, to },
-    });
+    // a room that moved for some members and not others. A repeat that moved
+    // nothing (#600) has nothing to announce.
+    if (moved) {
+      await this.publish({
+        roomId,
+        type: 'room.status_changed',
+        payload: { from: room.status, to },
+      });
+    }
     return this.getRoomSummary(actor, roomId);
   }
 
