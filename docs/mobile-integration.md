@@ -68,8 +68,10 @@ touching another room gets `403 ROOM_SCOPE_VIOLATION`. Hide the button _and_
 handle the error — the API is the enforcement layer.
 
 Re-sending the state a room is already in — `collecting`, `matching` or
-`active` — answers `200` with the current summary, so a retry after a timeout
-is safe. A repeated `active` does not notify members a second time (#600).
+`active` — normally answers `200` with the current summary, so a retry after a
+timeout is safe. A repeated `matching` still re-checks readiness and can answer
+`409`. A repeated `active` changes nothing and notifies no one a second time
+(#600).
 
 Optimistic concurrency: `preferences` (`expectedVersion`), `constraints`
 (`expectedConstraintVersion`), `plans` (`expectedVersion`). On `409` reload and

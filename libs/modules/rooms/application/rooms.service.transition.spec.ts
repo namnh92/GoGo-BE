@@ -61,7 +61,9 @@ describe('RoomsService.transition (#600)', () => {
     expect(events.publish).not.toHaveBeenCalled();
   });
 
-  it('stays silent when a racing start won the lock after the policy read saw ready', async () => {
+  it('trusts the repository over its own earlier read: no move, no publish', async () => {
+    // The policy read saw `ready`, but the repository found the room already
+    // active under the lock. A service deciding from its own read would publish.
     const { service, events, summary } = build({ status: 'ready', moved: false });
 
     await expect(service.transition(host, roomId, 'active')).resolves.toBe(summary);

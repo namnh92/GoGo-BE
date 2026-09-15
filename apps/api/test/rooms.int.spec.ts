@@ -1558,15 +1558,52 @@ describe('a repeated start is idempotent (#600, SRS §7.2)', () => {
     expect(await startEvents(room.id)).toHaveLength(1);
   });
 
-  it('two starts racing from ready both succeed and write one event', async () => {
+  it('a start that waited on the row lock behind another start writes nothing', async () => {
     const { host, room } = await readyRoomWithMember('race');
-    const results = await Promise.all([
-      setStatus(host.token, room.id, 'active'),
-      setStatus(host.token, room.id, 'active'),
-    ]);
-    expect(results.map((res) => res.statusCode)).toEqual([200, 200]);
-    expect(results.map((res) => res.json().status)).toEqual(['active', 'active']);
-    expect(await startEvents(room.id)).toHaveLength(1);
+    // A race made deterministic: this transaction wins the row lock and moves
+    // the room, and the request below is released only once it is provably
+    // waiting on that lock. Its earlier, unlocked reads still saw `ready`.
+    const winner = await pool.connect();
+    let loser: ReturnType<typeof setStatus> | undefined;
+    let wonAt: Date;
+    try {
+      await winner.query('begin');
+      await winner.query('select id from rooms where id = $1 for update', [room.id]);
+      const moved = await winner.query<{ updated_at: Date }>(
+        `update rooms set status = 'active', updated_at = now() where id = $1 returning updated_at`,
+        [room.id],
+      );
+      wonAt = moved.rows[0]!.updated_at;
+
+      loser = setStatus(host.token, room.id, 'active');
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const waiting = await pool.query<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'`,
+        );
+        if (waiting.rows[0]!.n > 0) break;
+        if (Date.now() > deadline) throw new Error('the second start never waited on the lock');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await winner.query('commit');
+    } catch (error) {
+      await winner.query('rollback').catch(() => undefined);
+      throw error;
+    } finally {
+      winner.release();
+    }
+
+    const res = await loser;
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe('active');
+    // The winner is a bare update that writes no event, so any row is the loser's.
+    expect(await startEvents(room.id)).toHaveLength(0);
+    const [row] = await db
+      .select({ status: schema.rooms.status, updatedAt: schema.rooms.updatedAt })
+      .from(schema.rooms)
+      .where(eq(schema.rooms.id, room.id));
+    expect(row).toEqual({ status: 'active', updatedAt: wonAt });
   });
 
   it('a member still cannot start the date, before or after the host has', async () => {
