@@ -1,14 +1,26 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
-import { ProviderUnavailableError, type NotificationProviderPort } from '@gogo/providers';
+import {
+  ProviderUnavailableError,
+  type NotificationProviderPort,
+  type PushLocale,
+  type UserNotification,
+} from '@gogo/providers';
+import {
+  DEFAULT_PUSH_LOCALE,
+  PUSH_LOCALES,
+  opensPlan,
+  pushIdempotencyKey,
+  pushLocaleOf,
+  renderPushNotification,
+  type PushKind,
+} from './notification-templates';
 import { pushAllowed } from './push-preference';
 
-type NotificationKind = (typeof schema.notifications.$inferSelect)['kind'];
-
 /** Which domain events fan out to which member notifications (BE-BFF-010). */
-const EVENT_TO_NOTIFICATION: Record<
+export const EVENT_TO_NOTIFICATION: Record<
   string,
-  { kind: NotificationKind; audience: 'host' | 'members' }
+  { kind: PushKind; audience: 'host' | 'members' }
 > = {
   'member.joined': { kind: 'invite', audience: 'host' },
   'preferences.completed': { kind: 'preference_reminder', audience: 'host' },
@@ -203,39 +215,74 @@ export class OutboxDispatcher {
     // and no `device_tokens` read on this path any more.
     const recipients = userIds.filter((id) => !optedOutOfPush.has(id));
     if (recipients.length === 0) return;
-    try {
-      const result = await this.push.sendToUsers(recipients, {
-        // Placeholder copy until the template layer lands (NTF-BE-005, #196):
-        // the payload contract below is what clients route on. Nothing on the
-        // lock screen may carry private content — ids and a kind only.
-        headings: { en: 'GoGo' },
-        contents: { en: mapping.kind },
-        data: { kind: mapping.kind, roomId, eventType: event.eventType },
-        // The event id, so a retry of this fan-out is a replay at the provider
-        // rather than a second push (30-day window).
-        idempotencyKey: event.id,
+
+    // #594: copy follows each recipient's account locale (spec §39), so an
+    // event whose recipients read different languages is one call per
+    // language. Every account that exists today is `vi`, which is still exactly
+    // one call under the event id.
+    const localeRows = await this.db
+      .select({ id: schema.users.id, locale: schema.users.locale })
+      .from(schema.users)
+      .where(inArray(schema.users.id, recipients));
+    const localeOf = new Map(localeRows.map((row) => [row.id, pushLocaleOf(row.locale)]));
+    const byLocale = new Map<PushLocale, string[]>();
+    for (const userId of recipients) {
+      const locale = localeOf.get(userId) ?? DEFAULT_PUSH_LOCALE;
+      byLocale.set(locale, [...(byLocale.get(locale) ?? []), userId]);
+    }
+
+    // A plan kind opens the room's current plan. An edit or a regenerate writes
+    // a new plan row, so the plan id an event names may already be superseded.
+    let currentPlanId: string | null = null;
+    if (opensPlan(mapping.kind)) {
+      const [current] = await this.db
+        .select({ id: schema.plans.id })
+        .from(schema.plans)
+        .where(and(eq(schema.plans.roomId, roomId), eq(schema.plans.status, 'current')))
+        .limit(1);
+      currentPlanId = current?.id ?? null;
+    }
+
+    for (const locale of PUSH_LOCALES) {
+      const group = byLocale.get(locale);
+      if (!group || group.length === 0) continue;
+      await this.sendPush(group, mapping.kind, {
+        ...renderPushNotification({ kind: mapping.kind, locale, event, roomId, currentPlanId }),
+        // Derived from the event, so a retry of this fan-out is a replay at the
+        // provider rather than a second push (30-day window).
+        idempotencyKey: pushIdempotencyKey(event.id, locale),
       });
+    }
+  }
+
+  private async sendPush(
+    recipients: string[],
+    pushKind: PushKind,
+    notification: UserNotification,
+  ): Promise<void> {
+    try {
+      const result = await this.push.sendToUsers(recipients, notification);
       // Review fix (#193): "sent" is a message the provider created. A 200
       // with no message id means nobody in the request was subscribed — counted
       // apart, so a fleet of never-logged-in users cannot look like delivery.
       if (result.providerMessageIds.length > 0) {
         this.metrics?.increment(
           'push_delivery_sent_total',
-          { kind: mapping.kind },
+          { kind: pushKind },
           result.providerMessageIds.length,
         );
       }
       if (result.emptyResponses > 0) {
         this.metrics?.increment(
           'push_delivery_no_target_total',
-          { kind: mapping.kind },
+          { kind: pushKind },
           result.emptyResponses,
         );
       }
       if (result.unknownUserIds.length > 0) {
         this.metrics?.increment(
           'push_delivery_unknown_user_total',
-          { kind: mapping.kind },
+          { kind: pushKind },
           result.unknownUserIds.length,
         );
       }
@@ -247,7 +294,7 @@ export class OutboxDispatcher {
       // Permanent (refused credential, rejected payload): retrying produces the
       // same answer. Count it, keep the in-app notification as the durable
       // half, and let the event publish.
-      this.metrics?.increment('push_delivery_failed_total', { kind: mapping.kind });
+      this.metrics?.increment('push_delivery_failed_total', { kind: pushKind });
     }
   }
 }

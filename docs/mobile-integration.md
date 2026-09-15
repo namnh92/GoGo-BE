@@ -110,8 +110,28 @@ in-app navigation (FR-PLAN-010).
 - **Photo upload for check-ins**: `photoKeys` are opaque storage keys; the R2
   presigned-upload endpoint is blocked on credentials (GoGo-BE#60/#81). Until
   then send `photoKeys: []` or a placeholder key in dev.
-- **Push delivery**: `PUT /me/device-tokens` accepts and stores tokens; FCM/APNs
-  adapters land with credentials (GoGo-BE#59/#60).
 - **Realtime suggestion progress**: runs are synchronous today; SSE progress
   arrives with BE-BFF-010's async pipeline. Poll `…/suggestions/current`.
 - **Bulk import / Sheets**: CMS-side only (PI-BE-011..017), no mobile surface.
+
+## 9. Push payload (contract v1, GoGo-BE#594)
+
+Push goes through OneSignal by user id (spec §24–§26). The copy is rendered by the
+server in the recipient's account locale (`users.locale`, `vi` by default). Every
+field in `data` is a string:
+
+| Field                           | Value                                                                                  |
+| ------------------------------- | -------------------------------------------------------------------------------------- |
+| `type`                          | `invite`, `preference_reminder`, `plan_ready`, `plan_changed`, `date_reminder`         |
+| `version`                       | `"1"`                                                                                  |
+| `notificationId`                | Outbox event id: the same for every recipient of one send. It is not the inbox row id. |
+| `route`                         | `gogo://room/{roomId}` or `gogo://plan/{planId}`                                       |
+| `entityType` / `entityId`       | `room` or `plan`, plus the id `route` names                                            |
+| `kind` / `roomId` / `eventType` | Legacy fields, kept for clients already shipped                                        |
+
+- **Routes.** `invite` and `preference_reminder` open the room. The plan kinds open
+  the room's current plan, or the room when it has no plan yet.
+- **Routing rule.** Route on `route` first, then on `type` + ids. Refetch from the
+  API on open; push is only a trigger.
+- **Privacy.** Nothing in the payload or the copy is private: no names, no room code,
+  no invite code.
