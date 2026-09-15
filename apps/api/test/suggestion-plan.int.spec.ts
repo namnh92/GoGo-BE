@@ -873,3 +873,86 @@ describe('plan feedback (SG-009, #48)', () => {
     expect(res.json().stops.map((s: { placeId: string }) => s.placeId)).toContain(lockedPlaceId);
   });
 });
+
+describe('plan cost scope (GoGo-BE#593)', () => {
+  it('declares every plan cost per person: free counts as 0, a per_item price is not summed', async () => {
+    // Outside the 5 km room radius, so no other case retrieves it as a candidate.
+    const [itemOnly] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Tiệm Theo Món',
+        nameNormalized: 'x',
+        status: 'published',
+        geom: { x: 106.7, y: 10.85 },
+        rating: '4.40',
+        ratingCount: 500,
+        suitability: { couple: 0.9, group: 0.9 },
+        avgVisitMinutes: 60,
+        confidence: '0.9',
+        freshnessCheckedAt: new Date(),
+      })
+      .returning();
+    await db.insert(schema.placePrices).values({
+      placeId: itemOnly!.id,
+      priceMin: 30_000,
+      priceMax: 60_000,
+      currency: 'VND',
+      unit: 'per_item',
+      confidence: '0.8',
+      source: 'editor',
+      verifiedAt: new Date(),
+    });
+
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    const cur = await get(hostToken, `/v1/rooms/${roomId}/suggestions/current`);
+    await put(hostToken, `/v1/rooms/${roomId}/votes/${cur.json().candidates[0].placeId}`, {
+      value: 'yes',
+    });
+    const fin = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`);
+    const finalized = (await get(hostToken, `/v1/plans/${fin.json().planId}`)).json();
+    expect(finalized.totals.costScope).toBe('per_person');
+    for (const stop of finalized.stops) expect(stop.costScope).toBe('per_person');
+
+    // Every stop priced per person (the park is free): the totals are certain.
+    const priced = await patch(hostToken, `/v1/plans/${finalized.id}`, {
+      expectedVersion: finalized.version,
+      stops: [
+        { placeId: placeIds['Cafe Uno'], isLocked: false },
+        { placeId: placeIds['Park Xanh'], isLocked: false },
+      ],
+    });
+    expect(priced.statusCode).toBe(200);
+    const pricedPlan = priced.json();
+    expect(pricedPlan.totals).toMatchObject({
+      costMin: 50_000,
+      costMax: 90_000,
+      costScope: 'per_person',
+      uncertain: false,
+    });
+    expect(pricedPlan.stops.map((s: { costMax: number }) => s.costMax)).toEqual([90_000, 0]);
+
+    // A per_item price is not a per-person amount: the stop has no cost in
+    // this scope, the sum leaves it out, and the totals say they are incomplete.
+    const withItem = await patch(hostToken, `/v1/plans/${pricedPlan.id}`, {
+      expectedVersion: pricedPlan.version,
+      stops: [
+        { placeId: placeIds['Cafe Uno'], isLocked: false },
+        { placeId: placeIds['Park Xanh'], isLocked: false },
+        { placeId: itemOnly!.id, isLocked: false },
+      ],
+    });
+    expect(withItem.statusCode).toBe(200);
+    const plan = withItem.json();
+    expect(plan.totals).toMatchObject({
+      costMin: 50_000,
+      costMax: 90_000,
+      costScope: 'per_person',
+      uncertain: true,
+    });
+    const [cafe, park, item] = plan.stops;
+    expect([cafe.costMin, cafe.costMax, cafe.costScope]).toEqual([50_000, 90_000, 'per_person']);
+    expect([park.costMin, park.costMax, park.costScope]).toEqual([0, 0, 'per_person']);
+    expect([item.costMin, item.costMax, item.costScope]).toEqual([null, null, 'per_person']);
+  });
+});

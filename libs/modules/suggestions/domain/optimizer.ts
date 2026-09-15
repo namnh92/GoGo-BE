@@ -101,7 +101,10 @@ export async function buildItinerary(input: {
     costMax: s.costMax,
     isLocked: true,
     category: null,
-    lowConfidence: false,
+    // GoGo-BE#593 — an anchor keeps the cost it was stored with, and `null`
+    // means its place has no per-person price. Counting that as a confident 0
+    // made a vote winner with no price read as a free plan.
+    lowConfidence: s.costMin === null || s.costMax === null,
   }));
   let costMax = sequence.reduce((a, s) => a + (s.costMax ?? 0), 0);
   let usedMinutes = sequence.reduce((a, s) => a + s.durationMinutes, 0);
