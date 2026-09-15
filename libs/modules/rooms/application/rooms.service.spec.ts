@@ -16,6 +16,7 @@ const ROOM_ID = '311f5bd8-f853-4ced-af68-e04398d1451a';
 
 function serviceWith(opts: {
   roomStatus: string[];
+  roomExpiresAt?: Date | null;
   invite?: Partial<{
     revokedAt: Date | null;
     expiresAt: Date;
@@ -39,7 +40,11 @@ function serviceWith(opts: {
     consumeInvite,
   } as unknown as RoomsRepository;
   const policy = {
-    getRoom: vi.fn(async () => ({ id: ROOM_ID, status: statuses.shift() ?? statuses.at(-1) })),
+    getRoom: vi.fn(async () => ({
+      id: ROOM_ID,
+      status: statuses.shift() ?? statuses.at(-1),
+      expiresAt: opts.roomExpiresAt ?? null,
+    })),
   } as unknown as RoomPolicy;
   const tokens = { hashOpaqueToken: (code: string) => `hash:${code}` } as unknown as TokenService;
   const service = new RoomsService(
@@ -69,6 +74,26 @@ describe('RoomsService.consumeInviteCode (GoGo-BE#592)', () => {
     expect(consumeInvite).not.toHaveBeenCalled();
   });
 
+  it('refuses an expired room on the guest route without spending a use', async () => {
+    const { service, consumeInvite } = serviceWith({
+      roomStatus: ['collecting'],
+      roomExpiresAt: new Date(Date.now() - 60_000),
+    });
+    expect(await codeOf(service.consumeInviteCode('code', { enforceRoomExpiry: true }))).toBe(
+      'ROOM_EXPIRED',
+    );
+    expect(consumeInvite).not.toHaveBeenCalled();
+  });
+
+  it('passes the expiry rule on to the guarded consume only where it is enforced', async () => {
+    const { service, consumeInvite } = serviceWith({ roomStatus: ['collecting'] });
+    await service.consumeInviteCode('code', { enforceRoomExpiry: true });
+    expect(consumeInvite).toHaveBeenCalledWith('invite-1', {
+      joinableStatuses: ['draft', 'collecting'],
+      enforceRoomExpiry: true,
+    });
+  });
+
   it('refuses a revoked invite without spending a use', async () => {
     const { service, consumeInvite } = serviceWith({
       roomStatus: ['collecting'],
@@ -82,7 +107,9 @@ describe('RoomsService.consumeInviteCode (GoGo-BE#592)', () => {
     const { service, consumeInvite } = serviceWith({ roomStatus: ['collecting'] });
     await expect(service.consumeInviteCode('code')).resolves.toMatchObject({ id: ROOM_ID });
     expect(consumeInvite).toHaveBeenCalledTimes(1);
-    expect(consumeInvite).toHaveBeenCalledWith('invite-1', ['draft', 'collecting']);
+    expect(consumeInvite).toHaveBeenCalledWith('invite-1', {
+      joinableStatuses: ['draft', 'collecting'],
+    });
   });
 
   it('answers ROOM_NOT_JOINABLE when the room moved on between the read and the consume', async () => {

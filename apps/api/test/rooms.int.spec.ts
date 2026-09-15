@@ -7,6 +7,8 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import { JOINABLE_ROOM_STATUSES } from '../../../libs/modules/rooms/domain/invite-join';
+import { RoomsRepository } from '../../../libs/modules/rooms/infrastructure/rooms.repository';
 
 /**
  * BE-BFF-003/004/005 + BE-BFF-015 acceptance: lifecycle, host/member/guest
@@ -1565,5 +1567,94 @@ describe('BE-BFF-022 rename a room (#579)', () => {
     const refused = await rename(host.token, { title: 'Quá muộn' });
     expect(refused.statusCode).toBe(409);
     expect(refused.json().code).toBe('ROOM_NOT_EDITABLE');
+  });
+});
+
+describe('invite consumption (GoGo-BE#592)', () => {
+  async function collectingRoomWithInvite(email: string, payload: Record<string, unknown> = {}) {
+    const { token } = await registerUser(email);
+    const room = await createGroupRoom(token);
+    await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/status`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { status: 'collecting' },
+    });
+    const created = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload,
+    });
+    const { inviteId, code } = created.json();
+    return { roomId: room.id as string, inviteId: inviteId as string, code: code as string };
+  }
+  const useCount = async (inviteId: string) =>
+    (await db.select().from(schema.roomInvites).where(eq(schema.roomInvites.id, inviteId)))[0]!
+      .useCount;
+  const guestJoin = (inviteCode: string, displayName: string) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join/guest',
+      remoteAddress: ip(),
+      payload: { inviteCode, displayName },
+    });
+
+  it('a guest refused for a room past its expiry spends no use', async () => {
+    const { roomId, inviteId, code } = await collectingRoomWithInvite('host592exp@gogo.id.vn');
+    await db
+      .update(schema.rooms)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(schema.rooms.id, roomId));
+
+    for (const displayName of ['Hết Hạn Một', 'Hết Hạn Hai']) {
+      const res = await guestJoin(code, displayName);
+      expect(res.statusCode).toBe(410);
+      expect(res.json().code).toBe('ROOM_EXPIRED');
+    }
+    expect(await useCount(inviteId)).toBe(0);
+  });
+
+  it('the guarded consume itself spends nothing on a room that moved on or expired', async () => {
+    const repo = app.get(RoomsRepository);
+    const { roomId, inviteId } = await collectingRoomWithInvite('host592guard@gogo.id.vn');
+
+    await db.update(schema.rooms).set({ status: 'ready' }).where(eq(schema.rooms.id, roomId));
+    expect(await repo.consumeInvite(inviteId, { joinableStatuses: JOINABLE_ROOM_STATUSES })).toBe(
+      false,
+    );
+    expect(await useCount(inviteId)).toBe(0);
+
+    await db
+      .update(schema.rooms)
+      .set({ status: 'collecting', expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(schema.rooms.id, roomId));
+    expect(
+      await repo.consumeInvite(inviteId, {
+        joinableStatuses: JOINABLE_ROOM_STATUSES,
+        enforceRoomExpiry: true,
+      }),
+    ).toBe(false);
+    expect(await useCount(inviteId)).toBe(0);
+
+    // The expiry guard applies only where it is asked for.
+    expect(await repo.consumeInvite(inviteId, { joinableStatuses: JOINABLE_ROOM_STATUSES })).toBe(
+      true,
+    );
+    expect(await useCount(inviteId)).toBe(1);
+  });
+
+  it('two joins racing for the last use: one gets in, the other is told the invite is spent', async () => {
+    const { inviteId, code } = await collectingRoomWithInvite('host592race@gogo.id.vn', {
+      maxUses: 1,
+    });
+
+    const results = await Promise.all([guestJoin(code, 'Nhanh Tay'), guestJoin(code, 'Chậm Chân')]);
+    const statuses = results.map((res) => res.statusCode).sort();
+    expect(statuses).toEqual([201, 410]);
+    expect(results.find((res) => res.statusCode === 410)!.json().code).toBe('INVITE_NOT_USABLE');
+    expect(await useCount(inviteId)).toBe(1);
   });
 });

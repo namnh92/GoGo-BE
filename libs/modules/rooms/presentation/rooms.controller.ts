@@ -185,7 +185,9 @@ export class RoomsController {
   @RateLimit({ action: 'rooms.join_guest', limit: 10, windowSeconds: 60, keyBy: 'ip' })
   @Post('join/guest')
   async joinGuest(@Body(new ZodValidationPipe(guestJoinSchema)) body: GuestJoinDto) {
-    const room = await this.rooms.consumeInviteCode(body.inviteCode);
+    // The guest session refuses a room past its expiry; decide that before a
+    // use of the invite is spent (GoGo-BE#592).
+    const room = await this.rooms.consumeInviteCode(body.inviteCode, { enforceRoomExpiry: true });
     const session = await this.auth.createGuestSession({
       roomCode: room.code,
       displayName: body.displayName,

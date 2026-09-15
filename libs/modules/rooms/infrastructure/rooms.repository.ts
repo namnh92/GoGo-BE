@@ -489,12 +489,18 @@ export class RoomsRepository {
 
   /**
    * Atomic use-count increment guarded by revocation, expiry, max_uses and —
-   * GoGo-BE#592 — the room still taking members. The caller has already
-   * refused a join that fails any of these; repeating them in the UPDATE means
-   * an invite spent or a room moving on in between still costs nothing.
-   * Returns false when the use was not spent.
+   * GoGo-BE#592 — the room still taking members (and, where the path enforces
+   * it, not past its expiry). The caller has already refused a join that fails
+   * any of these; repeating them in the UPDATE means a change committed before
+   * this statement starts still costs nothing. The invite row is locked by the
+   * UPDATE, so two joins racing for the last use cannot both spend it. A room
+   * change committed while the statement runs is not seen: the `exists` reads
+   * the statement's snapshot. Returns false when the use was not spent.
    */
-  async consumeInvite(inviteId: string, joinableStatuses: readonly string[]): Promise<boolean> {
+  async consumeInvite(
+    inviteId: string,
+    rules: { joinableStatuses: readonly string[]; enforceRoomExpiry?: boolean | undefined },
+  ): Promise<boolean> {
     const rows = await this.db
       .update(schema.roomInvites)
       .set({ useCount: sql`${schema.roomInvites.useCount} + 1` })
@@ -504,10 +510,14 @@ export class RoomsRepository {
           isNull(schema.roomInvites.revokedAt),
           sql`${schema.roomInvites.expiresAt} > now()`,
           sql`(${schema.roomInvites.maxUses} is null or ${schema.roomInvites.useCount} < ${schema.roomInvites.maxUses})`,
-          sql`exists (select 1 from rooms r where r.id = ${schema.roomInvites.roomId} and r.status in (${sql.join(
-            joinableStatuses.map((status) => sql`${status}`),
+          sql`exists (select 1 from ${schema.rooms} where ${schema.rooms.id} = ${schema.roomInvites.roomId} and ${schema.rooms.status} in (${sql.join(
+            rules.joinableStatuses.map((status) => sql`${status}`),
             sql`, `,
-          )}))`,
+          )})${
+            rules.enforceRoomExpiry
+              ? sql` and (${schema.rooms.expiresAt} is null or ${schema.rooms.expiresAt} > now())`
+              : sql``
+          })`,
         ),
       )
       .returning({ id: schema.roomInvites.id });
