@@ -968,6 +968,9 @@ describe('plan cost scope (GoGo-BE#593)', () => {
       costScope: 'per_person',
     });
     expect(next.totals).toMatchObject({ costScope: 'per_person', uncertain: true });
+    // Stored as the optimizer built it, not only derived when read.
+    const [stored] = await db.select().from(schema.plans).where(eq(schema.plans.id, next.id));
+    expect(stored!.totals.uncertain).toBe(true);
   });
 
   it('reads a plan stored before the rule as an estimate when a stop has no price', async () => {
