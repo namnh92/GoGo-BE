@@ -11,6 +11,14 @@ import { SuggestionsRepository } from '../../suggestions/infrastructure/suggesti
 import { PlansRepository, type PlanRow, type StopRow } from '../infrastructure/plans.repository';
 import { PlanBuilderService } from './plan-builder.service';
 
+/**
+ * GoGo-BE#593 — what every plan cost is *per*. Plans read only `per_person`
+ * price rows, the optimizer sums them per stop and compares the sum with the
+ * per-person budget, so these amounts are per person. Without the scope in the
+ * contract a client labelled the sum a group total and divided it again.
+ */
+export const PLAN_COST_SCOPE = 'per_person' as const;
+
 /** BE-BFF-008 + BE-BFF-014 — plan read/edit/regenerate/active-date APIs. */
 @Injectable()
 export class PlansService {
@@ -70,6 +78,12 @@ export class PlansService {
       return undefined;
     };
     const reasons = new Map(stops.map((s) => [s.id, unavailableReason(s.placeId)]));
+    // GoGo-BE#593 — a stop with no per-person price makes the totals an
+    // estimate. Derived here, at read time, so plans stored before the optimizer
+    // said so (DEV plan 94b894df, `uncertain: false` with an unpriced stop)
+    // read correctly without a migration.
+    const uncertain =
+      plan.totals.uncertain || stops.some((s) => s.costMin === null || s.costMax === null);
 
     return {
       id: plan.id,
@@ -78,7 +92,7 @@ export class PlansService {
       status: plan.status,
       isStale: plan.isStale,
       constraintVersion: plan.constraintVersion,
-      totals: plan.totals,
+      totals: { ...plan.totals, uncertain, costScope: PLAN_COST_SCOPE },
       createdAt: plan.createdAt.toISOString(),
       // Plan-level flag so a client can show one banner without scanning stops.
       hasUnavailableStops: [...reasons.values()].some((r) => r !== undefined),
@@ -93,6 +107,7 @@ export class PlansService {
         travelDistanceMFromPrev: s.travelDistanceMFromPrev,
         costMin: s.costMin,
         costMax: s.costMax,
+        costScope: PLAN_COST_SCOPE,
         isLocked: s.isLocked,
         status: s.status,
         completedAt: s.completedAt?.toISOString(),
