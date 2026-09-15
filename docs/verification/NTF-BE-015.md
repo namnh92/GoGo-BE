@@ -90,6 +90,29 @@ Once the bare-key row exists, every insert the previous release makes for that e
 
 If step 1 never reaches 0 because an event keeps failing, fix or dead-letter that event deliberately first; do not delete its inbox rows. The automatic rollback inside `deploy-vps.sh` does not run these steps. It fires only when the new release fails its health check, so the new worker has usually run for under a minute; its exposure is limited to the boundary above. A manual rollback follows this procedure.
 
+## Push locale groups across a release boundary (GoGo-BE#594)
+
+Since #594 the dispatcher sends one provider call per recipient locale:
+
+- **`vi`** carries idempotency key `event.id`, which is the only key the previous release ever sent.
+- **`en`** carries `event.id:en`.
+
+Inbox rows are unaffected. Push for `en` recipients can go wrong when an event is retried by the other release:
+
+- **Duplicate (previous → this release).** The previous release sends its single call under `event.id` to every recipient, `en` included, and is killed before marking the event. This release's retry of the `vi` call is a provider-side replay. Its `en` call carries a new key, so `en` recipients get a second push.
+- **Missing (this release → previous).** This release's `vi` call succeeds, then its `en` call fails transiently. The previous release's retry after a rollback sends everyone under `event.id`, which the provider treats as a replay of the `vi` message, so `en` recipients get no push.
+
+**Exposure today is none.** Every account is `vi` (the column default, and no client writes `en`). Check before a deploy or rollback:
+
+```sql
+select count(*) as en_accounts from users where lower(locale) like 'en%';
+```
+
+If it is non-zero:
+
+- **Rollback:** the procedure above already closes the missing case. Step 1 waits until no unfinished event has inbox rows, and the push always follows the inbox rows.
+- **Deploy:** the duplicate case needs the previous worker killed mid-fan-out. Stop it gracefully (steps 2–3) before deploying.
+
 ## Not run
 
 DEV deploy, a real multi-member room on DEV, and a real rolling replacement of the DEV worker. Command output for this head is in the pull request.

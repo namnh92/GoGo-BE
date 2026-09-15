@@ -152,13 +152,18 @@ export class OutboxDispatcher {
     const userIds = targets.map((t) => t.userId!) as string[];
     // NTF-BE-014 (#572), ADR-0025: one switch per account decides push for
     // every kind. The in-app row below is written regardless of it.
-    const pushOff = await this.db
-      .select({ id: schema.users.id })
+    // #594: the same read carries each recipient's account locale, which
+    // decides the copy below (spec §39).
+    const pushRows = await this.db
+      .select({
+        id: schema.users.id,
+        locale: schema.users.locale,
+        allowed: sql<boolean>`${pushAllowed(sql`${schema.users.id}`)}`,
+      })
       .from(schema.users)
-      .where(
-        and(inArray(schema.users.id, userIds), sql`not ${pushAllowed(sql`${schema.users.id}`)}`),
-      );
-    const optedOutOfPush = new Set(pushOff.map((row) => row.id));
+      .where(inArray(schema.users.id, userIds));
+    const optedOutOfPush = new Set(pushRows.filter((row) => !row.allowed).map((row) => row.id));
+    const localeOf = new Map(pushRows.map((row) => [row.id, pushLocaleOf(row.locale)]));
 
     // #584 — one inbox row per recipient, whichever release writes it.
     //
@@ -216,15 +221,11 @@ export class OutboxDispatcher {
     const recipients = userIds.filter((id) => !optedOutOfPush.has(id));
     if (recipients.length === 0) return;
 
-    // #594: copy follows each recipient's account locale (spec §39), so an
-    // event whose recipients read different languages is one call per
-    // language. Every account that exists today is `vi`, which is still exactly
-    // one call under the event id.
-    const localeRows = await this.db
-      .select({ id: schema.users.id, locale: schema.users.locale })
-      .from(schema.users)
-      .where(inArray(schema.users.id, recipients));
-    const localeOf = new Map(localeRows.map((row) => [row.id, pushLocaleOf(row.locale)]));
+    // #594: copy follows each recipient's account locale, so an event whose
+    // recipients read different languages is one call per language. Every
+    // account that exists today is `vi`, which is still exactly one call under
+    // the event id. Across a release boundary `en` recipients can get a
+    // duplicate or no push: see docs/verification/NTF-BE-015.md.
     const byLocale = new Map<PushLocale, string[]>();
     for (const userId of recipients) {
       const locale = localeOf.get(userId) ?? DEFAULT_PUSH_LOCALE;
