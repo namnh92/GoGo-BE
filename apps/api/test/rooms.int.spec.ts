@@ -624,6 +624,83 @@ describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
     expect(second.statusCode).toBe(410);
   });
 
+  it('a refused join spends no use of the invite, for a user or a guest (GoGo-BE#592)', async () => {
+    const { token } = await registerUser('host592@gogo.id.vn');
+    const room = await createGroupRoom(token);
+    await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/status`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { status: 'collecting' },
+    });
+    const created = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { maxUses: 3 },
+    });
+    const { inviteId, code } = created.json();
+    const useCount = async () =>
+      (await db.select().from(schema.roomInvites).where(eq(schema.roomInvites.id, inviteId)))[0]!
+        .useCount;
+
+    const joined = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join/guest',
+      remoteAddress: ip(),
+      payload: { inviteCode: code, displayName: 'Vào Kịp' },
+    });
+    expect(joined.statusCode).toBe(201);
+    expect(await useCount()).toBe(1);
+
+    // The room moves past collecting: the regression's `ready` room.
+    await db.update(schema.rooms).set({ status: 'ready' }).where(eq(schema.rooms.id, room.id));
+
+    const outsider = await registerUser('late592@gogo.id.vn');
+    const userJoin = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join',
+      remoteAddress: ip(),
+      headers: auth(outsider.token),
+      payload: { inviteCode: code },
+    });
+    expect(userJoin.statusCode).toBe(410);
+    expect(userJoin.json().code).toBe('ROOM_NOT_JOINABLE');
+    expect(await useCount()).toBe(1);
+
+    for (const displayName of ['Trễ Một', 'Trễ Hai', 'Trễ Ba']) {
+      const guestJoin = await api().inject({
+        method: 'POST',
+        url: '/v1/rooms/join/guest',
+        remoteAddress: ip(),
+        payload: { inviteCode: code, displayName },
+      });
+      expect(guestJoin.statusCode).toBe(410);
+      expect(guestJoin.json().code).toBe('ROOM_NOT_JOINABLE');
+    }
+    // Three refused guests would have spent the last two uses of a maxUses-3 invite.
+    expect(await useCount()).toBe(1);
+
+    // A revoked invite still says so, and still spends nothing.
+    await api().inject({
+      method: 'DELETE',
+      url: `/v1/rooms/${room.id}/invites/${inviteId}`,
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    const revoked = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join/guest',
+      remoteAddress: ip(),
+      payload: { inviteCode: code, displayName: 'Thu Hồi' },
+    });
+    expect(revoked.statusCode).toBe(410);
+    expect(revoked.json().code).toBe('INVITE_NOT_USABLE');
+    expect(await useCount()).toBe(1);
+  });
+
   it('host can remove a member; removed guest session is revoked', async () => {
     const { token } = await registerUser('host12@gogo.id.vn');
     const room = await createGroupRoom(token);

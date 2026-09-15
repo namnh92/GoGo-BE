@@ -487,8 +487,14 @@ export class RoomsRepository {
       .where(eq(schema.roomInvites.id, inviteId));
   }
 
-  /** Atomic use-count increment guarded by max_uses. Returns false when spent. */
-  async consumeInvite(inviteId: string): Promise<boolean> {
+  /**
+   * Atomic use-count increment guarded by revocation, expiry, max_uses and —
+   * GoGo-BE#592 — the room still taking members. The caller has already
+   * refused a join that fails any of these; repeating them in the UPDATE means
+   * an invite spent or a room moving on in between still costs nothing.
+   * Returns false when the use was not spent.
+   */
+  async consumeInvite(inviteId: string, joinableStatuses: readonly string[]): Promise<boolean> {
     const rows = await this.db
       .update(schema.roomInvites)
       .set({ useCount: sql`${schema.roomInvites.useCount} + 1` })
@@ -498,6 +504,10 @@ export class RoomsRepository {
           isNull(schema.roomInvites.revokedAt),
           sql`${schema.roomInvites.expiresAt} > now()`,
           sql`(${schema.roomInvites.maxUses} is null or ${schema.roomInvites.useCount} < ${schema.roomInvites.maxUses})`,
+          sql`exists (select 1 from rooms r where r.id = ${schema.roomInvites.roomId} and r.status in (${sql.join(
+            joinableStatuses.map((status) => sql`${status}`),
+            sql`, `,
+          )}))`,
         ),
       )
       .returning({ id: schema.roomInvites.id });

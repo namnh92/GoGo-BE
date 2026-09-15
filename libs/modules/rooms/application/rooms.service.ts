@@ -20,6 +20,12 @@ import {
   type RoomType,
   assertRoomDetailsEditable,
 } from '../domain/room-state';
+import {
+  inviteJoinRefusal,
+  isJoinable,
+  JOINABLE_ROOM_STATUSES,
+  type JoinRefusal,
+} from '../domain/invite-join';
 import { RoomPolicy } from '../presentation/room-policy';
 import {
   RoomsRepository,
@@ -467,15 +473,23 @@ export class RoomsService {
     return { revoked: true };
   }
 
-  /** Resolve + consume an invite code. Shared by user join and guest join. */
+  /**
+   * Resolve + consume an invite code. Shared by user join and guest join.
+   *
+   * GoGo-BE#592 — every refusal is decided before the use is spent. This used
+   * to consume first and check the room afterwards, so each 410
+   * `ROOM_NOT_JOINABLE` still counted against `maxUses`.
+   */
   async consumeInviteCode(code: string): Promise<RoomRow> {
     const invite = await this.repo.findInviteByHash(this.tokens.hashOpaqueToken(code));
     if (!invite) throw AppError.notFound('INVITE_NOT_FOUND', 'Invite not found');
-    const ok = await this.repo.consumeInvite(invite.id);
-    if (!ok) throw AppError.gone('INVITE_NOT_USABLE', 'Invite expired, revoked or fully used');
     const room = await this.policy.getRoom(invite.roomId);
-    if (!['draft', 'collecting'].includes(room.status)) {
-      throw AppError.gone('ROOM_NOT_JOINABLE', 'Room is no longer accepting members');
+    const refusal = inviteJoinRefusal(invite, room.status, new Date());
+    if (refusal) throw joinRefused(refusal);
+    if (!(await this.repo.consumeInvite(invite.id, JOINABLE_ROOM_STATUSES))) {
+      // Something changed between the read and the guarded UPDATE; nothing was spent.
+      const now = await this.policy.getRoom(invite.roomId);
+      throw joinRefused(isJoinable(now.status) ? 'INVITE_NOT_USABLE' : 'ROOM_NOT_JOINABLE');
     }
     return room;
   }
@@ -530,6 +544,12 @@ export class RoomsService {
     await this.repo.removeSeedPlace(roomId, placeId);
     return { seedPlaces: await this.repo.listSeedPlaces(roomId) };
   }
+}
+
+function joinRefused(refusal: JoinRefusal): AppError {
+  return refusal === 'ROOM_NOT_JOINABLE'
+    ? AppError.gone('ROOM_NOT_JOINABLE', 'Room is no longer accepting members')
+    : AppError.gone('INVITE_NOT_USABLE', 'Invite expired, revoked or fully used');
 }
 
 function isoDate(value: Date | string | null | undefined): string | undefined {
