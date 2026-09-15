@@ -24,6 +24,7 @@ function serviceWith(opts: {
     maxUses: number | null;
   }>;
   consumed?: boolean;
+  member?: { id: string; role: 'host' | 'member' };
 }) {
   const statuses = [...opts.roomStatus];
   const consumeInvite = vi.fn(async () => opts.consumed ?? true);
@@ -38,6 +39,8 @@ function serviceWith(opts: {
       ...opts.invite,
     })),
     consumeInvite,
+    findActiveUserMember: vi.fn(async () => opts.member),
+    addUserMember: vi.fn(async () => ({ id: 'new-member', role: 'member' })),
   } as unknown as RoomsRepository;
   const policy = {
     getRoom: vi.fn(async () => ({
@@ -47,15 +50,16 @@ function serviceWith(opts: {
     })),
   } as unknown as RoomPolicy;
   const tokens = { hashOpaqueToken: (code: string) => `hash:${code}` } as unknown as TokenService;
+  const events = { publish: vi.fn(async () => undefined) };
   const service = new RoomsService(
     repo,
     policy,
     tokens,
-    {} as IdentityRepository,
+    { findUserById: vi.fn(async () => ({ displayName: 'Lan' })) } as unknown as IdentityRepository,
     {} as SessionRevocationService,
-    { publish: vi.fn() } as unknown as RoomEventBus,
+    events as unknown as RoomEventBus,
   );
-  return { service, consumeInvite };
+  return { service, consumeInvite, repo, events };
 }
 
 async function codeOf(run: Promise<unknown>): Promise<string> {
@@ -120,5 +124,68 @@ describe('RoomsService.consumeInviteCode (GoGo-BE#592)', () => {
   it('answers INVITE_NOT_USABLE when the last use went to someone else in between', async () => {
     const { service } = serviceWith({ roomStatus: ['collecting', 'collecting'], consumed: false });
     expect(await codeOf(service.consumeInviteCode('code'))).toBe('INVITE_NOT_USABLE');
+  });
+});
+
+describe('RoomsService.joinAsUser × existing member (GoGo-BE#597)', () => {
+  const user = { type: 'user', id: 'user-1', sessionId: 'session-1' } as never;
+
+  it('returns the membership of someone already in a finalised room, spending nothing', async () => {
+    const { service, consumeInvite, repo, events } = serviceWith({
+      roomStatus: ['ready'],
+      member: { id: 'member-1', role: 'member' },
+    });
+    await expect(service.joinAsUser(user, 'code')).resolves.toEqual({
+      roomId: ROOM_ID,
+      memberId: 'member-1',
+      role: 'member',
+    });
+    expect(consumeInvite).not.toHaveBeenCalled();
+    expect(repo.addUserMember).not.toHaveBeenCalled();
+    expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it('lets a member back in through a revoked invite: the membership grants access', async () => {
+    const { service, consumeInvite } = serviceWith({
+      roomStatus: ['ready'],
+      invite: { revokedAt: new Date() },
+      member: { id: 'host-1', role: 'host' },
+    });
+    await expect(service.joinAsUser(user, 'code')).resolves.toMatchObject({ role: 'host' });
+    expect(consumeInvite).not.toHaveBeenCalled();
+  });
+
+  it('still refuses someone who is not an active member with ROOM_NOT_JOINABLE', async () => {
+    // `findActiveUserMember` returns nothing for a removed member too.
+    const { service, consumeInvite, repo } = serviceWith({ roomStatus: ['ready'] });
+    expect(await codeOf(service.joinAsUser(user, 'code'))).toBe('ROOM_NOT_JOINABLE');
+    expect(repo.findActiveUserMember).toHaveBeenCalledWith(ROOM_ID, 'user-1');
+    expect(consumeInvite).not.toHaveBeenCalled();
+  });
+
+  it('still refuses a non-member holding a revoked invite with INVITE_NOT_USABLE', async () => {
+    const { service } = serviceWith({
+      roomStatus: ['collecting'],
+      invite: { revokedAt: new Date() },
+    });
+    expect(await codeOf(service.joinAsUser(user, 'code'))).toBe('INVITE_NOT_USABLE');
+  });
+
+  it('joins a new member into a room still collecting, spending one use', async () => {
+    const { service, consumeInvite, repo } = serviceWith({ roomStatus: ['collecting'] });
+    await expect(service.joinAsUser(user, 'code')).resolves.toEqual({
+      roomId: ROOM_ID,
+      memberId: 'new-member',
+      role: 'member',
+    });
+    expect(consumeInvite).toHaveBeenCalledTimes(1);
+    expect(repo.addUserMember).toHaveBeenCalledTimes(1);
+  });
+
+  it('never answers a guest session through this path', async () => {
+    const { service, repo } = serviceWith({ roomStatus: ['collecting'] });
+    const guest = { type: 'guest', id: 'guest-1', sessionId: 'guest-1', roomId: ROOM_ID } as never;
+    expect(await codeOf(service.joinAsUser(guest, 'code'))).toBe('USER_ONLY');
+    expect(repo.findActiveUserMember).not.toHaveBeenCalled();
   });
 });

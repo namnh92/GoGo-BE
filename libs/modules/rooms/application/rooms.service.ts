@@ -29,6 +29,7 @@ import {
 import { RoomPolicy } from '../presentation/room-policy';
 import {
   RoomsRepository,
+  type InviteRow,
   type NewConstraint,
   type RoomRow,
 } from '../infrastructure/rooms.repository';
@@ -481,8 +482,16 @@ export class RoomsService {
    * `ROOM_NOT_JOINABLE` still counted against `maxUses`.
    */
   async consumeInviteCode(code: string, rules: JoinRules = {}): Promise<RoomRow> {
+    return this.consumeInvite(await this.resolveInvite(code), rules);
+  }
+
+  private async resolveInvite(code: string): Promise<InviteRow> {
     const invite = await this.repo.findInviteByHash(this.tokens.hashOpaqueToken(code));
     if (!invite) throw AppError.notFound('INVITE_NOT_FOUND', 'Invite not found');
+    return invite;
+  }
+
+  private async consumeInvite(invite: InviteRow, rules: JoinRules = {}): Promise<RoomRow> {
     const room = await this.policy.getRoom(invite.roomId);
     const refusal = inviteJoinRefusal(invite, roomState(room), new Date(), rules);
     if (refusal) throw joinRefused(refusal);
@@ -510,7 +519,18 @@ export class RoomsService {
     if (actor.type !== 'user') {
       throw AppError.forbidden('USER_ONLY', 'Use the guest session endpoint instead');
     }
-    const room = await this.consumeInviteCode(inviteCode);
+    const invite = await this.resolveInvite(inviteCode);
+    // GoGo-BE#597 — someone already in the room is re-joining, which the
+    // contract has always answered with their membership. Checked before the
+    // invite and the room are judged: a member reopening their room's link
+    // after it was finalised was refused 410 ROOM_NOT_JOINABLE and never
+    // reached the idempotent branch in `addUserMember`. Nothing is spent and
+    // nobody is told they arrived again. The invite only has to exist; the
+    // membership is what grants access.
+    const existing = await this.repo.findActiveUserMember(invite.roomId, actor.id);
+    if (existing) return { roomId: invite.roomId, memberId: existing.id, role: existing.role };
+
+    const room = await this.consumeInvite(invite);
     const user = await this.identity.findUserById(actor.id);
     const member = await this.repo.addUserMember({
       roomId: room.id,
