@@ -82,6 +82,17 @@ Codes worth explicit UI: `INVALID_CREDENTIALS`, `SESSION_REVOKED`,
 `PREFERENCE_VERSION_CONFLICT`, `PLAN_VERSION_CONFLICT`, `NOT_A_CANDIDATE`,
 `BILL_PHOTO_REQUIRED`, `PLACE_CLOSED`, `RATE_LIMITED`.
 
+**Invite join: membership first (GoGo-BE#597, owner decision 2026-09-15).**
+`POST /rooms/join` checks the caller's membership before judging the invite or
+the room. A current member of the invite's room gets `201 { roomId, memberId,
+role }` for their own room, even when the link is revoked or expired, or the
+room is past `collecting`. No use of the invite is spent and nothing new is
+granted. Everyone else, including a member the host removed, still gets `410
+INVITE_NOT_USABLE` / `ROOM_NOT_JOINABLE`, and a refused join spends nothing
+(GoGo-BE#592). `POST /rooms/join/guest` is unchanged: a returning guest
+re-enters with their stored `guestToken`. The OpenAPI `410` description for
+`joinRoom` is updated at the next contract bump.
+
 ## 7. Flow cheat-sheet
 
 | Screen       | Calls                                                                                           |
