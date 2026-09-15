@@ -9,6 +9,7 @@ import {
   assertConstraintsEditable,
   assertRoomDetailsEditable,
   assertTransition,
+  isNoOpTransition,
 } from '../domain/room-state';
 import { assertMatchingReady } from '../domain/matching-readiness';
 import { Inject, Injectable } from '@nestjs/common';
@@ -335,13 +336,14 @@ export class RoomsRepository {
     });
   }
 
+  /** Whether the room moved. `false` is an idempotent repeat that wrote nothing (#600). */
   async updateStatus(
     roomId: string,
     status: RoomRow['status'],
     event: DomainEventInput,
     allowIncomplete = false,
-  ) {
-    await this.db.transaction(async (tx) => {
+  ): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
       const [room] = await tx
         .select()
         .from(schema.rooms)
@@ -349,6 +351,9 @@ export class RoomsRepository {
         .for('update');
       if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
       assertTransition(room.status, status);
+      // Under the lock, so of two starts racing from `ready` exactly one writes
+      // `room.status_active` and its member push.
+      if (isNoOpTransition(room.status, status)) return false;
       if (status === 'matching') {
         const members = await tx
           .select({ selectionStatus: schema.roomMembers.selectionStatus })
@@ -362,6 +367,7 @@ export class RoomsRepository {
         .set({ status, updatedAt: sql`now()` })
         .where(eq(schema.rooms.id, roomId));
       await writeOutbox(tx, event);
+      return true;
     });
   }
 
