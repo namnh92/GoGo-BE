@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   approvalBlock,
+  blocksApproval,
+  isActionable,
   remediationCategory,
   type ActiveCommune,
   type MappingUnderApproval,
 } from './approval-policy';
+import type { MappingStatus } from './mapping-status';
 
 /**
  * ADM-009 (#462) — the approval invariant.
@@ -112,5 +115,52 @@ describe('remediation categories', () => {
     const mapping = verified({ datasetVersion: OLDER });
     expect(remediationCategory(mapping, ACTIVE)).toBe('verified_against_older_version');
     expect(approvalBlock(mapping, ACTIVE, commune)).toBeNull();
+  });
+});
+
+/**
+ * ADM-025 (#615) — the queue's idea of "actionable" and the policy's idea of
+ * "blocks publication" are now one definition with two names, and these tests
+ * are what stops them drifting apart again. The pair that drifted was a
+ * hand-kept list `['NEEDS_REVIEW', 'STALE']` sitting beside a policy that had
+ * long since started blocking AUTO_MATCHED too.
+ */
+describe('what the queue calls actionable', () => {
+  const ALL: MappingStatus[] = [
+    'UNMAPPED',
+    'AUTO_MATCHED',
+    'NEEDS_REVIEW',
+    'VERIFIED',
+    'REJECTED',
+    'STALE',
+  ];
+
+  it('blocks publication for everything except a verified mapping', () => {
+    for (const status of ALL) {
+      expect(blocksApproval(status), status).toBe(status !== 'VERIFIED');
+    }
+  });
+
+  it('is a subset of what blocks publication — never work nobody needs to do', () => {
+    for (const status of ALL) {
+      if (isActionable(status)) expect(blocksApproval(status), status).toBe(true);
+    }
+  });
+
+  it('includes the resolver proposal, which is the whole point', () => {
+    // A machine match blocks publication and has an answer to confirm. Leaving
+    // it out reported zero work while 271 places waited (GoGo-BE#610).
+    expect(isActionable('AUTO_MATCHED')).toBe(true);
+    expect(isActionable('NEEDS_REVIEW')).toBe(true);
+    expect(isActionable('STALE')).toBe(true);
+  });
+
+  it('excludes UNMAPPED, which blocks but offers nothing to decide', () => {
+    expect(blocksApproval('UNMAPPED')).toBe(true);
+    expect(isActionable('UNMAPPED')).toBe(false);
+  });
+
+  it('excludes VERIFIED, which is the answer rather than a question', () => {
+    expect(isActionable('VERIFIED')).toBe(false);
   });
 });

@@ -48,6 +48,34 @@ export type ActiveCommune = {
   effectiveTo: string | null;
 } | null;
 
+/**
+ * ADM-025 (#615) — whether a mapping stands between a place and publication.
+ *
+ * `VERIFIED` is the only status that does not. Everything else does, which is
+ * why the queue's row flag and the queue's counts must both be read from here
+ * rather than from a list somebody maintains beside it.
+ */
+export function blocksApproval(status: MappingStatus): boolean {
+  return status !== 'VERIFIED';
+}
+
+/**
+ * Blocking publication **and** carrying an answer a person can act on.
+ *
+ * `UNMAPPED` blocks, and is deliberately not actionable: there is nothing for a
+ * reviewer to decide about a place the resolver could not place. It stays in
+ * the counts and one filter away.
+ *
+ * `AUTO_MATCHED` is actionable, and the definition that excluded it is the
+ * defect this function exists to close. It was written when a machine match was
+ * rare; a boundary release makes it the normal state of a fresh catalogue
+ * (GoGo-BE#610 produced 271 in one run), and a queue that called that "nothing
+ * to do" reported zero work while every one of them waited for a person.
+ */
+export function isActionable(status: MappingStatus): boolean {
+  return blocksApproval(status) && status !== 'UNMAPPED';
+}
+
 export function approvalBlock(
   mapping: MappingUnderApproval,
   activeDatasetVersion: string,
