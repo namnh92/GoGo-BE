@@ -34,7 +34,7 @@
       "path": "json/simplified_json_generated_data_vn_units.json",
       "vendoredAs": "historical-units.v2.4.1.json.gz",
       "sha256": "86c1e097b1b8b63cf5f8b7aa71d90e3bd97f2e75412af67d5dede4d9c0e91899",
-      "bytes": 2451968,
+      "bytes": 2500493,
       "license": "MIT",
       "licenseFile": "LICENSE.vietnamese-provinces-database.txt",
       "retrievedAt": "2026-09-07",
