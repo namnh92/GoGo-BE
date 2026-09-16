@@ -9687,7 +9687,11 @@ components:
         affectedPlaceCount: { type: integer }
         decisionState:
           type: string
-          enum:
+          description: >
+            Grows with the review model (GoGo-BE#619 added the MATERIALIZED_*
+            pair), so it is declared extensible: a client treats a value it does
+            not know as "not actionable here", never as a malformed response.
+          x-extensible-enum:
             [
               UNDECIDED,
               ACCEPTED_DRAFT,
@@ -9801,7 +9805,11 @@ components:
             decidedAt: { type: string, format: date-time, nullable: true }
         decisionState:
           type: string
-          enum:
+          description: >
+            Grows with the review model (GoGo-BE#619 added the MATERIALIZED_*
+            pair), so it is declared extensible: a client treats a value it does
+            not know as "not actionable here", never as a malformed response.
+          x-extensible-enum:
             [
               UNDECIDED,
               ACCEPTED_DRAFT,

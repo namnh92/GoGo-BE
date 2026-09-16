@@ -5028,8 +5028,8 @@ export interface components {
             };
             candidateCount: number;
             affectedPlaceCount: number;
-            /** @enum {string} */
-            decisionState: "UNDECIDED" | "ACCEPTED_DRAFT" | "REJECTED_DRAFT" | "SUPERSEDED" | "MATERIALIZED_ACCEPT" | "MATERIALIZED_REJECT";
+            /** @description Grows with the review model (GoGo-BE#619 added the MATERIALIZED_* pair), so it is declared extensible: a client treats a value it does not know as "not actionable here", never as a malformed response. */
+            decisionState: string;
             /** Format: date-time */
             decidedAt: string | null;
             sourceProvenance: string;
@@ -5098,8 +5098,8 @@ export interface components {
                 /** Format: date-time */
                 decidedAt: string | null;
             } | null;
-            /** @enum {string} */
-            decisionState: "UNDECIDED" | "ACCEPTED_DRAFT" | "REJECTED_DRAFT" | "SUPERSEDED" | "MATERIALIZED_ACCEPT" | "MATERIALIZED_REJECT";
+            /** @description Grows with the review model (GoGo-BE#619 added the MATERIALIZED_* pair), so it is declared extensible: a client treats a value it does not know as "not actionable here", never as a malformed response. */
+            decisionState: string;
             /** @description Append-only, newest first. Nothing here is ever rewritten. */
             history: components["schemas"]["AdministrativeOverrideDecisionRecord"][];
         };
