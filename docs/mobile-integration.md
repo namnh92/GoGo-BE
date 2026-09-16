@@ -52,6 +52,10 @@ submission. Do **not** generate a fresh key per retry — that defeats it.
 - **Prices are ranges with confidence.** Show a range, never a fake exact
   number. `totals.overBudget` comes from the _upper_ bound; `totals.uncertain`
   means some stop's price is unknown — say so instead of implying certainty.
+- **Plan costs carry their scope (GoGo-BE#593).** `totals.costScope` and each
+  stop's `costScope` say what `costMin`/`costMax` are per — `per_person` today.
+  A group figure is that amount × `participantCount`; never divide it. A stop
+  whose cost is `null` has no known price, which is not the same as free (`0`).
 - **Provider attribution is mandatory** wherever Google-sourced facts appear
   (`sources[]`, `candidate.attributions[]`). Google rating, GoGo rating and
   the derived score are separate fields — do not merge them into one star row.

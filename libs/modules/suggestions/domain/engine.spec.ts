@@ -238,6 +238,49 @@ describe('optimizer (SG-007/SG-008)', () => {
     expect(result.stops.filter((s) => s.placeId === 'locked-place')).toHaveLength(1);
   });
 
+  describe('an anchor price (GoGo-BE#593)', () => {
+    const anchor = (costMin: number | null, costMax: number | null): LockedAnchor => ({
+      placeId: 'winner',
+      name: 'Winner',
+      position: 0,
+      arriveAt: null,
+      departAt: null,
+      durationMinutes: 90,
+      travelMinutesFromPrev: null,
+      travelDistanceMFromPrev: null,
+      costMin,
+      costMax,
+      isLocked: false,
+      lat: 10.777,
+      lng: 106.701,
+    });
+
+    it('with no per-person price makes the totals uncertain, never a confident 0', async () => {
+      const result = await buildItinerary({
+        ranked: [],
+        snapshot: snapshot(),
+        lockedStops: [anchor(null, null)],
+        maxStops: 1,
+      });
+      expect(result.stops[0]!.costMax).toBeNull();
+      expect(result.totals.costMax).toBe(0);
+      expect(result.totals.uncertain).toBe(true);
+      expect(result.reasonCodes).toContain('PRICE_UNCERTAIN');
+    });
+
+    it('that is free stays a known 0', async () => {
+      const result = await buildItinerary({
+        ranked: [],
+        snapshot: snapshot(),
+        lockedStops: [anchor(0, 0)],
+        maxStops: 1,
+      });
+      expect(result.totals.costMax).toBe(0);
+      expect(result.totals.uncertain).toBe(false);
+      expect(result.reasonCodes).not.toContain('PRICE_UNCERTAIN');
+    });
+  });
+
   it('is deterministic', async () => {
     const snap = snapshot();
     const r1 = await buildItinerary({ ranked: ranked(snap, ['a', 'b', 'c']), snapshot: snap });
