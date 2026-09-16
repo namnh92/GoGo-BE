@@ -1,7 +1,7 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { generateKeyPairSync, verify as verifySignature } from 'node:crypto';
@@ -380,8 +380,25 @@ describe('outbox dispatcher (BE-BFF-010)', () => {
     // dedupe.
     expect(push.sent).toHaveLength(1);
     expect(push.sent[0]!.userIds).toEqual([userId]);
-    expect(push.sent[0]!.data).toMatchObject({ kind: 'plan_ready', roomId: room!.id });
     expect(push.sent[0]!.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+    // #594 contract v1. No current plan exists yet, so the room is what opens.
+    expect(push.sent[0]!.data).toEqual({
+      type: 'plan_ready',
+      version: '1',
+      notificationId: push.sent[0]!.idempotencyKey,
+      route: `gogo://room/${room!.id}`,
+      entityType: 'room',
+      entityId: room!.id,
+      kind: 'plan_ready',
+      roomId: room!.id,
+      eventType: 'plan.published',
+    });
+    // Rendered copy in the account's locale (`vi` by default), never the kind key.
+    expect(push.sent[0]!.headings).toEqual({
+      vi: 'Kế hoạch đã sẵn sàng',
+      en: 'Kế hoạch đã sẵn sàng',
+    });
+    expect(push.sent[0]!.body).not.toBe('plan_ready');
 
     const inbox = await api().inject({
       method: 'GET',
@@ -689,6 +706,131 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
       .where(sql`${schema.notifications.payload}->>'resourceId' = ${resourceId}`);
     return userIds.map((id) => rows.filter((row) => row.userId === id).length);
   }
+
+  it('renders each recipient in their account locale and opens the current plan (#594)', async () => {
+    const { roomId, userIds } = await roomWithMembers('push-locale', 2);
+    const [hostId, viMember, enMember] = userIds as [string, string, string];
+    await db.update(schema.users).set({ locale: 'en' }).where(eq(schema.users.id, enMember));
+    const [plan] = await db
+      .insert(schema.plans)
+      .values({
+        roomId,
+        version: 1,
+        status: 'current',
+        constraintVersion: 1,
+        totals: {
+          costMin: 0,
+          costMax: 0,
+          currency: 'VND',
+          durationMinutes: 0,
+          travelDistanceM: 0,
+          overBudget: false,
+          uncertain: false,
+        },
+      })
+      .returning();
+    const event = await queueEvent(roomId);
+    const push = new FakePush();
+    await new OutboxDispatcher(db as never, push).dispatchBatch();
+
+    // One provider call per language; Vietnamese first, under the bare event id
+    // every earlier release used, so a retry across the deploy is a replay.
+    expect(push.sent).toHaveLength(2);
+    const [vi, en] = push.sent;
+    expect([...vi!.userIds].sort()).toEqual([hostId, viMember].sort());
+    expect(en!.userIds).toEqual([enMember]);
+    expect(vi!.idempotencyKey).toBe(event.id);
+    expect(en!.idempotencyKey).toBe(`${event.id}:en`);
+    expect(vi!.headings).toEqual({ vi: 'Kế hoạch đã sẵn sàng', en: 'Kế hoạch đã sẵn sàng' });
+    expect(en!.headings).toEqual({ en: 'Your plan is ready' });
+
+    const [room] = await db
+      .select({ code: schema.rooms.code })
+      .from(schema.rooms)
+      .where(eq(schema.rooms.id, roomId));
+    for (const call of push.sent) {
+      expect(call.data).toEqual({
+        type: 'plan_ready',
+        version: '1',
+        notificationId: event.id,
+        route: `gogo://plan/${plan!.id}`,
+        entityType: 'plan',
+        entityId: plan!.id,
+        kind: 'plan_ready',
+        roomId,
+        eventType: 'plan.published',
+      });
+      // What a lock screen can show names no member and no room code.
+      const shown = JSON.stringify([call.headings, call.contents, call.data]);
+      expect(shown).not.toContain(room!.code);
+      expect(shown).not.toContain('Member 0');
+    }
+  });
+
+  it('a plan.changed on a superseded plan opens the current one; an opted-out en member gets none (#594)', async () => {
+    const { roomId, userIds } = await roomWithMembers('push-superseded', 3);
+    const [hostId, viMember, enMember, enOptedOut] = userIds as [string, string, string, string];
+    await db
+      .update(schema.users)
+      .set({ locale: 'en' })
+      .where(inArray(schema.users.id, [enMember, enOptedOut]));
+    await db
+      .insert(schema.notificationSettings)
+      .values({ userId: enOptedOut, pushEnabled: false, source: 'explicit' });
+    const totals = {
+      costMin: 0,
+      costMax: 0,
+      currency: 'VND',
+      durationMinutes: 0,
+      travelDistanceM: 0,
+      overBudget: false,
+      uncertain: false,
+    };
+    const [oldPlan, currentPlan] = await db
+      .insert(schema.plans)
+      .values([
+        { roomId, version: 1, status: 'superseded', constraintVersion: 1, totals },
+        { roomId, version: 2, status: 'current', constraintVersion: 1, totals },
+      ])
+      .returning();
+    // A regenerate names the plan it replaced, which is no longer the one to open.
+    const [event] = await db
+      .insert(schema.outboxEvents)
+      .values({
+        eventType: 'plan.changed',
+        resourceType: 'plan',
+        resourceId: oldPlan!.id,
+        payload: {},
+      })
+      .returning();
+    const push = new FakePush();
+    await new OutboxDispatcher(db as never, push).dispatchBatch();
+
+    // Everyone keeps the inbox row, the opted-out member included.
+    expect(await inboxCounts(userIds, oldPlan!.id)).toEqual([1, 1, 1, 1]);
+    expect(push.sent).toHaveLength(2);
+    const [vi, en] = push.sent;
+    expect([...vi!.userIds].sort()).toEqual([hostId, viMember].sort());
+    expect(en!.userIds).toEqual([enMember]);
+    expect(push.sent.flatMap((call) => call.userIds)).not.toContain(enOptedOut);
+    expect(vi!.idempotencyKey).toBe(event!.id);
+    expect(en!.idempotencyKey).toBe(`${event!.id}:en`);
+    expect(vi!.headings).toEqual({ vi: 'Kế hoạch có thay đổi', en: 'Kế hoạch có thay đổi' });
+    expect(en!.headings).toEqual({ en: 'Plan updated' });
+    for (const call of push.sent) {
+      expect(call.data).toEqual({
+        type: 'plan_changed',
+        version: '1',
+        notificationId: event!.id,
+        route: `gogo://plan/${currentPlan!.id}`,
+        entityType: 'plan',
+        entityId: currentPlan!.id,
+        kind: 'plan_changed',
+        roomId,
+        eventType: 'plan.changed',
+      });
+    }
+  });
 
   it('every member of a members event gets exactly one inbox row (#584)', async () => {
     const { roomId, userIds } = await roomWithMembers('outbox-fanout', 2);

@@ -120,8 +120,59 @@ in-app navigation (FR-PLAN-010).
 - **Photo upload for check-ins**: `photoKeys` are opaque storage keys; the R2
   presigned-upload endpoint is blocked on credentials (GoGo-BE#60/#81). Until
   then send `photoKeys: []` or a placeholder key in dev.
-- **Push delivery**: `PUT /me/device-tokens` accepts and stores tokens; FCM/APNs
-  adapters land with credentials (GoGo-BE#59/#60).
 - **Realtime suggestion progress**: runs are synchronous today; SSE progress
   arrives with BE-BFF-010's async pipeline. Poll `…/suggestions/current`.
 - **Bulk import / Sheets**: CMS-side only (PI-BE-011..017), no mobile surface.
+
+## 9. Push payload (contract v1, GoGo-BE#594)
+
+Push goes through OneSignal by user id (spec §24–§26). The copy is rendered by the
+server in the recipient's account locale (`users.locale`, `vi` by default). Every
+field in `data` is a string:
+
+| Field                           | Value                                                                                  |
+| ------------------------------- | -------------------------------------------------------------------------------------- |
+| `type`                          | `invite`, `preference_reminder`, `plan_ready`, `plan_changed`, `date_reminder`         |
+| `version`                       | `"1"`                                                                                  |
+| `notificationId`                | Outbox event id: the same for every recipient of one send. It is not the inbox row id. |
+| `route`                         | `gogo://room/{roomId}` or `gogo://plan/{planId}`                                       |
+| `entityType` / `entityId`       | `room` or `plan`, plus the id `route` names                                            |
+| `kind` / `roomId` / `eventType` | Legacy fields, kept for clients already shipped                                        |
+
+- **Routes.** `invite` and `preference_reminder` open the room. The plan kinds open
+  the room's current plan, or the room when it has no plan yet.
+- **Routing rule.** Route on `route` first, then on `type` + ids. Refetch from the
+  API on open; push is only a trigger.
+- **Privacy.** Nothing in the payload or the copy is private: no names, no room code,
+  no invite code.
+
+### Campaign push is a different shape
+
+CMS campaigns (`campaign-dispatcher.ts`) send copy written in the CMS, with this `data`:
+
+`{ campaignId, destinationType, destination? }`
+
+- There is no `type`, `route` or `notificationId`.
+- `destinationType` is a `CampaignDestination`: `home`, `place`, `recommendation`, `plan_template`, `saved` or `external_url`.
+- `destination` is the id or URL that the destination type carries.
+
+A client treats any payload without `type`, `kind` or `route` as non-transactional. It opens the destination if it has a screen for it, and Home otherwise. It never shows an error.
+
+### `route` is a logical in-app link
+
+`route` always uses the `gogo://` scheme, whatever the build flavour. It names a screen for the app's own router; it is not a URL for the operating system.
+
+- Never pass it to `Linking.openURL`.
+- Never send it as a OneSignal `url` or `app_url`. Dev and stag builds register `gogo-dev://` and `gogo-stag://`, so the OS would open nothing, or a different flavour.
+- Parse its path (`room/{id}`, `plan/{id}`) and navigate inside the app.
+
+### Web and Mini
+
+GoGo-WebApp has no push click handling yet: develop `65454f9` has no room or plan route. When it adds one, it maps the same two paths onto its own router, never onto the browser location:
+
+| Path        | Screen                     |
+| ----------- | -------------------------- |
+| `room/{id}` | room screen, `/room/{id}`  |
+| `plan/{id}` | plan screen, `/plans/{id}` |
+
+These are the paths the mobile router uses. The Mini App applies the same mapping to any notification payload a host platform hands it through the bridge, after the bridge's schema check.
