@@ -504,9 +504,9 @@ path: nothing fetches it at startup, and the resolver reads polygons out of
 PostgreSQL. A 64 KB fixture of five real entries is committed so every test runs
 offline against genuine geometry.
 
-Boundaries ship at **v5.0.0, the same tag as the current units**, and the two
-agree exactly: 34/34 provinces, 3,321/3,321 communes, zero parent
-disagreements. §10's cross-release hierarchy check stays, because agreement
+Boundaries ship at **v5.1.0, the same tag as the current units** (v5.0.0 until
+the 2026-09-16 re-pin, #610), and the two agree exactly: 34/34 provinces,
+3,321/3,321 communes, zero parent disagreements. §10's cross-release hierarchy check stays, because agreement
 measured once is not agreement guaranteed.
 
 **Nothing is repaired.** `ST_Multi` is the only normalization and it promoted
@@ -724,22 +724,25 @@ and the legacy-district status.
 
 | role                    | repo                                        | ref                                                   | file                                                | licence |
 | ----------------------- | ------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------- | ------- |
-| current units           | `thanglequoc/vietnamese-provinces-database` | `v5.0.0` @ `b092d6b45ea76c39990afd34375eabe1f6c3a492` | `json/simplified_json_generated_data_vn_units.json` | MIT     |
+| current units           | `thanglequoc/vietnamese-provinces-database` | `v5.1.0` @ `f8de63cd778b2f6144d7e7c0153cd5c711f58c60` | `json/simplified_json_generated_data_vn_units.json` | MIT     |
 | historical units        | same repo                                   | `v2.4.1` @ `fc33b7411ec4e3697817fab8118718a8d39ef090` | same path                                           | MIT     |
 | advisory change mapping | `tranngocminhhieu/vietnamadminunits`        | `7fac8c45805aad9916b17237c54baf4502303b93`            | `data/interim/convert_legacy_2025_simple.csv`       | MIT     |
 
 ```text
-b2af4329be6bbbb68bb53217d26edc8d4ff0a24aea5ad5569e72232cf6275ac3  v5.0.0 units
+17bf75142931d143174883328edd02850526b16531ee434b4cc524386e7e5e28  v5.1.0 units
 86c1e097b1b8b63cf5f8b7aa71d90e3bd97f2e75412af67d5dede4d9c0e91899  v2.4.1 units
 93d53e6f53d2094a0bfa4a17fba18f772eab36106737962b00fe1749ca7bbb1d  7fac8c4 mapping
 ```
 
 Verified by fetching and counting, not assumed:
 
-- **v5.0.0**: 34 provinces (7 municipalities, 27 provinces), 3,321 communes (697
-  phường, 2,610 xã, 13 đặc khu), no duplicate codes, current to Decree
-  30/2026/QH16, released 2026-08-31. **This source alone decides whether a
-  current target code exists.**
+- **v5.1.0**: 34 provinces (8 municipalities, 26 provinces), 3,321 communes (697
+  phường, 2,610 xã, 13 đặc khu), no duplicate codes, current to Nghị quyết
+  36/2026/QH16, released 2026-09-13. **This source alone decides whether a
+  current target code exists.** Re-pinned from v5.0.0 on 2026-09-16 (#610): the
+  measured delta is one row — province `22` becomes `Thành phố Quảng Ninh`, which
+  is why the municipality count moves 7 → 8 — and no commune code, parent or name
+  changes, so no place mapping is invalidated by the move.
 - **v2.4.1**: 63 provinces, 696 districts, 10,035 communes, no duplicate codes
   at any level. Imported as inactive, effective-dated history.
 - **mapping**: 10,602 rows; every one of the 10,035 historical communes has an
@@ -754,7 +757,7 @@ that became đặc khu — Bạch Long Vĩ, Cồn Cỏ, Hoàng Sa, Lý Sơn, Cô
 them changing province), classified `VALID_DISTRICT_TO_SPECIAL_ZONE` rather than
 discarded as malformed.
 
-Boundaries (ADM-007, #460): `json/vn_provinces_wards_geojson.zip` at **v5.0.0,
+Boundaries (ADM-007, #460): `json/vn_provinces_wards_geojson.zip` at **v5.1.0,
 the same immutable commit as the current units** — 34/34 provinces and
 3,321/3,321 communes as MultiPolygons in **SRID 4326**, the same SRID as
 `places.geom`, derived from the Vietnam Administrative Units Reference Map
@@ -762,9 +765,11 @@ the same immutable commit as the current units** — 34/34 provinces and
 
 An earlier reading of this ADR selected the **v4.0.0 (2026-06-20)** GIS release,
 because that was the newest tag carrying GIS data when #460 was written. It is
-no longer the selected source: v5.0.0 ships a purpose-built provinces-and-wards
-archive, and taking boundaries from the same commit as the units removes an
-entire class of disagreement rather than managing it.
+no longer the selected source: from v5.0.0 onwards the upstream ships a
+purpose-built provinces-and-wards archive, and taking boundaries from the same
+commit as the units removes an entire class of disagreement rather than managing
+it. That rule is what moved both pins together to v5.1.0 in #610 — the units
+release is the one that changed, and the boundary archive follows its commit.
 
 The separate pinning and the cross-source consistency gate **stay**. The two
 components are still versioned independently in the combined dataset version,

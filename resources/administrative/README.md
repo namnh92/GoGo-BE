@@ -62,8 +62,16 @@ Sa), 64 KB. Every loader and resolver test runs offline against genuine geometry
 — two communes that share a border, an offshore special zone, and a province
 carrying only some of its communes.
 
-Boundaries ship at **v5.0.0, the same tag as `current-units`**. Issue #460
+Boundaries ship at **v5.1.0, the same tag as `current-units`**. Issue #460
 assumed a separate v4.0.0 GIS release; that predates this archive, and the two
 agree exactly — 34/34 provinces, 3,321/3,321 communes, zero parent
 disagreements. The resolver's cross-release hierarchy check stays anyway,
 because "they agree today" is a measurement, not a guarantee.
+
+The pin moved from v5.0.0 to v5.1.0 on 2026-09-16 (#610). The upstream release
+carries Nghị quyết 36/2026/QH16, and the measured delta against v5.0.0 is one
+row: province `22` reads `Thành phố Quảng Ninh` instead of `Tỉnh Quảng Ninh`.
+No commune code, parent or name moves, so the boundary archive is re-fetched
+under the new pin rather than re-derived. `boundaries-fixture.v5.0.0.zip` keeps
+its own v5.0.0 identity: it is five unmodified entries whose geometry v5.1.0
+does not touch, and re-cutting it would change a test input for no reason.
