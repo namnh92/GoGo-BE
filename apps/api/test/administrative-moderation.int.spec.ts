@@ -1146,3 +1146,107 @@ async function metricCount(metric: string, contains?: string): Promise<number> {
     .filter((line) => line.startsWith(metric) && (!contains || line.includes(contains)))
     .reduce((sum, line) => sum + Number(line.trim().split(/\s+/).at(-1) ?? 0), 0);
 }
+
+/**
+ * ADM-024 (#613) — confirming many proposals at once.
+ *
+ * The risk this batch introduces is not that it writes too little; it is that
+ * it writes as one act. These tests hold it to the opposite: N transactions, N
+ * audit rows, N independent `expectedUpdatedAt` checks, and a failure that
+ * stays inside the entry that caused it.
+ */
+describe('batch verification', () => {
+  const batch = (entries: Record<string, unknown>[], role: Role = 'moderator') =>
+    send('POST', '/v1/cms/administrative-mappings/verify', role, { entries });
+
+  const entryFor = async (
+    placeId: string,
+    codes = { provinceCode: '01', communeCode: '00004' },
+  ) => {
+    const place = await placeRow(placeId);
+    return { placeId, ...codes, expectedUpdatedAt: place.updatedAt.toISOString() };
+  };
+
+  it('verifies every entry, and writes one audit row per place', async () => {
+    const a = await insertPlace();
+    const b = await insertPlace();
+
+    const res = await batch([await entryFor(a.id), await entryFor(b.id)]);
+
+    expect(res.statusCode).toBe(201);
+    const report = res.json();
+    expect(report).toMatchObject({ requested: 2, verified: 2, conflicts: 0, refused: 0 });
+    for (const id of [a.id, b.id]) {
+      const row = await placeRow(id);
+      expect(row.administrativeMappingStatus).toBe('VERIFIED');
+      expect(row.administrativeMappingSource).toBe('editor');
+      expect(row.administrativeMappedBy).toBe(adminIds.moderator);
+      // One decision, one audit row — not one row naming two places.
+      expect(await auditRows('administrative_mapping.verify', id)).toHaveLength(1);
+    }
+  });
+
+  it('conflicts on the entry that moved, and still writes the others', async () => {
+    const moved = await insertPlace();
+    const untouched = await insertPlace();
+    const stale = await entryFor(moved.id);
+    // Somebody else decides about `moved` after the reviewer read it.
+    await verify(moved.id, { provinceCode: '01', communeCode: '00008' });
+
+    const res = await batch([stale, await entryFor(untouched.id)]);
+
+    expect(res.statusCode).toBe(201);
+    const report = res.json();
+    expect(report).toMatchObject({ requested: 2, verified: 1, conflicts: 1, refused: 0 });
+    expect(report.results.find((r: { placeId: string }) => r.placeId === moved.id)).toMatchObject({
+      outcome: 'conflict',
+      code: 'PLACE_MODIFIED',
+    });
+    // The neighbour landed: one bad entry does not cost the reviewer the rest.
+    expect((await placeRow(untouched.id)).administrativeMappingStatus).toBe('VERIFIED');
+    // And the moved place keeps the decision that beat this one.
+    expect((await placeRow(moved.id)).communeCode).toBe('00008');
+  });
+
+  it('refuses the entry whose pair is not a pair, and names the reason', async () => {
+    const bad = await insertPlace();
+    const good = await insertPlace();
+
+    const res = await batch([
+      await entryFor(bad.id, { provinceCode: '79', communeCode: '00004' }),
+      await entryFor(good.id),
+    ]);
+
+    expect(res.statusCode).toBe(201);
+    const report = res.json();
+    expect(report).toMatchObject({ requested: 2, verified: 1, conflicts: 0, refused: 1 });
+    expect(report.results.find((r: { placeId: string }) => r.placeId === bad.id)).toMatchObject({
+      outcome: 'refused',
+      code: 'HIERARCHY_INVALID',
+    });
+    expect((await placeRow(bad.id)).administrativeMappingStatus).toBe('UNMAPPED');
+    expect((await placeRow(good.id)).administrativeMappingStatus).toBe('VERIFIED');
+  });
+
+  it('refuses the whole batch when one place is listed twice, and writes nothing', async () => {
+    const twice = await insertPlace();
+    const other = await insertPlace();
+    const entry = await entryFor(twice.id);
+
+    const res = await batch([entry, await entryFor(other.id), entry]);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('DUPLICATE_PLACE_IN_BATCH');
+    // Nothing was written — including the entry that was perfectly valid.
+    expect((await placeRow(twice.id)).administrativeMappingStatus).toBe('UNMAPPED');
+    expect((await placeRow(other.id)).administrativeMappingStatus).toBe('UNMAPPED');
+    expect(await auditRows('administrative_mapping.verify', other.id)).toHaveLength(0);
+  });
+
+  it('is closed to the editor, who approves places but does not certify where they are', async () => {
+    const place = await insertPlace();
+    const res = await batch([await entryFor(place.id)], 'editor');
+    expect(res.statusCode).toBe(403);
+    expect((await placeRow(place.id)).administrativeMappingStatus).toBe('UNMAPPED');
+  });
+});

@@ -1063,6 +1063,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/administrative-mappings/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moderation: confirm many proposals, one decision each (ADM-024)
+         * @description A boundary release lets the resolver answer for the whole catalogue at once, so a reviewer can agree with hundreds of proposals in a sitting. This is the request that carries them.
+         *
+         *     It is not a bulk write. Every entry takes the same path as the single-place route: its own transaction, its own row lock, its own re-read of the active dataset, its own hierarchy check, its own `expectedUpdatedAt`, and its own audit row. A batch is N decisions one person took at one moment, and the audit log says exactly that.
+         *
+         *     **Partial success is normal.** A place another reviewer touched a second ago fails alone, as `conflict`; an entry whose pair is not current in the active dataset fails alone, as `refused` with the reason. The response is `201` either way — the request succeeded, and the report says what happened to each place.
+         *
+         *     Two conditions refuse the whole batch and write nothing: the same place listed twice (`DUPLICATE_PLACE_IN_BATCH` — two `expectedUpdatedAt` values for one row, the second wrong the moment the first commits), and no published administrative dataset (`ADMINISTRATIVE_DATASET_UNAVAILABLE`).
+         */
+        post: operations["verifyAdministrativeMappingsBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/administrative-mappings/remediation": {
         parameters: {
             query?: never;
@@ -5225,6 +5251,37 @@ export interface components {
              * @description The place's `updatedAt` as the reviewer saw it. A mismatch is 409 PLACE_MODIFIED rather than a lost update.
              */
             expectedUpdatedAt: string;
+        };
+        AdministrativeMappingBatchEntry: {
+            /** Format: uuid */
+            placeId: string;
+            provinceCode: string;
+            communeCode: string;
+            /** @description Pre-2025-07-01 evidence. Checked against the historical set. */
+            legacyDistrictCode?: string | null;
+            /**
+             * Format: date-time
+             * @description Per entry, never per batch: a reviewer decides about the row they saw, and the rows in a batch were read at the same moment but move independently afterwards.
+             */
+            expectedUpdatedAt: string;
+        };
+        AdministrativeMappingBatchResult: {
+            /** Format: uuid */
+            placeId: string;
+            /** @enum {string} */
+            outcome: "verified" | "conflict" | "refused";
+            status: components["schemas"]["AdministrativeMappingStatus"] | null;
+            datasetVersion: string | null;
+            /** @description The refusal's error code, so the reviewer is told why rather than that it failed. */
+            code: string | null;
+            message: string | null;
+        };
+        AdministrativeMappingBatchReport: {
+            requested: number;
+            verified: number;
+            conflicts: number;
+            refused: number;
+            results: components["schemas"]["AdministrativeMappingBatchResult"][];
         };
         AdministrativeMappingListItem: {
             /** Format: uuid */
@@ -10508,6 +10565,40 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
+        };
+    };
+    verifyAdministrativeMappingsBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    entries: components["schemas"]["AdministrativeMappingBatchEntry"][];
+                    note?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The batch ran; every entry carries its own outcome */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdministrativeMappingBatchReport"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["AdministrativeUnavailable"];
         };
     };
     getAdministrativeRemediation: {
