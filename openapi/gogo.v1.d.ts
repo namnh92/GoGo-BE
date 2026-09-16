@@ -5000,11 +5000,11 @@ export interface components {
             canonical: {
                 [key: string]: number;
             };
-            /** @description Quarantine rows only, by classification. This is the review queue, and it is deliberately not derivable from the import report's `classification`, which counts promoted rows too. */
+            /** @description Quarantine rows still open on this version, by classification. This is the review queue, and it is deliberately not derivable from the import report's `classification`, which counts promoted rows too. A row whose decision a materialisation carried into this version is settled and no longer counted here. */
             backlog: {
                 [key: string]: number;
             };
-            /** @description Rows by the state of their effective decision: UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED. */
+            /** @description Rows by the state of their effective decision: UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED, MATERIALIZED_ACCEPT, MATERIALIZED_REJECT. The last two are settled on this version, not drafts, and a draft decision on such a row reports as the draft. */
             decisions: {
                 [key: string]: number;
             };
@@ -5029,7 +5029,7 @@ export interface components {
             candidateCount: number;
             affectedPlaceCount: number;
             /** @enum {string} */
-            decisionState: "UNDECIDED" | "ACCEPTED_DRAFT" | "REJECTED_DRAFT" | "SUPERSEDED";
+            decisionState: "UNDECIDED" | "ACCEPTED_DRAFT" | "REJECTED_DRAFT" | "SUPERSEDED" | "MATERIALIZED_ACCEPT" | "MATERIALIZED_REJECT";
             /** Format: date-time */
             decidedAt: string | null;
             sourceProvenance: string;
@@ -5088,8 +5088,18 @@ export interface components {
                 status: string;
             };
             decision: components["schemas"]["AdministrativeOverrideDecisionRecord"] | null;
+            /** @description The decision a materialisation carried into this dataset version for this row. Null on a version nobody has decided this row for. It is settled: a reviewer reads it, and re-deciding it in a draft set is a deliberate second act, not an edit of this one. */
+            materialized?: {
+                /** @enum {string} */
+                decision: "ACCEPT" | "REJECT";
+                /** @description The canonical successor the accepted edge names; null for a rejection. */
+                targetCode: string | null;
+                reason: string | null;
+                /** Format: date-time */
+                decidedAt: string | null;
+            } | null;
             /** @enum {string} */
-            decisionState: "UNDECIDED" | "ACCEPTED_DRAFT" | "REJECTED_DRAFT" | "SUPERSEDED";
+            decisionState: "UNDECIDED" | "ACCEPTED_DRAFT" | "REJECTED_DRAFT" | "SUPERSEDED" | "MATERIALIZED_ACCEPT" | "MATERIALIZED_REJECT";
             /** @description Append-only, newest first. Nothing here is ever rewritten. */
             history: components["schemas"]["AdministrativeOverrideDecisionRecord"][];
         };
@@ -10261,7 +10271,7 @@ export interface operations {
             query?: {
                 /** @description Comma-separated quarantine classifications. */
                 classification?: string;
-                /** @description Comma-separated subset of UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED. */
+                /** @description Comma-separated subset of UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED, MATERIALIZED_ACCEPT, MATERIALIZED_REJECT. */
                 decisionState?: string;
                 limit?: number;
                 cursor?: string;

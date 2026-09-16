@@ -19,8 +19,21 @@ import type { Refusal } from './publication-gates';
 export type OverrideSetStatus = 'DRAFT' | 'MATERIALIZED' | 'ABANDONED';
 export type DecisionKind = 'ACCEPT' | 'REJECT';
 
-/** What the queue filter calls a row, derived from its effective decision. */
-export type DecisionState = 'UNDECIDED' | 'ACCEPTED_DRAFT' | 'REJECTED_DRAFT' | 'SUPERSEDED';
+/**
+ * What the queue filter calls a row, derived from its effective decision.
+ *
+ * `MATERIALIZED_*` is a fact of the dataset version, not of a draft set: the
+ * row's decision was carried into this version by a materialisation and
+ * nothing a reviewer does in a later draft un-settles it — a new decision on
+ * such a row is a re-decision, and the queue then reports that draft state.
+ */
+export type DecisionState =
+  | 'UNDECIDED'
+  | 'ACCEPTED_DRAFT'
+  | 'REJECTED_DRAFT'
+  | 'SUPERSEDED'
+  | 'MATERIALIZED_ACCEPT'
+  | 'MATERIALIZED_REJECT';
 
 export type OverrideSet = {
   id: string;
@@ -227,9 +240,22 @@ export function abandonRefusal(set: OverrideSet): Refusal | null {
 export function decisionState(
   effective: { decision: DecisionKind } | null,
   hasSupersededHistory: boolean,
+  materialized: DecisionKind | null = null,
 ): DecisionState {
   if (effective) return effective.decision === 'ACCEPT' ? 'ACCEPTED_DRAFT' : 'REJECTED_DRAFT';
+  if (materialized)
+    return materialized === 'ACCEPT' ? 'MATERIALIZED_ACCEPT' : 'MATERIALIZED_REJECT';
   return hasSupersededHistory ? 'SUPERSEDED' : 'UNDECIDED';
+}
+
+/**
+ * The decision a materialisation stamped on a quarantine row, if any. The
+ * column is free text because it is copied from the decision enum at
+ * materialisation time; anything else in it is not a decision and is ignored
+ * rather than trusted.
+ */
+export function materializedDecision(reviewerDecision: string | null): DecisionKind | null {
+  return reviewerDecision === 'ACCEPT' || reviewerDecision === 'REJECT' ? reviewerDecision : null;
 }
 
 export const DECISION_STATES: readonly DecisionState[] = [
@@ -237,4 +263,6 @@ export const DECISION_STATES: readonly DecisionState[] = [
   'ACCEPTED_DRAFT',
   'REJECTED_DRAFT',
   'SUPERSEDED',
+  'MATERIALIZED_ACCEPT',
+  'MATERIALIZED_REJECT',
 ];
