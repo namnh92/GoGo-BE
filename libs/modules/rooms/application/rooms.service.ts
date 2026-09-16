@@ -20,6 +20,12 @@ import {
   type RoomType,
   assertRoomDetailsEditable,
 } from '../domain/room-state';
+import {
+  inviteJoinRefusal,
+  JOINABLE_ROOM_STATUSES,
+  type JoinRefusal,
+  type JoinRules,
+} from '../domain/invite-join';
 import { RoomPolicy } from '../presentation/room-policy';
 import {
   RoomsRepository,
@@ -470,15 +476,34 @@ export class RoomsService {
     return { revoked: true };
   }
 
-  /** Resolve + consume an invite code. Shared by user join and guest join. */
-  async consumeInviteCode(code: string): Promise<RoomRow> {
+  /**
+   * Resolve + consume an invite code. Shared by user join and guest join.
+   *
+   * GoGo-BE#592 — every refusal is decided before the use is spent. This used
+   * to consume first and check the room afterwards, so each 410
+   * `ROOM_NOT_JOINABLE` still counted against `maxUses`.
+   */
+  async consumeInviteCode(code: string, rules: JoinRules = {}): Promise<RoomRow> {
     const invite = await this.repo.findInviteByHash(this.tokens.hashOpaqueToken(code));
     if (!invite) throw AppError.notFound('INVITE_NOT_FOUND', 'Invite not found');
-    const ok = await this.repo.consumeInvite(invite.id);
-    if (!ok) throw AppError.gone('INVITE_NOT_USABLE', 'Invite expired, revoked or fully used');
     const room = await this.policy.getRoom(invite.roomId);
-    if (!['draft', 'collecting'].includes(room.status)) {
-      throw AppError.gone('ROOM_NOT_JOINABLE', 'Room is no longer accepting members');
+    const refusal = inviteJoinRefusal(invite, roomState(room), new Date(), rules);
+    if (refusal) throw joinRefused(refusal);
+    const consumed = await this.repo.consumeInvite(invite.id, {
+      joinableStatuses: JOINABLE_ROOM_STATUSES,
+      ...rules,
+    });
+    if (!consumed) {
+      // The invite or the room changed between the read above and the guarded
+      // UPDATE, and nothing was spent. Read both again to say which.
+      const [nowInvite, nowRoom] = await Promise.all([
+        this.repo.findInviteByHash(invite.codeHash),
+        this.policy.getRoom(invite.roomId),
+      ]);
+      const reason = nowInvite
+        ? inviteJoinRefusal(nowInvite, roomState(nowRoom), new Date(), rules)
+        : null;
+      throw joinRefused(reason ?? 'INVITE_NOT_USABLE');
     }
     return room;
   }
@@ -532,6 +557,21 @@ export class RoomsService {
     await this.policy.requireHost(actor, roomId);
     await this.repo.removeSeedPlace(roomId, placeId);
     return { seedPlaces: await this.repo.listSeedPlaces(roomId) };
+  }
+}
+
+function roomState(room: RoomRow): { status: string; expiresAt: Date | null } {
+  return { status: room.status, expiresAt: room.expiresAt ?? null };
+}
+
+function joinRefused(refusal: JoinRefusal): AppError {
+  switch (refusal) {
+    case 'ROOM_NOT_JOINABLE':
+      return AppError.gone('ROOM_NOT_JOINABLE', 'Room is no longer accepting members');
+    case 'ROOM_EXPIRED':
+      return AppError.gone('ROOM_EXPIRED', 'Room link has expired');
+    default:
+      return AppError.gone('INVITE_NOT_USABLE', 'Invite expired, revoked or fully used');
   }
 }
 
