@@ -721,6 +721,79 @@ describe('materialisation', () => {
     expect(baseDecided!.n).toBe(0);
   });
 
+  it('reports the carried decisions as settled, and takes them out of the backlog', async () => {
+    // GoGo-BE#619: the derived version carried the decision on every row it
+    // was taken for, and the queue still called each of them UNDECIDED and
+    // counted it in the backlog — a published round looked like nobody had
+    // reviewed anything.
+    type Item = {
+      id: string;
+      decisionState: string;
+      decidedAt: string | null;
+      source: { code: string | null };
+    };
+    type Counts = { decisions: Record<string, number>; backlog: Record<string, number> };
+    type Page = { items: Item[]; counts: Counts; nextCursor: string | null };
+    const items: Item[] = [];
+    let counts!: Counts;
+    let cursor: string | null = null;
+    do {
+      const page: Page = (
+        await get(
+          `${BASE}/${derived!.id}/quarantine?limit=100` +
+            (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''),
+          'ops_admin',
+        )
+      ).json();
+      items.push(...page.items);
+      counts = page.counts;
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(items).toHaveLength(1033);
+
+    const settled = items.filter((i) => i.decisionState === 'MATERIALIZED_ACCEPT');
+    expect(settled.map((i) => i.source.code).sort()).toEqual([rowA.oldCode, rowB.oldCode].sort());
+    expect(settled.every((i) => i.decidedAt)).toBe(true);
+    expect(items.some((i) => i.decisionState === 'MATERIALIZED_REJECT')).toBe(false);
+
+    expect(counts.decisions.MATERIALIZED_ACCEPT).toBe(2);
+    expect(counts.decisions.MATERIALIZED_REJECT).toBe(0);
+    expect(counts.decisions.UNDECIDED).toBe(1031);
+    expect(counts.backlog).toEqual({ DIVIDED_REQUIRES_REVIEW: 1031 });
+
+    // The filter knows the new state.
+    const filtered = await get(
+      `${BASE}/${derived!.id}/quarantine?decisionState=MATERIALIZED_ACCEPT&limit=10`,
+      'ops_admin',
+    );
+    expect(filtered.statusCode).toBe(200);
+    expect(
+      (filtered.json().items as Item[]).every((i) => i.decisionState === 'MATERIALIZED_ACCEPT'),
+    ).toBe(true);
+
+    // The detail names the decision and the successor the accepted edge points at.
+    const carried = settled.find((i) => i.source.code === rowA.oldCode)!;
+    const detail = (
+      await get(`${BASE}/${derived!.id}/quarantine/${carried.id}`, 'ops_admin')
+    ).json();
+    expect(detail.decisionState).toBe('MATERIALIZED_ACCEPT');
+    expect(detail.materialized).toEqual({
+      decision: 'ACCEPT',
+      targetCode: rowA.candidates[1],
+      reason: expect.any(String),
+      decidedAt: expect.any(String),
+    });
+    // Nothing is drafted on the derived version; a settled decision is not a draft.
+    expect(detail.decision).toBeNull();
+    expect(detail.history).toEqual([]);
+
+    // The base is evidence and stays as it was: nothing there is settled.
+    const baseCounts = (await get(`${BASE}/${base.id}/quarantine?limit=1`, 'ops_admin')).json()
+      .counts;
+    expect(baseCounts.decisions.MATERIALIZED_ACCEPT).toBe(0);
+    expect(baseCounts.backlog).toEqual({ DIVIDED_REQUIRES_REVIEW: 1033 });
+  }, 120_000);
+
   it('closes the set and refuses to materialise it twice', async () => {
     const [set] = await db
       .select()

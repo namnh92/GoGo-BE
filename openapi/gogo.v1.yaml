@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.41
+  version: 1.0.0-alpha.42
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1707,7 +1707,7 @@ paths:
           schema: { type: string }
           description: >
             Comma-separated subset of UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT,
-            SUPERSEDED.
+            SUPERSEDED, MATERIALIZED_ACCEPT, MATERIALIZED_REJECT.
         - {
             name: limit,
             in: query,
@@ -9636,15 +9636,19 @@ components:
           type: object
           additionalProperties: { type: integer }
           description: >
-            Quarantine rows only, by classification. This is the review queue,
-            and it is deliberately not derivable from the import report's
-            `classification`, which counts promoted rows too.
+            Quarantine rows still open on this version, by classification. This
+            is the review queue, and it is deliberately not derivable from the
+            import report's `classification`, which counts promoted rows too.
+            A row whose decision a materialisation carried into this version is
+            settled and no longer counted here.
         decisions:
           type: object
           additionalProperties: { type: integer }
           description: >
             Rows by the state of their effective decision: UNDECIDED,
-            ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED.
+            ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED, MATERIALIZED_ACCEPT,
+            MATERIALIZED_REJECT. The last two are settled on this version, not
+            drafts, and a draft decision on such a row reports as the draft.
     AdministrativeQuarantineItem:
       type: object
       required:
@@ -9683,7 +9687,19 @@ components:
         affectedPlaceCount: { type: integer }
         decisionState:
           type: string
-          enum: [UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED]
+          description: >
+            Grows with the review model (GoGo-BE#619 added the MATERIALIZED_*
+            pair), so it is declared extensible: a client treats a value it does
+            not know as "not actionable here", never as a malformed response.
+          x-extensible-enum:
+            [
+              UNDECIDED,
+              ACCEPTED_DRAFT,
+              REJECTED_DRAFT,
+              SUPERSEDED,
+              MATERIALIZED_ACCEPT,
+              MATERIALIZED_REJECT,
+            ]
         decidedAt: { type: string, format: date-time, nullable: true }
         sourceProvenance: { type: string }
     AdministrativeQuarantinePage:
@@ -9770,9 +9786,38 @@ components:
         decision:
           allOf: [{ $ref: '#/components/schemas/AdministrativeOverrideDecisionRecord' }]
           nullable: true
+        materialized:
+          type: object
+          nullable: true
+          description: >
+            The decision a materialisation carried into this dataset version for
+            this row. Null on a version nobody has decided this row for. It is
+            settled: a reviewer reads it, and re-deciding it in a draft set is a
+            deliberate second act, not an edit of this one.
+          required: [decision, targetCode, reason, decidedAt]
+          properties:
+            decision: { type: string, enum: [ACCEPT, REJECT] }
+            targetCode:
+              type: string
+              nullable: true
+              description: The canonical successor the accepted edge names; null for a rejection.
+            reason: { type: string, nullable: true }
+            decidedAt: { type: string, format: date-time, nullable: true }
         decisionState:
           type: string
-          enum: [UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED]
+          description: >
+            Grows with the review model (GoGo-BE#619 added the MATERIALIZED_*
+            pair), so it is declared extensible: a client treats a value it does
+            not know as "not actionable here", never as a malformed response.
+          x-extensible-enum:
+            [
+              UNDECIDED,
+              ACCEPTED_DRAFT,
+              REJECTED_DRAFT,
+              SUPERSEDED,
+              MATERIALIZED_ACCEPT,
+              MATERIALIZED_REJECT,
+            ]
         history:
           type: array
           description: Append-only, newest first. Nothing here is ever rewritten.
