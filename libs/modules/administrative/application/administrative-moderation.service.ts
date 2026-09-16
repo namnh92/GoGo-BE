@@ -7,6 +7,8 @@ import { AppError } from '../../shared/app-error';
 import { writeAudit } from '../../shared/audit';
 import {
   approvalBlock,
+  blocksApproval,
+  isActionable,
   remediationCategory,
   type ApprovalBlock,
   type RemediationCategory,
@@ -97,9 +99,6 @@ export type MappingListItem = {
   updatedAt: string;
   blocksApproval: boolean;
 };
-
-/** The actionable queue first, then everything else, but never nothing. */
-const ACTIONABLE: MappingStatus[] = ['NEEDS_REVIEW', 'STALE'];
 
 const MAX_LIMIT = 200;
 
@@ -194,7 +193,7 @@ export class AdministrativeModerationService {
         communeCode: r.communeCode,
         datasetVersion: r.datasetVersion,
         updatedAt: r.updatedAt.toISOString(),
-        blocksApproval: r.mappingStatus !== 'VERIFIED',
+        blocksApproval: blocksApproval(r.mappingStatus),
       })),
       nextCursor: rows.length > limit ? (page.at(-1)?.placeId ?? null) : null,
       counts: await this.countsWith(() => this.action('list', 'ok')),
@@ -227,7 +226,7 @@ export class AdministrativeModerationService {
     };
     for (const row of rows) {
       counts[row.status] = row.n;
-      if (ACTIONABLE.includes(row.status)) counts.actionable = (counts.actionable ?? 0) + row.n;
+      if (isActionable(row.status)) counts.actionable = (counts.actionable ?? 0) + row.n;
     }
     return counts;
   }
