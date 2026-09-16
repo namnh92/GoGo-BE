@@ -231,7 +231,7 @@ describe('import', () => {
       sources: { currentSourceVersion: string };
       counts: { communes: number };
     };
-    expect(diff.sources.currentSourceVersion).toBe('v5.0.0');
+    expect(diff.sources.currentSourceVersion).toBe('v5.1.0');
     expect(diff.counts.communes).toBe(3321);
   });
 
