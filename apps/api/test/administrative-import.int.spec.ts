@@ -264,7 +264,7 @@ describe('a snapshot that has drifted is refused', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'adm-drift-'));
     for (const f of [
       'manifest.json',
-      'current-units.v5.0.0.json.gz',
+      'current-units.v5.1.0.json.gz',
       'historical-units.v2.4.1.json.gz',
       'change-mapping.7fac8c4.csv.gz',
     ]) {
