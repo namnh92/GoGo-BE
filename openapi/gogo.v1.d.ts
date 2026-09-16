@@ -6829,9 +6829,13 @@ export interface components {
                 }[];
             };
         };
+        /** @description GoGo-BE#593 — `costMin` and `costMax` are amounts per `costScope`, which is `per_person` today: each stop's per-person price, summed. A group figure is that amount times `participantCount`; nothing here is a group total to divide. */
         PlanTotals: {
+            /** @description Sum of every stop's lower price bound, per `costScope`. A stop with no price in that scope adds nothing and sets `uncertain`, so `0` with `uncertain: true` means no price is known — never "free". */
             costMin?: number;
+            /** @description Sum of every stop's upper price bound, per `costScope`, under the same rule as `costMin`. `overBudget` compares it with the per-person budget. */
             costMax?: number;
+            costScope: components["schemas"]["BudgetScope"];
             currency?: string;
             durationMinutes?: number;
             travelDistanceM?: number;
@@ -6855,8 +6859,11 @@ export interface components {
             durationMinutes?: number;
             travelMinutesFromPrev?: number | null;
             travelDistanceMFromPrev?: number | null;
+            /** @description Lower price bound per `costScope`. `null` means the place has no price in that scope — unknown, not free; a free place is `0`. */
             costMin?: number | null;
+            /** @description Upper price bound per `costScope`, under the same rule as `costMin`. */
             costMax?: number | null;
+            costScope: components["schemas"]["BudgetScope"];
             /** @description Locked stops are invariant across regenerate. */
             isLocked?: boolean;
             /**
