@@ -423,6 +423,25 @@ export class RoomsRepository {
     });
   }
 
+  /**
+   * GoGo-BE#597 — the caller's active membership of a room, if any. A removed
+   * member (`removed_at` set) is not a member and gets no row back.
+   */
+  async findActiveUserMember(roomId: string, userId: string): Promise<MemberRow | undefined> {
+    const [member] = await this.db
+      .select()
+      .from(schema.roomMembers)
+      .where(
+        and(
+          eq(schema.roomMembers.roomId, roomId),
+          eq(schema.roomMembers.userId, userId),
+          isNull(schema.roomMembers.removedAt),
+        ),
+      )
+      .limit(1);
+    return member;
+  }
+
   async addUserMember(input: {
     roomId: string;
     userId: string;
