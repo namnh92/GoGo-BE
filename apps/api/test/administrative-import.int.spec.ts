@@ -100,9 +100,11 @@ describe('importing the pinned snapshot set', () => {
       DIVIDED_REQUIRES_REVIEW: 1033,
     });
 
-    // The one known defect in v5.0.0, surfaced rather than silently repaired.
+    // The one known source defect, surfaced rather than silently repaired. It
+    // survives the v5.1.0 re-pin: commune 06325 still reads "xã Bắc Sơn" with a
+    // lowercase type prefix, which is why unit type is derived case-insensitively.
     expect(report.warnings).toEqual([expect.stringContaining('06325')]);
-    expect(report.combinedDatasetVersion).toBe('v5.0.0+v2.4.1+7fac8c45+fixture-v1+r0');
+    expect(report.combinedDatasetVersion).toBe('v5.1.0+v2.4.1+7fac8c45+fixture-v1+r0');
   });
 
   it('writes a STAGED dataset and nothing published', async () => {
