@@ -76,6 +76,28 @@ const verifyBody = z
   })
   .strict();
 
+const verifyBatchBody = z
+  .object({
+    entries: z
+      .array(
+        z
+          .object({
+            placeId: ID,
+            provinceCode: CODE,
+            communeCode: CODE,
+            legacyDistrictCode: CODE.nullish(),
+            ...concurrency,
+          })
+          .strict(),
+      )
+      .min(1, 'a batch verifies at least one place')
+      // A cap, not a guess: the queue pages at 50, and a reviewer confirming
+      // more than two pages in one click has stopped reading them.
+      .max(100, 'a batch verifies at most 100 places'),
+    note: z.string().trim().max(500).optional(),
+  })
+  .strict();
+
 const reasonBody = z.object({ reason: z.string().trim().min(1).max(500), ...concurrency }).strict();
 
 const correctBody = verifyBody
@@ -112,6 +134,47 @@ export class AdministrativeMappingQueueController {
       limit: query.limit,
       ...(query.cursor ? { cursor: query.cursor } : {}),
     });
+  }
+
+  /**
+   * ADM-024 (#613) — confirm many proposals, one decision each.
+   *
+   * The rate limit is lower than the per-place route's on purpose: one call
+   * here is up to a hundred writes, and the two should cost a reviewer the same
+   * budget rather than the same number of requests.
+   *
+   * `201` even when some entries failed. The request succeeded; the report says
+   * what happened to each place, and a transport-level error for a partial
+   * result would tell the client to retry work that already landed.
+   */
+  @RateLimit({
+    // Its own bucket, not the per-place one. One call here is up to a hundred
+    // writes; sharing a counter with the single-place route would let a batch
+    // spend a reviewer's whole per-place budget, and — as CI found — let a
+    // file's worth of single verifies lock the batch route out entirely.
+    action: 'cms.administrative.decideBatch',
+    limit: 30,
+    windowSeconds: 60,
+    keyBy: 'actor',
+  })
+  @Post('verify')
+  async verifyMany(
+    @CurrentActor() actor: Actor,
+    @Body(new ZodValidationPipe(verifyBatchBody)) body: z.infer<typeof verifyBatchBody>,
+  ) {
+    return this.moderation.verifyMany(
+      {
+        entries: body.entries.map((entry) => ({
+          placeId: entry.placeId,
+          provinceCode: entry.provinceCode,
+          communeCode: entry.communeCode,
+          legacyDistrictCode: entry.legacyDistrictCode ?? null,
+          expectedUpdatedAt: entry.expectedUpdatedAt,
+        })),
+        ...(body.note ? { note: body.note } : {}),
+      },
+      { id: actor.id, role: (actor as AdminActor).role },
+    );
   }
 
   /**

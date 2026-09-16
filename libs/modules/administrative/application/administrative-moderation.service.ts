@@ -100,6 +100,24 @@ export type MappingListItem = {
   blocksApproval: boolean;
 };
 
+/** One entry's fate in a batch verification (ADM-024). */
+export type BatchVerifyResult = {
+  placeId: string;
+  outcome: 'verified' | 'conflict' | 'refused';
+  status: MappingStatus | null;
+  datasetVersion: string | null;
+  /** The refusal's error code, so a reviewer is told why rather than that it failed. */
+  code: string | null;
+  message: string | null;
+};
+
+export type BatchVerifyReport = {
+  requested: number;
+  verified: number;
+  conflicts: number;
+  refused: number;
+  results: BatchVerifyResult[];
+};
 const MAX_LIMIT = 200;
 
 @Injectable()
@@ -376,6 +394,112 @@ export class AdministrativeModerationService {
         },
       };
     });
+  }
+
+  /**
+   * ADM-024 (#613) — one reviewer, many places, still one decision each.
+   *
+   * After a boundary release lands, the resolver can answer for the whole
+   * catalogue at once (#610 turned 270 unresolved places into 271 proposals in
+   * a single run). The confirmations did not scale with it: `VERIFIED` is a
+   * person's claim and stays one, so a reviewer agreeing with 271 proposals had
+   * to send 271 requests.
+   *
+   * This sends one. It is **not** a bulk write: every entry goes through the
+   * same `verify` path, which means its own transaction, its own row lock, its
+   * own re-read of the active dataset, its own hierarchy check, its own
+   * `expectedUpdatedAt`, and its own audit row. A batch is N decisions one
+   * person took at the same moment, and the log has to read that way — a single
+   * audit row naming 271 places would record an act nobody performed.
+   *
+   * Entries run in order rather than concurrently. Each is a separate
+   * transaction taking a row lock, and firing them at once through a connection
+   * pooler buys contention in exchange for a saving nobody asked for.
+   *
+   * **Partial success is the expected result, not an error.** A place another
+   * reviewer touched a second ago must fail alone; failing its 270 neighbours
+   * with it would make the feature useless exactly when the queue is busy.
+   */
+  async verifyMany(
+    input: {
+      entries: ReadonlyArray<{
+        placeId: string;
+        provinceCode: string;
+        communeCode: string;
+        legacyDistrictCode?: string | null;
+        expectedUpdatedAt: Date;
+      }>;
+      note?: string;
+    },
+    actor: ModerationActor,
+  ): Promise<BatchVerifyReport> {
+    const seen = new Set<string>();
+    for (const entry of input.entries) {
+      // Two entries for one place carry two `expectedUpdatedAt` values, and the
+      // second is wrong the moment the first commits. Refusing is the only
+      // answer that does not silently pick one.
+      if (seen.has(entry.placeId)) {
+        throw AppError.badRequest(
+          'DUPLICATE_PLACE_IN_BATCH',
+          `place ${entry.placeId} appears more than once; a batch carries one decision per place`,
+        );
+      }
+      seen.add(entry.placeId);
+    }
+
+    // Checked once, before anything is written: with no published dataset there
+    // is nothing to validate a pair against, and discovering that on entry 57
+    // would leave 56 places verified against a question nobody could answer.
+    await this.activeDataset();
+
+    const results: BatchVerifyResult[] = [];
+    for (const entry of input.entries) {
+      try {
+        const done = await this.verify(
+          entry.placeId,
+          {
+            provinceCode: entry.provinceCode,
+            communeCode: entry.communeCode,
+            legacyDistrictCode: entry.legacyDistrictCode ?? null,
+            expectedUpdatedAt: entry.expectedUpdatedAt,
+            ...(input.note ? { note: input.note } : {}),
+          },
+          actor,
+        );
+        results.push({
+          placeId: entry.placeId,
+          outcome: 'verified',
+          status: done.status,
+          datasetVersion: done.datasetVersion,
+          code: null,
+          message: null,
+        });
+      } catch (error) {
+        if (!(error instanceof AppError)) throw error;
+        // A dataset disappearing mid-batch is a condition about the batch, not
+        // about the entry that happened to notice it.
+        if (error.code === 'ADMINISTRATIVE_DATASET_UNAVAILABLE') throw error;
+        results.push({
+          placeId: entry.placeId,
+          outcome: error.httpStatus === 409 ? 'conflict' : 'refused',
+          status: null,
+          datasetVersion: null,
+          code: error.code,
+          message: error.message,
+        });
+      }
+    }
+
+    const count = (outcome: BatchVerifyResult['outcome']): number =>
+      results.filter((r) => r.outcome === outcome).length;
+
+    return {
+      requested: input.entries.length,
+      verified: count('verified'),
+      conflicts: count('conflict'),
+      refused: count('refused'),
+      results,
+    };
   }
 
   /**

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.40
+  version: 1.0.0-alpha.41
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2049,6 +2049,63 @@ paths:
                     description: One per mapping status plus `actionable`.
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/administrative-mappings/verify:
+    post:
+      operationId: verifyAdministrativeMappingsBatch
+      tags: [cms, administrative]
+      summary: 'Moderation: confirm many proposals, one decision each (ADM-024)'
+      description: >
+        A boundary release lets the resolver answer for the whole catalogue at
+        once, so a reviewer can agree with hundreds of proposals in a sitting.
+        This is the request that carries them.
+
+
+        It is not a bulk write. Every entry takes the same path as the
+        single-place route: its own transaction, its own row lock, its own
+        re-read of the active dataset, its own hierarchy check, its own
+        `expectedUpdatedAt`, and its own audit row. A batch is N decisions one
+        person took at one moment, and the audit log says exactly that.
+
+
+        **Partial success is normal.** A place another reviewer touched a second
+        ago fails alone, as `conflict`; an entry whose pair is not current in the
+        active dataset fails alone, as `refused` with the reason. The response is
+        `201` either way — the request succeeded, and the report says what
+        happened to each place.
+
+
+        Two conditions refuse the whole batch and write nothing: the same place
+        listed twice (`DUPLICATE_PLACE_IN_BATCH` — two `expectedUpdatedAt`
+        values for one row, the second wrong the moment the first commits), and
+        no published administrative dataset (`ADMINISTRATIVE_DATASET_UNAVAILABLE`).
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [entries]
+              properties:
+                entries:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { $ref: '#/components/schemas/AdministrativeMappingBatchEntry' }
+                note: { type: string, maxLength: 500 }
+      responses:
+        '201':
+          description: The batch ran; every entry carries its own outcome
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeMappingBatchReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AdministrativeUnavailable' }
 
   /cms/administrative-mappings/remediation:
     get:
@@ -9950,6 +10007,52 @@ components:
           description: >
             The place's `updatedAt` as the reviewer saw it. A mismatch is 409
             PLACE_MODIFIED rather than a lost update.
+    AdministrativeMappingBatchEntry:
+      type: object
+      additionalProperties: false
+      required: [placeId, provinceCode, communeCode, expectedUpdatedAt]
+      properties:
+        placeId: { type: string, format: uuid }
+        provinceCode: { type: string, pattern: '^[0-9]{2,5}$' }
+        communeCode: { type: string, pattern: '^[0-9]{2,5}$' }
+        legacyDistrictCode:
+          type: string
+          pattern: '^[0-9]{2,5}$'
+          nullable: true
+          description: Pre-2025-07-01 evidence. Checked against the historical set.
+        expectedUpdatedAt:
+          type: string
+          format: date-time
+          description: >
+            Per entry, never per batch: a reviewer decides about the row they
+            saw, and the rows in a batch were read at the same moment but move
+            independently afterwards.
+    AdministrativeMappingBatchResult:
+      type: object
+      required: [placeId, outcome, status, datasetVersion, code, message]
+      properties:
+        placeId: { type: string, format: uuid }
+        outcome: { type: string, enum: [verified, conflict, refused] }
+        status:
+          allOf: [{ $ref: '#/components/schemas/AdministrativeMappingStatus' }]
+          nullable: true
+        datasetVersion: { type: string, nullable: true }
+        code:
+          type: string
+          nullable: true
+          description: The refusal's error code, so the reviewer is told why rather than that it failed.
+        message: { type: string, nullable: true }
+    AdministrativeMappingBatchReport:
+      type: object
+      required: [requested, verified, conflicts, refused, results]
+      properties:
+        requested: { type: integer }
+        verified: { type: integer }
+        conflicts: { type: integer }
+        refused: { type: integer }
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/AdministrativeMappingBatchResult' }
     AdministrativeMappingListItem:
       type: object
       required:
