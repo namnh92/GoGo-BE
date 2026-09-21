@@ -874,6 +874,7 @@ describe('materialisation', () => {
       targetCode: rowA.candidates[1],
       reason: expect.any(String),
       decidedAt: expect.any(String),
+      retracted: null,
     });
     // Nothing is drafted on the derived version; a settled decision is not a draft.
     expect(detail.decision).toBeNull();

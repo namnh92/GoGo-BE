@@ -256,6 +256,7 @@ describe('the diff against a published baseline', () => {
       // says exactly one thing.
       OVERRIDE_ACCEPTED: 0,
       OVERRIDE_TARGET_CHANGED: 0,
+      OVERRIDE_RETRACTED: 0,
     });
     expect(diff.entries).toHaveLength(1);
     expect(diff.entries.find((e) => e.category === 'SOURCE_DRIFT')!.detail).toBe(
