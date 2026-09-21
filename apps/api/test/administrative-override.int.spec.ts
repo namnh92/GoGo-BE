@@ -2,7 +2,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import argon2 from 'argon2';
 import path from 'node:path';
 import { Pool } from 'pg';
@@ -72,6 +72,8 @@ let base!: { id: string; version: string };
 let derived: { id: string; version: string } | null = null;
 /** The second round's version, derived from `derived` (GoGo-BE#622). */
 let second: { id: string; version: string } | null = null;
+/** The third round's version, derived from `second` with one override retracted (GoGo-BE#623). */
+let third: { id: string; version: string } | null = null;
 /** Two quarantined rows, picked deterministically so the assertions are stable. */
 let rowA!: QuarantineRow;
 let rowB!: QuarantineRow;
@@ -1204,7 +1206,6 @@ describe('a settled source stays settled across rounds (GoGo-BE#622)', () => {
 });
 
 describe('a materialised override can be retracted in a later round (GoGo-BE#623)', () => {
-  let third: { id: string; version: string } | null = null;
   let siblingC!: { id: string; oldCode: string; newCode: string };
 
   it('publishes the second round, so there is a served override to retract', async () => {
@@ -1370,6 +1371,116 @@ describe('a materialised override can be retracted in a later round (GoGo-BE#623
     });
     expect(res.statusCode).toBe(201);
     expect(res.json().retracts).toBeNull();
+  });
+});
+
+describe('the decision-state filter scans the whole queue (GoGo-BE#620)', () => {
+  /** The contract's largest page (`limit` max 100) — and the old scan's whole horizon. */
+  const PAGE_MAX = 100;
+  type Item = { id: string; decisionState: string };
+  type Page = {
+    items: Item[];
+    nextCursor: string | null;
+    counts: { decisions: Record<string, number> };
+  };
+  /** Walks a filter to the end, page by page, the way a client would. */
+  async function walk(versionId: string, state: string, limit: number) {
+    const pages: Page[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: Page = (
+        await get(
+          `${BASE}/${versionId}/quarantine?decisionState=${state}&limit=${limit}` +
+            (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''),
+          'ops_admin',
+        )
+      ).json();
+      pages.push(page);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return pages;
+  }
+  const draftRevision = async (versionId: string) =>
+    (
+      await db
+        .select({ revision: schema.administrativeMappingOverrideSets.revision })
+        .from(schema.administrativeMappingOverrideSets)
+        .where(
+          and(
+            eq(schema.administrativeMappingOverrideSets.baseDatasetId, versionId),
+            eq(schema.administrativeMappingOverrideSets.status, 'DRAFT'),
+          ),
+        )
+    )[0]?.revision ?? 0;
+
+  let lastRow!: { id: string; oldCode: string | null };
+
+  it('finds a decision taken on the last row of the queue', async () => {
+    // The keyset order the list walks. The last row of it lies past any
+    // window a single read could cover, whatever the window is.
+    const ordered = await db
+      .select({
+        id: schema.administrativeMappingQuarantine.id,
+        oldCode: schema.administrativeMappingQuarantine.oldCode,
+      })
+      .from(schema.administrativeMappingQuarantine)
+      .where(eq(schema.administrativeMappingQuarantine.datasetVersionId, third!.id))
+      .orderBy(
+        sql`coalesce(${schema.administrativeMappingQuarantine.oldCode}, '')`,
+        asc(schema.administrativeMappingQuarantine.id),
+      );
+    const decidedSources = new Set([rowA.oldCode, rowB.oldCode, rowC.oldCode]);
+    lastRow = [...ordered].reverse().find((r) => !decidedSources.has(r.oldCode ?? ''))!;
+    expect(ordered.indexOf(lastRow)).toBeGreaterThan(PAGE_MAX * 5);
+
+    const res = await post(`${BASE}/${third!.id}/quarantine/${lastRow.id}/reject`, 'ops_admin', {
+      payload: {
+        reason: 'the last row of the queue',
+        expectedRevision: await draftRevision(third!.id),
+      },
+    });
+    expect(res.statusCode).toBe(201);
+
+    // Before #620: the first hundred rows held no rejection, so the page came
+    // back empty and said there was nothing more.
+    const [page] = await walk(third!.id, 'REJECTED_DRAFT', 10);
+    expect(page!.items.map((i) => i.id)).toEqual([lastRow.id]);
+    expect(page!.nextCursor).toBeNull();
+  });
+
+  it('pages a sparse filter to the end without a gap or a repeat', async () => {
+    // One match early (the sibling accepted in the previous round) and one on
+    // the last row: with a page of one, the second page has to reach the end.
+    const pages = await walk(third!.id, 'ACCEPTED_DRAFT,REJECTED_DRAFT', 1);
+    const ids = pages.flatMap((p) => p.items.map((i) => i.id));
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.at(-1)).toBe(lastRow.id);
+    expect(pages.map((p) => p.items.length)).toEqual([1, 1]);
+    expect(pages.at(-1)!.nextCursor).toBeNull();
+  });
+
+  it('pages the largest filter completely: as many rows as the counts say, each once', async () => {
+    const pages = await walk(third!.id, 'UNDECIDED', PAGE_MAX);
+    const ids = pages.flatMap((p) => p.items.map((i) => i.id));
+    const expected = pages[0]!.counts.decisions.UNDECIDED!;
+    // Before #620: one window of a hundred rows is at most one full page, so
+    // the walk stopped after the first page.
+    expect(expected).toBeGreaterThan(PAGE_MAX * 5);
+    expect(ids).toHaveLength(expected);
+    expect(new Set(ids).size).toBe(expected);
+    expect(pages).toHaveLength(Math.ceil(expected / PAGE_MAX));
+    for (const page of pages) {
+      expect(page.items.every((i) => i.decisionState === 'UNDECIDED')).toBe(true);
+    }
+  });
+
+  it('pages a settled-by-sibling filter one row at a time', async () => {
+    const pages = await walk(third!.id, 'SOURCE_SETTLED', 1);
+    const ids = pages.flatMap((p) => p.items.map((i) => i.id));
+    expect(ids).toHaveLength(pages[0]!.counts.decisions.SOURCE_SETTLED!);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(pages.every((p) => p.items.length === 1)).toBe(true);
   });
 });
 
