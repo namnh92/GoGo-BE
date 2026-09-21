@@ -335,6 +335,37 @@ export function materializedDecision(reviewerDecision: string | null): DecisionK
   return reviewerDecision === 'ACCEPT' || reviewerDecision === 'REJECT' ? reviewerDecision : null;
 }
 
+export type Retraction = {
+  decisionId: string | null;
+  targetCode: string;
+  sourceVersion: string;
+};
+
+/**
+ * What a REJECT on this row means when the base already carries a reviewer
+ * override for its source. On the decided row it retracts that override: the
+ * derived version drops the edge and the source is unresolved again — the one
+ * way a materialised decision is ever changed (ADM-028, #623). On a sibling
+ * row it retracts nothing: that row never produced an edge.
+ */
+export function retractionOf(
+  row: { newCode: string | null },
+  sourceOverride: {
+    targetCode: string;
+    sourceVersion: string;
+    decisionId: string | null;
+    decidedProposal: string | null;
+  } | null,
+): Retraction | null {
+  if (!sourceOverride) return null;
+  if (settlementOf(row, sourceOverride).materialized !== 'ACCEPT') return null;
+  return {
+    decisionId: sourceOverride.decisionId,
+    targetCode: sourceOverride.targetCode,
+    sourceVersion: sourceOverride.sourceVersion,
+  };
+}
+
 export const DECISION_STATES: readonly DecisionState[] = [
   'UNDECIDED',
   'ACCEPTED_DRAFT',

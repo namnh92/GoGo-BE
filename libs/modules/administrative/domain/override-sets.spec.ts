@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  DECISION_STATES,
   acceptRefusal,
+  DECISION_STATES,
   decisionState,
   materializedDecision,
+  retractionOf,
   settlementOf,
   type AcceptInput,
 } from './override-sets';
@@ -176,5 +177,30 @@ describe('acceptRefusal — one source, one successor (GoGo-BE#622)', () => {
       sourceOverride: { targetCode: '00025', sourceVersion: 'override:r1' },
     });
     expect(refusal?.code).toBe('OVERRIDE_TARGET_NOT_CURRENT');
+  });
+});
+
+describe('retractionOf (GoGo-BE#623)', () => {
+  const override = {
+    targetCode: '00025',
+    sourceVersion: 'override:r1',
+    decisionId: 'dec-1',
+    decidedProposal: '00025',
+  };
+
+  it('is nothing when the base carries no override for the source', () => {
+    expect(retractionOf({ newCode: '00025' }, null)).toBeNull();
+  });
+
+  it('retracts the override when the decided row is rejected', () => {
+    expect(retractionOf({ newCode: '00025' }, override)).toEqual({
+      decisionId: 'dec-1',
+      targetCode: '00025',
+      sourceVersion: 'override:r1',
+    });
+  });
+
+  it('retracts nothing on a sibling row, which never produced an edge', () => {
+    expect(retractionOf({ newCode: '00008' }, override)).toBeNull();
   });
 });

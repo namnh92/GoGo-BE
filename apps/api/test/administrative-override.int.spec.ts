@@ -70,6 +70,8 @@ function post(
 let base!: { id: string; version: string };
 /** The version materialisation derives from it. */
 let derived: { id: string; version: string } | null = null;
+/** The second round's version, derived from `derived` (GoGo-BE#622). */
+let second: { id: string; version: string } | null = null;
 /** Two quarantined rows, picked deterministically so the assertions are stable. */
 let rowA!: QuarantineRow;
 let rowB!: QuarantineRow;
@@ -1056,8 +1058,6 @@ describe('a second round opens against the derived version', () => {
 });
 
 describe('a settled source stays settled across rounds (GoGo-BE#622)', () => {
-  let second: { id: string; version: string } | null = null;
-
   const draftRevision = async (versionId: string) =>
     (
       await db
@@ -1200,6 +1200,176 @@ describe('a settled source stays settled across rounds (GoGo-BE#622)', () => {
     expect(gates).not.toContain('OVERRIDE_CONFLICT');
     expect(res.json().validation.publishable).toBe(true);
   }, 180_000);
+});
+
+describe('a materialised override can be retracted in a later round (GoGo-BE#623)', () => {
+  let third: { id: string; version: string } | null = null;
+  let siblingC!: { id: string; oldCode: string; newCode: string };
+
+  it('publishes the second round, so there is a served override to retract', async () => {
+    const res = await post(`${BASE}/${second!.id}/publish`, 'ops_admin');
+    expect(res.statusCode).toBe(201);
+    expect(await activeIds()).toEqual([second!.id]);
+    const served = await get(`/v1/administrative/resolve?code=${rowC.oldCode}&at=2025-01-01`);
+    expect(served.json().unresolved).toBe(false);
+    expect(served.json().successors.map((s: { code: string }) => s.code)).toContain(
+      rowC.candidates[0],
+    );
+  }, 120_000);
+
+  it('records a REJECT on the decided row as a retraction, and on a sibling as nothing', async () => {
+    const decided = await rowOn(second!.id, rowC.oldCode, rowC.newCode);
+    const [sibling] = await db
+      .select()
+      .from(schema.administrativeMappingQuarantine)
+      .where(
+        and(
+          eq(schema.administrativeMappingQuarantine.datasetVersionId, second!.id),
+          eq(schema.administrativeMappingQuarantine.oldCode, rowC.oldCode),
+          sql`${schema.administrativeMappingQuarantine.id} <> ${decided.id}::uuid`,
+        ),
+      )
+      .limit(1);
+    siblingC = { id: sibling!.id, oldCode: sibling!.oldCode!, newCode: sibling!.newCode! };
+
+    const retract = await post(
+      `${BASE}/${second!.id}/quarantine/${decided.id}/reject`,
+      'ops_admin',
+      {
+        payload: { reason: 'the survey was wrong: this ward went elsewhere', expectedRevision: 0 },
+      },
+    );
+    expect(retract.statusCode).toBe(201);
+    expect(retract.json().retracts).toEqual({
+      decisionId: expect.any(String),
+      targetCode: rowC.candidates[0],
+      sourceVersion: 'override:r2',
+    });
+
+    const plain = await post(
+      `${BASE}/${second!.id}/quarantine/${siblingC.id}/reject`,
+      'ops_admin',
+      {
+        payload: { reason: 'not this proposal either', expectedRevision: 1 },
+      },
+    );
+    expect(plain.statusCode).toBe(201);
+    expect(plain.json().retracts).toBeNull();
+  });
+
+  it('materialises without the retracted edge, and says so', async () => {
+    const res = await post(`${BASE}/${second!.id}/override-set/materialize`, 'ops_admin', {
+      payload: { reason: 'third round: retract', expectedRevision: 2 },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().decisions).toMatchObject({
+      accepted: 0,
+      rejected: 2,
+      edges: 0,
+      retracted: 1,
+    });
+    third = { id: res.json().datasetVersionId, version: res.json().combinedDatasetVersion };
+    expect(third.version).toContain('+r3');
+
+    const overrides = await db
+      .select({ oldCode: schema.administrativeUnitChanges.oldCode })
+      .from(schema.administrativeUnitChanges)
+      .where(
+        and(
+          eq(schema.administrativeUnitChanges.datasetVersionId, third.id),
+          sql`override_decision_id is not null`,
+        ),
+      );
+    // The first round's two overrides are still there; the retracted one is not.
+    expect(overrides.map((o) => o.oldCode).sort()).toEqual([rowA.oldCode, rowB.oldCode].sort());
+    // And the previous version is untouched: the edge still exists where it was decided.
+    const [kept] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.administrativeUnitChanges)
+      .where(
+        and(
+          eq(schema.administrativeUnitChanges.datasetVersionId, second!.id),
+          eq(schema.administrativeUnitChanges.oldCode, rowC.oldCode),
+          sql`override_decision_id is not null`,
+        ),
+      );
+    expect(kept!.n).toBe(1);
+  }, 180_000);
+
+  it('reads the retracted row as a carried rejection naming what it withdrew', async () => {
+    const decided = await rowOn(third!.id, rowC.oldCode, rowC.newCode);
+    const detail = (await get(`${BASE}/${third!.id}/quarantine/${decided.id}`, 'ops_admin')).json();
+    expect(detail.decisionState).toBe('MATERIALIZED_REJECT');
+    expect(detail.materialized).toMatchObject({
+      decision: 'REJECT',
+      targetCode: null,
+      retracted: { targetCode: rowC.candidates[0], decisionId: expect.any(String) },
+    });
+    expect(detail.sourceSettled).toBeNull();
+
+    // The sibling's rejection withdrew nothing, and the source is open again:
+    // nothing settles its other rows any more.
+    const sibling = await rowOn(third!.id, siblingC.oldCode, siblingC.newCode);
+    const siblingDetail = (
+      await get(`${BASE}/${third!.id}/quarantine/${sibling.id}`, 'ops_admin')
+    ).json();
+    expect(siblingDetail.decisionState).toBe('MATERIALIZED_REJECT');
+    expect(siblingDetail.materialized.retracted).toBeNull();
+    expect(siblingDetail.sourceSettled).toBeNull();
+  });
+
+  it('diffs against the published version as one retraction, not as an acceptance', async () => {
+    const diff = (await get(`${BASE}/${third!.id}/diff?limit=50`, 'ops_admin')).json();
+    expect(diff.fromVersion).toBe(second!.version);
+    expect(diff.countsByCategory.OVERRIDE_RETRACTED).toBe(1);
+    expect(diff.countsByCategory.OVERRIDE_ACCEPTED).toBe(0);
+    const entry = diff.entries.find(
+      (e: { category: string }) => e.category === 'OVERRIDE_RETRACTED',
+    );
+    expect(entry.key).toBe(`OVERRIDE_RETRACTED:${rowC.oldCode}>${rowC.candidates[0]}`);
+    expect(entry.detail).toContain('retracted');
+  });
+
+  it('validates, publishes, and the resolver forgets the retracted successor only now', async () => {
+    const validation = await post(`${BASE}/${third!.id}/validate`, 'ops_admin');
+    expect(validation.statusCode).toBe(201);
+    const gates = validation.json().validation.findings.map((f: { gate: string }) => f.gate);
+    expect(gates).not.toContain('OVERRIDE_CONFLICT');
+    expect(validation.json().validation.publishable).toBe(true);
+
+    // Still served from r2 until publication.
+    expect(
+      (await get(`/v1/administrative/resolve?code=${rowC.oldCode}&at=2025-01-01`)).json()
+        .unresolved,
+    ).toBe(false);
+
+    const published = await post(`${BASE}/${third!.id}/publish`, 'ops_admin');
+    expect(published.statusCode).toBe(201);
+    expect(await activeIds()).toEqual([third!.id]);
+
+    const forgotten = await get(`/v1/administrative/resolve?code=${rowC.oldCode}&at=2025-01-01`);
+    expect(forgotten.json().unresolved).toBe(true);
+    // The first round's decision is unaffected by the third.
+    const kept = await get(`/v1/administrative/resolve?code=${rowA.oldCode}&at=2025-01-01`);
+    expect(kept.json().unresolved).toBe(false);
+    expect(kept.json().successors.map((s: { code: string }) => s.code)).toContain(
+      rowA.candidates[1],
+    );
+  }, 300_000);
+
+  it('lets the source be decided again, now that nothing settles it', async () => {
+    const sibling = await rowOn(third!.id, siblingC.oldCode, siblingC.newCode);
+    const res = await post(`${BASE}/${third!.id}/quarantine/${sibling.id}/accept`, 'ops_admin', {
+      payload: {
+        targetCode: rowC.candidates[1],
+        targetEffectiveFrom: '2025-07-01',
+        reason: 'fourth round: the corrected successor',
+        expectedRevision: 0,
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().retracts).toBeNull();
+  });
 });
 
 describe('the whole surface calls no provider and issues no Redis command', () => {

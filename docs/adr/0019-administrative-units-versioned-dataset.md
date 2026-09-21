@@ -207,6 +207,15 @@ the sibling row). Three things follow:
 Changing where a settled source goes is a retraction of the earlier override
 (ADM-028, #623), never a second accept.
 
+**Retracting a materialised override (#623).** A REJECT taken, in a later
+round, on the row a base override was decided on retracts that override: the
+materialisation does not carry its edge, the source is unresolved again, and
+the diff against the published version reports `OVERRIDE_RETRACTED`. A REJECT
+on a sibling row retracts nothing — that row never produced an edge. Nothing is
+edited: the earlier decision, its edge on the earlier version and the quarantine
+row all stay; the derived version simply does not repeat the edge. Re-pointing a
+source is therefore two rounds — retract, then accept — never a second accept.
+
 #### 3a-i. Validation is a transition, not a read (#482)
 
 `validate` runs the gates and stores the report — and, with it, the resulting

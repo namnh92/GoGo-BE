@@ -5092,6 +5092,12 @@ export interface components {
             materialized?: {
                 /** @enum {string} */
                 decision: "ACCEPT" | "REJECT";
+                /** @description On a carried REJECT that retracted an earlier round's override: the successor that override named, now withdrawn. Null otherwise. */
+                retracted: {
+                    targetCode: string;
+                    /** Format: uuid */
+                    decisionId: string | null;
+                } | null;
                 /** @description The canonical successor the accepted edge names; null for a rejection. */
                 targetCode: string | null;
                 reason: string | null;
@@ -5154,6 +5160,13 @@ export interface components {
             supersededDecisionId: string | null;
             /** Format: date-time */
             decidedAt: string;
+            /** @description Set on a REJECT taken on the row a base override was decided on: when materialised, that override's edge is not carried and the source is unresolved again (ADM-028). Null for every other decision. */
+            retracts: {
+                /** Format: uuid */
+                decisionId: string | null;
+                targetCode: string;
+                sourceVersion: string;
+            } | null;
         };
         AdministrativeMaterializeResult: {
             /** Format: uuid */
@@ -5176,6 +5189,8 @@ export interface components {
                 rejected: number;
                 /** @description Canonical edges written. A rejection produces none — it changes the derived dataset's provenance, not its content. */
                 edges: number;
+                /** @description Base override edges not carried into the derived version because the row they were decided on was rejected this round (ADM-028). */
+                retracted: number;
             };
         };
         /** @description Places whose administrative claim does not resolve against the dataset being activated. Reported, never written: whether a claim a person verified should be demoted is the mapping work's decision (#459/#461/#462). */

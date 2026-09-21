@@ -179,6 +179,51 @@ describe('migration categories come from canonical changes, not from shape', () 
   });
 });
 
+describe('OVERRIDE_RETRACTED (GoGo-BE#623)', () => {
+  const change = (over: Partial<ChangeRow> = {}): ChangeRow => ({
+    oldCode: '00007',
+    newCode: '00025',
+    changeType: 'SPLIT',
+    effectiveDate: '2025-07-01',
+    legalReference: 'GoGo override set',
+    overrideDecisionId: 'dec-1',
+    ...over,
+  });
+
+  it('reports a baseline override this version no longer carries', () => {
+    // The to-side has nothing to iterate for a dropped edge; the entry is
+    // derived from what the baseline had and this version does not.
+    const diff = run({
+      fromUnits: [unit({ code: '00007', fullName: 'Phường Cống Vị' }), unit({ code: '00025' })],
+      toUnits: [unit({ code: '00007', fullName: 'Phường Cống Vị' }), unit({ code: '00025' })],
+      fromChanges: [change()],
+      toChanges: [],
+    });
+    expect(diff.countsByCategory.OVERRIDE_RETRACTED).toBe(1);
+    const entry = diff.entries.find((e) => e.category === 'OVERRIDE_RETRACTED')!;
+    expect(entry.key).toBe('OVERRIDE_RETRACTED:00007>00025');
+    expect(entry.from?.code).toBe('00007');
+    expect(entry.to?.code).toBe('00025');
+    expect(entry.detail).toContain('retracted');
+    expect(entry.provenance).toContain('dec-1');
+  });
+
+  it('does not report an override that was re-pointed, which is a target change', () => {
+    const diff = run({
+      toUnits: [unit({ code: '00007' }), unit({ code: '00008' })],
+      fromChanges: [change()],
+      toChanges: [change({ newCode: '00008', overrideDecisionId: 'dec-2' })],
+    });
+    expect(diff.countsByCategory.OVERRIDE_RETRACTED).toBe(0);
+    expect(diff.countsByCategory.OVERRIDE_TARGET_CHANGED).toBe(1);
+  });
+
+  it('does not report an override the version still carries', () => {
+    const diff = run({ fromChanges: [change()], toChanges: [change()] });
+    expect(diff.countsByCategory.OVERRIDE_RETRACTED).toBe(0);
+  });
+});
+
 describe('UNRESOLVED and SOURCE_DRIFT', () => {
   it('surfaces a quarantined row as UNRESOLVED, never as a resolved migration', () => {
     const quarantine: QuarantineSummary[] = [
@@ -245,7 +290,7 @@ describe('ordering, bounding and linkage', () => {
     // computed. #484 added two, so this is 13.
     const diff = run();
     expect(Object.values(diff.countsByCategory).every((n) => n === 0)).toBe(true);
-    expect(Object.keys(diff.countsByCategory)).toHaveLength(13);
+    expect(Object.keys(diff.countsByCategory)).toHaveLength(14);
     expect(diff.countsByCategory.OVERRIDE_ACCEPTED).toBe(0);
     expect(diff.countsByCategory.OVERRIDE_TARGET_CHANGED).toBe(0);
   });
