@@ -305,16 +305,21 @@ export function decisionState(
  * is a copy of it that an earlier materialisation may not have carried, so the
  * edge is consulted first and the stamp second.
  *
- * - the edge names this row's proposed target → this is the decided row;
- * - the edge names another target → a sibling row was decided, and this one
- *   is settled by it.
+ * The decided row is the one the decision was taken on, identified across
+ * versions by its proposal (`old_code`, `new_code` — a clone keeps both), not
+ * by the target: a reviewer may send a row to the very successor a sibling row
+ * proposed, and that sibling is settled, not decided.
+ *
+ * - this row carries the proposal the decision was taken on → decided row;
+ * - otherwise → a sibling row was decided, and this one is settled by it.
  */
 export function settlementOf(
   row: { newCode: string | null },
-  sourceOverride: { targetCode: string } | null,
+  sourceOverride: { targetCode: string; decidedProposal: string | null } | null,
 ): { materialized: DecisionKind | null; sourceSettled: boolean } {
   if (!sourceOverride) return { materialized: null, sourceSettled: false };
-  if (row.newCode && sourceOverride.targetCode === row.newCode) {
+  const decided = sourceOverride.decidedProposal ?? sourceOverride.targetCode;
+  if (row.newCode && decided === row.newCode) {
     return { materialized: 'ACCEPT', sourceSettled: false };
   }
   return { materialized: null, sourceSettled: true };

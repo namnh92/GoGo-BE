@@ -74,24 +74,37 @@ describe('settlementOf', () => {
     });
   });
 
-  it("reads the override edge as this row's own decision when it names this row's target", () => {
+  it("reads the override as this row's own decision when the decision was taken on its proposal", () => {
     // GoGo-BE#622: an earlier materialisation dropped the stamp on r2/r3, and
     // the row went back to "undecided" while its edge was still canonical.
-    expect(settlementOf({ newCode: '00025' }, { targetCode: '00025' })).toEqual({
+    expect(
+      settlementOf({ newCode: '00025' }, { targetCode: '00025', decidedProposal: '00025' }),
+    ).toEqual({ materialized: 'ACCEPT', sourceSettled: false });
+  });
+
+  it('settles a sibling row, even one whose proposal is the chosen successor', () => {
+    // The reviewer sent the row proposing 00008 to 00025 — the successor the
+    // sibling row proposed. The sibling asked the same question; it did not
+    // get decided.
+    const override = { targetCode: '00025', decidedProposal: '00008' };
+    expect(settlementOf({ newCode: '00008' }, override)).toEqual({
       materialized: 'ACCEPT',
       sourceSettled: false,
     });
+    expect(settlementOf({ newCode: '00025' }, override)).toEqual({
+      materialized: null,
+      sourceSettled: true,
+    });
+    expect(settlementOf({ newCode: null }, override)).toEqual({
+      materialized: null,
+      sourceSettled: true,
+    });
   });
 
-  it('settles a sibling row when the override names a different successor', () => {
-    expect(settlementOf({ newCode: '00008' }, { targetCode: '00025' })).toEqual({
-      materialized: null,
-      sourceSettled: true,
-    });
-    expect(settlementOf({ newCode: null }, { targetCode: '00025' })).toEqual({
-      materialized: null,
-      sourceSettled: true,
-    });
+  it('falls back to the target when the decision behind the edge is gone', () => {
+    expect(
+      settlementOf({ newCode: '00025' }, { targetCode: '00025', decidedProposal: null }),
+    ).toEqual({ materialized: 'ACCEPT', sourceSettled: false });
   });
 });
 
