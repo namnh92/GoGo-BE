@@ -44,7 +44,14 @@ export type DiffCategory =
    * as a string and `countsByCategory` as a free map, so this is additive.
    */
   | 'OVERRIDE_ACCEPTED'
-  | 'OVERRIDE_TARGET_CHANGED';
+  | 'OVERRIDE_TARGET_CHANGED'
+  /**
+   * ADM-028 (#623). A reviewer override the baseline carried and this version
+   * does not: the decided row was rejected in a later round, the edge was not
+   * copied, and the source is unresolved again. Nothing on the to-side
+   * mentions it, so it is derived from what the baseline had.
+   */
+  | 'OVERRIDE_RETRACTED';
 
 export type DiffIdentity = {
   code: string;
@@ -105,6 +112,7 @@ const CATEGORIES: DiffCategory[] = [
   'SOURCE_DRIFT',
   'OVERRIDE_ACCEPTED',
   'OVERRIDE_TARGET_CHANGED',
+  'OVERRIDE_RETRACTED',
 ];
 
 function toIdentity(unit: ProvenancedUnit | undefined): DiffIdentity | null {
@@ -244,18 +252,26 @@ export function diffDatasets(input: DiffInput): DatasetDiff {
    * override for one of them is a *changed* decision, not a first one, and that
    * distinction is the whole reason a second review round is reviewable.
    */
-  const priorOverrideTargets = new Map<string, string>();
+  const priorOverrideTargets = new Map<string, { target: string; decisionId: string }>();
   for (const change of input.fromChanges ?? []) {
     if (change.overrideDecisionId && change.oldCode && change.newCode) {
-      priorOverrideTargets.set(change.oldCode, change.newCode);
+      priorOverrideTargets.set(change.oldCode, {
+        target: change.newCode,
+        decisionId: change.overrideDecisionId,
+      });
     }
   }
+  const fromByCode = new Map<string, ProvenancedUnit>();
+  for (const unit of input.fromUnits)
+    if (!fromByCode.has(unit.code)) fromByCode.set(unit.code, unit);
 
   for (const change of input.toChanges) {
     if (priorEdges.has(`${change.oldCode ?? ''}>${change.newCode ?? ''}:${change.changeType}`)) {
       continue;
     }
-    const previousTarget = change.oldCode ? priorOverrideTargets.get(change.oldCode) : undefined;
+    const previousTarget = change.oldCode
+      ? priorOverrideTargets.get(change.oldCode)?.target
+      : undefined;
     const category: DiffCategory = change.overrideDecisionId
       ? previousTarget
         ? 'OVERRIDE_TARGET_CHANGED'
@@ -306,6 +322,27 @@ export function diffDatasets(input: DiffInput): DatasetDiff {
             'CHANGE_HIERARCHY',
             'MERGE_SPLIT_STRUCTURE',
           ),
+    });
+  }
+
+  /*
+   * An override the baseline carried and this version does not. The to-side
+   * has nothing to iterate for it, so it is read off what the baseline had:
+   * every source with a prior override and no override edge now.
+   */
+  const toOverrideSources = new Set(
+    input.toChanges.filter((c) => c.overrideDecisionId && c.oldCode).map((c) => c.oldCode!),
+  );
+  for (const [oldCode, prior] of priorOverrideTargets) {
+    if (toOverrideSources.has(oldCode)) continue;
+    entries.push({
+      category: 'OVERRIDE_RETRACTED',
+      key: `OVERRIDE_RETRACTED:${oldCode}>${prior.target}`,
+      from: toIdentity(fromByCode.get(oldCode)),
+      to: toIdentity(fromByCode.get(prior.target)),
+      detail: `${oldCode} → ${prior.target}: reviewer override retracted; the source is unresolved again`,
+      provenance: `GoGo reviewer decision ${prior.decisionId} retracted`,
+      validation: link('UNRESOLVED_CHANGES', 'OVERRIDE_CONFLICT'),
     });
   }
 

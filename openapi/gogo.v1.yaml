@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.43
+  version: 1.0.0-alpha.44
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -9805,9 +9805,19 @@ components:
             this row. Null on a version nobody has decided this row for. It is
             settled: a reviewer reads it, and re-deciding it in a draft set is a
             deliberate second act, not an edit of this one.
-          required: [decision, targetCode, reason, decidedAt]
+          required: [decision, targetCode, reason, decidedAt, retracted]
           properties:
             decision: { type: string, enum: [ACCEPT, REJECT] }
+            retracted:
+              type: object
+              nullable: true
+              description: >
+                On a carried REJECT that retracted an earlier round's override:
+                the successor that override named, now withdrawn. Null otherwise.
+              required: [targetCode, decisionId]
+              properties:
+                targetCode: { type: string }
+                decisionId: { type: string, format: uuid, nullable: true }
             targetCode:
               type: string
               nullable: true
@@ -9892,6 +9902,7 @@ components:
           quarantineRowId,
           supersededDecisionId,
           decidedAt,
+          retracts,
         ]
       properties:
         decisionId: { type: string, format: uuid }
@@ -9907,6 +9918,18 @@ components:
           nullable: true
           description: The decision this one replaces. The replaced row is never edited.
         decidedAt: { type: string, format: date-time }
+        retracts:
+          type: object
+          nullable: true
+          description: >
+            Set on a REJECT taken on the row a base override was decided on:
+            when materialised, that override's edge is not carried and the
+            source is unresolved again (ADM-028). Null for every other decision.
+          required: [decisionId, targetCode, sourceVersion]
+          properties:
+            decisionId: { type: string, format: uuid, nullable: true }
+            targetCode: { type: string }
+            sourceVersion: { type: string }
     AdministrativeMaterializeResult:
       type: object
       required:
@@ -9935,7 +9958,7 @@ components:
         status: { type: string, enum: [STAGED] }
         decisions:
           type: object
-          required: [effective, accepted, rejected, edges]
+          required: [effective, accepted, rejected, edges, retracted]
           properties:
             effective: { type: integer }
             accepted: { type: integer }
@@ -9945,6 +9968,11 @@ components:
               description: >
                 Canonical edges written. A rejection produces none — it changes
                 the derived dataset's provenance, not its content.
+            retracted:
+              type: integer
+              description: >
+                Base override edges not carried into the derived version because
+                the row they were decided on was rejected this round (ADM-028).
     AdministrativeStaleMappings:
       type: object
       description: >
