@@ -5004,7 +5004,7 @@ export interface components {
             backlog: {
                 [key: string]: number;
             };
-            /** @description Rows by the state of their effective decision: UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED, MATERIALIZED_ACCEPT, MATERIALIZED_REJECT. The last two are settled on this version, not drafts, and a draft decision on such a row reports as the draft. */
+            /** @description Rows by the state of their effective decision: UNDECIDED, ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED, MATERIALIZED_ACCEPT, MATERIALIZED_REJECT, SOURCE_SETTLED. The last three are settled on this version, not drafts, and a draft decision on such a row reports as the draft. */
             decisions: {
                 [key: string]: number;
             };
@@ -5028,7 +5028,7 @@ export interface components {
             };
             candidateCount: number;
             affectedPlaceCount: number;
-            /** @description Grows with the review model (GoGo-BE#619 added the MATERIALIZED_* pair), so it is declared extensible: a client treats a value it does not know as "not actionable here", never as a malformed response. */
+            /** @description Grows with the review model (GoGo-BE#619 added the MATERIALIZED_* pair, GoGo-BE#622 SOURCE_SETTLED — another row of the same source carried the decision), so it is declared extensible: a client treats a value it does not know as "not actionable here", never as a malformed response. */
             decisionState: string;
             /** Format: date-time */
             decidedAt: string | null;
@@ -5098,7 +5098,15 @@ export interface components {
                 /** Format: date-time */
                 decidedAt: string | null;
             } | null;
-            /** @description Grows with the review model (GoGo-BE#619 added the MATERIALIZED_* pair), so it is declared extensible: a client treats a value it does not know as "not actionable here", never as a malformed response. */
+            /** @description Set when another row of this row's source carried the reviewer override this version holds: the source already has its one successor, so this row is settled by it and cannot be accepted onto anything else (OVERRIDE_SOURCE_ALREADY_RESOLVED). Null otherwise. */
+            sourceSettled?: {
+                targetCode: string;
+                /** @description The round that wrote the edge, e.g. `override:r1`. */
+                sourceVersion: string;
+                /** Format: uuid */
+                decisionId: string | null;
+            } | null;
+            /** @description Grows with the review model (GoGo-BE#619 added the MATERIALIZED_* pair, GoGo-BE#622 SOURCE_SETTLED — another row of the same source carried the decision), so it is declared extensible: a client treats a value it does not know as "not actionable here", never as a malformed response. */
             decisionState: string;
             /** @description Append-only, newest first. Nothing here is ever rewritten. */
             history: components["schemas"]["AdministrativeOverrideDecisionRecord"][];
@@ -10387,7 +10395,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Refused, and audited. OVERRIDE_SET_NOT_DRAFT, OVERRIDE_SET_REVISION_CONFLICT when somebody else decided a row first, QUARANTINE_ROW_NOT_IN_DATASET, QUARANTINE_ROW_HAS_NO_SOURCE, OVERRIDE_TARGET_NOT_FOUND when the named identity is not in this dataset, OVERRIDE_TARGET_NOT_CURRENT, OVERRIDE_TARGET_HIERARCHY_INVALID, OVERRIDE_TARGET_IS_SOURCE, or OVERRIDE_EDGE_ALREADY_CANONICAL. */
+            /** @description Refused, and audited. OVERRIDE_SET_NOT_DRAFT, OVERRIDE_SET_REVISION_CONFLICT when somebody else decided a row first, QUARANTINE_ROW_NOT_IN_DATASET, QUARANTINE_ROW_HAS_NO_SOURCE, OVERRIDE_TARGET_NOT_FOUND when the named identity is not in this dataset, OVERRIDE_TARGET_NOT_CURRENT, OVERRIDE_TARGET_HIERARCHY_INVALID, OVERRIDE_TARGET_IS_SOURCE, OVERRIDE_EDGE_ALREADY_CANONICAL, and — because one source has one successor whatever row it was decided on — OVERRIDE_SOURCE_ALREADY_RESOLVED when the base already carries a reviewer override for this source onto another target, OVERRIDE_SOURCE_CONFLICT_IN_DRAFT when this draft already accepts another target on a sibling row, and OVERRIDE_SOURCE_ALREADY_DECIDED_IN_DRAFT when it already accepts the same one. */
             409: {
                 headers: {
                     [name: string]: unknown;

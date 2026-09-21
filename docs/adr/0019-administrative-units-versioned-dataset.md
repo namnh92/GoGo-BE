@@ -181,6 +181,32 @@ skips edges the baseline asserted. `OVERRIDE_REJECTED` is deliberately absent: a
 rejection creates no edge, so it changes the derived dataset's provenance rather
 than its content, and it is reported in the decision counts instead.
 
+**A decision is taken on a row; the fact is about the source (#622, 2026-09-21).**
+The 1,033 quarantined rows describe 471 sources, so a divided commune usually
+carries two or three advisory rows — and the resolver answers one successor per
+source. Two rows of one source accepted onto different targets, in one draft or
+across rounds, produced a version that `OVERRIDE_CONFLICT` refused forever (DEV
+r2 and r3, 2026-09-17: `00007 → 00025` in r1, then `00007 → 00008` accepted on
+the sibling row). Three things follow:
+
+1. Accepting a row is refused when the base already carries a reviewer
+   override for its source onto another target
+   (`OVERRIDE_SOURCE_ALREADY_RESOLVED`, naming the target and the round), or
+   when the draft already accepts a sibling row
+   (`OVERRIDE_SOURCE_CONFLICT_IN_DRAFT` for another target,
+   `OVERRIDE_SOURCE_ALREADY_DECIDED_IN_DRAFT` for the same one). The gate stays
+   as the last line; the decision path no longer reaches it.
+2. The other rows of a settled source read `SOURCE_SETTLED` — not actionable,
+   not in the backlog — and the detail names the target and the round that
+   settled them.
+3. Materialisation carries the stamp of earlier rounds (`coalesce` with the
+   base row's `reviewer_decision`), because a decision taken in r1 is still
+   taken on r2. The read layer treats the override _edge_ as the fact and the
+   stamp as its copy, so a version minted before this reads correctly as well.
+
+Changing where a settled source goes is a retraction of the earlier override
+(ADM-028, #623), never a second accept.
+
 #### 3a-i. Validation is a transition, not a read (#482)
 
 `validate` runs the gates and stores the report — and, with it, the resulting

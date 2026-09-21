@@ -2,7 +2,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import argon2 from 'argon2';
 import path from 'node:path';
 import { Pool } from 'pg';
@@ -73,8 +73,31 @@ let derived: { id: string; version: string } | null = null;
 /** Two quarantined rows, picked deterministically so the assertions are stable. */
 let rowA!: QuarantineRow;
 let rowB!: QuarantineRow;
+/** A third source, decided in the second round (GoGo-BE#622). */
+let rowC!: QuarantineRow;
+/** Another advisory row of rowA's source: the same commune, a different proposal. */
+let siblingA!: { id: string; oldCode: string; newCode: string };
+/** Rows of rowA's and rowB's sources that their decisions settle without being decided. */
+let settledSiblings = 0;
 
-type QuarantineRow = { id: string; oldCode: string; candidates: string[] };
+type QuarantineRow = { id: string; oldCode: string; newCode: string; candidates: string[] };
+
+/** The clone of a base row on a derived version: same source and proposal, new id. */
+async function rowOn(versionId: string, oldCode: string, newCode: string) {
+  const [row] = await db
+    .select()
+    .from(schema.administrativeMappingQuarantine)
+    .where(
+      and(
+        eq(schema.administrativeMappingQuarantine.datasetVersionId, versionId),
+        eq(schema.administrativeMappingQuarantine.oldCode, oldCode),
+        eq(schema.administrativeMappingQuarantine.newCode, newCode),
+      ),
+    )
+    .limit(1);
+  expect(row).toBeTruthy();
+  return row!;
+}
 
 async function createAdmin(role: Role) {
   const email = `adm011-${role}@gogo.local`;
@@ -198,6 +221,7 @@ beforeAll(async () => {
     .select({
       id: schema.administrativeMappingQuarantine.id,
       oldCode: schema.administrativeMappingQuarantine.oldCode,
+      newCode: schema.administrativeMappingQuarantine.newCode,
     })
     .from(schema.administrativeMappingQuarantine)
     .where(eq(schema.administrativeMappingQuarantine.datasetVersionId, base.id))
@@ -206,21 +230,35 @@ beforeAll(async () => {
       schema.administrativeMappingQuarantine.newCode,
     );
 
+  // 1,033 rows describe 471 sources; the fixtures need sources with more than
+  // one row, because the rule under test is about the source, not the row.
+  const perSource = new Map<string, number>();
+  for (const row of picked) perSource.set(row.oldCode!, (perSource.get(row.oldCode!) ?? 0) + 1);
+
   const usable: QuarantineRow[] = [];
   for (const row of picked) {
-    if (usable.length === 2) break;
-    // One row per source, so the two fixtures cannot collide on one commune.
+    if (usable.length === 3) break;
+    // One row per source, so the fixtures cannot collide on one commune.
     if (usable.some((u) => u.oldCode === row.oldCode)) continue;
+    if ((perSource.get(row.oldCode!) ?? 0) < 2) continue;
     const detail = (await get(`${BASE}/${base.id}/quarantine/${row.id}`, 'ops_admin')).json();
     const selectable = (detail.candidates as { code: string; selectable: boolean }[])
       .filter((c) => c.selectable)
       .map((c) => c.code);
     if (selectable.length >= 2) {
-      usable.push({ id: row.id, oldCode: row.oldCode!, candidates: selectable });
+      usable.push({
+        id: row.id,
+        oldCode: row.oldCode!,
+        newCode: row.newCode!,
+        candidates: selectable,
+      });
     }
   }
-  expect(usable).toHaveLength(2);
-  [rowA, rowB] = usable as [QuarantineRow, QuarantineRow];
+  expect(usable).toHaveLength(3);
+  [rowA, rowB, rowC] = usable as [QuarantineRow, QuarantineRow, QuarantineRow];
+  const sibling = picked.find((r) => r.oldCode === rowA.oldCode && r.id !== rowA.id)!;
+  siblingA = { id: sibling.id, oldCode: sibling.oldCode!, newCode: sibling.newCode! };
+  settledSiblings = perSource.get(rowA.oldCode)! - 1 + (perSource.get(rowB.oldCode)! - 1);
 }, 300_000);
 
 afterAll(async () => {
@@ -440,6 +478,47 @@ describe('accepting names a target; it never picks one', () => {
     expect(body.decisionState).toBe('ACCEPTED_DRAFT');
     expect(body.decision.reason).toContain('field survey');
     expect(body.history).toHaveLength(1);
+  });
+
+  it('refuses a second successor for the same source on a sibling row of this draft', async () => {
+    // GoGo-BE#622 — DEV 2026-09-17: 00016 → 00008 and 00016 → 00004 were both
+    // accepted in one draft, and the materialised version could never publish
+    // (OVERRIDE_CONFLICT). The decision is on a row; the fact is about the
+    // source, so the second row is refused here with the first one's target.
+    const before = await revision();
+    const conflict = await post(
+      `${BASE}/${base.id}/quarantine/${siblingA.id}/accept`,
+      'ops_admin',
+      {
+        payload: {
+          targetCode: rowA.candidates[1],
+          targetEffectiveFrom: '2025-07-01',
+          reason: 'the other half of the ward',
+          expectedRevision: before,
+        },
+      },
+    );
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json().code).toBe('OVERRIDE_SOURCE_CONFLICT_IN_DRAFT');
+    expect(conflict.json().message).toContain(rowA.candidates[0]);
+
+    // The same target twice would write the same edge twice.
+    const twice = await post(`${BASE}/${base.id}/quarantine/${siblingA.id}/accept`, 'ops_admin', {
+      payload: {
+        targetCode: rowA.candidates[0],
+        targetEffectiveFrom: '2025-07-01',
+        reason: 'agreeing with the first row',
+        expectedRevision: before,
+      },
+    });
+    expect(twice.statusCode).toBe(409);
+    expect(twice.json().code).toBe('OVERRIDE_SOURCE_ALREADY_DECIDED_IN_DRAFT');
+
+    expect(await revision()).toBe(before);
+    const audit = await lastAudit('administrative_mapping_override.decision_rejected');
+    expect((audit!.diff as Record<string, unknown>).reason).toBe(
+      'OVERRIDE_SOURCE_ALREADY_DECIDED_IN_DRAFT',
+    );
   });
 });
 
@@ -756,10 +835,21 @@ describe('materialisation', () => {
     expect(settled.every((i) => i.decidedAt)).toBe(true);
     expect(items.some((i) => i.decisionState === 'MATERIALIZED_REJECT')).toBe(false);
 
+    // The other rows of the two decided sources are settled by those decisions
+    // (GoGo-BE#622): not decided themselves, not in the backlog either.
+    const settledBySource = items.filter((i) => i.decisionState === 'SOURCE_SETTLED');
+    expect(settledBySource).toHaveLength(settledSiblings);
+    expect(
+      settledBySource.every(
+        (i) => i.source.code === rowA.oldCode || i.source.code === rowB.oldCode,
+      ),
+    ).toBe(true);
+
     expect(counts.decisions.MATERIALIZED_ACCEPT).toBe(2);
     expect(counts.decisions.MATERIALIZED_REJECT).toBe(0);
-    expect(counts.decisions.UNDECIDED).toBe(1031);
-    expect(counts.backlog).toEqual({ DIVIDED_REQUIRES_REVIEW: 1031 });
+    expect(counts.decisions.SOURCE_SETTLED).toBe(settledSiblings);
+    expect(counts.decisions.UNDECIDED).toBe(1031 - settledSiblings);
+    expect(counts.backlog).toEqual({ DIVIDED_REQUIRES_REVIEW: 1031 - settledSiblings });
 
     // The filter knows the new state.
     const filtered = await get(
@@ -786,6 +876,20 @@ describe('materialisation', () => {
     // Nothing is drafted on the derived version; a settled decision is not a draft.
     expect(detail.decision).toBeNull();
     expect(detail.history).toEqual([]);
+    expect(detail.sourceSettled).toBeNull();
+
+    // The sibling row names the decision that settled it, and where it went.
+    const sibling = await rowOn(derived!.id, siblingA.oldCode, siblingA.newCode);
+    const siblingDetail = (
+      await get(`${BASE}/${derived!.id}/quarantine/${sibling.id}`, 'ops_admin')
+    ).json();
+    expect(siblingDetail.decisionState).toBe('SOURCE_SETTLED');
+    expect(siblingDetail.materialized).toBeNull();
+    expect(siblingDetail.sourceSettled).toEqual({
+      targetCode: rowA.candidates[1],
+      sourceVersion: 'override:r1',
+      decisionId: expect.any(String),
+    });
 
     // The base is evidence and stays as it was: nothing there is settled.
     const baseCounts = (await get(`${BASE}/${base.id}/quarantine?limit=1`, 'ops_admin')).json()
@@ -949,6 +1053,153 @@ describe('a second round opens against the derived version', () => {
     expect(next.statusCode).toBe(201);
     expect(next.json().overrideSetRevision).toBe(1);
   });
+});
+
+describe('a settled source stays settled across rounds (GoGo-BE#622)', () => {
+  let second: { id: string; version: string } | null = null;
+
+  const draftRevision = async (versionId: string) =>
+    (
+      await db
+        .select({ revision: schema.administrativeMappingOverrideSets.revision })
+        .from(schema.administrativeMappingOverrideSets)
+        .where(
+          and(
+            eq(schema.administrativeMappingOverrideSets.baseDatasetId, versionId),
+            eq(schema.administrativeMappingOverrideSets.status, 'DRAFT'),
+          ),
+        )
+    )[0]?.revision ?? 0;
+
+  it('refuses to send a settled source elsewhere, and says where it already goes', async () => {
+    // DEV 2026-09-17: r1 said 00007 → 00025; the sibling row still read
+    // "undecided", and accepting it onto 00008 minted a version with two
+    // successors for one commune.
+    const sibling = await rowOn(derived!.id, siblingA.oldCode, siblingA.newCode);
+    const before = await draftRevision(derived!.id);
+    const res = await post(`${BASE}/${derived!.id}/quarantine/${sibling.id}/accept`, 'ops_admin', {
+      payload: {
+        targetCode: rowA.candidates[0],
+        targetEffectiveFrom: '2025-07-01',
+        reason: 'second thoughts about the first round',
+        expectedRevision: before,
+      },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('OVERRIDE_SOURCE_ALREADY_RESOLVED');
+    expect(res.json().message).toContain(rowA.candidates[1]);
+    expect(res.json().message).toContain('override:r1');
+    expect(await draftRevision(derived!.id)).toBe(before);
+  });
+
+  it('materialises a second round that carries the first round with it', async () => {
+    const third = await rowOn(derived!.id, rowC.oldCode, rowC.newCode);
+    const before = await draftRevision(derived!.id);
+    const accepted = await post(
+      `${BASE}/${derived!.id}/quarantine/${third.id}/accept`,
+      'ops_admin',
+      {
+        payload: {
+          targetCode: rowC.candidates[0],
+          targetEffectiveFrom: '2025-07-01',
+          reason: 'second round: a third commune',
+          expectedRevision: before,
+        },
+      },
+    );
+    expect(accepted.statusCode).toBe(201);
+
+    // What the live draft on r1 holds besides that accept: the previous
+    // describe rejected r1's first row by id, which is random per import and
+    // may be any row — including one the first round decided. The expectations
+    // below are computed from that, not assumed.
+    const [liveSet] = await db
+      .select({ id: schema.administrativeMappingOverrideSets.id })
+      .from(schema.administrativeMappingOverrideSets)
+      .where(
+        and(
+          eq(schema.administrativeMappingOverrideSets.baseDatasetId, derived!.id),
+          eq(schema.administrativeMappingOverrideSets.status, 'DRAFT'),
+        ),
+      );
+    const liveRejects = await db
+      .select({
+        oldCode: schema.administrativeMappingQuarantine.oldCode,
+        newCode: schema.administrativeMappingQuarantine.newCode,
+      })
+      .from(schema.administrativeMappingOverrideDecisions)
+      .innerJoin(
+        schema.administrativeMappingQuarantine,
+        eq(
+          schema.administrativeMappingQuarantine.id,
+          schema.administrativeMappingOverrideDecisions.quarantineRowId,
+        ),
+      )
+      .where(
+        and(
+          eq(schema.administrativeMappingOverrideDecisions.overrideSetId, liveSet!.id),
+          eq(schema.administrativeMappingOverrideDecisions.decision, 'REJECT'),
+          isNull(schema.administrativeMappingOverrideDecisions.supersededById),
+        ),
+      );
+    const key = (r: { oldCode: string | null; newCode: string | null }) =>
+      `${r.oldCode}>${r.newCode}`;
+    const rejectedKeys = new Set(liveRejects.map(key));
+
+    const res = await post(`${BASE}/${derived!.id}/override-set/materialize`, 'ops_admin', {
+      payload: { reason: 'second review round', expectedRevision: before + 1 },
+    });
+    expect(res.statusCode).toBe(201);
+    second = { id: res.json().datasetVersionId, version: res.json().combinedDatasetVersion };
+    expect(second.version).toContain('+r2');
+
+    // Before #622 the copy carried only this round's decisions, and the rows
+    // decided in r1 went back to "undecided" while their edges stayed canonical.
+    // A row this round re-decided carries this round's decision instead.
+    for (const source of [rowA, rowB, rowC]) {
+      const row = await rowOn(second.id, source.oldCode, source.newCode);
+      const item = (await get(`${BASE}/${second.id}/quarantine/${row.id}`, 'ops_admin')).json();
+      const reDecided = rejectedKeys.has(key(row));
+      expect(item.decisionState).toBe(reDecided ? 'MATERIALIZED_REJECT' : 'MATERIALIZED_ACCEPT');
+      expect(row.reviewerDecision).toBe(reDecided ? 'REJECT' : 'ACCEPT');
+      expect(row.reviewedAt).toBeTruthy();
+      if (source === rowA && !reDecided) {
+        expect(item.materialized.targetCode).toBe(rowA.candidates[1]);
+      }
+    }
+
+    // Stamped rows on r2: the three accepts across two rounds plus this
+    // round's rejects, counted once per row.
+    const [stamped] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.administrativeMappingQuarantine)
+      .where(
+        and(
+          eq(schema.administrativeMappingQuarantine.datasetVersionId, second.id),
+          sql`reviewer_decision is not null`,
+        ),
+      );
+    const decided = new Set([...[rowA, rowB, rowC].map(key), ...rejectedKeys]);
+    expect(stamped!.n).toBe(decided.size);
+
+    // And the sibling of the first round's source is still settled by it.
+    const sibling = await rowOn(second.id, siblingA.oldCode, siblingA.newCode);
+    const siblingItem = (
+      await get(`${BASE}/${second.id}/quarantine/${sibling.id}`, 'ops_admin')
+    ).json();
+    expect(['SOURCE_SETTLED', 'MATERIALIZED_REJECT']).toContain(siblingItem.decisionState);
+    if (siblingItem.decisionState === 'SOURCE_SETTLED') {
+      expect(siblingItem.sourceSettled.sourceVersion).toBe('override:r1');
+    }
+  }, 180_000);
+
+  it('validates the second round without a source conflict', async () => {
+    const res = await post(`${BASE}/${second!.id}/validate`, 'ops_admin');
+    expect(res.statusCode).toBe(201);
+    const gates = res.json().validation.findings.map((f: { gate: string }) => f.gate);
+    expect(gates).not.toContain('OVERRIDE_CONFLICT');
+    expect(res.json().validation.publishable).toBe(true);
+  }, 180_000);
 });
 
 describe('the whole surface calls no provider and issues no Redis command', () => {
