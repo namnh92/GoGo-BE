@@ -486,8 +486,10 @@ export function validateDataset(input: DatasetUnderValidation): ValidationReport
   );
 
   // Two effective overrides sending one source to different successors is the
-  // contradiction the whole append-only decision model exists to prevent; if it
-  // reaches a dataset, something wrote edges outside the materialisation path.
+  // contradiction the whole append-only decision model exists to prevent. Until
+  // GoGo-BE#622 the accept path could still produce it — a decision is taken
+  // on a row, and two rows describe one divided commune — so this gate is what
+  // caught it; it now also refuses at decision time.
   const overrideTargets = new Map<string, Set<string>>();
   for (const change of overrides) {
     if (!change.oldCode || !change.newCode) continue;

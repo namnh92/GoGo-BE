@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.42
+  version: 1.0.0-alpha.43
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1839,7 +1839,14 @@ paths:
             first, QUARANTINE_ROW_NOT_IN_DATASET, QUARANTINE_ROW_HAS_NO_SOURCE,
             OVERRIDE_TARGET_NOT_FOUND when the named identity is not in this
             dataset, OVERRIDE_TARGET_NOT_CURRENT, OVERRIDE_TARGET_HIERARCHY_INVALID,
-            OVERRIDE_TARGET_IS_SOURCE, or OVERRIDE_EDGE_ALREADY_CANONICAL.
+            OVERRIDE_TARGET_IS_SOURCE, OVERRIDE_EDGE_ALREADY_CANONICAL, and —
+            because one source has one successor whatever row it was decided on
+            — OVERRIDE_SOURCE_ALREADY_RESOLVED when the base already carries a
+            reviewer override for this source onto another target,
+            OVERRIDE_SOURCE_CONFLICT_IN_DRAFT when this draft already accepts
+            another target on a sibling row, and
+            OVERRIDE_SOURCE_ALREADY_DECIDED_IN_DRAFT when it already accepts the
+            same one.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -9647,8 +9654,9 @@ components:
           description: >
             Rows by the state of their effective decision: UNDECIDED,
             ACCEPTED_DRAFT, REJECTED_DRAFT, SUPERSEDED, MATERIALIZED_ACCEPT,
-            MATERIALIZED_REJECT. The last two are settled on this version, not
-            drafts, and a draft decision on such a row reports as the draft.
+            MATERIALIZED_REJECT, SOURCE_SETTLED. The last three are settled on
+            this version, not drafts, and a draft decision on such a row reports
+            as the draft.
     AdministrativeQuarantineItem:
       type: object
       required:
@@ -9689,8 +9697,10 @@ components:
           type: string
           description: >
             Grows with the review model (GoGo-BE#619 added the MATERIALIZED_*
-            pair), so it is declared extensible: a client treats a value it does
-            not know as "not actionable here", never as a malformed response.
+            pair, GoGo-BE#622 SOURCE_SETTLED — another row of the same source
+            carried the decision), so it is declared extensible: a client treats
+            a value it does not know as "not actionable here", never as a
+            malformed response.
           x-extensible-enum:
             [
               UNDECIDED,
@@ -9699,6 +9709,7 @@ components:
               SUPERSEDED,
               MATERIALIZED_ACCEPT,
               MATERIALIZED_REJECT,
+              SOURCE_SETTLED,
             ]
         decidedAt: { type: string, format: date-time, nullable: true }
         sourceProvenance: { type: string }
@@ -9803,12 +9814,29 @@ components:
               description: The canonical successor the accepted edge names; null for a rejection.
             reason: { type: string, nullable: true }
             decidedAt: { type: string, format: date-time, nullable: true }
+        sourceSettled:
+          type: object
+          nullable: true
+          description: >
+            Set when another row of this row's source carried the reviewer
+            override this version holds: the source already has its one
+            successor, so this row is settled by it and cannot be accepted onto
+            anything else (OVERRIDE_SOURCE_ALREADY_RESOLVED). Null otherwise.
+          required: [targetCode, sourceVersion, decisionId]
+          properties:
+            targetCode: { type: string }
+            sourceVersion:
+              type: string
+              description: The round that wrote the edge, e.g. `override:r1`.
+            decisionId: { type: string, format: uuid, nullable: true }
         decisionState:
           type: string
           description: >
             Grows with the review model (GoGo-BE#619 added the MATERIALIZED_*
-            pair), so it is declared extensible: a client treats a value it does
-            not know as "not actionable here", never as a malformed response.
+            pair, GoGo-BE#622 SOURCE_SETTLED — another row of the same source
+            carried the decision), so it is declared extensible: a client treats
+            a value it does not know as "not actionable here", never as a
+            malformed response.
           x-extensible-enum:
             [
               UNDECIDED,
@@ -9817,6 +9845,7 @@ components:
               SUPERSEDED,
               MATERIALIZED_ACCEPT,
               MATERIALIZED_REJECT,
+              SOURCE_SETTLED,
             ]
         history:
           type: array

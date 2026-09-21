@@ -33,7 +33,13 @@ export type DecisionState =
   | 'REJECTED_DRAFT'
   | 'SUPERSEDED'
   | 'MATERIALIZED_ACCEPT'
-  | 'MATERIALIZED_REJECT';
+  | 'MATERIALIZED_REJECT'
+  /*
+   * Another row of the same source carried the decision: this version already
+   * names a successor for the source, so this row asks a question that has
+   * been answered. Not actionable, and not in the backlog.
+   */
+  | 'SOURCE_SETTLED';
 
 export type OverrideSet = {
   id: string;
@@ -98,6 +104,15 @@ export type AcceptInput = {
   parentExists: boolean;
   /** Whether this exact edge is already asserted canonically in the base. */
   edgeAlreadyCanonical: boolean;
+  /**
+   * The successor a reviewer override in the base already names for this
+   * source, whichever quarantine row it was decided on. One source has one
+   * successor (ADR-0019 §3a-0), so a second target is a contradiction the
+   * validation gate would refuse later — this refuses it now, with the reason.
+   */
+  sourceOverride: { targetCode: string; sourceVersion: string } | null;
+  /** An effective ACCEPT this draft already holds on another row of the same source. */
+  siblingAccept: { quarantineRowId: string; targetCode: string } | null;
 };
 
 /**
@@ -162,6 +177,40 @@ export function acceptRefusal(input: AcceptInput): Refusal | null {
       message:
         `${input.row.oldCode} → ${input.target.code} is already a canonical edge in this ` +
         'dataset; there is nothing for an override to add',
+    };
+  }
+  /*
+   * The decision is taken on a row, but the fact it asserts is about the
+   * source: 1,033 advisory rows describe 471 divided communes, and a commune
+   * has one successor in the resolver whatever the source proposed. So a
+   * source that a reviewer already sent somewhere — in this base, or on
+   * another row of this draft — cannot be sent somewhere else from here.
+   */
+  if (input.sourceOverride && input.sourceOverride.targetCode !== input.target.code) {
+    return {
+      code: 'OVERRIDE_SOURCE_ALREADY_RESOLVED',
+      message:
+        `${input.row.oldCode} already resolves to ${input.sourceOverride.targetCode} through a ` +
+        `reviewer override (${input.sourceOverride.sourceVersion}); one source has one ` +
+        'successor, so retract that override in a later round before naming another',
+    };
+  }
+  if (input.siblingAccept) {
+    if (input.siblingAccept.targetCode !== input.target.code) {
+      return {
+        code: 'OVERRIDE_SOURCE_CONFLICT_IN_DRAFT',
+        message:
+          `this draft already accepts ${input.row.oldCode} → ${input.siblingAccept.targetCode} on ` +
+          `another row of the same source (${input.siblingAccept.quarantineRowId}); decide the ` +
+          'source once — supersede that decision, or reject this row',
+      };
+    }
+    return {
+      code: 'OVERRIDE_SOURCE_ALREADY_DECIDED_IN_DRAFT',
+      message:
+        `this draft already accepts ${input.row.oldCode} → ${input.target.code} on another row ` +
+        `of the same source (${input.siblingAccept.quarantineRowId}); that decision covers the ` +
+        'source, and a second one would write the same edge twice',
     };
   }
   return null;
@@ -241,11 +290,34 @@ export function decisionState(
   effective: { decision: DecisionKind } | null,
   hasSupersededHistory: boolean,
   materialized: DecisionKind | null = null,
+  sourceSettled = false,
 ): DecisionState {
   if (effective) return effective.decision === 'ACCEPT' ? 'ACCEPTED_DRAFT' : 'REJECTED_DRAFT';
   if (materialized)
     return materialized === 'ACCEPT' ? 'MATERIALIZED_ACCEPT' : 'MATERIALIZED_REJECT';
+  if (sourceSettled) return 'SOURCE_SETTLED';
   return hasSupersededHistory ? 'SUPERSEDED' : 'UNDECIDED';
+}
+
+/**
+ * What a reviewer override already in this version means for one quarantine
+ * row of the same source. The override edge is the fact; the stamp on the row
+ * is a copy of it that an earlier materialisation may not have carried, so the
+ * edge is consulted first and the stamp second.
+ *
+ * - the edge names this row's proposed target → this is the decided row;
+ * - the edge names another target → a sibling row was decided, and this one
+ *   is settled by it.
+ */
+export function settlementOf(
+  row: { newCode: string | null },
+  sourceOverride: { targetCode: string } | null,
+): { materialized: DecisionKind | null; sourceSettled: boolean } {
+  if (!sourceOverride) return { materialized: null, sourceSettled: false };
+  if (row.newCode && sourceOverride.targetCode === row.newCode) {
+    return { materialized: 'ACCEPT', sourceSettled: false };
+  }
+  return { materialized: null, sourceSettled: true };
 }
 
 /**
@@ -265,4 +337,5 @@ export const DECISION_STATES: readonly DecisionState[] = [
   'SUPERSEDED',
   'MATERIALIZED_ACCEPT',
   'MATERIALIZED_REJECT',
+  'SOURCE_SETTLED',
 ];
