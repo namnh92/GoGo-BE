@@ -2,7 +2,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, notInArray, sql } from 'drizzle-orm';
 import argon2 from 'argon2';
 import path from 'node:path';
 import { Pool } from 'pg';
@@ -100,6 +100,43 @@ async function rowOn(versionId: string, oldCode: string, newCode: string) {
     )
     .limit(1);
   expect(row).toBeTruthy();
+  return row!;
+}
+
+/**
+ * An arbitrary quarantine row of `versionId` that no earlier round has decided.
+ *
+ * The tests that use this only need *a* row nobody has touched, to show that a
+ * decision opens a fresh draft — which row it is carries no meaning. Ordering
+ * by `id` alone did not give that: `id` is `defaultRandom()`, so the lowest one
+ * is a uniform pick over the version's ~1,033 rows, and roughly one run in five
+ * hundred landed on the row `rowA` or `rowB` was accepted on. A REJECT there
+ * retracts that round's override (ADM-028, #623) — correct behaviour that
+ * silently rewrote the fixture the r2 and r3 assertions are written against
+ * (TEST-BE-002, #627: CI run 35614675085 picked `rowB`'s row).
+ *
+ * So the decided rows are excluded here, at the pick, rather than tolerated in
+ * every assertion downstream.
+ */
+async function undecidedRowOn(versionId: string) {
+  const decided = await Promise.all(
+    [rowA, rowB].map((source) => rowOn(versionId, source.oldCode, source.newCode)),
+  );
+  const decidedIds = decided.map((r) => r.id);
+  const [row] = await db
+    .select({ id: schema.administrativeMappingQuarantine.id })
+    .from(schema.administrativeMappingQuarantine)
+    .where(
+      and(
+        eq(schema.administrativeMappingQuarantine.datasetVersionId, versionId),
+        notInArray(schema.administrativeMappingQuarantine.id, decidedIds),
+      ),
+    )
+    .orderBy(schema.administrativeMappingQuarantine.id)
+    .limit(1);
+  expect(row).toBeTruthy();
+  // The guard this helper exists for: never a row an earlier round decided.
+  expect(decidedIds).not.toContain(row!.id);
   return row!;
 }
 
@@ -991,14 +1028,9 @@ describe('the derived dataset goes through the ordinary path', () => {
 
 describe('a second round opens against the derived version', () => {
   it('refuses to reuse the materialised set and opens a new draft', async () => {
-    const [row] = await db
-      .select({ id: schema.administrativeMappingQuarantine.id })
-      .from(schema.administrativeMappingQuarantine)
-      .where(eq(schema.administrativeMappingQuarantine.datasetVersionId, derived!.id))
-      .orderBy(schema.administrativeMappingQuarantine.id)
-      .limit(1);
+    const row = await undecidedRowOn(derived!.id);
 
-    const res = await post(`${BASE}/${derived!.id}/quarantine/${row!.id}/reject`, 'ops_admin', {
+    const res = await post(`${BASE}/${derived!.id}/quarantine/${row.id}/reject`, 'ops_admin', {
       payload: { reason: 'second round', expectedRevision: 0 },
     });
     expect(res.statusCode).toBe(201);
@@ -1046,13 +1078,8 @@ describe('a second round opens against the derived version', () => {
     expect(materialize.json().code).toBe('OVERRIDE_SET_NOT_FOUND');
 
     // A new decision opens a fresh draft rather than reviving the abandoned one.
-    const [row] = await db
-      .select({ id: schema.administrativeMappingQuarantine.id })
-      .from(schema.administrativeMappingQuarantine)
-      .where(eq(schema.administrativeMappingQuarantine.datasetVersionId, derived!.id))
-      .orderBy(schema.administrativeMappingQuarantine.id)
-      .limit(1);
-    const next = await post(`${BASE}/${derived!.id}/quarantine/${row!.id}/reject`, 'ops_admin', {
+    const row = await undecidedRowOn(derived!.id);
+    const next = await post(`${BASE}/${derived!.id}/quarantine/${row.id}/reject`, 'ops_admin', {
       payload: { reason: 'third round', expectedRevision: 0 },
     });
     expect(next.statusCode).toBe(201);
@@ -1112,10 +1139,11 @@ describe('a settled source stays settled across rounds (GoGo-BE#622)', () => {
     );
     expect(accepted.statusCode).toBe(201);
 
-    // What the live draft on r1 holds besides that accept: the previous
-    // describe rejected r1's first row by id, which is random per import and
-    // may be any row — including one the first round decided. The expectations
-    // below are computed from that, not assumed.
+    // What the live draft on r1 holds besides that accept: the previous describe
+    // rejected an undecided row of r1 (`undecidedRowOn`), so it can be a sibling
+    // of a decided source but never a decided row itself (#627). The
+    // expectations below are still computed from the draft rather than assumed,
+    // because which sibling it is remains arbitrary.
     const [liveSet] = await db
       .select({ id: schema.administrativeMappingOverrideSets.id })
       .from(schema.administrativeMappingOverrideSets)
