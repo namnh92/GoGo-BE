@@ -164,6 +164,61 @@ describe('register / login', () => {
     }
     expect(last).toBe(429);
   });
+
+  /**
+   * GoGo-BE#631 — a 429 has to say how long to wait, and must not carry another
+   * limiter's numbers while doing it.
+   *
+   * Two limiters can speak on one response: the coarse `@fastify/rate-limit`
+   * flood net (1200/min, per IP) which sets `x-ratelimit-*`, and the per-action
+   * guard which is what refuses here. Before this the guard's 429 went out with
+   * no `Retry-After` at all, carrying the flood net's counters — a rejected
+   * request reporting over a thousand remaining.
+   */
+  it('answers a guard 429 with Retry-After, and without the other limiter s counters', async () => {
+    const ip = freshIp();
+    let blocked: Awaited<ReturnType<ReturnType<typeof api>['inject']>> | null = null;
+    for (let i = 0; i < 12 && !blocked; i++) {
+      const res = await api().inject({
+        method: 'POST',
+        url: '/v1/auth/login',
+        remoteAddress: ip,
+        payload: { email: `ra${i}@gogo.id.vn`, password: 'whatever-long-pw' },
+      });
+      if (res.statusCode === 429) blocked = res;
+    }
+    expect(blocked).toBeTruthy();
+    const res = blocked as NonNullable<typeof blocked>;
+    expect(res.json().code).toBe('RATE_LIMITED');
+
+    // The wait, in seconds, from the window that actually refused.
+    const retryAfter = res.headers['retry-after'];
+    expect(retryAfter).toBeDefined();
+    const seconds = Number(retryAfter);
+    expect(Number.isInteger(seconds)).toBe(true);
+    expect(seconds).toBeGreaterThan(0);
+    // Conservative by design: the store keeps no TTL, so the whole window is
+    // used rather than a guess at what is left of it.
+    expect(seconds).toBeLessThanOrEqual(60);
+
+    // The flood net's budget described a different bucket and read as though
+    // the caller had plenty left. It must not ride along on this refusal.
+    expect(res.headers['x-ratelimit-limit']).toBeUndefined();
+    expect(res.headers['x-ratelimit-remaining']).toBeUndefined();
+    expect(res.headers['x-ratelimit-reset']).toBeUndefined();
+  });
+
+  it('leaves a successful response s rate-limit headers alone', async () => {
+    // The removal is scoped to a guard 429; nothing else loses its headers.
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/taxonomies',
+      remoteAddress: freshIp(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['retry-after']).toBeUndefined();
+    expect(res.headers['x-ratelimit-limit']).toBeDefined();
+  });
 });
 
 describe('refresh rotation + revoke chain (ADR-0003)', () => {

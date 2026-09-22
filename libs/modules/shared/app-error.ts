@@ -13,6 +13,11 @@ export class AppError extends Error {
       fieldErrors?: FieldError[];
       retryable?: boolean;
       cause?: unknown;
+      /**
+       * Seconds the caller should wait, from the limiter that actually refused
+       * (GoGo-BE#631). Rendered as `Retry-After`.
+       */
+      retryAfterSeconds?: number;
     } = {},
   ) {
     super(message, { cause: options.cause });
@@ -48,8 +53,17 @@ export class AppError extends Error {
     return new AppError(code, message, 410);
   }
 
-  static tooManyRequests(message = 'Rate limit exceeded'): AppError {
-    return new AppError('RATE_LIMITED', message, 429, { retryable: true });
+  /**
+   * `retryAfterSeconds` must come from the window that refused this request, not
+   * from whichever limiter happens to be nearest. Until #631 nothing carried it
+   * and the 429 went out bare, so a client had no wait to honour and the only
+   * numbers on the response described a different budget entirely.
+   */
+  static tooManyRequests(message = 'Rate limit exceeded', retryAfterSeconds?: number): AppError {
+    return new AppError('RATE_LIMITED', message, 429, {
+      retryable: true,
+      ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+    });
   }
 
   static internal(message = 'Internal server error'): AppError {

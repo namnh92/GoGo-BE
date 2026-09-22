@@ -61,6 +61,29 @@ export class AppExceptionFilter implements ExceptionFilter {
       request.log.info({ code: envelope.code, request_id: requestId }, 'request failed');
     }
 
+    /*
+     * GoGo-BE#631. Two limiters can speak on one response: the coarse
+     * `@fastify/rate-limit` flood net, which sets `x-ratelimit-*` on its way
+     * through, and the per-action / per-actor guard, which is what actually
+     * refuses these. Before this, a guard 429 went out with no `Retry-After`
+     * at all and carrying the flood net's counters — a rejected request
+     * reporting `x-ratelimit-remaining: 1177`, which is true of that budget and
+     * a lie about the caller's.
+     *
+     * So the wait comes from the window that refused, and the other limiter's
+     * numbers are removed from this one response rather than left to mislead.
+     * No limit changes, and every other response keeps its headers.
+     */
+    if (status === 429 && exception instanceof AppError) {
+      const wait = exception.options.retryAfterSeconds;
+      if (wait !== undefined) {
+        void reply.header('Retry-After', String(Math.max(1, Math.ceil(wait))));
+        for (const stale of ['x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset']) {
+          void reply.removeHeader(stale);
+        }
+      }
+    }
+
     void reply.status(status).send(envelope);
   }
 }

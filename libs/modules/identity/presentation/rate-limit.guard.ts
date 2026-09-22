@@ -77,11 +77,13 @@ export class RateLimitGuard implements CanActivate {
     const key = parts.join('|');
     const count = await this.store.hit(key, spec.windowSeconds);
     if (count > spec.limit) {
-      throw AppError.tooManyRequests();
+      throw AppError.tooManyRequests('Rate limit exceeded', spec.windowSeconds);
     }
     if (spec.burst) {
       const burst = await this.store.hit(`${key}|burst`, spec.burst.windowSeconds);
-      if (burst > spec.burst.limit) throw AppError.tooManyRequests();
+      if (burst > spec.burst.limit) {
+        throw AppError.tooManyRequests('Rate limit exceeded', spec.burst.windowSeconds);
+      }
     }
     return true;
   }
@@ -100,6 +102,7 @@ export class RateLimitGuard implements CanActivate {
     const limit = BASELINE_PER_MINUTE[req.actor?.type ?? 'anonymous'] ?? 120;
 
     const count = await this.baselineStore.hit(key, BASELINE_WINDOW_SECONDS);
-    if (count > limit) throw AppError.tooManyRequests();
+    if (count > limit)
+      throw AppError.tooManyRequests('Rate limit exceeded', BASELINE_WINDOW_SECONDS);
   }
 }
