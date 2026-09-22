@@ -374,7 +374,30 @@ export class SuggestionService {
       tie = resolved.tie;
     }
 
-    const plan = await this.planBuilder.buildAroundWinner(roomId, winner, run.id);
-    return { finalized: true, tie, winnerPlaceId: winner, planId: plan.plan.id };
+    /*
+     * Two taps that arrive together both pass the `matching` check above, because
+     * the room only becomes `ready` once a plan has been written. The unique
+     * index on (room, version) is what keeps the second one from adding a plan,
+     * and the repository now reports that as `PLAN_VERSION_CONFLICT` instead of
+     * letting the driver error escape as a 500 (GoGo-BE#629).
+     *
+     * The loser is told what the sequential second tap is told: by the time it
+     * was considered, the room was no longer matching. Same code, so a client
+     * needs no new branch — and it is the truth, since the winner has moved the
+     * room on. The room is re-read rather than assumed: if it somehow is still
+     * matching, the conflict is surfaced as itself rather than mislabelled.
+     */
+    try {
+      const plan = await this.planBuilder.buildAroundWinner(roomId, winner, run.id);
+      return { finalized: true, tie, winnerPlaceId: winner, planId: plan.plan.id };
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'PLAN_VERSION_CONFLICT') {
+        const current = await this.policy.getRoom(roomId);
+        if (current.status !== 'matching') {
+          throw AppError.conflict('ROOM_NOT_MATCHING', 'Room is not in matching state');
+        }
+      }
+      throw error;
+    }
   }
 }

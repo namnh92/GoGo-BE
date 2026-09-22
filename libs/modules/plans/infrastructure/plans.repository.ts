@@ -12,6 +12,18 @@ type RoomStatus = (typeof schema.rooms.$inferSelect)['status'];
 export type PlanRow = typeof schema.plans.$inferSelect;
 export type StopRow = typeof schema.planStops.$inferSelect;
 
+/**
+ * Postgres unique violation. Raised here by `plans_room_version_unique` when two
+ * writers pick the same next version for one room (GoGo-BE#629).
+ */
+function isUniqueViolation(error: unknown, constraint: string): boolean {
+  for (let e: unknown = error; e; e = (e as { cause?: unknown }).cause) {
+    const c = e as { code?: unknown; constraint?: unknown };
+    if (c.code === '23505' && c.constraint === constraint) return true;
+  }
+  return false;
+}
+
 @Injectable()
 export class PlansRepository {
   constructor(@Inject(DB) readonly db: Db) {}
@@ -96,8 +108,72 @@ export class PlansRepository {
     totals: PlanTotalsDraft;
     generatedByRunId?: string | undefined;
     events: DomainEventInput[];
+    /**
+     * Move the room out of `from` and into `to` in the same transaction that
+     * writes the plan, and refuse if it has already left `from` (GoGo-BE#629).
+     * Only the paths where creating the plan *is* the transition pass this; a
+     * regenerate leaves the room where it is and omits it.
+     */
+    claimRoom?: { from: RoomStatus; to: RoomStatus };
+  }): Promise<{ plan: PlanRow; stops: StopRow[] }> {
+    /*
+     * The version is read and then written, so two writers for one room both
+     * see the same `prev` and both pick the same next version. What stops the
+     * duplicate is `plans_room_version_unique`, and until #629 that arrived as
+     * an unhandled driver error — a 500 telling the caller to retry a decision
+     * that had in fact been taken. The invariant was never in question; only
+     * the answer was. So the violation is translated here into the domain fact
+     * it represents: somebody else created this version first.
+     */
+    try {
+      return await this.createPlanVersionOnce(input);
+    } catch (error) {
+      if (isUniqueViolation(error, 'plans_room_version_unique')) {
+        throw AppError.conflict(
+          'PLAN_VERSION_CONFLICT',
+          'Another writer created this plan version first',
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async createPlanVersionOnce(input: {
+    roomId: string;
+    constraintVersion: number;
+    stops: PlanStopDraft[];
+    totals: PlanTotalsDraft;
+    generatedByRunId?: string | undefined;
+    events: DomainEventInput[];
+    claimRoom?: { from: RoomStatus; to: RoomStatus };
   }): Promise<{ plan: PlanRow; stops: StopRow[] }> {
     return this.db.transaction(async (tx) => {
+      /*
+       * The claim goes first, and it is a compare-and-swap rather than a read:
+       * two finalize calls that arrive together must not both get to write.
+       * Whichever updates the row owns the transition; the other sees no row
+       * and stops here, before a second plan version exists.
+       *
+       * This is the half the unique index cannot cover. The index only catches
+       * racers that picked the *same* version; a racer that starts after the
+       * first commits reads the new plan as `prev`, picks the next version up,
+       * and both succeed — two plans for one decision (GoGo-BE#629).
+       */
+      if (input.claimRoom) {
+        const claimed = await tx
+          .update(schema.rooms)
+          .set({ status: input.claimRoom.to, updatedAt: sql`now()` })
+          .where(
+            and(eq(schema.rooms.id, input.roomId), eq(schema.rooms.status, input.claimRoom.from)),
+          )
+          .returning({ id: schema.rooms.id });
+        if (claimed.length === 0) {
+          throw AppError.conflict(
+            'PLAN_VERSION_CONFLICT',
+            'Another writer already moved this room on',
+          );
+        }
+      }
       const [prev] = await tx
         .select()
         .from(schema.plans)
@@ -237,12 +313,5 @@ export class PlansRepository {
       price_min: string | null;
       price_max: string | null;
     }[];
-  }
-
-  async setRoomStatus(roomId: string, status: RoomStatus) {
-    await this.db
-      .update(schema.rooms)
-      .set({ status, updatedAt: sql`now()` })
-      .where(eq(schema.rooms.id, roomId));
   }
 }

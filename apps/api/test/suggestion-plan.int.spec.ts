@@ -7,6 +7,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import { PlansRepository } from '../../../libs/modules/plans/infrastructure/plans.repository';
 
 /**
  * SG pipeline + BE-BFF-007/008/014 end-to-end over real HTTP + PostGIS:
@@ -281,6 +282,170 @@ describe('group vote flow (SG-002..006, BE-BFF-007)', () => {
     const room = await get(hostToken, `/v1/rooms/${roomId}`);
     expect(room.json().status).toBe('ready');
   });
+});
+
+/**
+ * A latch on the one seam both the base and the fixed version share:
+ * `PlansRepository.createPlanVersion`, which `finalize` reaches only after it has
+ * passed `requireHost`, the `matching` check, and the run/staleness checks. So a
+ * request parked here has already cleared every gate before the write — which is
+ * the thing `Promise.all` alone never established.
+ *
+ * Always restored in `finally`, and every wait is bounded: a schedule that cannot
+ * be forced fails the test instead of hanging the suite.
+ */
+function latchCreatePlanVersion(onCall: (callIndex: number) => Promise<void>): {
+  restore: () => void;
+  calls: () => number;
+} {
+  const repo = app.get(PlansRepository);
+  const original = repo.createPlanVersion.bind(repo);
+  let calls = 0;
+  repo.createPlanVersion = (async (input: Parameters<typeof original>[0]) => {
+    const index = calls++;
+    await onCall(index);
+    return original(input);
+  }) as typeof repo.createPlanVersion;
+  return {
+    restore: () => {
+      repo.createPlanVersion = original;
+    },
+    calls: () => calls,
+  };
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Rejects rather than hangs, so an unforceable schedule is a failure. */
+function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms),
+    ),
+  ]);
+}
+
+async function votedMatchingRoom() {
+  const { hostToken, memberToken, roomId } = await matchingRoom('group', 'vote');
+  const gen = await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+  expect(gen.statusCode).toBe(201);
+  const target = gen.json().candidates[0].placeId;
+  await put(memberToken, `/v1/rooms/${roomId}/votes/${target}`, { value: 'yes' });
+  await put(hostToken, `/v1/rooms/${roomId}/votes/${target}`, { value: 'yes' });
+  return { hostToken, roomId };
+}
+
+describe('two finalize calls that race (GoGo-BE#629)', () => {
+  /**
+   * Schedule 1 — both requests are past the `matching` check before either
+   * writes. The barrier is the proof: neither call leaves the latch until both
+   * have reached it, and reaching it means every gate in `finalize` is behind
+   * them. On the base version both then read the same `prev`, pick the same
+   * version, and the loser's unique violation escaped as 500 INTERNAL.
+   */
+  it('refuses the second and keeps one plan, when both are past the matching check', async () => {
+    const { hostToken, roomId } = await votedMatchingRoom();
+    const bothArrived = deferred();
+    let arrived = 0;
+    const latch = latchCreatePlanVersion(async () => {
+      arrived += 1;
+      if (arrived === 2) bothArrived.resolve();
+      // Hold until the other one is here too, then release together.
+      await withTimeout(bothArrived.promise, 20_000, 'both finalize calls to reach the write');
+    });
+
+    try {
+      const both = Promise.all([
+        post(hostToken, `/v1/rooms/${roomId}/votes/finalize`),
+        post(hostToken, `/v1/rooms/${roomId}/votes/finalize`),
+      ]);
+      await withTimeout(bothArrived.promise, 20_000, 'both finalize calls to reach the write');
+      // The claim the barrier exists to make.
+      expect(arrived).toBe(2);
+      const [a, b] = await withTimeout(both, 30_000, 'both finalize calls to answer');
+
+      expect([a.statusCode, b.statusCode].sort((x, y) => x - y)).toEqual([201, 409]);
+      for (const res of [a, b]) {
+        expect(res.statusCode).not.toBe(500);
+        if (res.statusCode === 409) expect(res.json().code).toBe('ROOM_NOT_MATCHING');
+      }
+
+      const plans = await db.select().from(schema.plans).where(eq(schema.plans.roomId, roomId));
+      expect(plans).toHaveLength(1);
+      expect(plans[0]!.version).toBe(1);
+      const winner = a.statusCode === 201 ? a : b;
+      expect(winner.json().planId).toBe(plans[0]!.id);
+    } finally {
+      latch.restore();
+    }
+  }, 180_000);
+
+  /**
+   * Schedule 2 — the second request passes the `matching` check while the room
+   * is still matching, but only begins writing after the first has committed.
+   * This is the half the unique index cannot catch: the second read sees the
+   * first plan as `prev`, picks the next version up, and on the base version
+   * both answered 201 and the room ended with two plans for one decision.
+   */
+  it('refuses a second that cleared the gate early and wrote late', async () => {
+    const { hostToken, roomId } = await votedMatchingRoom();
+    const firstEntered = deferred();
+    const secondEntered = deferred();
+    const releaseFirst = deferred();
+    const releaseSecond = deferred();
+
+    const latch = latchCreatePlanVersion(async (index) => {
+      if (index === 0) {
+        firstEntered.resolve();
+        await withTimeout(releaseFirst.promise, 20_000, 'the first write to be released');
+        return;
+      }
+      secondEntered.resolve();
+      await withTimeout(releaseSecond.promise, 30_000, 'the second write to be released');
+    });
+
+    try {
+      const first = post(hostToken, `/v1/rooms/${roomId}/votes/finalize`);
+      await withTimeout(firstEntered.promise, 20_000, 'the first finalize to reach the write');
+
+      // Sent while the room is still `matching` and the first has written
+      // nothing, so it clears every gate — then waits.
+      const second = post(hostToken, `/v1/rooms/${roomId}/votes/finalize`);
+      await withTimeout(secondEntered.promise, 20_000, 'the second finalize to clear the gate');
+
+      // Only now does the first write and commit.
+      releaseFirst.resolve();
+      const a = await withTimeout(first, 30_000, 'the first finalize to answer');
+      expect(a.statusCode).toBe(201);
+      // The room has moved on. The second starts writing only now.
+      releaseSecond.resolve();
+      const b = await withTimeout(second, 30_000, 'the second finalize to answer');
+
+      // The invariant first: this is the half that made the room hold two plans
+      // for one decision, and it is what a reader should see fail on the base.
+      const plans = await db.select().from(schema.plans).where(eq(schema.plans.roomId, roomId));
+      expect(plans).toHaveLength(1);
+      expect(plans[0]!.version).toBe(1);
+      expect(a.json().planId).toBe(plans[0]!.id);
+
+      expect(b.statusCode).toBe(409);
+      expect(b.json().code).toBe('ROOM_NOT_MATCHING');
+      expect(b.statusCode).not.toBe(500);
+    } finally {
+      releaseFirst.resolve();
+      releaseSecond.resolve();
+      latch.restore();
+    }
+  }, 180_000);
 });
 
 describe('couple match flow (FR-SUG-003)', () => {
