@@ -160,7 +160,7 @@ let placeIds: Record<string, string>;
 /** Create a room with two user members, prefs completed → matching. */
 async function matchingRoom(
   type: 'couple' | 'group',
-  decisionMode: 'match' | 'vote',
+  decisionMode: 'match' | 'vote' | 'host',
   options: { skipTransitions?: boolean } = {},
 ) {
   const hostToken = await register(`h${Date.now()}${Math.random().toString(36).slice(2, 6)}@g.vn`);
@@ -343,6 +343,126 @@ async function votedMatchingRoom() {
   await put(hostToken, `/v1/rooms/${roomId}/votes/${target}`, { value: 'yes' });
   return { hostToken, roomId };
 }
+
+describe('decisionMode is enforced at finalize (GoGo-BE#630)', () => {
+  /**
+   * The contract has always said `placeId` is for "host mode / tie-break", and
+   * `resolveWinner` returns `tiedPlaceIds` for exactly that. The server never
+   * checked, so in a vote room a host could name any candidate and skip the
+   * tally — with no votes cast at all. A UI that does not send the field is not
+   * enforcement (RULE-CORE-005), so these pin it server-side.
+   */
+  /** FR-ROOM-002: couple takes match|host, group takes vote|host. */
+  async function votedRoom(mode: 'vote' | 'match' | 'host') {
+    const type = mode === 'match' ? 'couple' : 'group';
+    const { hostToken, memberToken, roomId } = await matchingRoom(type, mode);
+    const gen = await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    expect(gen.statusCode).toBe(201);
+    const candidates = (gen.json().candidates as { placeId: string }[]).map((c) => c.placeId);
+    // Enough distinct candidates for "the leaders" and "somewhere else" to mean
+    // different things; asserted rather than assumed, so a thinner fixture fails
+    // here instead of quietly weakening the case below.
+    expect(candidates.length).toBeGreaterThanOrEqual(3);
+    return { hostToken, memberToken, roomId, candidates };
+  }
+
+  it('refuses a vote-room override when nobody has voted', async () => {
+    const { hostToken, roomId, candidates } = await votedRoom('vote');
+    // No votes at all. Before #630 this answered 201 and built a plan around
+    // whatever the host named.
+    const res = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`, {
+      placeId: candidates.at(-1)!,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('NO_VOTES');
+
+    const plans = await db.select().from(schema.plans).where(eq(schema.plans.roomId, roomId));
+    expect(plans).toHaveLength(0);
+  }, 180_000);
+
+  it('refuses a vote-room override that is not the one the votes chose', async () => {
+    const { hostToken, memberToken, roomId, candidates } = await votedRoom('vote');
+    const chosen = candidates[0]!;
+    const other = candidates.at(-1)!;
+    // A clear winner: two yes votes on one place, nothing on the other.
+    await put(hostToken, `/v1/rooms/${roomId}/votes/${chosen}`, { value: 'yes' });
+    await put(memberToken, `/v1/rooms/${roomId}/votes/${chosen}`, { value: 'yes' });
+
+    const res = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`, { placeId: other });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('OVERRIDE_NOT_ALLOWED');
+    expect(
+      await db.select().from(schema.plans).where(eq(schema.plans.roomId, roomId)),
+    ).toHaveLength(0);
+
+    // The same room still finalizes on the votes, so the refusal blocks the
+    // override and nothing else.
+    const ok = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`);
+    expect(ok.statusCode).toBe(201);
+    expect(ok.json().winnerPlaceId).toBe(chosen);
+    expect(ok.json().tie).toBe(false);
+  }, 180_000);
+
+  it('allows a vote-room override only inside the tied group', async () => {
+    const { hostToken, memberToken, roomId, candidates } = await votedRoom('vote');
+    const a = candidates[0]!;
+    const b = candidates[1]!;
+    const outside = candidates.at(-1)!;
+    // One vote each: a and b tie on points, so the host may pick between them.
+    await put(hostToken, `/v1/rooms/${roomId}/votes/${a}`, { value: 'yes' });
+    await put(memberToken, `/v1/rooms/${roomId}/votes/${b}`, { value: 'yes' });
+
+    // Still refused outside the tie, even though a tie exists.
+    const no = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`, { placeId: outside });
+    expect(no.statusCode).toBe(409);
+    expect(no.json().code).toBe('OVERRIDE_NOT_ALLOWED');
+
+    // `b` is the tied leader the rank tie-break would not have picked, which is
+    // the whole point of letting the host choose here.
+    const res = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`, { placeId: b });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().winnerPlaceId).toBe(b);
+    expect(res.json().tie).toBe(true);
+  }, 180_000);
+
+  it('leaves host mode free to pick any candidate', async () => {
+    const { hostToken, roomId, candidates } = await votedRoom('host');
+    // No votes, host names a place well down the ranking: legitimate here.
+    const pick = candidates.at(-1)!;
+    const res = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`, { placeId: pick });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().winnerPlaceId).toBe(pick);
+  }, 180_000);
+
+  it('holds match mode to the same rule as vote', async () => {
+    const { hostToken, roomId, candidates } = await votedRoom('match');
+    const res = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`, {
+      placeId: candidates.at(-1)!,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('NO_VOTES');
+  }, 180_000);
+
+  it('still refuses a place that is not a candidate at all, in every mode', async () => {
+    const { hostToken, roomId } = await votedRoom('host');
+    // A place this dataset does not hold at all: `NOT_A_CANDIDATE` is about the
+    // current suggestion set, so a well-formed id outside it is the honest probe.
+    const res = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`, {
+      placeId: '00000000-0000-4000-8000-000000000630',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('NOT_A_CANDIDATE');
+  }, 180_000);
+
+  it('keeps finalize host-only, whatever the mode', async () => {
+    const { memberToken, roomId, candidates } = await votedRoom('host');
+    const res = await post(memberToken, `/v1/rooms/${roomId}/votes/finalize`, {
+      placeId: candidates[0]!,
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe('HOST_ONLY');
+  }, 180_000);
+});
 
 describe('two finalize calls that race (GoGo-BE#629)', () => {
   /**

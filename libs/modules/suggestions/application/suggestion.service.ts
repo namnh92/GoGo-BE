@@ -353,20 +353,49 @@ export class SuggestionService {
       );
     }
 
-    let winner: string;
-    let tie = false;
-    if (explicitPlaceId) {
-      // Host decision mode / host tie-break — still allowlisted only.
-      if (!scores.some((s) => s.placeId === explicitPlaceId)) {
-        throw AppError.badRequest('NOT_A_CANDIDATE', 'Place is not in the current suggestions');
-      }
-      winner = explicitPlaceId;
-    } else {
+    const tallied = async () => {
       const votes = await this.repo.listVotes(roomId);
       const tally = tallyVotes(
         votes.map((v) => ({ memberId: v.memberId, placeId: v.targetPlaceId, value: v.value })),
       );
-      const resolved = resolveWinner(tally, new Map(scores.map((s) => [s.placeId, s.rank])));
+      return resolveWinner(tally, new Map(scores.map((s) => [s.placeId, s.rank])));
+    };
+
+    let winner: string;
+    let tie = false;
+    if (explicitPlaceId) {
+      if (!scores.some((s) => s.placeId === explicitPlaceId)) {
+        throw AppError.badRequest('NOT_A_CANDIDATE', 'Place is not in the current suggestions');
+      }
+      if (room.decisionMode === 'host') {
+        // The one mode where the host decides: members advise, the host picks
+        // (spec §3.5). Any current candidate is a legitimate answer.
+        winner = explicitPlaceId;
+      } else {
+        /*
+         * `match` and `vote` derive the winner from what the members chose, so a
+         * `placeId` here is a tie-break and nothing else — which is what the
+         * contract has always said ("host mode / tie-break") and what
+         * `resolveWinner` was built for. Until GoGo-BE#630 the server never
+         * checked: a host could pass any candidate in a vote room and skip the
+         * tally entirely, with no votes cast at all. The UI not sending the
+         * field was never enforcement (RULE-CORE-005).
+         */
+        const resolved = await tallied();
+        if (!resolved.winnerPlaceId) {
+          throw AppError.conflict('NO_VOTES', 'No votes to finalize');
+        }
+        if (!resolved.tie || !resolved.tiedPlaceIds.includes(explicitPlaceId)) {
+          throw AppError.conflict(
+            'OVERRIDE_NOT_ALLOWED',
+            `Decision mode ${room.decisionMode} finalizes on the votes; an explicit place may only break a tie between the leaders`,
+          );
+        }
+        winner = explicitPlaceId;
+        tie = true;
+      }
+    } else {
+      const resolved = await tallied();
       if (!resolved.winnerPlaceId) {
         throw AppError.conflict('NO_VOTES', 'No votes to finalize');
       }
