@@ -283,6 +283,44 @@ describe('group vote flow (SG-002..006, BE-BFF-007)', () => {
   });
 });
 
+describe('two finalize calls that race (GoGo-BE#629)', () => {
+  it('writes one plan and answers the loser with a domain conflict, never a 500', async () => {
+    const { hostToken, memberToken, roomId } = await matchingRoom('group', 'vote');
+    const gen = await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    expect(gen.statusCode).toBe(201);
+    const target = gen.json().candidates[0].placeId;
+    await put(memberToken, `/v1/rooms/${roomId}/votes/${target}`, { value: 'yes' });
+    await put(hostToken, `/v1/rooms/${roomId}/votes/${target}`, { value: 'yes' });
+
+    // Both requests are in flight before either has written a plan, so both pass
+    // the `matching` check. Before #629 the loser surfaced the unique violation
+    // on `plans_room_version_unique` as an unhandled 500 INTERNAL.
+    const [a, b] = await Promise.all([
+      post(hostToken, `/v1/rooms/${roomId}/votes/finalize`),
+      post(hostToken, `/v1/rooms/${roomId}/votes/finalize`),
+    ]);
+    const codes = [a.statusCode, b.statusCode].sort((x, y) => x - y);
+
+    // Exactly one wins. The other is a conflict, and never a server fault.
+    expect(codes).toEqual([201, 409]);
+    for (const res of [a, b]) {
+      expect(res.statusCode).not.toBe(500);
+      if (res.statusCode === 409) {
+        expect(res.json().code).toBe('ROOM_NOT_MATCHING');
+      }
+    }
+
+    // The invariant the unique index was protecting: one plan, one version.
+    const plans = await db.select().from(schema.plans).where(eq(schema.plans.roomId, roomId));
+    expect(plans).toHaveLength(1);
+    expect(plans[0]!.version).toBe(1);
+    expect(plans[0]!.status).toBe('current');
+
+    const winner = a.statusCode === 201 ? a : b;
+    expect(winner.json().planId).toBe(plans[0]!.id);
+  });
+});
+
 describe('couple match flow (FR-SUG-003)', () => {
   it('auto-creates the plan when both members match on a place', async () => {
     const { hostToken, memberToken, roomId } = await matchingRoom('couple', 'match');

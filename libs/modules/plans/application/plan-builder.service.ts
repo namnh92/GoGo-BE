@@ -85,8 +85,12 @@ export class PlanBuilderService {
           payload: { reasonCodes: built.reasonCodes, stopCount: built.stops.length },
         },
       ],
+      // Deciding the winner *is* the `matching -> ready` transition, so the two
+      // happen together or not at all. The separate write that used to follow
+      // let a second finalize slip in between and add another plan version
+      // (GoGo-BE#629).
+      claimRoom: { from: 'matching', to: 'ready' },
     });
-    await this.plans.setRoomStatus(roomId, 'ready');
     return result;
   }
 
