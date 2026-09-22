@@ -1,20 +1,29 @@
 /**
- * GoGo-BE#632 — a green integration run must not exit non-zero.
+ * GoGo-BE#632 — a green integration run must not exit non-zero, and a suite
+ * that hides a lost database is worse than one that exits noisily.
  *
- * Every integration spec starts its own Postgres container and its own `pg.Pool`,
- * and tears both down in `afterAll`. When the server goes away while a pooled
- * client is still connected, Postgres sends `57P01 terminating connection due to
- * administrator command`. A `pg.Pool` with no `error` listener re-emits that as
- * an unhandled error, and vitest counts it: run 35677085520 reported
- * `1377 passed | 3 skipped` and still exited 1.
+ * Every integration spec starts its own Postgres container and tears it down in
+ * `afterAll`. When the server goes away while a pooled client is still
+ * connected, Postgres sends `57P01 terminating connection due to administrator
+ * command`. A `pg.Pool` with no `error` listener re-emits that as an unhandled
+ * error, and vitest counts it: run 35677085520 reported `1377 passed | 3
+ * skipped` and still exited 1.
  *
  * `pg`'s own guidance is to attach an error handler to the pool. This does that
- * once, for every pool a test process creates, and it **classifies** rather than
- * swallows: a shutdown-class error during teardown is expected and ignored, and
- * anything else is re-thrown so the run still fails loudly.
+ * once, for every pool a test process creates. **Two conditions must both hold**
+ * before an error is tolerated:
+ *
+ *  1. that pool is in intentional teardown — `pool.end()` has been called on
+ *     **it**, so `pool.ending` is true; and
+ *  2. the error is one the teardown explains.
+ *
+ * Neither alone is enough. A `57P02` while a test is still running means the
+ * database crashed under it, and that must fail the run — which is the review
+ * finding this shape answers. And because the listener closes over its own pool,
+ * one pool tearing down can never silence another pool that is still working.
  */
 
-/** Errors that only mean "the server this pool talked to has gone away". */
+/** Errors a pool's own shutdown explains. Only consulted once teardown is confirmed. */
 export function isShutdownNoise(error: unknown): boolean {
   const e = error as { code?: unknown; message?: unknown } | null;
   if (!e) return false;
@@ -28,8 +37,26 @@ export function isShutdownNoise(error: unknown): boolean {
   );
 }
 
+/** A pool whose lifecycle flags we read; `pg` sets these in `end()`. */
+type PoolLifecycle = { ending?: boolean; ended?: boolean };
+
+/**
+ * Whether this pool is being shut down on purpose. `pg` sets `ending` at the top
+ * of `end()` and `ended` when it resolves, so either one means the test asked
+ * for this teardown rather than suffering it.
+ */
+export function isTearingDown(pool: unknown): boolean {
+  const p = pool as PoolLifecycle | null;
+  return Boolean(p && (p.ending === true || p.ended === true));
+}
+
+/** The one rule: tolerate only an explained error on a pool that is closing. */
+export function shouldTolerate(pool: unknown, error: unknown): boolean {
+  return isTearingDown(pool) && isShutdownNoise(error);
+}
+
 let ignored = 0;
-/** How many shutdown-class pool errors were tolerated; for assertions. */
+/** How many teardown-explained pool errors were tolerated; for assertions. */
 export function ignoredShutdownErrors(): number {
   return ignored;
 }
@@ -37,17 +64,13 @@ export function ignoredShutdownErrors(): number {
 /**
  * Attaches the handler to every pool this process creates, by wrapping the
  * constructor once. Test-only: it changes no production path, and it is the
- * single place that knows teardown noise from a real pool failure.
+ * single place that knows a pool's own teardown from a database lost mid-test.
  */
 export function installPoolShutdownGuard(): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports -- CJS module shape
-  const pg = require('pg') as { Pool: new (...args: never[]) => unknown };
-  const Original = pg.Pool as unknown as { prototype: object };
-  if ((Original as { __gogoGuarded?: boolean }).__gogoGuarded) return;
-
-  const proto = Original.prototype as { on?: unknown };
-  const originalOn = (proto as { on: (...a: unknown[]) => unknown }).on;
-  void originalOn;
+  const pg = require('pg') as { Pool: unknown };
+  const Original = pg.Pool as { prototype: object; __gogoGuarded?: boolean };
+  if (Original.__gogoGuarded) return;
 
   const Wrapped = function (this: unknown, ...args: never[]) {
     const pool = new (
@@ -56,18 +79,19 @@ export function installPoolShutdownGuard(): void {
       }
     )(...args);
     pool.on('error', (error: unknown) => {
-      if (isShutdownNoise(error)) {
+      if (shouldTolerate(pool, error)) {
         ignored += 1;
         return;
       }
-      // Not teardown noise: let it be as loud as it was before.
+      // Either this pool is still in use, or the error is not one its shutdown
+      // explains. Be exactly as loud as an unguarded pool was.
       throw error;
     });
     return pool;
   } as unknown as typeof Original;
 
   Wrapped.prototype = Original.prototype;
-  (Wrapped as { __gogoGuarded?: boolean }).__gogoGuarded = true;
+  Wrapped.__gogoGuarded = true;
   (pg as { Pool: unknown }).Pool = Wrapped;
 }
 
