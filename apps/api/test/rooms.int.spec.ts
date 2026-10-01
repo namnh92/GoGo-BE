@@ -2029,6 +2029,84 @@ describe('invite consumption (GoGo-BE#592)', () => {
     expect(await useCount(inviteId)).toBe(1);
   });
 
+  /**
+   * GoGo-BE#605 — hold the room `FOR UPDATE` the way `PreferencesService.complete`
+   * does while it flips `collecting → matching`, fire a join, then commit the
+   * flip. The join must wait for the lock and see `matching`; before the fix it
+   * read the uncommitted `collecting`, spent a use and added the member.
+   */
+  async function joinDuringMatchingFlip<T>(roomId: string, join: () => PromiseLike<T>): Promise<T> {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => (signalLocked = resolve));
+    const flip = db.transaction(async (tx) => {
+      await tx.select().from(schema.rooms).where(eq(schema.rooms.id, roomId)).for('update');
+      signalLocked();
+      await gate;
+      await tx.update(schema.rooms).set({ status: 'matching' }).where(eq(schema.rooms.id, roomId));
+    });
+    await locked;
+    let settled = false;
+    const joined = Promise.resolve(join()).finally(() => {
+      settled = true;
+    });
+    // Commit the flip once the join is parked on the room lock — or, on code
+    // that takes no lock, once the join has already finished.
+    for (let i = 0; i < 100 && !settled; i += 1) {
+      const waiting = await pool.query(
+        `select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()`,
+      );
+      if (waiting.rowCount) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    release();
+    await flip;
+    return joined;
+  }
+
+  it('a user join racing the matching flip waits, then is refused and spends nothing (GoGo-BE#605)', async () => {
+    const { roomId, inviteId, code } = await collectingRoomWithInvite('host605user@gogo.id.vn');
+    const { token } = await registerUser('joiner605user@gogo.id.vn');
+
+    const res = await joinDuringMatchingFlip(roomId, () =>
+      api().inject({
+        method: 'POST',
+        url: '/v1/rooms/join',
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: { inviteCode: code },
+      }),
+    );
+    expect(res.statusCode).toBe(410);
+    expect(res.json().code).toBe('ROOM_NOT_JOINABLE');
+    expect(await useCount(inviteId)).toBe(0);
+    const members = await db
+      .select()
+      .from(schema.roomMembers)
+      .where(eq(schema.roomMembers.roomId, roomId));
+    expect(members).toHaveLength(1);
+  });
+
+  it('a guest join racing the matching flip waits, then is refused and leaves nothing behind (GoGo-BE#605)', async () => {
+    const { roomId, inviteId, code } = await collectingRoomWithInvite('host605guest@gogo.id.vn');
+
+    const res = await joinDuringMatchingFlip(roomId, () => guestJoin(code, 'Khách Đua'));
+    expect(res.statusCode).toBe(410);
+    expect(res.json().code).toBe('ROOM_NOT_JOINABLE');
+    expect(await useCount(inviteId)).toBe(0);
+    const members = await db
+      .select()
+      .from(schema.roomMembers)
+      .where(eq(schema.roomMembers.roomId, roomId));
+    expect(members).toHaveLength(1);
+    const sessions = await db
+      .select()
+      .from(schema.guestSessions)
+      .where(eq(schema.guestSessions.roomId, roomId));
+    expect(sessions).toHaveLength(0);
+  });
+
   it('two joins racing for the last use: one gets in, the other is told the invite is spent', async () => {
     const { inviteId, code } = await collectingRoomWithInvite('host592race@gogo.id.vn', {
       maxUses: 1,

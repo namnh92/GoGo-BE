@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { schema, type Db } from '@gogo/database';
 
-type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
+/** A Drizzle transaction handle — what `Db.transaction` passes to its callback. */
+export type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
 export type DomainEventInput = {
   eventType: string;

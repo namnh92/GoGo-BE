@@ -3,6 +3,7 @@ import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
+import type { Tx } from '../../shared/outbox';
 
 export type UserRow = typeof schema.users.$inferSelect;
 export type AuthSessionRow = typeof schema.authSessions.$inferSelect;
@@ -153,13 +154,34 @@ export class IdentityRepository {
       .then((r) => r[0]);
   }
 
-  async createGuestSession(input: {
-    roomId: string;
-    displayName: string;
-    tokenHash: string;
-    expiresAt: Date;
-  }): Promise<GuestSessionRow> {
-    const [row] = await this.db.insert(schema.guestSessions).values(input).returning();
+  /** Run `work` in one transaction (GoGo-BE#605 guest join). */
+  transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
+    return this.db.transaction(work);
+  }
+
+  /**
+   * GoGo-BE#605 — the room row under `FOR SHARE`, so a guest join and the
+   * `collecting → matching` flip (`FOR UPDATE`) run one after the other.
+   */
+  async lockRoomForJoin(tx: Tx, roomId: string) {
+    const [room] = await tx
+      .select()
+      .from(schema.rooms)
+      .where(eq(schema.rooms.id, roomId))
+      .for('share');
+    return room;
+  }
+
+  async createGuestSession(
+    input: {
+      roomId: string;
+      displayName: string;
+      tokenHash: string;
+      expiresAt: Date;
+    },
+    tx?: Tx,
+  ): Promise<GuestSessionRow> {
+    const [row] = await (tx ?? this.db).insert(schema.guestSessions).values(input).returning();
     if (!row) throw new Error('guest session insert returned no row');
     return row;
   }
@@ -189,12 +211,15 @@ export class IdentityRepository {
       .then((r) => r[0]);
   }
 
-  async addGuestMember(input: {
-    roomId: string;
-    guestSessionId: string;
-    displayName: string;
-  }): Promise<{ memberId: string | null }> {
-    const [row] = await this.db
+  async addGuestMember(
+    input: {
+      roomId: string;
+      guestSessionId: string;
+      displayName: string;
+    },
+    tx?: Tx,
+  ): Promise<{ memberId: string | null }> {
+    const [row] = await (tx ?? this.db)
       .insert(schema.roomMembers)
       .values({
         roomId: input.roomId,

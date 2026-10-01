@@ -17,7 +17,7 @@ import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { pgArray } from '../../search/infrastructure/search.repository';
 import { DB } from '../../shared/tokens';
-import { writeOutbox, type DomainEventInput } from '../../shared/outbox';
+import { writeOutbox, type DomainEventInput, type Tx } from '../../shared/outbox';
 
 export type RoomRow = typeof schema.rooms.$inferSelect;
 export type ConstraintRow = typeof schema.roomConstraints.$inferSelect;
@@ -495,37 +495,66 @@ export class RoomsRepository {
     return member;
   }
 
-  async addUserMember(input: {
-    roomId: string;
-    userId: string;
-    displayName: string;
-    event: DomainEventInput;
-  }): Promise<MemberRow> {
-    return this.db.transaction(async (tx) => {
-      const [existing] = await tx
-        .select()
-        .from(schema.roomMembers)
-        .where(
-          and(
-            eq(schema.roomMembers.roomId, input.roomId),
-            eq(schema.roomMembers.userId, input.userId),
-            isNull(schema.roomMembers.removedAt),
-          ),
-        )
-        .limit(1);
-      if (existing) return existing; // idempotent re-join
-      const [member] = await tx
-        .insert(schema.roomMembers)
-        .values({
-          roomId: input.roomId,
-          userId: input.userId,
-          role: 'member',
-          displayName: input.displayName,
-        })
-        .returning();
-      await writeOutbox(tx, input.event);
-      return member!;
-    });
+  /**
+   * Insert a user's membership (idempotent) and its outbox event. Runs inside
+   * `tx` when given — GoGo-BE#605: the join path passes the transaction that
+   * holds the room lock and spent the invite use, so all three commit together.
+   */
+  async addUserMember(
+    input: {
+      roomId: string;
+      userId: string;
+      displayName: string;
+      event: DomainEventInput;
+    },
+    tx?: Tx,
+  ): Promise<MemberRow> {
+    if (!tx) return this.db.transaction((own) => this.addUserMember(input, own));
+    const [existing] = await tx
+      .select()
+      .from(schema.roomMembers)
+      .where(
+        and(
+          eq(schema.roomMembers.roomId, input.roomId),
+          eq(schema.roomMembers.userId, input.userId),
+          isNull(schema.roomMembers.removedAt),
+        ),
+      )
+      .limit(1);
+    if (existing) return existing; // idempotent re-join
+    const [member] = await tx
+      .insert(schema.roomMembers)
+      .values({
+        roomId: input.roomId,
+        userId: input.userId,
+        role: 'member',
+        displayName: input.displayName,
+      })
+      .returning();
+    await writeOutbox(tx, input.event);
+    return member!;
+  }
+
+  /** Run `work` in one transaction (GoGo-BE#605 join path). */
+  transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
+    return this.db.transaction(work);
+  }
+
+  /**
+   * GoGo-BE#605 — read the room under `FOR SHARE` for a join. The lock
+   * conflicts with the `FOR UPDATE` that `PreferencesService.complete` holds
+   * while it flips `collecting → matching`, so a join and that flip run one
+   * after the other: the join either commits first (and is counted by the
+   * flip's member tally) or waits and sees the new status. Joins do not block
+   * each other.
+   */
+  async lockRoomForJoin(tx: Tx, roomId: string): Promise<RoomRow | undefined> {
+    const [room] = await tx
+      .select()
+      .from(schema.rooms)
+      .where(eq(schema.rooms.id, roomId))
+      .for('share');
+    return room;
   }
 
   // --- invites (FR-ROOM-006/009) -------------------------------------------
@@ -541,8 +570,8 @@ export class RoomsRepository {
     return row!;
   }
 
-  findInviteByHash(codeHash: string): Promise<InviteRow | undefined> {
-    return this.db
+  findInviteByHash(codeHash: string, tx?: Tx): Promise<InviteRow | undefined> {
+    return (tx ?? this.db)
       .select()
       .from(schema.roomInvites)
       .where(eq(schema.roomInvites.codeHash, codeHash))
@@ -578,8 +607,9 @@ export class RoomsRepository {
   async consumeInvite(
     inviteId: string,
     rules: { joinableStatuses: readonly string[]; enforceRoomExpiry?: boolean | undefined },
+    tx?: Tx,
   ): Promise<boolean> {
-    const rows = await this.db
+    const rows = await (tx ?? this.db)
       .update(schema.roomInvites)
       .set({ useCount: sql`${schema.roomInvites.useCount} + 1` })
       .where(

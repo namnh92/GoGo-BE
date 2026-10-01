@@ -28,6 +28,13 @@ function serviceWith(opts: {
 }) {
   const statuses = [...opts.roomStatus];
   const consumeInvite = vi.fn(async () => opts.consumed ?? true);
+  // The pre-check read and the locked read (GoGo-BE#605) draw from the same
+  // status sequence, so a test can move the room on between the two.
+  const readRoom = vi.fn(async () => ({
+    id: ROOM_ID,
+    status: statuses.length > 1 ? statuses.shift() : statuses[0],
+    expiresAt: opts.roomExpiresAt ?? null,
+  }));
   const repo = {
     findInviteByHash: vi.fn(async () => ({
       id: 'invite-1',
@@ -39,16 +46,12 @@ function serviceWith(opts: {
       ...opts.invite,
     })),
     consumeInvite,
+    transaction: vi.fn(async (work: (tx: unknown) => Promise<unknown>) => work('tx')),
+    lockRoomForJoin: vi.fn(async () => readRoom()),
     findActiveUserMember: vi.fn(async () => opts.member),
     addUserMember: vi.fn(async () => ({ id: 'new-member', role: 'member' })),
   } as unknown as RoomsRepository;
-  const policy = {
-    getRoom: vi.fn(async () => ({
-      id: ROOM_ID,
-      status: statuses.shift() ?? statuses.at(-1),
-      expiresAt: opts.roomExpiresAt ?? null,
-    })),
-  } as unknown as RoomPolicy;
+  const policy = { getRoom: readRoom } as unknown as RoomPolicy;
   const tokens = { hashOpaqueToken: (code: string) => `hash:${code}` } as unknown as TokenService;
   const events = { publish: vi.fn(async () => undefined) };
   const service = new RoomsService(
@@ -62,6 +65,12 @@ function serviceWith(opts: {
   return { service, consumeInvite, repo, events };
 }
 
+/** Pre-check, then spend inside a (fake) transaction — the guest route's two steps. */
+async function consume(service: RoomsService, code: string, rules = {}) {
+  const { admit } = await service.openInvite(code, rules);
+  return admit('tx' as never);
+}
+
 async function codeOf(run: Promise<unknown>): Promise<string> {
   try {
     await run;
@@ -71,10 +80,10 @@ async function codeOf(run: Promise<unknown>): Promise<string> {
   throw new Error('expected a rejection');
 }
 
-describe('RoomsService.consumeInviteCode (GoGo-BE#592)', () => {
+describe('RoomsService.openInvite + admit (GoGo-BE#592, #605)', () => {
   it('refuses a room that no longer takes members without spending a use', async () => {
     const { service, consumeInvite } = serviceWith({ roomStatus: ['ready'] });
-    expect(await codeOf(service.consumeInviteCode('code'))).toBe('ROOM_NOT_JOINABLE');
+    expect(await codeOf(consume(service, 'code'))).toBe('ROOM_NOT_JOINABLE');
     expect(consumeInvite).not.toHaveBeenCalled();
   });
 
@@ -83,7 +92,7 @@ describe('RoomsService.consumeInviteCode (GoGo-BE#592)', () => {
       roomStatus: ['collecting'],
       roomExpiresAt: new Date(Date.now() - 60_000),
     });
-    expect(await codeOf(service.consumeInviteCode('code', { enforceRoomExpiry: true }))).toBe(
+    expect(await codeOf(consume(service, 'code', { enforceRoomExpiry: true }))).toBe(
       'ROOM_EXPIRED',
     );
     expect(consumeInvite).not.toHaveBeenCalled();
@@ -91,11 +100,15 @@ describe('RoomsService.consumeInviteCode (GoGo-BE#592)', () => {
 
   it('passes the expiry rule on to the guarded consume only where it is enforced', async () => {
     const { service, consumeInvite } = serviceWith({ roomStatus: ['collecting'] });
-    await service.consumeInviteCode('code', { enforceRoomExpiry: true });
-    expect(consumeInvite).toHaveBeenCalledWith('invite-1', {
-      joinableStatuses: ['draft', 'collecting'],
-      enforceRoomExpiry: true,
-    });
+    await consume(service, 'code', { enforceRoomExpiry: true });
+    expect(consumeInvite).toHaveBeenCalledWith(
+      'invite-1',
+      {
+        joinableStatuses: ['draft', 'collecting'],
+        enforceRoomExpiry: true,
+      },
+      'tx',
+    );
   });
 
   it('refuses a revoked invite without spending a use', async () => {
@@ -103,27 +116,31 @@ describe('RoomsService.consumeInviteCode (GoGo-BE#592)', () => {
       roomStatus: ['collecting'],
       invite: { revokedAt: new Date() },
     });
-    expect(await codeOf(service.consumeInviteCode('code'))).toBe('INVITE_NOT_USABLE');
+    expect(await codeOf(consume(service, 'code'))).toBe('INVITE_NOT_USABLE');
     expect(consumeInvite).not.toHaveBeenCalled();
   });
 
   it('spends exactly one use on a join it lets through, guarded by the joinable statuses', async () => {
     const { service, consumeInvite } = serviceWith({ roomStatus: ['collecting'] });
-    await expect(service.consumeInviteCode('code')).resolves.toMatchObject({ id: ROOM_ID });
+    await expect(consume(service, 'code')).resolves.toMatchObject({ id: ROOM_ID });
     expect(consumeInvite).toHaveBeenCalledTimes(1);
-    expect(consumeInvite).toHaveBeenCalledWith('invite-1', {
-      joinableStatuses: ['draft', 'collecting'],
-    });
+    expect(consumeInvite).toHaveBeenCalledWith(
+      'invite-1',
+      {
+        joinableStatuses: ['draft', 'collecting'],
+      },
+      'tx',
+    );
   });
 
   it('answers ROOM_NOT_JOINABLE when the room moved on between the read and the consume', async () => {
     const { service } = serviceWith({ roomStatus: ['collecting', 'matching'], consumed: false });
-    expect(await codeOf(service.consumeInviteCode('code'))).toBe('ROOM_NOT_JOINABLE');
+    expect(await codeOf(consume(service, 'code'))).toBe('ROOM_NOT_JOINABLE');
   });
 
   it('answers INVITE_NOT_USABLE when the last use went to someone else in between', async () => {
     const { service } = serviceWith({ roomStatus: ['collecting', 'collecting'], consumed: false });
-    expect(await codeOf(service.consumeInviteCode('code'))).toBe('INVITE_NOT_USABLE');
+    expect(await codeOf(consume(service, 'code'))).toBe('INVITE_NOT_USABLE');
   });
 });
 
@@ -196,10 +213,14 @@ describe('RoomsService.joinAsUser × existing member (GoGo-BE#597)', () => {
   it('guards the consume of a user join with the room expiry too (GoGo-BE#606)', async () => {
     const { service, consumeInvite } = serviceWith({ roomStatus: ['collecting'] });
     await service.joinAsUser(user, 'code');
-    expect(consumeInvite).toHaveBeenCalledWith('invite-1', {
-      joinableStatuses: ['draft', 'collecting'],
-      enforceRoomExpiry: true,
-    });
+    expect(consumeInvite).toHaveBeenCalledWith(
+      'invite-1',
+      {
+        joinableStatuses: ['draft', 'collecting'],
+        enforceRoomExpiry: true,
+      },
+      'tx',
+    );
   });
 
   it('still lets an existing member of an expired room back in (GoGo-BE#597 × #606)', async () => {
@@ -210,6 +231,26 @@ describe('RoomsService.joinAsUser × existing member (GoGo-BE#597)', () => {
     });
     await expect(service.joinAsUser(user, 'code')).resolves.toMatchObject({ memberId: 'member-1' });
     expect(consumeInvite).not.toHaveBeenCalled();
+  });
+
+  it('refuses a room that moved to matching after the pre-check, spending nothing (GoGo-BE#605)', async () => {
+    const { service, consumeInvite, repo, events } = serviceWith({
+      roomStatus: ['collecting', 'matching'],
+    });
+    expect(await codeOf(service.joinAsUser(user, 'code'))).toBe('ROOM_NOT_JOINABLE');
+    expect(repo.lockRoomForJoin).toHaveBeenCalledWith('tx', ROOM_ID);
+    expect(consumeInvite).not.toHaveBeenCalled();
+    expect(repo.addUserMember).not.toHaveBeenCalled();
+    expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it('spends the use and adds the member in the one transaction that locked the room (GoGo-BE#605)', async () => {
+    const { service, consumeInvite, repo } = serviceWith({ roomStatus: ['collecting'] });
+    await service.joinAsUser(user, 'code');
+    expect(repo.transaction).toHaveBeenCalledTimes(1);
+    expect(repo.lockRoomForJoin).toHaveBeenCalledWith('tx', ROOM_ID);
+    expect((consumeInvite.mock.calls[0] as unknown[])[2]).toBe('tx');
+    expect(vi.mocked(repo.addUserMember).mock.calls[0]?.[1]).toBe('tx');
   });
 
   it('never answers a guest session through this path', async () => {
