@@ -250,7 +250,14 @@ feature. A `RESOLUTION_TOKEN_INVALID` in a client's hands is not an incident:
 the client is being told to resolve again, which is the one thing that has to
 happen rather than a silent second Google call.
 
-### Place refresh (`place_refresh_total`, `worker_periodic_runs_total{job="gogo:worker:place-refresh"}`)
+### Place refresh (`place_refresh_total`, `worker_periodic_runs_total{periodic_job="gogo:worker:place-refresh"}`)
+
+> **Label is `periodic_job` (#362).** Prometheus owns `job` (the scrape target)
+> and renamed the worker's old `job` label to `exported_job` on ingestion, so
+> `{job="gogo:worker:place-refresh"}` never matched. Series from before this
+> release exist only as `{exported_job="gogo:worker:place-refresh"}`; to span
+> the rename, query both, e.g.
+> `sum by (result) (worker_periodic_runs_total{periodic_job="gogo:worker:place-refresh"}) or sum by (result) (worker_periodic_runs_total{exported_job="gogo:worker:place-refresh"})`.
 
 PR7 (#340). `gogo:worker:place-refresh` asks Google, for rows whose
 `refresh_after` has passed, one question: _does this Place ID still resolve, and
@@ -272,14 +279,14 @@ its numbers are written. `GoGo-Infra/scripts/lib/place-refresh-budget.sh` prints
 `REFUSE-ALL` on each deploy for exactly that case, and `MISCONFIGURED` when some
 values are set and the scope still authorises nothing.
 
-| Symptom                                                                    | Read it as                                                                                                                                                        | Do                                                                                                        |
-| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `outcome="provider_error"` non-zero                                        | the tick stopped at the first failing call; rows stayed due and no attempt was recorded against them                                                              | read `places_provider_failures_total`; this is Google or our key, never the catalogue                     |
-| `outcome="invalid_identity"` climbing                                      | Place IDs that no longer resolve. Backoff is 7d, then 14d, then dormant                                                                                           | expected at a low rate as places churn; a spike means a bad backfill or a key restricted away from Places |
-| `outcome="dormant"` non-zero                                               | a row failed three times and the job stopped asking. `source_status = 'unknown'`, `refresh_after = null`, and an audit line `place.refresh_identity_unverifiable` | a person decides. The place stays published: three failed lookups are not evidence a business shut        |
-| `outcome="moved"` non-zero                                                 | Google named a successor id, or answered as one. Row is `moved` with `moved_to_external_id`; a published place goes to `review`                                   | an editor merges or re-resolves. Nothing repoints the place automatically and no place is created         |
-| `outcome="deadline"` non-zero                                              | the tick ran out of wall clock before its batch                                                                                                                   | usually a slow provider; the leftovers are still due and the next tick takes them in the same order       |
-| `worker_periodic_runs_total{job="gogo:worker:place-refresh"}` flat at zero | the job is not ticking at all — process down, or the advisory lock is held by a replica that never releases it                                                    | this is the alert that a scheduled job stopped, and it is the reason the runner reports at all            |
+| Symptom                                                                             | Read it as                                                                                                                                                        | Do                                                                                                        |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `outcome="provider_error"` non-zero                                                 | the tick stopped at the first failing call; rows stayed due and no attempt was recorded against them                                                              | read `places_provider_failures_total`; this is Google or our key, never the catalogue                     |
+| `outcome="invalid_identity"` climbing                                               | Place IDs that no longer resolve. Backoff is 7d, then 14d, then dormant                                                                                           | expected at a low rate as places churn; a spike means a bad backfill or a key restricted away from Places |
+| `outcome="dormant"` non-zero                                                        | a row failed three times and the job stopped asking. `source_status = 'unknown'`, `refresh_after = null`, and an audit line `place.refresh_identity_unverifiable` | a person decides. The place stays published: three failed lookups are not evidence a business shut        |
+| `outcome="moved"` non-zero                                                          | Google named a successor id, or answered as one. Row is `moved` with `moved_to_external_id`; a published place goes to `review`                                   | an editor merges or re-resolves. Nothing repoints the place automatically and no place is created         |
+| `outcome="deadline"` non-zero                                                       | the tick ran out of wall clock before its batch                                                                                                                   | usually a slow provider; the leftovers are still due and the next tick takes them in the same order       |
+| `worker_periodic_runs_total{periodic_job="gogo:worker:place-refresh"}` flat at zero | the job is not ticking at all — process down, or the advisory lock is held by a replica that never releases it                                                    | this is the alert that a scheduled job stopped, and it is the reason the runner reports at all            |
 
 Two counters, deliberately apart: `refresh_attempts` is evidence about a Place
 ID, `transient_failures` is evidence about a bad afternoon. Nothing that raises

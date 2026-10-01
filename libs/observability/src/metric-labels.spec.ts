@@ -173,6 +173,20 @@ describe('metric label contract', () => {
     }
   });
 
+  it('declares no label Prometheus owns on scrape (#362)', () => {
+    // `job` and `instance` are set by the scraper for the target. With the
+    // default `honor_labels: false` an exported one is renamed `exported_job`
+    // / `exported_instance`, so every documented query on it returns nothing.
+    // `__`-prefixed names are reserved for Prometheus internals.
+    const reserved = new Set(['job', 'instance']);
+    const violations = Object.entries(METRIC_LABELS).flatMap(([metric, labels]) =>
+      labels
+        .filter((label) => reserved.has(label) || label.startsWith('__'))
+        .map((label) => `${metric}{${label}}`),
+    );
+    expect(violations).toEqual([]);
+  });
+
   it('documents every contracted metric in infrastructure.md §3b', () => {
     const doc = readFileSync(path.join(repoRoot, 'docs/infrastructure.md'), 'utf8');
     const section = doc.slice(doc.indexOf('## 3b.'), doc.indexOf('## 3c.'));

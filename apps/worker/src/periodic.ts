@@ -111,7 +111,8 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
   };
 
   const record = (job: PeriodicJob, result: 'ok' | 'failed' | 'lock_skipped' | 'lease_lost') => {
-    options.metrics?.increment('worker_periodic_runs_total', { job: job.name, result });
+    // #362 — `periodic_job`, not `job`: Prometheus owns `job` on scrape.
+    options.metrics?.increment('worker_periodic_runs_total', { periodic_job: job.name, result });
   };
 
   const tick = async (job: PeriodicJob) => {
@@ -158,7 +159,7 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
         options.metrics?.observe(
           'worker_periodic_duration_seconds',
           (Date.now() - startedAt) / 1000,
-          { job: job.name },
+          { periodic_job: job.name },
         );
         await lease
           .release()
