@@ -3710,6 +3710,46 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     return id;
   }
 
+  /**
+   * #358 — "this campaign is due, and nothing else is", made true by the
+   * database rather than by timing.
+   *
+   * `dispatchDue()` claims whatever is `scheduled` with `scheduled_at <= now()`,
+   * oldest first. Two things made that nondeterministic under a loaded suite:
+   * - `scheduled_at` is the api's `new Date()` (host clock) while `now()` is the
+   *   container's clock. When the container lags, a campaign scheduled a
+   *   moment ago is not due yet, the tick claims nothing, and the test reads
+   *   `scheduled` / zero sends.
+   * - Earlier tests in this file leave campaigns `scheduled` (one on purpose,
+   *   to prove scheduling dispatches nothing). A tick claims those too.
+   * So: the campaign under test is pinned a second into the past in the
+   * database's clock, and every other still-scheduled campaign is parked a day
+   * ahead. Nothing about what the dispatcher does is changed or skipped.
+   */
+  /** Inbox rows written for one campaign — not every campaign the file made. */
+  async function campaignNotifications(id: string): Promise<number> {
+    const { rows } = await db.execute(sql`
+      select count(*)::int as n from notifications
+      where kind = 'campaign' and payload->>'campaignId' = ${id}
+    `);
+    return (rows[0] as { n: number }).n;
+  }
+
+  async function makeOnlyDue(id: string) {
+    await db.execute(sql`
+      update notification_campaigns
+      set scheduled_at = case when id = ${id}::uuid
+                              then now() - interval '1 second'
+                              else now() + interval '1 day' end
+      where status = 'scheduled'
+    `);
+  }
+
+  async function dispatchCampaign(id: string, push: CountingPush) {
+    await makeOnlyDue(id);
+    return (await dispatcher(push)).dispatchDue();
+  }
+
   /*
    * BE-CMS-M3 — the image has to survive the whole way to the provider.
    *
@@ -3840,7 +3880,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     expect(estimate.statusCode).toBe(200);
     const estimated = estimate.json().estimatedRecipients as number;
 
-    await (await dispatcher(new CountingPush())).dispatchDue();
+    await dispatchCampaign(id, new CountingPush());
     const [row] = await db
       .select()
       .from(schema.notificationCampaigns)
@@ -3862,8 +3902,8 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
   it('claims a due campaign, sends once per recipient, and records what it did', async () => {
     const id = await scheduledCampaign();
     const push = new CountingPush();
-    const handled = await (await dispatcher(push)).dispatchDue();
-    expect(handled).toBeGreaterThanOrEqual(1);
+    const handled = await dispatchCampaign(id, push);
+    expect(handled).toBe(1);
 
     const [row] = await db
       .select()
@@ -3894,12 +3934,10 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
   it('a second run sends nothing: the dedupe key is the record of "already sent"', async () => {
     const id = await scheduledCampaign();
     const first = new CountingPush();
-    await (await dispatcher(first)).dispatchDue();
-    const afterFirst = await db.$count(
-      schema.notifications,
-      eq(schema.notifications.kind, 'campaign'),
-    );
+    await dispatchCampaign(id, first);
+    const afterFirst = await campaignNotifications(id);
     expect(first.sent.length).toBeGreaterThan(0);
+    expect(afterFirst).toBe(first.sent.length);
 
     // Put it back on the queue with the same dispatch key — exactly what a
     // crash between "claimed" and "finished" leaves behind.
@@ -3909,21 +3947,17 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
       .where(eq(schema.notificationCampaigns.id, id));
 
     const second = new CountingPush();
-    await (await dispatcher(second)).dispatchDue();
+    await dispatchCampaign(id, second);
 
     expect(second.sent).toHaveLength(0);
-    expect(await db.$count(schema.notifications, eq(schema.notifications.kind, 'campaign'))).toBe(
-      afterFirst,
-    );
+    expect(await campaignNotifications(id)).toBe(afterFirst);
   });
 
   it('a re-send after a cancel is a new dispatch, not a suppressed retry', async () => {
     const id = await scheduledCampaign();
-    await (await dispatcher(new CountingPush())).dispatchDue();
-    const afterFirst = await db.$count(
-      schema.notifications,
-      eq(schema.notifications.kind, 'campaign'),
-    );
+    await dispatchCampaign(id, new CountingPush());
+    const afterFirst = await campaignNotifications(id);
+    expect(afterFirst).toBeGreaterThan(0);
 
     // A deliberate second send gets a new dispatch key, so the dedupe key that
     // silenced the retry above does not silence this.
@@ -3941,16 +3975,14 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     expect(rescheduled.statusCode).toBe(201);
 
     const push = new CountingPush();
-    await (await dispatcher(push)).dispatchDue();
+    await dispatchCampaign(id, push);
     expect(push.sent.length).toBeGreaterThan(0);
-    expect(
-      await db.$count(schema.notifications, eq(schema.notifications.kind, 'campaign')),
-    ).toBeGreaterThan(afterFirst);
+    expect(await campaignNotifications(id)).toBe(afterFirst + push.sent.length);
   });
 
   it('does not send to someone who turned campaigns off', async () => {
     const id = await scheduledCampaign();
-    await (await dispatcher(new CountingPush())).dispatchDue();
+    await dispatchCampaign(id, new CountingPush());
 
     const rows = await db
       .select()
@@ -3978,7 +4010,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
         return firstRun.sendToUsers(ids, payload);
       },
     };
-    await (await dispatcher(flaky as never)).dispatchDue();
+    await dispatchCampaign(id, flaky as never);
     const [failed] = await db
       .select()
       .from(schema.notificationCampaigns)
@@ -4006,7 +4038,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     expect(again!.dispatchKey).toBe(keyBefore);
 
     const secondRun = new CountingPush();
-    await (await dispatcher(secondRun)).dispatchDue();
+    await dispatchCampaign(id, secondRun);
     const [done] = await db
       .select()
       .from(schema.notificationCampaigns)
@@ -4037,7 +4069,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
   it('a delivered campaign refuses edits to copy, audience and destination (R3)', async () => {
     const id = await scheduledCampaign();
     const push = new CountingPush();
-    await (await dispatcher(push)).dispatchDue();
+    await dispatchCampaign(id, push);
     expect(push.sent.length).toBeGreaterThan(0);
     const [sent] = await db
       .select()
@@ -4084,7 +4116,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
 
   it('a delivered campaign still accepts an editorial rename and a no-op patch (R3)', async () => {
     const id = await scheduledCampaign();
-    await (await dispatcher(new CountingPush())).dispatchDue();
+    await dispatchCampaign(id, new CountingPush());
     await db
       .update(schema.notificationCampaigns)
       .set({ status: 'failed' })
@@ -4141,7 +4173,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
         };
       },
     };
-    await (await dispatcher(refusing as never)).dispatchDue();
+    await dispatchCampaign(id, refusing as never);
     const { rows: delivered } = await db.execute(sql`
       select count(*)::int as n from notifications
       where kind = 'campaign' and payload->>'campaignId' = ${id} and push_sent_at is not null
@@ -4189,7 +4221,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
         };
       },
     };
-    await (await dispatcher(noTarget as never)).dispatchDue();
+    await dispatchCampaign(id, noTarget as never);
 
     const [row] = await db
       .select()
@@ -4231,7 +4263,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
       audienceFilter: { platform: 'web' },
     });
     const push = new CountingPush();
-    await (await dispatcher(push)).dispatchDue();
+    await dispatchCampaign(id, push);
 
     const [row] = await db
       .select()
@@ -4271,7 +4303,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
         return firstRun.sendToUsers(ids, payload);
       },
     };
-    await (await dispatcher(flaky as never)).dispatchDue();
+    await dispatchCampaign(id, flaky as never);
     const [failed] = await db
       .select()
       .from(schema.notificationCampaigns)
@@ -4289,7 +4321,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
     expect(rescheduled.statusCode).toBe(201);
 
     const secondRun = new CountingPush();
-    await (await dispatcher(secondRun)).dispatchDue();
+    await dispatchCampaign(id, secondRun);
 
     // The no-target recipient is attempted again: its row carries no
     // push_sent_at, which is the same thing "never delivered" means for a
@@ -4337,6 +4369,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
       } as never,
       exploding as never,
     );
+    await makeOnlyDue(id);
     await broken.dispatchDue();
 
     const [row] = await db
