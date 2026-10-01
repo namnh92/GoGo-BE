@@ -182,6 +182,36 @@ describe('RoomsService.joinAsUser × existing member (GoGo-BE#597)', () => {
     expect(repo.addUserMember).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a new member for a room past its expiry with ROOM_EXPIRED, spending nothing (GoGo-BE#606)', async () => {
+    const { service, consumeInvite, repo, events } = serviceWith({
+      roomStatus: ['collecting'],
+      roomExpiresAt: new Date(Date.now() - 60_000),
+    });
+    expect(await codeOf(service.joinAsUser(user, 'code'))).toBe('ROOM_EXPIRED');
+    expect(consumeInvite).not.toHaveBeenCalled();
+    expect(repo.addUserMember).not.toHaveBeenCalled();
+    expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it('guards the consume of a user join with the room expiry too (GoGo-BE#606)', async () => {
+    const { service, consumeInvite } = serviceWith({ roomStatus: ['collecting'] });
+    await service.joinAsUser(user, 'code');
+    expect(consumeInvite).toHaveBeenCalledWith('invite-1', {
+      joinableStatuses: ['draft', 'collecting'],
+      enforceRoomExpiry: true,
+    });
+  });
+
+  it('still lets an existing member of an expired room back in (GoGo-BE#597 × #606)', async () => {
+    const { service, consumeInvite } = serviceWith({
+      roomStatus: ['collecting'],
+      roomExpiresAt: new Date(Date.now() - 60_000),
+      member: { id: 'member-1', role: 'member' },
+    });
+    await expect(service.joinAsUser(user, 'code')).resolves.toMatchObject({ memberId: 'member-1' });
+    expect(consumeInvite).not.toHaveBeenCalled();
+  });
+
   it('never answers a guest session through this path', async () => {
     const { service, repo } = serviceWith({ roomStatus: ['collecting'] });
     const guest = { type: 'guest', id: 'guest-1', sessionId: 'guest-1', roomId: ROOM_ID } as never;

@@ -9583,7 +9583,12 @@ export interface operations {
                     };
                 };
             };
-            /** @description Invite expired/revoked/spent or room not joinable */
+            /**
+             * @description Invite expired/revoked/spent (`INVITE_NOT_USABLE`), room no longer
+             *     taking members (`ROOM_NOT_JOINABLE`), or room past its expiry
+             *     (`ROOM_EXPIRED`, GoGo-BE#606 — same as the guest route). Someone
+             *     already an active member is answered with their membership instead.
+             */
             410: {
                 headers: {
                     [name: string]: unknown;

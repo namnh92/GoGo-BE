@@ -1975,6 +1975,31 @@ describe('invite consumption (GoGo-BE#592)', () => {
     expect(await useCount(inviteId)).toBe(0);
   });
 
+  it('a signed-in user refused for a room past its expiry spends no use and does not join (GoGo-BE#606)', async () => {
+    const { roomId, inviteId, code } = await collectingRoomWithInvite('host606exp@gogo.id.vn');
+    await db
+      .update(schema.rooms)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(schema.rooms.id, roomId));
+    const { token } = await registerUser('joiner606exp@gogo.id.vn');
+
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms/join',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { inviteCode: code },
+    });
+    expect(res.statusCode).toBe(410);
+    expect(res.json().code).toBe('ROOM_EXPIRED');
+    expect(await useCount(inviteId)).toBe(0);
+    const members = await db
+      .select()
+      .from(schema.roomMembers)
+      .where(eq(schema.roomMembers.roomId, roomId));
+    expect(members).toHaveLength(1);
+  });
+
   it('the guarded consume itself spends nothing on a room that moved on or expired', async () => {
     const repo = app.get(RoomsRepository);
     const { roomId, inviteId } = await collectingRoomWithInvite('host592guard@gogo.id.vn');

@@ -896,7 +896,11 @@ paths:
                   memberId: { type: string, format: uuid }
                   role: { type: string, enum: [host, member] }
         '410':
-          description: Invite expired/revoked/spent or room not joinable
+          description: |
+            Invite expired/revoked/spent (`INVITE_NOT_USABLE`), room no longer
+            taking members (`ROOM_NOT_JOINABLE`), or room past its expiry
+            (`ROOM_EXPIRED`, GoGo-BE#606 — same as the guest route). Someone
+            already an active member is answered with their membership instead.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
