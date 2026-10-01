@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import { DB } from '../../shared/tokens';
 import { AppError } from '../../shared/app-error';
+import { toIso } from '../../shared/cursor';
 
 /**
  * BE-IMP-010 — reading the audit log back.
@@ -76,8 +77,6 @@ export function decodeAuditCursor(cursor: string): { occurredAt: string; id: str
     throw AppError.badRequest('INVALID_CURSOR', 'Cursor is not valid');
   }
 }
-
-const toIso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : String(v));
 
 @Injectable()
 export class CmsAuditService {
