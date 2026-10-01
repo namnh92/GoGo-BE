@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.44
+  version: 1.0.0-alpha.45
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -617,6 +617,14 @@ paths:
       operationId: updateRoomConstraints
       tags: [rooms]
       summary: 'Host-only: new constraint version; marks scores/plans stale'
+      description: >
+        Partial update (BE-BFF-021): a field left out keeps the value the room
+        already has, and an explicit null clears it. budgetMode and budgetAmount
+        are always required — an edit states the unit it means (GoGo-BE#559).
+        Before this, an omitted field was cleared, so a client editing the
+        budget by spreading RoomSummary.constraints wiped originLat/originLng,
+        coordinates the summary does not return and the client cannot send
+        back.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -625,7 +633,7 @@ paths:
           application/json:
             schema:
               allOf:
-                - $ref: '#/components/schemas/RoomConstraintInput'
+                - $ref: '#/components/schemas/RoomConstraintPatch'
                 - type: object
                   required: [expectedConstraintVersion]
                   properties:
@@ -637,6 +645,15 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RoomSummary' }
+        '400':
+          description: >
+            INVALID_SCHEDULE when the merged window runs backwards — the
+            request's startAt or endAt against whichever half the room already
+            has — or INVALID_BUDGET_MODE when a couple room is edited as
+            per_person (GoGo-BE#559).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
 
@@ -10419,14 +10436,64 @@ components:
         accessibilityKeys:
           type: array
           items: { type: string }
+    RoomConstraintPatch:
+      type: object
+      required: [budgetMode, budgetAmount]
+      description: >
+        BE-BFF-021 — the body of a constraint PATCH. Same fields as
+        RoomConstraintInput, with the update semantics made explicit: absent
+        keeps the stored value, null clears it. Clearing endAt, an area or an
+        origin is therefore an explicit null rather than an omission.
+      properties:
+        originText: { type: [string, 'null'], maxLength: 200 }
+        originLat: { type: [number, 'null'], minimum: -90, maximum: 90 }
+        originLng: { type: [number, 'null'], minimum: -180, maximum: 180 }
+        administrativeArea:
+          oneOf:
+            - $ref: '#/components/schemas/AdministrativeAreaInput'
+            - type: 'null'
+          description: >
+            As on RoomConstraintInput: omitted keeps the stored area, null
+            clears it. Setting an area replaces areaKey.
+        areaKey:
+          type: [string, 'null']
+          description: Legacy service-area key. Cleared and ignored while administrativeArea is set.
+        radiusM: { type: [integer, 'null'], minimum: 100, maximum: 50000 }
+        startAt: { type: [string, 'null'], format: date-time }
+        endAt:
+          type: [string, 'null']
+          format: date-time
+          description: >
+            Null clears the end of the window. Omitting it keeps whatever the
+            room has — the one behaviour that changed with BE-BFF-021.
+        budgetMode:
+          type: string
+          enum: [total, per_person]
+          description: >
+            Required on every edit, and held to the same rule as create: a
+            couple room must be `total` (GoGo-BE#559).
+        budgetAmount:
+          type: integer
+          minimum: 0
+          description: Integer minor units, interpreted per budgetMode. Required on every edit.
+        currency: { type: string, minLength: 3, maxLength: 3 }
+        dietaryKeys:
+          type: array
+          items: { type: string }
+        accessibilityKeys:
+          type: array
+          items: { type: string }
     RoomConstraints:
       type: object
-      description: A room's current constraint version as read back (RoomSummary.constraints).
+      description: >
+        A room's current constraint version as read back (RoomSummary.constraints).
+        Exact origin coordinates are deliberately absent: they have a limited
+        retention window and the server has never returned them here. A client
+        that needs to leave them untouched simply omits them from a constraint
+        PATCH, which keeps the stored value (BE-BFF-021, GoGo-BE#576).
       required: [budgetMode, budgetAmount, administrativeArea]
       properties:
         originText: { type: string, maxLength: 200 }
-        originLat: { type: number, minimum: -90, maximum: 90 }
-        originLng: { type: number, minimum: -180, maximum: 180 }
         administrativeArea:
           oneOf:
             - $ref: '#/components/schemas/AdministrativeArea'

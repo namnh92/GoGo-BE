@@ -52,6 +52,16 @@ export type ConstraintInput = {
   accessibilityKeys?: string[] | undefined;
 };
 
+/**
+ * What a PATCH may carry (#576). Same fields, but each clearable one accepts
+ * `null` — "clear this" — on top of being absent, which means "leave it".
+ */
+export type ConstraintPatch = {
+  [K in keyof ConstraintInput]: K extends 'budgetMode' | 'budgetAmount'
+    ? ConstraintInput[K]
+    : ConstraintInput[K] | null;
+};
+
 function toNewConstraint(input: ConstraintInput): NewConstraint {
   return {
     ...(input.administrativeArea !== undefined
@@ -267,7 +277,7 @@ export class RoomsService {
   async updateConstraints(
     actor: Actor,
     roomId: string,
-    input: ConstraintInput & {
+    input: ConstraintPatch & {
       expectedConstraintVersion: number;
       participantCount?: number | undefined;
     },
@@ -284,7 +294,27 @@ export class RoomsService {
     const version = await this.repo.applyConstraintVersion({
       roomId,
       expectedVersion: input.expectedConstraintVersion,
-      constraint: toNewConstraint(input),
+      // Merged under the room lock in the repository (#576): `undefined`
+      // keeps what is stored, `null` clears it.
+      constraint: {
+        ...(input.administrativeArea !== undefined
+          ? { administrativeArea: input.administrativeArea }
+          : {}),
+        ...(input.originText !== undefined ? { originText: input.originText } : {}),
+        ...(input.originLat !== undefined ? { originLat: input.originLat } : {}),
+        ...(input.originLng !== undefined ? { originLng: input.originLng } : {}),
+        ...(input.areaKey !== undefined ? { areaKey: input.areaKey } : {}),
+        ...(input.radiusM !== undefined ? { radiusM: input.radiusM } : {}),
+        ...(input.startAt !== undefined ? { startAt: input.startAt } : {}),
+        ...(input.endAt !== undefined ? { endAt: input.endAt } : {}),
+        budgetMode: input.budgetMode,
+        budgetAmount: input.budgetAmount,
+        ...(input.currency !== undefined ? { currency: input.currency } : {}),
+        ...(input.dietaryKeys !== undefined ? { dietaryKeys: input.dietaryKeys } : {}),
+        ...(input.accessibilityKeys !== undefined
+          ? { accessibilityKeys: input.accessibilityKeys }
+          : {}),
+      },
       memberId: member.id,
       ...(input.participantCount ? { participantCount: input.participantCount } : {}),
       event: {

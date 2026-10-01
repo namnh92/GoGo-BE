@@ -37,6 +37,30 @@ function sameArea(
   );
 }
 
+/**
+ * BE-BFF-021 (#576) — what a constraint PATCH carries. `undefined` means the
+ * request said nothing and the stored value survives; `null` means clear.
+ * Merged under the room lock in `applyConstraintVersion`, beside the area
+ * merge that already worked this way, so a retention job that nulls the
+ * coordinates mid-edit cannot have them copied back out of a stale read.
+ */
+export type ConstraintPatch = {
+  administrativeArea?: AdministrativeAreaInput | null | undefined;
+  originText?: string | null | undefined;
+  originLat?: number | null | undefined;
+  originLng?: number | null | undefined;
+  areaKey?: string | null | undefined;
+  radiusM?: number | null | undefined;
+  startAt?: Date | null | undefined;
+  endAt?: Date | null | undefined;
+  budgetMode: 'total' | 'per_person';
+  budgetAmount: number;
+  /** Not clearable — the column is NOT NULL, so null here reads as "keep". */
+  currency?: string | null | undefined;
+  dietaryKeys?: string[] | null | undefined;
+  accessibilityKeys?: string[] | null | undefined;
+};
+
 export type NewConstraint = {
   /** ADM-020: omitted on update keeps the stored area; null clears it. */
   administrativeArea?: AdministrativeAreaInput | null;
@@ -227,7 +251,7 @@ export class RoomsRepository {
   async applyConstraintVersion(input: {
     roomId: string;
     expectedVersion: number;
-    constraint: NewConstraint;
+    constraint: ConstraintPatch;
     memberId: string;
     participantCount?: number;
     event: DomainEventInput;
@@ -271,7 +295,36 @@ export class RoomsRepository {
       //   published — a client echoing RoomSummary.constraints to change the
       //   budget must neither fail nor silently re-map the area;
       // - anything else is a new choice, validated against the published dataset.
-      const { administrativeArea: requestedArea, ...constraint } = input.constraint;
+      const { administrativeArea: requestedArea, ...patch } = input.constraint;
+      /*
+       * #576 — a field the request left out keeps what the room has; an
+       * explicit null clears it. Merged here rather than in the service
+       * because `previous` is the row read under this transaction's lock:
+       * merging from a read taken earlier would let an edit copy forward
+       * coordinates the privacy job nulled in between.
+       */
+      const keep = <T>(incoming: T | null | undefined, stored: T | null | undefined): T | null =>
+        incoming === undefined ? (stored ?? null) : incoming;
+      const constraint = {
+        originText: keep(patch.originText, previous?.originText),
+        originLat: keep(patch.originLat, previous?.originLat),
+        originLng: keep(patch.originLng, previous?.originLng),
+        areaKey: keep(patch.areaKey, previous?.areaKey),
+        radiusM: keep(patch.radiusM, previous?.radiusM),
+        startAt: keep(patch.startAt, previous?.startAt),
+        endAt: keep(patch.endAt, previous?.endAt),
+        budgetMode: patch.budgetMode,
+        budgetAmount: patch.budgetAmount,
+        currency: patch.currency ?? previous?.currency ?? 'VND',
+        dietaryKeys: patch.dietaryKeys ?? previous?.dietaryKeys ?? [],
+        accessibilityKeys: patch.accessibilityKeys ?? previous?.accessibilityKeys ?? [],
+      };
+      // The DTO can only compare the two fields one request happened to
+      // carry; a later `startAt` sent alone is only wrong against the stored
+      // `endAt`.
+      if (constraint.startAt && constraint.endAt && constraint.startAt >= constraint.endAt) {
+        throw AppError.badRequest('INVALID_SCHEDULE', 'startAt must be before endAt');
+      }
       const storedArea = previous?.administrativeArea ?? null;
       const administrativeArea =
         requestedArea === undefined ||

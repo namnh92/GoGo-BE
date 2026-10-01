@@ -281,7 +281,10 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Host-only: new constraint version; marks scores/plans stale */
+        /**
+         * Host-only: new constraint version; marks scores/plans stale
+         * @description Partial update (BE-BFF-021): a field left out keeps the value the room already has, and an explicit null clears it. budgetMode and budgetAmount are always required — an edit states the unit it means (GoGo-BE#559). Before this, an omitted field was cleared, so a client editing the budget by spreading RoomSummary.constraints wiped originLat/originLng, coordinates the summary does not return and the client cannot send back.
+         */
         patch: operations["updateRoomConstraints"];
         trace?: never;
     };
@@ -5449,11 +5452,37 @@ export interface components {
             dietaryKeys?: string[];
             accessibilityKeys?: string[];
         };
-        /** @description A room's current constraint version as read back (RoomSummary.constraints). */
+        /** @description BE-BFF-021 — the body of a constraint PATCH. Same fields as RoomConstraintInput, with the update semantics made explicit: absent keeps the stored value, null clears it. Clearing endAt, an area or an origin is therefore an explicit null rather than an omission. */
+        RoomConstraintPatch: {
+            originText?: string | null;
+            originLat?: number | null;
+            originLng?: number | null;
+            /** @description As on RoomConstraintInput: omitted keeps the stored area, null clears it. Setting an area replaces areaKey. */
+            administrativeArea?: components["schemas"]["AdministrativeAreaInput"] | null;
+            /** @description Legacy service-area key. Cleared and ignored while administrativeArea is set. */
+            areaKey?: string | null;
+            radiusM?: number | null;
+            /** Format: date-time */
+            startAt?: string | null;
+            /**
+             * Format: date-time
+             * @description Null clears the end of the window. Omitting it keeps whatever the room has — the one behaviour that changed with BE-BFF-021.
+             */
+            endAt?: string | null;
+            /**
+             * @description Required on every edit, and held to the same rule as create: a couple room must be `total` (GoGo-BE#559).
+             * @enum {string}
+             */
+            budgetMode: "total" | "per_person";
+            /** @description Integer minor units, interpreted per budgetMode. Required on every edit. */
+            budgetAmount: number;
+            currency?: string;
+            dietaryKeys?: string[];
+            accessibilityKeys?: string[];
+        };
+        /** @description A room's current constraint version as read back (RoomSummary.constraints). Exact origin coordinates are deliberately absent: they have a limited retention window and the server has never returned them here. A client that needs to leave them untouched simply omits them from a constraint PATCH, which keeps the stored value (BE-BFF-021, GoGo-BE#576). */
         RoomConstraints: {
             originText?: string;
-            originLat?: number;
-            originLng?: number;
             /** @description ADM-020 — the stored canonical area with the labels saved when it was chosen, or null. status is needs_reselection when its dataset is no longer the published one; the room keeps its labels, and suggestions are refused with 409 ADMINISTRATIVE_VERSION_CHANGED until the host chooses again or clears it. */
             administrativeArea: components["schemas"]["AdministrativeArea"] | null;
             /** @description Legacy service-area key. Cleared and ignored while administrativeArea is set. */
@@ -9248,7 +9277,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RoomConstraintInput"] & {
+                "application/json": components["schemas"]["RoomConstraintPatch"] & {
                     expectedConstraintVersion: number;
                     participantCount?: number;
                 };
@@ -9262,6 +9291,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RoomSummary"];
+                };
+            };
+            /** @description INVALID_SCHEDULE when the merged window runs backwards — the request's startAt or endAt against whichever half the room already has — or INVALID_BUDGET_MODE when a couple room is edited as per_person (GoGo-BE#559). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             403: components["responses"]["Forbidden"];
