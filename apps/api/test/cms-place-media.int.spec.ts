@@ -202,6 +202,29 @@ describe('#191 upload → attach → moderate → visible', () => {
     });
   });
 
+  it('a same-value moderation PATCH keeps the original actor, time and reason (#441 F-01)', async () => {
+    const place = await makePlace();
+    const upload = await authorizeUpload(editor.token);
+    const media = (await attach(place.id, { storageKey: upload.key })).json();
+    const first = (
+      await patchMedia(place.id, media.id, {
+        moderation: 'rejected',
+        moderationReason: 'Ảnh mờ, không thấy quán',
+      })
+    ).json() as { moderatedBy: string; moderatedAt: string; moderationReason: string };
+
+    // Another editor (or a retry) repeats the same value with no reason.
+    const other = await createAdmin('media-editor-repeat@gogo.local', 'editor');
+    const repeat = await patchMedia(place.id, media.id, { moderation: 'rejected' }, other.token);
+    expect(repeat.statusCode).toBe(200);
+    expect(repeat.json()).toMatchObject({
+      moderation: 'rejected',
+      moderatedBy: editor.id,
+      moderatedAt: first.moderatedAt,
+      moderationReason: 'Ảnh mờ, không thấy quán',
+    });
+  });
+
   it('stops serving a photo the moment it is rejected', async () => {
     const place = await makePlace();
     const upload = await authorizeUpload(editor.token);

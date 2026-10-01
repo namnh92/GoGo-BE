@@ -257,7 +257,12 @@ export class CmsPlaceMediaService {
   ) {
     const before = await this.row(placeId, mediaId);
 
-    if (patch.moderation !== undefined && patch.moderation !== before.moderation) {
+    // A moderation value equal to the current one is not a decision: it must
+    // not re-stamp who decided and when, nor wipe the reason (#441 F-01).
+    const moderationChanges =
+      patch.moderation !== undefined && patch.moderation !== before.moderation;
+
+    if (moderationChanges) {
       if (!patch.moderationReason || patch.moderationReason.trim().length < 3) {
         throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', [
           {
@@ -284,7 +289,7 @@ export class CmsPlaceMediaService {
           ...(patch.caption !== undefined ? { caption: patch.caption } : {}),
           ...(patch.attribution !== undefined ? { attribution: patch.attribution } : {}),
           ...(isCover !== undefined ? { isCover } : {}),
-          ...(patch.moderation !== undefined
+          ...(moderationChanges
             ? {
                 moderation: patch.moderation,
                 moderationReason: patch.moderationReason ?? null,
