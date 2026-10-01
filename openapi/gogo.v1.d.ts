@@ -301,7 +301,10 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Host-only: validated room state transition (SRS §7.2) */
+        /**
+         * Host-only: validated room state transition (SRS §7.2)
+         * @description Host-only is enforced server-side before the state machine runs (GoGo-BE#602), so this answers `403 HOST_ONLY` to a member who is not the host, `403 NOT_A_MEMBER` to an actor with no active membership, and `403 ROOM_SCOPE_VIOLATION` to a guest session bound to another room.
+         */
         patch: operations["transitionRoom"];
         trace?: never;
     };
@@ -9335,6 +9338,7 @@ export interface operations {
                     "application/json": components["schemas"]["RoomSummary"];
                 };
             };
+            403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
         };
     };

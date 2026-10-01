@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.45
+  version: 1.0.0-alpha.46
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -662,6 +662,11 @@ paths:
       operationId: transitionRoom
       tags: [rooms]
       summary: 'Host-only: validated room state transition (SRS §7.2)'
+      description: >
+        Host-only is enforced server-side before the state machine runs
+        (GoGo-BE#602), so this answers `403 HOST_ONLY` to a member who is not
+        the host, `403 NOT_A_MEMBER` to an actor with no active membership, and
+        `403 ROOM_SCOPE_VIOLATION` to a guest session bound to another room.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -684,6 +689,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RoomSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
 
   /rooms/{id}/title:
