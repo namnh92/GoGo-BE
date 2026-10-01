@@ -173,6 +173,35 @@ describe('#191 upload → attach → moderate → visible', () => {
     expect(afterApproval.json().photos[0].url).toContain(upload.key);
   });
 
+  it('says who moderated a photo and when, on the write and on the detail (#441)', async () => {
+    const place = await makePlace();
+    const upload = await authorizeUpload(editor.token);
+    const media = (await attach(place.id, { storageKey: upload.key })).json();
+    // Nobody has decided yet: null, not absent and not the uploader.
+    expect(media).toMatchObject({ moderatedBy: null, moderatedAt: null });
+    const undecided = (await detail(place.id)).json().media[0];
+    expect(undecided).toMatchObject({ moderatedBy: null, moderatedAt: null });
+
+    const before = Date.now();
+    const rejected = await patchMedia(place.id, media.id, {
+      moderation: 'rejected',
+      moderationReason: 'Ảnh mờ, không thấy quán',
+    });
+    expect(rejected.statusCode).toBe(200);
+    const written = rejected.json() as { moderatedBy: string; moderatedAt: string };
+    expect(written.moderatedBy).toBe(editor.id);
+    expect(written.moderatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
+    expect(Date.parse(written.moderatedAt)).toBeGreaterThanOrEqual(before - 5_000);
+
+    // The detail drawer reads a different query; it must say the same thing.
+    const listed = (await detail(place.id)).json().media[0];
+    expect(listed).toMatchObject({
+      moderation: 'rejected',
+      moderatedBy: editor.id,
+      moderatedAt: written.moderatedAt,
+    });
+  });
+
   it('stops serving a photo the moment it is rejected', async () => {
     const place = await makePlace();
     const upload = await authorizeUpload(editor.token);

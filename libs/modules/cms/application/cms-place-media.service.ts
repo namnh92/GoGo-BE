@@ -364,6 +364,8 @@ export class CmsPlaceMediaService {
       sortOrder: row.sortOrder,
       moderation: row.moderation,
       moderationReason: row.moderationReason,
+      moderatedBy: row.moderatedBy,
+      moderatedAt: row.moderatedAt?.toISOString() ?? null,
       caption: row.caption,
       attribution: row.attribution,
       isCover: row.isCover,

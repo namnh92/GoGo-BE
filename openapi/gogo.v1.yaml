@@ -14002,6 +14002,17 @@ components:
             has never been anything else. Requests do constrain it — see
             `cmsUpdatePlaceMedia`.
         moderationReason: { type: [string, 'null'] }
+        moderatedBy:
+          type: [string, 'null']
+          format: uuid
+          description: >
+            The admin who last changed `moderation`, null while nobody has. An id
+            only, the same as `CmsAuditEntry.actorId`, which also carries no
+            name (#441).
+        moderatedAt:
+          type: [string, 'null']
+          format: date-time
+          description: When `moderation` last changed, null while it never has (#441).
         caption: { type: [string, 'null'] }
         attribution:
           type: [string, 'null']
