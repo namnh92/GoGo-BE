@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.46
+  version: 1.0.0-alpha.47
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -12653,6 +12653,25 @@ components:
         payload:
           type: object
           additionalProperties: true
+          description: >-
+            Free-form per kind. Rows the outbox writes (`invite`, `preference_reminder`,
+            `plan_ready`, `plan_changed`, `date_reminder`) also carry where the row opens, in the
+            same shape as push data v1: `route`, `entityType`, `entityId`. Plan kinds name the plan
+            current at fan-out, or the room when there is none; a later edit or regenerate can
+            supersede that plan, so a client opening a stale row falls back to the room's current
+            plan. Older rows lack the three fields — route them by `roomId`.
+          properties:
+            eventType: { type: string }
+            roomId: { type: string, format: uuid }
+            resourceId: { type: string, format: uuid }
+            route:
+              type: string
+              description: Canonical app link, `gogo://plan/{id}` or `gogo://room/{id}`.
+            entityType:
+              type: string
+              description: Grows with push data v1; route an unknown value by `roomId`.
+              x-extensible-enum: [room, plan]
+            entityId: { type: string, format: uuid }
         readAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
     OpenState:

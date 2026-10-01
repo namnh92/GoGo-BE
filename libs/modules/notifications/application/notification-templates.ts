@@ -131,6 +131,20 @@ export function pushRoute(target: PushTarget): string {
   return `gogo://${target.entityType}/${target.entityId}`;
 }
 
+/**
+ * #609 — where an inbox row opens, in the push data's shape. Plan kinds name
+ * the plan that was current at fan-out; a later edit or regenerate supersedes
+ * it, so a client opening a stale row still falls back to the room's current
+ * plan, exactly as it would for a push tapped late.
+ */
+export function inboxTarget(target: PushTarget): {
+  route: string;
+  entityType: PushTarget['entityType'];
+  entityId: string;
+} {
+  return { route: pushRoute(target), entityType: target.entityType, entityId: target.entityId };
+}
+
 export type PushEvent = { id: string; eventType: string };
 
 export function renderPushData(input: {
@@ -145,9 +159,7 @@ export function renderPushData(input: {
     // The outbox event: the same for every recipient of one fan-out, which is
     // what lets the app drop a click it has already routed. Not the inbox row.
     notificationId: input.event.id,
-    route: pushRoute(input.target),
-    entityType: input.target.entityType,
-    entityId: input.target.entityId,
+    ...inboxTarget(input.target),
     kind: input.kind,
     roomId: input.roomId,
     eventType: input.event.eventType,

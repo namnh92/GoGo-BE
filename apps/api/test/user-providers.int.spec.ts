@@ -832,6 +832,86 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
     }
   });
 
+  /**
+   * #609 — `plan.published` hangs off the room, so the inbox row named only the
+   * room and a client had to call `plans/current` before it could open the
+   * plan. The row now carries the push data's target: the plan current at
+   * fan-out, or the room when there is none.
+   */
+  it('a plan_ready inbox row names the current plan in the push shape (#609)', async () => {
+    const host = await roomWithHost('inbox-plan-ready@gogo.id.vn');
+    const totals = {
+      costMin: 0,
+      costMax: 0,
+      currency: 'VND',
+      durationMinutes: 0,
+      travelDistanceM: 0,
+      overBudget: false,
+      uncertain: false,
+    };
+    const [, currentPlan] = await db
+      .insert(schema.plans)
+      .values([
+        { roomId: host.roomId, version: 1, status: 'superseded', constraintVersion: 1, totals },
+        { roomId: host.roomId, version: 2, status: 'current', constraintVersion: 1, totals },
+      ])
+      .returning();
+    await queueEvent(host.roomId);
+    const push = new FakePush();
+    await new OutboxDispatcher(db as never, push).dispatchBatch();
+
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/me/notifications',
+      headers: auth(host.token),
+    });
+    expect(res.statusCode).toBe(200);
+    const rows = (res.json() as { notifications: { kind: string; payload: unknown }[] })
+      .notifications;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.kind).toBe('plan_ready');
+    expect(rows[0]!.payload).toEqual({
+      eventType: 'plan.published',
+      roomId: host.roomId,
+      resourceId: host.roomId,
+      route: `gogo://plan/${currentPlan!.id}`,
+      entityType: 'plan',
+      entityId: currentPlan!.id,
+    });
+    // One way to route: the inbox row and the push open the same place.
+    const data = push.sent[0]!.data!;
+    expect({ route: data.route, entityType: data.entityType, entityId: data.entityId }).toEqual({
+      route: `gogo://plan/${currentPlan!.id}`,
+      entityType: 'plan',
+      entityId: currentPlan!.id,
+    });
+  });
+
+  it('a plan_ready with no current plan opens the room, and a host kind opens the room (#609)', async () => {
+    const host = await roomWithHost('inbox-plan-none@gogo.id.vn');
+    await queueEvent(host.roomId);
+    await db.insert(schema.outboxEvents).values({
+      eventType: 'member.joined',
+      resourceType: 'room',
+      resourceId: host.roomId,
+      payload: {},
+    });
+    await new OutboxDispatcher(db as never, new FakePush()).dispatchBatch();
+
+    const rows = await db
+      .select({ kind: schema.notifications.kind, payload: schema.notifications.payload })
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, host.userId));
+    const byKind = Object.fromEntries(rows.map((row) => [row.kind, row.payload]));
+    const roomTarget = {
+      route: `gogo://room/${host.roomId}`,
+      entityType: 'room',
+      entityId: host.roomId,
+    };
+    expect(byKind.plan_ready).toMatchObject(roomTarget);
+    expect(byKind.invite).toMatchObject(roomTarget);
+  });
+
   it('every member of a members event gets exactly one inbox row (#584)', async () => {
     const { roomId, userIds } = await roomWithMembers('outbox-fanout', 2);
     await queueEvent(roomId);
