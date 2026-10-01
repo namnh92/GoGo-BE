@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { AppError } from '../../shared/app-error';
 import { rankWithFairness } from '../../suggestions/domain/fairness';
 import { hardFilter } from '../../suggestions/domain/hard-filter';
@@ -8,6 +8,7 @@ import { DEFAULT_SCORING_WEIGHTS } from '../../suggestions/domain/types';
 import { SuggestionsRepository } from '../../suggestions/infrastructure/suggestions.repository';
 import { PlansRepository } from '../infrastructure/plans.repository';
 import { TravelTimeService } from '../../travel/application/travel-time.service';
+import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
 
 /**
  * Shared plan construction (SG-007/SG-008): winner-anchored builds and
@@ -20,7 +21,41 @@ export class PlanBuilderService {
     private readonly plans: PlansRepository,
     private readonly suggestions: SuggestionsRepository,
     private readonly travel: TravelTimeService,
+    @Inject(ROOM_EVENT_BUS) private readonly events: RoomEventBus,
   ) {}
+
+  /*
+   * Deciding a winner writes the plan and moves the room to `ready` in one
+   * claim, so both facts are announced here — the only place that performs
+   * them (#608). The host's finalize path announced neither, and `match`
+   * self-decide announced the plan but not the move, so a client on SSE
+   * learned about a finalized room only when it next refetched.
+   *
+   * After the commit, never inside it: a bus that is down costs a client one
+   * refetch, never a room that moved for some members and not others.
+   */
+  private async announceDecision(
+    roomId: string,
+    plan: { id: string; version: number },
+    reason: string,
+  ): Promise<void> {
+    try {
+      await this.events.publish({
+        roomId,
+        type: 'plan.updated',
+        resourceType: 'plan',
+        resourceId: plan.id,
+        payload: { planId: plan.id, version: plan.version, reason },
+      });
+      await this.events.publish({
+        roomId,
+        type: 'room.status_changed',
+        payload: { from: 'matching', to: 'ready' },
+      });
+    } catch {
+      /* transport-only; clients fall back to polling */
+    }
+  }
 
   /**
    * ADR-0007 — one provider call per greedy step. Bound here rather than
@@ -34,8 +69,18 @@ export class PlanBuilderService {
     ) => this.travel.matrix(origin, destinations);
   }
 
-  /** Winner becomes stop #1; the optimizer fills complementary stops. */
-  async buildAroundWinner(roomId: string, winnerPlaceId: string, runId?: string) {
+  /**
+   * Winner becomes stop #1; the optimizer fills complementary stops.
+   *
+   * `reason` travels onto the `plan.updated` event so a client can tell a
+   * host's finalize from a `match` room deciding itself.
+   */
+  async buildAroundWinner(
+    roomId: string,
+    winnerPlaceId: string,
+    runId?: string,
+    reason = 'finalized',
+  ) {
     const snapshot = await this.suggestions.buildSnapshot(roomId);
     const candidates = await this.suggestions.retrieveCandidates(snapshot);
     const winner = candidates.find((c) => c.placeId === winnerPlaceId);
@@ -91,6 +136,7 @@ export class PlanBuilderService {
       // (GoGo-BE#629).
       claimRoom: { from: 'matching', to: 'ready' },
     });
+    await this.announceDecision(roomId, result.plan, reason);
     return result;
   }
 
