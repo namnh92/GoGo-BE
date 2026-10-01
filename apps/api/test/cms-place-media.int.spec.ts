@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
 
 /**
  * BE-CMS-M1 (#191) — place media is writable at last.
@@ -65,7 +66,7 @@ async function makePlace() {
 let editor: { id: string; token: string };
 
 /** The real door: `POST /cms/uploads` presigns and records the key. */
-async function authorizeUpload(token: string, purpose = 'place_image') {
+async function authorizeUpload(token: string, purpose = 'place_image', uploaded = true) {
   const res = await api().inject({
     method: 'POST',
     url: '/v1/cms/uploads',
@@ -74,7 +75,22 @@ async function authorizeUpload(token: string, purpose = 'place_image') {
     payload: { purpose, contentType: 'image/jpeg', contentLength: 512_000 },
   });
   expect(res.statusCode).toBe(201);
-  return res.json() as { id: string; key: string };
+  const body = res.json() as { id: string; key: string };
+  if (uploaded) markUploaded(body.key);
+  return body;
+}
+
+/**
+ * #560 — attach now asks the bucket whether the bytes arrived. This stands in
+ * for the client's PUT through the presigned URL, into the bucket the key's
+ * prefix names (ADR-0005).
+ */
+function markUploaded(key: string): string {
+  const token = /^(places|banners|campaigns)\//.test(key)
+    ? PUBLIC_STORAGE_PROVIDER
+    : STORAGE_PROVIDER;
+  app.get<FakeStorage>(token).seed(key, new Uint8Array([0xff, 0xd8, 0xff]), 'image/jpeg');
+  return key;
 }
 
 const attach = (placeId: string, payload: Record<string, unknown>, token = editor.token) =>
@@ -250,6 +266,53 @@ describe('#191 upload → attach → moderate → visible', () => {
       });
     });
   }
+
+  it('refuses a key whose bytes never reached the bucket, and writes nothing (#560)', async () => {
+    const place = await makePlace();
+    // Authorized, unexpired, this editor's — but the PUT never happened.
+    const upload = await authorizeUpload(editor.token, 'place_image', false);
+
+    const res = await attach(place.id, { storageKey: upload.key });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('UPLOAD_NOT_RECEIVED');
+
+    // No catalog row pointing at nothing, and the key is still claimable.
+    const rows = await db
+      .select()
+      .from(schema.placeMedia)
+      .where(eq(schema.placeMedia.storageKey, upload.key));
+    expect(rows).toHaveLength(0);
+    const [claim] = await db
+      .select({ status: schema.mediaUploads.status })
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.storageKey, upload.key));
+    expect(claim!.status).toBe('pending');
+
+    // Once the upload lands, the same key attaches.
+    markUploaded(upload.key);
+    const retry = await attach(place.id, { storageKey: upload.key });
+    expect(retry.statusCode).toBe(201);
+  });
+
+  it('a storage outage during the check is retryable and writes nothing (#560)', async () => {
+    const place = await makePlace();
+    const upload = await authorizeUpload(editor.token);
+    const store = app.get<FakeStorage>(PUBLIC_STORAGE_PROVIDER);
+    store.failReads = true;
+    try {
+      const res = await attach(place.id, { storageKey: upload.key });
+      expect(res.statusCode).toBe(503);
+      expect(res.json().code).toBe('UPLOAD_STORAGE_UNAVAILABLE');
+      expect(res.json().retryable).toBe(true);
+    } finally {
+      store.failReads = false;
+    }
+    const rows = await db
+      .select()
+      .from(schema.placeMedia)
+      .where(eq(schema.placeMedia.storageKey, upload.key));
+    expect(rows).toHaveLength(0);
+  });
 
   it('stops serving a photo the moment it is rejected', async () => {
     const place = await makePlace();

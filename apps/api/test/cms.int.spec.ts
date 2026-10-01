@@ -9,6 +9,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
 import { AdminAuthService, audiencePredicate, respectsPushPreference } from '@gogo/modules';
 
 /**
@@ -83,6 +84,19 @@ async function superAdmin(): Promise<{ id: string; token: string }> {
     superAdminId = row!.id;
   }
   return { id: superAdminId, token: await adminLogin(SUPER_ADMIN_EMAIL, superAdminPassword) };
+}
+
+/**
+ * #560 — attach now asks the bucket whether the bytes arrived. This stands in
+ * for the client's PUT through the presigned URL, into the bucket the key's
+ * prefix names (ADR-0005).
+ */
+function markUploaded(key: string): string {
+  const token = /^(places|banners|campaigns)\//.test(key)
+    ? PUBLIC_STORAGE_PROVIDER
+    : STORAGE_PROVIDER;
+  app.get<FakeStorage>(token).seed(key, new Uint8Array([0xff, 0xd8, 0xff]), 'image/jpeg');
+  return key;
 }
 
 beforeAll(async () => {
@@ -3196,7 +3210,7 @@ describe('notification campaigns (BE-CMS-G4e #226)', () => {
         payload: { purpose, contentType: 'image/jpeg', contentLength: 90_000 },
       });
       expect(res.statusCode).toBe(201);
-      return res.json().key as string;
+      return markUploaded(res.json().key as string);
     }
 
     it('binds a valid key to the campaign it was saved on', async () => {
@@ -3827,7 +3841,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
       payload: { purpose: 'campaign_image', contentType: 'image/jpeg', contentLength: 5_000 },
     });
     expect(authorized.statusCode).toBe(201);
-    const key = authorized.json().key as string;
+    const key = markUploaded(authorized.json().key as string);
     // ADR-0005 routing: a campaign image lands on the public prefix, which is
     // what makes a public URL for it meaningful at all.
     expect(key).toMatch(/^campaigns\//);
@@ -4470,7 +4484,7 @@ describe('banners (BE-CMS-G4c #224)', () => {
       payload: { purpose, contentType: 'image/jpeg', contentLength: 120_000 },
     });
     expect(res.statusCode).toBe(201);
-    return res.json().key as string;
+    return markUploaded(res.json().key as string);
   }
 
   beforeAll(async () => {

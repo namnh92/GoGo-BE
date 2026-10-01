@@ -418,6 +418,13 @@ export interface StoragePort {
   ): Promise<void>;
   /** Idempotent: deleting an object that is already gone is a success. */
   deleteObject(key: string, options?: { signal?: AbortSignal }): Promise<void>;
+  /**
+   * GoGo-BE#560 — HEAD: whether the bytes for `key` are in the bucket. A
+   * presigned key is only a permission to upload; nothing says the client used
+   * it. `false` only on a definite not-found; any other failure is
+   * `ProviderUnavailableError`, never a guess either way.
+   */
+  exists(key: string, options?: { signal?: AbortSignal }): Promise<boolean>;
 }
 
 /**

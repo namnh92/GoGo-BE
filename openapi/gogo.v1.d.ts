@@ -11589,6 +11589,24 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            /** @description `UPLOAD_NOT_RECEIVED` (#560) — the upload key is valid but no file has reached storage for it. Nothing was written and the key is still usable: PUT the file to the upload URL, then retry. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether the file arrived. Nothing was written; retryable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     submitPlaceImport: {
@@ -14663,7 +14681,24 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description The key is already on this place, or `UPLOAD_NOT_RECEIVED` (#560): the key is valid but no file has reached storage for it. Nothing was written and the key stays usable: PUT the file, then retry. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether the file arrived. Nothing was written; retryable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsListAttachableMedia: {
@@ -15722,12 +15757,21 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description A banner with that name exists (`BANNER_NAME_TAKEN`) */
+            /** @description A banner with that name exists (`BANNER_NAME_TAKEN`), or no file has reached storage for the image key yet (`UPLOAD_NOT_RECEIVED`, #560). */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether the file arrived. Nothing was written; retryable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };
@@ -15780,6 +15824,24 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+            /** @description `UPLOAD_NOT_RECEIVED` (#560) — the upload key is valid but no file has reached storage for it. Nothing was written and the key is still usable: PUT the file to the upload URL, then retry. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether the file arrived. Nothing was written; retryable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsSetBannerStatus: {
@@ -15885,7 +15947,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description A campaign with that name exists (`CAMPAIGN_NAME_TAKEN`) */
+            /** @description A campaign with that name exists (`CAMPAIGN_NAME_TAKEN`), or no file has reached storage for the image key yet (`UPLOAD_NOT_RECEIVED`, #560). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -15894,6 +15956,15 @@ export interface operations {
             };
             /** @description `INVALID_DESTINATION` with `field_errors[0].field = destinationType` — `recommendation`, `plan_template` and `external_url` are not accepted for new campaigns until the app can open them (GoGo-BE#604). They stay in `CampaignDestination` so campaigns that already hold one remain readable. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether the file arrived. Nothing was written; retryable. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15952,7 +16023,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
-            /** @description Not in an editable state (`CAMPAIGN_NOT_EDITABLE`), or already delivered to at least one recipient and the patch changes a field that reaches a phone (`CAMPAIGN_ALREADY_DELIVERED`). */
+            /** @description Not in an editable state (`CAMPAIGN_NOT_EDITABLE`), or already delivered to at least one recipient and the patch changes a field that reaches a phone (`CAMPAIGN_ALREADY_DELIVERED`), or no file has reached storage for the image key yet (`UPLOAD_NOT_RECEIVED`, #560). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -15963,6 +16034,15 @@ export interface operations {
             };
             /** @description `INVALID_DESTINATION` with `field_errors[0].field = destinationType` — the patch changes the destination to `recommendation`, `plan_template` or `external_url`, which the app cannot open yet (GoGo-BE#604). A campaign that already holds one can still be edited in every other field, re-saved with the same destination, or moved to an openable one. Changing `destinationType` takes its `destinationValue` from the patch only; the previous value is not carried over. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether the file arrived. Nothing was written; retryable. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

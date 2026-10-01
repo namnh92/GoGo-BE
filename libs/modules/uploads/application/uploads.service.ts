@@ -2,11 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
-import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type StoragePort } from '@gogo/providers';
+import {
+  ProviderUnavailableError,
+  PUBLIC_STORAGE_PROVIDER,
+  STORAGE_PROVIDER,
+  type StoragePort,
+} from '@gogo/providers';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
-import { PUBLIC_UPLOAD_PREFIXES } from '../../shared/media-url';
+import { isPublicKey, PUBLIC_UPLOAD_PREFIXES } from '../../shared/media-url';
 import {
   AVATAR_STORAGE_CONFIGURED,
   CATALOGUE_STORAGE_CONFIGURED,
@@ -252,6 +257,15 @@ export class UploadsService {
       ]);
     }
 
+    // #560 — a valid, unexpired key is a permission to upload, not proof that
+    // anything was. Ask the bucket before claiming it, so a failed PUT can no
+    // longer leave a resource pointing at nothing. Only keys still pending:
+    // one already attached to this resource was checked when it was claimed.
+    const pending = rows
+      .filter((row) => usable.has(row.storageKey) && row.status === 'pending')
+      .map((row) => row.storageKey);
+    await this.assertUploaded(pending);
+
     await db
       .update(schema.mediaUploads)
       .set({
@@ -261,5 +275,32 @@ export class UploadsService {
         attachedAt: sql`now()`,
       })
       .where(inArray(schema.mediaUploads.storageKey, [...usable]));
+  }
+
+  private async assertUploaded(keys: string[]): Promise<void> {
+    let found: boolean[];
+    try {
+      // The key's prefix names its bucket, exactly as it did when presigned.
+      found = await Promise.all(
+        keys.map((key) => (isPublicKey(key) ? this.publicStorage : this.storage).exists(key)),
+      );
+    } catch (err) {
+      if (err instanceof ProviderUnavailableError) {
+        throw AppError.serviceUnavailable(
+          'UPLOAD_STORAGE_UNAVAILABLE',
+          'Object storage is not answering, try again shortly',
+        );
+      }
+      throw err;
+    }
+    const missing = keys.filter((_, i) => !found[i]);
+    if (missing.length > 0) {
+      // 409, not 400: the key is fine and the request may succeed once the
+      // upload has finished. Nothing is written — no claim, no resource row.
+      throw AppError.conflict(
+        'UPLOAD_NOT_RECEIVED',
+        'The file for this upload key has not reached storage; upload it, then retry',
+      );
+    }
   }
 }

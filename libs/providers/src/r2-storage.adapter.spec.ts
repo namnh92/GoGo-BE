@@ -129,6 +129,31 @@ describe('R2 server-side verbs (ADR-0022)', () => {
     await expect(missing.deleteObject('gone')).resolves.toBeUndefined();
   });
 
+  it('HEAD answers whether the object is there, signed like every other verb (#560)', async () => {
+    const present = stubFetch({ status: 200 });
+    const signed = new R2StorageAdapter({ ...adapter['config'], fetch: present.fetcher });
+    await expect(signed.exists('places/a/b.jpg')).resolves.toBe(true);
+    const { url, init } = present.calls[0]!;
+    expect(init.method).toBe('HEAD');
+    expect(url).toBe('https://acct.r2.cloudflarestorage.com/gogo-media/places/a/b.jpg');
+    expect(header(init, 'authorization')).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE\//);
+
+    const missing = new R2StorageAdapter({
+      ...adapter['config'],
+      fetch: stubFetch({ status: 404 }).fetcher,
+    });
+    await expect(missing.exists('places/a/gone.jpg')).resolves.toBe(false);
+
+    // A 403 or 500 is not "absent": guessing either way would be a lie.
+    for (const status of [403, 500]) {
+      const broken = new R2StorageAdapter({
+        ...adapter['config'],
+        fetch: stubFetch({ status }).fetcher,
+      });
+      await expect(broken.exists('k')).rejects.toThrow(/unavailable/);
+    }
+  });
+
   it('any other failure is the provider being unavailable, never a silent success', async () => {
     const broken = new R2StorageAdapter({
       ...adapter['config'],

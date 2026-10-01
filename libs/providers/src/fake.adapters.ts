@@ -324,6 +324,14 @@ export class FakeStorage implements StoragePort {
     this.objects.delete(key);
     this.deleted.push(key);
   }
+
+  /** Set to make `exists` fail, for the storage-outage path of attach (#560). */
+  failReads = false;
+
+  async exists(key: string): Promise<boolean> {
+    if (this.failReads) throw new ProviderUnavailableError('fake-storage', 'failReads');
+    return this.objects.has(key);
+  }
 }
 
 /** Records what would have been purged at the edge. */

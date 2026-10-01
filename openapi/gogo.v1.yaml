@@ -2983,6 +2983,21 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Checkin' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: >
+            `UPLOAD_NOT_RECEIVED` (#560) — the upload key is valid but no file
+            has reached storage for it. Nothing was written and the key is still
+            usable: PUT the file to the upload URL, then retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: >
+            `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether
+            the file arrived. Nothing was written; retryable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /places/imports:
     post:
@@ -6422,7 +6437,21 @@ paths:
               schema: { $ref: '#/components/schemas/CmsPlaceMedia' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: >
+            The key is already on this place, or `UPLOAD_NOT_RECEIVED` (#560):
+            the key is valid but no file has reached storage for it. Nothing was
+            written and the key stays usable: PUT the file, then retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: >
+            `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether
+            the file arrived. Nothing was written; retryable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/places/{placeId}/media/attachable:
     get:
@@ -7400,7 +7429,17 @@ paths:
             points at nothing (`DESTINATION_NOT_FOUND`), the window is inverted
             (`INVALID_SCHEDULE`), or the image key is not usable
             (`INVALID_UPLOAD_KEY`).
-        '409': { description: 'A banner with that name exists (`BANNER_NAME_TAKEN`)' }
+        '409':
+          description: >
+            A banner with that name exists (`BANNER_NAME_TAKEN`), or no file has
+            reached storage for the image key yet (`UPLOAD_NOT_RECEIVED`, #560).
+        '503':
+          description: >
+            `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether
+            the file arrived. Nothing was written; retryable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/banners/{id}:
     get:
@@ -7435,6 +7474,21 @@ paths:
               schema: { $ref: '#/components/schemas/CmsBanner' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `UPLOAD_NOT_RECEIVED` (#560) — the upload key is valid but no file
+            has reached storage for it. Nothing was written and the key is still
+            usable: PUT the file to the upload URL, then retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: >
+            `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether
+            the file arrived. Nothing was written; retryable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/banners/{id}/status:
     patch:
@@ -7540,7 +7594,11 @@ paths:
             Audience filter does not fit the audience type (`INVALID_AUDIENCE`),
             destination is malformed or unsafe (`INVALID_DESTINATION`), or it
             points at something that does not exist (`DESTINATION_NOT_FOUND`).
-        '409': { description: 'A campaign with that name exists (`CAMPAIGN_NAME_TAKEN`)' }
+        '409':
+          description: >
+            A campaign with that name exists (`CAMPAIGN_NAME_TAKEN`), or no file
+            has reached storage for the image key yet (`UPLOAD_NOT_RECEIVED`,
+            #560).
         '422':
           description: >
             `INVALID_DESTINATION` with `field_errors[0].field = destinationType`
@@ -7548,6 +7606,13 @@ paths:
             accepted for new campaigns until the app can open them
             (GoGo-BE#604). They stay in `CampaignDestination` so campaigns that
             already hold one remain readable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: >
+            `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether
+            the file arrived. Nothing was written; retryable.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -7602,7 +7667,15 @@ paths:
         '409':
           description: >-
             Not in an editable state (`CAMPAIGN_NOT_EDITABLE`), or already delivered to at least one
-            recipient and the patch changes a field that reaches a phone (`CAMPAIGN_ALREADY_DELIVERED`).
+            recipient and the patch changes a field that reaches a phone (`CAMPAIGN_ALREADY_DELIVERED`),
+            or no file has reached storage for the image key yet (`UPLOAD_NOT_RECEIVED`, #560).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: >
+            `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether
+            the file arrived. Nothing was written; retryable.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
