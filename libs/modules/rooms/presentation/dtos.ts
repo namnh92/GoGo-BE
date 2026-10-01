@@ -41,9 +41,40 @@ export const createRoomSchema = z.object({
 });
 export type CreateRoomDto = z.infer<typeof createRoomSchema>;
 
+/*
+ * BE-BFF-021 (#576). PATCH is a partial update: a field left out keeps what
+ * the room already has, and `null` clears it. It used to replace the whole
+ * constraint, so a client editing the budget by spreading
+ * `RoomSummary.constraints` wiped `originLat`/`originLng` — coordinates the
+ * summary does not return and the client therefore cannot send back. Every
+ * budget edit silently dropped the room's origin and its geo filter with it.
+ *
+ * `administrativeArea` already worked this way; the rest now match it.
+ * `budgetMode` and `budgetAmount` stay required: an edit states the unit it
+ * means (#559), and guessing it from the stored row is how a couple room's
+ * total got read as per-person.
+ */
+const patchableConstraintFields = {
+  administrativeArea: constraintFields.administrativeArea,
+  originText: constraintFields.originText.nullable(),
+  originLat: constraintFields.originLat.nullable(),
+  originLng: constraintFields.originLng.nullable(),
+  areaKey: constraintFields.areaKey.nullable(),
+  radiusM: constraintFields.radiusM.nullable(),
+  startAt: constraintFields.startAt.nullable(),
+  endAt: constraintFields.endAt.nullable(),
+  budgetMode: constraintFields.budgetMode,
+  budgetAmount: constraintFields.budgetAmount,
+  // No `.default()` here, unlike create: a default would turn "left out" into
+  // "cleared", which is the whole bug.
+  currency: z.string().length(3).optional(),
+  dietaryKeys: z.array(z.string().max(64)).max(20).optional(),
+  accessibilityKeys: z.array(z.string().max(64)).max(20).optional(),
+};
+
 export const updateConstraintsSchema = z
   .object({
-    ...constraintFields,
+    ...patchableConstraintFields,
     expectedConstraintVersion: z.number().int().min(1),
     participantCount: z.number().int().min(2).max(20).optional(),
   })

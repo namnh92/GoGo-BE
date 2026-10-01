@@ -52,6 +52,16 @@ export type ConstraintInput = {
   accessibilityKeys?: string[] | undefined;
 };
 
+/**
+ * What a PATCH may carry (#576). Same fields, but each clearable one accepts
+ * `null` — "clear this" — on top of being absent, which means "leave it".
+ */
+export type ConstraintPatch = {
+  [K in keyof ConstraintInput]: K extends 'budgetMode' | 'budgetAmount'
+    ? ConstraintInput[K]
+    : ConstraintInput[K] | null;
+};
+
 function toNewConstraint(input: ConstraintInput): NewConstraint {
   return {
     ...(input.administrativeArea !== undefined
@@ -70,6 +80,19 @@ function toNewConstraint(input: ConstraintInput): NewConstraint {
     dietaryKeys: input.dietaryKeys ?? [],
     accessibilityKeys: input.accessibilityKeys ?? [],
   };
+}
+
+/**
+ * BE-BFF-021 (#576) — a PATCH keeps what it does not mention.
+ *
+ * `undefined` means the client said nothing about the field, so the stored
+ * value survives; `null` means it asked for the field to be cleared. The
+ * distinction matters most for `originLat`/`originLng`, which `RoomSummary`
+ * does not return: a client editing the budget cannot send coordinates back,
+ * so replacing the whole row dropped the room's origin every time.
+ */
+function keep<T>(incoming: T | null | undefined, stored: T | null | undefined): T | null {
+  return incoming === undefined ? (stored ?? null) : incoming;
 }
 
 /** BE-BFF-003/004 + BE-BFF-015 — room lifecycle, invites, members, seeds. */
@@ -267,7 +290,7 @@ export class RoomsService {
   async updateConstraints(
     actor: Actor,
     roomId: string,
-    input: ConstraintInput & {
+    input: ConstraintPatch & {
       expectedConstraintVersion: number;
       participantCount?: number | undefined;
     },
@@ -281,10 +304,34 @@ export class RoomsService {
     if (room.type === 'couple' && input.participantCount && input.participantCount !== 2) {
       throw AppError.badRequest('INVALID_PARTICIPANT_COUNT', 'Couple rooms have exactly 2 people');
     }
+    const stored = await this.repo.getCurrentConstraint(roomId, room.constraintVersion);
+    const merged: NewConstraint = {
+      ...(input.administrativeArea !== undefined
+        ? { administrativeArea: input.administrativeArea }
+        : {}),
+      originText: keep(input.originText, stored?.originText),
+      originLat: keep(input.originLat, stored?.originLat),
+      originLng: keep(input.originLng, stored?.originLng),
+      areaKey: keep(input.areaKey, stored?.areaKey),
+      radiusM: keep(input.radiusM, stored?.radiusM),
+      startAt: keep(input.startAt, stored?.startAt),
+      endAt: keep(input.endAt, stored?.endAt),
+      budgetMode: input.budgetMode,
+      budgetAmount: input.budgetAmount,
+      currency: input.currency ?? stored?.currency ?? 'VND',
+      dietaryKeys: input.dietaryKeys ?? stored?.dietaryKeys ?? [],
+      accessibilityKeys: input.accessibilityKeys ?? stored?.accessibilityKeys ?? [],
+    };
+    // The DTO can only compare the two fields a request happened to carry.
+    // Sending a later `startAt` alone, against a stored `endAt`, is only
+    // visible once both halves are on the table.
+    if (merged.startAt && merged.endAt && merged.startAt >= merged.endAt) {
+      throw AppError.badRequest('INVALID_SCHEDULE', 'startAt must be before endAt');
+    }
     const version = await this.repo.applyConstraintVersion({
       roomId,
       expectedVersion: input.expectedConstraintVersion,
-      constraint: toNewConstraint(input),
+      constraint: merged,
       memberId: member.id,
       ...(input.participantCount ? { participantCount: input.participantCount } : {}),
       event: {

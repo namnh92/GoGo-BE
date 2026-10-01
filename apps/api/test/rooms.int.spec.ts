@@ -1,7 +1,7 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -398,6 +398,198 @@ describe('permission matrix (SRS §15.7 — hand-crafted requests)', () => {
 });
 
 describe('constraints + staleness (core rule #6)', () => {
+  /**
+   * BE-BFF-021 (#576). `RoomSummary.constraints` does not carry
+   * originLat/originLng, so a client editing the budget spreads what it has
+   * and the coordinates are simply absent. While PATCH replaced the whole
+   * row, every budget edit silently dropped the room's origin — and with it
+   * the geo filter the next suggestion run would have used.
+   */
+  it('keeps the origin a budget edit never mentioned, and clears only what is sent as null', async () => {
+    const { token } = await registerUser('partial-constraints@gogo.id.vn');
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        type: 'group',
+        decisionMode: 'vote',
+        participantCount: 4,
+        constraint: {
+          ...baseConstraint,
+          originText: 'Nhà của A',
+          originLat: 10.7769,
+          originLng: 106.7009,
+          startAt: '2026-11-01T10:00:00.000Z',
+          endAt: '2026-11-01T18:00:00.000Z',
+        },
+      },
+    });
+    const room = created.json();
+
+    const originOf = async (version: number) => {
+      const [row] = await db
+        .select({
+          lat: schema.roomConstraints.originLat,
+          lng: schema.roomConstraints.originLng,
+          text: schema.roomConstraints.originText,
+          endAt: schema.roomConstraints.endAt,
+        })
+        .from(schema.roomConstraints)
+        .where(
+          and(
+            eq(schema.roomConstraints.roomId, room.id),
+            eq(schema.roomConstraints.version, version),
+          ),
+        );
+      return row;
+    };
+    expect(await originOf(room.constraintVersion)).toMatchObject({
+      lat: 10.7769,
+      lng: 106.7009,
+    });
+
+    // Exactly what the client can send: the summary's own constraints, which
+    // have no coordinates in them, plus the new budget.
+    const budgetEdit = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/constraints`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        ...room.constraints,
+        budgetAmount: 450_000,
+        expectedConstraintVersion: room.constraintVersion,
+      },
+    });
+    expect(budgetEdit.statusCode).toBe(200);
+    expect(budgetEdit.json().constraints.budgetAmount).toBe(450_000);
+
+    const afterBudget = await originOf(budgetEdit.json().constraintVersion);
+    expect(afterBudget).toMatchObject({ lat: 10.7769, lng: 106.7009, text: 'Nhà của A' });
+    // Untouched fields survive too, not just the invisible ones.
+    expect(afterBudget?.endAt).not.toBeNull();
+
+    // Clearing is still possible — it is just explicit now.
+    const clearEnd = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/constraints`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        budgetMode: 'per_person',
+        budgetAmount: 450_000,
+        endAt: null,
+        expectedConstraintVersion: budgetEdit.json().constraintVersion,
+      },
+    });
+    expect(clearEnd.statusCode).toBe(200);
+    const afterClear = await originOf(clearEnd.json().constraintVersion);
+    expect(afterClear?.endAt).toBeNull();
+    expect(afterClear).toMatchObject({ lat: 10.7769, lng: 106.7009 });
+  });
+
+  /**
+   * The privacy job nulls the coordinates once the retention window closes
+   * (schema note on room_constraints). Carrying forward must copy that null
+   * rather than resurrect anything, and must not block the edit.
+   */
+  it('still edits a room whose origin has already aged out of retention', async () => {
+    const { token } = await registerUser('aged-origin@gogo.id.vn');
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        type: 'group',
+        decisionMode: 'vote',
+        participantCount: 4,
+        constraint: {
+          ...baseConstraint,
+          originText: 'Nhà của A',
+          originLat: 10.5,
+          originLng: 106.5,
+        },
+      },
+    });
+    const room = created.json();
+
+    // What the privacy job leaves behind: the text stays, the point goes.
+    await db
+      .update(schema.roomConstraints)
+      .set({ originLat: null, originLng: null })
+      .where(eq(schema.roomConstraints.roomId, room.id));
+
+    const edit = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/constraints`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        ...room.constraints,
+        budgetAmount: 500_000,
+        expectedConstraintVersion: room.constraintVersion,
+      },
+    });
+    expect(edit.statusCode).toBe(200);
+    const [row] = await db
+      .select({
+        lat: schema.roomConstraints.originLat,
+        text: schema.roomConstraints.originText,
+      })
+      .from(schema.roomConstraints)
+      .where(
+        and(
+          eq(schema.roomConstraints.roomId, room.id),
+          eq(schema.roomConstraints.version, edit.json().constraintVersion),
+        ),
+      );
+    expect(row).toMatchObject({ lat: null, text: 'Nhà của A' });
+  });
+
+  /**
+   * The DTO can only compare the two fields one request happened to carry.
+   * A later `startAt` sent alone, against a stored `endAt`, is only wrong
+   * once both halves are on the table.
+   */
+  it('refuses a merged window that runs backwards', async () => {
+    const { token } = await registerUser('merged-window@gogo.id.vn');
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        type: 'group',
+        decisionMode: 'vote',
+        participantCount: 4,
+        constraint: {
+          ...baseConstraint,
+          startAt: '2026-11-01T10:00:00.000Z',
+          endAt: '2026-11-01T12:00:00.000Z',
+        },
+      },
+    });
+    const room = created.json();
+
+    const backwards = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/constraints`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        budgetMode: 'per_person',
+        budgetAmount: 300_000,
+        startAt: '2026-11-01T18:00:00.000Z',
+        expectedConstraintVersion: room.constraintVersion,
+      },
+    });
+    expect(backwards.statusCode).toBe(400);
+    expect(backwards.json().code).toBe('INVALID_SCHEDULE');
+  });
+
   /**
    * GoGo-BE#559 — the rule applies to an explicit constraint edit too, and a
    * room stored before it keeps its value: nothing is converted behind the
