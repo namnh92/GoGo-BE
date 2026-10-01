@@ -31,6 +31,12 @@ const SEQ_TTL_SECONDS = 60 * 60 * 24;
  */
 const BUFFER_TTL_SECONDS = 60 * 15;
 
+/**
+ * #638 F-02 — how long a reconnected stream remembers what it replayed, to
+ * drop a late live copy. Copies are in flight for milliseconds; this is slack.
+ */
+const REPLAY_DEDUPE_WINDOW_MS = 30_000;
+
 const channelOf = (roomId: string) => `room:${roomId}:events`;
 const seqKeyOf = (roomId: string) => `room:${roomId}:seq`;
 const bufferKeyOf = (roomId: string) => `room:${roomId}:buffer`;
@@ -116,24 +122,29 @@ export class RedisRoomEventBus implements RoomEventBus {
     let attached = false;
     const early: SequencedRoomEvent[] = [];
     /**
-     * Sequences already handed out in the replay. The replay comes over the
-     * commands connection and the live copy over the subscriber connection, so
-     * the live copy of a replayed event can still arrive after the attach;
-     * it is dropped once. Keyed by sequence rather than a high-water mark, so a
-     * slower publisher's lower sequence arriving late is still delivered.
+     * Events already handed out in the replay, by `event_id`. The replay comes
+     * over the commands connection and the live copy over the subscriber
+     * connection, so the live copy of a replayed event can still arrive after
+     * the attach; it is dropped once. Keyed by the event's immutable id — not
+     * its sequence, which restarts when the room's counter expires (F-02) —
+     * and kept only for REPLAY_DEDUPE_WINDOW_MS: a live copy is in flight for
+     * milliseconds, and nothing older can still be one.
      */
-    const replayed = new Set<number>();
+    const replayed = new Set<string>();
+    let dedupeUntil = 0;
 
     const handler = (incoming: string, message: string) => {
       if (incoming !== channel) return;
       const event = JSON.parse(message) as SequencedRoomEvent;
       if (!attached) {
         early.push(event);
-      } else if (replayed.delete(event.seq)) {
         return;
-      } else {
-        listener(event);
       }
+      if (replayed.size > 0) {
+        if (Date.now() > dedupeUntil) replayed.clear();
+        else if (replayed.delete(event.event.event_id)) return;
+      }
+      listener(event);
     };
     this.subscriber.on('message', handler);
     const refs = (this.refCounts.get(channel) ?? 0) + 1;
@@ -149,7 +160,10 @@ export class RedisRoomEventBus implements RoomEventBus {
       if (remaining <= 0) {
         this.refCounts.delete(channel);
         this.subscribing.delete(channel);
-        void this.subscriber.unsubscribe(channel);
+        // Fire-and-forget, but never unhandled: during a Redis outage this
+        // rejects too, and an unhandled rejection takes the process down
+        // (F-03). The caller's own error, if any, is what propagates.
+        this.subscriber.unsubscribe(channel).catch(() => undefined);
       } else {
         this.refCounts.set(channel, remaining);
       }
@@ -174,15 +188,13 @@ export class RedisRoomEventBus implements RoomEventBus {
 
       // Whatever arrived live during the attach and is not already in the
       // replay goes out with it, in sequence order.
-      for (const event of replay) replayed.add(event.seq);
+      for (const event of replay) replayed.add(event.event.event_id);
       for (const event of early) {
         if (afterSeq !== null && event.seq <= afterSeq) continue;
-        if (replayed.has(event.seq)) {
-          replayed.delete(event.seq); // its live copy has already arrived
-          continue;
-        }
+        if (replayed.delete(event.event.event_id)) continue; // live copy already here
         replay.push(event);
       }
+      dedupeUntil = Date.now() + REPLAY_DEDUPE_WINDOW_MS;
       replay.sort((a, b) => a.seq - b.seq);
       // From here on events go straight to the listener. Everything between
       // this line and the caller emitting `replay` runs in one microtask

@@ -32,6 +32,7 @@ class FakeConnection implements RedisPubSubLike {
   /** Runs once, after the next command of the given name resolves. */
   readonly after = new Map<string, () => Promise<void>>();
   failNextSubscribe = false;
+  failUnsubscribe = false;
   subscribeCalls = 0;
 
   constructor(private readonly server: FakeRedisServer) {}
@@ -89,6 +90,7 @@ class FakeConnection implements RedisPubSubLike {
     return this.done('subscribe', 1);
   }
   async unsubscribe(channel: string) {
+    if (this.failUnsubscribe) throw new Error('Connection is closed.');
     this.server.subscribed.get(this)?.delete(channel);
     return 1;
   }
@@ -195,5 +197,47 @@ describe('RedisRoomEventBus reconnect (#638)', () => {
     expect(b.seen()).toEqual([1]);
     a.sub.unsubscribe();
     b.sub.unsubscribe();
+  });
+
+  it('a failed attach during an outage rejects with its own error and leaves no unhandled rejection (F-03)', async () => {
+    const { receiver, receiverSubscriber } = cluster();
+    receiverSubscriber.failNextSubscribe = true;
+    receiverSubscriber.failUnsubscribe = true;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await expect(receiver.subscribe(ROOM, null, () => undefined)).rejects.toThrow('max retries');
+      // Let a dangling rejection surface before looking.
+      await settle();
+      await settle();
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+  });
+
+  it('dedupes a replayed event by its id, so a reset sequence cannot swallow a new event (F-02)', async () => {
+    const server = new FakeRedisServer();
+    const receiverCommands = new FakeConnection(server);
+    const receiverSubscriber = new FakeConnection(server);
+    const receiver = new RedisRoomEventBus(receiverCommands, receiverSubscriber);
+    const sender = new RedisRoomEventBus(new FakeConnection(server), new FakeConnection(server));
+
+    // seq 1 is seen; seq 2 is published on another instance *before* the
+    // stream's SUBSCRIBE, so it is in the replay and its live copy never comes.
+    await sender.publish(change(1));
+    await sender.publish(change(2));
+    const stream = await attach(receiver, 1);
+    expect(stream.seen()).toEqual([2]);
+
+    // The room goes quiet past the sequence key's TTL; the counter restarts.
+    server.counters.clear();
+    await sender.publish(change(10)); // seq 1 again
+    await sender.publish(change(11)); // seq 2 again: a different event
+    await settle();
+
+    expect(stream.seen()).toEqual([2, 1, 2]);
+    stream.sub.unsubscribe();
   });
 });
