@@ -9,9 +9,11 @@ import {
 import {
   DEFAULT_PUSH_LOCALE,
   PUSH_LOCALES,
+  inboxTarget,
   opensPlan,
   pushIdempotencyKey,
   pushLocaleOf,
+  pushTarget,
   renderPushNotification,
   type PushKind,
 } from './notification-templates';
@@ -165,6 +167,18 @@ export class OutboxDispatcher {
     const optedOutOfPush = new Set(pushRows.filter((row) => !row.allowed).map((row) => row.id));
     const localeOf = new Map(pushRows.map((row) => [row.id, pushLocaleOf(row.locale)]));
 
+    // A plan kind opens the room's current plan. An edit or a regenerate writes
+    // a new plan row, so the plan id an event names may already be superseded.
+    let currentPlanId: string | null = null;
+    if (opensPlan(mapping.kind)) {
+      const [current] = await this.db
+        .select({ id: schema.plans.id })
+        .from(schema.plans)
+        .where(and(eq(schema.plans.roomId, roomId), eq(schema.plans.status, 'current')))
+        .limit(1);
+      currentPlanId = current?.id ?? null;
+    }
+
     // #584 — one inbox row per recipient, whichever release writes it.
     //
     // The previous release wrote every recipient under the bare event id, so
@@ -175,7 +189,16 @@ export class OutboxDispatcher {
     // global index and writes nothing, and whoever owns the row — this release's
     // pick or the previous release's first recipient — is that person's row.
     // Everyone else gets a key of their own.
-    const payload = { eventType: event.eventType, roomId, resourceId: event.resourceId };
+    //
+    // #609: the row also carries where it opens, in the same shape as the push
+    // data (`route`, `entityType`, `entityId`), so the inbox and a tapped push
+    // route one way. `resourceId` stays for clients that already read it.
+    const payload = {
+      eventType: event.eventType,
+      roomId,
+      resourceId: event.resourceId,
+      ...inboxTarget(pushTarget(mapping.kind, roomId, currentPlanId)),
+    };
     const existing = await this.db
       .select({ userId: schema.notifications.userId })
       .from(schema.notifications)
@@ -230,18 +253,6 @@ export class OutboxDispatcher {
     for (const userId of recipients) {
       const locale = localeOf.get(userId) ?? DEFAULT_PUSH_LOCALE;
       byLocale.set(locale, [...(byLocale.get(locale) ?? []), userId]);
-    }
-
-    // A plan kind opens the room's current plan. An edit or a regenerate writes
-    // a new plan row, so the plan id an event names may already be superseded.
-    let currentPlanId: string | null = null;
-    if (opensPlan(mapping.kind)) {
-      const [current] = await this.db
-        .select({ id: schema.plans.id })
-        .from(schema.plans)
-        .where(and(eq(schema.plans.roomId, roomId), eq(schema.plans.status, 'current')))
-        .limit(1);
-      currentPlanId = current?.id ?? null;
     }
 
     for (const locale of PUSH_LOCALES) {

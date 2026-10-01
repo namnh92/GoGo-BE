@@ -6830,7 +6830,20 @@ export interface components {
             /** Format: uuid */
             id?: string;
             kind?: components["schemas"]["NotificationKind"];
+            /** @description Free-form per kind. Rows the outbox writes (`invite`, `preference_reminder`, `plan_ready`, `plan_changed`, `date_reminder`) also carry where the row opens, in the same shape as push data v1: `route`, `entityType`, `entityId`. Plan kinds name the plan current at fan-out, or the room when there is none; a later edit or regenerate can supersede that plan, so a client opening a stale row falls back to the room's current plan. Older rows lack the three fields — route them by `roomId`. */
             payload?: {
+                eventType?: string;
+                /** Format: uuid */
+                roomId?: string;
+                /** Format: uuid */
+                resourceId?: string;
+                /** @description Canonical app link, `gogo://plan/{id}` or `gogo://room/{id}`. */
+                route?: string;
+                /** @description Grows with push data v1; route an unknown value by `roomId`. */
+                entityType?: string;
+                /** Format: uuid */
+                entityId?: string;
+            } & {
                 [key: string]: unknown;
             };
             /** Format: date-time */
