@@ -90,51 +90,122 @@ export class RedisRoomEventBus implements RoomEventBus {
     );
   }
 
+  /**
+   * #638 — the SUBSCRIBE in flight per channel. A second stream on the same
+   * channel waits for it instead of reporting itself attached to a channel
+   * Redis is not yet delivering, and fails with it if it fails.
+   */
+  private readonly subscribing = new Map<string, Promise<unknown>>();
+
+  /**
+   * #638 — order matters. The channel is subscribed *before* the replay window
+   * is read: an event published between the two is then either in the buffer
+   * (ZADD precedes PUBLISH) or heard live, never neither. The reverse order
+   * left a gap in which an event was neither replayed nor delivered, and a
+   * reconnected stream looked open while the change reached the client only
+   * through its safety poll. Events heard during the attach are held back and
+   * merged into the replay by sequence, so nothing is emitted twice or ahead
+   * of an older replayed event.
+   */
   private async attach(
     roomId: string,
     afterSeq: number | null,
     listener: (event: SequencedRoomEvent) => void,
   ): Promise<Subscription> {
     const channel = channelOf(roomId);
-    let replay: SequencedRoomEvent[] = [];
-    let resync = false;
-
-    if (afterSeq !== null) {
-      const raw = await this.commands.zrangebyscore(bufferKeyOf(roomId), afterSeq + 1, '+inf');
-      replay = raw.map((item) => JSON.parse(item) as SequencedRoomEvent);
-      const oldest = replay[0]?.seq;
-      // Nothing at the resume point and something after it means the buffer
-      // has already rolled past the gap: say so instead of skipping it.
-      if (oldest !== undefined && oldest > afterSeq + 1) {
-        resync = true;
-        replay = [];
-      }
-    }
+    let attached = false;
+    const early: SequencedRoomEvent[] = [];
+    /**
+     * Sequences already handed out in the replay. The replay comes over the
+     * commands connection and the live copy over the subscriber connection, so
+     * the live copy of a replayed event can still arrive after the attach;
+     * it is dropped once. Keyed by sequence rather than a high-water mark, so a
+     * slower publisher's lower sequence arriving late is still delivered.
+     */
+    const replayed = new Set<number>();
 
     const handler = (incoming: string, message: string) => {
       if (incoming !== channel) return;
-      listener(JSON.parse(message) as SequencedRoomEvent);
+      const event = JSON.parse(message) as SequencedRoomEvent;
+      if (!attached) {
+        early.push(event);
+      } else if (replayed.delete(event.seq)) {
+        return;
+      } else {
+        listener(event);
+      }
     };
     this.subscriber.on('message', handler);
     const refs = (this.refCounts.get(channel) ?? 0) + 1;
     this.refCounts.set(channel, refs);
-    if (refs === 1) await this.subscriber.subscribe(channel);
 
-    return {
-      replay,
-      resync,
-      unsubscribe: () => {
-        const remove = this.subscriber.off ?? this.subscriber.removeListener;
-        remove?.call(this.subscriber, 'message', handler);
-        const remaining = (this.refCounts.get(channel) ?? 1) - 1;
-        if (remaining <= 0) {
-          this.refCounts.delete(channel);
-          void this.subscriber.unsubscribe(channel);
-        } else {
-          this.refCounts.set(channel, remaining);
-        }
-      },
+    let detached = false;
+    const detach = () => {
+      if (detached) return;
+      detached = true;
+      const remove = this.subscriber.off ?? this.subscriber.removeListener;
+      remove?.call(this.subscriber, 'message', handler);
+      const remaining = (this.refCounts.get(channel) ?? 1) - 1;
+      if (remaining <= 0) {
+        this.refCounts.delete(channel);
+        this.subscribing.delete(channel);
+        void this.subscriber.unsubscribe(channel);
+      } else {
+        this.refCounts.set(channel, remaining);
+      }
     };
+
+    try {
+      await this.channelSubscribed(channel, refs === 1);
+
+      let replay: SequencedRoomEvent[] = [];
+      let resync = false;
+      if (afterSeq !== null) {
+        const raw = await this.commands.zrangebyscore(bufferKeyOf(roomId), afterSeq + 1, '+inf');
+        replay = raw.map((item) => JSON.parse(item) as SequencedRoomEvent);
+        const oldest = replay[0]?.seq;
+        // Nothing at the resume point and something after it means the buffer
+        // has already rolled past the gap: say so instead of skipping it.
+        if (oldest !== undefined && oldest > afterSeq + 1) {
+          resync = true;
+          replay = [];
+        }
+      }
+
+      // Whatever arrived live during the attach and is not already in the
+      // replay goes out with it, in sequence order.
+      for (const event of replay) replayed.add(event.seq);
+      for (const event of early) {
+        if (afterSeq !== null && event.seq <= afterSeq) continue;
+        if (replayed.has(event.seq)) {
+          replayed.delete(event.seq); // its live copy has already arrived
+          continue;
+        }
+        replay.push(event);
+      }
+      replay.sort((a, b) => a.seq - b.seq);
+      // From here on events go straight to the listener. Everything between
+      // this line and the caller emitting `replay` runs in one microtask
+      // chain, and pub/sub messages arrive as I/O, so none can slip between.
+      attached = true;
+
+      return { replay, resync, unsubscribe: detach };
+    } catch (error) {
+      // A failed attach must give its reference back, or the channel would
+      // count a listener that does not exist and the next stream would never
+      // SUBSCRIBE — open, heartbeating, and deaf.
+      detach();
+      throw error;
+    }
+  }
+
+  private channelSubscribed(channel: string, first: boolean): Promise<unknown> {
+    if (!first) return this.subscribing.get(channel) ?? Promise.resolve();
+    const pending = this.subscriber.subscribe(channel);
+    this.subscribing.set(channel, pending);
+    // Only the outcome matters to waiters; a rejection is handled by each attach.
+    pending.catch(() => undefined);
+    return pending;
   }
 }
 
