@@ -588,6 +588,24 @@ describe('constraints + staleness (core rule #6)', () => {
     });
     expect(backwards.statusCode).toBe(400);
     expect(backwards.json().code).toBe('INVALID_SCHEDULE');
+
+    // The same mistake with both halves in the request answers with the same
+    // code; it used to fall out of the DTO as VALIDATION_FAILED.
+    const bothHalves = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/constraints`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        budgetMode: 'per_person',
+        budgetAmount: 300_000,
+        startAt: '2026-11-02T18:00:00.000Z',
+        endAt: '2026-11-02T09:00:00.000Z',
+        expectedConstraintVersion: room.constraintVersion,
+      },
+    });
+    expect(bothHalves.statusCode).toBe(400);
+    expect(bothHalves.json().code).toBe('INVALID_SCHEDULE');
   });
 
   /**

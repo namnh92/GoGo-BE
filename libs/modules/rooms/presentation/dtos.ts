@@ -72,16 +72,18 @@ const patchableConstraintFields = {
   accessibilityKeys: z.array(z.string().max(64)).max(20).optional(),
 };
 
-export const updateConstraintsSchema = z
-  .object({
-    ...patchableConstraintFields,
-    expectedConstraintVersion: z.number().int().min(1),
-    participantCount: z.number().int().min(2).max(20).optional(),
-  })
-  .refine((c) => !c.startAt || !c.endAt || c.startAt < c.endAt, {
-    message: 'startAt must be before endAt',
-    path: ['startAt'],
-  });
+/*
+ * No `startAt < endAt` refine here, unlike create. A PATCH may carry one half
+ * of the window and leave the other stored, so the pair is only knowable
+ * after the merge — and the server checks it there, under the room lock, as a
+ * single `INVALID_SCHEDULE`. Refusing the two-field case here as well would
+ * answer the same mistake with two different codes.
+ */
+export const updateConstraintsSchema = z.object({
+  ...patchableConstraintFields,
+  expectedConstraintVersion: z.number().int().min(1),
+  participantCount: z.number().int().min(2).max(20).optional(),
+});
 export type UpdateConstraintsDto = z.infer<typeof updateConstraintsSchema>;
 
 export const transitionSchema = z.object({
