@@ -31,7 +31,26 @@ export function decodeKeysetCursor(cursor: string): { at: string; id: string } {
   }
 }
 
-/** Driver rows carry a Date or the raw string depending on the parser in play. */
+/**
+ * RFC 3339 `date-time` for a timestamp column, whichever form the driver handed
+ * back. Typed Drizzle selects give a Date; a raw `db.execute` gives the
+ * Postgres text form — "2026-09-06 11:16:24.599968+00", a space for the `T` and
+ * a two-digit offset — which `format: date-time` rejects and Safari cannot
+ * parse (#443). Rewrite that form to ISO-8601 before parsing so the result does
+ * not rest on an engine's leniency. A value that still does not parse is
+ * returned as-is rather than turned into a 500.
+ *
+ * Never feed this into a cursor: a JS Date keeps milliseconds, the column keeps
+ * microseconds, and keyset paging needs the exact value.
+ */
 export function toIso(value: Date | string): string {
-  return value instanceof Date ? value.toISOString() : String(value);
+  if (value instanceof Date) return value.toISOString();
+  const raw = String(value);
+  const parsed = new Date(
+    raw
+      .trim()
+      .replace(' ', 'T')
+      .replace(/([+-]\d{2})$/, '$1:00'),
+  );
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString();
 }

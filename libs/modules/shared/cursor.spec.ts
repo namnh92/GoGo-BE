@@ -34,8 +34,17 @@ describe('keyset cursor (BE-CMS-G1 #219)', () => {
     }
   });
 
-  it('normalizes whichever shape the driver hands back', () => {
+  it('normalizes whichever shape the driver hands back to RFC 3339 UTC (#443)', () => {
     expect(toIso(new Date('2026-01-10T12:00:00.000Z'))).toBe('2026-01-10T12:00:00.000Z');
-    expect(toIso('2026-01-10 12:00:00+00')).toBe('2026-01-10 12:00:00+00');
+    // Postgres text form from a raw `db.execute`: space separator, `+00` offset.
+    expect(toIso('2026-01-10 12:00:00+00')).toBe('2026-01-10T12:00:00.000Z');
+    expect(toIso('2026-09-06 11:16:24.599968+00')).toBe('2026-09-06T11:16:24.599Z');
+    expect(toIso('2026-09-06 18:16:24.5+07')).toBe('2026-09-06T11:16:24.500Z');
+    expect(toIso('2026-09-06 11:16:24+05:30')).toBe('2026-09-06T05:46:24.000Z');
+    expect(toIso('2026-01-10T12:00:00.000Z')).toBe('2026-01-10T12:00:00.000Z');
+  });
+
+  it('returns an unparseable value as-is instead of throwing', () => {
+    expect(toIso('whenever')).toBe('whenever');
   });
 });

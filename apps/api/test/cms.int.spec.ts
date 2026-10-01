@@ -6042,6 +6042,37 @@ describe('audit read (BE-IMP-010, #158, FR-CMS-008)', () => {
     expect(asEditor.json().items[0].ipAddress).toBeUndefined();
   });
 
+  it('returns occurredAt as RFC 3339 date-time in UTC (#443)', async () => {
+    const ops = await createAdmin('audit-iso@gogo.local', 'ops_admin');
+    const place = await suspendablePlace('Audit ISO Cafe');
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/emergency/places/${place.id}/suspend`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { reason: 'Takedown used to check the audit timestamp format' },
+    });
+
+    const res = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/audit?resourceType=place&resourceId=${place.id}&limit=1`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+    });
+    expect(res.statusCode).toBe(200);
+    const entry = res.json().items[0] as { id: string; occurredAt: string };
+    // The raw query hands created_at back as the Postgres text form
+    // ("2026-09-06 11:16:24.599968+00"): a space for the `T` and a `+00`
+    // offset, neither of which `format: date-time` accepts.
+    expect(entry.occurredAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
+    // Same instant as the stored row, to the millisecond a JS Date carries.
+    const stored = await db.execute(
+      sql`select floor(extract(epoch from created_at) * 1000)::text as ms
+          from audit_logs where id = ${entry.id}::uuid`,
+    );
+    expect(Date.parse(entry.occurredAt)).toBe(Number((stored.rows[0] as { ms: string }).ms));
+  });
+
   it('pages by cursor without repeating a row, newest first', async () => {
     const ops = await createAdmin('audit-page@gogo.local', 'ops_admin');
     // Five distinct registry keys: #221 closed the key space, so an audit
