@@ -6,7 +6,11 @@ import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/ro
 import { UploadsService } from '../../uploads/application/uploads.service';
 import { FeedbackService } from '../../suggestions/application/feedback.service';
 import type { FeedbackContext } from '../../suggestions/domain/feedback';
-import { buildItinerary, type LockedAnchor } from '../../suggestions/domain/optimizer';
+import {
+  buildItinerary,
+  LOW_CONFIDENCE,
+  type LockedAnchor,
+} from '../../suggestions/domain/optimizer';
 import { SuggestionsRepository } from '../../suggestions/infrastructure/suggestions.repository';
 import { PlansRepository, type PlanRow, type StopRow } from '../infrastructure/plans.repository';
 import { PlanBuilderService } from './plan-builder.service';
@@ -82,8 +86,18 @@ export class PlansService {
     // estimate. Derived here, at read time, so plans stored before the optimizer
     // said so (DEV plan 94b894df, `uncertain: false` with an unpriced stop)
     // read correctly without a migration.
+    // GoGo-BE#603 F-01 — and a stop whose place is below the optimizer's
+    // confidence bar, for the same reason: plans stored before anchors were
+    // held to it (every finalized winner on a default-0.50 place) still say
+    // `uncertain: false`. A stored `true` is never lowered, and a missing place
+    // is already reported through `unavailableReason`.
+    const lowConfidence = (placeId: string): boolean => {
+      const confidence = statuses.get(placeId)?.confidence;
+      return confidence !== undefined && confidence < LOW_CONFIDENCE;
+    };
     const uncertain =
-      plan.totals.uncertain || stops.some((s) => s.costMin === null || s.costMax === null);
+      plan.totals.uncertain ||
+      stops.some((s) => s.costMin === null || s.costMax === null || lowConfidence(s.placeId));
 
     return {
       id: plan.id,
