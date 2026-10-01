@@ -9573,7 +9573,8 @@ export interface operations {
              *     new membership created by this request, `true` when the caller was
              *     already an active member (host included) and nothing changed — no
              *     invite use spent, no `participant.joined`. Clients count a join only
-             *     when it is `false`.
+             *     when it is `false`. A response without `alreadyMember` comes from a
+             *     server older than 1.0.0-alpha.48: treat it as unknown, not `false`.
              */
             201: {
                 headers: {
