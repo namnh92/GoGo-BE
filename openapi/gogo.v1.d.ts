@@ -9567,7 +9567,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Joined (idempotent — re-joining returns the existing membership) */
+            /**
+             * @description Joined (idempotent — re-joining returns the existing membership).
+             *     `alreadyMember` tells the two apart (GoGo-BE#607): `false` for a
+             *     new membership created by this request, `true` when the caller was
+             *     already an active member (host included) and nothing changed — no
+             *     invite use spent, no `participant.joined`. Clients count a join only
+             *     when it is `false`.
+             */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -9575,11 +9582,12 @@ export interface operations {
                 content: {
                     "application/json": {
                         /** Format: uuid */
-                        roomId?: string;
+                        roomId: string;
                         /** Format: uuid */
-                        memberId?: string;
+                        memberId: string;
                         /** @enum {string} */
-                        role?: "host" | "member";
+                        role: "host" | "member";
+                        alreadyMember: boolean;
                     };
                 };
             };

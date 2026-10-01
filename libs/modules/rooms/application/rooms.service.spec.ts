@@ -156,6 +156,7 @@ describe('RoomsService.joinAsUser × existing member (GoGo-BE#597)', () => {
       roomId: ROOM_ID,
       memberId: 'member-1',
       role: 'member',
+      alreadyMember: true, // GoGo-BE#607 — a re-entry says so
     });
     expect(consumeInvite).not.toHaveBeenCalled();
     expect(repo.addUserMember).not.toHaveBeenCalled();
@@ -194,6 +195,7 @@ describe('RoomsService.joinAsUser × existing member (GoGo-BE#597)', () => {
       roomId: ROOM_ID,
       memberId: 'new-member',
       role: 'member',
+      alreadyMember: false, // GoGo-BE#607 — a real join says so
     });
     expect(consumeInvite).toHaveBeenCalledTimes(1);
     expect(repo.addUserMember).toHaveBeenCalledTimes(1);
