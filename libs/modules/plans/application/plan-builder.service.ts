@@ -108,6 +108,7 @@ export class PlanBuilderService {
       isLocked: false,
       lat: winner.lat,
       lng: winner.lng,
+      confidence: winner.confidence,
     };
     const built = await buildItinerary({
       ranked,
@@ -198,6 +199,7 @@ export class PlanBuilderService {
         isLocked: true,
         lat: Number(fact.lat),
         lng: Number(fact.lng),
+        confidence: Number(fact.confidence),
       };
     });
 

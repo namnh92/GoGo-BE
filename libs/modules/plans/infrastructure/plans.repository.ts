@@ -293,7 +293,7 @@ export class PlansRepository {
     if (placeIds.length === 0) return [];
     const rows = await this.db.execute(sql`
       select p.id, p.name, ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
-        p.avg_visit_minutes, p.status,
+        p.avg_visit_minutes, p.status, p.confidence,
         lp.price_min, lp.price_max
       from places p
       left join lateral (
@@ -312,6 +312,8 @@ export class PlansRepository {
       status: string;
       price_min: string | null;
       price_max: string | null;
+      /** numeric(3,2), NOT NULL — GoGo-BE#603. */
+      confidence: string;
     }[];
   }
 }

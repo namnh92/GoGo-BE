@@ -33,8 +33,15 @@ export type TravelBatch = (
  */
 export const TRAVEL_BATCH_SIZE = 5;
 
-/** Locked anchor passed into regenerate: full stored stop + its coordinates. */
-export type LockedAnchor = PlanStopDraft & { lat: number; lng: number };
+/** Below this a stop's facts are not certain, and the plan totals say so. */
+export const LOW_CONFIDENCE = 0.6;
+
+/**
+ * Locked anchor passed into regenerate: full stored stop + its coordinates,
+ * plus its place's data confidence (0..1). GoGo-BE#603 — required, so every
+ * caller that builds an anchor has to say how sure the place's facts are.
+ */
+export type LockedAnchor = PlanStopDraft & { lat: number; lng: number; confidence: number };
 
 type SeqEntry = {
   placeId: string;
@@ -104,7 +111,9 @@ export async function buildItinerary(input: {
     // GoGo-BE#593 — an anchor keeps the cost it was stored with, and `null`
     // means its place has no per-person price. Counting that as a confident 0
     // made a vote winner with no price read as a free plan.
-    lowConfidence: s.costMin === null || s.costMax === null,
+    // GoGo-BE#603 — and the same confidence bar as a greedily picked stop: an
+    // anchor is kept as it is, but how sure its facts are is not waived.
+    lowConfidence: s.confidence < LOW_CONFIDENCE || s.costMin === null || s.costMax === null,
   }));
   let costMax = sequence.reduce((a, s) => a + (s.costMax ?? 0), 0);
   let usedMinutes = sequence.reduce((a, s) => a + s.durationMinutes, 0);
@@ -181,7 +190,7 @@ export async function buildItinerary(input: {
       costMax: c.pricePerPersonMax,
       isLocked: false,
       category: (c.taxonomyKeys['category'] ?? [])[0] ?? null,
-      lowConfidence: c.confidence < 0.6 || c.pricePerPersonMax === null,
+      lowConfidence: c.confidence < LOW_CONFIDENCE || c.pricePerPersonMax === null,
     });
   }
 

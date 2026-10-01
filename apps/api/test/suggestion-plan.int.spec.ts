@@ -1300,6 +1300,38 @@ describe('plan cost scope (GoGo-BE#593)', () => {
     expect(stored!.totals.uncertain).toBe(true);
   });
 
+  it('a priced stop whose place is below 0.6 confidence makes an edited plan uncertain (GoGo-BE#603)', async () => {
+    const sure = await placePricedAs('Quán Chắc Chắn', 10.855, [60_000, 120_000], 'per_person');
+    const unsure = await placePricedAs('Quán Chưa Chắc', 10.856, [60_000, 120_000], 'per_person');
+    await db.update(schema.places).set({ confidence: '0.50' }).where(eq(schema.places.id, unsure));
+    const { hostToken, plan } = await finalizedPlan();
+
+    // Same price, same unit: the confident place alone gives certain totals...
+    const certain = await patch(hostToken, `/v1/plans/${plan.id}`, {
+      expectedVersion: plan.version,
+      stops: [{ placeId: sure, isLocked: true }],
+    });
+    expect(certain.statusCode).toBe(200);
+    expect(certain.json().totals.uncertain).toBe(false);
+
+    // ...and the low-confidence one does not, though the stop is kept as given.
+    const edited = await patch(hostToken, `/v1/plans/${certain.json().id}`, {
+      expectedVersion: certain.json().version,
+      stops: [{ placeId: unsure, isLocked: true }],
+    });
+    expect(edited.statusCode).toBe(200);
+    const body = edited.json();
+    expect(body.totals).toMatchObject({ costMin: 60_000, costMax: 120_000, uncertain: true });
+    expect(body.stops[0]).toMatchObject({
+      placeId: unsure,
+      isLocked: true,
+      costMin: 60_000,
+      costMax: 120_000,
+    });
+    const [stored] = await db.select().from(schema.plans).where(eq(schema.plans.id, body.id));
+    expect(stored!.totals.uncertain).toBe(true);
+  });
+
   it('reads a plan stored before the rule as an estimate when a stop has no price', async () => {
     const unpriced = await placeWithoutPrice('Chỗ Cũ Chưa Có Giá', 10.854);
     const { hostToken, plan } = await finalizedPlan();

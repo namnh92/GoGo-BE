@@ -192,6 +192,7 @@ export class PlansService {
         isLocked: s.isLocked,
         lat: Number(fact.lat),
         lng: Number(fact.lng),
+        confidence: Number(fact.confidence),
       };
     });
 
