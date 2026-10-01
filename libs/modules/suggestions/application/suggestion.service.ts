@@ -323,14 +323,9 @@ export class SuggestionService {
         const best = [...matches].sort(
           (a, b) => (rankByPlace.get(a) ?? 1e9) - (rankByPlace.get(b) ?? 1e9),
         )[0]!;
-        const plan = await this.planBuilder.buildAroundWinner(roomId, best, run.id);
-        await this.publish({
-          roomId,
-          type: 'plan.updated',
-          resourceType: 'plan',
-          resourceId: plan.plan.id,
-          payload: { planId: plan.plan.id, version: plan.plan.version, reason: 'matched' },
-        });
+        // The builder announces both the plan and the `matching -> ready`
+        // move, since it is what performs them (#608).
+        const plan = await this.planBuilder.buildAroundWinner(roomId, best, run.id, 'matched');
         return { voted: true, matched: true, planId: plan.plan.id };
       }
     }

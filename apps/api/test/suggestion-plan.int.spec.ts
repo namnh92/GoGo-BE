@@ -8,6 +8,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PlansRepository } from '../../../libs/modules/plans/infrastructure/plans.repository';
+import {
+  ROOM_EVENT_BUS,
+  type RoomEventBus,
+} from '../../../libs/modules/realtime/application/room-event-bus';
+import type { SequencedRoomEvent } from '../../../libs/modules/realtime/domain/room-event';
 
 /**
  * SG pipeline + BE-BFF-007/008/014 end-to-end over real HTTP + PostGIS:
@@ -268,6 +273,16 @@ describe('group vote flow (SG-002..006, BE-BFF-007)', () => {
     // Member cannot finalize; host can.
     const memberFinalize = await post(memberToken, `/v1/rooms/${roomId}/votes/finalize`);
     expect(memberFinalize.statusCode).toBe(403);
+
+    /*
+     * #608 — the host's finalize writes the plan and moves the room to
+     * `ready`, and announced neither. A member watching `/events` learned the
+     * room had a plan only when it next happened to refetch.
+     */
+    const seen: SequencedRoomEvent[] = [];
+    const bus = app.get<RoomEventBus>(ROOM_EVENT_BUS);
+    const subscription = await bus.subscribe(roomId, null, (event) => seen.push(event));
+
     const finalize = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`);
     expect(finalize.statusCode).toBe(201);
     const planId = finalize.json().planId;
@@ -281,6 +296,17 @@ describe('group vote flow (SG-002..006, BE-BFF-007)', () => {
 
     const room = await get(hostToken, `/v1/rooms/${roomId}`);
     expect(room.json().status).toBe('ready');
+
+    subscription.unsubscribe();
+    const typeOf = (entry: SequencedRoomEvent) => entry.event.event_type;
+    expect(seen.map(typeOf)).toEqual(['plan.updated', 'room.status_changed']);
+    expect(seen.find((entry) => typeOf(entry) === 'plan.updated')?.event.payload).toMatchObject({
+      planId,
+      reason: 'finalized',
+    });
+    expect(
+      seen.find((entry) => typeOf(entry) === 'room.status_changed')?.event.payload,
+    ).toMatchObject({ from: 'matching', to: 'ready' });
   });
 });
 
@@ -576,9 +602,25 @@ describe('couple match flow (FR-SUG-003)', () => {
 
     const v1 = await put(hostToken, `/v1/rooms/${roomId}/votes/${target}`, { value: 'yes' });
     expect(v1.json().matched).toBe(false);
+
+    // #608 — a room deciding itself announced the plan but not the move to
+    // `ready`, so a client on SSE saw a plan appear under a room it still
+    // believed was matching.
+    const seen: SequencedRoomEvent[] = [];
+    const bus = app.get<RoomEventBus>(ROOM_EVENT_BUS);
+    const subscription = await bus.subscribe(roomId, null, (event) => seen.push(event));
+
     const v2 = await put(memberToken, `/v1/rooms/${roomId}/votes/${target}`, { value: 'yes' });
     expect(v2.json().matched).toBe(true);
     expect(v2.json().planId).toBeTruthy();
+
+    subscription.unsubscribe();
+    const types = seen.map((entry) => entry.event.event_type);
+    expect(types).toContain('plan.updated');
+    expect(types).toContain('room.status_changed');
+    expect(
+      seen.find((entry) => entry.event.event_type === 'plan.updated')?.event.payload,
+    ).toMatchObject({ planId: v2.json().planId, reason: 'matched' });
   });
 });
 
