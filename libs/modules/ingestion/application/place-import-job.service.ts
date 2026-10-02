@@ -96,6 +96,8 @@ type JobRow = typeof schema.placeIngestJobs.$inferSelect;
 type IngestRow = typeof schema.placeIngestRows.$inferSelect;
 
 const ACTIVE_STATUSES = new Set(['uploaded', 'validating', 'processing']);
+/** Parked on a provider fault (#279, #284): resumable by `start`, cancellable. */
+const PAUSED_STATUSES: string[] = ['paused_provider_quota', 'paused_provider_unavailable'];
 
 /**
  * PI-BE-015/016 — bulk import orchestration.
@@ -616,7 +618,7 @@ export class PlaceImportJobService {
       throw AppError.conflict('DRY_RUN_JOB', 'Dry-run job không chạy import');
     }
     if (job.status === 'processing') return this.getJob(jobId);
-    if (!['review_required', 'uploaded', 'paused_provider_quota'].includes(job.status)) {
+    if (!['review_required', 'uploaded', ...PAUSED_STATUSES].includes(job.status)) {
       throw AppError.conflict('JOB_NOT_STARTABLE', `Job đang ở trạng thái ${job.status}`);
     }
     await this.db
@@ -631,7 +633,7 @@ export class PlaceImportJobService {
 
   async cancel(jobId: string, adminId: string) {
     const job = await this.requireJob(jobId);
-    if (!ACTIVE_STATUSES.has(job.status) && job.status !== 'paused_provider_quota') {
+    if (!ACTIVE_STATUSES.has(job.status) && !PAUSED_STATUSES.includes(job.status)) {
       throw AppError.conflict('JOB_NOT_CANCELLABLE', `Job đang ở trạng thái ${job.status}`);
     }
     // Only unprocessed work stops; rows already imported are left alone.
@@ -769,17 +771,22 @@ export class PlaceImportJobService {
                 eq(schema.placeIngestRows.status, 'resolving'),
               ),
             );
+          // #284 — the status says what fixes it. Quota clears by waiting; a
+          // configuration fault or a dead upstream does not, so it parks
+          // under its own value and the runbook branches on the status.
+          const pausedStatus =
+            err instanceof ProviderQuotaExceededError
+              ? 'paused_provider_quota'
+              : 'paused_provider_unavailable';
           await this.db
             .update(schema.placeIngestJobs)
-            .set({ status: 'paused_provider_quota' })
+            .set({ status: pausedStatus })
             .where(eq(schema.placeIngestJobs.id, jobId));
           this.metrics.increment('place_import_jobs_total', {
-            status: 'paused_provider_quota',
+            status: pausedStatus,
             source_type: job.sourceType,
-            // The status enum has one paused value and adding another needs a
-            // migration, so the distinction rides the metric until GoGo-BE#284
-            // renames it: quota clears by waiting, a configuration fault does
-            // not, and a runbook has to be able to tell them apart.
+            // The finer cause, kept for dashboards and alerts written against
+            // it before #284 split the status.
             reason:
               err instanceof ProviderQuotaExceededError
                 ? 'QUOTA_EXHAUSTED'

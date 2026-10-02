@@ -361,7 +361,8 @@ Không có tín hiệu nào **auto-reject**. Tín hiệu nghĩa là "người qu
 ## Job statuses
 
 `uploaded → validating → review_required → processing → completed |
-partial_success | failed`, plus `cancelled` and `paused_provider_quota`.
+partial_success | failed`, plus `cancelled`, `paused_provider_quota` and
+`paused_provider_unavailable`.
 
 Row statuses: `pending → resolving → ready | needs_confirmation | duplicate |
 unresolved | failed`, then `imported` after publish. `validation_failed` rows
@@ -378,6 +379,10 @@ never reach the provider.
 - **Quota**: `ProviderQuotaExceededError` parks the job at
   `paused_provider_quota` and returns the claimed rows to `pending`. No row is
   marked invalid, no data is discarded. `POST …/start` resumes it.
+- **Broken provider** (#284): `ProviderConfigurationError` (API disabled,
+  missing or rejected key) and `ProviderUnavailableError` (upstream down) park
+  the job the same way at `paused_provider_unavailable`. Waiting does not clear
+  it — fix the configuration, then `POST …/start`.
 - **Cancel** stops unprocessed chunks only. Rows already imported stay.
 
 ## Who can do what

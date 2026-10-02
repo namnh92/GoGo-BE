@@ -9,7 +9,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PlaceImportJobService } from '@gogo/modules';
-import { PLACE_PROVIDER, ProviderQuotaExceededError, SHEETS_PROVIDER } from '@gogo/providers';
+import {
+  PLACE_PROVIDER,
+  ProviderConfigurationError,
+  ProviderQuotaExceededError,
+  ProviderUnavailableError,
+  SHEETS_PROVIDER,
+} from '@gogo/providers';
 import type { FakePlaceProvider, FakeSheets } from '@gogo/providers';
 
 /**
@@ -832,6 +838,92 @@ describe('PI-BE-015/016 — processing, quota pause, publish RBAC', () => {
     await imports.processJob(job.id);
     const resumed = await imports.getJob(job.id);
     expect(resumed.rowsByStatus.ready).toBe(1);
+  });
+
+  /**
+   * GoGo-BE#284 — a provider that is broken, not exhausted, parks under its own
+   * status. Quota clears by waiting; a disabled API, a bad key or a dead
+   * upstream does not, and an editor reading `paused_provider_quota` for those
+   * would wait for nothing.
+   */
+  for (const [label, error] of [
+    [
+      'a configuration fault',
+      () => new ProviderConfigurationError('google.places', 'AUTH_FAILED', 'SERVICE_DISABLED'),
+    ],
+    ['an upstream outage', () => new ProviderUnavailableError('google.places')],
+  ] as const) {
+    it(`parks on ${label} as paused_provider_unavailable and resumes (#284)`, async () => {
+      const slug = label.replace(/\W+/g, '-');
+      const editor = await createAdmin(`unavail-${slug}@gogo.local`, 'editor');
+      places.seed({
+        providerPlaceId: `fake-unavail-${slug}`,
+        name: `Quán Unavail ${slug}`,
+        lat: 10.79,
+        lng: 106.71,
+      });
+      const job = await createJob(editor.token, [
+        `U-1,Quán Unavail ${slug},Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-unavail-${slug},cafe,,,`,
+      ]);
+      const start = () =>
+        api().inject({
+          method: 'POST',
+          url: `/v1/cms/place-imports/${job.id}/start`,
+          remoteAddress: ip(),
+          headers: auth(editor.token),
+        });
+      await start();
+
+      const original = places.details.bind(places);
+      places.details = async () => {
+        throw error();
+      };
+      await imports.processJob(job.id);
+      places.details = original;
+
+      const paused = await imports.getJob(job.id);
+      expect(paused.status).toBe('paused_provider_unavailable');
+      expect(paused.rowsByStatus.pending).toBe(1);
+
+      // Resume is the same door as after quota: fix the console, then start.
+      expect((await start()).statusCode).toBe(201);
+      await imports.processJob(job.id);
+      expect((await imports.getJob(job.id)).rowsByStatus.ready).toBe(1);
+    });
+  }
+
+  it('lets an editor cancel a job parked on a broken provider (#284)', async () => {
+    const editor = await createAdmin('unavail-cancel@gogo.local', 'editor');
+    places.seed({
+      providerPlaceId: 'fake-unavail-cancel',
+      name: 'Quán Cancel',
+      lat: 10.79,
+      lng: 106.71,
+    });
+    const job = await createJob(editor.token, [
+      'C-1,Quán Cancel,Hồ Chí Minh,Quận 1,https://www.google.com/maps?place_id=fake-unavail-cancel,cafe,,,',
+    ]);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/start`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    const original = places.details.bind(places);
+    places.details = async () => {
+      throw new ProviderUnavailableError('google.places');
+    };
+    await imports.processJob(job.id);
+    places.details = original;
+
+    const cancelled = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${job.id}/cancel`,
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+    });
+    expect(cancelled.statusCode, cancelled.body).toBe(201);
+    expect(cancelled.json().status).toBe('cancelled');
   });
 
   it('links a duplicate row to the existing place instead of creating another', async () => {

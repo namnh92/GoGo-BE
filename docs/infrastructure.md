@@ -265,16 +265,16 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 
 Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 
-| Alert            | Điều kiện                                                                 | Vì sao                                                                                                                             |
-| ---------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Ingestion quota  | có `place_import_jobs_total{status="paused_provider_quota"}`              | job đang đứng, cần người vào resume                                                                                                |
-| Provider lỗi     | tỉ lệ `places_provider_requests_total{status!~"2.."}` > 10% trong 15 phút | key sai, hết hạn, hoặc Google có sự cố                                                                                             |
-| Resolve chậm     | p95 `place_resolve_duration_seconds` > 3s trong 15 phút                   | job 5.000 dòng sẽ không kịp                                                                                                        |
-| Google chậm      | p95 `place_provider_request_duration_seconds` > 1s trong 15 phút          | tách phần chậm của Google khỏi phần chậm của ta — `place_resolve_duration_seconds` đo cả hai                                       |
-| Chi phí          | `places_provider_cost_units` vượt ngân sách ngày                          | chặn hoá đơn bất ngờ — **đặt cả budget alert bên Google Cloud Billing**, đừng chỉ dựa vào cái này                                  |
-| Chất lượng match | tỉ lệ bucket `0-0.5` > 30% trong một job                                  | dữ liệu nguồn kém hoặc mapping sai, không phải lỗi resolver                                                                        |
-| Submission tồn   | p95 `place_submission_publish_latency_hours` > 72h                        | hàng chờ moderation bị bỏ quên                                                                                                     |
-| Break-glass      | **bất kỳ** `cms_emergency_takedown_total`                                 | gỡ nội dung khẩn cấp phải **page ngay**, không để tới kỳ audit sau. Nhiều lần liên tiếp từ một actor = dấu hiệu tài khoản bị chiếm |
+| Alert            | Điều kiện                                                                 | Vì sao                                                                                                                                    |
+| ---------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Ingestion paused | có `place_import_jobs_total{status=~"paused_provider_.*"}`                | job đang đứng, cần người vào resume: `paused_provider_quota` chờ/nâng quota, `paused_provider_unavailable` sửa cấu hình rồi resume (#284) |
+| Provider lỗi     | tỉ lệ `places_provider_requests_total{status!~"2.."}` > 10% trong 15 phút | key sai, hết hạn, hoặc Google có sự cố                                                                                                    |
+| Resolve chậm     | p95 `place_resolve_duration_seconds` > 3s trong 15 phút                   | job 5.000 dòng sẽ không kịp                                                                                                               |
+| Google chậm      | p95 `place_provider_request_duration_seconds` > 1s trong 15 phút          | tách phần chậm của Google khỏi phần chậm của ta — `place_resolve_duration_seconds` đo cả hai                                              |
+| Chi phí          | `places_provider_cost_units` vượt ngân sách ngày                          | chặn hoá đơn bất ngờ — **đặt cả budget alert bên Google Cloud Billing**, đừng chỉ dựa vào cái này                                         |
+| Chất lượng match | tỉ lệ bucket `0-0.5` > 30% trong một job                                  | dữ liệu nguồn kém hoặc mapping sai, không phải lỗi resolver                                                                               |
+| Submission tồn   | p95 `place_submission_publish_latency_hours` > 72h                        | hàng chờ moderation bị bỏ quên                                                                                                            |
+| Break-glass      | **bất kỳ** `cms_emergency_takedown_total`                                 | gỡ nội dung khẩn cấp phải **page ngay**, không để tới kỳ audit sau. Nhiều lần liên tiếp từ một actor = dấu hiệu tài khoản bị chiếm        |
 
 **Nhãn phải hữu hạn (#313).** `duration_ms` từng là _nhãn_ của
 `places_provider_requests_total`: mỗi mili-giây khác nhau sinh một series mới,
