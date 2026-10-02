@@ -42,6 +42,11 @@ function lock(granted = true): JobLock & {
   return l;
 }
 
+/**
+ * #362 — keyed by `periodic_job`, never `job`: Prometheus renames an exported
+ * `job` to `exported_job` on scrape, so a `job` label is a query that matches
+ * nothing. Reading any other key here makes every count below come out empty.
+ */
 function recorder() {
   const counts: Record<string, number> = {};
   const durations: string[] = [];
@@ -49,11 +54,11 @@ function recorder() {
     counts,
     durations,
     increment(name: string, labels?: Record<string, string | number | undefined>) {
-      const key = `${name}{${labels?.job as string},${labels?.result as string}}`;
+      const key = `${name}{${labels?.periodic_job as string},${labels?.result as string}}`;
       counts[key] = (counts[key] ?? 0) + 1;
     },
     observe(name: string, _value: number, labels?: Record<string, string | number | undefined>) {
-      durations.push(`${name}{${labels?.job as string}}`);
+      durations.push(`${name}{${labels?.periodic_job as string}}`);
     },
   };
 }

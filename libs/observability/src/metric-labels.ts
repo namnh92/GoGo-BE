@@ -71,11 +71,14 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   cost_monitoring_over_budget_total: [],
 
   // --- worker --------------------------------------------------------------
-  // #340 — `job` is the registered job name (a literal in `apps/worker`),
-  // `result` is ok | failed | lock_skipped. Both closed sets; no timings as
-  // labels, the duration is its own histogram.
-  worker_periodic_runs_total: ['job', 'result'],
-  worker_periodic_duration_seconds: ['job'],
+  // #340 — `periodic_job` is the registered job name (a literal in
+  // `apps/worker`), `result` is ok | failed | lock_skipped | lease_lost. Both
+  // closed sets; no timings as labels, the duration is its own histogram.
+  // #362 — never name a label `job` or `instance`: Prometheus sets both on
+  // scrape and renames an exported one to `exported_job`, so a documented
+  // `{job="…"}` query silently matches nothing. The spec enforces this.
+  worker_periodic_runs_total: ['periodic_job', 'result'],
+  worker_periodic_duration_seconds: ['periodic_job'],
 
   // --- ingestion -----------------------------------------------------------
   place_resolve_duration_seconds: ['source', 'outcome'],
