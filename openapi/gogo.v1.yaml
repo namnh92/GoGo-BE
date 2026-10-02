@@ -13184,6 +13184,10 @@ components:
             and nothing else to search with, and GoGo holds no place with that
             CID; no provider endpoint looks a CID up. Not `NO_QUERY`: the link
             is not empty, it names a Google record GoGo cannot translate.
+            `CID_IDENTITY_CONFLICT` (with `UNRESOLVED`) — GoGo's own rows store
+            that CID against two different Google Place IDs, so nothing here
+            picks one; unlike `PLACE_IDENTITY_CONFLICT`, which is one Place ID
+            claimed by two GoGo places.
         existingPlaceId: { type: string, format: uuid }
         resolutionToken:
           type: string

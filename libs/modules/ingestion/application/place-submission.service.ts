@@ -307,7 +307,7 @@ export class PlaceSubmissionService {
      * the Place ID stored with it: the same DB-first answer a `place_id` link
      * gets, or — when that row is stale — a Details call on a known id rather
      * than a search. Two different ids behind one CID is a conflict nobody
-     * here can collapse; none falls through to the ordinary path, which says
+     * here can collapse (`CID_IDENTITY_CONFLICT`); none falls through to the ordinary path, which says
      * `CID_NOT_RESOLVABLE` when the link has nothing else to search with.
      */
     if (!hints.providerPlaceId && hints.cid) {
@@ -316,7 +316,9 @@ export class PlaceSubmissionService {
         result: ids.length > 1 ? 'conflict' : ids.length === 1 ? 'stored' : 'none',
       });
       if (ids.length > 1) {
-        return { status: 'UNRESOLVED', reasonCodes: ['PLACE_IDENTITY_CONFLICT'] };
+        // Not PLACE_IDENTITY_CONFLICT: that code means one Place ID claimed by
+        // two GoGo places. This is one CID stored against two Place IDs.
+        return { status: 'UNRESOLVED', reasonCodes: ['CID_IDENTITY_CONFLICT'] };
       }
       if (ids.length === 1) {
         hints = { ...hints, providerPlaceId: ids[0]! };

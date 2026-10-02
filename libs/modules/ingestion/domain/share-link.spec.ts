@@ -338,6 +338,12 @@ describe('#470 — a ?cid= link carries an identity, not nothing', () => {
     expect(parsed.ok && parsed.value.cid).toBe(BigInt('0x6e7680c15e3b597d').toString());
   });
 
+  it('normalizes leading zeros so a padded CID still matches the stored one (F-01)', () => {
+    const parsed = parseMapsUrl('https://maps.google.com/?cid=007959510044504727677');
+    expect(parsed.ok && parsed.value.cid).toBe('7959510044504727677');
+    expect(cidFromGoogleMapsUri('https://maps.google.com/?cid=0042')).toBe('42');
+  });
+
   it('ignores a cid that is not a 64-bit decimal', () => {
     for (const bad of ['abc', '-1', '1'.repeat(21), '18446744073709551616']) {
       const parsed = parseMapsUrl(`https://maps.google.com/?cid=${bad}`);

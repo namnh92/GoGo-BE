@@ -124,8 +124,12 @@ export function cidFromGoogleMapsUri(uri: string | null | undefined): string | n
     return null;
   }
   const cid = parsed.searchParams.get('cid');
-  // 64 bits at most: twenty digits admit values past 2^64-1, which no CID is.
-  return cid !== null && /^\d{1,20}$/.test(cid) && BigInt(cid) <= MAX_CID ? cid : null;
+  // 64 bits at most, and canonical decimal: a padded `007959…` names the same
+  // record as `7959…` and must compare equal to it (GoGo-BE#470 F-01). The
+  // length cap only bounds the BigInt parse.
+  if (cid === null || !/^\d{1,40}$/.test(cid)) return null;
+  const value = BigInt(cid);
+  return value <= MAX_CID ? value.toString() : null;
 }
 
 function isPrivateHost(host: string): boolean {

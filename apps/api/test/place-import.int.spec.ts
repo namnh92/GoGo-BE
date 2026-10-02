@@ -2911,6 +2911,37 @@ describe('a ?cid= link GoGo already stores resolves from its own rows (#470)', (
     expect(res.json()).toMatchObject({ status: 'ALREADY_EXISTS', existingPlaceId: placeId });
   });
 
+  it('refuses a CID stored against two different Place IDs, without asking Google (F-02)', async () => {
+    const cid = '2222222222222222222';
+    const first = await newPlace('CID twin A');
+    const second = await newPlace('CID twin B');
+    await db.insert(schema.placeSources).values([
+      {
+        placeId: first,
+        provider: 'google',
+        externalId: 'fake-cid-twin-a',
+        url: `https://maps.google.com/?cid=${cid}`,
+      },
+      {
+        placeId: second,
+        provider: 'google',
+        externalId: 'fake-cid-twin-b',
+        url: `https://maps.google.com/?cid=${cid}`,
+      },
+    ]);
+    const searchesBefore = places.searches.length + places.identitySearches.length;
+    const detailsBefore = places.tiersRequested.length;
+
+    const res = await resolve(`https://maps.google.com/?cid=${cid}`);
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json()).toMatchObject({
+      status: 'UNRESOLVED',
+      reasonCodes: ['CID_IDENTITY_CONFLICT'],
+    });
+    expect(places.searches.length + places.identitySearches.length).toBe(searchesBefore);
+    expect(places.tiersRequested.length).toBe(detailsBefore);
+  });
+
   it('says a CID GoGo does not hold cannot be resolved, not that the link is empty', async () => {
     const res = await resolve('https://maps.google.com/?cid=1111111111111111111');
     expect(res.statusCode, res.body).toBe(201);
