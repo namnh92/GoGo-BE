@@ -111,6 +111,21 @@ async function purgeSettledOrBlocked(
   throw new Error('purge neither finished nor blocked within 10s');
 }
 
+/** Rejects instead of hanging when `promise` has not settled within `ms`. */
+async function within<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} did not settle within ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 describe('origin retention vs constraint edit (#576, retro F-01)', () => {
   it('a purge overlapping an edit leaves no origin on any version, the new one included', async () => {
     const roomId = await finishedRoomWithOrigin();
@@ -119,9 +134,11 @@ describe('origin retention vs constraint edit (#576, retro F-01)', () => {
     const editorPid = (await editor.query('select pg_backend_pid() as pid')).rows[0].pid as number;
     let purge: Promise<unknown> | undefined;
     let state: 'finished' | 'blocked' | undefined;
+    let open = false;
     try {
       // The edit: lock the room, then read `previous` under that lock.
       await editor.query('begin');
+      open = true;
       await editor.query('select id from rooms where id = $1 for update', [roomId]);
       const previous = (
         await editor.query(
@@ -148,11 +165,15 @@ describe('origin retention vs constraint edit (#576, retro F-01)', () => {
         [roomId],
       );
       await editor.query('commit');
+      open = false;
 
-      await purge;
+      await within(purge, 15_000, 'purge');
     } finally {
-      await purge?.catch(() => undefined);
+      // Free the room lock the purge may be waiting on BEFORE waiting for the
+      // purge: a failed barrier would otherwise park both forever (retro F-03).
+      if (open) await editor.query('rollback').catch(() => undefined);
       editor.release();
+      if (purge) await within(purge, 15_000, 'purge cleanup').catch(() => undefined);
     }
 
     const rows = await pool.query(
