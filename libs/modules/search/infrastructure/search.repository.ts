@@ -3,6 +3,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
 import { APP_CONFIG, type ProvenanceConfig } from '../../shared/config';
 import { googleProvenanceRows } from '../../shared/google-provenance';
+import { providerStatusSubquery } from '../../shared/provider-status';
 import { DB } from '../../shared/tokens';
 import { toSearchQuery } from '../domain/normalize';
 
@@ -375,18 +376,9 @@ export class SearchRepository {
         (select json_agg(json_build_object('provider', src.provider, 'url', src.url,
             'attribution', src.attribution))
           from (${googleProvenanceRows(sql`p.id`, this.unifiedProvenance)}) src) as sources,
-        -- GoGo-BE#360: what the provider last said about the business. The
-        -- most severe report wins (closed > temporarily_closed > moved >
-        -- active > unknown), so the detail never calls open a place search
-        -- excludes on *any* shut source (#339). Newest fetch breaks ties.
-        (select json_build_object('status', ps.source_status, 'fetchedAt', ps.fetched_at)
-          from place_provider_sources ps
-          where ps.place_id = p.id
-          order by case ps.source_status
-              when 'closed' then 0 when 'temporarily_closed' then 1
-              when 'moved' then 2 when 'active' then 3 else 4 end,
-            ps.fetched_at desc
-          limit 1) as provider_status,
+        -- GoGo-BE#360: what the provider last said about the business, most
+        -- severe report first. The rule is shared with the CMS place detail.
+        ${providerStatusSubquery(sql`p.id`)} as provider_status,
         -- #151: photos travel with their attribution and moderation state.
         -- Community imagery that has not been approved never leaves the CMS.
         (select json_agg(json_build_object(

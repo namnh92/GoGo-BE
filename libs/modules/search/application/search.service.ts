@@ -7,6 +7,7 @@ import { AppError } from '../../shared/app-error';
 import { normalizeGoogleAttribution } from '../../shared/attribution';
 import { iso, num, toPhotos, type PlacePhotoRow } from '../domain/place-dto';
 import { writeOutbox } from '../../shared/outbox';
+import { toProviderStatus } from '../../shared/provider-status';
 import { DB } from '../../shared/tokens';
 import { validateAreaSelection } from '../../administrative/application/area-selection';
 import { normalizeVietnamese } from '../domain/normalize';
@@ -362,7 +363,7 @@ export class SearchService {
       sources,
       // GoGo-BE#360 — core rule 8's "or warned": a fact the client renders as
       // a warning. Absent when no provider has reported on the place.
-      providerStatus: providerStatus(row['provider_status']),
+      providerStatus: toProviderStatus(row['provider_status']),
       photos: toPhotos(
         row['media'] as PlacePhotoRow[] | null,
         this.mediaBaseUrl,
@@ -370,13 +371,4 @@ export class SearchService {
       ),
     };
   }
-}
-
-/** `json_build_object` hands the timestamp back as text; the contract says ISO-8601. */
-function providerStatus(raw: unknown): { status: string; fetchedAt: string } | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const value = raw as { status?: unknown; fetchedAt?: unknown };
-  if (typeof value.status !== 'string') return undefined;
-  const fetchedAt = iso(value.fetchedAt);
-  return fetchedAt ? { status: value.status, fetchedAt } : undefined;
 }

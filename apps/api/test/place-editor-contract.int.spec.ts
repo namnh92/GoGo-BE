@@ -1187,3 +1187,69 @@ describe('#501 a link fills and keeps every compatible field', () => {
     expect(view.sources).toEqual([]);
   });
 });
+
+/**
+ * GoGo-BE#360 — the CMS editor sees the same provider status the consumer
+ * detail carries (#656), from the same rows and the same severity rule. An
+ * editor deciding whether to keep a place published has to see that its
+ * provider reports it shut; the consumer client already warns on it.
+ */
+describe('#360 provider status on the CMS place detail', () => {
+  async function placeWith(
+    statuses: ('active' | 'moved' | 'temporarily_closed' | 'closed' | 'unknown')[],
+  ) {
+    const place = await makePlace({ status: 'published' });
+    for (const [i, status] of statuses.entries()) {
+      await db.insert(schema.placeProviderSources).values({
+        placeId: place.id,
+        provider: 'google_places',
+        externalId: `ChIJ-cms-status-probe-${place.id}-${i}`,
+        sourceStatus: status,
+        fetchedAt: new Date(Date.UTC(2026, 8, 1 + i)),
+      });
+    }
+    return place.id;
+  }
+
+  it('states the provider status with when it was read', async () => {
+    const res = await detail(await placeWith(['temporarily_closed']));
+    expect(res.statusCode).toBe(200);
+    expect(res.json().providerStatus).toEqual({
+      status: 'temporarily_closed',
+      fetchedAt: '2026-09-01T00:00:00.000Z',
+    });
+  });
+
+  it('ranks by severity, not recency: an older closed report beats a newer active one', async () => {
+    // closed fetched 2026-09-01, active a day later.
+    const res = await detail(await placeWith(['closed', 'active']));
+    expect(res.json().providerStatus).toEqual({
+      status: 'closed',
+      fetchedAt: '2026-09-01T00:00:00.000Z',
+    });
+  });
+
+  it('breaks a same-severity tie with the newer fetch', async () => {
+    const res = await detail(await placeWith(['active', 'active']));
+    expect(res.json().providerStatus).toEqual({
+      status: 'active',
+      fetchedAt: '2026-09-02T00:00:00.000Z',
+    });
+  });
+
+  it('omits the fact when no provider has reported on the place', async () => {
+    const res = await detail(await placeWith([]));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).not.toHaveProperty('providerStatus');
+  });
+
+  it('agrees with the consumer detail for the same place', async () => {
+    for (const statuses of [['closed', 'active'], ['moved', 'active'], ['unknown'], []] as const) {
+      const id = await placeWith([...statuses]);
+      const cms = (await detail(id)).json();
+      const consumer = await api().inject({ method: 'GET', url: `/v1/places/${id}` });
+      expect(consumer.statusCode).toBe(200);
+      expect(cms.providerStatus).toEqual(consumer.json().providerStatus);
+    }
+  });
+});
