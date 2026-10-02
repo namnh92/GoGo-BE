@@ -55,7 +55,6 @@ const A_REAL_PLACE: ResolvedProviderPlace = {
   primaryType: 'cafe',
   types: ['cafe', 'coffee_shop', 'food', 'point_of_interest', 'establishment'],
   googleMapsUri: 'https://maps.google.com/?cid=ChIJlacaph',
-  photos: [],
   fetchTier: 'quality',
   attribution: 'Data © Google',
   raw: {},

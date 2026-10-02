@@ -24,6 +24,12 @@ import type { PlaceFetchTier } from './ports';
  * keys on.
  */
 const ADR_LIVENESS = ['id', 'movedPlaceId'];
+/**
+ * GoGo-BE#509 (owner decision 2026-10-02, ADR-0029): `photos` left `core` and
+ * `priceRange` left `quality`. Photos are bought only by the display operation;
+ * `priceRange` has no unit, so core rule 13 forbids showing it and nothing asks.
+ */
+const REMOVED_BY_509 = ['photos', 'priceRange'];
 const ADR_CORE = [
   'id',
   'displayName',
@@ -33,15 +39,8 @@ const ADR_CORE = [
   'primaryType',
   'types',
   'googleMapsUri',
-  'photos',
 ];
-const ADR_QUALITY = [
-  'rating',
-  'userRatingCount',
-  'regularOpeningHours',
-  'priceLevel',
-  'priceRange',
-];
+const ADR_QUALITY = ['rating', 'userRatingCount', 'regularOpeningHours', 'priceLevel'];
 const ADR_DETAIL = ['reviews'];
 
 describe('ADR-0006 §2 field-mask tiers', () => {
@@ -95,9 +94,15 @@ describe('ADR-0006 §2 field-mask tiers', () => {
     expect(fields('liveness').length).toBeLessThan(fields('core').length);
   });
 
-  it('core carries the three fields the shipped adapter was missing', () => {
-    for (const field of ['types', 'googleMapsUri', 'photos']) {
+  it('core carries the fields the shipped adapter was missing', () => {
+    for (const field of ['types', 'googleMapsUri']) {
       expect(PLACE_FIELD_MASKS.core.split(',')).toContain(field);
+    }
+  });
+
+  it('#509: no ingestion tier buys photos or priceRange', () => {
+    for (const mask of Object.values(PLACE_FIELD_MASKS)) {
+      for (const field of REMOVED_BY_509) expect(mask.split(',')).not.toContain(field);
     }
   });
 
@@ -359,16 +364,20 @@ describe('GooglePlacesAdapter.details', () => {
     expect(place?.googleMapsUri).toBe('https://maps.google.com/?cid=1234567890');
   });
 
-  it('normalizes photos to references with attributions, dropping nameless ones', async () => {
+  it('#509: a described place carries no photos and no provider price range', async () => {
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      // Even if Google sent them, nothing maps them: rule 13 forbids a price
+      // with no unit, and photos are display-only.
+      json: async () => ({
+        ...googlePlace,
+        priceRange: { startPrice: { currencyCode: 'VND', units: '100000' } },
+      }),
+    }));
     const place = await new GooglePlacesAdapter('key').details('ChIJ-lacaph', 'quality');
-    expect(place?.photos).toEqual([
-      {
-        reference: 'places/ChIJ-lacaph/photos/AeJbb3c',
-        widthPx: 4032,
-        heightPx: 3024,
-        attributions: ['Minh Trần'],
-      },
-    ]);
+    expect(place).not.toHaveProperty('photos');
+    expect(place).not.toHaveProperty('priceRange');
   });
 
   it('survives a provider that omits the new core fields entirely', async () => {
@@ -382,6 +391,6 @@ describe('GooglePlacesAdapter.details', () => {
       }),
     }));
     const place = await new GooglePlacesAdapter('key').details('ChIJ-x', 'quality');
-    expect(place).toMatchObject({ types: [], googleMapsUri: null, photos: [] });
+    expect(place).toMatchObject({ types: [], googleMapsUri: null });
   });
 });

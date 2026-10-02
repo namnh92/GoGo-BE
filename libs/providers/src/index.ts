@@ -23,6 +23,7 @@ export {
   FakeAcquisitionLinkProvider,
   FakeAreaAutocomplete,
   FakeCachePurge,
+  FakePlacePhotoDisplay,
   FakePlaceProvider,
   FakePush,
   FakeSheets,
@@ -41,7 +42,12 @@ export {
   readGoogleError,
   type GoogleErrorInfo,
 } from './google-error';
-export { GooglePlacesAdapter } from './google-places.adapter';
+export {
+  GooglePlacesAdapter,
+  PHOTO_DISPLAY_FIELD_MASK,
+  toDisplayPhotos,
+} from './google-places.adapter';
+export { IMAGE_HOSTS, LINK_HOSTS, safeProviderUri } from './provider-links';
 export { GoogleRoutesAdapter } from './google-routes.adapter';
 export { HaversineTravelTime } from './haversine-travel.adapter';
 export { GoogleSheetsAdapter } from './google-sheets.adapter';
