@@ -2,6 +2,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { sql } from 'drizzle-orm';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -111,7 +112,6 @@ afterAll(async () => {
 beforeEach(async () => {
   // CASCADE from the dataset clears units, changes and quarantine with it.
   await db.execute(sql`truncate table administrative_dataset_versions cascade`);
-  await db.execute(sql`truncate table administrative_unit_change_overrides cascade`);
 });
 
 describe('administrative_units identity', () => {
@@ -300,31 +300,63 @@ describe('administrative_unit_changes', () => {
   });
 });
 
-describe('overrides are GoGo-owned and never edit upstream', () => {
-  it('allows one live override per edge and keeps a revoked one beside it', async () => {
-    const edge = {
-      oldCode: '00025',
-      newCode: '00008',
-      changeType: 'SPLIT' as const,
-      effectiveDate: '2025-07-01',
-      reason: 'Toạ độ trụ sở nằm trong Ngọc Hà',
-      decidedAgainstVersion: 'test-1',
-    };
-    const [first] = await db
-      .insert(schema.administrativeUnitChangeOverrides)
-      .values(edge)
-      .returning();
-    await expectViolation(
-      () => db.insert(schema.administrativeUnitChangeOverrides).values(edge),
-      'administrative_unit_change_overrides_live_unique',
+describe('the global override table is gone (#486)', () => {
+  // 0051 created `administrative_unit_change_overrides`: a global override that
+  // won at resolve time. #484 rejected that semantics (only a PUBLISHED dataset
+  // changes precedence) and ADM-011 replaced it with override sets; 0068 drops
+  // the table. A fresh database must not carry it, or its indexes, again.
+  it('drops the table and both of its indexes', async () => {
+    const { rows } = await db.execute(
+      sql`select to_regclass('public.administrative_unit_change_overrides') as t`,
     );
+    expect(rows[0]!.t).toBeNull();
 
-    await db.execute(
-      sql`update administrative_unit_change_overrides set revoked_at = now() where id = ${first!.id}`,
+    const idx = await db.execute(
+      sql`select indexname from pg_indexes where indexname like 'administrative_unit_change_overrides%'`,
     );
-    await expect(
-      db.insert(schema.administrativeUnitChangeOverrides).values(edge),
-    ).resolves.toBeDefined();
+    expect(idx.rows).toEqual([]);
+  });
+
+  it('refuses to drop the table while it still holds a row', async () => {
+    // The issue's precondition is `count(*) = 0` everywhere. If an environment
+    // ever wrote one, the deploy must stop with the data intact, not drop it.
+    const statements = readFileSync(
+      path.join(MIGRATIONS, '0068_drop-administrative-unit-change-overrides.sql'),
+      'utf8',
+    ).split('--> statement-breakpoint');
+    await db.execute(
+      sql`create table administrative_unit_change_overrides (id uuid primary key default gen_random_uuid())`,
+    );
+    try {
+      await db.execute(sql`insert into administrative_unit_change_overrides default values`);
+      // Drizzle's outer message echoes the SQL, which itself contains the
+      // words; so assert on the pg error underneath: RAISE EXCEPTION = P0001.
+      let caught: unknown;
+      try {
+        await db.execute(sql.raw(statements[0]!));
+      } catch (err) {
+        caught = err;
+      }
+      let raised: { code?: string; message?: string } | undefined;
+      for (let e: unknown = caught; e != null; e = (e as { cause?: unknown }).cause) {
+        if ((e as { code?: string }).code === 'P0001') raised = e as typeof raised;
+      }
+      expect(raised?.message).toMatch(/is not empty; refusing to drop/);
+      const { rows } = await db.execute(
+        sql`select count(*)::int as n from administrative_unit_change_overrides`,
+      );
+      expect(rows[0]!.n).toBe(1);
+
+      // Emptied, the same migration goes through.
+      await db.execute(sql`delete from administrative_unit_change_overrides`);
+      for (const stmt of statements) await db.execute(sql.raw(stmt));
+      const after = await db.execute(
+        sql`select to_regclass('public.administrative_unit_change_overrides') as t`,
+      );
+      expect(after.rows[0]!.t).toBeNull();
+    } finally {
+      await db.execute(sql`drop table if exists administrative_unit_change_overrides`);
+    }
   });
 });
 

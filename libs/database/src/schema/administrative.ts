@@ -481,38 +481,6 @@ export const administrativeMappingOverrideDecisions = pgTable(
 );
 
 /**
- * A reviewer correcting a mapping does not touch the pinned snapshot: the
- * snapshot is evidence of what the source said, and editing it would destroy
- * the only way to tell an upstream fact from a GoGo decision. The override is
- * a separate row that wins over the upstream mapping at resolve time, per the
- * precedence order in ADR-0019.
- */
-export const administrativeUnitChangeOverrides = pgTable(
-  'administrative_unit_change_overrides',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    oldCode: text('old_code').notNull(),
-    newCode: text('new_code'),
-    changeType: administrativeChangeType('change_type').notNull(),
-    effectiveDate: date('effective_date').notNull(),
-    legalReference: text('legal_reference'),
-    reason: text('reason').notNull(),
-    /** Which combined version the reviewer was looking at when they decided. */
-    decidedAgainstVersion: text('decided_against_version').notNull(),
-    createdBy: uuid('created_by'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    revokedAt: timestamp('revoked_at', { withTimezone: true }),
-    revokedBy: uuid('revoked_by'),
-  },
-  (t) => [
-    index('administrative_unit_change_overrides_old_idx')
-      .on(t.oldCode)
-      .where(sql`${t.revokedAt} is null`),
-    // The live-uniqueness index uses COALESCE and lives in the SQL migration.
-  ],
-);
-
-/**
  * drizzle's `geometry` helper only models points, so the boundary column is
  * declared here. It is never selected into JavaScript — a multipolygon of a
  * Vietnamese commune is hundreds of kilobytes and containment is decided in

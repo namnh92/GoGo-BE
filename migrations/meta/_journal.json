@@ -470,6 +470,13 @@
       "when": 1790812800000,
       "tag": "0068_plan-stops-optional",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1790899200000,
+      "tag": "0069_drop-administrative-unit-change-overrides",
+      "breakpoints": true
     }
   ]
 }
