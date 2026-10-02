@@ -206,6 +206,14 @@ const PROVENANCE_COLUMN: Record<string, ProvenanceField> = {
   website: 'website',
   lat: 'geom',
   lng: 'geom',
+  /**
+   * #440 F-05 — claimed at create with their own evidence, so an edit must
+   * re-stamp them like any other field; otherwise the create-time reference
+   * and actor would go on vouching for codes or categories they never saw.
+   */
+  provinceCode: 'province_code',
+  communeCode: 'commune_code',
+  taxonomyIds: 'taxonomy',
 };
 
 /**

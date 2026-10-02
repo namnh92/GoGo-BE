@@ -285,6 +285,25 @@ describe('creating a place with canonical codes', () => {
     );
     expect(claims.every((c) => c.sourceType === 'editorial' && !!c.sourceReference)).toBe(true);
 
+    // #440 F-05 — an edit of the codes re-stamps their claims: the create-time
+    // reference and actor no longer vouch for codes they never saw.
+    const edited = await send('PATCH', `/v1/cms/places/${created.id}`, 'editor', {
+      provinceCode: mapped.provinceCode,
+      communeCode: mapped.communeCode,
+    });
+    expect(edited.statusCode, edited.body).toBe(200);
+    const restamped = await db
+      .select()
+      .from(schema.placeFieldProvenance)
+      .where(eq(schema.placeFieldProvenance.placeId, created.id));
+    for (const field of ['province_code', 'commune_code']) {
+      expect(restamped.find((c) => c.field === field)).toMatchObject({
+        sourceType: 'editorial',
+        sourceReference: null,
+        actorId: adminIds.editor,
+      });
+    }
+
     const row = await placeRow(created.id);
     expect(row).toMatchObject({
       provinceCode: mapped.provinceCode,

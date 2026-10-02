@@ -360,6 +360,25 @@ describe('#440 field boundaries and evidence coverage', () => {
       sourceType: 'editorial',
       sourceReference: 'thực đơn: cà phê',
     });
+
+    // F-05 — an edit of the categories re-stamps their claim.
+    const patched = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/places/${claimed.json().id}`,
+      headers: auth(editor.token),
+      payload: { taxonomyIds: [] },
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+    const [row] = await db
+      .select()
+      .from(schema.placeFieldProvenance)
+      .where(
+        and(
+          eq(schema.placeFieldProvenance.placeId, claimed.json().id),
+          eq(schema.placeFieldProvenance.field, 'taxonomy'),
+        ),
+      );
+    expect(row).toMatchObject({ sourceReference: null, actorId: editor.id });
   });
 
   it('names every supplied fact without a reference, and every reference without a fact', async () => {
@@ -733,6 +752,55 @@ describe('#440 retries', () => {
     const retry = await create(payload, who, key);
     expect(retry.statusCode, retry.body).toBe(201);
     expect(await placesNamed(name)).toHaveLength(1);
+  });
+
+  it('F-06: a create whose expired claim was taken over mid-flight rolls back; the new holder survives', async () => {
+    const key = randomUUID();
+    const who = await tok();
+    const slow = `Quán Chậm ${uniq()}`;
+    const taker = `Quán Tiếp Quản ${uniq()}`;
+    await db.execute(sql`
+      create or replace function c440_sleep() returns trigger language plpgsql as $$
+      begin perform pg_sleep(case when new.name like 'Quán Chậm %' then 2 else 4 end);
+      return new; end $$`);
+    await db.execute(
+      sql.raw(`create trigger c440_slow before insert on places for each row
+        when (new.name = '${slow}' or new.name = '${taker}') execute function c440_sleep()`),
+    );
+    try {
+      // A claims the key and stalls inside its transaction, before completing.
+      const first = create(body({ name: slow, lat: 10.98, lng: 106.98 }), who, key);
+      await new Promise((r) => setTimeout(r, 600));
+      // A's claim expires (its row is not locked yet: completion comes later).
+      await db
+        .update(schema.idempotencyKeys)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(
+          and(
+            eq(schema.idempotencyKeys.endpoint, 'POST /v1/cms/places'),
+            sql`${schema.idempotencyKeys.responseStatus} is null`,
+          ),
+        );
+      // B takes the key over and is still in flight when A tries to complete.
+      const second = create(body({ name: taker, lat: 10.99, lng: 106.99 }), who, key);
+      const [a, b] = await Promise.all([first, second]);
+
+      expect(a.statusCode, a.body).toBe(409);
+      expect(a.json().retryable).toBe(true);
+      expect(await placesNamed(slow)).toHaveLength(0);
+
+      expect(b.statusCode, b.body).toBe(201);
+      expect(await placesNamed(taker)).toHaveLength(1);
+      const rows = await db
+        .select()
+        .from(schema.idempotencyKeys)
+        .where(eq(schema.idempotencyKeys.endpoint, 'POST /v1/cms/places'));
+      expect(
+        rows.find((r) => (r.responseBody as { placeId?: string })?.placeId === b.json().id),
+      ).toMatchObject({ responseStatus: 201 });
+    } finally {
+      await db.execute(sql`drop trigger if exists c440_slow on places`);
+    }
   });
 
   it('F-03: one place for concurrent retries of one key', async () => {
