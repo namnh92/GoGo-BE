@@ -10,7 +10,8 @@ import {
   type ResolvedProviderPlace,
 } from '@gogo/providers';
 import type { Db } from '@gogo/database';
-import { PlaceResolverService } from './place-resolver.service';
+import { PlaceResolverService, toTarget } from './place-resolver.service';
+import { scoreMatch } from '../domain/match-score';
 import { placeProviderUnavailable } from './place-submission.service';
 import { AppError } from '../../shared/app-error';
 
@@ -285,5 +286,92 @@ describe('#314 — a link the provider rejects is a broken link, not an outage',
     const out = await resolver.resolveFromUrl(LACAPH, 'quality', { name: good.name });
 
     expect(out.status).not.toBe('UNRESOLVED');
+  });
+});
+
+/**
+ * #288 — the category weight (0.10, PI-BE-005 / FR-INGEST-003) never ran:
+ * `toTarget` dropped the provider's `primaryType`, so `scoreMatch` saw no type
+ * on any candidate and treated every row as if it carried no category. These
+ * go through the real pipeline — provider details → `toTarget` → `decideMatch`
+ * — because the scorer on its own was always correct; the gap was the wiring.
+ */
+describe('#288 — the category weight reaches the score through the resolver', () => {
+  /** A row naming the place exactly, in the right district (no city column). */
+  const ROW = { name: A_REAL_PLACE.name, district: 'Quận 1' };
+
+  function resolverReturning(place: ResolvedProviderPlace) {
+    return new PlaceResolverService(
+      providerThat({
+        searchCandidates: async () => [place.providerPlaceId],
+        details: async () => place,
+      }),
+      db,
+    );
+  }
+
+  it('carries the provider primary type onto the match target', () => {
+    expect(toTarget(A_REAL_PLACE).primaryType).toBe('cafe');
+    expect(toTarget({ ...A_REAL_PLACE, primaryType: null }).primaryType).toBeUndefined();
+  });
+
+  it('a category mismatch costs the 0.10 weight and stops auto-resolution', async () => {
+    // Name and district are perfect; the row says `bar`, Google says `cafe`.
+    // Before #288 this auto-resolved at 1.0 because the type never arrived.
+    const outcome = await resolverReturning(A_REAL_PLACE).resolveFromUrl(LACAPH, 'quality', {
+      ...ROW,
+      categoryKey: 'bar',
+    });
+
+    expect(outcome.status).toBe('NEEDS_CONFIRMATION');
+    if (outcome.status !== 'NEEDS_CONFIRMATION') return;
+    // (0.50·1 + 0.20·1 + 0.10·0) / 0.80
+    expect(outcome.decision.best?.confidence).toBe(0.875);
+    expect(outcome.decision.reasons).toContain('TYPE_MISMATCH');
+  });
+
+  it('a category match adds the 0.10 weight to an imperfect row', async () => {
+    // Wrong district, right category: (0.50·1 + 0.20·0 + 0.10·1) / 0.80.
+    // Without the type the category was left out: 0.50 / 0.70 = 0.714.
+    const outcome = await resolverReturning(A_REAL_PLACE).resolveFromUrl(LACAPH, 'quality', {
+      name: A_REAL_PLACE.name,
+      district: 'Quận 3',
+      categoryKey: 'cafe',
+    });
+
+    expect(outcome.status).toBe('NEEDS_CONFIRMATION');
+    if (outcome.status !== 'NEEDS_CONFIRMATION') return;
+    expect(outcome.decision.best?.confidence).toBe(0.75);
+    expect(outcome.decision.reasons).not.toContain('TYPE_MISMATCH');
+  });
+
+  it('a matching category on a perfect row still auto-resolves at 1.0', async () => {
+    const outcome = await resolverReturning(A_REAL_PLACE).resolveFromUrl(LACAPH, 'quality', {
+      ...ROW,
+      categoryKey: 'cafe',
+    });
+
+    expect(outcome.status).toBe('RESOLVED');
+    if (outcome.status !== 'RESOLVED') return;
+    expect(outcome.decision.best?.confidence).toBe(1);
+  });
+
+  it('no provider type, or one GoGo has no category for, stays neutral', async () => {
+    for (const primaryType of [null, 'tourist_attraction']) {
+      const place = { ...A_REAL_PLACE, primaryType };
+      const outcome = await resolverReturning(place).resolveFromUrl(LACAPH, 'quality', {
+        ...ROW,
+        categoryKey: 'bar',
+      });
+
+      expect(outcome.status).toBe('RESOLVED');
+      if (outcome.status !== 'RESOLVED') continue;
+      expect(outcome.decision.best?.confidence).toBe(1);
+      expect(outcome.decision.reasons).not.toContain('TYPE_MISMATCH');
+      // Same answer as a row that never named a category.
+      expect(scoreMatch({ ...ROW, categoryKey: 'bar' }, toTarget(place)).confidence).toBe(
+        scoreMatch(ROW, toTarget(place)).confidence,
+      );
+    }
   });
 });
