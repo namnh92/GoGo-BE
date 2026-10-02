@@ -28,4 +28,26 @@ describe('place report body (#218)', () => {
       false,
     );
   });
+
+  it('applies the cap after trimming (#662 F-03)', () => {
+    const padded = `  ${'a'.repeat(PLACE_REPORT_NOTE_MAX)}  `;
+    expect(placeReportBodySchema.parse({ reasonCode: 'other', note: padded }).note).toBe(
+      'a'.repeat(PLACE_REPORT_NOTE_MAX),
+    );
+  });
+
+  it('refuses control characters except tab and line feed (#662 F-03)', () => {
+    for (const note of ['a\u0000b', 'a\u0007', 'a\u001b', 'a\u007f', 'a\u0085', 'a\rb']) {
+      const parsed = placeReportBodySchema.safeParse({ reasonCode: 'other', note });
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) expect(parsed.error.issues[0]!.path).toEqual(['note']);
+    }
+    expect(placeReportBodySchema.parse({ reasonCode: 'other', note: 'a\nb\tc' }).note).toBe(
+      'a\nb\tc',
+    );
+  });
+
+  it('normalises CRLF to LF rather than refusing pasted text', () => {
+    expect(placeReportBodySchema.parse({ reasonCode: 'other', note: 'a\r\nb' }).note).toBe('a\nb');
+  });
 });

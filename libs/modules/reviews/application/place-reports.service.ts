@@ -42,9 +42,11 @@ export class PlaceReportsService {
    * pile the moderator has to dismiss one by one. Once decided, a new report
    * is a new report — the place may have regressed.
    *
-   * Best effort under concurrency: two simultaneous first submissions can both
-   * insert. That costs a duplicate row in a moderation queue, not a wrong
-   * decision, so it is not worth a lock or a unique index here.
+   * Serialized per place (GoGo-BE#662 F-01): the place row is read
+   * `FOR UPDATE`, so a second submission waits for the first transaction to
+   * commit and then sees its report. Without it a double tap filed two rows.
+   * The lock is held only for one select and one insert, and only blocks other
+   * writers of the same place row (CMS place edits wait milliseconds at most).
    */
   async file(
     actor: Actor,
@@ -69,7 +71,8 @@ export class PlaceReportsService {
             inArray(schema.places.status, READABLE_PLACE_STATUSES),
           ),
         )
-        .limit(1);
+        .limit(1)
+        .for('update');
       if (!place) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
 
       const reporterMatch =

@@ -337,3 +337,95 @@ describe('reporting wrong place information (#218)', () => {
     );
   });
 });
+
+describe('review round 1 (#662)', () => {
+  it('F-01: simultaneous identical submissions file exactly one report', async () => {
+    const placeId = await place();
+    const reader = await account();
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => report(reader.token, placeId, { reasonCode: 'wrong_hours' })),
+    );
+
+    const codes = results.map((r) => r.statusCode).sort();
+    expect(codes).toEqual([200, 200, 200, 200, 201]);
+    expect(new Set(results.map((r) => r.json().id)).size).toBe(1);
+    expect(await rowsFor(placeId)).toHaveLength(1);
+  });
+
+  it('F-02: an Idempotency-Key replay keeps the 200 of a duplicate answer', async () => {
+    const placeId = await place();
+    const reader = await account();
+    const first = await report(reader.token, placeId, { reasonCode: 'wrong_price' });
+    expect(first.statusCode).toBe(201);
+
+    const send = () =>
+      api().inject({
+        method: 'POST',
+        url: `/v1/places/${placeId}/reports`,
+        remoteAddress: ip(),
+        headers: { ...auth(reader.token), 'idempotency-key': 'report-dup-key-0001' },
+        payload: { reasonCode: 'wrong_price' },
+      });
+    const duplicate = await send();
+    const replay = await send();
+
+    expect(duplicate.statusCode).toBe(200);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.headers['x-idempotent-replay']).toBe('true');
+    expect(replay.json().id).toBe(first.json().id);
+  });
+
+  it('F-02: an Idempotency-Key replay of a new report is still 201', async () => {
+    const placeId = await place();
+    const reader = await account();
+    const send = () =>
+      api().inject({
+        method: 'POST',
+        url: `/v1/places/${placeId}/reports`,
+        remoteAddress: ip(),
+        headers: { ...auth(reader.token), 'idempotency-key': 'report-new-key-0001' },
+        payload: { reasonCode: 'other' },
+      });
+    const first = await send();
+    const replay = await send();
+    expect(first.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(201);
+    expect(replay.headers['x-idempotent-replay']).toBe('true');
+    expect(replay.json().id).toBe(first.json().id);
+    expect(await rowsFor(placeId)).toHaveLength(1);
+  });
+
+  it('F-03: refuses a NUL or other control character in the note with a field error', async () => {
+    const placeId = await place();
+    const reader = await account();
+    for (const note of ['bad\u0000note', 'bell\u0007', 'esc\u001b[0m', 'del\u007f']) {
+      const res = await report(reader.token, placeId, { reasonCode: 'other', note });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().code).toBe('VALIDATION_FAILED');
+      expect(res.json().retryable).not.toBe(true);
+      expect(res.json().field_errors).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'note' })]),
+      );
+      expect(res.body).not.toContain(note);
+    }
+    expect(await rowsFor(placeId)).toHaveLength(0);
+
+    // Line breaks and tabs are ordinary text.
+    const ok = await report(reader.token, placeId, {
+      reasonCode: 'other',
+      note: 'dòng 1\ndòng 2\tcột',
+    });
+    expect(ok.statusCode).toBe(201);
+  });
+
+  it('F-03: measures the 500-character cap after trimming', async () => {
+    const placeId = await place();
+    const reader = await account();
+    const padded = `   ${'a'.repeat(500)}   `;
+    const res = await report(reader.token, placeId, { reasonCode: 'other', note: padded });
+    expect(res.statusCode).toBe(201);
+    const [row] = await rowsFor(placeId);
+    expect(row!.note).toBe('a'.repeat(500));
+  });
+});

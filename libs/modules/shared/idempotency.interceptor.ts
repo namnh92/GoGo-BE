@@ -76,8 +76,16 @@ export class IdempotencyInterceptor implements NestInterceptor {
     );
   }
 
+  /**
+   * The status the reply actually carries. Nest applies the route's status
+   * (201 for POST, 200 otherwise, or `@HttpCode`) before interceptors run, and
+   * a handler may change it. Mapping a POST 200 to 201 replayed a deliberate
+   * "already exists" 200, and an `@HttpCode(200)` POST, as a creation
+   * (GoGo-BE#662 F-02). The method default is only a fallback for a reply that
+   * somehow carries no status.
+   */
   private statusFor(method: string, reply: FastifyReply): number {
-    if (reply.statusCode && reply.statusCode !== 200) return reply.statusCode;
+    if (reply.statusCode) return reply.statusCode;
     return method === 'POST' ? 201 : 200;
   }
 

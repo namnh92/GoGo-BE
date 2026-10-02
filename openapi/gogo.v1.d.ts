@@ -1342,9 +1342,9 @@ export interface paths {
          * Report wrong information about a place ("Báo thông tin sai")
          * @description BE-BFF-P2 (#218). Files a report into the moderation queue the CMS already reads (`GET /cms/moderation/reports`, `targetType=place`). An app account or a room guest may report; a CMS admin token answers `403 REPORTER_NOT_ALLOWED` and an anonymous call `401`. A place Place Detail does not open answers `404 PLACE_NOT_FOUND`, exactly like a missing one.
          *
-         *     Naturally idempotent: while this actor already has an **open** report of the same `reasonCode` on this place, the call files nothing and answers that report with `200`; a new report answers `201`. Once a moderator decides it, a new report is a new report.
+         *     Deduplicated: while this actor already has an **open** report of the same `reasonCode` on this place, the call files nothing and answers that report with `200`; a new report answers `201`. Submissions for one place are serialized, so simultaneous identical calls file one report. Once a moderator decides it, a new report is a new report. An `Idempotency-Key` replay answers the original status and body.
          *
-         *     `reasonCode` is a stable key the client labels through i18n — never a sentence. `note` is optional free text (trimmed, at most 500 characters, blank means none) delivered to moderators only: it is not echoed in the response and not logged. Do not ask the user for contact details in it. Rate-limited per actor: 5 a minute, 20 an hour.
+         *     `reasonCode` is a stable key the client labels through i18n — never a sentence. `note` is optional free text (CRLF normalised to LF, then trimmed, then at most 500 characters; control characters other than tab and line feed are refused with `400`; blank means none) delivered to moderators only: it is not echoed in the response and not logged. Do not ask the user for contact details in it. Rate-limited per actor: 5 a minute, 20 an hour.
          */
         post: operations["reportPlace"];
         delete?: never;
@@ -7627,7 +7627,7 @@ export interface components {
         PlaceReportReason: string;
         PlaceReportRequest: {
             reasonCode: components["schemas"]["PlaceReportReason"];
-            /** @description Optional detail for moderators. Trimmed; blank means no note. */
+            /** @description Optional detail for moderators. CRLF becomes LF, then the note is trimmed and must be at most 500 characters, so a client enforcing the limit on the raw text is safe. Control characters other than tab and line feed are refused. Blank means no note. */
             note?: string;
         };
         PlaceReport: {
@@ -11211,7 +11211,10 @@ export interface operations {
     reportPlace: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };

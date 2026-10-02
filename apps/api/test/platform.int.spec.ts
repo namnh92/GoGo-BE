@@ -105,6 +105,14 @@ describe('Idempotency-Key (api-contract rule)', () => {
 
     const rooms = await db.select().from(schema.rooms).where(eq(schema.rooms.id, first.json().id));
     expect(rooms).toHaveLength(1);
+
+    // GoGo-BE#662 F-02: the interceptor records the status the reply carried.
+    // An ordinary creating POST must still be stored, and replayed, as 201.
+    const stored = await db
+      .select({ status: schema.idempotencyKeys.responseStatus })
+      .from(schema.idempotencyKeys)
+      .where(eq(schema.idempotencyKeys.endpoint, 'POST /v1/rooms'));
+    expect(stored.map((r) => r.status)).toContain(201);
   });
 
   it('same key + different body → 422 IDEMPOTENCY_KEY_REUSED', async () => {
