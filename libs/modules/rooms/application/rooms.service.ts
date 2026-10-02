@@ -583,8 +583,17 @@ export class RoomsService {
     // reached the idempotent branch in `addUserMember`. Nothing is spent and
     // nobody is told they arrived again. The invite only has to exist; the
     // membership is what grants access.
+    // GoGo-BE#607 — `alreadyMember` tells the client this was a re-entry, not
+    // a join, so it does not count it as one (`gogo_partner_joined`).
     const existing = await this.repo.findActiveUserMember(invite.roomId, actor.id);
-    if (existing) return { roomId: invite.roomId, memberId: existing.id, role: existing.role };
+    if (existing) {
+      return {
+        roomId: invite.roomId,
+        memberId: existing.id,
+        role: existing.role,
+        alreadyMember: true,
+      };
+    }
 
     // GoGo-BE#606 — a room past its expiry takes no new members on either
     // route. Only the guest route used to say so (410 ROOM_EXPIRED); a signed-in
@@ -593,7 +602,7 @@ export class RoomsService {
     await this.precheckInvite(invite, rules);
     const user = await this.identity.findUserById(actor.id);
     // GoGo-BE#605 — room lock, use spent and member added commit together.
-    const member = await this.repo.transaction(async (tx) => {
+    const { member, created } = await this.repo.transaction(async (tx) => {
       const room = await this.admitThroughInvite(tx, invite, rules);
       return this.repo.addUserMember(
         {
@@ -611,15 +620,25 @@ export class RoomsService {
         tx,
       );
     });
-    await this.publish({
+    // GoGo-BE#607 — a concurrent first join by the same user committed the
+    // membership first: this request created nothing, so it is a re-entry and
+    // nobody is told a participant arrived. Published after the commit.
+    if (created) {
+      await this.publish({
+        roomId: invite.roomId,
+        type: 'participant.joined',
+        // The room-scoped member id, not the user id: it identifies the
+        // participant inside this room without carrying an account across rooms.
+        actorId: member.id,
+        payload: { memberId: member.id, role: member.role, memberType: 'user' },
+      });
+    }
+    return {
       roomId: invite.roomId,
-      type: 'participant.joined',
-      // The room-scoped member id, not the user id: it identifies the
-      // participant inside this room without carrying an account across rooms.
-      actorId: member.id,
-      payload: { memberId: member.id, role: member.role, memberType: 'user' },
-    });
-    return { roomId: invite.roomId, memberId: member.id, role: member.role };
+      memberId: member.id,
+      role: member.role,
+      alreadyMember: !created,
+    };
   }
 
   // --- seed places (FR-ROOM-010/011, BE-BFF-015) ---------------------------

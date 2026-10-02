@@ -25,6 +25,8 @@ function serviceWith(opts: {
   }>;
   consumed?: boolean;
   member?: { id: string; role: 'host' | 'member' };
+  addedMember?: { id: string; role: 'host' | 'member' };
+  created?: boolean;
 }) {
   const statuses = [...opts.roomStatus];
   const consumeInvite = vi.fn(async () => opts.consumed ?? true);
@@ -49,7 +51,10 @@ function serviceWith(opts: {
     transaction: vi.fn(async (work: (tx: unknown) => Promise<unknown>) => work('tx')),
     lockRoomForJoin: vi.fn(async () => readRoom()),
     findActiveUserMember: vi.fn(async () => opts.member),
-    addUserMember: vi.fn(async () => ({ id: 'new-member', role: 'member' })),
+    addUserMember: vi.fn(async () => ({
+      member: opts.addedMember ?? { id: 'new-member', role: 'member' },
+      created: opts.created ?? true,
+    })),
   } as unknown as RoomsRepository;
   const policy = { getRoom: readRoom } as unknown as RoomPolicy;
   const tokens = { hashOpaqueToken: (code: string) => `hash:${code}` } as unknown as TokenService;
@@ -156,6 +161,7 @@ describe('RoomsService.joinAsUser × existing member (GoGo-BE#597)', () => {
       roomId: ROOM_ID,
       memberId: 'member-1',
       role: 'member',
+      alreadyMember: true, // GoGo-BE#607 — a re-entry says so
     });
     expect(consumeInvite).not.toHaveBeenCalled();
     expect(repo.addUserMember).not.toHaveBeenCalled();
@@ -194,6 +200,7 @@ describe('RoomsService.joinAsUser × existing member (GoGo-BE#597)', () => {
       roomId: ROOM_ID,
       memberId: 'new-member',
       role: 'member',
+      alreadyMember: false, // GoGo-BE#607 — a real join says so
     });
     expect(consumeInvite).toHaveBeenCalledTimes(1);
     expect(repo.addUserMember).toHaveBeenCalledTimes(1);
@@ -251,6 +258,24 @@ describe('RoomsService.joinAsUser × existing member (GoGo-BE#597)', () => {
     expect(repo.lockRoomForJoin).toHaveBeenCalledWith('tx', ROOM_ID);
     expect((consumeInvite.mock.calls[0] as unknown[])[2]).toBe('tx');
     expect(vi.mocked(repo.addUserMember).mock.calls[0]?.[1]).toBe('tx');
+  });
+
+  it("reports a concurrent first join that found the other request's row as a re-entry, unannounced (GoGo-BE#607 F-01)", async () => {
+    const { service, events } = serviceWith({
+      roomStatus: ['collecting'],
+      addedMember: { id: 'member-1', role: 'member' },
+      created: false,
+    });
+    const res = await service.joinAsUser(user, 'code');
+    expect(res.alreadyMember).toBe(true);
+    expect(res.memberId).toBe('member-1');
+    expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it('announces a membership this request created (GoGo-BE#607 F-01)', async () => {
+    const { service, events } = serviceWith({ roomStatus: ['collecting'] });
+    await expect(service.joinAsUser(user, 'code')).resolves.toMatchObject({ alreadyMember: false });
+    expect(events.publish).toHaveBeenCalledTimes(1);
   });
 
   it('never answers a guest session through this path', async () => {

@@ -496,9 +496,13 @@ export class RoomsRepository {
   }
 
   /**
-   * Insert a user's membership (idempotent) and its outbox event. Runs inside
-   * `tx` when given — GoGo-BE#605: the join path passes the transaction that
-   * holds the room lock and spent the invite use, so all three commit together.
+   * Insert a user's membership, or return the active one already there, plus
+   * its outbox event. Runs inside `tx` when given — GoGo-BE#605: the join path
+   * passes the transaction that holds the room lock and spent the invite use,
+   * so all three commit together. `created` says which (GoGo-BE#607): two
+   * concurrent first joins by the same user can both get past the service's
+   * membership check, and the one that finds the other's row here must not be
+   * reported or announced as a join.
    */
   async addUserMember(
     input: {
@@ -508,7 +512,7 @@ export class RoomsRepository {
       event: DomainEventInput;
     },
     tx?: Tx,
-  ): Promise<MemberRow> {
+  ): Promise<{ member: MemberRow; created: boolean }> {
     if (!tx) return this.db.transaction((own) => this.addUserMember(input, own));
     const [existing] = await tx
       .select()
@@ -521,7 +525,7 @@ export class RoomsRepository {
         ),
       )
       .limit(1);
-    if (existing) return existing; // idempotent re-join
+    if (existing) return { member: existing, created: false }; // idempotent re-join
     const [member] = await tx
       .insert(schema.roomMembers)
       .values({
@@ -532,7 +536,7 @@ export class RoomsRepository {
       })
       .returning();
     await writeOutbox(tx, input.event);
-    return member!;
+    return { member: member!, created: true };
   }
 
   /** Run `work` in one transaction (GoGo-BE#605 join path). */

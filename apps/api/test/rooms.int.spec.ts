@@ -951,6 +951,8 @@ describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
 
     const first = await join(member.token, shared.code);
     expect(first.statusCode).toBe(201);
+    // GoGo-BE#607 — a real join and a re-entry answer the same 201 but say which.
+    expect(first.json().alreadyMember).toBe(false);
     expect(await useCount(shared.inviteId)).toBe(1);
 
     // The regression's shape: the plan is ready, and the member opens the link again.
@@ -958,13 +960,13 @@ describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
 
     const again = await join(member.token, shared.code);
     expect(again.statusCode).toBe(201);
-    expect(again.json()).toEqual(first.json());
+    expect(again.json()).toEqual({ ...first.json(), alreadyMember: true });
     expect(again.json().roomId).toBe(room.id);
     expect(await useCount(shared.inviteId)).toBe(1);
 
     const hostAgain = await join(host.token, shared.code);
     expect(hostAgain.statusCode).toBe(201);
-    expect(hostAgain.json()).toMatchObject({ roomId: room.id, role: 'host' });
+    expect(hostAgain.json()).toMatchObject({ roomId: room.id, role: 'host', alreadyMember: true });
     expect(await useCount(shared.inviteId)).toBe(1);
 
     // Someone who is not in the room is still refused, and still spends nothing.
@@ -994,6 +996,7 @@ describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
       const back = await join(member.token, code);
       expect(back.statusCode).toBe(201);
       expect(back.json().memberId).toBe(first.json().memberId);
+      expect(back.json().alreadyMember).toBe(true);
     }
     expect(await useCount(shared.inviteId)).toBe(1);
     expect(await useCount(expiring.inviteId)).toBe(0);
