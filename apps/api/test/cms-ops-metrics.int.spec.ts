@@ -13,10 +13,10 @@ import { schema } from '@gogo/database';
  * BE-CMS-P2 (#315) — the permission gate, the input surface, and what happens
  * when the monitoring backend is not there.
  *
- * This deployment has no `GRAFANA_*` configured, which is exactly the state
- * every environment is in before its account exists — so the "backend
- * unavailable" path is not simulated here, it is simply the truth, and these
- * assert that it degrades instead of erroring.
+ * This deployment has no metrics store configured, which is exactly the state
+ * of an environment without a collector — so the "backend unavailable" path is
+ * not simulated here, it is simply the truth, and these assert that it
+ * degrades instead of erroring.
  */
 
 let container: StartedPostgreSqlContainer;
@@ -62,10 +62,12 @@ beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.REDIS_URL = 'redis://localhost:6380';
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
-  // Deliberately unset: this is the pre-account state of every environment.
-  delete process.env.GRAFANA_PROM_URL;
-  delete process.env.GRAFANA_PROM_USER;
-  delete process.env.GRAFANA_READ_TOKEN;
+  // Deliberately unset: no store to read. Retention is stated, so the window
+  // arithmetic below is exercised against a known span (GoGo-BE#409: there is
+  // no default to fall back on any more).
+  delete process.env.METRICS_QUERY_URL;
+  delete process.env.PROMETHEUS_REMOTE_WRITE_URL;
+  process.env.METRICS_RETENTION_DAYS = '14';
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
   pool.on('error', () => undefined);
@@ -219,7 +221,8 @@ describe('#315 — nothing about the store reaches the caller', () => {
     for (const url of ROUTES) {
       const body = JSON.stringify((await get(url, 'ops_admin')).json());
       // The store's identity is as much ours to keep as its token.
-      expect(body).not.toContain('grafana.net');
+      expect(body).not.toContain('/api/prom');
+      expect(body).not.toContain('/api/v1/');
       expect(body).not.toContain('glc_');
       expect(body).not.toContain('Basic ');
       // Series names describe internal structure; a product-level DTO does not
@@ -260,14 +263,12 @@ describe('#315 — nothing about the store reaches the caller', () => {
 });
 
 describe('#315 — the API holds the read credential and only the read one', () => {
-  it('does not declare the collector write token at all', () => {
-    // Not "does not use": the env schema is the whole surface through which
-    // configuration enters this process, and `GRAFANA_WRITE_TOKEN` is not on
-    // it. The API literally cannot read the credential that can write to the
-    // store, which is a stronger guarantee than a code review.
+  it('declares no retired Grafana Cloud variable (GoGo-BE#409)', () => {
+    // The env schema is the whole surface through which configuration enters
+    // this process. Grafana Cloud was deleted on 2026-09-05; a name for it
+    // here would be a binding to a store that does not exist.
     const env = readFileSync(path.resolve(__dirname, '../src/config/env.ts'), 'utf8');
-    expect(env).toContain('GRAFANA_READ_TOKEN');
-    expect(env).not.toContain('GRAFANA_WRITE_TOKEN');
+    expect(env).not.toMatch(/GRAFANA_[A-Z_]+:/);
   });
 
   it('binds no query port when the read credential is absent', async () => {

@@ -26,8 +26,7 @@ import { writeAudit } from '../../libs/modules/shared/audit';
  * Environment: DATABASE_URL, plus whatever names the metrics store — the same
  * resolution the API uses (`resolveMetricsQueryConfig`), so a backfill can
  * never read a different store than the console does. After ADR-0007 that is
- * PROMETHEUS_REMOTE_WRITE_URL; through the rollback window the Grafana Cloud
- * triple still works unchanged.
+ * PROMETHEUS_REMOTE_WRITE_URL (or an explicit METRICS_QUERY_URL).
  */
 
 type Args = Record<string, string | boolean>;
@@ -53,8 +52,7 @@ const USAGE = `pnpm cost:backfill --env <dev|staging|prod> --from YYYY-MM-DD --t
 pnpm cost:backfill --env <env> --reconcile YYYY-MM [--mark]
 
 Environment: DATABASE_URL, and a metrics store — PROMETHEUS_REMOTE_WRITE_URL
-(or METRICS_QUERY_URL), or the legacy GRAFANA_PROM_URL + GRAFANA_PROM_USER +
-GRAFANA_READ_TOKEN.`;
+(or METRICS_QUERY_URL).`;
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH = /^\d{4}-\d{2}$/;

@@ -58,7 +58,7 @@ export type PrometheusQueryConfig = {
   url: string;
   /**
    * Basic-auth credentials, both or neither. Optional because authentication
-   * is a property of the deployment, not of the protocol: Grafana Cloud
+   * is a property of the deployment, not of the protocol: a hosted store
    * requires it, a Prometheus reachable only from one address on a LAN does
    * not. Absent credentials send no `authorization` header — they never send
    * an empty one, which reads to a server as a malformed attempt rather than
@@ -78,8 +78,8 @@ export type PrometheusQueryConfig = {
  *   http://192.168.68.168:9090       ->  http://192.168.68.168:9090
  *
  * **Derived from the URL's shape, never from its hostname.** An earlier version
- * appended `/api/prom` to any host that did not contain `.grafana.net`, which
- * put one vendor's domain into shared code and made the store's identity a
+ * appended `/api/prom` to any host outside one vendor's domain, which
+ * put that domain into shared code and made the store's identity a
  * string match. ADR-0006 and ADR-0013 both rest on the opposite property —
  * "swapping the store is a binding change, not a rewrite" — and a hostname test
  * is what turns that into a rewrite.
@@ -102,7 +102,7 @@ export function promApiBase(endpoint: string): string {
   return trimmed;
 }
 
-/** The environment variables that can name a metrics store, neutral and legacy. */
+/** The environment variables that can name a metrics store. */
 export type MetricsQueryEnv = {
   METRICS_QUERY_URL?: string | undefined;
   METRICS_QUERY_USERNAME?: string | undefined;
@@ -110,19 +110,16 @@ export type MetricsQueryEnv = {
   PROMETHEUS_REMOTE_WRITE_URL?: string | undefined;
   PROMETHEUS_BASIC_AUTH_USER?: string | undefined;
   PROMETHEUS_BASIC_AUTH_PASSWORD?: string | undefined;
-  GRAFANA_PROM_URL?: string | undefined;
-  GRAFANA_PROM_USER?: string | undefined;
-  GRAFANA_READ_TOKEN?: string | undefined;
 };
 
 /**
  * Which store the read path talks to — **the enforcement of ADR-0007 §E7**.
  *
  * §E7 forbids two states, and the dangerous one is quiet: the collector writing
- * to the self-hosted Prometheus while the API still queries Grafana Cloud. The
- * monitoring screen then reports healthy and shows nothing, which is the exact
- * shape `unknown != zero` exists to prevent. Prose cannot prevent it, because
- * the two halves are two environment variables and nothing stops an operator
+ * to one store while the API queries another. The monitoring screen then
+ * reports healthy and shows nothing, which is the exact shape
+ * `unknown != zero` exists to prevent. Prose cannot prevent it, because the
+ * two halves are two environment variables and nothing stops an operator
  * setting one.
  *
  * So the read path *follows the write path by construction*:
@@ -135,12 +132,13 @@ export type MetricsQueryEnv = {
  *    API reads.** Setting the write endpoint moves both halves in one action;
  *    the split-brain state cannot be reached by forgetting a variable, only by
  *    deliberately overriding rule 1.
- * 3. `GRAFANA_PROM_URL` + its two credentials — the legacy Cloud path, kept
- *    working *unchanged* for the whole rollback window (§E7 again: the Cloud
- *    credentials stay valid and are revoked last).
- * 4. Nothing configured — `null`, and the ops endpoints answer
+ * 3. Nothing configured — `null`, and the ops endpoints answer
  *    `backend.status: "unavailable"`. Never a fake: a fake answers a dashboard
  *    with invented traffic.
+ *
+ * The Grafana Cloud read path that used to sit between 2 and 3 is gone
+ * (GoGo-BE#409): the account was deleted on 2026-09-05 after the self-hosted
+ * cutover (GoGo-Infra ADR-0007), so its variables name nothing.
  *
  * Under rule 2 authentication is optional, and its absence is a deployment
  * decision recorded in GoGo-Infra INF-066, not an oversight here.
@@ -166,16 +164,6 @@ export function resolveMetricsQueryConfig(env: MetricsQueryEnv): PrometheusQuery
       token: env.METRICS_QUERY_TOKEN || env.PROMETHEUS_BASIC_AUTH_PASSWORD || undefined,
     };
   }
-  // The legacy path keeps its old gate exactly: Grafana Cloud rejects an
-  // unauthenticated read, so a URL without both credentials is not a usable
-  // store and binding it would trade "unavailable" for a 401 on every panel.
-  if (env.GRAFANA_PROM_URL && env.GRAFANA_PROM_USER && env.GRAFANA_READ_TOKEN) {
-    return {
-      url: env.GRAFANA_PROM_URL,
-      username: env.GRAFANA_PROM_USER,
-      token: env.GRAFANA_READ_TOKEN,
-    };
-  }
   return null;
 }
 
@@ -185,9 +173,8 @@ export class PrometheusQueryAdapter implements MetricsQueryPort {
 
   constructor(config: PrometheusQueryConfig) {
     this.base = promApiBase(config.url);
-    // Basic when credentials exist — on Grafana Cloud the username is the
-    // numeric instance id and the password is the `metrics:read` token. The
-    // token is never logged, never returned, and never leaves this process.
+    // Basic when credentials exist (the self-hosted store's `gogo-obs` user
+    // on DEV, GoGo-Infra INF-066). The token is never logged, never returned, and never leaves this process.
     // Both or neither: half a credential is a 401 that looks like an outage.
     this.auth =
       config.username && config.token

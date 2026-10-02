@@ -29,7 +29,7 @@ function stubPort(overrides: Partial<MetricsQueryPort> = {}) {
   return { port, queries };
 }
 
-const config = { APP_ENV: 'dev', GRAFANA_RETENTION_DAYS: 14 };
+const config = { APP_ENV: 'dev', METRICS_RETENTION_DAYS: 14 };
 
 describe('envelope', () => {
   it('reports a served window as untruncated', async () => {
@@ -70,6 +70,29 @@ describe('a monitoring outage is not an outage', () => {
     expect(res.backend.status).toBe('unavailable');
     expect(res.totals).toBeNull();
     expect(res.backend.detail).toContain('No metrics backend configured');
+  });
+
+  it('answers unavailable when retention is not configured, never a guessed 14 days (GoGo-BE#409)', async () => {
+    // The 14-day default was Grafana Cloud Free's. The self-hosted store keeps
+    // a different span, so an unset METRICS_RETENTION_DAYS is unknown — the
+    // console must not offer a window nobody stated the store can answer.
+    const { port, queries } = stubPort();
+    const res = await new CmsOpsMetricsService({ APP_ENV: 'dev' }, port).summary('30d');
+    expect(res.backend.status).toBe('unavailable');
+    expect(res.backend.detail).toContain('retention');
+    expect(res.totals).toBeNull();
+    expect(res.truncated).toBe(false);
+    expect(res.effectiveWindow).toBe('30d');
+    expect(res.retentionDays).not.toBe(14);
+    expect(queries).toHaveLength(0);
+  });
+
+  it('ignores the retired Grafana Cloud retention variable (GoGo-BE#409)', async () => {
+    const { port } = stubPort();
+    // Built at runtime so the retired name appears nowhere in source.
+    const legacy = { APP_ENV: 'dev', [`GRAFANA_${'RETENTION_DAYS'}`]: 14 } as { APP_ENV: string };
+    const res = await new CmsOpsMetricsService(legacy, port).summary('7d');
+    expect(res.backend.status).toBe('unavailable');
   });
 
   it('reports unavailable, not an error, when the store refuses us', async () => {

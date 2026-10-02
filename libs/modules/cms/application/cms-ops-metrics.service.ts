@@ -45,15 +45,13 @@ import {
 type OpsMetricsConfig = {
   APP_ENV?: string | undefined;
   /**
-   * How much history the store holds. `METRICS_RETENTION_DAYS` is the neutral
-   * name and wins; `GRAFANA_RETENTION_DAYS` is the legacy one and stays
-   * readable through ADR-0007's rollback window. The default is Grafana Cloud
-   * Free's 14 days, which the self-hosted store does not share — after cutover
-   * the value must be set, or the console offers a window the store cannot
-   * answer.
+   * How much history the store holds — the only name for it (GoGo-BE#409).
+   * There is no default: the 14 days this used to assume were Grafana Cloud
+   * Free's, and that account was deleted on 2026-09-05. Unset, the ops
+   * endpoints answer `unavailable` rather than offer a window nobody stated
+   * the store can answer.
    */
   METRICS_RETENTION_DAYS?: number | undefined;
-  GRAFANA_RETENTION_DAYS?: number | undefined;
 };
 
 export type BackendStatus = 'ok' | 'degraded' | 'unavailable';
@@ -85,9 +83,6 @@ const CACHE_TTL_MS: Record<OpsWindow, number> = {
   '30d': 180_000,
 };
 
-/** Grafana Cloud Free. Overridden per environment once a paid tier is used. */
-const DEFAULT_RETENTION_DAYS = 14;
-
 type CacheEntry = { at: number; value: unknown };
 
 @Injectable()
@@ -108,16 +103,25 @@ export class CmsOpsMetricsService {
     return this.config.APP_ENV ?? 'dev';
   }
 
-  private get retentionDays(): number {
-    return (
-      this.config.METRICS_RETENTION_DAYS ??
-      this.config.GRAFANA_RETENTION_DAYS ??
-      DEFAULT_RETENTION_DAYS
-    );
+  /** Null when unset: unknown, never guessed (GoGo-BE#409). */
+  private get retentionDays(): number | null {
+    return this.config.METRICS_RETENTION_DAYS ?? null;
+  }
+
+  /**
+   * The window the store can answer. With retention unknown nothing is cut
+   * and `retentionDays` reads 0, and `serve` answers `unavailable` before any
+   * query runs — so no number in that envelope is presented as measured.
+   */
+  private resolve(window: OpsWindow): ResolvedWindow {
+    const retention = this.retentionDays;
+    if (retention !== null) return resolveWindow(window, retention);
+    const full = resolveWindow(window, Number.MAX_SAFE_INTEGER / 86_400);
+    return { ...full, retentionDays: 0 };
   }
 
   async summary(window: OpsWindow) {
-    const w = resolveWindow(window, this.retentionDays);
+    const w = this.resolve(window);
     return this.serve(`summary|${window}`, w, async () => {
       const day = utcDay();
       const { totals } = aggregate(await this.instantSamples(w), day);
@@ -131,7 +135,7 @@ export class CmsOpsMetricsService {
   }
 
   async providers(window: OpsWindow) {
-    const w = resolveWindow(window, this.retentionDays);
+    const w = this.resolve(window);
     return this.serve(`providers|${window}`, w, async () => {
       const day = utcDay();
       const { providers } = aggregate(await this.instantSamples(w), day);
@@ -143,7 +147,7 @@ export class CmsOpsMetricsService {
   }
 
   async provider(provider: OpsProvider, window: OpsWindow) {
-    const w = resolveWindow(window, this.retentionDays);
+    const w = this.resolve(window);
     return this.serve(`provider:${provider}|${window}`, w, async () => {
       const day = utcDay();
       const { providers } = aggregate(await this.instantSamples(w), day);
@@ -179,6 +183,16 @@ export class CmsOpsMetricsService {
       return {
         ...emptyPayload<T>(),
         ...this.envelope(w, 'unavailable', 'No metrics backend configured for this environment'),
+      };
+    }
+    if (this.retentionDays === null) {
+      return {
+        ...emptyPayload<T>(),
+        ...this.envelope(
+          w,
+          'unavailable',
+          'Metrics retention is not configured for this environment',
+        ),
       };
     }
     try {
