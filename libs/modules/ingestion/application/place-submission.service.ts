@@ -300,7 +300,32 @@ export class PlaceSubmissionService {
       return { status: 'UNRESOLVED', reasonCodes: [identified.reasonCode] };
     }
 
-    const knownId = identified.value.providerPlaceId;
+    let hints = identified.value;
+    /**
+     * GoGo-BE#470 — a link with a CID and no Place ID. GoGo writes Google's
+     * `?cid=` URI into its own rows, so a CID it has met before is answered by
+     * the Place ID stored with it: the same DB-first answer a `place_id` link
+     * gets, or — when that row is stale — a Details call on a known id rather
+     * than a search. Two different ids behind one CID is a conflict nobody
+     * here can collapse (`CID_IDENTITY_CONFLICT`); none falls through to the ordinary path, which says
+     * `CID_NOT_RESOLVABLE` when the link has nothing else to search with.
+     */
+    if (!hints.providerPlaceId && hints.cid) {
+      const ids = await this.dedup.googlePlaceIdsForCid(hints.cid);
+      this.metrics.increment('place_link_cid_stored_total', {
+        result: ids.length > 1 ? 'conflict' : ids.length === 1 ? 'stored' : 'none',
+      });
+      if (ids.length > 1) {
+        // Not PLACE_IDENTITY_CONFLICT: that code means one Place ID claimed by
+        // two GoGo places. This is one CID stored against two Place IDs.
+        return { status: 'UNRESOLVED', reasonCodes: ['CID_IDENTITY_CONFLICT'] };
+      }
+      if (ids.length === 1) {
+        hints = { ...hints, providerPlaceId: ids[0]! };
+      }
+    }
+
+    const knownId = hints.providerPlaceId;
     if (knownId) {
       const known = await this.knownIdAnswer(knownId);
       if (known) return known;
@@ -316,7 +341,7 @@ export class PlaceSubmissionService {
     // said "no reviews" about a place nobody asked about. ADR-0006 §2 puts
     // "preview shown" on the `quality` row for exactly this reason.
     const outcome = await this.resolver
-      .resolveIdentified(identified.value, 'quality', { city: input.cityHint })
+      .resolveIdentified(hints, 'quality', { city: input.cityHint })
       .catch((err: unknown) => {
         throw placeProviderUnavailable(err);
       });

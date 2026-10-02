@@ -195,16 +195,24 @@ export class PlaceResolverService {
       // else. A caller-supplied hint still wins: bulk import knows its row.
       lat: hints.lat ?? parsed.placeLat,
       lng: hints.lng ?? parsed.placeLng,
-      ...(parsed.featureId ? { featureCid: parsed.featureId.cid } : {}),
+      // #470 — `parsed.cid` is the feature id's CID or a `?cid=` link's; the
+      // same identity either way.
+      ...(parsed.cid ? { featureCid: parsed.cid } : {}),
     };
 
     // Provider id in the URL is authoritative — no search, no ambiguity.
     if (parsed.providerPlaceId) {
-      return this.resolveByProviderId(parsed.providerPlaceId, tier, parsed.featureId?.cid);
+      return this.resolveByProviderId(parsed.providerPlaceId, tier, parsed.cid);
     }
 
     const query = merged.name ?? merged.query;
-    if (!query) return { status: 'UNRESOLVED', reasonCode: 'NO_QUERY' };
+    // #470 — a link carrying only a CID is not empty: it names one Google
+    // record that no Places endpoint can look up. Saying `NO_QUERY` read as
+    // "the link had nothing in it"; the editor needs to know it had an id
+    // GoGo could not translate.
+    if (!query) {
+      return { status: 'UNRESOLVED', reasonCode: parsed.cid ? 'CID_NOT_RESOLVABLE' : 'NO_QUERY' };
+    }
 
     const searchText = [query, merged.district, merged.city].filter(Boolean).join(' ');
     const bias = searchBias(parsed, merged);

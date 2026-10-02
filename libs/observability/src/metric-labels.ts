@@ -113,6 +113,10 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // the link's; `incomparable` means Google published none to compare; and
   // `not_found` means the search returned nothing at all.
   place_link_cid_lookup_total: ['result'],
+  // #470 — a CID-only link answered from GoGo's own stored `?cid=` URIs, no
+  // provider request. `stored` mapped to one Place ID, `conflict` to more than
+  // one, `none` to nothing GoGo holds.
+  place_link_cid_stored_total: ['result'],
   // #528 — a moderator asked Google what this submission's place looks like.
   // One `quality` Details each, counted apart from the fetch approval makes,
   // so preview spend and approval spend are two numbers and not one.
