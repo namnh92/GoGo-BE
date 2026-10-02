@@ -205,16 +205,14 @@ still needs it, and an override is still legitimate. `name`, `city` and
 `district` remain accepted — they are match hints for a row whose link has to be
 resolved by text search, not data GoGo keeps.
 
-### Photos are references, not images
+### Photos are not part of ingestion
 
-`core` now includes `photos`, and they arrive as `ProviderPhotoRef` — an opaque
-provider handle, the original dimensions, and the author attributions the
-licence requires to be rendered with the image. **Nothing stores them.** Turning
-a reference into bytes is a second, separately billed Google call, and GoGo has
-no provider-image storage: `place_photos` does not exist, and `ImportCandidate`
-has no `photoUrl` in the OpenAPI spec (the GoGo-CMS zod mirror declares one that
-the server has never populated). Materialization needs its own decision about
-storage, cost and cache lifetime. It is not smuggled in here.
+GoGo-BE#509 (owner decision 2026-10-02, ADR-0029) removed `photos` from the
+`core` mask: no import, resolve or refresh step asks for a photo, and
+`ResolvedProviderPlace` no longer carries one. Google photos reach a user only
+through `GET /v1/places/{id}/provider-photos`, fetched when Place Detail opens
+and stored nowhere (`PlacePhotoDisplayPort`). `ImportCandidate` still has no
+`photoUrl` in the OpenAPI spec.
 
 ## Google identity: one table, one place
 

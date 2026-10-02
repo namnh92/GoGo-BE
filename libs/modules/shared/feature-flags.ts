@@ -137,6 +137,17 @@ export const FEATURE_FLAGS = {
     description: 'Run the periodic Google Place ID liveness refresh (IDs-Only, billed at $0).',
     platformScoped: false,
   },
+  // GoGo-BE#509. Default **off**, like `place_refresh.enabled`: every Place
+  // Detail view would become a paid Google call, so the code shipping must not
+  // be what turns it on. Deploy-time default `FLAG_PLACE_PROVIDER_PHOTOS`; this
+  // row is the incident switch.
+  'place_provider_photos.enabled': {
+    valueType: 'boolean',
+    defaultValue: false,
+    description:
+      'Show transient Google photos on Place Detail (fetched per view, never stored; Place Details Photos is billed per photo).',
+    platformScoped: false,
+  },
 } as const satisfies Record<string, FlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAGS;

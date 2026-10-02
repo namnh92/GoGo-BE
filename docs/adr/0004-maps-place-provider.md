@@ -77,6 +77,8 @@ The operation label is the adapter's `method` label on
 | `google.details.core`                         | Details Pro                                            | request             | yes                           |
 | `google.details.quality`                      | Details Enterprise                                     | request             | yes                           |
 | `google.details.detail`                       | Details Enterprise + Atmosphere                        | request             | yes                           |
+| `google.details.photos`                       | Details Essentials IDs-Only ($0) — #509                | request             | yes                           |
+| `google.photoMedia`                           | Place Details Photos ($7/1k) — #509                    | request             | yes                           |
 | `google.autocomplete`                         | Autocomplete Requests                                  | request             | yes                           |
 | `google.routeMatrix`                          | `routes.computeRouteMatrix` (Routes Essentials)        | matrix **elements** | yes                           |
 | `google.sheets.meta` / `google.sheets.values` | Sheets API — free                                      | —                   | yes                           |

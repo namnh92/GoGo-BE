@@ -1332,6 +1332,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/places/{id}/provider-photos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Transient Google photos for one Place Detail view (never stored)
+         * @description GoGo-BE#509 (owner decision 2026-10-02, ADR-0029). Fetched from Google when Place Detail is opened and returned once: photo names, image URLs and bytes are not stored anywhere (database, object storage, cache, jobs, snapshots), and the response is `Cache-Control: private, no-store` — clients must not persist it in a disk/offline image cache or persisted query state either. Images arrive inline as base64 so the client never calls Google directly. At most three photos, each with its author credit (`authorAttributions`) to render beside it, plus the `attribution` text (Google Maps) whenever any photo is shown. Never call this per list card.
+         *
+         *     Always 200 for a place Place Detail opens (404 otherwise). `status` says why `photos` is empty: `disabled` (kill switch off), `not_linked` (no Google Place ID), `budget_exhausted` (daily provider budget reached or not configured), `unavailable` (provider error, timeout or moved place). Treat an unknown `status` like `unavailable`. GoGo imagery stays on `PlaceDetail.photos`; Google price ranges are never returned (core rule 13: a price without its unit).
+         */
+        get: operations["getPlaceProviderPhotos"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/places/{id}/reports": {
         parameters: {
             query?: never;
@@ -6915,6 +6937,47 @@ export interface components {
             currency?: string;
             confidence?: number;
         };
+        /** @description GoGo-BE#509 — transient provider photos. Display once, never persist. */
+        PlaceProviderPhotos: {
+            /** @description Why `photos` may be empty. Unknown values mean "no photos". */
+            status: string;
+            /** @enum {string} */
+            provider: "google";
+            /** @description Provider attribution to render whenever a photo is shown ("Google Maps"). */
+            attribution: string;
+            photos: components["schemas"]["PlaceProviderPhoto"][];
+        };
+        PlaceProviderPhoto: {
+            contentType: string;
+            /**
+             * Format: byte
+             * @description Image bytes (at most 400 KiB before encoding, 800 px wide).
+             */
+            dataBase64: string;
+            /** @description Width of Google's original, not of these bytes. */
+            widthPx: number | null;
+            heightPx: number | null;
+            /** @description Credit to render with this photo — never a generic gallery footer. */
+            authorAttributions: components["schemas"]["ProviderPhotoAuthor"][];
+            /**
+             * Format: uri
+             * @description This photo on Google Maps. `https`, Google host; else null.
+             */
+            googleMapsUri: string | null;
+        };
+        ProviderPhotoAuthor: {
+            displayName: string;
+            /**
+             * Format: uri
+             * @description Author profile link (`https`, Google host); null when absent or unsafe.
+             */
+            uri: string | null;
+            /**
+             * Format: uri
+             * @description Author avatar (`https`, Google image host); null when absent or unsafe.
+             */
+            photoUri: string | null;
+        };
         PlaceDetail: {
             /** Format: uuid */
             id?: string;
@@ -11267,6 +11330,32 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlaceReviewPreview"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    getPlaceProviderPhotos: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Zero to three provider photos with attribution, for this view only */
+            200: {
+                headers: {
+                    /** @description Always `private, no-store`. */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaceProviderPhotos"];
                 };
             };
             404: components["responses"]["NotFound"];

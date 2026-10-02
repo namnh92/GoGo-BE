@@ -345,3 +345,19 @@ A rising count means the role model does not fit the work people actually do —
 it is not, by itself, evidence that anyone misbehaved. Read the audit with
 `authorization_path = 'super_admin_bypass'`, see which routes keep needing it,
 and fix the role model rather than the people.
+
+## Transient Google photos on Place Detail (GoGo-BE#509)
+
+`GET /v1/places/{id}/provider-photos` fetches up to three Google photos per
+view and stores nothing (ADR-0029). It always answers 200; `status` says why
+`photos` is empty. Three things have to allow it before Google is called:
+
+| Check       | Where                                                                                  | Off looks like                                                                      |
+| ----------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| kill switch | `feature_flags` row `place_provider_photos.enabled`, else `FLAG_PLACE_PROVIDER_PHOTOS` | `status: disabled`; `place_provider_photos_total{outcome="disabled"}`               |
+| hard budget | `PLACE_DISPLAY_DAILY_MAX_*` (scope `google.places.display`)                            | `status: budget_exhausted`; `place_provider_photos_total{outcome="refused_budget"}` |
+| rate limit  | `places.providerPhotos`, 30/min per IP                                                 | 429                                                                                 |
+
+Incident: insert/update the flag row with `enabled = false` — the next request
+answers `disabled` with no provider call. Spend: `google.photoMedia` on the
+cost ledger (Place Details Photos, $7 / 1,000, 1,000 free per month).

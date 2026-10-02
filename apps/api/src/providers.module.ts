@@ -12,6 +12,7 @@ import {
   CloudflareCachePurgeAdapter,
   FakeAreaAutocomplete,
   FakeCachePurge,
+  FakePlacePhotoDisplay,
   FakePlaceProvider,
   FakePush,
   FakeSheets,
@@ -24,6 +25,7 @@ import {
   OneSignalPushAdapter,
   NoAcquisitionLinkProvider,
   NoopCachePurge,
+  PLACE_PHOTO_DISPLAY,
   PLACE_PROVIDER,
   PUBLIC_STORAGE_PROVIDER,
   PrometheusQueryAdapter,
@@ -75,6 +77,19 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       useFactory: (config: AppConfig, metrics: MetricsPort) => {
         const status = placeProviderStatus(config);
         if (status.provider === 'fake') return new FakePlaceProvider();
+        if (status.provider === 'unconfigured') return new UnconfiguredPlaceProvider();
+        return new GooglePlacesAdapter(config.GOOGLE_PLACES_API_KEY, metrics);
+      },
+      inject: [APP_CONFIG, METRICS],
+    },
+    {
+      // GoGo-BE#509 — transient display photos. Same mode rule as above: no key
+      // under `google` refuses (the endpoint then answers "no photos"), never
+      // the fake.
+      provide: PLACE_PHOTO_DISPLAY,
+      useFactory: (config: AppConfig, metrics: MetricsPort) => {
+        const status = placeProviderStatus(config);
+        if (status.provider === 'fake') return new FakePlacePhotoDisplay();
         if (status.provider === 'unconfigured') return new UnconfiguredPlaceProvider();
         return new GooglePlacesAdapter(config.GOOGLE_PLACES_API_KEY, metrics);
       },
@@ -312,6 +327,7 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     COST_USAGE_LEDGER,
     METRICS_QUERY,
     PLACE_PROVIDER,
+    PLACE_PHOTO_DISPLAY,
     AREA_AUTOCOMPLETE,
     SHEETS_PROVIDER,
     TRAVEL_TIME_PROVIDER,

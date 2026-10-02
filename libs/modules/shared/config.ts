@@ -9,6 +9,18 @@ export type MediaConfig = { MEDIA_PUBLIC_BASE_URL: string };
 /** #334 — the reader half of the Google provenance unification. */
 export type ProvenanceConfig = { PROVENANCE_UNIFIED_READS: boolean };
 
+/**
+ * GoGo-BE#509 — transient Place Detail photos: the kill switch's deploy-time
+ * default and the `google.places.display` budget. Budget values unset = refuse.
+ */
+export type ProviderPhotosConfig = {
+  APP_ENV: 'dev' | 'staging' | 'prod' | 'production';
+  FLAG_PLACE_PROVIDER_PHOTOS: boolean;
+  PLACE_DISPLAY_DAILY_MAX_CALLS?: number | undefined;
+  PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD?: number | undefined;
+  PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA?: number | undefined;
+};
+
 /** The deployment a flag row is scoped to (#221). */
 export type PlatformConfig = { APP_ENV: 'dev' | 'staging' | 'prod' | 'production' };
 
