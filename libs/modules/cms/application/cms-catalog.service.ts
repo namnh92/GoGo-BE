@@ -10,6 +10,7 @@ import { AppError } from '../../shared/app-error';
 import { invalidateTravelOnMove } from '../../shared/place-relocation';
 import { APP_CONFIG, type MediaConfig, type ProvenanceConfig } from '../../shared/config';
 import { GOOGLE_PROVIDER, googleProvenanceRows } from '../../shared/google-provenance';
+import { toProviderStatus, providerStatusSubquery } from '../../shared/provider-status';
 import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
 import { writeOutbox } from '../../shared/outbox';
@@ -431,6 +432,8 @@ type PlaceDetailRow = {
   created_at: Date | string;
   updated_at: Date | string;
   provenance: PlaceProvenanceRow[] | null;
+  /** GoGo-BE#360 — `json_build_object` result, or null with no provider row. */
+  provider_status: unknown;
 };
 
 type PlaceHoursRow = {
@@ -1071,7 +1074,10 @@ export class CmsCatalogService {
                    'source_reference', fp.source_reference,
                    'verified_at', fp.verified_at))
                  from place_field_provenance fp where fp.place_id = p.id
-               ), '[]'::jsonb) as provenance
+               ), '[]'::jsonb) as provenance,
+               -- GoGo-BE#360 — the same fact and severity rule as the consumer
+               -- detail, carried in this row for the same pool reason as above.
+               ${providerStatusSubquery(sql`p.id`)} as provider_status
         from places p
         where p.id = ${placeId}::uuid
       `)
@@ -1261,6 +1267,11 @@ export class CmsCatalogService {
           ];
         }),
       ),
+      /**
+       * GoGo-BE#360 — what the provider last reported about the business, so
+       * an editor sees a shut place as shut. Absent when no provider row exists.
+       */
+      providerStatus: toProviderStatus(row.provider_status),
       freshnessCheckedAt: toIso(row.freshness_checked_at),
       createdAt: toIso(row.created_at)!,
       updatedAt: toIso(row.updated_at)!,

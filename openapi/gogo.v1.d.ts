@@ -6951,16 +6951,17 @@ export interface components {
                 url?: string;
                 attribution?: string;
             }[];
-            /** @description GoGo-BE#360 — what the place's provider last reported about the business, a fact for core rule 8's "excluded or warned": search already excludes a closed or temporarily closed place, but a saved place, a plan stop or a share link still opens this detail, and the client must warn rather than present it as open (with more than colour). When several provider rows exist the most severe report wins (closed, temporarily_closed, moved, active, unknown). Absent when no provider has reported on the place. `places.status` (`status` above) is GoGo's own moderation decision and is separate. */
-            providerStatus?: {
-                /** @description Treat a value you do not know as `unknown`. */
-                status: string;
-                /**
-                 * Format: date-time
-                 * @description When the provider was last read for this report.
-                 */
-                fetchedAt: string;
-            };
+            providerStatus?: components["schemas"]["PlaceProviderStatus"];
+        };
+        /** @description GoGo-BE#360 — what the place's provider last reported about the business, a fact for core rule 8's "excluded or warned": search already excludes a closed or temporarily closed place, but a saved place, a plan stop or a share link still opens this detail, and the client must warn rather than present it as open (with more than colour). When several provider rows exist the most severe report wins (closed, temporarily_closed, moved, active, unknown). Absent when no provider has reported on the place. The place's own `status` is GoGo's moderation decision and is separate. */
+        PlaceProviderStatus: {
+            /** @description Treat a value you do not know as `unknown`. */
+            status: string;
+            /**
+             * Format: date-time
+             * @description When the provider was last read for this report.
+             */
+            fetchedAt: string;
         };
         SuggestionCandidate: {
             /** Format: uuid */
@@ -7898,6 +7899,8 @@ export interface components {
             }[];
             /** @description Cover first, then the editor's order. */
             media: components["schemas"]["CmsPlaceMedia"][];
+            /** @description GoGo-BE#360 — the same fact, rows and severity rule as `PlaceDetail.providerStatus`, so an editor sees a place its provider reports shut as shut. Absent when no provider has reported on the place. Read from the database; no provider call is made. */
+            providerStatus?: components["schemas"]["PlaceProviderStatus"];
             /** Format: date-time */
             freshnessCheckedAt?: string | null;
             /** Format: date-time */
