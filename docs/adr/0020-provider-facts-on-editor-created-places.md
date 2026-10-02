@@ -1,6 +1,7 @@
 # ADR-0020: Provider facts on a place an editor creates from a link
 
-- **Status:** accepted
+- **Status:** superseded on the `POST /cms/places` door by the GoGo-BE#440
+  amendment below (2026-10-02)
 - **Date:** 2026-09-08
 - **Deciders:** product owner, backend, CMS
 
@@ -118,3 +119,42 @@ backfills them here, and this ADR authorises no backfill.
 Rollback is deleting the `providerSnapshot` call in `CmsCatalogService.createPlace`.
 Rows already written stay valid — they are ordinary provider-sourced rows,
 indistinguishable from ones the submission path wrote.
+
+## Amendment — GoGo-BE#440 (2026-10-02): withdrawn on the CMS create door
+
+**Decision (SA, binding shape for #440).** `POST /cms/places` calls no Google
+provider and persists no provider content. The Option 3 enrichment above —
+rating, review count, price level, weekly hours and the `place_provider_sources`
+snapshot written at create — is removed from this route. A `googlePlaceId`
+remains, as identity only (`place_sources`).
+
+**Why.** The workspace provenance rule
+(`GOGO_PRODUCT_DATA_ARCHITECTURE.md`, header: a value is GoGo-owned only with
+independent provenance; copying or confirming a Google value never makes it
+GoGo-owned) is the permanent authority, and it overrides the reading of §2
+"No by default" this ADR relied on. Where the two disagree, this ADR yields.
+
+**What the door does instead.**
+
+- Every supplied non-null canonical fact carries a `sourceReferences` entry
+  (API field name; `geom` covers both coordinates), trimmed, 1–500 characters,
+  naming independent evidence. One provenance row per claimed field,
+  `source_type = editorial`, the reference, the actor. References are
+  accountable assertions, never fetched.
+- A non-empty `googleDerivedFields` is refused with
+  `400 GOOGLE_CONTENT_NOT_PERSISTABLE`. Retyping a preview value does not make
+  it GoGo-owned, and a declared Google-derived value is not stored at all.
+- The resolve (`POST /cms/places/resolve-link`) still returns an attributed,
+  transient preview; it never enters a replay cache.
+- Place, provenance, identity, administrative mapping, `place.created`, the
+  audit entry and the idempotency completion commit in one transaction.
+
+**Consequences.** `cms_place_create_provider_enrichment_total` is retired.
+Places already created with provider facts keep them; historical cleanup and
+the other ingestion writers (submission approval, bulk import) are separate
+work and are not changed by this amendment. The CMS console must send
+`sourceReferences` and an `Idempotency-Key`, and stop sending
+`googleDerivedFields` — a coordinated client change.
+
+**Rollback.** Revert the #440 change. No migration was added; rows written
+under either rule remain valid.

@@ -2,9 +2,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { METRICS, type MetricsPort } from '@gogo/observability';
-import type { ResolvedProviderPlace } from '@gogo/providers';
 import { PlaceDedupService } from '../../ingestion/application/place-dedup.service';
-import { PlaceResolverService } from '../../ingestion/application/place-resolver.service';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { AppError } from '../../shared/app-error';
 import { invalidateTravelOnMove } from '../../shared/place-relocation';
@@ -13,6 +11,13 @@ import { GOOGLE_PROVIDER, googleProvenanceRows } from '../../shared/google-prove
 import { toProviderStatus, providerStatusSubquery } from '../../shared/provider-status';
 import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
+import {
+  beginIdempotent,
+  completeIdempotentWithin,
+  releaseIdempotent,
+  type IdempotencyScope,
+} from '../../shared/idempotency.interceptor';
+import { currentRequestContext } from '../../shared/request-context';
 import { writeOutbox } from '../../shared/outbox';
 import { assertPlaceApprovable } from '../../administrative/application/place-approval';
 import {
@@ -141,6 +146,12 @@ export type PlaceCreateInput = Omit<
    * they do.
    */
   googleDerivedFields?: readonly GoogleDerivableField[] | undefined;
+  /**
+   * GoGo-BE#440 — the independent evidence behind each canonical fact, keyed by
+   * API field name (`geom` covers `lat` + `lng`). Required for every supplied
+   * non-null fact; see `assertSourceReferences`.
+   */
+  sourceReferences: Readonly<Record<string, string>>;
 };
 
 /**
@@ -187,6 +198,97 @@ const PROVENANCE_COLUMN: Record<string, ProvenanceField> = {
   lat: 'geom',
   lng: 'geom',
 };
+
+/**
+ * GoGo-BE#440 — `sourceReferences` keys: the API's own field names, with `geom`
+ * standing for the coordinate pair, mapped to the provenance column each one
+ * names. A key outside this list is not a canonical fact.
+ */
+export const SOURCE_REFERENCE_KEYS = [
+  'name',
+  'description',
+  'addressText',
+  'areaKey',
+  'city',
+  'district',
+  'phone',
+  'website',
+  'geom',
+] as const;
+export type SourceReferenceKey = (typeof SOURCE_REFERENCE_KEYS)[number];
+
+const REFERENCE_COLUMN: Record<SourceReferenceKey, ProvenanceField> = {
+  name: 'name',
+  description: 'description',
+  addressText: 'address_text',
+  areaKey: 'area_key',
+  city: 'city',
+  district: 'district',
+  phone: 'phone',
+  website: 'website',
+  geom: 'geom',
+};
+
+/**
+ * GoGo-BE#440 — every canonical fact a create supplies names its evidence, and
+ * every reference names a fact the create supplies.
+ *
+ * A supplied non-null value without a reference would be a fact nobody can
+ * account for; a reference for a field the body does not set is provenance
+ * pointing at nothing. Both are refused field by field, so the console can mark
+ * the box. Returns the reference per provenance column.
+ */
+export function assertSourceReferences(
+  input: Omit<PlaceCreateInput, 'sourceReferences'> & {
+    sourceReferences?: Readonly<Record<string, string>> | undefined;
+  },
+): Map<ProvenanceField, string> {
+  const refs = input.sourceReferences ?? {};
+  const supplied = new Set<SourceReferenceKey>(['name', 'geom']);
+  for (const key of SOURCE_REFERENCE_KEYS) {
+    if (key === 'name' || key === 'geom') continue;
+    const value = (input as Record<string, unknown>)[key];
+    if (value !== undefined && value !== null) supplied.add(key);
+  }
+
+  const errors: { field: string; code: string; message: string }[] = [];
+  for (const key of supplied) {
+    if (typeof refs[key] !== 'string' || refs[key]!.trim().length === 0) {
+      errors.push({
+        field: `sourceReferences.${key}`,
+        code: 'required',
+        message: 'each supplied fact needs an independent source reference',
+      });
+    }
+  }
+  for (const key of Object.keys(refs)) {
+    if (!supplied.has(key as SourceReferenceKey)) {
+      errors.push({
+        field: `sourceReferences.${key}`,
+        code: 'unused',
+        message: 'no supplied canonical fact by this name',
+      });
+    }
+  }
+  if (errors.length > 0) {
+    throw AppError.badRequest(
+      'SOURCE_REFERENCE_INVALID',
+      'Thiếu hoặc thừa nguồn cho dữ liệu',
+      errors,
+    );
+  }
+
+  return new Map([...supplied].map((key) => [REFERENCE_COLUMN[key], refs[key]!.trim()]));
+}
+
+/** Postgres unique violation on one named constraint, through any `cause` chain. */
+function isUniqueViolation(error: unknown, constraint: string): boolean {
+  for (let e: unknown = error; e; e = (e as { cause?: unknown }).cause) {
+    const c = e as { code?: unknown; constraint?: unknown };
+    if (c.code === '23505' && c.constraint === constraint) return true;
+  }
+  return false;
+}
 
 /**
  * The fields a Google Maps resolution can legitimately fill.
@@ -608,14 +710,6 @@ export class CmsCatalogService {
      * are all in there, and a second copy would be a second answer.
      */
     private readonly resolver: AdministrativeResolverService,
-    /**
-     * PI-BE-021 — the one Details fetch a place created from a link is worth.
-     *
-     * Injected rather than reimplemented for the third time: `resolveByProviderId`
-     * already carries the tier decision, the operational-vs-answered error split
-     * (#279) and the request counters the cost dashboards read.
-     */
-    private readonly providerResolver: PlaceResolverService,
     @Optional()
     @Inject(APP_CONFIG)
     private readonly config?: ProvenanceConfig & Partial<MediaConfig>,
@@ -1288,65 +1382,100 @@ export class CmsCatalogService {
    * that a human owns this phone number and leave it alone.
    */
   /**
-   * GoGo-BE#452 — the third way a place can enter the catalogue.
+   * GoGo-BE#440 — `createPlace` behind its own replay record.
    *
-   * There were two before, and neither is a person typing what they know:
-   * bulk import resolves rows against a provider, and a community submission
-   * arrives from the app for review. An editor holding a menu and a phone
-   * number had nowhere to put it, so the CMS shipped its "Thêm địa điểm"
-   * button visibly disabled (GoGo-CMS#128).
+   * The generic `IdempotencyInterceptor` completes its record after the
+   * handler returns, which is after this method's transaction has committed.
+   * A failure in that gap released the key, and the console's retry created
+   * the place a second time. Here the key is claimed before the work and
+   * completed inside the transaction that creates the place (see
+   * `createPlace`), so the two commit or roll back together.
+   *
+   * The record stores the new place's id, not the response document: a replay
+   * re-reads the place, so no response body — and nothing a provider preview
+   * ever showed — sits in the replay cache.
+   */
+  async createPlaceOnce(adminId: string, input: PlaceCreateInput, scope: IdempotencyScope) {
+    const replay = await beginIdempotent(this.db, scope);
+    if (replay) {
+      const placeId = (replay.body as { placeId?: unknown } | null)?.placeId;
+      if (typeof placeId !== 'string') throw AppError.internal('Replay record names no place');
+      return { replayed: true, place: await this.getPlace(placeId) };
+    }
+    let place;
+    try {
+      place = await this.createPlace(adminId, input, scope.storedKey);
+    } catch (err) {
+      // Nothing committed, so the key is the client's again. A release that
+      // itself fails leaves the key in flight (409 until it expires) — the
+      // safe direction — and must not hide the error that caused it.
+      await releaseIdempotent(this.db, scope.storedKey).catch(() => undefined);
+      throw err;
+    }
+    // Committed: from here a failure is a replay on retry, never a second row.
+    return { replayed: false, place: await this.getPlace(place.id) };
+  }
+
+  /**
+   * GoGo-BE#452 / #440 — the third way a place can enter the catalogue: an
+   * editor entering what they know, with the evidence they know it from.
    *
    * Created as `draft`, never `published`: entering the catalogue and being
-   * visible are separate decisions, and the existing status workflow already
-   * owns the second one.
+   * visible are separate decisions, and the existing status workflow owns the
+   * second one.
    *
-   * Nothing here touches provider data. Every field is the editor's own claim
-   * and is recorded `editorial`, the same as a typed edit — copying a value off
-   * a provider preview does not transfer ownership
-   * (`GOGO_PRODUCT_DATA_ARCHITECTURE.md`).
+   * **No provider content (#440).** This route calls no Google provider and
+   * persists nothing a provider said. A `googlePlaceId` is identity only — a
+   * `place_sources` row that puts the place inside dedup. Every canonical fact
+   * carries an independent `sourceReferences` entry and is recorded
+   * `editorial`; a field declared as applied from the Google preview is
+   * refused, because copying a Google value never makes it GoGo-owned
+   * (`GOGO_PRODUCT_DATA_ARCHITECTURE.md`, provenance rule). ADR-0020's
+   * enrichment on this door is withdrawn — see its #440 amendment.
+   *
+   * **One commit.** The place, its provenance, identity, administrative
+   * mapping, the `place.created` event, the audit line and the replay record's
+   * completion are written in one transaction. Before #440 the audit ran after
+   * commit, so an audit failure left a place nobody had recorded creating.
    */
-  async createPlace(adminId: string, input: PlaceCreateInput) {
+  async createPlace(adminId: string, input: PlaceCreateInput, replayKey: string) {
+    if (input.googleDerivedFields && input.googleDerivedFields.length > 0) {
+      throw AppError.badRequest(
+        'GOOGLE_CONTENT_NOT_PERSISTABLE',
+        'Không lưu giá trị lấy từ Google thành dữ liệu GoGo — hãy nhập kèm nguồn độc lập',
+        input.googleDerivedFields.map((field) => ({
+          field: 'googleDerivedFields',
+          code: 'not_persistable',
+          message: field,
+        })),
+      );
+    }
+    const references = assertSourceReferences(input);
     const contact = this.normalizeContact(input);
 
     /**
      * #465 — identity beats similarity. When the editor arrived by link, the
      * catalogue already knows whether that Google record belongs to a place,
      * and answering "you already have this, here it is" is both cheaper and
-     * more useful than the fuzzy 150 m / 0.5-similarity answer below, which
-     * would miss it outright for a place that moved or was renamed.
+     * more useful than the fuzzy 150 m / 0.5-similarity answer below.
      *
      * `allowDuplicate` does not open this gate. Two GoGo places may legitimately
-     * share a name and a street corner; they may not share one Google record —
-     * `place_sources_provider_external_unique` would reject the second insert
-     * anyway, and a 409 naming the existing place beats a constraint violation.
+     * share a name and a street corner; they may not share one Google record.
+     * Checked again inside the transaction, and a lost race on
+     * `place_sources_provider_external_unique` is translated to the same 409.
      */
     if (input.googlePlaceId !== undefined) {
-      const identity = await this.dedup.resolveGoogleIdentity(input.googlePlaceId);
-      if (identity.kind === 'CONFLICT') {
-        throw AppError.conflict(
-          'PLACE_IDENTITY_CONFLICT',
-          'Google ID này đang bị hai địa điểm cùng nhận — cần gộp trước khi thêm mới',
-          identity.placeIds.map((id) => ({
-            field: 'googlePlaceId',
-            code: 'conflict',
-            message: id,
-          })),
-        );
-      }
-      if (identity.kind !== 'NONE') {
-        throw AppError.conflict(
-          'PLACE_ALREADY_LINKED',
-          'GoGo đã có địa điểm gắn với link Google này',
-          [{ field: 'googlePlaceId', code: 'already_linked', message: identity.placeId }],
-        );
-      }
+      await this.assertGoogleIdentityFree(input.googlePlaceId);
     }
 
     /**
      * Same rule the duplicate queue uses — 150 m apart and a name similarity
-     * over 0.5 — applied before the row exists rather than after. A near-copy
-     * of a place already in the catalogue is the failure mode of manual entry,
-     * and finding it later means merging two histories instead of one.
+     * over 0.5 — applied before the row exists rather than after. Advisory:
+     * similarity never proves identity, so nothing is merged automatically.
+     *
+     * Each candidate is a structured `field_errors[].candidate` (#440) so the
+     * console can open it by id; `message` keeps its old human form for
+     * clients that read it.
      *
      * `allowDuplicate` is how an editor says "I looked, they are different
      * places": two cafés of the same chain on one street are real.
@@ -1368,28 +1497,27 @@ export class CmsCatalogService {
         throw AppError.conflict(
           'PLACE_DUPLICATE_SUSPECTED',
           'Địa điểm này có thể đã có trong danh mục',
-          rows.map((row) => ({
-            field: 'name',
-            code: 'duplicate_candidate',
-            message: `${String(row.name)} (${Math.round(Number(row.distance_m))}m)`,
-          })),
+          rows.map((row) => {
+            const distanceM = Math.round(Number(row.distance_m));
+            return {
+              field: 'name',
+              code: 'duplicate_candidate',
+              message: `${String(row.name)} (${distanceM}m)`,
+              candidate: {
+                placeId: String(row.id),
+                name: String(row.name),
+                status: String(row.status),
+                distanceM,
+                nameSimilarity: Math.round(Number(row.name_similarity) * 1000) / 1000,
+              },
+            };
+          }),
         );
       }
     }
 
-    // `lat` and `lng` both name `geom`, so the pair collapses to one row.
-    const claimed = [
-      ...new Set(
-        Object.keys(input)
-          .filter((key) => PROVENANCE_COLUMN[key] !== undefined)
-          .map((key) => PROVENANCE_COLUMN[key]!),
-      ),
-    ];
-    const derived = new Set(
-      input.googlePlaceId === undefined
-        ? []
-        : (input.googleDerivedFields ?? []).map((key) => PROVENANCE_COLUMN[key]!),
-    );
+    const claimed = [...references.keys()];
+    const origin = input.googlePlaceId !== undefined ? 'cms_link' : 'cms_manual';
 
     const codes = {
       provinceCode: input.provinceCode ?? null,
@@ -1397,299 +1525,178 @@ export class CmsCatalogService {
     };
     const codesAsserted = codes.provinceCode !== null || codes.communeCode !== null;
 
-    /**
-     * PI-BE-021 — the provider facts, fetched **before** the transaction opens.
-     *
-     * A place created from a link used to store its Google id and nothing else,
-     * so `GET /cms/places/{id}` came back with no rating, no review count, no
-     * opening hours and no canonical Google link — the exact facts the editor
-     * had just been shown in the preview, missing from the row that preview
-     * created.
-     *
-     * They are fetched here rather than carried from the resolve because
-     * ADR-0006 §9.5 forbids the server holding provider content across
-     * requests: there is no snapshot to replay, deliberately. This is the same
-     * argument, and the same code path, as `createDraftFromSubmission` — the
-     * approve step re-verifies for the identical reason.
-     *
-     * Outside the transaction so that a slow or unreachable provider cannot
-     * hold a write lock on `places` open, and `null` on failure so that Google
-     * being down costs the editor the enrichment rather than the whole form.
-     */
-    const provider =
-      input.googlePlaceId === undefined
-        ? null
-        : await this.providerSnapshot(input.googlePlaceId, input.areaKey ?? null);
-
     let mappingWrite: PersistResult | null = null;
-    const created = await this.db.transaction(async (tx) => {
-      /**
-       * ADM-016 — validated against the dataset that is published *now*, inside
-       * the transaction that stores the codes.
-       *
-       * Two different answers when there is no published dataset, and the
-       * difference is whether the request claimed anything. An editor who chose
-       * a province and a commune is asserting a fact, and there is nothing to
-       * check it against, so the honest answer is 503 rather than storing an
-       * unvalidated claim. An editor who chose neither is not asserting
-       * anything — the place is created `UNMAPPED`, which already blocks
-       * publication, and a fresh environment keeps working.
-       */
-      const dataset: DatasetRef | null = codesAsserted
-        ? await requireActiveDataset(tx)
-        : await activeDataset(tx);
-      if (codesAsserted) await assertCurrentPair(tx, dataset!, codes);
+    let created: typeof schema.places.$inferSelect;
+    try {
+      created = await this.db.transaction(async (tx) => {
+        /**
+         * ADM-016 — validated against the dataset that is published *now*,
+         * inside the transaction that stores the codes. Codes asserted with no
+         * published dataset are a 503; no codes and no dataset is a place
+         * created `UNMAPPED`, which already blocks publication.
+         */
+        const dataset: DatasetRef | null = codesAsserted
+          ? await requireActiveDataset(tx)
+          : await activeDataset(tx);
+        if (codesAsserted) await assertCurrentPair(tx, dataset!, codes);
 
-      const [place] = await tx
-        .insert(schema.places)
-        .values({
-          name: input.name,
-          // The database trigger owns this column; every other writer passes
-          // the same placeholder rather than normalising twice.
-          nameNormalized: 'set-by-trigger',
-          status: 'draft',
-          geom: { x: input.lng, y: input.lat },
-          ...(input.description !== undefined ? { description: input.description } : {}),
-          ...(input.addressText !== undefined ? { addressText: input.addressText } : {}),
-          ...(input.areaKey !== undefined ? { areaKey: input.areaKey } : {}),
-          ...(input.city !== undefined ? { city: input.city } : {}),
-          ...(input.district !== undefined ? { district: input.district } : {}),
-          ...(contact.phone !== undefined ? { phone: contact.phone } : {}),
-          ...(contact.website !== undefined ? { website: contact.website } : {}),
-          ...(input.avgVisitMinutes !== undefined
-            ? { avgVisitMinutes: input.avgVisitMinutes }
-            : {}),
-          ...(input.suitability !== undefined ? { suitability: input.suitability } : {}),
-          ...(input.isLodging !== undefined ? { isLodging: input.isLodging } : {}),
-          ...(input.curatedRank !== undefined ? { curatedRank: input.curatedRank } : {}),
-          /**
-           * PI-BE-021 — provider aggregates, written as the provider's own
-           * figures and nothing else.
-           *
-           * `places.rating` has always meant "the provider's rating"; the
-           * console renders it beside GoGo's own and never averages the two
-           * (FR-INGEST-006). Storing it here does not make it a GoGo fact —
-           * `GOGO_PRODUCT_DATA_ARCHITECTURE.md` is explicit that copying never
-           * transfers ownership — and nothing in the recommendation pipeline
-           * reads it as one. See `docs/adr/0020-*`.
-           *
-           * An editor cannot type these: they come from the provider answer
-           * this request made, not from the request body, so there is no path
-           * by which a person's number is stored wearing Google's attribution.
-           */
-          ...(provider
-            ? {
-                rating:
-                  provider.details.rating !== null ? provider.details.rating.toFixed(2) : null,
-                ratingCount: provider.details.ratingCount,
-                priceLevel: provider.details.priceLevel,
-                freshnessCheckedAt: new Date(),
-              }
-            : {}),
-        })
-        .returning();
+        if (input.googlePlaceId !== undefined) {
+          await this.assertGoogleIdentityFree(input.googlePlaceId, tx);
+        }
 
-      /**
-       * PI-BE-021 — the week, in GoGo's representation.
-       *
-       * `entry_kind` is left at its `interval` default: the adapter only ever
-       * produces spans, and inventing `closed` for a day Google did not
-       * mention would assert a fact nobody supplied. A day with no period
-       * simply has no row, which is what "unknown is the absence of a row"
-       * means on this table.
-       */
-      if (provider && provider.details.hours.length > 0) {
-        await tx.insert(schema.placeHours).values(
-          provider.details.hours.map((h) => ({
+        const [place] = await tx
+          .insert(schema.places)
+          .values({
+            name: input.name,
+            // The database trigger owns this column; every other writer passes
+            // the same placeholder rather than normalising twice.
+            nameNormalized: 'set-by-trigger',
+            status: 'draft',
+            geom: { x: input.lng, y: input.lat },
+            ...(input.description !== undefined ? { description: input.description } : {}),
+            ...(input.addressText !== undefined ? { addressText: input.addressText } : {}),
+            ...(input.areaKey !== undefined ? { areaKey: input.areaKey } : {}),
+            ...(input.city !== undefined ? { city: input.city } : {}),
+            ...(input.district !== undefined ? { district: input.district } : {}),
+            ...(contact.phone !== undefined ? { phone: contact.phone } : {}),
+            ...(contact.website !== undefined ? { website: contact.website } : {}),
+            ...(input.avgVisitMinutes !== undefined
+              ? { avgVisitMinutes: input.avgVisitMinutes }
+              : {}),
+            ...(input.suitability !== undefined ? { suitability: input.suitability } : {}),
+            ...(input.isLodging !== undefined ? { isLodging: input.isLodging } : {}),
+            ...(input.curatedRank !== undefined ? { curatedRank: input.curatedRank } : {}),
+          })
+          .returning();
+
+        if (input.taxonomyIds && input.taxonomyIds.length > 0) {
+          await tx
+            .insert(schema.placeTaxonomies)
+            .values(input.taxonomyIds.map((taxonomyId) => ({ placeId: place!.id, taxonomyId })))
+            .onConflictDoNothing();
+        }
+
+        /**
+         * Identity only. Written in the same transaction as the row it
+         * identifies, so a failure cannot leave a place claiming a Google id
+         * nothing recorded, or a `place_sources` row pointing at nothing.
+         */
+        if (input.googlePlaceId !== undefined) {
+          await tx.insert(schema.placeSources).values({
             placeId: place!.id,
-            dayOfWeek: h.dayOfWeek,
-            openMinute: h.openMinute,
-            closeMinute: h.closeMinute,
-            isOvernight: h.isOvernight,
-            source: 'provider' as const,
-            verifiedAt: new Date(),
-          })),
-        );
-      }
+            provider: 'google',
+            externalId: input.googlePlaceId,
+          });
+        }
 
-      if (input.taxonomyIds && input.taxonomyIds.length > 0) {
-        await tx
-          .insert(schema.placeTaxonomies)
-          .values(input.taxonomyIds.map((taxonomyId) => ({ placeId: place!.id, taxonomyId })))
-          .onConflictDoNothing();
-      }
-
-      /**
-       * The link is what puts the place inside provider dedup. Written in the
-       * same transaction as the row it identifies, so a failure after the
-       * insert cannot leave a place claiming a Google id nothing recorded — or
-       * a `place_sources` row pointing at a place that does not exist.
-       */
-      if (input.googlePlaceId !== undefined) {
-        await tx.insert(schema.placeSources).values({
-          placeId: place!.id,
-          provider: 'google',
-          externalId: input.googlePlaceId,
-        });
-      }
-
-      /**
-       * A value the editor typed is their own claim and is recorded
-       * `editorial` — including one they read off the preview and retyped,
-       * because GOGO_PRODUCT_DATA_ARCHITECTURE.md is explicit that copying does
-       * not transfer ownership. A value *applied* from the preview and left
-       * alone is `google_derived`, which is the case this enum member was
-       * reserved for, and it carries the Google id as its reference so a later
-       * refresh knows which fields it may overwrite without arguing with a
-       * person.
-       */
-      if (claimed.length > 0) {
-        await tx.insert(schema.placeFieldProvenance).values(
-          claimed.map((field) => {
-            const fromGoogle = derived.has(field);
-            return {
+        /**
+         * One row per claimed field, `editorial`, carrying the editor's
+         * independent reference. The reference is an accountable assertion —
+         * the server records who made it and never fetches it.
+         */
+        if (claimed.length > 0) {
+          await tx.insert(schema.placeFieldProvenance).values(
+            claimed.map((field) => ({
               placeId: place!.id,
               field,
-              sourceType: fromGoogle ? ('google_derived' as const) : ('editorial' as const),
-              sourceReference: fromGoogle ? input.googlePlaceId! : null,
+              sourceType: 'editorial' as const,
+              sourceReference: references.get(field)!,
               actorId: adminId,
-            };
-          }),
-        );
-      }
+            })),
+          );
+        }
 
-      /**
-       * The mapping is written in the transaction that wrote the place.
-       *
-       * The editor's codes go in as `trustedCodes`, which is evidence and not
-       * an instruction: they are weighed against the geometry the same request
-       * supplied, and two sources naming different communes produce
-       * `NEEDS_REVIEW` rather than whichever one the code happened to trust. A
-       * place with no codes still resolves — from its own position — which is
-       * how a place created by hand stops being invisible to the queue.
-       */
-      if (dataset) {
-        const resolution = await this.resolver.resolvePlaceWithin(tx, place!.id, {
-          ...(codesAsserted ? { trustedCodes: codes } : {}),
-        });
-        mappingWrite = await this.resolver.persistWithin(tx, resolution, {
-          actor: { id: adminId, type: 'admin' },
-        });
-      }
+        /**
+         * The mapping is written in the transaction that wrote the place. The
+         * editor's codes are evidence weighed against the geometry, not an
+         * instruction; a place with no codes still resolves from its position.
+         */
+        if (dataset) {
+          const resolution = await this.resolver.resolvePlaceWithin(tx, place!.id, {
+            ...(codesAsserted ? { trustedCodes: codes } : {}),
+          });
+          mappingWrite = await this.resolver.persistWithin(tx, resolution, {
+            actor: { id: adminId, type: 'admin' },
+          });
+        }
 
-      await writeOutbox(tx, {
-        eventType: 'place.created',
-        resourceType: 'place',
-        resourceId: place!.id,
-        payload: {
-          status: 'draft',
-          origin: input.googlePlaceId !== undefined ? 'cms_link' : 'cms_manual',
-        },
+        await writeOutbox(tx, {
+          eventType: 'place.created',
+          resourceType: 'place',
+          resourceId: place!.id,
+          actorId: adminId,
+          correlationId: currentRequestContext().requestId,
+          payload: { status: 'draft', origin },
+        });
+
+        // Actor, request id and resource come from `writeAudit`; no raw
+        // coordinates and no request payload.
+        await writeAudit(tx, {
+          actorType: 'admin',
+          actorId: adminId,
+          action: 'place.created',
+          resourceType: 'place',
+          resourceId: place!.id,
+          diff: {
+            name: place!.name,
+            status: place!.status,
+            origin,
+            claimedFields: claimed,
+            allowDuplicate: input.allowDuplicate === true,
+            ...(input.googlePlaceId !== undefined ? { googlePlaceId: input.googlePlaceId } : {}),
+          },
+        });
+
+        await completeIdempotentWithin(tx, replayKey, 201, { placeId: place!.id });
+
+        return place!;
       });
-
-      return place!;
-    });
+    } catch (err) {
+      if (
+        input.googlePlaceId !== undefined &&
+        isUniqueViolation(err, 'place_sources_provider_external_unique')
+      ) {
+        // Lost the race to a concurrent create of the same Google record: the
+        // winner has committed, so the lookup now names it.
+        await this.assertGoogleIdentityFree(input.googlePlaceId);
+      }
+      throw err;
+    }
 
     // Counted only now: the write is real once the transaction that made it
     // has committed.
     if (mappingWrite) this.resolver.countPersist(mappingWrite);
 
-    /**
-     * PI-BE-021 — the canonical Google link, the aggregates and the fetch tier,
-     * on the row that owns provider provenance.
-     *
-     * After the transaction, not inside it: `upsertProviderSource` writes
-     * through the pool and keys on `(provider, external_id)`, so running it in
-     * the transaction would either need a second executor or a signature change
-     * across every caller. A failure here leaves a place that holds its Google
-     * identity (`place_sources`, written in the transaction) without the
-     * provider snapshot — which is exactly the state every place created before
-     * this change is in, and the refresh job repairs it.
-     *
-     * `provider_uri` is what makes Place Detail able to open the place in
-     * Google Maps: it is the URI Google published, never the short link the
-     * editor pasted.
-     */
-    if (provider) {
-      await this.dedup.upsertProviderSource({
-        placeId: created.id,
-        details: provider.details,
-        derivedScore: provider.score,
-        fetchTier: provider.details.fetchTier,
-      });
-    }
-
-    await this.audit(adminId, 'place.created', created.id, {
-      name: created.name,
-      status: created.status,
-      claimedFields: claimed,
-      allowDuplicate: input.allowDuplicate === true,
-      ...(input.googlePlaceId !== undefined
-        ? {
-            googlePlaceId: input.googlePlaceId,
-            googleDerivedFields: [...derived],
-            // Whether the row carries provider facts, and why not when it does
-            // not. An audit line that only said "created from a link" could not
-            // tell a missing rating from a provider outage.
-            providerSnapshot: provider ? 'applied' : 'absent',
-          }
-        : {}),
-    });
-
-    return this.getPlace(created.id);
+    return created;
   }
 
   /**
-   * PI-BE-021 — one `quality` Details call for a place being created from a
-   * link, or `null` and a reason.
-   *
-   * `quality` because that is the tier whose mask carries the fields this
-   * write needs — `rating`, `userRatingCount`, `regularOpeningHours`,
-   * `priceLevel` — and because it is the tier the preview the editor just saw
-   * was fetched at. Asking for `core` here would store a place whose rating
-   * the console had already shown and the row does not have.
-   *
-   * **Nothing throws.** Three failures are possible and all of them mean the
-   * same thing to the editor: the place is created, without provider facts.
-   *
-   *   - the provider is down, misconfigured or out of quota — losing a
-   *     completed form to Google's availability is a worse answer than a row
-   *     that the refresh job will fill in later;
-   *   - Google has never heard of the id;
-   *   - Google answered about a *different* id, because the place moved or was
-   *     merged (#334). That answer describes a different Place ID than the one
-   *     `place_sources` is about to store, and writing it would file one
-   *     place's rating under another's identity. It is dropped and counted;
-   *     `PlaceRefreshService` owns relocation.
-   *
-   * Each outcome is counted separately, because "no rating on this place" and
-   * "Google was unreachable for an hour" look identical in the data and are
-   * not the same operational fact.
+   * `PLACE_IDENTITY_CONFLICT` when two places already claim the Google ID,
+   * `PLACE_ALREADY_LINKED` when one does, nothing when it is free.
    */
-  private async providerSnapshot(
+  private async assertGoogleIdentityFree(
     googlePlaceId: string,
-    areaKey: string | null,
-  ): Promise<{ details: ResolvedProviderPlace; score: number } | null> {
-    const count = (result: string) =>
-      this.metrics?.increment('cms_place_create_provider_enrichment_total', { result });
-    let outcome;
-    try {
-      outcome = await this.providerResolver.resolveByProviderId(googlePlaceId, 'quality');
-    } catch {
-      count('unavailable');
-      return null;
+    runner: Pick<Db, 'execute'> = this.db,
+  ): Promise<void> {
+    const identity = await this.dedup.resolveGoogleIdentity(googlePlaceId, runner);
+    if (identity.kind === 'CONFLICT') {
+      throw AppError.conflict(
+        'PLACE_IDENTITY_CONFLICT',
+        'Google ID này đang bị hai địa điểm cùng nhận — cần gộp trước khi thêm mới',
+        identity.placeIds.map((id) => ({
+          field: 'googlePlaceId',
+          code: 'conflict',
+          message: id,
+        })),
+      );
     }
-    if (outcome.status !== 'RESOLVED') {
-      count(outcome.status === 'UNRESOLVED' ? 'not_found' : 'undecided');
-      return null;
+    if (identity.kind !== 'NONE') {
+      throw AppError.conflict(
+        'PLACE_ALREADY_LINKED',
+        'GoGo đã có địa điểm gắn với link Google này',
+        [{ field: 'googlePlaceId', code: 'already_linked', message: identity.placeId }],
+      );
     }
-    if (outcome.details.providerPlaceId !== googlePlaceId) {
-      count('moved');
-      return null;
-    }
-    const score = await this.providerResolver.scoreFor(outcome.details, areaKey, null);
-    count('applied');
-    return { details: outcome.details, score };
   }
 
   /**

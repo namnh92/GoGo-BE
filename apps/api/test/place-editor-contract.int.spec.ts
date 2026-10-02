@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PLACE_PROVIDER } from '@gogo/providers';
+import { idempotencyHeader, withSourceReferences } from './support/cms-place-create';
 
 /**
  * BE-CMS-PE-001 (#425) — the contract the CMS place editor writes against.
@@ -612,8 +613,28 @@ describe('#425 audit', () => {
  * nowhere to put it, and the console shipped its "Thêm địa điểm" button
  * visibly disabled (GoGo-CMS#128).
  */
-const create = (payload: Record<string, unknown>, token = editor.token) =>
-  api().inject({ method: 'POST', url: '/v1/cms/places', headers: auth(token), payload });
+/*
+ * #440 — every create carries an `Idempotency-Key` and a source per fact, and
+ * the route allows 20/minute per actor; the default creator rotates so a file
+ * of thirty creates is not a rate-limit test.
+ */
+let creator: { token: string } | undefined;
+let creatorUses = 0;
+const create = async (payload: Record<string, unknown>, token?: string) => {
+  if (token === undefined) {
+    if (!creator || creatorUses >= 10) {
+      creator = await createAdmin(`pe-creator-${Date.now()}-${creatorUses}@gogo.local`, 'editor');
+      creatorUses = 0;
+    }
+    creatorUses += 1;
+  }
+  return api().inject({
+    method: 'POST',
+    url: '/v1/cms/places',
+    headers: { ...auth(token ?? creator!.token), ...idempotencyHeader() },
+    payload: withSourceReferences(payload),
+  });
+};
 
 describe('#452 create a place by hand', () => {
   it('creates a draft and returns the record the editor screen loads', async () => {
@@ -710,10 +731,15 @@ describe('#452 create a place by hand', () => {
       .select()
       .from(schema.placeFieldProvenance)
       .where(eq(schema.placeFieldProvenance.placeId, placeId));
-    expect(provenance.length).toBeGreaterThan(0);
-    // Never `google_derived`: typing a value read off a preview does not make
-    // it provider data (GOGO_PRODUCT_DATA_ARCHITECTURE.md).
+    // #440 — one row per supplied fact, `editorial`, carrying its reference.
+    expect(provenance.map((row) => row.field).sort()).toEqual([
+      'area_key',
+      'geom',
+      'name',
+      'website',
+    ]);
     expect(provenance.every((row) => row.sourceType === 'editorial')).toBe(true);
+    expect(provenance.every((row) => (row.sourceReference ?? '').length > 0)).toBe(true);
 
     const audit = await db
       .select()
@@ -767,9 +793,8 @@ describe('#465 add a place by Google Maps link', () => {
     expect(body.status).toBe('RESOLVED');
     expect(body.candidate.name).toBe('Cà Phê Bên Đường');
     expect(body.candidate.location).toMatchObject({ lat: 10.7743, lng: 106.7038 });
-    // Shown so the editor can tell two branches of a chain apart, and — since
-    // PI-BE-021 — stored as the provider's own figure when the place is created
-    // (ADR-0020). It is never GoGo's rating and never averaged with one.
+    // Shown so the editor can tell two branches of a chain apart. Since #440 it
+    // is preview only: creating the place stores no provider fact.
     expect(body.candidate.googleRating).toBe(4.4);
     expect(body.candidate.attributions.length).toBeGreaterThan(0);
   });
@@ -854,17 +879,15 @@ describe('#465 add a place by Google Maps link', () => {
     expect(res.json().status).toBe('UNRESOLVED');
   });
 
-  it('links the Google record and marks the applied fields as its own', async () => {
+  it('links the Google record as identity, and records every fact as the editor’s', async () => {
     const googlePlaceId = `ChIJapply${Date.now()}`;
     const res = await create({
       name: 'Nhà Hàng Từ Link',
       lat: 10.7801,
       lng: 106.6991,
       addressText: '44 Lê Lợi, Quận 1',
-      // Not from the preview — the editor rang them.
       phone: '0283 822 1111',
       googlePlaceId,
-      googleDerivedFields: ['name', 'addressText', 'lat', 'lng'],
     });
     expect(res.statusCode).toBe(201);
     const placeId = res.json().id;
@@ -877,20 +900,22 @@ describe('#465 add a place by Google Maps link', () => {
     expect(sources).toHaveLength(1);
     expect(sources[0]).toMatchObject({ provider: 'google', externalId: googlePlaceId });
 
+    // #440 — identity is not ownership: every fact is `editorial`, with the
+    // editor's own reference, never the Google id.
     const provenance = await db
       .select()
       .from(schema.placeFieldProvenance)
       .where(eq(schema.placeFieldProvenance.placeId, placeId));
-    const byField = new Map(provenance.map((row) => [row.field, row]));
-
-    for (const field of ['name', 'address_text', 'geom']) {
-      expect(byField.get(field)).toMatchObject({
-        sourceType: 'google_derived',
-        sourceReference: googlePlaceId,
-      });
+    expect(provenance.map((row) => row.field).sort()).toEqual([
+      'address_text',
+      'geom',
+      'name',
+      'phone',
+    ]);
+    for (const row of provenance) {
+      expect(row.sourceType).toBe('editorial');
+      expect(row.sourceReference).not.toBe(googlePlaceId);
     }
-    // Typed, not applied. Copying does not transfer ownership either way.
-    expect(byField.get('phone')).toMatchObject({ sourceType: 'editorial', sourceReference: null });
   });
 
   it('records the position once, not once per coordinate', async () => {
@@ -899,7 +924,6 @@ describe('#465 add a place by Google Maps link', () => {
       lat: 10.7402,
       lng: 106.7211,
       googlePlaceId: `ChIJgeom${Date.now()}`,
-      googleDerivedFields: ['lat', 'lng'],
     });
     expect(res.statusCode).toBe(201);
 
@@ -908,27 +932,6 @@ describe('#465 add a place by Google Maps link', () => {
       .from(schema.placeFieldProvenance)
       .where(eq(schema.placeFieldProvenance.placeId, res.json().id));
     expect(provenance.filter((row) => row.field === 'geom')).toHaveLength(1);
-  });
-
-  it('records a retyped value as the editor’s own, not Google’s', async () => {
-    const googlePlaceId = `ChIJretyped${Date.now()}`;
-    const res = await create({
-      name: 'Tên Editor Tự Gõ',
-      lat: 10.75,
-      lng: 106.66,
-      googlePlaceId,
-      // The editor changed the name Google gave, so it left the list.
-      googleDerivedFields: ['lat', 'lng'],
-    });
-    expect(res.statusCode).toBe(201);
-
-    const provenance = await db
-      .select()
-      .from(schema.placeFieldProvenance)
-      .where(eq(schema.placeFieldProvenance.placeId, res.json().id));
-    const byField = new Map(provenance.map((row) => [row.field, row]));
-    expect(byField.get('name')).toMatchObject({ sourceType: 'editorial' });
-    expect(byField.get('geom')).toMatchObject({ sourceType: 'google_derived' });
   });
 
   it('refuses a second place for one Google record, and names the first', async () => {
@@ -972,7 +975,7 @@ describe('#465 add a place by Google Maps link', () => {
     expect(second.json().code).toBe('PLACE_ALREADY_LINKED');
   });
 
-  it('refuses provenance that points at no Google record', async () => {
+  it('refuses a Google-derived declaration even without a Google record', async () => {
     const res = await create({
       name: `Quán Không Nguồn ${Date.now()}`,
       lat: 10.73,
@@ -981,9 +984,7 @@ describe('#465 add a place by Google Maps link', () => {
     });
 
     expect(res.statusCode).toBe(400);
-    expect(res.json().field_errors.map((e: { field: string }) => e.field)).toContain(
-      'googlePlaceId',
-    );
+    expect(res.json().code).toBe('GOOGLE_CONTENT_NOT_PERSISTABLE');
   });
 
   it('still creates a place with no link at all', async () => {
@@ -1098,80 +1099,6 @@ describe('#501 a link fills and keeps every compatible field', () => {
 
     // What Google published, not what was pasted.
     expect(res.json().candidate.googleMapsUri).toBe('https://maps.google.com/?cid=ChIJshort001');
-  });
-
-  it('stores the provider facts on the place it creates, and returns them again', async () => {
-    const googlePlaceId = `ChIJkeep${Date.now()}`;
-    seedRich(googlePlaceId);
-
-    const created = await create({
-      name: 'Lacaph Coffee',
-      addressText: '35 Nguyễn Trãi, Phường Bến Thành, Hồ Chí Minh',
-      lat: 10.7712,
-      lng: 106.6903,
-      googlePlaceId,
-      googleDerivedFields: ['name', 'addressText', 'lat', 'lng'],
-    });
-    expect(created.statusCode).toBe(201);
-    const body = created.json();
-    const placeId = body.id;
-
-    // The create response and Place Detail are the same document; asserting
-    // both is what catches a value that exists only in one of them.
-    for (const view of [body, (await detail(placeId)).json()]) {
-      expect(view.ratings.provider).toMatchObject({ rating: 4.6, count: 1234 });
-      // GoGo's own rating is a different population and stays empty.
-      expect(view.ratings.gogo.rating).toBeUndefined();
-      expect(view.priceLevel).toBe(2);
-      expect(view.hours).toHaveLength(3);
-      expect(view.hours.every((h: { source: string }) => h.source === 'provider')).toBe(true);
-      expect(view.hours[0]).toMatchObject({ dayOfWeek: 1, openMinute: 420, closeMinute: 1320 });
-      // The canonical Google link, on the source row that owns provenance.
-      const google = view.sources.find(
-        (s: { externalId: string }) => s.externalId === googlePlaceId,
-      );
-      expect(google.url).toBe(`https://maps.google.com/?cid=${googlePlaceId}`);
-      expect(google.attribution).toBeTruthy();
-    }
-
-    const [source] = await db
-      .select()
-      .from(schema.placeProviderSources)
-      .where(eq(schema.placeProviderSources.externalId, googlePlaceId));
-    expect(source).toMatchObject({
-      providerUri: `https://maps.google.com/?cid=${googlePlaceId}`,
-      ratingCount: 1234,
-      primaryType: 'coffee_shop',
-      fetchTier: 'quality',
-    });
-  });
-
-  it('creates the place anyway when the provider cannot answer', async () => {
-    const googlePlaceId = `ChIJdown${Date.now()}`;
-    // Seeded, then made unreachable: the id is real, the provider is not up.
-    seedRich(googlePlaceId);
-    places.failing = true;
-    try {
-      const created = await create({
-        name: 'Quán Khi Google Sập',
-        lat: 10.7688,
-        lng: 106.6812,
-        googlePlaceId,
-      });
-      expect(created.statusCode).toBe(201);
-      const view = created.json();
-      // No provider facts — and no invented ones.
-      expect(view.ratings.provider.rating).toBeUndefined();
-      expect(view.hours).toEqual([]);
-      // The identity is still stored: that is what dedup and refresh need.
-      const sources = await db
-        .select()
-        .from(schema.placeSources)
-        .where(eq(schema.placeSources.placeId, view.id));
-      expect(sources[0]).toMatchObject({ externalId: googlePlaceId });
-    } finally {
-      places.failing = false;
-    }
   });
 
   it('stores nothing from the provider for a place created without a link', async () => {

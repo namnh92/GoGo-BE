@@ -12,6 +12,7 @@ import { schema } from '@gogo/database';
 /** Set before any import reads the environment; the config is parsed once. */
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 import { AdministrativeBoundaryImportService, AdministrativeImportService } from '@gogo/modules';
+import { idempotencyHeader, withSourceReferences } from './support/cms-place-create';
 
 /**
  * ADM-016 (#496) — the place create and edit forms, carrying canonical codes.
@@ -62,19 +63,53 @@ const get = (url: string, role: Role) =>
     headers: { authorization: `Bearer ${tokens[role]}` },
   });
 
-function send(
+async function send(
   method: 'POST' | 'PATCH',
   url: string,
   role: Role,
   payload: Record<string, unknown> = {},
 ) {
-  return api().inject({
-    method,
-    url,
-    remoteAddress: ip(),
-    headers: { authorization: `Bearer ${tokens[role]}` },
-    payload,
-  });
+  // #440 — creation requires a key and a source per fact.
+  const creating = method === 'POST' && url === '/v1/cms/places';
+  return sendAs(creating && role === 'editor' ? await creatorToken() : tokens[role]!);
+
+  function sendAs(token: string) {
+    return api().inject({
+      method,
+      url,
+      remoteAddress: ip(),
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(creating ? idempotencyHeader() : {}),
+      },
+      payload: creating ? withSourceReferences(payload) : payload,
+    });
+  }
+}
+
+/*
+ * #440 — creation allows 20/minute per actor. This file creates more than
+ * that, none of it about the limit, so creates rotate across editor accounts.
+ */
+let creator: { token: string; uses: number } | undefined;
+let creators = 0;
+async function creatorToken(): Promise<string> {
+  if (!creator || creator.uses >= 10) {
+    const email = `adm016-creator-${++creators}@gogo.local`;
+    const passwordHash = await argon2.hash('admin-password-123', { type: argon2.argon2id });
+    await db
+      .insert(schema.adminUsers)
+      .values({ email, passwordHash, displayName: email, role: 'editor' });
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/login',
+      remoteAddress: ip(),
+      payload: { email, password: 'admin-password-123' },
+    });
+    creator = { token: res.json().accessToken as string, uses: 0 };
+  }
+  creator.uses += 1;
+  return creator.token;
 }
 
 async function createAdmin(role: Role) {
