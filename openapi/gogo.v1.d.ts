@@ -11589,7 +11589,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            /** @description `UPLOAD_NOT_RECEIVED` (#560) — the upload key is valid but no file has reached storage for it. Nothing was written and the key is still usable: PUT the file to the upload URL, then retry. */
+            /** @description `ROOM_NOT_ACTIVE` — check-in happens during or after the date, not before it. Or `UPLOAD_NOT_RECEIVED` (#560) — an upload key is valid but no file has reached storage for it; nothing was written and the key is still usable: PUT the file to the upload URL, then retry. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -14681,7 +14681,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
-            /** @description The key is already on this place, or `UPLOAD_NOT_RECEIVED` (#560): the key is valid but no file has reached storage for it. Nothing was written and the key stays usable: PUT the file, then retry. */
+            /** @description The key is already on this place (`PLACE_MEDIA_EXISTS`), or `UPLOAD_NOT_RECEIVED` (#560): the key is valid but no file has reached storage for it. Nothing was written and the key stays usable: PUT the file, then retry. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -15826,7 +15826,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
-            /** @description `UPLOAD_NOT_RECEIVED` (#560) — the upload key is valid but no file has reached storage for it. Nothing was written and the key is still usable: PUT the file to the upload URL, then retry. */
+            /** @description A banner with that name exists (`BANNER_NAME_TAKEN`), or `UPLOAD_NOT_RECEIVED` (#560) — the image key is valid but no file has reached storage for it; nothing was written and the key is still usable: PUT the file to the upload URL, then retry. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -16027,7 +16027,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
-            /** @description Not in an editable state (`CAMPAIGN_NOT_EDITABLE`), or already delivered to at least one recipient and the patch changes a field that reaches a phone (`CAMPAIGN_ALREADY_DELIVERED`), or no file has reached storage for the image key yet (`UPLOAD_NOT_RECEIVED`, #560). */
+            /** @description Not in an editable state (`CAMPAIGN_NOT_EDITABLE`), already delivered to at least one recipient and the patch changes a field that reaches a phone (`CAMPAIGN_ALREADY_DELIVERED`), a campaign with that name exists (`CAMPAIGN_NAME_TAKEN`), or no file has reached storage for the image key yet (`UPLOAD_NOT_RECEIVED`, #560). */
             409: {
                 headers: {
                     [name: string]: unknown;
