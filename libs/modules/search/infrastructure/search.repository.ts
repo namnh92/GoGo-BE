@@ -5,6 +5,7 @@ import { APP_CONFIG, type ProvenanceConfig } from '../../shared/config';
 import { googleProvenanceRows } from '../../shared/google-provenance';
 import { providerStatusSubquery } from '../../shared/provider-status';
 import { DB } from '../../shared/tokens';
+import { PUBLIC_REVIEW_STATUS } from '../../reviews/domain/public-review';
 import { toSearchQuery } from '../domain/normalize';
 
 export type SearchWeights = {
@@ -390,8 +391,19 @@ export class SearchRepository {
             'isCover', m.is_cover)
             order by m.is_cover desc, m.sort_order, m.created_at)
           from place_media m
-          where m.place_id = p.id and m.moderation = 'approved') as media
+          where m.place_id = p.id and m.moderation = 'approved') as media,
+        -- GoGo-BE#217 (ADR-0028): the GoGo community rating, count and mean
+        -- from one aggregate in this one statement, so the two always describe
+        -- the same population. Published reviews of this place only, through
+        -- reviews_place_idx (place_id, status). Rounded once, here.
+        gr.gogo_rating_count, gr.gogo_rating_mean
       from places p
+      cross join lateral (
+        select count(*)::int as gogo_rating_count,
+               round(avg(r.rating)::numeric, 1) as gogo_rating_mean
+        from reviews r
+        where r.place_id = p.id and r.status = ${PUBLIC_REVIEW_STATUS}
+      ) gr
       where p.id = ${placeId} and p.status in ('published', 'community_submitted')
       limit 1
     `);

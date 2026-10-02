@@ -323,6 +323,12 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   administrative_remediation: ['category'],
   administrative_publication_enabled: [],
 
+  // --- place detail ---------------------------------------------------------
+  // GoGo-BE#217 (ADR-0028) — one per Place Detail read that reached the GoGo
+  // rating. `outcome` is a closed set: available | insufficient | error. Never
+  // the place, the reader or the score.
+  place_gogo_rating_total: ['outcome'],
+
   // --- profile / avatars (ADR-0022) ---------------------------------------
   // `outcome` is a closed set: ok | rejected (4xx) | unavailable (5xx) | error.
   avatar_set_total: ['outcome'],
