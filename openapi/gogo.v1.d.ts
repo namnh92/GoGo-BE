@@ -2591,7 +2591,7 @@ export interface paths {
         put?: never;
         /**
          * Super admin: create a staff account
-         * @description Every CMS account except the `super_admin` is created here. That one is bootstrapped once from SSM — an environment holds at most one before bootstrap and exactly one after — so `role: super_admin` is refused with 409 `SUPER_ADMIN_SINGLETON` (ADR-0018). The enum still lists it: narrowing the request enum is a breaking change and waits until no client sends the value.
+         * @description Every CMS account except the `super_admin` is created here. That one is bootstrapped once from SSM — an environment holds at most one before bootstrap and exactly one after — so `role` takes only an `AdminAssignableRole` and `super_admin` is a 400 on `role` (ADR-0018, #447). The service keeps its own 409 `SUPER_ADMIN_SINGLETON` behind the schema.
          */
         post: operations["cmsCreateAdmin"];
         delete?: never;
@@ -5722,8 +5722,16 @@ export interface components {
             confidence: number;
             reasonCodes: ("TEXT_MATCH" | "NEAR_YOU" | "HIGHLY_RATED" | "CURATED" | "OPEN_NOW")[];
         };
-        /** @enum {string} */
+        /**
+         * @description Every role an account can hold. Responses, `CmsAdmin.role` and the `GET /cms/auth/admins` filter use this; requests that assign a role use `AdminAssignableRole`.
+         * @enum {string}
+         */
         AdminRole: "editor" | "moderator" | "ops_admin" | "super_admin";
+        /**
+         * @description #447 / ADR-0018 — the roles a request may assign. `super_admin` is not one: an environment has exactly one, bootstrapped from SSM rather than created or promoted over HTTP.
+         * @enum {string}
+         */
+        AdminAssignableRole: "editor" | "moderator" | "ops_admin";
         /**
          * @description The two states the server actually enforces: `suspended` loses access on the next request, whatever token the account still holds. There is no third "disabled" state — a status the guard does not act on would be a claim in the data that nothing backs.
          * @enum {string}
@@ -13401,7 +13409,7 @@ export interface operations {
                     email: string;
                     password: string;
                     displayName: string;
-                    role: components["schemas"]["AdminRole"];
+                    role: components["schemas"]["AdminAssignableRole"];
                 };
             };
         };
@@ -13415,7 +13423,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
-            /** @description `SUPER_ADMIN_SINGLETON` — an environment has exactly one `super_admin` and a second cannot be created. */
+            /** @description `SUPER_ADMIN_SINGLETON` — an environment has exactly one `super_admin` and a second cannot be created. The request schema already refuses the value with a 400; this is the service's own refusal, kept for any caller that reaches it another way. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -16176,7 +16184,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    role?: components["schemas"]["AdminRole"];
+                    role?: components["schemas"]["AdminAssignableRole"];
                     displayName?: string;
                     /** @description Recorded in the audit log. Mandatory on every staff-account mutation. */
                     reason: string;
@@ -16207,7 +16215,7 @@ export interface operations {
             /**
              * @description `LAST_SUPER_ADMIN` — the `super_admin` role cannot be given up. Demoting it leaves a console nobody can administer, and there is by construction no second holder to fall back to.
              *
-             *     `SUPER_ADMIN_SINGLETON` — nor can `role` be set to `super_admin`: an environment holds at most one before it is bootstrapped and exactly one after, and that account is bootstrapped rather than promoted. The enum still offers the value; the refusal is here.
+             *     `SUPER_ADMIN_SINGLETON` — nor can `role` be set to `super_admin`: an environment holds at most one before it is bootstrapped and exactly one after, and that account is bootstrapped rather than promoted. The request schema (`AdminAssignableRole`) refuses the value with a 400 first; this is the service's own refusal behind it.
              *
              *     Neither freezes the account's credentials. It rotates its password through `POST /cms/auth/change-password` like every other account.
              */
