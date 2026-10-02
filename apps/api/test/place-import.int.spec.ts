@@ -2834,3 +2834,86 @@ describe('the same link resolves to the same place at every door (#505)', () => 
     );
   });
 });
+
+/**
+ * GoGo-BE#470 — a `?cid=` link GoGo wrote itself. The ingestion pipeline stores
+ * `https://maps.google.com/?cid=…` in `place_sources.url` and
+ * `place_provider_sources.provider_uri`; pasting one back answered
+ * `UNRESOLVED / NO_QUERY`. A CID is not a Place ID and no Places endpoint looks
+ * one up, but GoGo holds the mapping in its own rows.
+ */
+describe('a ?cid= link GoGo already stores resolves from its own rows (#470)', () => {
+  let editor: { token: string };
+
+  beforeEach(async () => {
+    editor ??= await createAdmin('cid-editor@gogo.local', 'editor');
+    places.registry.clear();
+  });
+
+  async function newPlace(name: string) {
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name,
+        nameNormalized: 'set-by-trigger',
+        status: 'published',
+        geom: { x: 106.7, y: 10.78 },
+      })
+      .returning({ id: schema.places.id });
+    return place!.id;
+  }
+
+  const resolve = (url: string) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/places/resolve-link',
+      remoteAddress: ip(),
+      headers: auth(editor.token),
+      payload: { url },
+    });
+
+  it('answers ALREADY_EXISTS for a CID in a stored place_sources url', async () => {
+    const cid = '7959510044504727677';
+    const placeId = await newPlace('Galaxy Cinema Nguyễn Du (cid probe)');
+    await db.insert(schema.placeSources).values({
+      placeId,
+      provider: 'google',
+      externalId: 'fake-cid-legacy-1',
+      url: `https://maps.google.com/?cid=${cid}`,
+    });
+    const searchesBefore = places.searches.length + places.identitySearches.length;
+
+    const res = await resolve(`https://maps.google.com/?cid=${cid}`);
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json()).toMatchObject({
+      status: 'ALREADY_EXISTS',
+      existingPlaceId: placeId,
+      reasonCodes: expect.arrayContaining(['DB_FIRST']),
+    });
+    // Answered from GoGo's rows: no search was bought to find it.
+    expect(places.searches.length + places.identitySearches.length).toBe(searchesBefore);
+  });
+
+  it('answers ALREADY_EXISTS for a CID in a canonical provider row', async () => {
+    const cid = '1234567890123456789';
+    const placeId = await newPlace('Provider row cid probe');
+    await db.insert(schema.placeProviderSources).values({
+      placeId,
+      provider: 'google_places',
+      externalId: 'fake-cid-canonical-1',
+      providerUri: `https://maps.google.com/?cid=${cid}&g_mp=x`,
+      sourceStatus: 'active',
+      refreshAfter: new Date(Date.now() + 86_400_000),
+    });
+
+    const res = await resolve(`https://www.google.com/maps?cid=${cid}`);
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json()).toMatchObject({ status: 'ALREADY_EXISTS', existingPlaceId: placeId });
+  });
+
+  it('says a CID GoGo does not hold cannot be resolved, not that the link is empty', async () => {
+    const res = await resolve('https://maps.google.com/?cid=1111111111111111111');
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json()).toMatchObject({ status: 'UNRESOLVED', reasonCodes: ['CID_NOT_RESOLVABLE'] });
+  });
+});

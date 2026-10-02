@@ -154,6 +154,36 @@ export class PlaceDedupService {
   }
 
   /**
+   * GoGo-BE#470 — the Google Place IDs GoGo has stored against a CID.
+   *
+   * A CID is not a Place ID and Places API (New) has no way to look one up,
+   * but GoGo writes Google's `googleMapsUri` (`maps.google.com/?cid=…`) into
+   * `place_provider_sources.provider_uri` and `place_sources.url`, so a CID
+   * GoGo has met before maps back to the Place ID it came with — from rows
+   * already held, no provider request.
+   *
+   * Distinct ids, at most two: the caller needs to know "none", "one" or
+   * "more than one", never the full list. Unindexed on purpose — both tables
+   * are catalogue-sized and this runs on an editor's paste, not a hot path.
+   */
+  async googlePlaceIdsForCid(cid: string): Promise<string[]> {
+    const found = await this.db.execute(sql`
+      select distinct external_id from (
+        select external_id from place_provider_sources
+          where provider = ${GOOGLE_PROVIDER}
+            and substring(provider_uri from '[?&]cid=([0-9]+)') = ${cid}
+        union
+        select external_id from place_sources
+          where provider = 'google'
+            and substring(url from '[?&]cid=([0-9]+)') = ${cid}
+      ) ids
+      order by external_id
+      limit 2
+    `);
+    return (found.rows as { external_id: string }[]).map((row) => row.external_id);
+  }
+
+  /**
    * DB-first: what we can answer about a Google Place ID without paying Google.
    *
    * The import, submit and bulk paths all used to call Details *before* asking

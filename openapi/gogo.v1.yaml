@@ -13175,6 +13175,15 @@ components:
             own, and none of them was it: the search did not return the place
             the link points at, so a person picks rather than GoGo
             auto-resolving onto an identity the link contradicts.
+
+
+            A `?cid=` link (GoGo-BE#470), the `googleMapsUri` form GoGo itself
+            stores: a CID GoGo holds is answered from its own rows like a known
+            `place_id` (`DB_FIRST`, `PLACE_ALREADY_LINKED`).
+            `CID_NOT_RESOLVABLE` (with `UNRESOLVED`) — the link carries a CID
+            and nothing else to search with, and GoGo holds no place with that
+            CID; no provider endpoint looks a CID up. Not `NO_QUERY`: the link
+            is not empty, it names a Google record GoGo cannot translate.
         existingPlaceId: { type: string, format: uuid }
         resolutionToken:
           type: string

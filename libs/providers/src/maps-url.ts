@@ -82,6 +82,13 @@ export type MapsUrlHints = {
   viewportLng?: number;
   /** `ftid=` or `data=!1s…` — see `MapsFeatureId`. */
   featureId?: MapsFeatureId;
+  /**
+   * The link's CID in decimal, from whichever shape carried it: `?cid=` (the
+   * `googleMapsUri` form GoGo itself stores, GoGo-BE#470) or the second half of
+   * the feature id. Not a Place ID — no Places endpoint looks one up — but GoGo
+   * can answer it from its own stored URIs.
+   */
+  cid?: string;
   /** Short links must be expanded before hints are final. */
   needsExpansion: boolean;
   normalizedUrl: string;
@@ -99,6 +106,8 @@ export function parseFeatureId(raw: string): MapsFeatureId | null {
   };
 }
 
+const MAX_CID = (BigInt(1) << BigInt(64)) - BigInt(1);
+
 /**
  * The CID out of a `googleMapsUri` as Place Details returns it
  * (`https://maps.google.com/?cid=10901959998421970840&…`), in decimal.
@@ -115,7 +124,8 @@ export function cidFromGoogleMapsUri(uri: string | null | undefined): string | n
     return null;
   }
   const cid = parsed.searchParams.get('cid');
-  return cid !== null && /^\d{1,20}$/.test(cid) ? cid : null;
+  // 64 bits at most: twenty digits admit values past 2^64-1, which no CID is.
+  return cid !== null && /^\d{1,20}$/.test(cid) && BigInt(cid) <= MAX_CID ? cid : null;
 }
 
 function isPrivateHost(host: string): boolean {
@@ -220,6 +230,9 @@ function extractHints(url: URL): Omit<MapsUrlHints, 'needsExpansion' | 'normaliz
 
   const featureId = readFeatureId(url);
   if (featureId) out.featureId = featureId;
+
+  const cid = featureId?.cid ?? cidFromGoogleMapsUri(url.toString());
+  if (cid) out.cid = cid;
 
   const place = readPlaceCoordinate(url);
   if (place) {

@@ -320,3 +320,28 @@ describe('#505 — CID decides identity, scoring does not have to', () => {
     expect(decision.best!.confidence).toBeLessThan(0.7);
   });
 });
+
+describe('#470 — a ?cid= link carries an identity, not nothing', () => {
+  it('reads the decimal CID GoGo itself stores in place_sources.url', () => {
+    const parsed = parseMapsUrl('https://maps.google.com/?cid=7959510044504727677');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    // Kept as a string: past 2^53 a number would round two places together.
+    expect(parsed.value.cid).toBe('7959510044504727677');
+    expect(parsed.value.providerPlaceId).toBeUndefined();
+  });
+
+  it('reads the same CID out of a feature id, so both shapes compare', () => {
+    const parsed = parseMapsUrl(
+      'https://www.google.com/maps/place/X/data=!4m2!3m1!1s0x31752f6d3b5f1d1b:0x6e7680c15e3b597d',
+    );
+    expect(parsed.ok && parsed.value.cid).toBe(BigInt('0x6e7680c15e3b597d').toString());
+  });
+
+  it('ignores a cid that is not a 64-bit decimal', () => {
+    for (const bad of ['abc', '-1', '1'.repeat(21), '18446744073709551616']) {
+      const parsed = parseMapsUrl(`https://maps.google.com/?cid=${bad}`);
+      expect(parsed.ok && parsed.value.cid, bad).toBeUndefined();
+    }
+  });
+});
