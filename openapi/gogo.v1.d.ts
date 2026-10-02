@@ -9570,11 +9570,14 @@ export interface operations {
             /**
              * @description Joined (idempotent — re-joining returns the existing membership).
              *     `alreadyMember` tells the two apart (GoGo-BE#607): `false` for a
-             *     new membership created by this request, `true` when the caller was
-             *     already an active member (host included) and nothing changed — no
-             *     invite use spent, no `participant.joined`. Clients count a join only
-             *     when it is `false`. A response without `alreadyMember` comes from a
-             *     server older than 1.0.0-alpha.48: treat it as unknown, not `false`.
+             *     new membership created by this request, `true` when the caller
+             *     already held an active membership (host included): that membership
+             *     is returned and no `participant.joined` is announced. A re-entry
+             *     recognised up front spends no invite use; a concurrent first join
+             *     that loses the race may already have spent one. Clients count a join
+             *     only when it is `false`. A response without `alreadyMember` comes
+             *     from a server older than 1.0.0-alpha.49: treat it as unknown, not
+             *     `false`.
              */
             201: {
                 headers: {
