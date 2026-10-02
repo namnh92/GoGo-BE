@@ -2641,6 +2641,55 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /places/{id}/reports:
+    post:
+      operationId: reportPlace
+      tags: [places]
+      summary: Report wrong information about a place ("Báo thông tin sai")
+      description: >
+        BE-BFF-P2 (#218). Files a report into the moderation queue the CMS
+        already reads (`GET /cms/moderation/reports`, `targetType=place`). An
+        app account or a room guest may report; a CMS admin token answers
+        `403 REPORTER_NOT_ALLOWED` and an anonymous call `401`. A place Place
+        Detail does not open answers `404 PLACE_NOT_FOUND`, exactly like a
+        missing one.
+
+
+        Naturally idempotent: while this actor already has an **open** report
+        of the same `reasonCode` on this place, the call files nothing and
+        answers that report with `200`; a new report answers `201`. Once a
+        moderator decides it, a new report is a new report.
+
+
+        `reasonCode` is a stable key the client labels through i18n — never a
+        sentence. `note` is optional free text (trimmed, at most 500
+        characters, blank means none) delivered to moderators only: it is not
+        echoed in the response and not logged. Do not ask the user for contact
+        details in it. Rate-limited per actor: 5 a minute, 20 an hour.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaceReportRequest' }
+      responses:
+        '200':
+          description: This actor's open report of the same reason, unchanged
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceReport' }
+        '201':
+          description: Report filed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
   /rooms/{roomId}/suggestions:
     post:
       operationId: generateSuggestions
@@ -13965,6 +14014,39 @@ components:
           type: array
           description: Ids of the place's published reviews the caller marked helpful. Never anyone else's marks.
           items: { type: string, format: uuid }
+    PlaceReportReason:
+      type: string
+      description: >
+        What is wrong, as a stable key the client labels through i18n. Mirrors
+        the facts Place Detail shows plus a catch-all. Extensible: a client
+        offers the keys it knows and treats an unknown one in a response as
+        `other`.
+      x-extensible-enum: [wrong_hours, wrong_price, wrong_location, permanently_closed, other]
+
+    PlaceReportRequest:
+      type: object
+      additionalProperties: false
+      required: [reasonCode]
+      properties:
+        reasonCode: { $ref: '#/components/schemas/PlaceReportReason' }
+        note:
+          type: string
+          maxLength: 500
+          description: Optional detail for moderators. Trimmed; blank means no note.
+
+    PlaceReport:
+      type: object
+      required: [id, placeId, reasonCode, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        placeId: { type: string, format: uuid }
+        reasonCode: { $ref: '#/components/schemas/PlaceReportReason' }
+        status:
+          type: string
+          description: Moderation state; a freshly filed or deduplicated report is `open`.
+          x-extensible-enum: [open, actioned, dismissed]
+        createdAt: { type: string, format: date-time }
+
     PlaceReviewPreview:
       type: object
       required: [source, order, reviews]
