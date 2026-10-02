@@ -257,7 +257,12 @@ export class CmsPlaceMediaService {
   ) {
     const before = await this.row(placeId, mediaId);
 
-    if (patch.moderation !== undefined && patch.moderation !== before.moderation) {
+    // A moderation value equal to the current one is not a decision: it must
+    // not re-stamp who decided and when, nor wipe the reason (#441 F-01).
+    const moderationChanges =
+      patch.moderation !== undefined && patch.moderation !== before.moderation;
+
+    if (moderationChanges) {
       if (!patch.moderationReason || patch.moderationReason.trim().length < 3) {
         throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', [
           {
@@ -275,24 +280,30 @@ export class CmsPlaceMediaService {
     const rejecting = patch.moderation === 'rejected';
     const isCover = rejecting ? false : patch.isCover;
 
+    const changes = {
+      ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
+      ...(patch.caption !== undefined ? { caption: patch.caption } : {}),
+      ...(patch.attribution !== undefined ? { attribution: patch.attribution } : {}),
+      ...(isCover !== undefined ? { isCover } : {}),
+      ...(moderationChanges
+        ? {
+            moderation: patch.moderation,
+            moderationReason: patch.moderationReason ?? null,
+            moderatedBy: actor.id,
+            moderatedAt: sql`now()`,
+          }
+        : {}),
+    };
+    // #441 F-02 — a PATCH that changes nothing (e.g. repeating the current
+    // moderation) must not reach `.set({})`, which Drizzle refuses with a
+    // throw. Nothing changed, so nothing is written or audited.
+    if (Object.keys(changes).length === 0) return this.present(before);
+
     const after = await this.db.transaction(async (tx) => {
       if (isCover === true) await this.clearCover(tx, placeId, mediaId);
       const [row] = await tx
         .update(schema.placeMedia)
-        .set({
-          ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
-          ...(patch.caption !== undefined ? { caption: patch.caption } : {}),
-          ...(patch.attribution !== undefined ? { attribution: patch.attribution } : {}),
-          ...(isCover !== undefined ? { isCover } : {}),
-          ...(patch.moderation !== undefined
-            ? {
-                moderation: patch.moderation,
-                moderationReason: patch.moderationReason ?? null,
-                moderatedBy: actor.id,
-                moderatedAt: sql`now()`,
-              }
-            : {}),
-        })
+        .set(changes)
         .where(eq(schema.placeMedia.id, mediaId))
         .returning();
       return row!;
@@ -364,6 +375,8 @@ export class CmsPlaceMediaService {
       sortOrder: row.sortOrder,
       moderation: row.moderation,
       moderationReason: row.moderationReason,
+      moderatedBy: row.moderatedBy,
+      moderatedAt: row.moderatedAt?.toISOString() ?? null,
       caption: row.caption,
       attribution: row.attribution,
       isCover: row.isCover,

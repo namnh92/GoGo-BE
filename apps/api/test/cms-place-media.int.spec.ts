@@ -173,6 +173,84 @@ describe('#191 upload → attach → moderate → visible', () => {
     expect(afterApproval.json().photos[0].url).toContain(upload.key);
   });
 
+  it('says who moderated a photo and when, on the write and on the detail (#441)', async () => {
+    const place = await makePlace();
+    const upload = await authorizeUpload(editor.token);
+    const media = (await attach(place.id, { storageKey: upload.key })).json();
+    // Nobody has decided yet: null, not absent and not the uploader.
+    expect(media).toMatchObject({ moderatedBy: null, moderatedAt: null });
+    const undecided = (await detail(place.id)).json().media[0];
+    expect(undecided).toMatchObject({ moderatedBy: null, moderatedAt: null });
+
+    const before = Date.now();
+    const rejected = await patchMedia(place.id, media.id, {
+      moderation: 'rejected',
+      moderationReason: 'Ảnh mờ, không thấy quán',
+    });
+    expect(rejected.statusCode).toBe(200);
+    const written = rejected.json() as { moderatedBy: string; moderatedAt: string };
+    expect(written.moderatedBy).toBe(editor.id);
+    expect(written.moderatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
+    expect(Date.parse(written.moderatedAt)).toBeGreaterThanOrEqual(before - 5_000);
+
+    // The detail drawer reads a different query; it must say the same thing.
+    const listed = (await detail(place.id)).json().media[0];
+    expect(listed).toMatchObject({
+      moderation: 'rejected',
+      moderatedBy: editor.id,
+      moderatedAt: written.moderatedAt,
+    });
+  });
+
+  it('a same-value moderation PATCH keeps the original actor, time and reason (#441 F-01)', async () => {
+    const place = await makePlace();
+    const upload = await authorizeUpload(editor.token);
+    const media = (await attach(place.id, { storageKey: upload.key })).json();
+    const first = (
+      await patchMedia(place.id, media.id, {
+        moderation: 'rejected',
+        moderationReason: 'Ảnh mờ, không thấy quán',
+      })
+    ).json() as { moderatedBy: string; moderatedAt: string; moderationReason: string };
+
+    // Another editor (or a retry) repeats the same value with no reason.
+    const other = await createAdmin('media-editor-repeat@gogo.local', 'editor');
+    const repeat = await patchMedia(place.id, media.id, { moderation: 'rejected' }, other.token);
+    expect(repeat.statusCode).toBe(200);
+    expect(repeat.json()).toMatchObject({
+      moderation: 'rejected',
+      moderatedBy: editor.id,
+      moderatedAt: first.moderatedAt,
+      moderationReason: 'Ảnh mờ, không thấy quán',
+    });
+  });
+
+  for (const state of ['pending', 'approved', 'rejected'] as const) {
+    it(`a same-value moderation PATCH on a ${state} photo is a 200 no-op (#441 F-02)`, async () => {
+      const place = await makePlace();
+      const upload = await authorizeUpload(editor.token);
+      const media = (await attach(place.id, { storageKey: upload.key })).json();
+      let current = media as { moderatedBy: string | null; moderatedAt: string | null };
+      if (state !== 'pending') {
+        const decided = await patchMedia(place.id, media.id, {
+          moderation: state,
+          moderationReason: 'Quyết định ban đầu',
+        });
+        expect(decided.statusCode).toBe(200);
+        current = decided.json();
+      }
+
+      // Only the moderation field, repeating what is stored: nothing to write.
+      const repeat = await patchMedia(place.id, media.id, { moderation: state });
+      expect(repeat.statusCode).toBe(200);
+      expect(repeat.json()).toMatchObject({
+        moderation: state,
+        moderatedBy: current.moderatedBy,
+        moderatedAt: current.moderatedAt,
+      });
+    });
+  }
+
   it('stops serving a photo the moment it is rejected', async () => {
     const place = await makePlace();
     const upload = await authorizeUpload(editor.token);

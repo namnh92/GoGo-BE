@@ -472,6 +472,8 @@ type PlaceMediaRow = {
   sort_order: number;
   moderation: string;
   moderation_reason: string | null;
+  moderated_by: string | null;
+  moderated_at: Date | string | null;
   caption: string | null;
   attribution: string | null;
   is_cover: boolean;
@@ -1101,8 +1103,8 @@ export class CmsCatalogService {
       `),
       this.db.execute(sql`
         select id, storage_key, width, height, sort_order, moderation,
-               moderation_reason, caption, attribution, is_cover, source_type,
-               created_at
+               moderation_reason, moderated_by, moderated_at, caption,
+               attribution, is_cover, source_type, created_at
         from place_media where place_id = ${placeId}::uuid
         -- #191: the cover leads, then the editor's order.
         order by is_cover desc, sort_order, created_at
@@ -1228,6 +1230,9 @@ export class CmsCatalogService {
           sortOrder: r.sort_order,
           moderation: r.moderation,
           moderationReason: r.moderation_reason,
+          // #441 — who decided and when, so ops read the history without psql.
+          moderatedBy: r.moderated_by,
+          moderatedAt: toIso(r.moderated_at) ?? null,
           caption: r.caption,
           // FR-INGEST-014: a provider photo keeps its terms even after an
           // editor has reordered the list it sits in.

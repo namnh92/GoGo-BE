@@ -7675,6 +7675,16 @@ export interface components {
             /** @description `pending`, `approved` or `rejected`. Left unconstrained for the same reason as `hours[].source`: `CmsPlaceDetail.media` already returned this property as an open string, and narrowing a response property reads as breaking to the compatibility gate even when the value set has never been anything else. Requests do constrain it — see `cmsUpdatePlaceMedia`. */
             moderation: string;
             moderationReason?: string | null;
+            /**
+             * Format: uuid
+             * @description The admin who last changed `moderation`, null while nobody has. An id only, the same as `CmsAuditEntry.actorId`, which also carries no name (#441).
+             */
+            moderatedBy?: string | null;
+            /**
+             * Format: date-time
+             * @description When `moderation` last changed, null while it never has (#441).
+             */
+            moderatedAt?: string | null;
             caption?: string | null;
             /** @description Provider terms survive an editor touching the list (FR-INGEST-014). */
             attribution?: string | null;
