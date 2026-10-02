@@ -93,7 +93,9 @@ export class PlanBuilderService {
       passed.map((c) => scoreCandidate(c, snapshot, DEFAULT_SCORING_WEIGHTS)),
       { topK: 10 },
     );
-    // Winner is a hard anchor at position 0.
+    // Winner is a hard anchor at position 0. GoGo-BE#228 — the optimizer no
+    // longer locks every anchor it is handed, so the lock the winner has always
+    // been stored with is now stated here rather than implied.
     const anchor: LockedAnchor = {
       placeId: winner.placeId,
       name: winner.name,
@@ -105,7 +107,8 @@ export class PlanBuilderService {
       travelDistanceMFromPrev: null,
       costMin: winner.pricePerPersonMin,
       costMax: winner.pricePerPersonMax,
-      isLocked: false,
+      isLocked: true,
+      isOptional: false,
       lat: winner.lat,
       lng: winner.lng,
       confidence: winner.confidence,
@@ -143,8 +146,9 @@ export class PlanBuilderService {
 
   /**
    * SG-008 — regenerate: locked stops are invariant (place, order-anchor,
-   * duration, cost); unlocked stops are rebuilt from a fresh snapshot, with
-   * structured feedback exclusions.
+   * duration, cost, optionality and stored schedule — ADR-0028); unlocked
+   * stops are rebuilt from a fresh snapshot, with structured feedback
+   * exclusions, and come back required.
    */
   async regenerate(
     planId: string,
@@ -189,14 +193,17 @@ export class PlanBuilderService {
         placeId: s.placeId,
         name: fact.name,
         position: s.position,
-        arriveAt: null,
-        departAt: null,
+        // ADR-0028 — the stored schedule travels with the lock; the optimizer
+        // keeps it or refuses with PLAN_TIME_CONFLICT.
+        arriveAt: s.arriveAt,
+        departAt: s.departAt,
         durationMinutes: s.durationMinutes,
         travelMinutesFromPrev: null,
         travelDistanceMFromPrev: null,
         costMin: s.costMin,
         costMax: s.costMax,
         isLocked: true,
+        isOptional: s.isOptional,
         lat: Number(fact.lat),
         lng: Number(fact.lng),
         confidence: Number(fact.confidence),
@@ -237,6 +244,18 @@ export class PlanBuilderService {
       stops: built.stops,
       totals: built.totals,
       generatedByRunId: plan.generatedByRunId ?? undefined,
+      // ADR-0028 — publish only over the exact plan this run read: still the
+      // current version, its lock/optional flags unchanged, the room on the
+      // constraint version the snapshot was built from and not yet started.
+      // Regenerate is how a stale plan is refreshed, so staleness is allowed.
+      guard: {
+        sourcePlanId: plan.id,
+        sourceVersion: plan.version,
+        constraintVersion: base.constraintVersion,
+        forbiddenRoomStatuses: ['active', 'completed'],
+        requireFresh: false,
+        stopFlags: stops.map((s) => ({ id: s.id, isLocked: s.isLocked, isOptional: s.isOptional })),
+      },
       events: [
         {
           eventType: 'plan.changed',
@@ -244,6 +263,7 @@ export class PlanBuilderService {
           resourceId: planId,
           payload: {
             action: 'regenerate',
+            optionalStopCount: built.stops.filter((s) => s.isOptional).length,
             keptLockedStops: anchors.map((a) => a.placeId),
             excluded: [...exclude],
             avoidedCategories: [...avoid],

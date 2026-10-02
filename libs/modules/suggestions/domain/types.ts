@@ -109,11 +109,22 @@ export type PlanStopDraft = {
   costMin: number | null;
   costMax: number | null;
   isLocked: boolean;
+  /**
+   * GoGo-BE#228 (ADR-0028) — host intent, independent of `isLocked`. Generated
+   * stops are always required (`false`); only a host edit sets it.
+   */
+  isOptional: boolean;
 };
 
 export type PlanTotalsDraft = {
+  /** Sums across **all** stops (required + optional). */
   costMin: number;
   costMax: number;
+  /** GoGo-BE#228 — `costMin = requiredCostMin + optionalCostMin`, same for max. */
+  requiredCostMin: number;
+  requiredCostMax: number;
+  optionalCostMin: number;
+  optionalCostMax: number;
   currency: string;
   durationMinutes: number;
   travelDistanceM: number;

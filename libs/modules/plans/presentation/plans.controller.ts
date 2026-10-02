@@ -20,6 +20,11 @@ const editStopsSchema = z.object({
           .max(12 * 60)
           .optional(),
         isLocked: z.boolean().default(false),
+        /**
+         * GoGo-BE#228 — omitted keeps the retained place's value, a new place
+         * starts required, explicit `false` clears it (ADR-0028).
+         */
+        isOptional: z.boolean().optional(),
       }),
     )
     .min(1)

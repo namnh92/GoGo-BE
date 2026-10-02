@@ -9,7 +9,27 @@ import type { PlanStopDraft, PlanTotalsDraft } from '../../suggestions/domain/ty
 
 type RoomStatus = (typeof schema.rooms.$inferSelect)['status'];
 
+/**
+ * GoGo-BE#228 (ADR-0028) — what a plan write read before computing, rechecked
+ * inside the publishing transaction under the room row lock. The computation
+ * (snapshot, provider travel) runs outside any transaction; this is what keeps
+ * an interleaved constraint change, edit, regenerate or lock from being
+ * overwritten by a result built from the older state.
+ */
+export type PlanWriteGuard = {
+  sourcePlanId: string;
+  sourceVersion: number;
+  /** Room constraint version the snapshot was built from. */
+  constraintVersion: number;
+  forbiddenRoomStatuses: readonly RoomStatus[];
+  /** Edit refuses a stale source; regenerate is how one is refreshed. */
+  requireFresh: boolean;
+  /** Every stop of the source plan as read: id + flags. */
+  stopFlags: readonly { id: string; isLocked: boolean; isOptional: boolean }[];
+};
+
 export type PlanRow = typeof schema.plans.$inferSelect;
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 export type StopRow = typeof schema.planStops.$inferSelect;
 
 /**
@@ -123,6 +143,7 @@ export class PlansRepository {
      * regenerate leaves the room where it is and omits it.
      */
     claimRoom?: { from: RoomStatus; to: RoomStatus };
+    guard?: PlanWriteGuard;
   }): Promise<{ plan: PlanRow; stops: StopRow[] }> {
     /*
      * The version is read and then written, so two writers for one room both
@@ -154,6 +175,7 @@ export class PlansRepository {
     generatedByRunId?: string | undefined;
     events: DomainEventInput[];
     claimRoom?: { from: RoomStatus; to: RoomStatus };
+    guard?: PlanWriteGuard;
   }): Promise<{ plan: PlanRow; stops: StopRow[] }> {
     return this.db.transaction(async (tx) => {
       /*
@@ -182,11 +204,13 @@ export class PlansRepository {
           );
         }
       }
+      if (input.guard) await this.lockRoomFor(tx, input.roomId, input.guard);
       const [prev] = await tx
         .select()
         .from(schema.plans)
         .where(and(eq(schema.plans.roomId, input.roomId), eq(schema.plans.status, 'current')))
         .limit(1);
+      if (input.guard) await this.checkSource(tx, prev, input.guard);
       if (prev) {
         await tx
           .update(schema.plans)
@@ -222,6 +246,7 @@ export class PlansRepository {
                   costMin: s.costMin,
                   costMax: s.costMax,
                   isLocked: s.isLocked,
+                  isOptional: s.isOptional,
                 })),
               )
               .returning()
@@ -233,11 +258,93 @@ export class PlansRepository {
     });
   }
 
-  async setStopLock(stopId: string, locked: boolean, memberId: string): Promise<void> {
-    await this.db
-      .update(schema.planStops)
-      .set({ isLocked: locked, lockedByMemberId: locked ? memberId : null })
-      .where(eq(schema.planStops.id, stopId));
+  /**
+   * ADR-0028 — the room row lock every plan writer takes first, then the room
+   * facts the computation assumed. A constraint change updates the same row,
+   * so it either commits before this (and the version check refuses) or waits
+   * and then marks the new plan stale.
+   */
+  private async lockRoomFor(tx: Tx, roomId: string, guard: PlanWriteGuard): Promise<void> {
+    const [room] = await tx
+      .select({ status: schema.rooms.status, constraintVersion: schema.rooms.constraintVersion })
+      .from(schema.rooms)
+      .where(eq(schema.rooms.id, roomId))
+      .for('update');
+    if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
+    if (guard.forbiddenRoomStatuses.includes(room.status)) {
+      throw ['active', 'completed'].includes(room.status)
+        ? AppError.conflict('ROOM_ACTIVE', 'Plan is locked once the date starts')
+        : AppError.conflict('ROOM_NOT_EDITABLE', 'The room no longer accepts plan changes');
+    }
+    if (room.constraintVersion !== guard.constraintVersion) {
+      throw AppError.conflict('PLAN_STALE', 'Room constraints changed — regenerate the plan');
+    }
+  }
+
+  private async checkSource(
+    tx: Tx,
+    prev: PlanRow | undefined,
+    guard: PlanWriteGuard,
+  ): Promise<void> {
+    if (!prev || prev.id !== guard.sourcePlanId || prev.version !== guard.sourceVersion) {
+      throw AppError.conflict('PLAN_VERSION_CONFLICT', 'Plan changed concurrently — reload');
+    }
+    if (guard.requireFresh && prev.isStale) {
+      throw AppError.conflict('PLAN_STALE', 'Room constraints changed — regenerate the plan');
+    }
+    const now = await tx
+      .select({
+        id: schema.planStops.id,
+        isLocked: schema.planStops.isLocked,
+        isOptional: schema.planStops.isOptional,
+      })
+      .from(schema.planStops)
+      .where(eq(schema.planStops.planId, prev.id));
+    const read = new Map(guard.stopFlags.map((f) => [f.id, f]));
+    const same =
+      now.length === read.size &&
+      now.every((row) => {
+        const was = read.get(row.id);
+        return (
+          was !== undefined && was.isLocked === row.isLocked && was.isOptional === row.isOptional
+        );
+      });
+    if (!same) {
+      throw AppError.conflict('PLAN_VERSION_CONFLICT', 'Plan stops changed concurrently — reload');
+    }
+  }
+
+  /**
+   * ADR-0028 — a lock lands on the current plan or not at all. Without the
+   * room lock and the `current` recheck, a lock racing an edit could be
+   * written to the version the edit had just superseded and silently lost.
+   */
+  async setStopLock(
+    planId: string,
+    roomId: string,
+    stopId: string,
+    locked: boolean,
+    memberId: string,
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .select({ id: schema.rooms.id })
+        .from(schema.rooms)
+        .where(eq(schema.rooms.id, roomId))
+        .for('update');
+      const [plan] = await tx
+        .select({ status: schema.plans.status })
+        .from(schema.plans)
+        .where(eq(schema.plans.id, planId))
+        .limit(1);
+      if (plan?.status !== 'current') {
+        throw AppError.conflict('PLAN_NOT_CURRENT', 'Only the current plan can change');
+      }
+      await tx
+        .update(schema.planStops)
+        .set({ isLocked: locked, lockedByMemberId: locked ? memberId : null })
+        .where(and(eq(schema.planStops.id, stopId), eq(schema.planStops.planId, planId)));
+    });
   }
 
   async completeStop(stopId: string, event: DomainEventInput): Promise<void> {

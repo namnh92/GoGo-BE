@@ -463,6 +463,13 @@
       "when": 1790726400000,
       "tag": "0067_import-paused-provider-unavailable",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1790812800000,
+      "tag": "0068_plan-stops-optional",
+      "breakpoints": true
     }
   ]
 }

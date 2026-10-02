@@ -1,0 +1,13 @@
+-- GoGo-BE#228, ADR-0028. A plan stop is required or optional; only the host
+-- sets it, and every historical stop stays required.
+--
+-- Additive: ADD COLUMN with a constant DEFAULT is a catalogue-only change on
+-- Postgres 11+ (no table rewrite, a brief ACCESS EXCLUSIVE for the catalogue
+-- update only). Plan `totals` JSON is not rewritten: a totals object without
+-- the required/optional split reads as required = existing totals, optional = 0.
+--
+-- Rollback (ADR-0028 §Rollback): application first — disable optional edits,
+-- then deploy a reader that preserves the column. The column is kept so no
+-- host decision is lost. Rehearsal-only down:
+-- ALTER TABLE plan_stops DROP COLUMN is_optional;
+ALTER TABLE plan_stops ADD COLUMN IF NOT EXISTS is_optional boolean NOT NULL DEFAULT false;
