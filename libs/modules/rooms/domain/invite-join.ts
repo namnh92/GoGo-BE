@@ -21,10 +21,12 @@ export type JoinRefusal = 'INVITE_NOT_USABLE' | 'ROOM_NOT_JOINABLE' | 'ROOM_EXPI
 /**
  * Which refusals a join path applies beyond the invite and the room status.
  *
- * `enforceRoomExpiry` is the guest route's rule: a guest session is refused for
- * a room past its link expiry (`AuthService.createGuestSession`), so a guest
- * join has to learn that before a use is spent. Authenticated joins have never
- * been refused on room expiry, and this does not add that rule.
+ * `enforceRoomExpiry` refuses a room past its expiry before a use is spent.
+ * Both join routes set it: the guest route (a guest session is refused for an
+ * expired room in `AuthService.createGuestSession`) and, since GoGo-BE#606,
+ * `POST /rooms/join` for a signed-in user who is not already a member. It stays
+ * a rule rather than a default so a caller that only consumes an invite has to
+ * say which expiry it means.
  */
 export type JoinRules = { enforceRoomExpiry?: boolean };
 

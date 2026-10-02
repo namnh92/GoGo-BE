@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.47
+  version: 1.0.0-alpha.48
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -896,7 +896,11 @@ paths:
                   memberId: { type: string, format: uuid }
                   role: { type: string, enum: [host, member] }
         '410':
-          description: Invite expired/revoked/spent or room not joinable
+          description: |
+            Invite expired/revoked/spent (`INVITE_NOT_USABLE`), room no longer
+            taking members (`ROOM_NOT_JOINABLE`), or room past its expiry
+            (`ROOM_EXPIRED`, GoGo-BE#606 — same as the guest route). Someone
+            already an active member is answered with their membership instead.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }

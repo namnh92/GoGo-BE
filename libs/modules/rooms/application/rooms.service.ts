@@ -563,7 +563,10 @@ export class RoomsService {
     const existing = await this.repo.findActiveUserMember(invite.roomId, actor.id);
     if (existing) return { roomId: invite.roomId, memberId: existing.id, role: existing.role };
 
-    const room = await this.consumeInvite(invite);
+    // GoGo-BE#606 — a room past its expiry takes no new members on either
+    // route. Only the guest route used to say so (410 ROOM_EXPIRED); a signed-in
+    // user with an invite still in date was let into an expired room.
+    const room = await this.consumeInvite(invite, { enforceRoomExpiry: true });
     const user = await this.identity.findUserById(actor.id);
     const member = await this.repo.addUserMember({
       roomId: room.id,
