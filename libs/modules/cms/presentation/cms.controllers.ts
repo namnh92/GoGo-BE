@@ -109,17 +109,17 @@ const adminListQuery = z.object({
  */
 const reasonSchema = z.string().trim().min(3).max(500);
 /**
- * ADR-0018 — an environment has exactly one `super_admin`, so the console
- * cannot hand that role out. The enum still carries all four values, and the
- * refusal is `AdminAuthService`'s 409 `SUPER_ADMIN_SINGLETON`.
+ * ADR-0018 — an environment has exactly one `super_admin`, bootstrapped from
+ * SSM by `db:seed-admin`, so no request may hand that role out. #447 narrows
+ * the request enum to the three roles that can be assigned (OpenAPI
+ * `AdminAssignableRole`), now that GoGo-CMS#142 stopped offering the fourth.
  *
- * Narrowing it here would be the tidier contract and is a **breaking** change:
- * GoGo-CMS renders these options from the same four-value enum today and would
- * start sending a value the schema rejects. It narrows once the console stops
- * offering the role (GoGo-CMS#142), not before — the breaking-change gate is
- * there to make that sequence deliberate rather than incidental.
+ * This is the friendliest of three layers, not the enforcement:
+ * `AdminAuthService.assertRoleAssignable` still answers 409
+ * `SUPER_ADMIN_SINGLETON` for any caller that reaches the service another way,
+ * and the database refuses a second row in the role.
  */
-const assignableAdminRole = z.enum(['editor', 'moderator', 'ops_admin', 'super_admin']);
+const assignableAdminRole = z.enum(['editor', 'moderator', 'ops_admin']);
 const updateAdminSchema = z
   .object({
     role: assignableAdminRole.optional(),

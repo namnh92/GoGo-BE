@@ -282,10 +282,10 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
   /*
    * ADR-0018 — an environment has exactly one super_admin. It is bootstrapped
    * from credentials held in SSM and every other CMS account is created and
-   * managed by it. Two layers refuse a second — the service and the database —
-   * and each is tested for what only it can catch. The request enum still
-   * offers the value: narrowing it is a breaking change and waits for
-   * GoGo-CMS#142.
+   * managed by it. Three layers refuse a second — the request schema, the
+   * service and the database — and each is tested for what only it can catch.
+   * #447 narrowed the request enum once GoGo-CMS#142 stopped offering the
+   * value, so over HTTP the refusal is now a 400 on `role`.
    */
   it('refuses to create a second super_admin over HTTP', async () => {
     const boss = await superAdmin();
@@ -300,8 +300,8 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
         role: 'super_admin',
       },
     });
-    expect(res.statusCode).toBe(409);
-    expect(res.json().code).toBe('SUPER_ADMIN_SINGLETON');
+    expect(res.statusCode).toBe(400);
+    expect(res.json().field_errors[0].field).toBe('role');
 
     const [existing] = await db
       .select()
@@ -319,8 +319,8 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
       headers: auth(boss.token),
       payload: { role: 'super_admin', ...REASON },
     });
-    expect(res.statusCode).toBe(409);
-    expect(res.json().code).toBe('SUPER_ADMIN_SINGLETON');
+    expect(res.statusCode).toBe(400);
+    expect(res.json().field_errors[0].field).toBe('role');
 
     const [after] = await db
       .select()
