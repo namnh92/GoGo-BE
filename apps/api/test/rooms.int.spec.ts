@@ -1297,6 +1297,90 @@ describe('GET /rooms — the actor can find their rooms again (#152)', () => {
     expect(row).not.toHaveProperty('inviteCode');
   });
 
+  it('carries the budget facts RoomSummary.constraints holds, per_person (#637)', async () => {
+    const { token } = await registerUser(`bpp${Date.now()}@g.vn`);
+    const room = await createGroupRoom(token);
+    const list = (
+      await api().inject({
+        method: 'GET',
+        url: '/v1/rooms',
+        remoteAddress: ip(),
+        headers: auth(token),
+      })
+    ).json();
+    const summary = (
+      await api().inject({
+        method: 'GET',
+        url: `/v1/rooms/${room.id}`,
+        remoteAddress: ip(),
+        headers: auth(token),
+      })
+    ).json();
+    const row = list.items.find((r: { id: string }) => r.id === room.id);
+    // Facts, not a sentence: the client composes "300k/người" itself.
+    expect(row.budget).toEqual({ mode: 'per_person', amount: 300_000, currency: 'VND' });
+    expect(row.budget).toEqual({
+      mode: summary.constraints.budgetMode,
+      amount: summary.constraints.budgetAmount,
+      currency: summary.constraints.currency,
+    });
+  });
+
+  it('carries a total budget as total, never as per_person (#637)', async () => {
+    const { token } = await registerUser(`btot${Date.now()}@g.vn`);
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        type: 'couple',
+        decisionMode: 'match',
+        participantCount: 2,
+        constraint: { ...baseConstraint, budgetMode: 'total', budgetAmount: 1_600_000 },
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const room = created.json();
+    const list = (
+      await api().inject({
+        method: 'GET',
+        url: '/v1/rooms',
+        remoteAddress: ip(),
+        headers: auth(token),
+      })
+    ).json();
+    const row = list.items.find((r: { id: string }) => r.id === room.id);
+    expect(row.budget).toEqual({ mode: 'total', amount: 1_600_000, currency: 'VND' });
+    expect(row.budget).toEqual({
+      mode: room.constraints.budgetMode,
+      amount: room.constraints.budgetAmount,
+      currency: room.constraints.currency,
+    });
+  });
+
+  it('omits budget when the room has no current constraint row (#637)', async () => {
+    const { token } = await registerUser(`bnone${Date.now()}@g.vn`);
+    const room = await createGroupRoom(token);
+    // A room whose current version has no constraint row has no budget to
+    // report; the summary omits `constraints` the same way.
+    await db
+      .update(schema.rooms)
+      .set({ constraintVersion: 999 })
+      .where(eq(schema.rooms.id, room.id));
+    const list = (
+      await api().inject({
+        method: 'GET',
+        url: '/v1/rooms',
+        remoteAddress: ip(),
+        headers: auth(token),
+      })
+    ).json();
+    const row = list.items.find((r: { id: string }) => r.id === room.id);
+    expect(row).toBeDefined();
+    expect(row).not.toHaveProperty('budget');
+  });
+
   it('never shows a room the caller is not in', async () => {
     const { token: mine } = await registerUser(`mine${Date.now()}@g.vn`);
     const { token: stranger } = await registerUser(`other${Date.now()}@g.vn`);

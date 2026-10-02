@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.51
+  version: 1.0.0-alpha.52
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -13977,6 +13977,22 @@ components:
           type: string
           format: uuid
           description: The room's current plan, when one exists.
+        budget:
+          type: object
+          description: >
+            GoGo-BE#637 — the budget of the room's current constraint version,
+            the same facts as RoomSummary.constraints (budgetMode, budgetAmount,
+            currency), so a list row can show it without a call per room. Facts,
+            not a sentence: the client composes the label from `mode` and the
+            room type. Absent when the room has no current constraint row.
+          required: [mode, amount, currency]
+          properties:
+            mode: { type: string, enum: [total, per_person] }
+            amount:
+              type: integer
+              minimum: 0
+              description: Integer minor units, interpreted per mode.
+            currency: { type: string, minLength: 3, maxLength: 3 }
     CmsPlaceMedia:
       type: object
       required: [id, storageKey, sortOrder, moderation, isCover, sourceType]

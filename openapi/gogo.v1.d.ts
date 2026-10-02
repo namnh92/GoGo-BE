@@ -7662,6 +7662,14 @@ export interface components {
              * @description The room's current plan, when one exists.
              */
             planId?: string;
+            /** @description GoGo-BE#637 — the budget of the room's current constraint version, the same facts as RoomSummary.constraints (budgetMode, budgetAmount, currency), so a list row can show it without a call per room. Facts, not a sentence: the client composes the label from `mode` and the room type. Absent when the room has no current constraint row. */
+            budget?: {
+                /** @enum {string} */
+                mode: "total" | "per_person";
+                /** @description Integer minor units, interpreted per mode. */
+                amount: number;
+                currency: string;
+            };
         };
         CmsPlaceMedia: {
             /** Format: uuid */

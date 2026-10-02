@@ -24,9 +24,18 @@ interface Operation {
   operationId?: string;
   responses?: Responses;
 }
+interface SchemaObject {
+  type?: string | string[];
+  required?: string[];
+  enum?: string[];
+  properties?: Record<string, SchemaObject>;
+}
 interface Document {
   paths: Record<string, Record<string, Operation | unknown>>;
-  components: { responses: Record<string, { content?: Record<string, { schema?: unknown }> }> };
+  components: {
+    responses: Record<string, { content?: Record<string, { schema?: unknown }> }>;
+    schemas: Record<string, SchemaObject>;
+  };
 }
 
 const doc = parseYaml(readFileSync(SPEC, 'utf8')) as Document;
@@ -61,5 +70,22 @@ describe('rooms contract', () => {
     expect(doc.components.responses.Forbidden?.content?.['application/json']?.schema).toEqual({
       $ref: '#/components/schemas/ErrorEnvelope',
     });
+  });
+
+  it('RoomListItem carries the budget as facts, optional and additive (#637)', () => {
+    const item = doc.components.schemas.RoomListItem!;
+    // Additive: a row without a budget stays valid, so `budget` is not required.
+    expect(item.required ?? []).not.toContain('budget');
+
+    const budget = item.properties?.budget;
+    expect(budget, 'RoomListItem.budget must exist').toBeDefined();
+    expect(budget?.required).toEqual(['mode', 'amount', 'currency']);
+    // The same unit vocabulary as RoomConstraints.budgetMode — total and
+    // per_person stay distinct (core rule #4), never a composed sentence.
+    expect(budget?.properties?.mode?.enum).toEqual(
+      doc.components.schemas.RoomConstraints!.properties?.budgetMode?.enum,
+    );
+    expect(budget?.properties?.amount?.type).toBe('integer');
+    expect(budget?.properties?.currency?.type).toBe('string');
   });
 });
