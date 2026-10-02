@@ -93,6 +93,12 @@ export type RoomListRow = {
   member_count: number;
   completed_count: number;
   plan_id: string | null;
+  // #637 — the current constraint version's budget; null when that row is
+  // missing. `budget_amount` is a bigint, which node-postgres hands back as a
+  // string.
+  budget_mode: 'total' | 'per_person' | null;
+  budget_amount: string | number | null;
+  currency: string | null;
 };
 
 @Injectable()
@@ -141,7 +147,8 @@ export class RoomsRepository {
                where m.room_id = r.id and m.removed_at is null
                  and m.selection_status = 'completed') as completed_count,
              (select p.id from plans p
-               where p.room_id = r.id and p.status = 'current' limit 1) as plan_id
+               where p.room_id = r.id and p.status = 'current' limit 1) as plan_id,
+             rc.budget_mode, rc.budget_amount, rc.currency
       from rooms r
       join room_members rm on rm.room_id = r.id
       left join room_constraints rc on rc.room_id = r.id and rc.version = r.constraint_version

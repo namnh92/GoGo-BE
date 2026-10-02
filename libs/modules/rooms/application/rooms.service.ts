@@ -190,6 +190,18 @@ export class RoomsService {
         memberCount: row.member_count,
         completedCount: row.completed_count,
         planId: row.plan_id ?? undefined,
+        // #637 — the same facts as RoomSummary.constraints, so a list row can
+        // show the budget without a call per room. Facts only: the client
+        // composes "800k/người" from mode + room type. Absent with no
+        // current constraint row, exactly as the summary omits `constraints`.
+        budget:
+          row.budget_mode !== null && row.budget_amount !== null && row.currency !== null
+            ? {
+                mode: row.budget_mode,
+                amount: Number(row.budget_amount),
+                currency: row.currency,
+              }
+            : undefined,
       })),
       nextCursor:
         rows.length > query.limit && last ? encodeRoomCursor(last.updated_at, last.id) : null,
