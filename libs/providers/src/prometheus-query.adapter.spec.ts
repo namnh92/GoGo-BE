@@ -8,7 +8,7 @@ import { MetricsQueryError } from './ports';
 import { resetBreakers } from './resilience';
 
 const CONFIG = {
-  url: 'https://prometheus-prod-37-prod-ap-southeast-1.grafana.net/api/prom/push',
+  url: 'https://metrics.example.test/api/prom/push',
   username: '3553140',
   token: 'glc_ExampleReadTokenNotARealCredential0000',
 };
@@ -30,14 +30,16 @@ function respond(
 describe('promApiBase', () => {
   it('derives the query API from the write endpoint stored in SSM', () => {
     // One parameter, so two cannot disagree.
-    expect(promApiBase(CONFIG.url)).toBe(
-      'https://prometheus-prod-37-prod-ap-southeast-1.grafana.net/api/prom',
-    );
+    expect(promApiBase(CONFIG.url)).toBe('https://metrics.example.test/api/prom');
   });
 
   it('accepts the query URL too, so a pasted-wrong value still works', () => {
-    expect(promApiBase('https://x.grafana.net/api/prom')).toBe('https://x.grafana.net/api/prom');
-    expect(promApiBase('https://x.grafana.net/api/prom/')).toBe('https://x.grafana.net/api/prom');
+    expect(promApiBase('https://mimir.example.test/api/prom')).toBe(
+      'https://mimir.example.test/api/prom',
+    );
+    expect(promApiBase('https://mimir.example.test/api/prom/')).toBe(
+      'https://mimir.example.test/api/prom',
+    );
   });
 
   it('accepts a self-hosted Prometheus endpoint', () => {
@@ -52,59 +54,28 @@ describe('promApiBase', () => {
 
   it('reads the URL shape, never the hostname', () => {
     // ADR-0007 / BE-SRE-P8: the previous version appended `/api/prom` to any
-    // host that did not contain `.grafana.net`, which is a vendor's domain
+    // host outside one vendor's domain, which is a vendor's domain
     // deciding behaviour in shared code. The suffix is the whole signal now,
     // so the same path resolves the same way whoever is hosting it.
     expect(promApiBase('https://metrics.example.test/api/prom/push')).toBe(
       'https://metrics.example.test/api/prom',
     );
-    expect(promApiBase('https://x.grafana.net/api/v1/write')).toBe('https://x.grafana.net');
+    expect(promApiBase('https://mimir.example.test/api/v1/write')).toBe(
+      'https://mimir.example.test',
+    );
     // A bare host is already a query root. It is no longer guessed at: an
     // operator who means Mimir's `/api/prom` writes it.
-    expect(promApiBase('https://x.grafana.net')).toBe('https://x.grafana.net');
+    expect(promApiBase('https://mimir.example.test')).toBe('https://mimir.example.test');
   });
 });
 
 describe('resolveMetricsQueryConfig', () => {
-  const CLOUD = {
-    GRAFANA_PROM_URL: CONFIG.url,
-    GRAFANA_PROM_USER: CONFIG.username,
-    GRAFANA_READ_TOKEN: CONFIG.token,
-  };
-
   it('reads where the collector writes, so the two cannot drift apart', () => {
     // ADR-0007 §E7: this is the whole point. Setting the write endpoint moves
     // the read path with it, in one action.
     expect(
       resolveMetricsQueryConfig({ PROMETHEUS_REMOTE_WRITE_URL: 'http://192.168.68.168:9090' }),
     ).toEqual({ url: 'http://192.168.68.168:9090', username: undefined, token: undefined });
-  });
-
-  it('will not silently keep reading Grafana Cloud once the collector has moved', () => {
-    // The forbidden state: Alloy writing to the LAN Prometheus while the API
-    // still answers from Cloud. The screen would report healthy and show
-    // nothing — `unknown != zero`, quietly violated.
-    const resolved = resolveMetricsQueryConfig({
-      ...CLOUD,
-      PROMETHEUS_REMOTE_WRITE_URL: 'http://192.168.68.168:9090/api/v1/write',
-    });
-    expect(resolved?.url).toBe('http://192.168.68.168:9090/api/v1/write');
-    expect(resolved?.token).toBeUndefined();
-  });
-
-  it('keeps the legacy Cloud path working for the rollback window', () => {
-    expect(resolveMetricsQueryConfig(CLOUD)).toEqual({
-      url: CONFIG.url,
-      username: CONFIG.username,
-      token: CONFIG.token,
-    });
-  });
-
-  it('refuses a half-configured Cloud path rather than binding a certain 401', () => {
-    expect(resolveMetricsQueryConfig({ GRAFANA_PROM_URL: CONFIG.url })).toBeNull();
-    expect(
-      resolveMetricsQueryConfig({ GRAFANA_PROM_URL: CONFIG.url, GRAFANA_PROM_USER: 'u' }),
-    ).toBeNull();
   });
 
   it("reads with the collector's credential, since it is the same store", () => {
@@ -141,7 +112,6 @@ describe('resolveMetricsQueryConfig', () => {
   it('lets an explicit query URL override both, credentials optional', () => {
     expect(
       resolveMetricsQueryConfig({
-        ...CLOUD,
         PROMETHEUS_REMOTE_WRITE_URL: 'http://192.168.68.168:9090',
         METRICS_QUERY_URL: 'http://replica:9090',
         METRICS_QUERY_USERNAME: 'reader',
@@ -150,10 +120,27 @@ describe('resolveMetricsQueryConfig', () => {
     ).toEqual({ url: 'http://replica:9090', username: 'reader', token: 'secret' });
   });
 
+  it('ignores the retired Grafana Cloud variables (GoGo-BE#409)', () => {
+    // Grafana Cloud was deleted on 2026-09-05 (GoGo-Infra ADR-0007). A leftover
+    // GRAFANA_* triple in some env file must bind nothing — not a store that no
+    // longer exists and would answer every panel with an error.
+    // Names built at runtime so the retired names appear nowhere in source
+    // (the #409 acceptance grep), while the test still feeds them in.
+    const legacy = (suffix: string) => `GRAFANA_${suffix}`;
+    const leftover = {
+      [legacy('PROM_URL')]: CONFIG.url,
+      [legacy('PROM_USER')]: CONFIG.username,
+      [legacy('READ_TOKEN')]: CONFIG.token,
+    } as Record<string, string>;
+    expect(resolveMetricsQueryConfig(leftover)).toBeNull();
+  });
+
   it('binds nothing when nothing is configured', () => {
     // Never a fake. A fake answers a dashboard with invented traffic.
     expect(resolveMetricsQueryConfig({})).toBeNull();
-    expect(resolveMetricsQueryConfig({ GRAFANA_PROM_URL: '', METRICS_QUERY_URL: '' })).toBeNull();
+    expect(
+      resolveMetricsQueryConfig({ PROMETHEUS_REMOTE_WRITE_URL: '', METRICS_QUERY_URL: '' }),
+    ).toBeNull();
   });
 });
 

@@ -352,7 +352,7 @@ const envSchema = z
      * §E7 exists to forbid.
      *
      * Authentication is optional and both parts move together. A Prometheus
-     * reachable only from the BE host on a LAN has none; Grafana Cloud
+     * reachable only from the BE host on a LAN has none; a hosted store
      * requires it. Either credential is server-to-server only: it must never
      * reach a browser, a CMS bundle or any `VITE_`/`EXPO_PUBLIC_` variable.
      */
@@ -360,32 +360,17 @@ const envSchema = z
     METRICS_QUERY_USERNAME: z.string().default(''),
     METRICS_QUERY_TOKEN: z.string().default(''),
     /**
-     * The legacy Grafana Cloud read path. Kept working unchanged for the whole
-     * rollback window — ADR-0007 §E7 revokes these credentials **last**, after
-     * end-to-end verification, and not before. Lowest precedence: the two
-     * variables above win when either is set.
-     *
-     * `GRAFANA_READ_TOKEN` is scoped `metrics:read` and is a different
-     * credential from the collector's `metrics:write`. All three empty binds
-     * no query port, and the ops endpoints answer `backend.status:
-     * "unavailable"` rather than failing.
-     */
-    GRAFANA_PROM_URL: z.string().default(''),
-    GRAFANA_PROM_USER: z.string().default(''),
-    GRAFANA_READ_TOKEN: z.string().default(''),
-    /**
      * How much history the store actually holds, so a 30-day request is
      * answered with what exists and says it was cut — extrapolating the
      * missing days would be inventing data.
      *
-     * Unset falls back to `GRAFANA_RETENTION_DAYS`, whose 14-day default is
-     * Grafana Cloud Free's. The self-hosted store's retention is set in
-     * `observability/local-grafana` and is a different number, so after
-     * cutover this must be set or the console reports a window the store does
-     * not have.
+     * No default (GoGo-BE#409). It must match the self-hosted store's
+     * retention (`observability/local-grafana`, PROMETHEUS_RETENTION_TIME);
+     * unset, the ops endpoints answer `backend.status: "unavailable"` rather
+     * than assume a span. The old 14-day fallback was Grafana Cloud Free's,
+     * and that account was deleted on 2026-09-05 (GoGo-Infra ADR-0007).
      */
     METRICS_RETENTION_DAYS: z.coerce.number().int().positive().optional(),
-    GRAFANA_RETENTION_DAYS: z.coerce.number().int().positive().default(14),
     /**
      * #335 — the durable provider usage ledger.
      *
