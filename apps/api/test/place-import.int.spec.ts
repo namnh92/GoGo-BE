@@ -2942,6 +2942,43 @@ describe('a ?cid= link GoGo already stores resolves from its own rows (#470)', (
     expect(places.tiersRequested.length).toBe(detailsBefore);
   });
 
+  it('reads stored CIDs the way a pasted link is read: padded and percent-encoded match (F-04)', async () => {
+    const padded = await newPlace('CID padded stored');
+    const encoded = await newPlace('CID encoded stored');
+    await db.insert(schema.placeSources).values({
+      placeId: padded,
+      provider: 'google',
+      externalId: 'fake-cid-padded',
+      url: 'https://maps.google.com/?cid=003333333333333333333',
+    });
+    await db.insert(schema.placeProviderSources).values({
+      placeId: encoded,
+      provider: 'google_places',
+      externalId: 'fake-cid-encoded',
+      // `4444` percent-encoded digit by digit.
+      providerUri: 'https://maps.google.com/?cid=%34%34%34%34',
+      sourceStatus: 'active',
+      refreshAfter: new Date(Date.now() + 86_400_000),
+    });
+
+    const a = await resolve('https://maps.google.com/?cid=3333333333333333333');
+    expect(a.json()).toMatchObject({ status: 'ALREADY_EXISTS', existingPlaceId: padded });
+    const b = await resolve('https://maps.google.com/?cid=4444');
+    expect(b.json()).toMatchObject({ status: 'ALREADY_EXISTS', existingPlaceId: encoded });
+  });
+
+  it('never matches a cid that sits in a stored URL fragment (F-04)', async () => {
+    const decoy = await newPlace('CID fragment decoy');
+    await db.insert(schema.placeSources).values({
+      placeId: decoy,
+      provider: 'google',
+      externalId: 'fake-cid-fragment',
+      url: 'https://maps.google.com/?q=x#?cid=5555',
+    });
+    const res = await resolve('https://maps.google.com/?cid=5555');
+    expect(res.json()).toMatchObject({ status: 'UNRESOLVED', reasonCodes: ['CID_NOT_RESOLVABLE'] });
+  });
+
   it('says a CID GoGo does not hold cannot be resolved, not that the link is empty', async () => {
     const res = await resolve('https://maps.google.com/?cid=1111111111111111111');
     expect(res.statusCode, res.body).toBe(201);

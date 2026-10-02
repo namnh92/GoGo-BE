@@ -1,7 +1,11 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
-import type { PlaceDescriptionTier, ResolvedProviderPlace } from '@gogo/providers';
+import {
+  cidFromGoogleMapsUri,
+  type PlaceDescriptionTier,
+  type ResolvedProviderPlace,
+} from '@gogo/providers';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { GOOGLE_PROVIDER } from '../../shared/google-provenance';
@@ -167,20 +171,33 @@ export class PlaceDedupService {
    * are catalogue-sized and this runs on an editor's paste, not a hot path.
    */
   async googlePlaceIdsForCid(cid: string): Promise<string[]> {
+    /*
+     * F-04 (#657 review): a stored URI is read exactly the way a pasted link
+     * is — `cidFromGoogleMapsUri`, so query string only (never the fragment),
+     * percent-decoded and BigInt-normalized. A regex over the raw text
+     * disagreed both ways: a stored `?cid=0042` or `?cid=%34%32` missed the
+     * canonical paste, and `?q=x#?cid=42` matched it.
+     *
+     * The SQL is only a prefilter that cannot drop a true match: a stored
+     * value either contains the canonical digits (plain, or zero-padded) or
+     * carries a `%` escape. Every candidate is then verified in code; ids are
+     * deduped and capped after verification, not before.
+     */
     const found = await this.db.execute(sql`
-      select distinct external_id from (
-        select external_id from place_provider_sources
-          where provider = ${GOOGLE_PROVIDER}
-            and substring(provider_uri from '[?&]cid=([0-9]+)') = ${cid}
-        union
-        select external_id from place_sources
-          where provider = 'google'
-            and substring(url from '[?&]cid=([0-9]+)') = ${cid}
-      ) ids
-      order by external_id
-      limit 2
+      select external_id, uri from (
+        select external_id, provider_uri as uri from place_provider_sources
+          where provider = ${GOOGLE_PROVIDER} and provider_uri is not null
+        union all
+        select external_id, url as uri from place_sources
+          where provider = 'google' and url is not null
+      ) candidates
+      where strpos(uri, ${cid}) > 0 or strpos(uri, '%') > 0
     `);
-    return (found.rows as { external_id: string }[]).map((row) => row.external_id);
+    const ids = new Set<string>();
+    for (const row of found.rows as { external_id: string; uri: string }[]) {
+      if (cidFromGoogleMapsUri(row.uri) === cid) ids.add(row.external_id);
+    }
+    return [...ids].sort().slice(0, 2);
   }
 
   /**
