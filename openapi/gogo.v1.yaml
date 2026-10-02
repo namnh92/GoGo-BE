@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.56
+  version: 1.0.0-alpha.57
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4829,9 +4829,10 @@ paths:
       description: >
         Every CMS account except the `super_admin` is created here. That one is
         bootstrapped once from SSM — an environment holds at most one before
-        bootstrap and exactly one after — so `role: super_admin` is refused with
-        409 `SUPER_ADMIN_SINGLETON` (ADR-0018). The enum still lists it: narrowing the request enum is a
-        breaking change and waits until no client sends the value.
+        bootstrap and exactly one after — so `role` takes only an
+        `AdminAssignableRole` and `super_admin` is a 400 on `role` (ADR-0018,
+        #447). The service keeps its own 409 `SUPER_ADMIN_SINGLETON` behind the
+        schema.
       requestBody:
         required: true
         content:
@@ -4843,7 +4844,7 @@ paths:
                 email: { type: string, format: email }
                 password: { type: string, minLength: 12 }
                 displayName: { type: string }
-                role: { $ref: '#/components/schemas/AdminRole' }
+                role: { $ref: '#/components/schemas/AdminAssignableRole' }
       responses:
         '201': { description: Created }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -4851,7 +4852,9 @@ paths:
         '409':
           description: >
             `SUPER_ADMIN_SINGLETON` — an environment has exactly one
-            `super_admin` and a second cannot be created.
+            `super_admin` and a second cannot be created. The request schema
+            already refuses the value with a 400; this is the service's own
+            refusal, kept for any caller that reaches it another way.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -7849,7 +7852,7 @@ paths:
               type: object
               required: [reason]
               properties:
-                role: { $ref: '#/components/schemas/AdminRole' }
+                role: { $ref: '#/components/schemas/AdminAssignableRole' }
                 displayName: { type: string, minLength: 1, maxLength: 50 }
                 reason:
                   type: string
@@ -7880,7 +7883,8 @@ paths:
             `SUPER_ADMIN_SINGLETON` — nor can `role` be set to `super_admin`:
             an environment holds at most one before it is bootstrapped and
             exactly one after, and that account is bootstrapped rather than
-            promoted. The enum still offers the value; the refusal is here.
+            promoted. The request schema (`AdminAssignableRole`) refuses the
+            value with a 400 first; this is the service's own refusal behind it.
 
 
             Neither freezes the account's credentials. It rotates its password
@@ -10904,6 +10908,17 @@ components:
     AdminRole:
       type: string
       enum: [editor, moderator, ops_admin, super_admin]
+      description: >
+        Every role an account can hold. Responses, `CmsAdmin.role` and the
+        `GET /cms/auth/admins` filter use this; requests that assign a role use
+        `AdminAssignableRole`.
+    AdminAssignableRole:
+      type: string
+      enum: [editor, moderator, ops_admin]
+      description: >
+        #447 / ADR-0018 — the roles a request may assign. `super_admin` is not
+        one: an environment has exactly one, bootstrapped from SSM rather than
+        created or promoted over HTTP.
     AdminStatus:
       type: string
       enum: [active, suspended]
