@@ -1,0 +1,11 @@
+-- GoGo-BE#284 (PI-BE-023). A bulk import parks on every provider fault since
+-- #279, but the only paused value said "quota". Quota clears by waiting; a
+-- disabled API, an invalid key or a dead upstream does not, and an editor
+-- reading `paused_provider_quota` for those would wait for nothing.
+--
+-- Additive and forward-only: ADD VALUE takes no table lock and rewrites no
+-- row; existing parked jobs keep `paused_provider_quota`. Postgres cannot drop
+-- an enum value, so rollback is application-only — older code never writes the
+-- new value, and a job already parked under it is resumed or cancelled before
+-- rolling back (both doors accept it from this release on).
+ALTER TYPE ingest_job_status ADD VALUE IF NOT EXISTS 'paused_provider_unavailable';

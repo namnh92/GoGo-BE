@@ -124,16 +124,35 @@ the failure this guards against.
 4. Restoring is a separate, privileged action on purpose — do not reverse a
    takedown to "tidy up" before the review is done.
 
-### Ingestion paused on provider quota (`place_import_jobs_total{status="paused_provider_quota"}`)
+### Ingestion paused (`place_import_jobs_total{status=~"paused_provider_.*"}`)
 
-Not a data error. Rows are intact and the job is waiting.
+Not a data error. Rows are intact and the job is waiting. **The status says
+which branch you are on (#284)** — the two do not share a fix.
+
+#### `paused_provider_quota` — wait, or raise the quota
 
 1. Check the Google Cloud console for the actual quota and the daily spend.
 2. If quota is genuinely exhausted, decide whether to raise it or wait — the
    job resumes with `POST /v1/cms/place-imports/{jobId}/start`, from where it
    stopped, with no duplicate rows.
-3. Do **not** cancel to "clear" the alert: cancel drops unprocessed chunks and
-   the already-imported rows stay, which is the confusing half-state.
+
+#### `paused_provider_unavailable` — fix the configuration, then resume
+
+The quota window never clears this one. The metric's `reason` label narrows it:
+`AUTH_FAILED` / `MISSING_CREDENTIAL` (API not enabled, key restricted to the
+wrong API, key deleted or absent) or `UPSTREAM_UNAVAILABLE` (Google not
+answering).
+
+1. Read `places_provider_failures_total{reason}` (next section) for Google's
+   own reason — `SERVICE_DISABLED`, `API_KEY_*` and so on.
+2. Fix it in the console or re-put the secret; for an upstream outage, confirm
+   on Google's status page that it is over.
+3. Resume with `POST /v1/cms/place-imports/{jobId}/start`. A resume against a
+   provider that is still broken simply parks the job again — nothing is lost.
+
+For either branch, do **not** cancel to "clear" the alert: cancel drops
+unprocessed chunks and the already-imported rows stay, which is the confusing
+half-state.
 
 ### Provider errors > 10% (`places_provider_requests_total{status!~"2.."}`)
 

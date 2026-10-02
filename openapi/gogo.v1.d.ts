@@ -2019,7 +2019,7 @@ export interface paths {
         put?: never;
         /**
          * Editor/ops: start (or resume) background processing (PI-BE-015)
-         * @description Flips the job to `processing`; the worker advances it in chunks of 50 rows. Also the resume path for a job parked at `paused_provider_quota`. Rejected for `dry_run` jobs.
+         * @description Flips the job to `processing`; the worker advances it in chunks of 50 rows. Also the resume path for a job parked at `paused_provider_quota` or `paused_provider_unavailable`. Rejected for `dry_run` jobs.
          */
         post: operations["startPlaceImport"];
         delete?: never;
@@ -7209,8 +7209,8 @@ export interface components {
         ImportJobSummary: {
             /** Format: uuid */
             id?: string;
-            /** @enum {string} */
-            status?: "uploaded" | "validating" | "processing" | "review_required" | "completed" | "partial_success" | "failed" | "cancelled" | "paused_provider_quota";
+            /** @description Two parked values, both resumed by `POST …/start` and cancellable (GoGo-BE#284): `paused_provider_quota` clears by waiting for the next quota window or raising it; `paused_provider_unavailable` is a provider that cannot answer (API disabled, invalid or missing key, upstream timeout or outage) and is not cleared by the quota window — fix the configuration, or confirm the upstream outage is over, then resume. Declared extensible: a client treats a value it does not know as a job that is neither running nor finished, never as a malformed response. */
+            status?: string;
             /**
              * @description `update_existing` re-syncs an edited sheet onto places that already exist: provider facts refresh from Google, editorial fields come from the sheet, and an empty cell means "unknown", not "delete". A row whose provider place now looks like a *different business* is written nowhere and lands in review instead.
              * @enum {string}

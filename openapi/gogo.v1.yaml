@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.52
+  version: 1.0.0-alpha.53
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3847,7 +3847,8 @@ paths:
       description: >
         Flips the job to `processing`; the worker advances it in chunks of 50
         rows. Also the resume path for a job parked at
-        `paused_provider_quota`. Rejected for `dry_run` jobs.
+        `paused_provider_quota` or `paused_provider_unavailable`. Rejected for
+        `dry_run` jobs.
       parameters:
         - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -13230,7 +13231,17 @@ components:
         id: { type: string, format: uuid }
         status:
           type: string
-          enum:
+          description: >
+            Two parked values, both resumed by `POST …/start` and cancellable
+            (GoGo-BE#284): `paused_provider_quota` clears by waiting for the
+            next quota window or raising it; `paused_provider_unavailable` is a
+            provider that cannot answer (API disabled, invalid or missing key,
+            upstream timeout or outage) and is not cleared by the quota window —
+            fix the configuration, or confirm the upstream outage is over, then
+            resume. Declared extensible: a client treats a value it does not
+            know as a job that is neither running nor finished, never as a
+            malformed response.
+          x-extensible-enum:
             [
               uploaded,
               validating,
@@ -13241,6 +13252,7 @@ components:
               failed,
               cancelled,
               paused_provider_quota,
+              paused_provider_unavailable,
             ]
         mode:
           type: string

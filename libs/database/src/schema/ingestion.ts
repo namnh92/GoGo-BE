@@ -41,6 +41,11 @@ export const ingestJobStatus = pgEnum('ingest_job_status', [
   'failed',
   'cancelled',
   'paused_provider_quota',
+  // GoGo-BE#284 — parked on a provider that is broken rather than exhausted:
+  // a disabled API, a bad key, an upstream timeout or outage. The quota window
+  // does not clear it; fixing the configuration (or the outage ending) and
+  // resuming does (migration 0067).
+  'paused_provider_unavailable',
 ]);
 
 export const ingestJobMode = pgEnum('ingest_job_mode', [
