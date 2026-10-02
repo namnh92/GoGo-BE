@@ -3,13 +3,18 @@ import {
   REPLAY_BUFFER_SIZE,
   type RoomEventBus,
   type Subscription,
+  type SubscriptionSink,
 } from '../application/room-event-bus';
+import { RoomSubscription, type RoomSnapshot } from '../application/room-subscription';
+import type { EventCursor, ResumePoint } from '../domain/room-event-cursor';
 import type { PublishInput, RoomEvent, SequencedRoomEvent } from '../domain/room-event';
 
 type RoomState = {
+  /** ADR-0027 D2 — a pruned and recreated room is a new generation. */
+  generation: string;
   seq: number;
   buffer: SequencedRoomEvent[];
-  listeners: Set<(event: SequencedRoomEvent) => void>;
+  subscriptions: Set<RoomSubscription>;
   touchedAt: number;
 };
 
@@ -18,8 +23,9 @@ type RoomState = {
  *
  * Dropping them the moment nobody is listening defeats the whole point: the
  * reconnect this endpoint exists for is exactly the one where the client was
- * *not* connected while things happened. Worse, a fresh state restarts the
- * sequence at 1, so a resuming client would be handed ids it had already seen.
+ * *not* connected while things happened. When a room is pruned anyway, its
+ * next state starts a new generation, so a resuming client is told
+ * (`generation_changed`) instead of handed reused sequence numbers.
  * Matches the Redis buffer TTL.
  */
 export const ROOM_STATE_TTL_MS = 15 * 60 * 1000;
@@ -29,7 +35,8 @@ export const ROOM_STATE_TTL_MS = 15 * 60 * 1000;
  * and wrong for more than one api instance — a member connected to instance B
  * would never see an event published on instance A. The Redis bus is what
  * makes it multi-instance; this one is the fallback so the feature works
- * without Redis rather than half-working with it.
+ * without Redis rather than half-working with it. Same attach protocol and
+ * subscription state machine as the Redis bus (ADR-0027).
  */
 export class InMemoryRoomEventBus implements RoomEventBus {
   private readonly rooms = new Map<string, RoomState>();
@@ -38,7 +45,13 @@ export class InMemoryRoomEventBus implements RoomEventBus {
     this.prune();
     let state = this.rooms.get(roomId);
     if (!state) {
-      state = { seq: 0, buffer: [], listeners: new Set(), touchedAt: Date.now() };
+      state = {
+        generation: randomUUID(),
+        seq: 0,
+        buffer: [],
+        subscriptions: new Set(),
+        touchedAt: Date.now(),
+      };
       this.rooms.set(roomId, state);
     }
     state.touchedAt = Date.now();
@@ -53,7 +66,17 @@ export class InMemoryRoomEventBus implements RoomEventBus {
   private prune(): void {
     const cutoff = Date.now() - ROOM_STATE_TTL_MS;
     for (const [roomId, state] of this.rooms) {
-      if (state.listeners.size === 0 && state.touchedAt < cutoff) this.rooms.delete(roomId);
+      if (state.subscriptions.size === 0 && state.touchedAt < cutoff) this.rooms.delete(roomId);
+    }
+  }
+
+  /** Test seam: what a Redis metadata reset does — the next state is a new generation. */
+  resetRoom(roomId: string): void {
+    const state = this.rooms.get(roomId);
+    this.rooms.delete(roomId);
+    if (state && state.subscriptions.size > 0) {
+      const next = this.state(roomId);
+      for (const subscription of state.subscriptions) next.subscriptions.add(subscription);
     }
   }
 
@@ -61,38 +84,51 @@ export class InMemoryRoomEventBus implements RoomEventBus {
     const state = this.state(input.roomId);
     state.seq += 1;
     const sequenced: SequencedRoomEvent = {
+      generation: state.generation,
       seq: state.seq,
       event: buildEvent(input),
     };
     state.buffer.push(sequenced);
     if (state.buffer.length > REPLAY_BUFFER_SIZE) state.buffer.shift();
-    for (const listener of state.listeners) listener(sequenced);
+    for (const subscription of [...state.subscriptions]) subscription.push(sequenced);
     return sequenced;
   }
 
   async subscribe(
     roomId: string,
-    afterSeq: number | null,
-    listener: (event: SequencedRoomEvent) => void,
+    resume: ResumePoint,
+    sink: SubscriptionSink,
   ): Promise<Subscription> {
+    const read = async (after: EventCursor | null) => this.snapshot(roomId, after);
+    const subscription = new RoomSubscription(sink, read);
     const state = this.state(roomId);
-    const oldest = state.buffer[0]?.seq ?? state.seq + 1;
-    // A gap the buffer cannot cover is reported, never skipped.
-    const resync = afterSeq !== null && afterSeq + 1 < oldest;
-    const replay =
-      afterSeq !== null && !resync ? state.buffer.filter((item) => item.seq > afterSeq) : [];
-
-    state.listeners.add(listener);
+    state.subscriptions.add(subscription);
+    const after = resume.kind === 'cursor' ? resume.cursor : null;
+    const decision = subscription.begin(resume, this.snapshot(roomId, after));
+    let released = false;
     return {
-      replay,
-      resync,
+      ...decision,
+      activate: () => subscription.activate(),
       unsubscribe: () => {
-        state.listeners.delete(listener);
+        if (released) return;
+        released = true;
+        subscription.close();
+        const current = this.rooms.get(roomId);
+        current?.subscriptions.delete(subscription);
         // Deliberately keeps the state: the room is pruned later, by idle age,
         // so a client that reconnects within the window can still resume.
-        state.touchedAt = Date.now();
+        if (current) current.touchedAt = Date.now();
       },
     };
+  }
+
+  private snapshot(roomId: string, after: EventCursor | null): RoomSnapshot {
+    const state = this.state(roomId);
+    const events =
+      after && after.generation === state.generation
+        ? state.buffer.filter((item) => item.seq > after.seq)
+        : [];
+    return { generation: state.generation, high: state.seq, events };
   }
 }
 

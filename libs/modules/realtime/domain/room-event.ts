@@ -4,6 +4,9 @@
  * Every one of these is server → client, which is why this is SSE and not a
  * WebSocket: nothing here needs a bidirectional channel, and SSE keeps the
  * auth story identical to the rest of the API.
+ *
+ * Domain events only. The stream's own frames — `resync` and the `: ping`
+ * keep-alive comment — never carry this envelope (ADR-0027).
  */
 export const ROOM_EVENT_TYPES = [
   'room.status_changed',
@@ -17,19 +20,6 @@ export const ROOM_EVENT_TYPES = [
   'suggestions.updated',
   'vote.changed',
   'plan.updated',
-  /**
-   * Not a domain event: the stream telling a client its resume point is gone
-   * and it must refetch. Emitted instead of silently skipping the gap — a
-   * client that is wrong without knowing it is the failure mode this whole
-   * endpoint exists to avoid.
-   */
-  'resync',
-  /**
-   * Keeps idle connections alive through proxies. A named event rather than a
-   * bare `:` comment frame because the framework serializes structured
-   * messages; either keeps the socket warm, and clients ignore this one.
-   */
-  'heartbeat',
 ] as const;
 
 export type RoomEventType = (typeof ROOM_EVENT_TYPES)[number];
@@ -56,8 +46,13 @@ export type RoomEvent = {
   payload: Record<string, unknown>;
 };
 
-/** What a subscriber receives: the event plus its per-room sequence number. */
-export type SequencedRoomEvent = { seq: number; event: RoomEvent };
+/**
+ * What a subscriber receives: the event plus its position in the room's event
+ * sequence (ADR-0027). `seq` increments within one `generation`; a reset of the
+ * room's sequence starts a new generation, so `(generation, seq)` — never `seq`
+ * alone — identifies a position.
+ */
+export type SequencedRoomEvent = { generation: string; seq: number; event: RoomEvent };
 
 export type PublishInput = {
   roomId: string;

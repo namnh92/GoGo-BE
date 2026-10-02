@@ -23,9 +23,22 @@ type RealtimeConfig = { NODE_ENV: string; REDIS_URL?: string };
         if (!config.REDIS_URL || config.NODE_ENV === 'test') return new InMemoryRoomEventBus();
         // Two connections: ioredis refuses ordinary commands on a connection
         // that is in subscriber mode, and publishing needs both.
-        const options = { lazyConnect: true, maxRetriesPerRequest: 1 } as const;
-        const commands = new IORedis(config.REDIS_URL, options);
-        const subscriber = new IORedis(config.REDIS_URL, options);
+        // ADR-0027 D5: a publication is never resent or queued for later — an
+        // ambiguous result must not become a second event — and a dropped
+        // subscriber is never silently resubscribed: the bus ends its streams
+        // so clients reattach (Pub/Sub does not replay the gap).
+        const commands = new IORedis(config.REDIS_URL, {
+          lazyConnect: true,
+          maxRetriesPerRequest: 1,
+          enableOfflineQueue: false,
+          autoResendUnfulfilledCommands: false,
+        });
+        const subscriber = new IORedis(config.REDIS_URL, {
+          lazyConnect: true,
+          maxRetriesPerRequest: 1,
+          autoResubscribe: false,
+          autoResendUnfulfilledCommands: false,
+        });
         commands.on('error', () => undefined);
         subscriber.on('error', () => undefined);
         return new RedisRoomEventBus(commands, subscriber, metrics ?? new NoopMetrics());
