@@ -7209,7 +7209,7 @@ export interface components {
         ImportJobSummary: {
             /** Format: uuid */
             id?: string;
-            /** @description Two parked values, both resumed by `POST …/start` and cancellable (GoGo-BE#284): `paused_provider_quota` clears by waiting for the next quota window or raising it; `paused_provider_unavailable` is a provider that cannot answer (API disabled, invalid key, upstream down) and does not clear by waiting — fix the configuration, then resume. Declared extensible: a client treats a value it does not know as a job that is neither running nor finished, never as a malformed response. */
+            /** @description Two parked values, both resumed by `POST …/start` and cancellable (GoGo-BE#284): `paused_provider_quota` clears by waiting for the next quota window or raising it; `paused_provider_unavailable` is a provider that cannot answer (API disabled, invalid or missing key, upstream timeout or outage) and is not cleared by the quota window — fix the configuration, or confirm the upstream outage is over, then resume. Declared extensible: a client treats a value it does not know as a job that is neither running nor finished, never as a malformed response. */
             status?: string;
             /**
              * @description `update_existing` re-syncs an edited sheet onto places that already exist: provider facts refresh from Google, editorial fields come from the sheet, and an empty cell means "unknown", not "delete". A row whose provider place now looks like a *different business* is written nowhere and lands in review instead.

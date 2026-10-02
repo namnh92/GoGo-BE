@@ -380,9 +380,10 @@ never reach the provider.
   `paused_provider_quota` and returns the claimed rows to `pending`. No row is
   marked invalid, no data is discarded. `POST …/start` resumes it.
 - **Broken provider** (#284): `ProviderConfigurationError` (API disabled,
-  missing or rejected key) and `ProviderUnavailableError` (upstream down) park
-  the job the same way at `paused_provider_unavailable`. Waiting does not clear
-  it — fix the configuration, then `POST …/start`.
+  missing or rejected key) and `ProviderUnavailableError` (upstream timeout or
+  outage) park the job the same way at `paused_provider_unavailable`. The quota
+  window does not clear it — fix the configuration, or confirm the upstream
+  outage is over, then `POST …/start`.
 - **Cancel** stops unprocessed chunks only. Rows already imported stay.
 
 ## Who can do what

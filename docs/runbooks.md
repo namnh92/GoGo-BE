@@ -138,7 +138,7 @@ which branch you are on (#284)** — the two do not share a fix.
 
 #### `paused_provider_unavailable` — fix the configuration, then resume
 
-Waiting never clears this one. The metric's `reason` label narrows it:
+The quota window never clears this one. The metric's `reason` label narrows it:
 `AUTH_FAILED` / `MISSING_CREDENTIAL` (API not enabled, key restricted to the
 wrong API, key deleted or absent) or `UPSTREAM_UNAVAILABLE` (Google not
 answering).
