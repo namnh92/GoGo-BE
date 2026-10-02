@@ -4,6 +4,7 @@ import { idempotencyKeyFrom, type NotificationProviderPort } from '@gogo/provide
 import {
   campaignDedupeKey,
   campaignOutcome,
+  isOpenableDestination,
   type CampaignAudience,
   type CampaignDestination,
 } from '../domain/campaign';
@@ -96,6 +97,21 @@ export class CampaignDispatcher {
   }
 
   private async send(campaign: DueCampaign): Promise<void> {
+    // GoGo-BE#604 — a campaign scheduled before the rule, pointing where no app
+    // can open, is not sent: every recipient would land on Home, which is not
+    // what the operator chose. `failed` with a reason code rather than skipped,
+    // because `failed` is visible in the console and editable — the operator
+    // moves the destination and reschedules.
+    if (!isOpenableDestination(campaign.destination_type)) {
+      await this.db.execute(sql`
+        update notification_campaigns
+        set status = 'failed', completed_at = now(),
+            last_error = 'DESTINATION_NOT_OPENABLE', updated_at = now()
+        where id = ${campaign.id}::uuid
+      `);
+      this.metrics?.increment('campaign_dispatched_total', { result: 'failed' });
+      return;
+    }
     try {
       const predicate = audiencePredicate(campaign.audience_type, campaign.audience_filter);
       const preference = respectsPushPreference();
