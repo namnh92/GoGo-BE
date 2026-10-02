@@ -124,12 +124,8 @@ export class PrivacyJobs {
         and (rc.origin_lat is not null or rc.origin_lng is not null)`;
     report.originsCleared = await count(originQ);
     if (!dryRun && report.originsCleared > 0) {
-      await this.db.execute(sql`
-        update room_constraints set origin_lat = null, origin_lng = null
-        where id in (${sql.raw(originQ)})
-      `);
+      report.originsCleared = await this.clearExpiredOrigins();
     }
-
     // Upload rows still pending a day past expiry: the presigned URL is long
     // dead and nothing attached the key, so the row is a record of a phone
     // that never PUT, or a request that failed before it could attach. The
@@ -184,5 +180,65 @@ export class PrivacyJobs {
     );
 
     return report;
+  }
+
+  /**
+   * #576 (retro SA review F-01 on #640) — the purge takes the room row lock
+   * that `RoomsRepository.applyConstraintVersion` holds, before it writes.
+   *
+   * A constraint edit copies omitted coordinates forward from the version it
+   * read under `rooms ... FOR UPDATE`. A purge that updated `room_constraints`
+   * directly would not wait for that lock: it could null the stored version
+   * between the edit's read and its insert, and the new version would carry
+   * the coordinates back. Coordinates are PII, so a purge must never be
+   * undone.
+   *
+   * Per batch, one short transaction: lock the selected rooms by id in id
+   * order (the edit locks one room, so the order cannot deadlock with it),
+   * then clear in a second statement. The second statement is the point — in
+   * READ COMMITTED it takes a fresh snapshot after the locks are granted, so
+   * it sees a version an edit committed while the purge was waiting. The lock
+   * is taken on id alone: once a room is selected, the purge wins even if the
+   * edit it waited for touched `updated_at`. Row locks only, never advisory
+   * locks (they leak through the pooler).
+   */
+  private async clearExpiredOrigins(batchSize = 100): Promise<number> {
+    let cleared = 0;
+    let after = '00000000-0000-0000-0000-000000000000';
+    for (;;) {
+      const page = await this.db.execute(sql`
+        select r.id from rooms r
+        where r.status in ('completed', 'cancelled', 'expired')
+          and r.updated_at < now() - interval '30 days'
+          and r.id > ${after}::uuid
+          and exists (
+            select 1 from room_constraints rc
+            where rc.room_id = r.id
+              and (rc.origin_lat is not null or rc.origin_lng is not null)
+          )
+        order by r.id
+        limit ${batchSize}
+      `);
+      const ids = (page.rows as Array<{ id: string }>).map((row) => row.id);
+      if (ids.length === 0) return cleared;
+      after = ids[ids.length - 1]!;
+      const idList = sql.join(
+        ids.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      );
+      cleared += await this.db.transaction(async (tx) => {
+        await tx.execute(sql`
+          select id from rooms where id in (${idList}) order by id for update
+        `);
+        const res = await tx.execute(sql`
+          update room_constraints set origin_lat = null, origin_lng = null
+          where room_id in (${idList})
+            and (origin_lat is not null or origin_lng is not null)
+          returning id
+        `);
+        return res.rows.length;
+      });
+      if (ids.length < batchSize) return cleared;
+    }
   }
 }
