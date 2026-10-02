@@ -535,6 +535,13 @@ export function toTarget(d: ResolvedProviderPlace): MatchTarget {
     address: d.addressText,
     lat: d.lat,
     lng: d.lng,
+    // #288 — `scoreMatch` weighs category at 0.10 (PI-BE-005 / FR-INGEST-003)
+    // by comparing the row's GoGo category with the one this Google type
+    // implies. Without the type here that branch never ran: every candidate
+    // scored as if the row had no category, and a cafe matched a karaoke bar
+    // as well as a cafe. `primaryType` is a `core` field, already in every
+    // description tier's mask, so this costs no extra provider field.
+    primaryType: d.primaryType ?? undefined,
     // #505 — the CID Google publishes for this place, so a share link's `ftid`
     // has something authoritative to be compared against. Absent is ordinary.
     providerCid: cidFromGoogleMapsUri(d.googleMapsUri),
