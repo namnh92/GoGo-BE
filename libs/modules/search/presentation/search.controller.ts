@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Header, Param, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { Public, RateLimit } from '../../identity/presentation/decorators';
@@ -113,6 +113,10 @@ export class SearchController {
   @Public()
   @RateLimit({ action: 'places.detail', limit: 120, windowSeconds: 60, keyBy: 'ip' })
   @Get(':id')
+  // GoGo-BE#217 — the GoGo rating is computed per read from published reviews,
+  // so a moderation decision (publish, reject, emergency hide) holds on the
+  // next read; no cache may serve the population from before it.
+  @Header('cache-control', 'no-store')
   placeDetail(@Param('id', new ZodValidationPipe(z.string().uuid())) id: string) {
     return this.search.placeDetail(id);
   }

@@ -1297,7 +1297,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Place detail with sources, freshness, hours, verified prices */
+        /**
+         * Place detail with sources, freshness, hours, verified prices
+         * @description GoGo-BE#217 (ADR-0028): carries the GoGo community rating (`gogoRating`, `gogoRatingCount`) beside the provider's (`rating`, `ratingCount`, attributed through `sources`). The two are separate facts from separate populations and are never merged into one score. The GoGo rating is computed on every read from the place's moderator-published reviews, so the response is served `Cache-Control: no-store` and a publish, rejection, edit back to moderation or emergency hide shows on the next read.
+         */
         get: operations["getPlaceDetail"];
         put?: never;
         post?: never;
@@ -6913,6 +6916,10 @@ export interface components {
             /** @description A number, not the string Postgres returns for `numeric`. The endpoint used to pass the row through unmapped, so a client calling `.toFixed` on this crashed (#169). */
             rating?: number;
             ratingCount?: number;
+            /** @description GoGo-BE#217 (ADR-0028) — the GoGo community rating, on a fixed 1–5 scale: the arithmetic mean of every moderator-published GoGo review of this place, each weighted equally, rounded once to one decimal (half away from zero, so 4.25 → 4.3). **Omitted** — never `null`, never 0 — while `gogoRatingCount` is below 5, the sample threshold; present whenever it is 5 or more. Never merged with the provider `rating`, which measures a different population; render each with its own source and count. */
+            gogoRating?: number;
+            /** @description GoGo-BE#217 (ADR-0028) — how many moderator-published GoGo reviews of this place `gogoRating` is computed from; always present, including 0. Counts reviews, not people: one author may have several. Pending, rejected, removed and hidden reviews, plan reviews, check-ins and provider reviews are never counted. Below 5 the client says in words that there are not enough GoGo reviews yet, beside this count, and renders no score. */
+            gogoRatingCount: number;
             priceLevel?: number;
             avgVisitMinutes?: number;
             suitability?: {
@@ -11186,6 +11193,8 @@ export interface operations {
             /** @description Place aggregate with hours, verified prices, sources and freshness */
             200: {
                 headers: {
+                    /** @description Always `no-store` — the GoGo rating follows moderation on the next read. */
+                    "Cache-Control"?: string;
                     [name: string]: unknown;
                 };
                 content: {

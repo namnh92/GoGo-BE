@@ -2,6 +2,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { APP_CONFIG, type MediaConfig } from '../../shared/config';
 import { AppError } from '../../shared/app-error';
 import { normalizeGoogleAttribution } from '../../shared/attribution';
@@ -10,6 +11,7 @@ import { writeOutbox } from '../../shared/outbox';
 import { toProviderStatus } from '../../shared/provider-status';
 import { DB } from '../../shared/tokens';
 import { validateAreaSelection } from '../../administrative/application/area-selection';
+import { gogoRatingOutcome, toGogoRating } from '../../reviews/domain/gogo-rating';
 import { normalizeVietnamese } from '../domain/normalize';
 import {
   SearchRepository,
@@ -120,6 +122,7 @@ export class SearchService {
     private readonly repo: SearchRepository,
     @Inject(DB) private readonly db: Db,
     @Optional() @Inject(APP_CONFIG) private readonly config?: MediaConfig,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
   /**
@@ -320,8 +323,29 @@ export class SearchService {
    * difference at the boundary.
    */
   async placeDetail(placeId: string) {
-    const row = (await this.repo.placeDetail(placeId)) as Record<string, unknown> | undefined;
+    let row: Record<string, unknown> | undefined;
+    try {
+      row = (await this.repo.placeDetail(placeId)) as Record<string, unknown> | undefined;
+    } catch (err) {
+      // GoGo-BE#217 — a failed read is an error, never "not enough reviews".
+      // The statement's duration is already in provider_request_duration_seconds.
+      this.metrics.increment('place_gogo_rating_total', { outcome: 'error' });
+      throw err;
+    }
     if (!row) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
+
+    let gogoRating: ReturnType<typeof toGogoRating>;
+    try {
+      gogoRating = toGogoRating(
+        num(row['gogo_rating_count']),
+        (row['gogo_rating_mean'] as string | null | undefined) ?? null,
+      );
+    } catch (err) {
+      this.metrics.increment('place_gogo_rating_total', { outcome: 'error' });
+      throw err;
+    }
+    // Bounded outcome only — never the place or the reader (#217, #319).
+    this.metrics.increment('place_gogo_rating_total', { outcome: gogoRatingOutcome(gogoRating) });
 
     const sources = (row['sources'] ?? []) as { provider: string; attribution?: string }[];
     // #339 — rows written before the wording was unified still say `Data ©
@@ -343,6 +367,10 @@ export class SearchService {
       website: (row['website'] as string | null) ?? undefined,
       rating: num(row['rating']),
       ratingCount: num(row['rating_count']) ?? 0,
+      // GoGo-BE#217 (ADR-0028) — the community rating beside the provider's,
+      // never merged with it (core rule 14). Score omitted below the sample
+      // threshold; the count always travels.
+      ...gogoRating,
       priceLevel: num(row['price_level']),
       avgVisitMinutes: num(row['avg_visit_minutes']),
       suitability: (row['suitability'] as Record<string, number> | null) ?? undefined,
