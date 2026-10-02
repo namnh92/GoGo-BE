@@ -186,12 +186,16 @@ export class RoomsController {
   @Post('join/guest')
   async joinGuest(@Body(new ZodValidationPipe(guestJoinSchema)) body: GuestJoinDto) {
     // The guest session refuses a room past its expiry; decide that before a
-    // use of the invite is spent (GoGo-BE#592).
-    const room = await this.rooms.consumeInviteCode(body.inviteCode, { enforceRoomExpiry: true });
-    const session = await this.auth.createGuestSession({
-      roomCode: room.code,
-      displayName: body.displayName,
+    // use of the invite is spent (GoGo-BE#592). The use is spent by `admit`,
+    // inside the transaction that writes the guest's session and membership
+    // (GoGo-BE#605).
+    const { room, admit } = await this.rooms.openInvite(body.inviteCode, {
+      enforceRoomExpiry: true,
     });
+    const session = await this.auth.createGuestSession(
+      { roomCode: room.code, displayName: body.displayName },
+      admit,
+    );
     return {
       guestSessionId: session.actor.id,
       roomId: session.roomId,

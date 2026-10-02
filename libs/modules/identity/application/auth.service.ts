@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { AppError } from '../../shared/app-error';
+import type { Tx } from '../../shared/outbox';
 import type { Actor } from '../domain/actor';
 import { IdentityRepository } from '../infrastructure/identity.repository';
 import { PasswordService } from './password.service';
@@ -174,10 +175,19 @@ export class AuthService {
 
   // --- guest sessions (FR-AUTH-002/003) ------------------------------------
 
-  async createGuestSession(input: {
-    roomCode: string;
-    displayName: string;
-  }): Promise<{ actor: Actor; accessToken: string; guestToken: string; roomId: string }> {
+  /**
+   * `admit`, when given, runs inside the join transaction after the room is
+   * locked and before the session and member rows are written — the invite
+   * route passes the step that spends the invite use, so a refusal there rolls
+   * the whole join back (GoGo-BE#605).
+   */
+  async createGuestSession(
+    input: {
+      roomCode: string;
+      displayName: string;
+    },
+    admit?: (tx: Tx) => Promise<unknown>,
+  ): Promise<{ actor: Actor; accessToken: string; guestToken: string; roomId: string }> {
     const room = await this.repo.findRoomByCode(input.roomCode);
     if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
     if (!['draft', 'collecting'].includes(room.status)) {
@@ -188,16 +198,33 @@ export class AuthService {
     }
 
     const guestToken = this.tokens.generateOpaqueToken();
-    const session = await this.repo.createGuestSession({
-      roomId: room.id,
-      displayName: input.displayName,
-      tokenHash: this.tokens.hashOpaqueToken(guestToken),
-      expiresAt: new Date(Date.now() + this.options.guestTtlSeconds * 1000),
-    });
-    const { memberId } = await this.repo.addGuestMember({
-      roomId: room.id,
-      guestSessionId: session.id,
-      displayName: input.displayName,
+    // GoGo-BE#605 — judge the room again on the row locked `FOR SHARE`, and
+    // write the session and the member in the same transaction. The checks
+    // above are the early answer; this one cannot be overtaken by a
+    // concurrent `collecting → matching` flip.
+    const { session, memberId } = await this.repo.transaction(async (tx) => {
+      const locked = await this.repo.lockRoomForJoin(tx, room.id);
+      if (!locked || !['draft', 'collecting'].includes(locked.status)) {
+        throw AppError.gone('ROOM_NOT_JOINABLE', 'Room is no longer accepting members');
+      }
+      if (locked.expiresAt && locked.expiresAt.getTime() <= Date.now()) {
+        throw AppError.gone('ROOM_EXPIRED', 'Room link has expired');
+      }
+      if (admit) await admit(tx);
+      const created = await this.repo.createGuestSession(
+        {
+          roomId: room.id,
+          displayName: input.displayName,
+          tokenHash: this.tokens.hashOpaqueToken(guestToken),
+          expiresAt: new Date(Date.now() + this.options.guestTtlSeconds * 1000),
+        },
+        tx,
+      );
+      const added = await this.repo.addGuestMember(
+        { roomId: room.id, guestSessionId: created.id, displayName: input.displayName },
+        tx,
+      );
+      return { session: created, memberId: added.memberId };
     });
     // Only a genuine join is announced: a guest whose membership row already
     // existed has reconnected, and telling the room they arrived again would

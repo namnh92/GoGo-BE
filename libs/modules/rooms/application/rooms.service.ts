@@ -26,6 +26,7 @@ import {
   type JoinRefusal,
   type JoinRules,
 } from '../domain/invite-join';
+import type { Tx } from '../../shared/outbox';
 import { RoomPolicy } from '../presentation/room-policy';
 import {
   RoomsRepository,
@@ -508,14 +509,23 @@ export class RoomsService {
   }
 
   /**
-   * Resolve + consume an invite code. Shared by user join and guest join.
+   * Resolve an invite code for a join and refuse it early if it cannot succeed.
+   * Shared by user join and guest join. Nothing is spent here: `admit` spends
+   * the use, inside the transaction that also adds the member.
    *
-   * GoGo-BE#592 — every refusal is decided before the use is spent. This used
-   * to consume first and check the room afterwards, so each 410
-   * `ROOM_NOT_JOINABLE` still counted against `maxUses`.
+   * GoGo-BE#592 — every refusal is decided before the use is spent.
+   * GoGo-BE#605 — spending the use and adding the member used to be separate
+   * statements with no room lock, so a join could land in a room that had just
+   * moved to `matching`. `admit` re-checks the room under a `FOR SHARE` lock in
+   * the caller's transaction; the member insert must run in that same `tx`.
    */
-  async consumeInviteCode(code: string, rules: JoinRules = {}): Promise<RoomRow> {
-    return this.consumeInvite(await this.resolveInvite(code), rules);
+  async openInvite(
+    code: string,
+    rules: JoinRules = {},
+  ): Promise<{ room: RoomRow; admit: (tx: Tx) => Promise<RoomRow> }> {
+    const invite = await this.resolveInvite(code);
+    const room = await this.precheckInvite(invite, rules);
+    return { room, admit: (tx) => this.admitThroughInvite(tx, invite, rules) };
   }
 
   private async resolveInvite(code: string): Promise<InviteRow> {
@@ -524,23 +534,36 @@ export class RoomsService {
     return invite;
   }
 
-  private async consumeInvite(invite: InviteRow, rules: JoinRules = {}): Promise<RoomRow> {
+  /** The early, lock-free answer: refuses what is already refused, spends nothing. */
+  private async precheckInvite(invite: InviteRow, rules: JoinRules): Promise<RoomRow> {
     const room = await this.policy.getRoom(invite.roomId);
     const refusal = inviteJoinRefusal(invite, roomState(room), new Date(), rules);
     if (refusal) throw joinRefused(refusal);
-    const consumed = await this.repo.consumeInvite(invite.id, {
-      joinableStatuses: JOINABLE_ROOM_STATUSES,
-      ...rules,
-    });
+    return room;
+  }
+
+  /**
+   * Inside `tx`: lock the room `FOR SHARE`, judge the join on the locked row,
+   * then spend one use with the guarded UPDATE. Throws (rolling `tx` back) on
+   * any refusal, so the caller's member insert never commits without the use
+   * and never lands in a room that stopped taking members.
+   */
+  private async admitThroughInvite(tx: Tx, invite: InviteRow, rules: JoinRules): Promise<RoomRow> {
+    const room = await this.repo.lockRoomForJoin(tx, invite.roomId);
+    if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
+    const refusal = inviteJoinRefusal(invite, roomState(room), new Date(), rules);
+    if (refusal) throw joinRefused(refusal);
+    const consumed = await this.repo.consumeInvite(
+      invite.id,
+      { joinableStatuses: JOINABLE_ROOM_STATUSES, ...rules },
+      tx,
+    );
     if (!consumed) {
-      // The invite or the room changed between the read above and the guarded
-      // UPDATE, and nothing was spent. Read both again to say which.
-      const [nowInvite, nowRoom] = await Promise.all([
-        this.repo.findInviteByHash(invite.codeHash),
-        this.policy.getRoom(invite.roomId),
-      ]);
+      // The room is locked and passed above, so the invite changed since it
+      // was read (revoked, or its last use went to someone else). Say which.
+      const nowInvite = await this.repo.findInviteByHash(invite.codeHash, tx);
       const reason = nowInvite
-        ? inviteJoinRefusal(nowInvite, roomState(nowRoom), new Date(), rules)
+        ? inviteJoinRefusal(nowInvite, roomState(room), new Date(), rules)
         : null;
       throw joinRefused(reason ?? 'INVITE_NOT_USABLE');
     }
@@ -566,29 +589,37 @@ export class RoomsService {
     // GoGo-BE#606 — a room past its expiry takes no new members on either
     // route. Only the guest route used to say so (410 ROOM_EXPIRED); a signed-in
     // user with an invite still in date was let into an expired room.
-    const room = await this.consumeInvite(invite, { enforceRoomExpiry: true });
+    const rules: JoinRules = { enforceRoomExpiry: true };
+    await this.precheckInvite(invite, rules);
     const user = await this.identity.findUserById(actor.id);
-    const member = await this.repo.addUserMember({
-      roomId: room.id,
-      userId: actor.id,
-      displayName: user?.displayName ?? 'Member',
-      event: {
-        eventType: 'member.joined',
-        resourceType: 'room',
-        resourceId: room.id,
-        actorId: user?.analyticsId,
-        payload: { memberType: 'user' },
-      },
+    // GoGo-BE#605 — room lock, use spent and member added commit together.
+    const member = await this.repo.transaction(async (tx) => {
+      const room = await this.admitThroughInvite(tx, invite, rules);
+      return this.repo.addUserMember(
+        {
+          roomId: room.id,
+          userId: actor.id,
+          displayName: user?.displayName ?? 'Member',
+          event: {
+            eventType: 'member.joined',
+            resourceType: 'room',
+            resourceId: room.id,
+            actorId: user?.analyticsId,
+            payload: { memberType: 'user' },
+          },
+        },
+        tx,
+      );
     });
     await this.publish({
-      roomId: room.id,
+      roomId: invite.roomId,
       type: 'participant.joined',
       // The room-scoped member id, not the user id: it identifies the
       // participant inside this room without carrying an account across rooms.
       actorId: member.id,
       payload: { memberId: member.id, role: member.role, memberType: 'user' },
     });
-    return { roomId: room.id, memberId: member.id, role: member.role };
+    return { roomId: invite.roomId, memberId: member.id, role: member.role };
   }
 
   // --- seed places (FR-ROOM-010/011, BE-BFF-015) ---------------------------
