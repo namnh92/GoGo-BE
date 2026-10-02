@@ -347,7 +347,16 @@ export class SearchRepository {
   }
 
   async placeDetail(placeId: string) {
-    const rows = await this.db.execute(sql`
+    const rows = await this.db.execute(this.placeDetailQuery(placeId));
+    return (rows.rows[0] as Record<string, unknown> | undefined) ?? undefined;
+  }
+
+  /**
+   * The one Place Detail statement, exposed so a test can EXPLAIN exactly what
+   * `placeDetail` sends (GoGo-BE#217 F-01) instead of a copy that can drift.
+   */
+  placeDetailQuery(placeId: string): SQL {
+    return sql`
       select
         p.id, p.name, p.description, p.status, p.address_text, p.area_key,
         ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
@@ -406,8 +415,7 @@ export class SearchRepository {
       ) gr
       where p.id = ${placeId} and p.status in ('published', 'community_submitted')
       limit 1
-    `);
-    return (rows.rows[0] as Record<string, unknown> | undefined) ?? undefined;
+    `;
   }
 
   /** Synonym expansion: exact normalized-term match → category keys (SE-001). */

@@ -8,6 +8,7 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
+import { SearchRepository } from '@gogo/modules';
 
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 
@@ -496,11 +497,9 @@ describe('read cost (#217)', () => {
     await reviews(target, userId, [4, 4, 4, 4, 5]);
     await db.execute(sql`analyze reviews`);
 
-    const plan = await db.execute(sql`
-      explain (analyze, format text)
-      select count(*)::int, round(avg(r.rating)::numeric, 1)
-      from reviews r where r.place_id = ${target} and r.status = 'published'
-    `);
+    // F-01: EXPLAIN the statement the repository actually sends, not a copy.
+    const statement = app.get(SearchRepository).placeDetailQuery(target);
+    const plan = await db.execute(sql`explain (analyze, format text) ${statement}`);
     const text = (plan.rows as { 'QUERY PLAN': string }[]).map((r) => r['QUERY PLAN']).join('\n');
     expect(text).toContain('reviews_place_idx');
     expect(text).not.toMatch(/Seq Scan on reviews/);
