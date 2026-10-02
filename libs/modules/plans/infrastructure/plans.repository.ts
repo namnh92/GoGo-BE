@@ -55,7 +55,7 @@ export class PlansRepository {
    */
   async placeAvailability(
     placeIds: string[],
-  ): Promise<Map<string, { status: string; providerStatus: string | null }>> {
+  ): Promise<Map<string, { status: string; providerStatus: string | null; confidence: number }>> {
     if (placeIds.length === 0) return new Map();
     // Two independent axes, and a stop can fail on either: `places.status` is
     // what GoGo decided (draft, suspended by a moderator), `source_status` is
@@ -63,7 +63,7 @@ export class PlansRepository {
     // good). A place taken down and a place on Tết holiday are not the same
     // thing to explain to a user.
     const rows = await this.db.execute(sql`
-      select p.id, p.status,
+      select p.id, p.status, p.confidence,
         (select ps.source_status from place_provider_sources ps
           where ps.place_id = p.id
           order by ps.fetched_at desc limit 1) as provider_status
@@ -71,9 +71,17 @@ export class PlansRepository {
       where p.id = any((${pgArray(placeIds)})::uuid[])
     `);
     return new Map(
-      (rows.rows as { id: string; status: string; provider_status: string | null }[]).map((r) => [
+      (
+        rows.rows as {
+          id: string;
+          status: string;
+          provider_status: string | null;
+          /** numeric(3,2), NOT NULL — GoGo-BE#603 F-01. */
+          confidence: string;
+        }[]
+      ).map((r) => [
         r.id,
-        { status: r.status, providerStatus: r.provider_status },
+        { status: r.status, providerStatus: r.provider_status, confidence: Number(r.confidence) },
       ]),
     );
   }
@@ -293,7 +301,7 @@ export class PlansRepository {
     if (placeIds.length === 0) return [];
     const rows = await this.db.execute(sql`
       select p.id, p.name, ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
-        p.avg_visit_minutes, p.status,
+        p.avg_visit_minutes, p.status, p.confidence,
         lp.price_min, lp.price_max
       from places p
       left join lateral (
@@ -312,6 +320,8 @@ export class PlansRepository {
       status: string;
       price_min: string | null;
       price_max: string | null;
+      /** numeric(3,2), NOT NULL — GoGo-BE#603. */
+      confidence: string;
     }[];
   }
 }

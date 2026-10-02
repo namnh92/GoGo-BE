@@ -222,6 +222,7 @@ describe('optimizer (SG-007/SG-008)', () => {
       isLocked: true,
       lat: 10.777,
       lng: 106.701,
+      confidence: 0.9,
     };
     const result = await buildItinerary({
       ranked: ranked(snap, ['x', 'y', 'z']),
@@ -239,7 +240,11 @@ describe('optimizer (SG-007/SG-008)', () => {
   });
 
   describe('an anchor price (GoGo-BE#593)', () => {
-    const anchor = (costMin: number | null, costMax: number | null): LockedAnchor => ({
+    const anchor = (
+      costMin: number | null,
+      costMax: number | null,
+      confidence = 0.9,
+    ): LockedAnchor => ({
       placeId: 'winner',
       name: 'Winner',
       position: 0,
@@ -253,6 +258,7 @@ describe('optimizer (SG-007/SG-008)', () => {
       isLocked: false,
       lat: 10.777,
       lng: 106.701,
+      confidence,
     });
 
     it('with no per-person price makes the totals uncertain, never a confident 0', async () => {
@@ -276,6 +282,55 @@ describe('optimizer (SG-007/SG-008)', () => {
         maxStops: 1,
       });
       expect(result.totals.costMax).toBe(0);
+      expect(result.totals.uncertain).toBe(false);
+      expect(result.reasonCodes).not.toContain('PRICE_UNCERTAIN');
+    });
+  });
+
+  describe('an anchor confidence (GoGo-BE#603)', () => {
+    const priced = (confidence: number): LockedAnchor => ({
+      placeId: 'winner',
+      name: 'Winner',
+      position: 0,
+      arriveAt: null,
+      departAt: null,
+      durationMinutes: 90,
+      travelMinutesFromPrev: null,
+      travelDistanceMFromPrev: null,
+      costMin: 80_000,
+      costMax: 120_000,
+      isLocked: true,
+      lat: 10.777,
+      lng: 106.701,
+      confidence,
+    });
+
+    it('below 0.6 makes the totals uncertain, as it does for a greedily picked stop', async () => {
+      const result = await buildItinerary({
+        ranked: [],
+        snapshot: snapshot(),
+        lockedStops: [priced(0.59)],
+        maxStops: 1,
+      });
+      expect(result.totals.uncertain).toBe(true);
+      expect(result.reasonCodes).toContain('PRICE_UNCERTAIN');
+      // The flag only: the locked stop itself is untouched (core rule #7).
+      expect(result.stops[0]).toMatchObject({
+        placeId: 'winner',
+        isLocked: true,
+        durationMinutes: 90,
+        costMin: 80_000,
+        costMax: 120_000,
+      });
+    });
+
+    it('at 0.6 with a known price stays certain', async () => {
+      const result = await buildItinerary({
+        ranked: [],
+        snapshot: snapshot(),
+        lockedStops: [priced(0.6)],
+        maxStops: 1,
+      });
       expect(result.totals.uncertain).toBe(false);
       expect(result.reasonCodes).not.toContain('PRICE_UNCERTAIN');
     });
