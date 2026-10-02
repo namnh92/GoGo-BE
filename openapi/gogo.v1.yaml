@@ -7625,6 +7625,15 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Not schedulable from its current state (`INVALID_STATUS_TRANSITION`)
+        '422':
+          description: >
+            `INVALID_DESTINATION` with `field_errors[0].field = destinationType`
+            — the campaign holds `recommendation`, `plan_template` or
+            `external_url`, which the app cannot open yet (GoGo-BE#604). Move it
+            to an openable destination, then schedule.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/campaigns/{id}/cancel:
     post:
@@ -7684,6 +7693,14 @@ paths:
             The caller has no verified consumer account on the same address
             (`NO_TEST_RECIPIENT`).
         '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: >
+            `INVALID_DESTINATION` with `field_errors[0].field = destinationType`
+            — the campaign's destination cannot be opened by the app yet
+            (GoGo-BE#604), so neither a send nor a preview of it is made.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { description: Too many test sends }
 
   /cms/uploads:

@@ -399,12 +399,18 @@ export class CampaignsService {
 
     // Re-validated at the last editable moment: the referenced place or
     // recommendation may have been deleted since the draft was written.
-    await this.validate({
-      audienceType: before.audience_type,
-      audienceFilter: before.audience_filter,
-      destinationType: before.destination_type,
-      destinationValue: before.destination_value ?? undefined,
-    });
+    // #604 F-01: and the destination must be one the app can open — the API is
+    // the final enforcement, so a legacy campaign is refused here with 422
+    // rather than accepted and failed silently by the worker.
+    await this.validate(
+      {
+        audienceType: before.audience_type,
+        audienceFilter: before.audience_filter,
+        destinationType: before.destination_type,
+        destinationValue: before.destination_value ?? undefined,
+      },
+      { requireOpenable: true },
+    );
 
     const scheduledAt = sendAt ?? new Date();
     // Review fix (#193): a campaign that *failed* mid-send is resumed, not
@@ -522,6 +528,9 @@ export class CampaignsService {
    */
   async requestTestSend(adminId: string, id: string) {
     const row = await this.requireRow(id);
+    // #604 F-02: a preview of a push the app cannot open is the same dead
+    // control as the real send.
+    assertDestinationOpenable(row.destination_type);
 
     const [admin] = await this.db
       .select({ email: schema.adminUsers.email })

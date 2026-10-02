@@ -286,6 +286,12 @@ export class CampaignDispatcher {
     `);
 
     for (const row of rows as (DueCampaign & { test_send_user_id: string })[]) {
+      // #604 backstop for a test send queued before the rule: dropped, never
+      // pushed. The request is already marked handled by the claim above.
+      if (!isOpenableDestination(row.destination_type)) {
+        this.metrics?.increment('campaign_dispatched_total', { result: 'test_failed' });
+        continue;
+      }
       try {
         await this.deliver(row, row.test_send_user_id, {
           // Unique per request, so a composer can preview a campaign as many

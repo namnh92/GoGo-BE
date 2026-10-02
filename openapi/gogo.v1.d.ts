@@ -15936,6 +15936,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description `INVALID_DESTINATION` with `field_errors[0].field = destinationType` — the campaign holds `recommendation`, `plan_template` or `external_url`, which the app cannot open yet (GoGo-BE#604). Move it to an openable destination, then schedule. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsCancelCampaign: {
@@ -16001,6 +16010,15 @@ export interface operations {
                 content?: never;
             };
             404: components["responses"]["NotFound"];
+            /** @description `INVALID_DESTINATION` with `field_errors[0].field = destinationType` — the campaign's destination cannot be opened by the app yet (GoGo-BE#604), so neither a send nor a preview of it is made. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             /** @description Too many test sends */
             429: {
                 headers: {
