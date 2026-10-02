@@ -534,3 +534,70 @@ describe('#339 — a place the provider reports shut never reaches search', () =
     ).toBe(true);
   });
 });
+
+/**
+ * GoGo-BE#360 — the "or warned" half of core rule 8. Search excludes a shut
+ * place (#339), but a saved place, a plan stop or a share link still opens its
+ * detail, and that page used to look like any open business. The detail now
+ * carries the provider's status as a fact; the copy is the client's.
+ */
+describe('#360 — place detail states what the provider reports about the business', () => {
+  let seq = 0;
+  async function placeWith(statuses: ('active' | 'moved' | 'temporarily_closed' | 'closed')[]) {
+    seq += 1;
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: `Status Probe ${seq}`,
+        nameNormalized: `status probe ${seq}`,
+        geom: { x: 106.7, y: 10.77 },
+        status: 'published',
+      })
+      .returning({ id: schema.places.id });
+    for (const [i, status] of statuses.entries()) {
+      await db.insert(schema.placeProviderSources).values({
+        placeId: place!.id,
+        provider: 'google_places',
+        externalId: `ChIJ-status-probe-${seq}-${i}`,
+        sourceStatus: status,
+        fetchedAt: new Date(Date.UTC(2026, 8, 1 + i)),
+      });
+    }
+    return place!.id;
+  }
+  const detail = async (id: string) =>
+    (await api().inject({ method: 'GET', url: `/v1/places/${id}` })).json();
+
+  it('says a permanently closed place is closed, with when that was read', async () => {
+    const body = await detail(await placeWith(['closed']));
+    expect(body.providerStatus).toEqual({
+      status: 'closed',
+      fetchedAt: '2026-09-01T00:00:00.000Z',
+    });
+  });
+
+  it('says a temporarily closed place is temporarily closed', async () => {
+    const body = await detail(await placeWith(['temporarily_closed']));
+    expect(body.providerStatus.status).toBe('temporarily_closed');
+  });
+
+  it('reports an open business as active — a fact, not silence', async () => {
+    const body = await detail(await placeWith(['active']));
+    expect(body.providerStatus.status).toBe('active');
+  });
+
+  it('lets a shut report win over an open one, as search does', async () => {
+    // Search excludes on *any* closed source; the detail must not call the same
+    // place open.
+    const body = await detail(await placeWith(['active', 'closed']));
+    expect(body.providerStatus).toEqual({
+      status: 'closed',
+      fetchedAt: '2026-09-02T00:00:00.000Z',
+    });
+  });
+
+  it('omits the fact when no provider has reported on the place', async () => {
+    const body = await detail(await placeWith([]));
+    expect(body).not.toHaveProperty('providerStatus');
+  });
+});

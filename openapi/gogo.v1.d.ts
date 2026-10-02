@@ -6918,6 +6918,16 @@ export interface components {
                 url?: string;
                 attribution?: string;
             }[];
+            /** @description GoGo-BE#360 — what the place's provider last reported about the business, a fact for core rule 8's "excluded or warned": search already excludes a closed or temporarily closed place, but a saved place, a plan stop or a share link still opens this detail, and the client must warn rather than present it as open (with more than colour). When several provider rows exist the most severe report wins (closed, temporarily_closed, moved, active, unknown). Absent when no provider has reported on the place. `places.status` (`status` above) is GoGo's own moderation decision and is separate. */
+            providerStatus?: {
+                /** @description Treat a value you do not know as `unknown`. */
+                status: string;
+                /**
+                 * Format: date-time
+                 * @description When the provider was last read for this report.
+                 */
+                fetchedAt: string;
+            };
         };
         SuggestionCandidate: {
             /** Format: uuid */
