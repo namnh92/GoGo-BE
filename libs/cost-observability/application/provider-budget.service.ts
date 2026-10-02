@@ -48,7 +48,9 @@ import { listCostMicros, pricingFor, utcDay } from '../pricing/provider-pricing'
  */
 
 /** Who is spending. Ceilings are per scope so one job cannot eat another's. */
-export type BudgetScope = 'google.places.refresh' | 'google.places.import';
+/** `google.places.display` — GoGo-BE#509, transient Place Detail photos. */
+export type BudgetScope =
+  'google.places.refresh' | 'google.places.import' | 'google.places.display';
 
 export type BudgetLimits = {
   /** Absolute calls per day for the scope. `null` = not configured. */
@@ -223,6 +225,7 @@ export class ProviderBudgetService {
 const SCOPE_ENV_PREFIX: Readonly<Record<BudgetScope, string>> = {
   'google.places.refresh': 'PLACE_REFRESH',
   'google.places.import': 'PLACE_IMPORT',
+  'google.places.display': 'PLACE_DISPLAY',
 };
 
 /** `google.details.liveness` → `GOOGLE_DETAILS_LIVENESS`. */
@@ -281,6 +284,7 @@ const PROVIDER_OPERATION_BY_ENV_SUFFIX: Readonly<Record<string, string>> = Objec
     'google.details.core',
     'google.details.quality',
     'google.details.detail',
+    'google.photoMedia',
     'google.autocomplete',
     'google.routeMatrix',
     'google.expand',
