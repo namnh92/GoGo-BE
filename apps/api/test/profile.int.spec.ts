@@ -539,6 +539,21 @@ describe('avatar pipeline (PROF-BE-004, ADR-0022)', () => {
     expect(await openQueueRows(empty)).toHaveLength(0);
   });
 
+  it('a storage outage while checking the original keeps the avatar error code (#560 F-05)', async () => {
+    const { token } = await register('avatar-head-outage@gogo.id.vn');
+    const key = await upload(token, await photo());
+    privateStore().failReads = true;
+    try {
+      const res = await putAvatar(token, key);
+      expect(res.statusCode).toBe(503);
+      expect(res.json().code).toBe('AVATAR_STORAGE_UNAVAILABLE');
+      expect(res.json().retryable).toBe(true);
+    } finally {
+      privateStore().failReads = false;
+    }
+    expect((await getMe(token)).json().avatarUrl).toBeNull();
+  });
+
   it('a public write failure is retryable and leaves nothing dangling', async () => {
     const { token } = await register('avatar-outage@gogo.id.vn');
     const key = await upload(token, await photo());

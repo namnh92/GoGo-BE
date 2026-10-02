@@ -314,6 +314,30 @@ describe('#191 upload → attach → moderate → visible', () => {
     expect(rows).toHaveLength(0);
   });
 
+  it('asks storage before opening a transaction (#560 F-04)', async () => {
+    const place = await makePlace();
+    const upload = await authorizeUpload(editor.token);
+    const store = app.get<FakeStorage>(PUBLIC_STORAGE_PROVIDER);
+    const openTx: number[] = [];
+    store.onExists = async () => {
+      // Every app connection sits on this database; one idle inside a
+      // transaction while the HEAD is in flight is the lock-holding pattern.
+      const r = await pool.query(
+        `select count(*)::int as n from pg_stat_activity
+         where datname = current_database() and state like 'idle in transaction%'
+           and pid <> pg_backend_pid()`,
+      );
+      openTx.push((r.rows[0] as { n: number }).n);
+    };
+    try {
+      const res = await attach(place.id, { storageKey: upload.key });
+      expect(res.statusCode).toBe(201);
+    } finally {
+      store.onExists = null;
+    }
+    expect(openTx).toEqual([0]);
+  });
+
   it('stops serving a photo the moment it is rejected', async () => {
     const place = await makePlace();
     const upload = await authorizeUpload(editor.token);

@@ -154,6 +154,24 @@ describe('R2 server-side verbs (ADR-0022)', () => {
     }
   });
 
+  it('HEAD turns a transport failure or timeout into unavailable, not a raw error (#560 F-03)', async () => {
+    const refused = new R2StorageAdapter({
+      ...adapter['config'],
+      fetch: (async () => {
+        throw new TypeError('fetch failed');
+      }) as typeof fetch,
+    });
+    await expect(refused.exists('k')).rejects.toMatchObject({ name: 'ProviderUnavailableError' });
+
+    const timedOut = new R2StorageAdapter({
+      ...adapter['config'],
+      fetch: (async () => {
+        throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+      }) as typeof fetch,
+    });
+    await expect(timedOut.exists('k')).rejects.toMatchObject({ name: 'ProviderUnavailableError' });
+  });
+
   it('any other failure is the provider being unavailable, never a silent success', async () => {
     const broken = new R2StorageAdapter({
       ...adapter['config'],

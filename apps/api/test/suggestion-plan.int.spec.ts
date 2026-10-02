@@ -1094,6 +1094,42 @@ describe('client upload path (BE-BFF-016, #171)', () => {
     expect(res.json().code).toBe('INVALID_UPLOAD_KEY');
   });
 
+  it('a missing bill photo leaves no photo claimed and no check-in (#560 F-02)', async () => {
+    const { memberToken, planId, stopId } = await activePlan();
+    const upload = async (purpose: string) =>
+      (
+        await post(memberToken, '/v1/uploads', {
+          purpose,
+          contentType: 'image/jpeg',
+          contentLength: 4000,
+        })
+      ).json().key as string;
+    const photoKey = markUploaded(await upload('checkin_photo'));
+    const billKey = await upload('bill_photo'); // never PUT
+
+    const res = await post(memberToken, `/v1/plans/${planId}/stops/${stopId}/checkin`, {
+      rating: 4,
+      tags: [],
+      photoKeys: [photoKey],
+      billTotal: 300_000,
+      billPeopleCount: 2,
+      billPhotoKey: billKey,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('UPLOAD_NOT_RECEIVED');
+
+    const claims = await db
+      .select({ key: schema.mediaUploads.storageKey, status: schema.mediaUploads.status })
+      .from(schema.mediaUploads)
+      .where(sql`${schema.mediaUploads.storageKey} in (${photoKey}, ${billKey})`);
+    expect(claims.map((c) => c.status)).toEqual(['pending', 'pending']);
+    const saved = await db
+      .select()
+      .from(schema.stopCheckins)
+      .where(eq(schema.stopCheckins.planStopId, stopId));
+    expect(saved).toHaveLength(0);
+  });
+
   it('re-saving a check-in with the same photo stays idempotent', async () => {
     const { memberToken, planId, stopId } = await activePlan();
     const key = (

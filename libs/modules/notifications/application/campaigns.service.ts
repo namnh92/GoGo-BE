@@ -17,7 +17,11 @@ import {
   type CampaignStatus,
 } from '../domain/campaign';
 import { audiencePredicate, respectsPushPreference } from './campaign-audience';
-import { UploadsService, type Executor } from '../../uploads/application/uploads.service';
+import {
+  UploadsService,
+  type Executor,
+  type VerifiedUploads,
+} from '../../uploads/application/uploads.service';
 import { publicCatalogueUrl } from '../../shared/media-url';
 import { APP_CONFIG, type MediaConfig } from '../../shared/config';
 import type { Actor } from '../../identity/domain/actor';
@@ -164,12 +168,14 @@ export class CampaignsService {
     campaignId: string,
     imageKey: string,
     executor: Executor,
+    verified: VerifiedUploads | undefined,
   ): Promise<void> {
     await this.uploads.attach(
       actor,
       [imageKey],
       { type: 'campaign', id: campaignId, purposes: ['campaign_image'] },
       executor,
+      verified,
     );
   }
 
@@ -246,6 +252,10 @@ export class CampaignsService {
      * campaign id the key binds to does not exist until the insert, so a
      * rejected key has to take the row with it.
      */
+    // #560 F-04 — storage is asked before the transaction opens.
+    const verified = input.imageKey
+      ? await this.uploads.verifyUploaded(actor, [input.imageKey], ['campaign_image'])
+      : undefined;
     return this.db.transaction(async (tx) => {
       const rows = await tx
         .insert(schema.notificationCampaigns)
@@ -266,7 +276,9 @@ export class CampaignsService {
           throw this.nameConflict(err, input.name);
         });
 
-      if (input.imageKey) await this.attachImage(actor, rows[0]!.id, input.imageKey, tx);
+      if (input.imageKey) {
+        await this.attachImage(actor, rows[0]!.id, input.imageKey, tx, verified);
+      }
       return rows;
     });
   }
@@ -350,9 +362,13 @@ export class CampaignsService {
      * written, so a rejected key leaves the campaign pointing at the image it
      * already had rather than at one that was never uploaded.
      */
+    const replacing = patch.imageKey && patch.imageKey !== before.image_key;
+    const verified = replacing
+      ? await this.uploads.verifyUploaded(actor, [patch.imageKey!], ['campaign_image'])
+      : undefined;
     await this.db.transaction(async (tx) => {
-      if (patch.imageKey && patch.imageKey !== before.image_key) {
-        await this.attachImage(actor, id, patch.imageKey, tx);
+      if (replacing) {
+        await this.attachImage(actor, id, patch.imageKey!, tx, verified);
       }
 
       await tx

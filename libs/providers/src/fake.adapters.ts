@@ -328,7 +328,11 @@ export class FakeStorage implements StoragePort {
   /** Set to make `exists` fail, for the storage-outage path of attach (#560). */
   failReads = false;
 
+  /** Called on every `exists`, before it answers — lets a test observe the caller mid-HEAD. */
+  onExists: ((key: string) => Promise<void>) | null = null;
+
   async exists(key: string): Promise<boolean> {
+    if (this.onExists) await this.onExists(key);
     if (this.failReads) throw new ProviderUnavailableError('fake-storage', 'failReads');
     return this.objects.has(key);
   }

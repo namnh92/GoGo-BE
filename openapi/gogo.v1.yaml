@@ -7433,6 +7433,9 @@ paths:
           description: >
             A banner with that name exists (`BANNER_NAME_TAKEN`), or no file has
             reached storage for the image key yet (`UPLOAD_NOT_RECEIVED`, #560).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '503':
           description: >
             `UPLOAD_STORAGE_UNAVAILABLE` (#560) — storage did not answer whether
@@ -7599,6 +7602,9 @@ paths:
             A campaign with that name exists (`CAMPAIGN_NAME_TAKEN`), or no file
             has reached storage for the image key yet (`UPLOAD_NOT_RECEIVED`,
             #560).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422':
           description: >
             `INVALID_DESTINATION` with `field_errors[0].field = destinationType`

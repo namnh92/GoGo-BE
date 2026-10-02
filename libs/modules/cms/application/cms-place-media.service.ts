@@ -177,6 +177,9 @@ export class CmsPlaceMediaService {
       )
       .then((r) => r.rows)) as [{ next: number }];
 
+    // #560 F-04 — storage is asked before the transaction opens.
+    const verified = await this.uploads.verifyUploaded(actor, [input.storageKey], ['place_image']);
+
     const row = await this.db.transaction(async (tx) => {
       /*
        * The claim belongs to the same transaction as the row that references
@@ -190,6 +193,7 @@ export class CmsPlaceMediaService {
         [input.storageKey],
         { type: 'place', id: placeId, purposes: ['place_image'] },
         tx,
+        verified,
       );
       if (input.isCover === true) await this.clearCover(tx, placeId, null);
       const [inserted] = await tx

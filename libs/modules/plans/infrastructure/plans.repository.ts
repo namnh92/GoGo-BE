@@ -261,8 +261,14 @@ export class PlansRepository {
     billPeopleCount?: number | undefined;
     billPhotoKey?: string | undefined;
     event: DomainEventInput;
+    /**
+     * #560 F-02 — runs first inside the same transaction, so claims on the
+     * check-in's uploads commit with the check-in row or not at all.
+     */
+    beforeWrite?: (tx: Parameters<Parameters<Db['transaction']>[0]>[0]) => Promise<void>;
   }) {
     return this.db.transaction(async (tx) => {
+      if (input.beforeWrite) await input.beforeWrite(tx);
       const [row] = await tx
         .insert(schema.stopCheckins)
         .values({

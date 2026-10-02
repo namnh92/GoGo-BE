@@ -170,7 +170,18 @@ export class R2StorageAdapter implements StoragePort {
   }
 
   async exists(key: string, options: { signal?: AbortSignal } = {}): Promise<boolean> {
-    const res = await this.signedRequest('HEAD', key, { signal: options.signal });
+    let res: Response;
+    try {
+      res = await this.signedRequest('HEAD', key, { signal: options.signal });
+    } catch (err) {
+      // #560 F-03 — a refused connection, DNS failure or the request timeout
+      // is storage not answering, not an application error: callers map
+      // ProviderUnavailableError to a retryable 503.
+      throw new ProviderUnavailableError(
+        'r2',
+        `HEAD ${err instanceof Error ? err.name : 'transport error'}`,
+      );
+    }
     if (res.ok) return true;
     if (res.status === 404) return false;
     throw new ProviderUnavailableError('r2', `HEAD ${res.status}`);

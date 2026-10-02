@@ -92,6 +92,14 @@ export class AvatarService {
       if (err instanceof AppError && err.code === 'UPLOAD_NOT_RECEIVED') {
         throw AppError.badRequest('AVATAR_UPLOAD_MISSING', 'No file was uploaded for that key');
       }
+      // #560 F-05 — this endpoint documents its storage outage as
+      // AVATAR_STORAGE_UNAVAILABLE (503, retryable); keep that promise.
+      if (err instanceof AppError && err.code === 'UPLOAD_STORAGE_UNAVAILABLE') {
+        throw AppError.serviceUnavailable(
+          'AVATAR_STORAGE_UNAVAILABLE',
+          'Object storage is not answering, try again shortly',
+        );
+      }
       throw err;
     }
     const [upload] = await this.db

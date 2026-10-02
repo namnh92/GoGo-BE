@@ -77,6 +77,17 @@ export type UploadPurpose = (typeof UPLOAD_PURPOSES)[number] | (typeof CMS_UPLOA
  */
 export type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
 
+const VERIFIED = Symbol('verifiedUploads');
+
+/**
+ * #560 F-04 — proof that `verifyUploaded` asked storage about these keys
+ * before the caller opened its transaction. Only `verifyUploaded` mints one.
+ */
+export interface VerifiedUploads {
+  readonly [VERIFIED]: true;
+  readonly keys: ReadonlySet<string>;
+}
+
 /**
  * Enforced server-side, not advertised. The content type is part of what gets
  * signed, so storage rejects a mismatch too — a client cannot ask for a JPEG
@@ -216,11 +227,52 @@ export class UploadsService {
    * the caller does not learn whether a key exists, only that theirs is not
    * usable.
    */
+  /**
+   * #560 — ask storage whether the bytes behind these keys arrived, **before**
+   * any transaction is open (F-04: a HEAD inside one would hold its connection
+   * and locks for up to the storage timeout). Every key this actor owns for
+   * these purposes and could still attach is checked, attached ones included
+   * (F-01: switching a banner back to an earlier key must not skip the check).
+   * Keys that are not the actor's, or not attachable, are left for `attach` to
+   * refuse with its usual 400, so the HEAD never runs on someone else's key.
+   *
+   * Missing → 409 `UPLOAD_NOT_RECEIVED`; storage silent → 503
+   * `UPLOAD_STORAGE_UNAVAILABLE`. Writes nothing.
+   */
+  async verifyUploaded(
+    actor: Actor,
+    keys: string[],
+    purposes: UploadPurpose[],
+  ): Promise<VerifiedUploads> {
+    const unique = [...new Set(keys)];
+    if (unique.length === 0) return { [VERIFIED]: true, keys: new Set() };
+    const rows = await this.db
+      .select()
+      .from(schema.mediaUploads)
+      .where(
+        and(
+          inArray(schema.mediaUploads.storageKey, unique),
+          eq(schema.mediaUploads.actorId, actor.id),
+        ),
+      );
+    const checkable = rows
+      .filter(
+        (row) =>
+          purposes.includes(row.purpose as UploadPurpose) &&
+          (row.status === 'attached' ||
+            (row.status === 'pending' && row.expiresAt.getTime() > Date.now())),
+      )
+      .map((row) => row.storageKey);
+    await this.assertUploaded(checkable);
+    return { [VERIFIED]: true, keys: new Set(checkable) };
+  }
+
   async attach(
     actor: Actor,
     keys: string[],
     target: { type: string; id: string; purposes: UploadPurpose[] },
     executor: Executor = this.db,
+    verified?: VerifiedUploads,
   ): Promise<void> {
     if (keys.length === 0) return;
 
@@ -258,13 +310,18 @@ export class UploadsService {
     }
 
     // #560 — a valid, unexpired key is a permission to upload, not proof that
-    // anything was. Ask the bucket before claiming it, so a failed PUT can no
-    // longer leave a resource pointing at nothing. Only keys still pending:
-    // one already attached to this resource was checked when it was claimed.
-    const pending = rows
-      .filter((row) => usable.has(row.storageKey) && row.status === 'pending')
-      .map((row) => row.storageKey);
-    await this.assertUploaded(pending);
+    // anything was. Every usable key must have been seen in storage: either by
+    // `verifyUploaded` before the caller's transaction, or here when the caller
+    // has none. A HEAD is never issued from inside a transaction (F-04).
+    const unverified = [...usable].filter((key) => !verified?.keys.has(key));
+    if (unverified.length > 0) {
+      if (executor !== this.db) {
+        throw new Error(
+          'uploads.attach inside a transaction needs verifyUploaded() first (#560 F-04)',
+        );
+      }
+      await this.assertUploaded(unverified);
+    }
 
     await db
       .update(schema.mediaUploads)

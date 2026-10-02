@@ -4632,6 +4632,23 @@ describe('banners (BE-CMS-G4c #224)', () => {
    * key was already saved when the 400 came back and the last good image was
    * gone from the record with nothing to recover it from.
    */
+  it('switching back to an earlier image key re-checks storage (#560 F-01)', async () => {
+    const created = await post(await valid({}, imageEditor.token), imageEditor.token);
+    expect(created.statusCode).toBe(201);
+    const banner = created.json();
+    const keyA = banner.imageKey as string;
+    const keyB = await uploadKey(imageEditor.token);
+    expect((await patch(banner.id, { imageKey: keyB }, imageEditor.token)).statusCode).toBe(200);
+
+    // A's object is gone from the bucket; its upload row still says it is
+    // attached to this banner, which used to skip the check entirely.
+    app.get<FakeStorage>(PUBLIC_STORAGE_PROVIDER).objects.delete(keyA);
+    const back = await patch(banner.id, { imageKey: keyA }, imageEditor.token);
+    expect(back.statusCode).toBe(409);
+    expect(back.json().code).toBe('UPLOAD_NOT_RECEIVED');
+    expect((await get(`/${banner.id}`)).json().imageKey).toBe(keyB);
+  });
+
   it('keeps the saved image when a replacement is refused', async () => {
     const created = await post(await valid({}, imageEditor.token), imageEditor.token);
     expect(created.statusCode).toBe(201);
