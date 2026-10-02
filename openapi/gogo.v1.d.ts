@@ -341,11 +341,13 @@ export interface paths {
          *
          *     SSE rather than a WebSocket because every event here is server → client; nothing needs a bidirectional channel, and this keeps the same bearer auth as the rest of the API.
          *
-         *     Event types: `room.status_changed`, `participant.joined`, `participant.left`, `participant.selection_changed`, `matching.started`, `matching.completed`, `matching.failed`, `suggestions.generated`, `suggestions.updated`, `vote.changed`, `plan.updated`, plus two stream-level types — `heartbeat`, which keeps idle connections alive through proxies, and `resync`, which says the client's resume point is older than the replay buffer and it must refetch. `resync` exists so a gap is reported rather than silently skipped: a client that is wrong without knowing it is the failure this endpoint is meant to prevent.
+         *     Event types: `room.status_changed`, `participant.joined`, `participant.left`, `participant.selection_changed`, `matching.started`, `matching.completed`, `matching.failed`, `suggestions.generated`, `suggestions.updated`, `vote.changed`, `plan.updated`, plus one stream-level type — `resync`, which says the client's resume point cannot be honoured exactly and it must refetch. `resync` exists so a gap is reported rather than silently skipped: a client that is wrong without knowing it is the failure this endpoint is meant to prevent.
          *
-         *     Each domain event's SSE `id` is an **opaque resume cursor** (ADR-0027, GoGo-BE#638). Its current form is `v2:<generation>:<seq>`, but clients must treat it as an uninterpreted string: store the `id` of the last domain event received, send it back verbatim as `Last-Event-ID` (or the `lastEventId` query parameter, which browsers need because `EventSource` cannot set headers) to resume, and never parse, compare or construct one. The event's own UUID stays in the payload as `event_id`; dedupe on `event_id`, order by arrival. Only domain events move the resume point — `heartbeat` and `resync` frames carry no cursor and must not overwrite it.
+         *     Keep-alive is an SSE **comment frame** (`: ping`) sent while the stream is idle so proxies do not close it. It has no `event:` name, no `id:` and no `data:`; `EventSource` and conforming parsers never surface it as an event and it never changes the resume point. There is no `heartbeat` event any more (ADR-0027) — a client must not rely on receiving one.
          *
-         *     Resume outcomes. A fresh connection (no cursor) replays nothing and delivers only events published after it attached; the client fetches state itself. A resumable cursor replays every retained event after it, in order and once each, then continues live. A cursor the server cannot honour exactly yields one `resync` frame (schema `RoomEventResync`) **before** any later domain event, and no partial replay: the replay window was exceeded or the requested events are no longer retained (`replay_unavailable`), the room's event sequence was reset since the cursor was issued (`generation_changed`), or the cursor is malformed, ahead of the server, or a legacy bare sequence number from before ADR-0027 (`invalid_or_legacy_cursor`). On `resync` the client refetches authoritative room/plan state, queues domain events that arrive meanwhile and reconciles them by resource version, and keeps treating its snapshot as required — across reconnects — until a refetch succeeds. `checkpoint.cursor` is the resume point that is valid once that refetch has completed. Replay is exact only while history is retained (bounded buffer, 15-minute window); `resync` restores state, not evicted event history.
+         *     Each domain event's SSE `id` is an **opaque resume cursor** (ADR-0027, GoGo-BE#638). Its current form is `v2:<generation>:<seq>`, but clients must treat it as an uninterpreted string: store the `id` of the last domain event received, send it back verbatim as `Last-Event-ID` (or the `lastEventId` query parameter, which browsers need because `EventSource` cannot set headers) to resume, and never parse, compare or construct one. The event's own UUID stays in the payload as `event_id`; dedupe on `event_id`, order by arrival. Only domain events move the resume point — a `resync` frame carries no `id`, and the keep-alive comment carries nothing at all.
+         *
+         *     Resume outcomes. A fresh connection (no cursor) replays nothing and delivers only events published after it attached; the client fetches state itself. A resumable cursor replays every retained event after it, in order and once each, then continues live. A cursor the server cannot honour exactly yields one `resync` frame (schema `RoomEventResync`) **before** any later domain event, and no partial replay: the replay window was exceeded or the requested events are no longer retained (`replay_unavailable`), the room's event sequence was reset since the cursor was issued (`generation_changed`), or the cursor is malformed, ahead of the server, or a legacy bare sequence number from before ADR-0027 (`invalid_or_legacy_cursor`). On `resync` the client refetches authoritative room/plan state, queues domain events that arrive meanwhile and reconciles them by resource version, and keeps treating its snapshot as required — across reconnects — until a refetch succeeds. `checkpoint.cursor` is the resume point that is valid once that refetch has completed; send it back verbatim. Replay is exact only while history is retained (bounded buffer, 15-minute window); `resync` restores state, not evicted event history.
          *
          *     Payloads carry facts, never composed copy, and never another member's preference selections — `participant.selection_changed` reports progress only (FR-PREF-005).
          *
@@ -8751,12 +8753,12 @@ export interface components {
         CmsCommunityPlacePage: components["schemas"]["CmsModerationPageMeta"] & {
             items: components["schemas"]["CmsCommunityPlace"][];
         };
-        /** @description The domain-event envelope from the api-contract rules, unchanged. Field names are snake_case here because that is the event convention, not the REST DTO convention. This is the `data` of every domain-event frame; the frame's SSE `id` is the opaque resume cursor (ADR-0027), not `event_id`. The stream-level `resync` frame carries `RoomEventResync` instead of this envelope, and `heartbeat` carries no domain data. */
+        /** @description The domain-event envelope from the api-contract rules, unchanged. Field names are snake_case here because that is the event convention, not the REST DTO convention. This is the `data` of every domain-event frame; the frame's SSE `id` is the opaque resume cursor (ADR-0027), not `event_id`. Only domain events use this envelope: the stream-level `resync` frame carries `RoomEventResync`, and the keep-alive is a comment frame with no data. */
         RoomEvent: {
             /** Format: uuid */
             event_id: string;
             /** @enum {string} */
-            event_type: "room.status_changed" | "participant.joined" | "participant.left" | "participant.selection_changed" | "matching.started" | "matching.completed" | "matching.failed" | "suggestions.generated" | "suggestions.updated" | "vote.changed" | "plan.updated" | "resync" | "heartbeat";
+            event_type: "room.status_changed" | "participant.joined" | "participant.left" | "participant.selection_changed" | "matching.started" | "matching.completed" | "matching.failed" | "suggestions.generated" | "suggestions.updated" | "vote.changed" | "plan.updated";
             event_version: number;
             /** Format: date-time */
             occurred_at: string;
@@ -9621,13 +9623,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description An event stream */
+            /** @description An event stream. Each frame's `data` is one of the schemas below, selected by the frame's SSE `event:` name: a domain event type (`room.status_changed` … `plan.updated`) carries `RoomEvent` and an opaque `id`; `resync` carries `RoomEventResync` and no `id`. The keep-alive `: ping` comment frame carries no data and is not listed. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": components["schemas"]["RoomEvent"];
+                    "text/event-stream": components["schemas"]["RoomEvent"] | components["schemas"]["RoomEventResync"];
                 };
             };
             403: components["responses"]["Forbidden"];

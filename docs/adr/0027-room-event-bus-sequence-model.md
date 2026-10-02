@@ -1,6 +1,6 @@
 # ADR-0027: Room event bus sequence model and opaque resume cursor
 
-- **Status:** proposed — the contract part needs CODEOWNER approval before any implementation (`.claude/rules/git.md`)
+- **Status:** proposed — the contract part needs CODEOWNER approval before any implementation (`.claude/rules/git.md`). Owner answered the open questions on PR #666 on 2026-10-02 (see _Owner decisions_).
 - **Date:** 2026-10-02
 - **Deciders:** SA review (Astra, shape decided 2026-10-02 on owner assignment), product owner (CODEOWNER for the OpenAPI change), backend
 - **Related:** GoGo-BE#638, GoGo-BE#608, GoGo-BE PR #649 (superseded approach, findings F-01/F-04/F-05), ADR-0005, BE-BFF-013 (#154), `.claude/rules/api-contract.md`
@@ -176,28 +176,43 @@ generation_changed, invalid_or_legacy_cursor]`. Extensible so a later reason
 - New `RoomEventCheckpoint` `{cursor, generation, seq}`. `cursor` is the
   opaque form to resume from after the refetch; `generation`/`seq` are
   informational (clients must not build a cursor from them).
-- `RoomEvent` description: the frame `id` is the cursor, not `event_id`;
-  `resync`/`heartbeat` frames do not carry the envelope.
+- `RoomEvent`: description says the frame `id` is the cursor, not
+  `event_id`; `event_type` enum drops `resync` and `heartbeat` (neither frame
+  ever carried this envelope, and `heartbeat` is no longer emitted).
+- `200` response: `oneOf` [`RoomEvent`, `RoomEventResync`], chosen by the
+  frame's SSE `event:` name. These are the only frames with `data`; the
+  keep-alive comment has none.
+- Keep-alive: the named `heartbeat` event is replaced by an SSE comment frame
+  `: ping` (no `event:`, no `id:`, no `data:`), documented in the operation
+  description.
 
 Rename noted: today's `replay_window_exceeded` becomes `replay_unavailable`
 (it now also covers trimmed/expired buffers and `H > afterSeq` with an empty
 buffer). The old value was never declared in the spec; GoGo-MobileApp tests
 use it as a fixture string only and its code does not branch on `reason`.
 
-Not changed: the `200` response still references `RoomEvent`. Changing it to a
-`oneOf` of frame payloads would correct a pre-existing mislabel (resync and
-heartbeat data were never the envelope) but risks an oasdiff response-shape
-finding; it is left for a separate decision (open question 3).
+The `oneOf` corrects a pre-existing mislabel: on `develop` the response
+declared `RoomEvent` for every frame, while `resync` sent `{reason, roomId}` and
+`heartbeat` sent `{}`. The owner chose to fix it in this PR and to treat an
+oasdiff breaking report, if any, through the approved exception process
+(red-by-design CI + CODEOWNER + admin merge), not by weakening the gate.
 
 ### Implementation constraint the contract implies
 
-Because NestJS assigns a per-connection counter to any message without an `id`
-(and not comment-only), "heartbeat carries no cursor" cannot be met by simply
-omitting `id`. The implementation must make non-domain frames carry no
-server-assigned numeric id; otherwise a browser `EventSource` resumes with a
-counter, which v2 treats as `invalid_or_legacy_cursor` and answers with a
-`resync` on every reconnect. The mechanism (comment-only heartbeat frame vs.
-another way to suppress the id) is open question 1.
+NestJS assigns a per-connection counter to any message without an `id` unless
+the message is comment-only (`@nestjs/core` `router/sse-stream.js`,
+`writeMessage` / `isCommentOnly`). Hence the keep-alive is a comment-only
+message (`{ comment: 'ping' }`), which Nest writes as `: ping` with no id.
+
+The `resync` frame has an `event:` name and `data`, so Nest _would_ number it.
+The implementation must still send it without a numeric id (for example by
+writing the stream's last delivered cursor, or the empty-string `id` only if
+the SA confirms that resetting `EventSource`'s last-event-id is acceptable).
+Otherwise a browser `EventSource` resumes with a counter, which v2 answers with
+`invalid_or_legacy_cursor` on every reconnect. The contract fixes the
+observable rule (no numeric id on `resync`); the exact mechanism is an
+implementation-step decision covered by test "no numeric SSE id on non-domain
+frames".
 
 ## Consequences
 
@@ -227,6 +242,13 @@ legacy numeric cursors are answered with `resync`
 - Already compatible: stores `event.id` as a string, sends it back verbatim,
   ignores ids on `heartbeat`/`resync`, clears the resume point and refetches
   on `resync`, never parses the id (verified on `origin/develop`).
+- Heartbeat → comment frame: no functional impact. The parser already skips
+  `:` comment lines (`sse-connection.ts:73`), and `transport.ts:822` only
+  returns early on `heartbeat` — nothing (no liveness timer or watchdog) is
+  driven by it. The branch becomes dead code and the `heartbeat` test fixtures
+  become obsolete; the vendored `event_type` union loses `resync` and
+  `heartbeat`, so any typed comparison against those literals on `RoomEvent`
+  needs updating when alpha.61 is vendored.
 - Must change:
   1. Keep a persistent _snapshot required_ flag set on `resync` and cleared
      only when the refetch succeeds. Today `refetchSubscribed` is
@@ -253,14 +275,18 @@ one, and must not let a browser `EventSource` adopt ids from non-domain frames
 **GoGo-CMS** — does not consume `/rooms/{id}/events`. Vendors the spec only:
 take `1.0.0-alpha.61` for the version gate; no code change.
 
-**Deprecation timeline** (owner to fill):
+**Deprecation timeline** (owner decision 2026-10-02, PR #666):
 
-| Step                                                                                    | Date  |
-| --------------------------------------------------------------------------------------- | ----- |
-| Contract approved (CODEOWNER)                                                           | _TBD_ |
-| Mobile build with items 1–2 released to testers                                         | _TBD_ |
-| Server v2 cutover on DEV (publishers drained)                                           | _TBD_ |
-| Legacy numeric cursor support window ends (keeps answering `resync`; no numeric resume) | _TBD_ |
+| Step                                                                                | When                                                                                                         |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Contract approved (CODEOWNER)                                                       | after this diff, on PR #666                                                                                  |
+| Server v2 cutover on DEV (publishers drained)                                       | implementation PR merged + DEV rollout                                                                       |
+| Legacy numeric cursor accepted, answered with `resync` (`invalid_or_legacy_cursor`) | from cutover **until the Mobile build using v2 cursors is on DEV**                                           |
+| Legacy window ends                                                                  | when that Mobile build is on DEV. No store build exists, so there is no long tail of old clients to wait for |
+
+After the window, a numeric cursor is simply an invalid cursor and still
+answers `invalid_or_legacy_cursor`; nothing about the server response changes,
+only the guarantee that old clients are expected.
 
 There is no window in which the server _resumes_ from a numeric cursor:
 mixing the two algorithms invalidates ordering (see _Migration & rollback_).
@@ -338,15 +364,16 @@ two independently connected bus instances, HTTP SSE end-to-end.
 - Failed post-commit publications (#608) remain best-effort, outside the
   replay guarantee.
 
-## Open questions for the owner
+## Owner decisions (2026-10-02, PR #666)
 
-1. Non-domain frame ids: a comment-only heartbeat (`: heartbeat`, no
-   `event: heartbeat`) is the simplest way to satisfy "heartbeat carries no
-   cursor" under NestJS. Clients that listen for a named `heartbeat` event
-   would stop seeing it (GoGo-MobileApp only ignores it). Accept, or decide
-   another mechanism (SA)?
-2. `checkpoint` shape: SA specified `(generation, H)`; this contract adds an
-   opaque `cursor` so clients never construct one. Confirm.
-3. Correcting the `200` response schema to describe each frame type
-   (`oneOf`) — separate decision, possibly breaking per oasdiff.
-4. Deprecation dates in the table above.
+1. Keep-alive is an SSE comment frame `: ping` — no id, no event name. Clients
+   no longer receive a `heartbeat` event.
+2. `checkpoint` keeps the opaque `cursor` field alongside `generation` and
+   `seq`; clients resume with `checkpoint.cursor` verbatim.
+3. The `200` response declares a per-frame `oneOf` in this PR. If oasdiff
+   reports it as breaking, it goes through the approved exception process
+   (red-by-design CI + CODEOWNER + admin merge); the gate is not weakened.
+4. Legacy numeric cursors are accepted (→ `resync`
+   `invalid_or_legacy_cursor`) until the Mobile build using v2 cursors is on
+   DEV; no store build exists, so no longer window.
+5. CODEOWNER approval follows once this diff reflects 1–4.

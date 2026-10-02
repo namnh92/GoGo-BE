@@ -748,12 +748,19 @@ paths:
         `participant.left`, `participant.selection_changed`,
         `matching.started`, `matching.completed`, `matching.failed`,
         `suggestions.generated`, `suggestions.updated`, `vote.changed`,
-        `plan.updated`, plus two stream-level types — `heartbeat`, which keeps
-        idle connections alive through proxies, and `resync`, which says the
-        client's resume point is older than the replay buffer and it must
-        refetch. `resync` exists so a gap is reported rather than silently
-        skipped: a client that is wrong without knowing it is the failure this
-        endpoint is meant to prevent.
+        `plan.updated`, plus one stream-level type — `resync`, which says the
+        client's resume point cannot be honoured exactly and it must refetch.
+        `resync` exists so a gap is reported rather than silently skipped: a
+        client that is wrong without knowing it is the failure this endpoint is
+        meant to prevent.
+
+
+        Keep-alive is an SSE **comment frame** (`: ping`) sent while the stream
+        is idle so proxies do not close it. It has no `event:` name, no `id:`
+        and no `data:`; `EventSource` and conforming parsers never surface it
+        as an event and it never changes the resume point. There is no
+        `heartbeat` event any more (ADR-0027) — a client must not rely on
+        receiving one.
 
 
         Each domain event's SSE `id` is an **opaque resume cursor** (ADR-0027,
@@ -764,8 +771,8 @@ paths:
         `EventSource` cannot set headers) to resume, and never parse, compare
         or construct one. The event's own UUID stays in the payload as
         `event_id`; dedupe on `event_id`, order by arrival. Only domain events
-        move the resume point — `heartbeat` and `resync` frames carry no
-        cursor and must not overwrite it.
+        move the resume point — a `resync` frame carries no `id`, and the
+        keep-alive comment carries nothing at all.
 
 
         Resume outcomes. A fresh connection (no cursor) replays nothing and
@@ -783,7 +790,7 @@ paths:
         that arrive meanwhile and reconciles them by resource version, and
         keeps treating its snapshot as required — across reconnects — until a
         refetch succeeds. `checkpoint.cursor` is the resume point that is
-        valid once that refetch has completed. Replay is exact only while
+        valid once that refetch has completed; send it back verbatim. Replay is exact only while
         history is retained (bounded buffer, 15-minute window); `resync`
         restores state, not evicted event history.
 
@@ -817,10 +824,19 @@ paths:
             Same opaque-cursor semantics; the header wins when both are sent.
       responses:
         '200':
-          description: An event stream
+          description: >
+            An event stream. Each frame's `data` is one of the schemas below,
+            selected by the frame's SSE `event:` name: a domain event type
+            (`room.status_changed` … `plan.updated`) carries `RoomEvent` and an
+            opaque `id`; `resync` carries `RoomEventResync` and no `id`. The
+            keep-alive `: ping` comment frame carries no data and is not
+            listed.
           content:
             text/event-stream:
-              schema: { $ref: '#/components/schemas/RoomEvent' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RoomEvent'
+                  - $ref: '#/components/schemas/RoomEventResync'
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429':
@@ -16092,9 +16108,9 @@ components:
         Field names are snake_case here because that is the event convention,
         not the REST DTO convention. This is the `data` of every domain-event
         frame; the frame's SSE `id` is the opaque resume cursor (ADR-0027),
-        not `event_id`. The stream-level `resync` frame carries
-        `RoomEventResync` instead of this envelope, and `heartbeat` carries no
-        domain data.
+        not `event_id`. Only domain events use this envelope: the stream-level
+        `resync` frame carries `RoomEventResync`, and the keep-alive is a
+        comment frame with no data.
       required:
         [event_id, event_type, event_version, occurred_at, resource_type, resource_id, payload]
       properties:
@@ -16113,8 +16129,6 @@ components:
             - suggestions.updated
             - vote.changed
             - plan.updated
-            - resync
-            - heartbeat
         event_version: { type: integer }
         occurred_at: { type: string, format: date-time }
         actor_id:
