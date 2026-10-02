@@ -43,10 +43,14 @@ export class PlaceReportsService {
    * is a new report — the place may have regressed.
    *
    * Serialized per place (GoGo-BE#662 F-01): the place row is read
-   * `FOR UPDATE`, so a second submission waits for the first transaction to
-   * commit and then sees its report. Without it a double tap filed two rows.
-   * The lock is held only for one select and one insert, and only blocks other
-   * writers of the same place row (CMS place edits wait milliseconds at most).
+   * `FOR NO KEY UPDATE`, so a second submission waits for the first
+   * transaction to commit and then sees its report. Without it a double tap
+   * filed two rows. `NO KEY` on purpose (F-04): plain `FOR UPDATE` conflicts
+   * with the `FOR KEY SHARE` lock every insert or update of a row referencing
+   * `places.id` takes, so reviews, room places and plan stops for this place
+   * would queue behind a report. `NO KEY UPDATE` still conflicts with itself
+   * (serializing reports) and with other updates of the place row, but not
+   * with foreign-key checks. Held for one select and one insert.
    */
   async file(
     actor: Actor,
@@ -72,7 +76,7 @@ export class PlaceReportsService {
           ),
         )
         .limit(1)
-        .for('update');
+        .for('no key update');
       if (!place) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
 
       const reporterMatch =

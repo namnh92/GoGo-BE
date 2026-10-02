@@ -115,6 +115,46 @@ describe('Idempotency-Key (api-contract rule)', () => {
     expect(stored.map((r) => r.status)).toContain(201);
   });
 
+  it('replays an @HttpCode(200) POST as 200, not 201 (GoGo-BE#662 F-05)', async () => {
+    // POST /rooms/{id}/preferences/complete declares 200 (GoGo-BE#448). Before
+    // #662 the interceptor stored every POST 200 as 201, so a replay answered
+    // a status the contract never declares.
+    const token = await register('idem-complete@gogo.id.vn');
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/rooms',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: roomPayload,
+    });
+    expect(created.statusCode).toBe(201);
+    const roomId = created.json().id as string;
+    await db.insert(schema.taxonomies).values({ kind: 'mood', key: 'chill' }).onConflictDoNothing();
+    const saved = await api().inject({
+      method: 'PUT',
+      url: `/v1/rooms/${roomId}/preferences/me`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { expectedVersion: 0, selections: { mood: ['chill'] } },
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const complete = () =>
+      api().inject({
+        method: 'POST',
+        url: `/v1/rooms/${roomId}/preferences/complete`,
+        remoteAddress: ip(),
+        headers: { ...auth(token), 'idempotency-key': 'complete-key-0001' },
+      });
+    const first = await complete();
+    const replay = await complete();
+    expect(first.statusCode).toBe(200);
+    expect(first.headers['x-idempotent-replay']).toBeUndefined();
+    expect(replay.statusCode).toBe(200);
+    expect(replay.headers['x-idempotent-replay']).toBe('true');
+    expect(replay.json()).toEqual(first.json());
+  });
+
   it('same key + different body → 422 IDEMPOTENCY_KEY_REUSED', async () => {
     const token = await register('idem2@gogo.id.vn');
     const key = 'client-key-0002';
