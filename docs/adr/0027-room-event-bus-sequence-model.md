@@ -1,6 +1,6 @@
 # ADR-0027: Room event bus sequence model and opaque resume cursor
 
-- **Status:** proposed — the contract part needs CODEOWNER approval before any implementation (`.claude/rules/git.md`). Owner answered the open questions on PR #666 on 2026-10-02 (see _Owner decisions_).
+- **Status:** accepted — CODEOWNER approved the contract on 2026-10-03; implemented on PR #666 (see _Implementation notes_). Owner answered the open questions on PR #666 on 2026-10-02 (see _Owner decisions_).
 - **Date:** 2026-10-02
 - **Deciders:** SA review (Astra, shape decided 2026-10-02 on owner assignment), product owner (CODEOWNER for the OpenAPI change), backend
 - **Related:** GoGo-BE#638, GoGo-BE#608, GoGo-BE PR #649 (superseded approach, findings F-01/F-04/F-05), ADR-0005, BE-BFF-013 (#154), `.claude/rules/api-contract.md`
@@ -162,7 +162,7 @@ refetch succeeds.
 
 ### Wire format (this PR)
 
-Recorded in `openapi/gogo.v1.yaml` (`1.0.0-alpha.61`):
+Recorded in `openapi/gogo.v1.yaml` (`1.0.0-alpha.62`):
 
 - `/rooms/{id}/events` description, `Last-Event-ID` header and `lastEventId`
   query: opaque cursor semantics, resume outcomes, recovery rules. The
@@ -248,7 +248,7 @@ legacy numeric cursors are answered with `resync`
   driven by it. The branch becomes dead code and the `heartbeat` test fixtures
   become obsolete; the vendored `event_type` union loses `resync` and
   `heartbeat`, so any typed comparison against those literals on `RoomEvent`
-  needs updating when alpha.61 is vendored.
+  needs updating when alpha.62 is vendored.
 - Must change:
   1. Keep a persistent _snapshot required_ flag set on `resync` and cleared
      only when the refetch succeeds. Today `refetchSubscribed` is
@@ -261,7 +261,7 @@ legacy numeric cursors are answered with `resync`
      instead of invalidating immediately.
   3. After a successful refetch, resume from `checkpoint.cursor` rather than
      reconnecting without a cursor.
-  4. Treat an unknown `reason` as a refetch; vendor `1.0.0-alpha.61`
+  4. Treat an unknown `reason` as a refetch; vendor `1.0.0-alpha.62`
      (`RoomEventResync`, `RoomEventCheckpoint`) and replace the
      `replay_window_exceeded` fixtures.
 - Ships before the server cutover. Items 1–2 are the correctness part; 3–4 are
@@ -273,7 +273,7 @@ one, and must not let a browser `EventSource` adopt ids from non-domain frames
 (see _Implementation constraint_).
 
 **GoGo-CMS** — does not consume `/rooms/{id}/events`. Vendors the spec only:
-take `1.0.0-alpha.61` for the version gate; no code change.
+take `1.0.0-alpha.62` for the version gate; no code change.
 
 **Deprecation timeline** (owner decision 2026-10-02, PR #666):
 
@@ -377,3 +377,42 @@ two independently connected bus instances, HTTP SSE end-to-end.
    `invalid_or_legacy_cursor`) until the Mobile build using v2 cursors is on
    DEV; no store build exists, so no longer window.
 5. CODEOWNER approval follows once this diff reflects 1–4.
+
+## Implementation notes (2026-10-03, PR #666)
+
+- **`resync` without an id.** Of the two mechanisms named under
+  _Implementation constraint_, "write the stream's last delivered cursor"
+  cannot cover the main case — an attach-time `resync` for a legacy or
+  malformed cursor has no delivered cursor, and re-stating the client's own
+  legacy value would put a numeric id back on the wire — and the empty-string
+  `id` needs SA confirmation. The implementation instead writes the frame with
+  **no `id:` line at all**, which is the contract text verbatim and changes no
+  client-visible semantics: the message's `id` property is pinned to
+  `undefined` so `SseStream.writeMessage`'s counter assignment is discarded
+  (`room-events.service.ts`, `resyncFrame`). Guarded against framework drift by
+  a unit test through the real `SseStream` and an HTTP test on a legacy
+  `Last-Event-ID`.
+- **Termination is a completed stream, not an error.** After headers are out,
+  NestJS turns an observable error into an `event: error` frame with a
+  numbered id. Subscriber loss, a failed recovery read and a failed attach
+  therefore complete the stream; the client reconnects and re-attaches.
+- **Fresh stream attach point = the snapshot.** A fresh connection delivers
+  events with `seq > H` of the attach snapshot. Defining it from the SUBSCRIBE
+  ACK instead would depend on which of two sockets answered first.
+- **Keys.** `room:{<id>}:v2:meta` (hash, no TTL), `room:{<id>}:v2:buffer`
+  (ZSET, 15 min TTL), channel `room:{<id>}:v2:events`. Scripts:
+  `libs/modules/realtime/infrastructure/room-event-scripts.ts` (EVALSHA with a
+  NOSCRIPT → EVAL fallback; NOSCRIPT means the script did not run, so it is not
+  a retry).
+- **Connections.** Commands: `enableOfflineQueue: false`,
+  `autoResendUnfulfilledCommands: false`, `maxRetriesPerRequest: 1`.
+  Subscriber: `autoResubscribe: false`, `autoResendUnfulfilledCommands: false`.
+- **Telemetry.** Labels unchanged. `roomEventsPublish` = one script;
+  `roomEventsSubscribe` = SUBSCRIBE + snapshot; a live-gap recovery read is
+  metered as one more `roomEventsSubscribe` call.
+- **Full-app test on Redis.** The API module selects the in-memory bus under
+  `NODE_ENV=test`, and `@nestjs/testing` is not a dependency, so the Redis
+  path is proven with the real controller/service over HTTP in a minimal Nest
+  app (`room-events-reconnect.int.spec.ts`) and the real-mutation path with the
+  full app on the in-memory bus (`rooms.int.spec.ts`). Both buses share one
+  subscription state machine (`room-subscription.ts`).
