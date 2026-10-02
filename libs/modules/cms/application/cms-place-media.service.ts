@@ -178,7 +178,11 @@ export class CmsPlaceMediaService {
       .then((r) => r.rows)) as [{ next: number }];
 
     // #560 F-04 — storage is asked before the transaction opens.
-    const verified = await this.uploads.verifyUploaded(actor, [input.storageKey], ['place_image']);
+    const verified = await this.uploads.verifyUploaded(actor, [input.storageKey], {
+      type: 'place',
+      id: placeId,
+      purposes: ['place_image'],
+    });
 
     const row = await this.db.transaction(async (tx) => {
       /*

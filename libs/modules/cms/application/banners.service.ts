@@ -192,7 +192,11 @@ export class BannersService {
      * leave the upload marked `attached` to a banner the rollback removed.
      */
     // #560 F-04 — storage is asked before the transaction opens.
-    const verified = await this.uploads.verifyUploaded(actor, [input.imageKey], ['banner_image']);
+    const verified = await this.uploads.verifyUploaded(actor, [input.imageKey], {
+      type: 'banner',
+      id: null,
+      purposes: ['banner_image'],
+    });
     const row = await this.db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(schema.banners)
@@ -250,7 +254,11 @@ export class BannersService {
      */
     const replacing = patch.imageKey && patch.imageKey !== before.image_key;
     const verified = replacing
-      ? await this.uploads.verifyUploaded(actor, [patch.imageKey!], ['banner_image'])
+      ? await this.uploads.verifyUploaded(actor, [patch.imageKey!], {
+          type: 'banner',
+          id,
+          purposes: ['banner_image'],
+        })
       : undefined;
     await this.db.transaction(async (tx) => {
       if (replacing) {

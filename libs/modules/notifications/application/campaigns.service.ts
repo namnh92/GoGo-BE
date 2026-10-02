@@ -254,7 +254,11 @@ export class CampaignsService {
      */
     // #560 F-04 — storage is asked before the transaction opens.
     const verified = input.imageKey
-      ? await this.uploads.verifyUploaded(actor, [input.imageKey], ['campaign_image'])
+      ? await this.uploads.verifyUploaded(actor, [input.imageKey], {
+          type: 'campaign',
+          id: null,
+          purposes: ['campaign_image'],
+        })
       : undefined;
     return this.db.transaction(async (tx) => {
       const rows = await tx
@@ -364,7 +368,11 @@ export class CampaignsService {
      */
     const replacing = patch.imageKey && patch.imageKey !== before.image_key;
     const verified = replacing
-      ? await this.uploads.verifyUploaded(actor, [patch.imageKey!], ['campaign_image'])
+      ? await this.uploads.verifyUploaded(actor, [patch.imageKey!], {
+          type: 'campaign',
+          id,
+          purposes: ['campaign_image'],
+        })
       : undefined;
     await this.db.transaction(async (tx) => {
       if (replacing) {

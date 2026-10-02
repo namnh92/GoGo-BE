@@ -230,41 +230,77 @@ export class UploadsService {
   /**
    * #560 — ask storage whether the bytes behind these keys arrived, **before**
    * any transaction is open (F-04: a HEAD inside one would hold its connection
-   * and locks for up to the storage timeout). Every key this actor owns for
-   * these purposes and could still attach is checked, attached ones included
-   * (F-01: switching a banner back to an earlier key must not skip the check).
-   * Keys that are not the actor's, or not attachable, are left for `attach` to
-   * refuse with its usual 400, so the HEAD never runs on someone else's key.
+   * and locks for up to the storage timeout).
    *
-   * Missing → 409 `UPLOAD_NOT_RECEIVED`; storage silent → 503
-   * `UPLOAD_STORAGE_UNAVAILABLE`. Writes nothing.
+   * Target-aware (F-07): a key this target could not claim anyway — another
+   * actor's, wrong purpose, expired, or already claimed by a different
+   * resource — is refused with the same 400 `INVALID_UPLOAD_KEY` `attach`
+   * gives, before any HEAD, so the caller is never told "upload and retry" for
+   * a key no upload could make usable. `target.id` is null for a resource the
+   * caller has not inserted yet, which no existing claim can belong to.
+   *
+   * Every key that would be claimable is HEADed, attached-to-this-target ones
+   * included (F-01). Missing → 409 `UPLOAD_NOT_RECEIVED`; storage silent →
+   * 503 `UPLOAD_STORAGE_UNAVAILABLE`. Writes nothing; `attach` re-checks the
+   * claim inside the caller's transaction.
    */
   async verifyUploaded(
     actor: Actor,
     keys: string[],
-    purposes: UploadPurpose[],
+    target: { type: string; id: string | null; purposes: UploadPurpose[] },
   ): Promise<VerifiedUploads> {
     const unique = [...new Set(keys)];
     if (unique.length === 0) return { [VERIFIED]: true, keys: new Set() };
-    const rows = await this.db
+    const usable = await this.claimableKeys(this.db, actor, unique, target);
+    this.refuseUnusable(unique, usable);
+    await this.assertUploaded([...usable]);
+    return { [VERIFIED]: true, keys: usable };
+  }
+
+  /**
+   * The keys `target` may claim: this actor's, for one of its purposes, and
+   * either pending and unexpired or already attached to this same resource
+   * (so re-saving is idempotent).
+   */
+  private async claimableKeys(
+    executor: Executor,
+    actor: Actor,
+    keys: string[],
+    target: { type: string; id: string | null; purposes: UploadPurpose[] },
+  ): Promise<Set<string>> {
+    const rows = await (executor as Db)
       .select()
       .from(schema.mediaUploads)
       .where(
         and(
-          inArray(schema.mediaUploads.storageKey, unique),
+          inArray(schema.mediaUploads.storageKey, keys),
           eq(schema.mediaUploads.actorId, actor.id),
         ),
       );
-    const checkable = rows
-      .filter(
-        (row) =>
-          purposes.includes(row.purpose as UploadPurpose) &&
-          (row.status === 'attached' ||
-            (row.status === 'pending' && row.expiresAt.getTime() > Date.now())),
-      )
-      .map((row) => row.storageKey);
-    await this.assertUploaded(checkable);
-    return { [VERIFIED]: true, keys: new Set(checkable) };
+    return new Set(
+      rows
+        .filter(
+          (row) =>
+            (row.status === 'pending' || row.status === 'attached') &&
+            target.purposes.includes(row.purpose as UploadPurpose) &&
+            (row.status === 'attached'
+              ? target.id !== null &&
+                row.attachedToType === target.type &&
+                row.attachedToId === target.id
+              : row.expiresAt.getTime() > Date.now()),
+        )
+        .map((row) => row.storageKey),
+    );
+  }
+
+  /** Same answer for every miss: the caller learns only that a key is not usable. */
+  private refuseUnusable(keys: string[], usable: Set<string>): void {
+    const rejected = keys.filter((key) => !usable.has(key));
+    if (rejected.length > 0) {
+      throw AppError.badRequest('INVALID_UPLOAD_KEY', 'Upload key is not usable', [
+        { field: 'photoKeys', code: 'invalid', message: `${rejected.length} key(s) rejected` },
+      ]);
+    }
   }
 
   async attach(
@@ -277,37 +313,8 @@ export class UploadsService {
     if (keys.length === 0) return;
 
     const db = executor as Db;
-    const rows = await db
-      .select()
-      .from(schema.mediaUploads)
-      .where(
-        and(
-          inArray(schema.mediaUploads.storageKey, keys),
-          eq(schema.mediaUploads.actorId, actor.id),
-        ),
-      );
-
-    const usable = new Set(
-      rows
-        .filter(
-          (row) =>
-            (row.status === 'pending' || row.status === 'attached') &&
-            target.purposes.includes(row.purpose as UploadPurpose) &&
-            // An expired pending key is not usable; one already attached to
-            // this same resource is, so re-saving a check-in is idempotent.
-            (row.status === 'attached'
-              ? row.attachedToType === target.type && row.attachedToId === target.id
-              : row.expiresAt.getTime() > Date.now()),
-        )
-        .map((row) => row.storageKey),
-    );
-
-    const rejected = keys.filter((key) => !usable.has(key));
-    if (rejected.length > 0) {
-      throw AppError.badRequest('INVALID_UPLOAD_KEY', 'Upload key is not usable', [
-        { field: 'photoKeys', code: 'invalid', message: `${rejected.length} key(s) rejected` },
-      ]);
-    }
+    const usable = await this.claimableKeys(executor, actor, keys, target);
+    this.refuseUnusable(keys, usable);
 
     // #560 — a valid, unexpired key is a permission to upload, not proof that
     // anything was. Every usable key must have been seen in storage: either by

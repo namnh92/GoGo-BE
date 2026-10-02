@@ -387,11 +387,18 @@ export class PlansService {
     // #560 — every object (photos and bill) is checked in storage before
     // anything is written (F-02: a missing bill used to fail after the photo
     // claims had committed), and outside the transaction (F-04).
-    const verifiedPhotos = await this.uploads.verifyUploaded(actor, input.photoKeys, [
-      'checkin_photo',
-    ]);
+    const checkinId = `${stopId}:${member.id}`;
+    const verifiedPhotos = await this.uploads.verifyUploaded(actor, input.photoKeys, {
+      type: 'stop_checkin',
+      id: checkinId,
+      purposes: ['checkin_photo'],
+    });
     const verifiedBill = input.billPhotoKey
-      ? await this.uploads.verifyUploaded(actor, [input.billPhotoKey], ['bill_photo'])
+      ? await this.uploads.verifyUploaded(actor, [input.billPhotoKey], {
+          type: 'stop_checkin_bill',
+          id: checkinId,
+          purposes: ['bill_photo'],
+        })
       : undefined;
     const claim = async (tx: Executor) => {
       await this.uploads.attach(

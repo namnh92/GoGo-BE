@@ -338,6 +338,30 @@ describe('#191 upload → attach → moderate → visible', () => {
     expect(openTx).toEqual([0]);
   });
 
+  it('a key claimed by another place is a 400, decided before any HEAD (#560 F-07)', async () => {
+    const placeA = await makePlace();
+    const placeB = await makePlace();
+    const upload = await authorizeUpload(editor.token);
+    expect((await attach(placeA.id, { storageKey: upload.key })).statusCode).toBe(201);
+
+    // The object disappears; the claim on place A stays.
+    const store = app.get<FakeStorage>(PUBLIC_STORAGE_PROVIDER);
+    store.objects.delete(upload.key);
+    const heads: string[] = [];
+    store.onExists = async (key) => {
+      heads.push(key);
+    };
+    try {
+      const res = await attach(placeB.id, { storageKey: upload.key });
+      // Not "upload and retry": no upload can free a key another place holds.
+      expect(res.statusCode).toBe(400);
+      expect(res.json().code).toBe('INVALID_UPLOAD_KEY');
+    } finally {
+      store.onExists = null;
+    }
+    expect(heads).toEqual([]);
+  });
+
   it('stops serving a photo the moment it is rejected', async () => {
     const place = await makePlace();
     const upload = await authorizeUpload(editor.token);
