@@ -275,6 +275,16 @@ describe('creating a place with canonical codes', () => {
       communeCode: mapped.communeCode,
     });
 
+    // #440 F-01 — the codes are claimed facts with their own evidence.
+    const claims = await db
+      .select()
+      .from(schema.placeFieldProvenance)
+      .where(eq(schema.placeFieldProvenance.placeId, created.id));
+    expect(claims.map((c) => c.field).sort()).toEqual(
+      ['commune_code', 'geom', 'name', 'province_code'].sort(),
+    );
+    expect(claims.every((c) => c.sourceType === 'editorial' && !!c.sourceReference)).toBe(true);
+
     const row = await placeRow(created.id);
     expect(row).toMatchObject({
       provinceCode: mapped.provinceCode,

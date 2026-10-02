@@ -14,6 +14,8 @@ const FACT_KEYS = [
   'district',
   'phone',
   'website',
+  'provinceCode',
+  'communeCode',
 ] as const;
 
 /** Fills `sourceReferences` for every supplied fact, unless the test set it. */
@@ -25,6 +27,9 @@ export function withSourceReferences(payload: Record<string, unknown>): Record<s
   for (const key of FACT_KEYS) {
     if (payload[key] !== undefined && payload[key] !== null)
       refs[key] = `xác nhận trực tiếp: ${key}`;
+  }
+  if (Array.isArray(payload.taxonomyIds) && payload.taxonomyIds.length > 0) {
+    refs.taxonomyIds = 'menu tại quán';
   }
   return { ...payload, sourceReferences: refs };
 }

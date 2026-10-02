@@ -31,7 +31,6 @@ import {
   GOOGLE_DERIVABLE_FIELDS,
   PLACE_SORTS,
   PLACE_SOURCES,
-  SOURCE_REFERENCE_KEYS,
   type PlaceEditInput,
 } from '../application/cms-catalog.service';
 import { PlaceSubmissionService } from '../../ingestion/application/place-submission.service';
@@ -734,7 +733,13 @@ const placeCreateSchema = placeEditSchema.omit({ expectedUpdatedAt: true }).exte
     .regex(/^[\w-]{6,255}$/, 'not a Google Place ID')
     .optional(),
   googleDerivedFields: z.array(z.enum(GOOGLE_DERIVABLE_FIELDS)).max(8).optional(),
-  sourceReferences: z.record(z.enum(SOURCE_REFERENCE_KEYS), z.string().trim().min(1).max(500)),
+  /**
+   * #440 F-02 — only "an object of strings" here. Which keys are allowed,
+   * which are required and how long each may be are answered by the service
+   * as `SOURCE_REFERENCE_INVALID`, one entry per key, so a client gets the one
+   * documented code whatever it got wrong. Absent means `{}`.
+   */
+  sourceReferences: z.record(z.string(), z.string()).optional(),
 });
 
 /**

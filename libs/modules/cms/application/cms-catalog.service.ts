@@ -15,6 +15,7 @@ import {
   beginIdempotent,
   completeIdempotentWithin,
   releaseIdempotent,
+  type IdempotencyClaim,
   type IdempotencyScope,
 } from '../../shared/idempotency.interceptor';
 import { currentRequestContext } from '../../shared/request-context';
@@ -151,7 +152,7 @@ export type PlaceCreateInput = Omit<
    * API field name (`geom` covers `lat` + `lng`). Required for every supplied
    * non-null fact; see `assertSourceReferences`.
    */
-  sourceReferences: Readonly<Record<string, string>>;
+  sourceReferences?: Readonly<Record<string, string>> | undefined;
 };
 
 /**
@@ -176,6 +177,14 @@ export const PROVENANCE_FIELDS = [
    * the door and a pin on the next street.
    */
   'geom',
+  /**
+   * #440 (F-01) — the canonical administrative address and the category set.
+   * Claimed at create with their own evidence; `taxonomy` is one row for the
+   * whole set the create supplied.
+   */
+  'province_code',
+  'commune_code',
+  'taxonomy',
 ] as const;
 export type ProvenanceField = (typeof PROVENANCE_FIELDS)[number];
 
@@ -214,6 +223,9 @@ export const SOURCE_REFERENCE_KEYS = [
   'phone',
   'website',
   'geom',
+  'provinceCode',
+  'communeCode',
+  'taxonomyIds',
 ] as const;
 export type SourceReferenceKey = (typeof SOURCE_REFERENCE_KEYS)[number];
 
@@ -227,6 +239,9 @@ const REFERENCE_COLUMN: Record<SourceReferenceKey, ProvenanceField> = {
   phone: 'phone',
   website: 'website',
   geom: 'geom',
+  provinceCode: 'province_code',
+  communeCode: 'commune_code',
+  taxonomyIds: 'taxonomy',
 };
 
 /**
@@ -238,22 +253,29 @@ const REFERENCE_COLUMN: Record<SourceReferenceKey, ProvenanceField> = {
  * pointing at nothing. Both are refused field by field, so the console can mark
  * the box. Returns the reference per provenance column.
  */
-export function assertSourceReferences(
-  input: Omit<PlaceCreateInput, 'sourceReferences'> & {
-    sourceReferences?: Readonly<Record<string, string>> | undefined;
-  },
-): Map<ProvenanceField, string> {
+export function assertSourceReferences(input: PlaceCreateInput): Map<ProvenanceField, string> {
   const refs = input.sourceReferences ?? {};
   const supplied = new Set<SourceReferenceKey>(['name', 'geom']);
   for (const key of SOURCE_REFERENCE_KEYS) {
     if (key === 'name' || key === 'geom') continue;
     const value = (input as Record<string, unknown>)[key];
+    // An empty category list asserts nothing, the same as an absent one.
+    if (Array.isArray(value) && value.length === 0) continue;
     if (value !== undefined && value !== null) supplied.add(key);
   }
 
   const errors: { field: string; code: string; message: string }[] = [];
   for (const key of supplied) {
-    if (typeof refs[key] !== 'string' || refs[key]!.trim().length === 0) {
+    const value = refs[key];
+    if (typeof value === 'string' && value.trim().length > 500) {
+      errors.push({
+        field: `sourceReferences.${key}`,
+        code: 'too_long',
+        message: 'a source reference is at most 500 characters',
+      });
+      continue;
+    }
+    if (typeof value !== 'string' || value.trim().length === 0) {
       errors.push({
         field: `sourceReferences.${key}`,
         code: 'required',
@@ -262,7 +284,13 @@ export function assertSourceReferences(
     }
   }
   for (const key of Object.keys(refs)) {
-    if (!supplied.has(key as SourceReferenceKey)) {
+    if (!(SOURCE_REFERENCE_KEYS as readonly string[]).includes(key)) {
+      errors.push({
+        field: `sourceReferences.${key}`,
+        code: 'unknown',
+        message: `not a canonical fact; one of ${SOURCE_REFERENCE_KEYS.join(', ')}`,
+      });
+    } else if (!supplied.has(key as SourceReferenceKey)) {
       errors.push({
         field: `sourceReferences.${key}`,
         code: 'unused',
@@ -603,6 +631,9 @@ const API_FIELD_OF: Record<string, string> = {
   district: 'district',
   phone: 'phone',
   website: 'website',
+  province_code: 'provinceCode',
+  commune_code: 'communeCode',
+  taxonomy: 'taxonomyIds',
 };
 
 type PlaceListRow = {
@@ -1396,20 +1427,20 @@ export class CmsCatalogService {
    * ever showed — sits in the replay cache.
    */
   async createPlaceOnce(adminId: string, input: PlaceCreateInput, scope: IdempotencyScope) {
-    const replay = await beginIdempotent(this.db, scope);
-    if (replay) {
-      const placeId = (replay.body as { placeId?: unknown } | null)?.placeId;
+    const begun = await beginIdempotent(this.db, scope);
+    if (begun.kind === 'replay') {
+      const placeId = (begun.body as { placeId?: unknown } | null)?.placeId;
       if (typeof placeId !== 'string') throw AppError.internal('Replay record names no place');
       return { replayed: true, place: await this.getPlace(placeId) };
     }
     let place;
     try {
-      place = await this.createPlace(adminId, input, scope.storedKey);
+      place = await this.createPlace(adminId, input, begun.claim);
     } catch (err) {
       // Nothing committed, so the key is the client's again. A release that
       // itself fails leaves the key in flight (409 until it expires) — the
       // safe direction — and must not hide the error that caused it.
-      await releaseIdempotent(this.db, scope.storedKey).catch(() => undefined);
+      await releaseIdempotent(this.db, begun.claim).catch(() => undefined);
       throw err;
     }
     // Committed: from here a failure is a replay on retry, never a second row.
@@ -1438,7 +1469,7 @@ export class CmsCatalogService {
    * completion are written in one transaction. Before #440 the audit ran after
    * commit, so an audit failure left a place nobody had recorded creating.
    */
-  async createPlace(adminId: string, input: PlaceCreateInput, replayKey: string) {
+  async createPlace(adminId: string, input: PlaceCreateInput, claim: IdempotencyClaim) {
     if (input.googleDerivedFields && input.googleDerivedFields.length > 0) {
       throw AppError.badRequest(
         'GOOGLE_CONTENT_NOT_PERSISTABLE',
@@ -1647,7 +1678,17 @@ export class CmsCatalogService {
           },
         });
 
-        await completeIdempotentWithin(tx, replayKey, 201, { placeId: place!.id });
+        // F-03: a claim lost while this ran (expired and reclaimed, or purged)
+        // rolls the create back — committing it would leave a place no
+        // record can replay, and the retry would create it again.
+        if (!(await completeIdempotentWithin(tx, claim, 201, { placeId: place!.id }))) {
+          throw new AppError(
+            'IDEMPOTENT_REQUEST_IN_FLIGHT',
+            'Idempotency claim was lost; retry the request',
+            409,
+            { retryable: true },
+          );
+        }
 
         return place!;
       });

@@ -14278,7 +14278,13 @@ export interface operations {
                      * @description Withdrawn by GoGo-BE#440. A value applied from a Google preview is not persistable as a GoGo fact, so any non-empty list is refused with `400 GOOGLE_CONTENT_NOT_PERSISTABLE`. Omit it, or send `[]`.
                      */
                     googleDerivedFields?: ("name" | "addressText" | "lat" | "lng")[];
-                    /** @description GoGo-BE#440 — the independent evidence behind each canonical fact, keyed by API field name; `geom` covers `lat` and `lng` together. Required for every supplied non-null fact (`name` and `geom` always); a key for a fact the body does not supply is refused, as is a missing one — `400 SOURCE_REFERENCE_INVALID`, one `field_errors` entry per key (`sourceReferences.<key>`). Each value is trimmed, 1..500 characters, naming non-Google evidence such as a venue menu or a field visit. Recorded as provenance with source type `editorial`; never fetched by the server. */
+                    /**
+                     * @description GoGo-BE#440 — the independent evidence behind each canonical fact, keyed by API field name. Required for every supplied non-null fact: `name` and `geom` (covers `lat` + `lng`) always; `description`, `addressText`, `areaKey`, `city`, `district`, `phone`, `website`, `provinceCode`, `communeCode` when sent non-null; `taxonomyIds` when the list is non-empty (one reference for the whole set). Omitting the object is the same as `{}`.
+                     *
+                     *     Every problem is `400 SOURCE_REFERENCE_INVALID` with one `field_errors` entry per key, `field = sourceReferences.<key>` and `code` one of `required` (supplied fact without a reference, or a blank one), `unused` (reference for a fact the body does not supply), `unknown` (not a key listed here), `too_long` (over 500 characters after trimming).
+                     *
+                     *     Values name non-Google evidence — a venue menu, a phone call, a field visit, the signage. A province, commune or category suggested from a Google-attached place is not evidence by itself: the console sends it only with the editor's own reference, or leaves the field out. Recorded as provenance, source type `editorial`, with the reference and the editor; never fetched by the server.
+                     */
                     sourceReferences: {
                         [key: string]: string;
                     };
@@ -14314,7 +14320,7 @@ export interface operations {
              *
              *     `PLACE_IDENTITY_CONFLICT` — two places already claim that Google ID. Nothing may be added against it until an editor merges them; both ids are in `field_errors`.
              *
-             *     `IDEMPOTENT_REQUEST_IN_FLIGHT` — the first request with this key is still running; retry shortly.
+             *     `IDEMPOTENT_REQUEST_IN_FLIGHT` (`retryable: true`) — the first request with this key is still running, or this request lost its claim on the key while it ran and was rolled back; retry shortly. A key older than 24 hours is taken over as a new request, never answered as a reuse.
              */
             409: {
                 headers: {

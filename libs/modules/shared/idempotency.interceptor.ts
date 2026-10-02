@@ -77,79 +77,123 @@ export function idempotencyScope(
 }
 
 /**
- * Claims the key, or answers with what the first execution stored. Null means
- * this caller owns the key and should execute; a changed body is a 422 and a
- * first execution still running is a 409.
+ * A claim on one replay record. `claimedAt` is what makes it *this* claim:
+ * once a key has expired and been reclaimed by someone else, the old holder's
+ * release or completion matches nothing instead of touching the new claim.
  */
-export async function beginIdempotent(
-  db: Db,
-  scope: IdempotencyScope,
-): Promise<{ status: number; body: unknown } | null> {
-  const inserted = await db
-    .insert(schema.idempotencyKeys)
-    .values({
-      key: scope.storedKey,
-      actorId: scope.actorScope,
-      endpoint: scope.endpoint,
-      requestHash: scope.requestHash,
-      expiresAt: new Date(Date.now() + KEY_TTL_HOURS * 3600 * 1000),
-    })
-    .onConflictDoNothing()
-    .returning({ key: schema.idempotencyKeys.key });
-  if (inserted.length > 0) return null; // we own the key — first execution
+export type IdempotencyClaim = { storedKey: string; claimedAt: Date };
 
-  const [existing] = await db
-    .select()
-    .from(schema.idempotencyKeys)
-    .where(eq(schema.idempotencyKeys.key, scope.storedKey))
-    .limit(1);
-  if (!existing) return null; // raced with expiry purge — treat as first run
-  if (existing.requestHash !== scope.requestHash) {
-    throw new AppError(
-      'IDEMPOTENCY_KEY_REUSED',
-      'Idempotency-Key was already used with a different request body',
-      422,
-    );
+export type IdempotencyBegin =
+  { kind: 'owned'; claim: IdempotencyClaim } | { kind: 'replay'; status: number; body: unknown };
+
+const CLAIM_ATTEMPTS = 3;
+
+/**
+ * Claims the key, or answers with what the first execution stored. A changed
+ * body is a 422 and a first execution still running is a 409.
+ *
+ * GoGo-BE#440 F-03 — the claim is one statement: insert, or take over a row
+ * whose 24 hours have passed. The old shape (insert-or-nothing, then select)
+ * had a gap: a row expired or released between the two answered "no row", and
+ * the caller executed the mutation without owning any record — so two callers
+ * could both mutate, and the completion matched nothing. A row that vanishes
+ * between the claim and the read now sends the caller round again; it never
+ * executes unclaimed.
+ */
+export async function beginIdempotent(db: Db, scope: IdempotencyScope): Promise<IdempotencyBegin> {
+  for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
+    // Millisecond precision on purpose: the value round-trips through a JS
+    // Date unchanged, so later matches on it are exact.
+    const claimedAt = new Date();
+    const claimed = await db
+      .insert(schema.idempotencyKeys)
+      .values({
+        key: scope.storedKey,
+        actorId: scope.actorScope,
+        endpoint: scope.endpoint,
+        requestHash: scope.requestHash,
+        createdAt: claimedAt,
+        expiresAt: new Date(claimedAt.getTime() + KEY_TTL_HOURS * 3600 * 1000),
+      })
+      .onConflictDoUpdate({
+        target: schema.idempotencyKeys.key,
+        set: {
+          actorId: scope.actorScope,
+          endpoint: scope.endpoint,
+          requestHash: scope.requestHash,
+          responseStatus: null,
+          responseBody: null,
+          createdAt: claimedAt,
+          expiresAt: new Date(claimedAt.getTime() + KEY_TTL_HOURS * 3600 * 1000),
+        },
+        // Only an expired record may be taken over; a live one is answered below.
+        setWhere: sql`${schema.idempotencyKeys.expiresAt} <= now()`,
+      })
+      .returning({ key: schema.idempotencyKeys.key });
+    if (claimed.length > 0) {
+      return { kind: 'owned', claim: { storedKey: scope.storedKey, claimedAt } };
+    }
+
+    const [existing] = await db
+      .select()
+      .from(schema.idempotencyKeys)
+      .where(eq(schema.idempotencyKeys.key, scope.storedKey))
+      .limit(1);
+    if (!existing) continue; // released or purged since the claim — claim again
+    if (existing.requestHash !== scope.requestHash) {
+      throw new AppError(
+        'IDEMPOTENCY_KEY_REUSED',
+        'Idempotency-Key was already used with a different request body',
+        422,
+      );
+    }
+    if (existing.responseStatus === null) {
+      // Original request still in flight — client should retry shortly.
+      throw AppError.conflict(
+        'IDEMPOTENT_REQUEST_IN_FLIGHT',
+        'Original request is still processing',
+      );
+    }
+    return { kind: 'replay', status: existing.responseStatus, body: existing.responseBody };
   }
-  if (existing.responseStatus === null) {
-    // Original request still in flight — client should retry shortly.
-    throw AppError.conflict('IDEMPOTENT_REQUEST_IN_FLIGHT', 'Original request is still processing');
-  }
-  return { status: existing.responseStatus, body: existing.responseBody };
+  // The key kept changing hands under us; never execute without a claim.
+  throw new AppError('IDEMPOTENT_REQUEST_IN_FLIGHT', 'Original request is still processing', 409, {
+    retryable: true,
+  });
 }
 
-/** A failed mutation releases the key so the client can retry. */
-export async function releaseIdempotent(db: Db, storedKey: string): Promise<void> {
-  await db
-    .delete(schema.idempotencyKeys)
-    .where(
-      and(
-        eq(schema.idempotencyKeys.key, storedKey),
-        sql`${schema.idempotencyKeys.responseStatus} is null`,
-      ),
-    );
+const ownClaim = (claim: IdempotencyClaim) =>
+  and(
+    eq(schema.idempotencyKeys.key, claim.storedKey),
+    eq(schema.idempotencyKeys.createdAt, claim.claimedAt),
+    sql`${schema.idempotencyKeys.responseStatus} is null`,
+  );
+
+/** A failed mutation releases its own claim so the client can retry. */
+export async function releaseIdempotent(db: Db, claim: IdempotencyClaim): Promise<void> {
+  await db.delete(schema.idempotencyKeys).where(ownClaim(claim));
 }
 
 /**
- * Marks the record complete. Given a transaction, the completion commits or
- * rolls back with the mutation it describes — which is the only arrangement in
- * which "the key is complete" and "the mutation happened" cannot disagree.
+ * Marks this claim complete and says whether it did. Given a transaction, the
+ * completion commits or rolls back with the mutation it describes — which is
+ * the only arrangement in which "the key is complete" and "the mutation
+ * happened" cannot disagree. `false` means the claim is gone (expired and
+ * reclaimed, or purged); a caller inside a transaction must then roll back
+ * rather than commit a mutation no record can replay.
  */
 export async function completeIdempotentWithin(
   db: Db | Tx,
-  storedKey: string,
+  claim: IdempotencyClaim,
   status: number,
   body: unknown,
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const done = await db
     .update(schema.idempotencyKeys)
     .set({ responseStatus: status, responseBody: body ?? null })
-    .where(
-      and(
-        eq(schema.idempotencyKeys.key, storedKey),
-        sql`${schema.idempotencyKeys.responseStatus} is null`,
-      ),
-    );
+    .where(ownClaim(claim))
+    .returning({ key: schema.idempotencyKeys.key });
+  return done.length === 1;
 }
 
 /**
@@ -181,26 +225,28 @@ export class IdempotencyInterceptor implements NestInterceptor {
     }
 
     const scope = idempotencyScope(req, clientKey);
-    const { storedKey } = scope;
 
     return from(beginIdempotent(this.db, scope)).pipe(
-      switchMap((replayed) => {
-        if (replayed) {
-          void reply.status(replayed.status);
+      switchMap((begun) => {
+        if (begun.kind === 'replay') {
+          void reply.status(begun.status);
           reply.header('x-idempotent-replay', 'true');
-          return of(replayed.body);
+          return of(begun.body);
         }
+        const { claim } = begun;
         return next.handle().pipe(
+          // Completed after the handler's own commit, as before #440: a lost
+          // claim here cannot undo a mutation that already committed, so the
+          // body is still returned. Routes that cannot accept that gap use
+          // `ManualIdempotency` and complete inside their transaction.
           switchMap((body) =>
             from(
-              completeIdempotentWithin(this.db, storedKey, this.statusFor(req.method, reply), body),
+              completeIdempotentWithin(this.db, claim, this.statusFor(req.method, reply), body),
             ).pipe(switchMap(() => of(body))),
           ),
           // A failed mutation releases the key so the client can retry.
           catchError((err) =>
-            from(releaseIdempotent(this.db, storedKey)).pipe(
-              switchMap(() => throwError(() => err)),
-            ),
+            from(releaseIdempotent(this.db, claim)).pipe(switchMap(() => throwError(() => err))),
           ),
         );
       }),

@@ -5920,15 +5920,31 @@ paths:
                   type: object
                   description: >
                     GoGo-BE#440 — the independent evidence behind each canonical
-                    fact, keyed by API field name; `geom` covers `lat` and `lng`
-                    together. Required for every supplied non-null fact (`name`
-                    and `geom` always); a key for a fact the body does not supply
-                    is refused, as is a missing one —
-                    `400 SOURCE_REFERENCE_INVALID`, one `field_errors` entry per
-                    key (`sourceReferences.<key>`). Each value is trimmed,
-                    1..500 characters, naming non-Google evidence such as a
-                    venue menu or a field visit. Recorded as provenance with
-                    source type `editorial`; never fetched by the server.
+                    fact, keyed by API field name. Required for every supplied
+                    non-null fact: `name` and `geom` (covers `lat` + `lng`)
+                    always; `description`, `addressText`, `areaKey`, `city`,
+                    `district`, `phone`, `website`, `provinceCode`, `communeCode`
+                    when sent non-null; `taxonomyIds` when the list is non-empty
+                    (one reference for the whole set). Omitting the object is the
+                    same as `{}`.
+
+
+                    Every problem is `400 SOURCE_REFERENCE_INVALID` with one
+                    `field_errors` entry per key, `field =
+                    sourceReferences.<key>` and `code` one of `required`
+                    (supplied fact without a reference, or a blank one),
+                    `unused` (reference for a fact the body does not supply),
+                    `unknown` (not a key listed here), `too_long` (over 500
+                    characters after trimming).
+
+
+                    Values name non-Google evidence — a venue menu, a phone
+                    call, a field visit, the signage. A province, commune or
+                    category suggested from a Google-attached place is not
+                    evidence by itself: the console sends it only with the
+                    editor's own reference, or leaves the field out. Recorded as
+                    provenance, source type `editorial`, with the reference and
+                    the editor; never fetched by the server.
                   propertyNames:
                     enum:
                       [
@@ -5941,6 +5957,9 @@ paths:
                         phone,
                         website,
                         geom,
+                        provinceCode,
+                        communeCode,
+                        taxonomyIds,
                       ]
                   additionalProperties:
                     type: string
@@ -5989,8 +6008,11 @@ paths:
             ids are in `field_errors`.
 
 
-            `IDEMPOTENT_REQUEST_IN_FLIGHT` — the first request with this key is
-            still running; retry shortly.
+            `IDEMPOTENT_REQUEST_IN_FLIGHT` (`retryable: true`) — the first
+            request with this key is still running, or this request lost its
+            claim on the key while it ran and was rolled back; retry shortly.
+            A key older than 24 hours is taken over as a new request, never
+            answered as a reuse.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }

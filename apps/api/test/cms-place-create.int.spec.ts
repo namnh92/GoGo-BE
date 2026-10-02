@@ -93,7 +93,7 @@ let pooled: { id: string; token: string } | undefined;
 let pooledUses = 0;
 const tok = async () => (await anEditor()).token;
 async function anEditor() {
-  if (!pooled || pooledUses >= 10) {
+  if (!pooled || pooledUses >= 3) {
     pooled = await createAdmin('editor');
     pooledUses = 0;
   }
@@ -296,9 +296,70 @@ describe('#440 field boundaries and evidence coverage', () => {
     void _omit;
     const res = await create(rest, await tok());
     expect(res.statusCode).toBe(400);
-    expect(res.json().field_errors.map((f: { field: string }) => f.field)).toContain(
-      'sourceReferences',
+    // F-02: the documented code, not a generic validation failure.
+    expect(res.json().code).toBe('SOURCE_REFERENCE_INVALID');
+    expect(
+      res
+        .json()
+        .field_errors.map((f: { field: string }) => f.field)
+        .sort(),
+    ).toEqual(['sourceReferences.geom', 'sourceReferences.name']);
+  });
+
+  it('F-02: answers unknown, overlong and blank references with SOURCE_REFERENCE_INVALID', async () => {
+    const cases: [Record<string, string>, string, string][] = [
+      [{ name: 'a', geom: 'b', rating: 'c' }, 'sourceReferences.rating', 'unknown'],
+      [{ name: 'x'.repeat(501), geom: 'b' }, 'sourceReferences.name', 'too_long'],
+      [{ name: '   ', geom: 'b' }, 'sourceReferences.name', 'required'],
+    ];
+    const who = await tok();
+    for (const [refs, field, code] of cases) {
+      const res = await create(body({ ...at(6), sourceReferences: refs }), who);
+      expect(res.statusCode, res.body).toBe(400);
+      expect(res.json().code).toBe('SOURCE_REFERENCE_INVALID');
+      expect(res.json().field_errors).toEqual([expect.objectContaining({ field, code })]);
+    }
+  });
+
+  it('F-01: administrative codes and categories are facts that need their own evidence', async () => {
+    const [taxonomy] = await db
+      .insert(schema.taxonomies)
+      .values({ kind: 'category', key: `c440-${uniq()}` })
+      .returning();
+    const missing = await create(
+      body({ ...at(7), provinceCode: '79', communeCode: '26734', taxonomyIds: [taxonomy!.id] }),
+      await tok(),
     );
+    expect(missing.statusCode).toBe(400);
+    expect(missing.json().code).toBe('SOURCE_REFERENCE_INVALID');
+    expect(
+      missing
+        .json()
+        .field_errors.map((f: { field: string }) => f.field)
+        .sort(),
+    ).toEqual([
+      'sourceReferences.communeCode',
+      'sourceReferences.provinceCode',
+      'sourceReferences.taxonomyIds',
+    ]);
+
+    // An empty category list asserts nothing and needs nothing.
+    const none = await create(body({ ...at(8), taxonomyIds: [] }), await tok());
+    expect(none.statusCode, none.body).toBe(201);
+
+    const claimed = await create(
+      body({
+        ...at(9),
+        taxonomyIds: [taxonomy!.id],
+        sourceReferences: { name: 'menu', geom: 'khảo sát', taxonomyIds: 'thực đơn: cà phê' },
+      }),
+      await tok(),
+    );
+    expect(claimed.statusCode, claimed.body).toBe(201);
+    expect(claimed.json().provenance.taxonomyIds).toMatchObject({
+      sourceType: 'editorial',
+      sourceReference: 'thực đơn: cà phê',
+    });
   });
 
   it('names every supplied fact without a reference, and every reference without a fact', async () => {
@@ -598,16 +659,91 @@ describe('#440 retries', () => {
     expect(changed.json().code).toBe('IDEMPOTENCY_KEY_REUSED');
   });
 
-  it('releases the key when the create is refused, so a corrected retry works', async () => {
+  it('F-04: releases the key when the create is refused, so a corrected retry works', async () => {
     const key = randomUUID();
+    const who = await tok();
+    const name = `Quán Sửa Lại ${uniq()}`;
     const refused = await create(
-      body({ lat: 10.91, lng: 106.91, phone: '1', sourceReferences: { name: 'a', geom: 'b' } }),
-      await tok(),
+      body({
+        name,
+        lat: 10.91,
+        lng: 106.91,
+        phone: '1',
+        sourceReferences: { name: 'a', geom: 'b' },
+      }),
+      who,
       key,
     );
     expect(refused.statusCode).toBe(400);
-    const stored = await db.select().from(schema.idempotencyKeys);
-    expect(stored.some((r) => r.responseStatus === null)).toBe(false);
+
+    // Same key, corrected body: a fresh create, not a 422 and not a replay.
+    const corrected = await create(
+      body({
+        name,
+        lat: 10.91,
+        lng: 106.91,
+        phone: '0283 822 4444',
+        sourceReferences: { name: 'a', geom: 'b', phone: 'gọi xác nhận' },
+      }),
+      who,
+      key,
+    );
+    expect(corrected.statusCode, corrected.body).toBe(201);
+    expect(corrected.headers['x-idempotent-replay']).toBeUndefined();
+    expect(await placesNamed(name)).toHaveLength(1);
+  });
+
+  it('F-03: takes over an expired key instead of answering it as a reuse', async () => {
+    const key = randomUUID();
+    const who = await tok();
+    const first = await create(body({ lat: 10.94, lng: 106.94 }), who, key);
+    expect(first.statusCode).toBe(201);
+    await db
+      .update(schema.idempotencyKeys)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.idempotencyKeys.endpoint, 'POST /v1/cms/places'));
+
+    const later = await create(body({ lat: 10.95, lng: 106.95 }), who, key);
+    expect(later.statusCode, later.body).toBe(201);
+    expect(later.json().id).not.toBe(first.json().id);
+  });
+
+  it('F-03: rolls the create back when its claim is lost mid-flight, and the retry creates once', async () => {
+    await db.execute(sql`
+      create or replace function c440_drop_claims() returns trigger language plpgsql as $$
+      begin delete from idempotency_keys where endpoint = 'POST /v1/cms/places'
+        and response_status is null; return new; end $$`);
+    const name = `Quán Mất Khoá ${uniq()}`;
+    await db.execute(
+      sql.raw(`create trigger c440_lost before insert on places for each row
+        when (new.name = '${name}') execute function c440_drop_claims()`),
+    );
+    const key = randomUUID();
+    const who = await tok();
+    const payload = body({ name, lat: 10.96, lng: 106.96 });
+    try {
+      const lost = await create(payload, who, key);
+      expect(lost.statusCode, lost.body).toBe(409);
+      expect(lost.json().retryable).toBe(true);
+    } finally {
+      await db.execute(sql`drop trigger if exists c440_lost on places`);
+    }
+    expect(await placesNamed(name)).toHaveLength(0);
+
+    const retry = await create(payload, who, key);
+    expect(retry.statusCode, retry.body).toBe(201);
+    expect(await placesNamed(name)).toHaveLength(1);
+  });
+
+  it('F-03: one place for concurrent retries of one key', async () => {
+    const key = randomUUID();
+    const who = await tok();
+    const payload = body({ lat: 10.97, lng: 106.97 });
+    const results = await Promise.all([0, 1, 2, 3, 4].map(() => create(payload, who, key)));
+    for (const r of results) expect([201, 409], r.body).toContain(r.statusCode);
+    const ids = new Set(results.filter((r) => r.statusCode === 201).map((r) => r.json().id));
+    expect(ids.size).toBe(1);
+    expect(await placesNamed(payload.name as string)).toHaveLength(1);
   });
 });
 
