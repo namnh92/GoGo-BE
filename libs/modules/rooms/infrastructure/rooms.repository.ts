@@ -308,7 +308,9 @@ export class RoomsRepository {
        * explicit null clears it. Merged here rather than in the service
        * because `previous` is the row read under this transaction's lock:
        * merging from a read taken earlier would let an edit copy forward
-       * coordinates the privacy job nulled in between.
+       * coordinates the privacy job nulled in between. The job takes this
+       * same room lock before it clears origins (`PrivacyJobs`
+       * `clearExpiredOrigins`), so it cannot null `previous` mid-edit either.
        */
       const keep = <T>(incoming: T | null | undefined, stored: T | null | undefined): T | null =>
         incoming === undefined ? (stored ?? null) : incoming;
