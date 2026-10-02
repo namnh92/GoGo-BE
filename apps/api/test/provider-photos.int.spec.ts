@@ -158,6 +158,11 @@ beforeEach(async () => {
   fake.answerAs = null;
   fake.refCalls.length = 0;
   fake.mediaCalls.length = 0;
+  fake.expired.clear();
+  fake.callsAfterAbort = 0;
+  // F-03: every case starts from an empty daily ledger — no case depends on
+  // what an earlier one spent.
+  await db.execute(sql`delete from provider_budget_daily where scope = 'google.places.display'`);
   await setKillSwitch(true);
 });
 
@@ -244,10 +249,12 @@ describe('GET /v1/places/:id/provider-photos', () => {
     ).toEqual([{ operation: 'google.photoMedia', units: 3 }]);
   });
 
-  it('stops at the daily budget: the rest of the day shows fewer, then none', async () => {
-    // Three of five units were spent above; two remain.
+  it('stops at the daily budget: 3 → 2 → none, inside one case', async () => {
+    // Five billed photo calls a day (beforeAll). Three, then the two left.
     const p = await place();
     seedPhotos(p.googleId!, 3);
+    expect((await read(p.id)).json().photos).toHaveLength(3);
+
     const partial = (await read(p.id)).json();
     expect(partial).toMatchObject({ status: 'ok' });
     expect(partial.photos).toHaveLength(2);
@@ -259,7 +266,35 @@ describe('GET /v1/places/:id/provider-photos', () => {
       attribution: 'Google Maps',
       photos: [],
     });
-    expect(fake.mediaCalls).toHaveLength(2);
+    expect(fake.mediaCalls).toHaveLength(5);
+  });
+
+  it('refetches an expired photo name once and serves the fresh one', async () => {
+    const p = await place();
+    seedPhotos(p.googleId!, 1);
+    fake.expired.add(photoName(p.googleId!, 0));
+    // The fresh lookup names the same photo anew.
+    const original = fake.photos.get(p.googleId!)!;
+    let lookups = 0;
+    const photoRefs = fake.photoRefs.bind(fake);
+    fake.photoRefs = async (id, options) => {
+      lookups += 1;
+      if (lookups === 2) {
+        const freshName = `places/${id}/photos/${MARK}fresh`;
+        fake.seed(id, [{ ...original[0]!, reference: freshName }]);
+        fake.seedMedia(freshName, { contentType: 'image/jpeg', bytes: JPEG });
+      }
+      return photoRefs(id, options);
+    };
+    try {
+      const body = (await read(p.id)).json();
+      expect(body.status).toBe('ok');
+      expect(body.photos).toHaveLength(1);
+      expect(lookups).toBe(2);
+      expect(fake.mediaCalls).toHaveLength(2);
+    } finally {
+      fake.photoRefs = photoRefs;
+    }
   });
 
   it('a provider outage answers 200 with no photos; Place Detail is untouched', async () => {
@@ -289,6 +324,10 @@ describe('GET /v1/places/:id/provider-photos', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ status: 'unavailable', photos: [] });
     expect(Date.now() - started).toBeLessThan(9_000);
+    // F-01: the deadline aborted the call; nothing ran after it.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(fake.mediaCalls).toEqual([]);
+    expect(fake.callsAfterAbort).toBe(0);
   }, 20_000);
 
   it("refuses a moved place's photos — the successor is not this place", async () => {

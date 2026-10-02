@@ -1,6 +1,7 @@
 import {
   GOOGLE_ATTRIBUTION,
   NO_PROVIDER_METRICS,
+  ProviderCallAbortedError,
   ProviderConfigurationError,
   ProviderInvalidRequestError,
   ProviderQuotaExceededError,
@@ -568,12 +569,13 @@ export class GooglePlacesAdapter
    */
   async photoRefs(
     providerPlaceId: string,
+    options: { signal?: AbortSignal | undefined } = {},
   ): Promise<{ providerPlaceId: string; photos: ProviderDisplayPhotoRef[] } | null> {
     const data = await this.call<{ id?: string; photos?: GooglePhoto[] }>(
       'google.details.photos',
       `https://places.googleapis.com/v1/places/${encodeURIComponent(providerPlaceId)}` +
         `?languageCode=${GOOGLE_LOCALE.languageCode}&regionCode=${GOOGLE_LOCALE.regionCode}`,
-      { method: 'GET', fieldMask: PHOTO_DISPLAY_FIELD_MASK },
+      { method: 'GET', fieldMask: PHOTO_DISPLAY_FIELD_MASK, signal: options.signal },
       DISPLAY_RESILIENCE,
     );
     if (!data?.id) return null;
@@ -591,24 +593,32 @@ export class GooglePlacesAdapter
    */
   async photoMedia(
     reference: string,
-    options: { maxWidthPx: number; maxBytes: number },
+    options: { maxWidthPx: number; maxBytes: number; signal?: AbortSignal | undefined },
   ): Promise<ProviderPhotoMedia | null> {
     if (!PHOTO_NAME.test(reference)) return null;
     const width = Math.max(1, Math.min(4800, Math.trunc(options.maxWidthPx)));
     const media = await this.call<{ photoUri?: string }>(
       'google.photoMedia',
       `https://places.googleapis.com/v1/${reference}/media?maxWidthPx=${width}&skipHttpRedirect=true`,
-      { method: 'GET' },
+      { method: 'GET', signal: options.signal },
       DISPLAY_RESILIENCE,
     );
     const imageUrl = safeProviderUri(media?.photoUri, IMAGE_HOSTS);
     if (!imageUrl) return null;
 
-    const res = await fetch(imageUrl, {
-      method: 'GET',
-      redirect: 'error',
-      signal: AbortSignal.timeout(PHOTO_BYTES_TIMEOUT_MS),
-    });
+    if (options.signal?.aborted) throw new ProviderCallAbortedError('google.places');
+    const timeout = AbortSignal.timeout(PHOTO_BYTES_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(imageUrl, {
+        method: 'GET',
+        redirect: 'error',
+        signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
+      });
+    } catch (err) {
+      if (options.signal?.aborted) throw new ProviderCallAbortedError('google.places');
+      throw err;
+    }
     if (!res.ok) {
       await res.body?.cancel().catch(() => undefined);
       return null;
@@ -647,22 +657,34 @@ export class GooglePlacesAdapter
   private call<T>(
     name: string,
     url: string,
-    init: { method: string; body?: string; fieldMask?: string },
+    init: { method: string; body?: string; fieldMask?: string; signal?: AbortSignal | undefined },
     resilience: typeof RESILIENCE = RESILIENCE,
   ): Promise<T> {
-    return withResilience({ name, ...resilience }, async (signal) => {
+    const caller = init.signal;
+    return withResilience({ name, ...resilience }, async (timeoutSignal) => {
+      // GoGo-BE#509 F-01: a caller's deadline stops the request too. A call
+      // that never left is not counted; one cut off mid-flight is reported as
+      // the caller's abort, not as a provider failure.
+      if (caller?.aborted) throw new ProviderCallAbortedError(name);
+      const signal = caller ? AbortSignal.any([caller, timeoutSignal]) : timeoutSignal;
       const started = Date.now();
-      const res = await fetch(url, {
-        method: init.method,
-        ...(init.body !== undefined ? { body: init.body } : {}),
-        signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': this.apiKey,
-          // The media endpoint takes no field mask; every other call sends one.
-          ...(init.fieldMask !== undefined ? { 'X-Goog-FieldMask': init.fieldMask } : {}),
-        },
-      });
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: init.method,
+          ...(init.body !== undefined ? { body: init.body } : {}),
+          signal,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': this.apiKey,
+            // The media endpoint takes no field mask; every other call sends one.
+            ...(init.fieldMask !== undefined ? { 'X-Goog-FieldMask': init.fieldMask } : {}),
+          },
+        });
+      } catch (err) {
+        if (caller?.aborted) throw new ProviderCallAbortedError(name);
+        throw err;
+      }
       // #313: `status` and `method` are finite; a duration is not. Emitted as
       // a label it gave every request a series of its own — 10 requests, 10
       // series, each stuck at 1 — which is a log line wearing a counter's

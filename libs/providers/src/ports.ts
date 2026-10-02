@@ -118,18 +118,26 @@ export interface PlacePhotoDisplayPort {
    * The place's photo references with their credits. Billed as Place Details
    * Essentials **IDs Only** (`id,photos`), which Google lists as free.
    * `providerPlaceId` is the id Google answered with — a caller compares it.
+   *
+   * `signal` is the caller's deadline: once it aborts, the call stops and
+   * rejects with `ProviderCallAbortedError` (review F-01).
    */
   photoRefs(
     providerPlaceId: string,
+    options?: { signal?: AbortSignal | undefined },
   ): Promise<{ providerPlaceId: string; photos: ProviderDisplayPhotoRef[] } | null>;
   /**
    * One photo's bytes: one Place Details Photos call (billed per call), then an
    * unauthenticated read of the short-lived image URL it returns. `null` when
    * the image is missing, too large or not an allowed image type.
+   *
+   * A photo name Google no longer accepts (names expire) rejects with
+   * `ProviderInvalidRequestError` (`NOT_FOUND` / `INVALID_ARGUMENT`), which a
+   * caller may answer with one fresh `photoRefs` (review F-02).
    */
   photoMedia(
     reference: string,
-    options: { maxWidthPx: number; maxBytes: number },
+    options: { maxWidthPx: number; maxBytes: number; signal?: AbortSignal | undefined },
   ): Promise<ProviderPhotoMedia | null>;
 }
 
@@ -640,6 +648,17 @@ export const NO_PROVIDER_METRICS: ProviderMetrics = {
   increment: () => undefined,
   observe: () => undefined,
 };
+
+/**
+ * GoGo-BE#509 — the caller gave up (its deadline aborted the signal). Not a
+ * provider fault: it is never retried and never counted toward a breaker.
+ */
+export class ProviderCallAbortedError extends Error {
+  constructor(readonly provider: string) {
+    super(`provider ${provider} call aborted by the caller`);
+    this.name = 'ProviderCallAbortedError';
+  }
+}
 
 export class ProviderInvalidRequestError extends Error {
   constructor(

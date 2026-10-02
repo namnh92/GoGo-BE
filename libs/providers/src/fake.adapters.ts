@@ -1,4 +1,6 @@
 import {
+  ProviderCallAbortedError,
+  ProviderInvalidRequestError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   SheetAccessError,
@@ -58,8 +60,20 @@ export class FakePlacePhotoDisplay implements PlacePhotoDisplayPort {
   /** Answer as if Google had moved the place to this id. */
   answerAs: string | null = null;
   failing = false;
-  /** Never settle — the caller's deadline is what ends the wait. */
+  /** Never settle — the caller's deadline (its signal) is what ends the wait. */
   hanging = false;
+  /** Photo names Google would reject as expired (`NOT_FOUND`). */
+  readonly expired = new Set<string>();
+  /** Calls that ran after the caller had already given up — must stay 0. */
+  callsAfterAbort = 0;
+
+  private async hang(signal: AbortSignal | undefined): Promise<never> {
+    return new Promise<never>((_, reject) => {
+      signal?.addEventListener('abort', () => reject(new ProviderCallAbortedError('fake.photos')), {
+        once: true,
+      });
+    });
+  }
 
   seed(providerPlaceId: string, photos: ProviderDisplayPhotoRef[]): void {
     this.photos.set(providerPlaceId, photos);
@@ -71,9 +85,11 @@ export class FakePlacePhotoDisplay implements PlacePhotoDisplayPort {
 
   async photoRefs(
     providerPlaceId: string,
+    options: { signal?: AbortSignal | undefined } = {},
   ): Promise<{ providerPlaceId: string; photos: ProviderDisplayPhotoRef[] } | null> {
+    if (options.signal?.aborted) this.callsAfterAbort += 1;
     this.refCalls.push(providerPlaceId);
-    if (this.hanging) await new Promise(() => undefined);
+    if (this.hanging) await this.hang(options.signal);
     if (this.failing) throw new ProviderUnavailableError('fake.photos');
     const photos = this.photos.get(providerPlaceId);
     if (!photos) return null;
@@ -82,11 +98,15 @@ export class FakePlacePhotoDisplay implements PlacePhotoDisplayPort {
 
   async photoMedia(
     reference: string,
-    options: { maxWidthPx: number; maxBytes: number },
+    options: { maxWidthPx: number; maxBytes: number; signal?: AbortSignal | undefined },
   ): Promise<ProviderPhotoMedia | null> {
+    if (options.signal?.aborted) this.callsAfterAbort += 1;
     this.mediaCalls.push(reference);
-    if (this.hanging) await new Promise(() => undefined);
+    if (this.hanging) await this.hang(options.signal);
     if (this.failing) throw new ProviderUnavailableError('fake.photos');
+    if (this.expired.has(reference)) {
+      throw new ProviderInvalidRequestError('fake.photos', 'NOT_FOUND');
+    }
     const media = this.media.get(reference);
     if (!media || media.bytes.byteLength > options.maxBytes) return null;
     return media;

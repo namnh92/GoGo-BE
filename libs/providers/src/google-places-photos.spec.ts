@@ -5,6 +5,7 @@ import {
   toDisplayPhotos,
 } from './google-places.adapter';
 import { safeProviderUri } from './provider-links';
+import { ProviderCallAbortedError } from './ports';
 import { resetBreakers } from './resilience';
 
 /**
@@ -137,6 +138,22 @@ describe('photoRefs', () => {
         method: 'google.details.photos',
       }),
     );
+  });
+
+  it("stops at the caller's deadline without calling Google or tripping the breaker", async () => {
+    stub();
+    const controller = new AbortController();
+    controller.abort();
+    const adapter = new GooglePlacesAdapter('key');
+    for (let i = 0; i < 6; i++) {
+      await expect(adapter.photoRefs(PLACE, { signal: controller.signal })).rejects.toBeInstanceOf(
+        ProviderCallAbortedError,
+      );
+    }
+    expect(calls).toHaveLength(0);
+    // Six caller aborts later the breaker is still closed.
+    stub(jsonResponse(googlePhotos));
+    expect((await adapter.photoRefs(PLACE))?.photos).toHaveLength(1);
   });
 
   it('does not retry — a slow photo is simply not shown', async () => {

@@ -352,11 +352,11 @@ and fix the role model rather than the people.
 view and stores nothing (ADR-0029). It always answers 200; `status` says why
 `photos` is empty. Three things have to allow it before Google is called:
 
-| Check       | Where                                                                                  | Off looks like                                                                      |
-| ----------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| kill switch | `feature_flags` row `place_provider_photos.enabled`, else `FLAG_PLACE_PROVIDER_PHOTOS` | `status: disabled`; `place_provider_photos_total{outcome="disabled"}`               |
-| hard budget | `PLACE_DISPLAY_DAILY_MAX_*` (scope `google.places.display`)                            | `status: budget_exhausted`; `place_provider_photos_total{outcome="refused_budget"}` |
-| rate limit  | `places.providerPhotos`, 30/min per IP                                                 | 429                                                                                 |
+| Check       | Where                                                                                  | Off looks like                                                                                                                                      |
+| ----------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| kill switch | `feature_flags` row `place_provider_photos.enabled`, else `FLAG_PLACE_PROVIDER_PHOTOS` | `status: disabled`; `place_provider_photos_total{outcome="disabled"}`                                                                               |
+| hard budget | `PLACE_DISPLAY_DAILY_MAX_*` (scope `google.places.display`)                            | `status: budget_exhausted`; `place_provider_photos_total{outcome="refused_budget"}` (one outcome per request; `empty` = Google had no usable photo) |
+| rate limit  | `places.providerPhotos`, 30/min per IP                                                 | 429                                                                                                                                                 |
 
 Incident: insert/update the flag row with `enabled = false` — the next request
 answers `disabled` with no provider call. Spend: `google.photoMedia` on the

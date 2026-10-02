@@ -10,9 +10,11 @@ import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import {
   GOOGLE_ATTRIBUTION,
   PLACE_PHOTO_DISPLAY,
+  ProviderInvalidRequestError,
   type PlacePhotoDisplayPort,
   type ProviderDisplayPhotoRef,
   type ProviderPhotoAuthor,
+  type ProviderPhotoMedia,
 } from '@gogo/providers';
 import { APP_CONFIG, type ProviderPhotosConfig } from '../../shared/config';
 import { AppError } from '../../shared/app-error';
@@ -66,9 +68,15 @@ export type ProviderPhotosDto = {
   photos: ProviderPhotoDto[];
 };
 
-/** `place_provider_photos_total{outcome}` — closed, no id or provider text. */
+/**
+ * `place_provider_photos_total{outcome}` — closed, no id or provider text.
+ * **Exactly one per 200 response** (review F-04): `served` (≥1 photo, even if
+ * the budget ran out part-way), `empty` (Google answered with no usable
+ * photo), and one outcome per non-ok `status`.
+ */
 export const PROVIDER_PHOTO_OUTCOMES = [
   'served',
+  'empty',
   'disabled',
   'not_linked',
   'refused_budget',
@@ -78,12 +86,24 @@ export const PROVIDER_PHOTO_OUTCOMES = [
 ] as const;
 type ProviderPhotoOutcome = (typeof PROVIDER_PHOTO_OUTCOMES)[number];
 
-class DeadlineExceeded extends Error {}
+type Result = { dto: ProviderPhotosDto; outcome: ProviderPhotoOutcome };
+
+/** A media call Google refused because the photo name has expired. */
+const EXPIRED = Symbol('expired');
+
+function isExpiredName(err: unknown): boolean {
+  return (
+    err instanceof ProviderInvalidRequestError &&
+    (err.canonicalStatus === 'NOT_FOUND' || err.canonicalStatus === 'INVALID_ARGUMENT')
+  );
+}
 
 @Injectable()
 export class ProviderPhotosService {
   private readonly budget: ProviderBudgetService;
   private readonly limits: BudgetLimits;
+  /** The whole provider stage. A field so a test can shorten it. */
+  deadlineMs = PROVIDER_PHOTOS_DEADLINE_MS;
 
   constructor(
     @Inject(DB) private readonly db: Db,
@@ -97,81 +117,147 @@ export class ProviderPhotosService {
   }
 
   async photos(placeId: string): Promise<ProviderPhotosDto> {
-    const providerPlaceId = await this.googleIdOf(placeId);
-    if (!(await this.enabled())) return this.answer('disabled');
-    if (!providerPlaceId) return this.answer('not_linked');
-
-    let timer: NodeJS.Timeout | undefined;
-    const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new DeadlineExceeded()), PROVIDER_PHOTOS_DEADLINE_MS);
-    });
-    try {
-      return await Promise.race([this.fetch(providerPlaceId), deadline]);
-    } catch (err) {
-      this.count(err instanceof DeadlineExceeded ? 'timeout' : 'provider_error');
-      return this.answer('unavailable');
-    } finally {
-      clearTimeout(timer);
-    }
+    const result = await this.resolve(placeId);
+    // The single place an outcome is counted: one request, one outcome.
+    this.metrics.increment('place_provider_photos_total', { outcome: result.outcome });
+    return result.dto;
   }
 
-  private async fetch(providerPlaceId: string): Promise<ProviderPhotosDto> {
+  private async resolve(placeId: string): Promise<Result> {
+    const providerPlaceId = await this.googleIdOf(placeId);
+    if (!(await this.enabled())) return this.result('disabled', 'disabled');
+    if (!providerPlaceId) return this.result('not_linked', 'not_linked');
     // The reference lookup is IDs Only and free, so it reserves nothing — but
     // it is skipped outright when no photo could be paid for: an environment
     // with no budget makes no Google call at all.
-    if (!this.mediaBudgetConfigured()) {
-      this.count('refused_budget');
-      return this.answer('budget_exhausted');
-    }
+    if (!this.mediaBudgetConfigured()) return this.result('budget_exhausted', 'refused_budget');
 
-    const refs = await this.provider.photoRefs(providerPlaceId);
-    // Google answering about another id means the place moved or merged. Its
-    // successor's photos are not evidence about the place GoGo shows, so none.
-    if (!refs || refs.providerPlaceId !== providerPlaceId) {
-      this.count('identity_mismatch');
-      return this.answer('unavailable');
+    // F-01: one signal for the whole stage. When the deadline fires it aborts
+    // every in-flight provider call and stops anything not yet started, so no
+    // work — and no byte of provider data — outlives the response.
+    const controller = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<'deadline'>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        resolve('deadline');
+      }, this.deadlineMs);
+    });
+    const work = this.fetch(providerPlaceId, controller.signal).catch((): Result =>
+      this.result('unavailable', 'provider_error'),
+    );
+    try {
+      const winner = await Promise.race([work, deadline]);
+      if (winner === 'deadline') return this.result('unavailable', 'timeout');
+      return winner;
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
     }
+  }
 
-    const wanted = refs.photos.slice(0, MAX_PROVIDER_PHOTOS);
-    if (wanted.length === 0) return this.answer('ok');
+  private async fetch(providerPlaceId: string, signal: AbortSignal): Promise<Result> {
+    const refs = await this.refsFor(providerPlaceId, signal);
+    if (!refs) return this.result('unavailable', 'identity_mismatch');
+
+    const wanted = refs.slice(0, MAX_PROVIDER_PHOTOS);
+    if (wanted.length === 0) return this.result('ok', 'empty');
 
     // One reservation per billed call, immediately before it — the refresh
     // job's rule. A refusal part-way shows the photos already paid for.
+    const granted = await this.grant(wanted, signal);
+    if (granted.length === 0) return this.result('budget_exhausted', 'refused_budget');
+
+    const first = await this.mediaFor(granted, signal);
+    const photos: (ProviderPhotoDto | null)[] = first.map((m, i) =>
+      m === EXPIRED || m === null ? null : this.toDto(granted[i]!, m),
+    );
+
+    // F-02: photo names expire. Expired ones get exactly one fresh lookup in
+    // the same deadline; the fresh reference at the same position replaces
+    // the stale one, credit included, and its media call is reserved anew.
+    const expiredAt = first.flatMap((m, i) => (m === EXPIRED ? [i] : []));
+    if (expiredAt.length > 0 && !signal.aborted) {
+      const fresh = await this.refsFor(providerPlaceId, signal).catch(() => null);
+      const retry = expiredAt
+        .map((i) => ({ i, ref: fresh?.[i] }))
+        .filter((r): r is { i: number; ref: ProviderDisplayPhotoRef } => r.ref !== undefined);
+      const regranted = await this.grant(
+        retry.map((r) => r.ref),
+        signal,
+      );
+      const second = await this.mediaFor(regranted, signal);
+      second.forEach((m, k) => {
+        if (m !== EXPIRED && m !== null) photos[retry[k]!.i] = this.toDto(regranted[k]!, m);
+      });
+    }
+
+    if (signal.aborted) return this.result('unavailable', 'timeout');
+    const served = photos.filter((p): p is ProviderPhotoDto => p !== null);
+    if (served.length === 0) return this.result('unavailable', 'provider_error');
+    return { dto: { ...this.answer('ok'), photos: served }, outcome: 'served' };
+  }
+
+  /** References for the id GoGo holds, or `null` when Google answers as another id. */
+  private async refsFor(
+    providerPlaceId: string,
+    signal: AbortSignal,
+  ): Promise<ProviderDisplayPhotoRef[] | null> {
+    const refs = await this.provider.photoRefs(providerPlaceId, { signal });
+    // Google answering about another id means the place moved or merged. Its
+    // successor's photos are not evidence about the place GoGo shows, so none.
+    if (!refs || refs.providerPlaceId !== providerPlaceId) return null;
+    return refs.photos;
+  }
+
+  /** Reserve one billed media call per ref, in order, stopping at the first refusal. */
+  private async grant(
+    refs: ProviderDisplayPhotoRef[],
+    signal: AbortSignal,
+  ): Promise<ProviderDisplayPhotoRef[]> {
     const granted: ProviderDisplayPhotoRef[] = [];
-    for (const ref of wanted) {
-      if (!(await this.reserve(MEDIA_OPERATION))) break;
+    for (const ref of refs) {
+      if (signal.aborted) break;
+      const result = await this.budget.reserve(
+        { scope: SCOPE, operation: MEDIA_OPERATION, calls: 1, units: 1 },
+        this.limits,
+      );
+      if (!result.ok) break;
       granted.push(ref);
     }
-    if (granted.length === 0) return this.answer('budget_exhausted');
+    return granted;
+  }
 
+  private async mediaFor(
+    refs: ProviderDisplayPhotoRef[],
+    signal: AbortSignal,
+  ): Promise<(ProviderPhotoMedia | null | typeof EXPIRED)[]> {
+    if (signal.aborted) return refs.map(() => null);
     const settled = await Promise.allSettled(
-      granted.map(async (ref) => {
-        const media = await this.provider.photoMedia(ref.reference, {
+      refs.map((ref) =>
+        this.provider.photoMedia(ref.reference, {
           maxWidthPx: PROVIDER_PHOTO_MAX_WIDTH_PX,
           maxBytes: PROVIDER_PHOTO_MAX_BYTES,
-        });
-        if (!media) return null;
-        // The bytes go out once, inside this response. Nothing holds them.
-        const photo: ProviderPhotoDto = {
-          contentType: media.contentType,
-          dataBase64: Buffer.from(media.bytes).toString('base64'),
-          widthPx: ref.widthPx,
-          heightPx: ref.heightPx,
-          authorAttributions: ref.authorAttributions,
-          googleMapsUri: ref.googleMapsUri,
-        };
-        return photo;
-      }),
+          signal,
+        }),
+      ),
     );
-    const photos = settled
-      .map((s) => (s.status === 'fulfilled' ? s.value : null))
-      .filter((p): p is ProviderPhotoDto => p !== null);
-    if (photos.length === 0) {
-      this.count('provider_error');
-      return this.answer('unavailable');
-    }
-    this.count('served');
-    return { ...this.answer('ok'), photos };
+    return settled.map((s) => {
+      if (s.status === 'fulfilled') return s.value;
+      return isExpiredName(s.reason) ? EXPIRED : null;
+    });
+  }
+
+  /** The bytes go out once, inside this response. Nothing holds them. */
+  private toDto(ref: ProviderDisplayPhotoRef, media: ProviderPhotoMedia): ProviderPhotoDto {
+    return {
+      contentType: media.contentType,
+      dataBase64: Buffer.from(media.bytes).toString('base64'),
+      widthPx: ref.widthPx,
+      heightPx: ref.heightPx,
+      authorAttributions: ref.authorAttributions,
+      googleMapsUri: ref.googleMapsUri,
+    };
   }
 
   /**
@@ -212,21 +298,11 @@ export class ProviderPhotosService {
     );
   }
 
-  private async reserve(operation: string): Promise<boolean> {
-    const result = await this.budget.reserve(
-      { scope: SCOPE, operation, calls: 1, units: 1 },
-      this.limits,
-    );
-    if (!result.ok) this.count('refused_budget');
-    return result.ok;
+  private result(status: ProviderPhotosStatus, outcome: ProviderPhotoOutcome): Result {
+    return { dto: this.answer(status), outcome };
   }
 
   private answer(status: ProviderPhotosStatus): ProviderPhotosDto {
-    if (status === 'disabled' || status === 'not_linked') this.count(status);
     return { status, provider: 'google', attribution: GOOGLE_ATTRIBUTION, photos: [] };
-  }
-
-  private count(outcome: ProviderPhotoOutcome): void {
-    this.metrics.increment('place_provider_photos_total', { outcome });
   }
 }
