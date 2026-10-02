@@ -62,6 +62,6 @@ rule 13 ("a price never leaves its unit behind") forbids rendering it.
 
 ## Migration & rollback
 
-No migration, no event. Contract: new path + schemas (`1.0.0-alpha.61`),
+No migration, no event. Contract: new path + schemas (`1.0.0-alpha.62`),
 additive. Rollback: flag row `enabled = false` (instant), or revert the PR —
 nothing was stored, so nothing has to be cleaned up.
