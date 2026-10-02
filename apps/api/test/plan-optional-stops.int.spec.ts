@@ -640,6 +640,42 @@ describe('regenerate with optional and locked stops (ADR-0028)', () => {
     expect(plans.find((p) => p.status === 'current')!.id).toBe(plan.id);
   });
 
+  it('refuses with PLAN_TIME_CONFLICT when endAt is shortened before a locked departure (F-01)', async () => {
+    const { hostToken, roomId, plan } = await plannedRoom();
+    const last = plan.stops[plan.stops.length - 1]!;
+    await patch(hostToken, `/v1/plans/${plan.id}/stops/${last.id}/lock`, { locked: true });
+    await db
+      .update(schema.planStops)
+      .set({
+        arriveAt: new Date('2026-08-29T08:00:00Z'),
+        departAt: new Date('2026-08-29T09:00:00Z'),
+      })
+      .where(eq(schema.planStops.id, last.id));
+    await patch(hostToken, `/v1/rooms/${roomId}/status`, { status: 'matching' });
+    const room = (await get(hostToken, `/v1/rooms/${roomId}`)).json();
+    const shortened = await patch(hostToken, `/v1/rooms/${roomId}/constraints`, {
+      budgetMode: 'per_person',
+      budgetAmount: 400_000,
+      currency: 'VND',
+      originLat: 10.776,
+      originLng: 106.7,
+      radiusM: 5000,
+      startAt: '2026-08-29T03:00:00Z',
+      endAt: '2026-08-29T08:30:00Z',
+      expectedConstraintVersion: room.constraintVersion,
+    });
+    expect(shortened.statusCode).toBe(200);
+
+    const regen = await post(hostToken, `/v1/plans/${plan.id}/regenerate`, {});
+    expect(regen.statusCode).toBe(409);
+    expect(regen.json().code).toBe('PLAN_TIME_CONFLICT');
+    const plans = await plansOf(roomId);
+    expect(plans).toHaveLength(2);
+    const current = plans.find((p) => p.status === 'current')!;
+    expect(current.id).toBe(plan.id);
+    expect(current.isStale).toBe(true);
+  });
+
   it('lock/unlock never changes optionality', async () => {
     const { hostToken, plan } = await plannedRoom();
     const v1 = (

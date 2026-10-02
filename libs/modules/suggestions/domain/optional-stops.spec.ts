@@ -347,6 +347,45 @@ describe('locked stops keep their stored schedule (FAIL-before)', () => {
     ).rejects.toMatchObject({ code: 'PLAN_TIME_CONFLICT', httpStatus: 409 });
   });
 
+  it('a locked stop ending after the current window end fails with PLAN_TIME_CONFLICT (F-01)', async () => {
+    await expect(
+      buildItinerary({
+        ranked: [],
+        // Host shortened the window to end at 08:00Z; the stop is stored until 09:00Z.
+        snapshot: snapshot({
+          timeWindow: { startAt: '2026-08-29T03:00:00Z', endAt: '2026-08-29T08:00:00Z' },
+        }),
+        lockedStops: [
+          anchor({
+            placeId: 'late',
+            isLocked: true,
+            arriveAt: at('2026-08-29T08:00:00Z'),
+            departAt: at('2026-08-29T09:00:00Z'),
+          }),
+        ],
+        maxStops: 1,
+      }),
+    ).rejects.toMatchObject({ code: 'PLAN_TIME_CONFLICT', httpStatus: 409 });
+  });
+
+  it('a locked stop whose stored departure precedes its arrival fails with PLAN_TIME_CONFLICT (F-01)', async () => {
+    await expect(
+      buildItinerary({
+        ranked: [],
+        snapshot: snapshot(),
+        lockedStops: [
+          anchor({
+            placeId: 'inverted',
+            isLocked: true,
+            arriveAt: at('2026-08-29T06:00:00Z'),
+            departAt: at('2026-08-29T05:00:00Z'),
+          }),
+        ],
+        maxStops: 1,
+      }),
+    ).rejects.toMatchObject({ code: 'PLAN_TIME_CONFLICT', httpStatus: 409 });
+  });
+
   it('an unlocked anchor with stored times is rescheduled, not pinned', async () => {
     const result = await buildItinerary({
       ranked: [],

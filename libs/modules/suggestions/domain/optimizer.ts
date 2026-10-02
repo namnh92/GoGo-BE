@@ -268,10 +268,20 @@ export async function buildItinerary(input: {
       // ADR-0028 — a locked stop keeps its stored schedule. Arriving early
       // means waiting; arriving late would move it, and that is refused here,
       // before anything is written, so the plan in place stays as it was.
-      if (cursor && cursor.getTime() > entry.pinned.arriveAt.getTime()) {
+      // F-01 — the kept interval must also be well-formed and fit the room's
+      // *current* window: a host who shortened `endAt` past a locked stop must
+      // get a conflict, not a fresh plan with an infeasible schedule.
+      const pinArrive = entry.pinned.arriveAt.getTime();
+      const pinDepart = entry.pinned.departAt.getTime();
+      if (
+        pinArrive > pinDepart ||
+        (startAt && pinArrive < startAt.getTime()) ||
+        (endAt && pinDepart > endAt.getTime()) ||
+        (cursor && cursor.getTime() > pinArrive)
+      ) {
         throw AppError.conflict(
           'PLAN_TIME_CONFLICT',
-          'A locked stop can no longer be reached at its scheduled time',
+          'A locked stop no longer fits its scheduled time in the current window',
         );
       }
       arriveAt = new Date(entry.pinned.arriveAt);

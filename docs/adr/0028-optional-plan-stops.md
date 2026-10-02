@@ -53,7 +53,8 @@ finalize winner anchor states `isLocked: true` explicitly, so the stored
 behaviour of a finalized plan is unchanged. Regenerate keeps every locked
 stop's place, relative order, duration, cost, optionality **and stored
 schedule**; travel around it is recalculated. A locked stop that can no longer
-be reached at its stored time fails the build with `409 PLAN_TIME_CONFLICT`,
+be reached at its stored time — or whose stored interval is inverted or falls
+outside the room's current window — fails the build with `409 PLAN_TIME_CONFLICT`,
 before anything is written. Unavailable locked stops stay (with their existing
 warning); exclusions, budget pressure and a reduced stop limit never drop them.
 
