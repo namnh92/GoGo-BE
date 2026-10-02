@@ -280,24 +280,30 @@ export class CmsPlaceMediaService {
     const rejecting = patch.moderation === 'rejected';
     const isCover = rejecting ? false : patch.isCover;
 
+    const changes = {
+      ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
+      ...(patch.caption !== undefined ? { caption: patch.caption } : {}),
+      ...(patch.attribution !== undefined ? { attribution: patch.attribution } : {}),
+      ...(isCover !== undefined ? { isCover } : {}),
+      ...(moderationChanges
+        ? {
+            moderation: patch.moderation,
+            moderationReason: patch.moderationReason ?? null,
+            moderatedBy: actor.id,
+            moderatedAt: sql`now()`,
+          }
+        : {}),
+    };
+    // #441 F-02 — a PATCH that changes nothing (e.g. repeating the current
+    // moderation) must not reach `.set({})`, which Drizzle refuses with a
+    // throw. Nothing changed, so nothing is written or audited.
+    if (Object.keys(changes).length === 0) return this.present(before);
+
     const after = await this.db.transaction(async (tx) => {
       if (isCover === true) await this.clearCover(tx, placeId, mediaId);
       const [row] = await tx
         .update(schema.placeMedia)
-        .set({
-          ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
-          ...(patch.caption !== undefined ? { caption: patch.caption } : {}),
-          ...(patch.attribution !== undefined ? { attribution: patch.attribution } : {}),
-          ...(isCover !== undefined ? { isCover } : {}),
-          ...(moderationChanges
-            ? {
-                moderation: patch.moderation,
-                moderationReason: patch.moderationReason ?? null,
-                moderatedBy: actor.id,
-                moderatedAt: sql`now()`,
-              }
-            : {}),
-        })
+        .set(changes)
         .where(eq(schema.placeMedia.id, mediaId))
         .returning();
       return row!;

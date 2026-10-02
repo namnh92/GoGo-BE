@@ -225,6 +225,32 @@ describe('#191 upload → attach → moderate → visible', () => {
     });
   });
 
+  for (const state of ['pending', 'approved', 'rejected'] as const) {
+    it(`a same-value moderation PATCH on a ${state} photo is a 200 no-op (#441 F-02)`, async () => {
+      const place = await makePlace();
+      const upload = await authorizeUpload(editor.token);
+      const media = (await attach(place.id, { storageKey: upload.key })).json();
+      let current = media as { moderatedBy: string | null; moderatedAt: string | null };
+      if (state !== 'pending') {
+        const decided = await patchMedia(place.id, media.id, {
+          moderation: state,
+          moderationReason: 'Quyết định ban đầu',
+        });
+        expect(decided.statusCode).toBe(200);
+        current = decided.json();
+      }
+
+      // Only the moderation field, repeating what is stored: nothing to write.
+      const repeat = await patchMedia(place.id, media.id, { moderation: state });
+      expect(repeat.statusCode).toBe(200);
+      expect(repeat.json()).toMatchObject({
+        moderation: state,
+        moderatedBy: current.moderatedBy,
+        moderatedAt: current.moderatedAt,
+      });
+    });
+  }
+
   it('stops serving a photo the moment it is rejected', async () => {
     const place = await makePlace();
     const upload = await authorizeUpload(editor.token);
