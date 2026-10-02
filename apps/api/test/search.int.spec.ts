@@ -543,7 +543,9 @@ describe('#339 — a place the provider reports shut never reaches search', () =
  */
 describe('#360 — place detail states what the provider reports about the business', () => {
   let seq = 0;
-  async function placeWith(statuses: ('active' | 'moved' | 'temporarily_closed' | 'closed')[]) {
+  async function placeWith(
+    statuses: ('active' | 'moved' | 'temporarily_closed' | 'closed' | 'unknown')[],
+  ) {
     seq += 1;
     const [place] = await db
       .insert(schema.places)
@@ -592,6 +594,39 @@ describe('#360 — place detail states what the provider reports about the busin
     const body = await detail(await placeWith(['active', 'closed']));
     expect(body.providerStatus).toEqual({
       status: 'closed',
+      fetchedAt: '2026-09-02T00:00:00.000Z',
+    });
+  });
+
+  it('ranks by severity, not by recency: an older closed report beats a newer active one (F-01)', async () => {
+    // The closed row is fetched first (2026-09-01), the active row a day later.
+    const body = await detail(await placeWith(['closed', 'active']));
+    expect(body.providerStatus).toEqual({
+      status: 'closed',
+      fetchedAt: '2026-09-01T00:00:00.000Z',
+    });
+  });
+
+  it('ranks moved above active in either order (F-01)', async () => {
+    expect((await detail(await placeWith(['moved', 'active']))).providerStatus.status).toBe(
+      'moved',
+    );
+    expect((await detail(await placeWith(['active', 'moved']))).providerStatus.status).toBe(
+      'moved',
+    );
+  });
+
+  it('ranks active above unknown, and unknown alone reads unknown (F-01)', async () => {
+    expect((await detail(await placeWith(['active', 'unknown']))).providerStatus.status).toBe(
+      'active',
+    );
+    expect((await detail(await placeWith(['unknown']))).providerStatus.status).toBe('unknown');
+  });
+
+  it('breaks a same-severity tie with the newer fetch (F-01)', async () => {
+    const body = await detail(await placeWith(['temporarily_closed', 'temporarily_closed']));
+    expect(body.providerStatus).toEqual({
+      status: 'temporarily_closed',
       fetchedAt: '2026-09-02T00:00:00.000Z',
     });
   });
