@@ -11,11 +11,20 @@
 --
 -- Guard: refuse to drop a table that holds rows. The issue's precondition is
 -- `select count(*) = 0` in every environment; if that is not true the deploy
--- fails here and the data survives for a human to look at.
+-- fails here and the data survives for a human to look at. The table is
+-- locked ACCESS EXCLUSIVE *before* the check and the lock is held through the
+-- DROP (drizzle runs every pending migration in one transaction), so no
+-- concurrent writer can commit a row between "empty" and DROP.
 --
--- Locks: ACCESS EXCLUSIVE on this table only. Nothing references it (no FK
--- points at it; its own FKs point at admin_users, whose lock is brief), and
--- nothing queries it, so there is no queue to wait behind.
+-- Locks and timeout: ACCESS EXCLUSIVE on this table (nothing references it,
+-- nothing reads it). DROP also takes a lock on `admin_users` to remove the FK
+-- triggers, and that one *can* queue behind a long transaction on admin_users
+-- (e.g. a slow CMS auth query) — and while it waits, new admin_users queries
+-- queue behind it. `lock_timeout = 5s` bounds that wait: if any lock is not
+-- granted within 5s, this migration (and the whole deploy transaction) aborts
+-- with `canceling statement due to lock timeout`, nothing is dropped, and the
+-- deploy can simply be retried. The timeout is reset to the session default at
+-- the end so later migrations in the same transaction are unaffected.
 --
 -- ---------------------------------------------------------------------------
 -- Down (re-creates the 0051 shape, empty; there is no data to restore):
@@ -40,9 +49,11 @@
 --     ON administrative_unit_change_overrides (old_code)
 --     WHERE revoked_at IS NULL;
 -- Application rollback needs no down: no released code touches the table.
+SET LOCAL lock_timeout = '5s';--> statement-breakpoint
 DO $$
 BEGIN
   IF to_regclass('public.administrative_unit_change_overrides') IS NOT NULL THEN
+    LOCK TABLE public.administrative_unit_change_overrides IN ACCESS EXCLUSIVE MODE;
     IF EXISTS (SELECT 1 FROM public.administrative_unit_change_overrides) THEN
       RAISE EXCEPTION 'administrative_unit_change_overrides is not empty; refusing to drop (GoGo-BE#486)';
     END IF;
@@ -51,4 +62,5 @@ END
 $$;--> statement-breakpoint
 DROP INDEX IF EXISTS administrative_unit_change_overrides_live_unique;--> statement-breakpoint
 DROP INDEX IF EXISTS administrative_unit_change_overrides_old_idx;--> statement-breakpoint
-DROP TABLE IF EXISTS administrative_unit_change_overrides;
+DROP TABLE IF EXISTS administrative_unit_change_overrides;--> statement-breakpoint
+SET LOCAL lock_timeout TO DEFAULT;

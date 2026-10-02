@@ -329,19 +329,26 @@ describe('the global override table is gone (#486)', () => {
     );
     try {
       await db.execute(sql`insert into administrative_unit_change_overrides default values`);
-      // Drizzle's outer message echoes the SQL, which itself contains the
-      // words; so assert on the pg error underneath: RAISE EXCEPTION = P0001.
-      let caught: unknown;
-      try {
-        await db.execute(sql.raw(statements[0]!));
-      } catch (err) {
-        caught = err;
-      }
-      let raised: { code?: string; message?: string } | undefined;
-      for (let e: unknown = caught; e != null; e = (e as { cause?: unknown }).cause) {
-        if ((e as { code?: string }).code === 'P0001') raised = e as typeof raised;
-      }
-      expect(raised?.message).toMatch(/is not empty; refusing to drop/);
+      // Run it the way drizzle does: every statement inside one transaction.
+      const runMigration = async () => {
+        const c = await pool.connect();
+        try {
+          await c.query('begin');
+          for (const stmt of statements) await c.query(stmt);
+          await c.query('commit');
+        } catch (err) {
+          await c.query('rollback');
+          throw err;
+        } finally {
+          c.release();
+        }
+      };
+      // RAISE EXCEPTION is SQLSTATE P0001; asserting the code and message
+      // rules out any other failure passing for the guard.
+      await expect(runMigration()).rejects.toMatchObject({
+        code: 'P0001',
+        message: expect.stringMatching(/is not empty; refusing to drop/),
+      });
       const { rows } = await db.execute(
         sql`select count(*)::int as n from administrative_unit_change_overrides`,
       );
@@ -349,12 +356,105 @@ describe('the global override table is gone (#486)', () => {
 
       // Emptied, the same migration goes through.
       await db.execute(sql`delete from administrative_unit_change_overrides`);
-      for (const stmt of statements) await db.execute(sql.raw(stmt));
+      await runMigration();
       const after = await db.execute(
         sql`select to_regclass('public.administrative_unit_change_overrides') as t`,
       );
       expect(after.rows[0]!.t).toBeNull();
     } finally {
+      await db.execute(sql`drop table if exists administrative_unit_change_overrides`);
+    }
+  });
+
+  it('gives up within the lock budget instead of queueing admin_users (F-02)', async () => {
+    // DROP removes the FK triggers on admin_users. A long transaction there
+    // (a CMS write) must make the migration abort fast and retryably, not wait
+    // indefinitely while every new admin_users query queues behind it.
+    const statements = readFileSync(
+      path.join(MIGRATIONS, '0068_drop-administrative-unit-change-overrides.sql'),
+      'utf8',
+    ).split('--> statement-breakpoint');
+    await db.execute(
+      sql`create table administrative_unit_change_overrides (id uuid primary key default gen_random_uuid(), created_by uuid references admin_users(id) on delete set null)`,
+    );
+    const holder = await pool.connect();
+    const a = await pool.connect();
+    try {
+      await holder.query('begin');
+      await holder.query('lock table admin_users in row exclusive mode');
+
+      const started = Date.now();
+      let caught: { code?: string } | undefined;
+      try {
+        await a.query('begin');
+        for (const stmt of statements) await a.query(stmt);
+        await a.query('commit');
+      } catch (err) {
+        caught = err as { code?: string };
+        await a.query('rollback');
+      }
+      expect(caught?.code).toBe('55P03'); // lock_not_available
+      expect(Date.now() - started).toBeLessThan(15_000);
+
+      await holder.query('rollback');
+      const { rows } = await db.execute(
+        sql`select to_regclass('public.administrative_unit_change_overrides') as t`,
+      );
+      expect(rows[0]!.t).not.toBeNull(); // aborted: nothing dropped, retry later
+    } finally {
+      await holder.query('rollback').catch(() => undefined);
+      holder.release();
+      a.release();
+      await db.execute(sql`drop table if exists administrative_unit_change_overrides`);
+    }
+  });
+
+  it('a row written while the migration runs is never dropped silently (F-01)', async () => {
+    // Drizzle runs the migration inside one transaction. Between the emptiness
+    // check and the DROP, a second connection must not be able to commit a row
+    // that the DROP then deletes. Either its write waits/fails, or the
+    // migration sees it and aborts — never both "write committed" and "table
+    // dropped".
+    const statements = readFileSync(
+      path.join(MIGRATIONS, '0068_drop-administrative-unit-change-overrides.sql'),
+      'utf8',
+    ).split('--> statement-breakpoint');
+    const guardAt = statements.findIndex((s) => s.includes('DO $$'));
+    expect(guardAt).toBeGreaterThanOrEqual(0);
+
+    await db.execute(
+      sql`create table administrative_unit_change_overrides (id uuid primary key default gen_random_uuid())`,
+    );
+    const a = await pool.connect();
+    const b = await pool.connect();
+    try {
+      await a.query('begin');
+      for (const stmt of statements.slice(0, guardAt + 1)) await a.query(stmt);
+
+      // B writes in autocommit while A sits between the check and the DROP.
+      let bCommitted = false;
+      const bWrite = b
+        .query('insert into administrative_unit_change_overrides default values')
+        .then(() => {
+          bCommitted = true;
+        });
+      bWrite.catch(() => undefined);
+      await Promise.race([bWrite, new Promise((r) => setTimeout(r, 1_000))]);
+
+      let aDropped = false;
+      try {
+        for (const stmt of statements.slice(guardAt + 1)) await a.query(stmt);
+        await a.query('commit');
+        aDropped = true;
+      } catch {
+        await a.query('rollback');
+      }
+      await bWrite.catch(() => undefined);
+
+      expect({ bCommitted, aDropped }).not.toEqual({ bCommitted: true, aDropped: true });
+    } finally {
+      a.release();
+      b.release();
       await db.execute(sql`drop table if exists administrative_unit_change_overrides`);
     }
   });
