@@ -142,6 +142,44 @@ describe('ProviderPhotosService', () => {
     expect(outcomes).toEqual(['served']);
   });
 
+  it('F-06: a reordered fresh list replaces the stale photo, never re-serves a good one', async () => {
+    const keep = { ...ref('Keep', 'Kim'), googleMapsUri: 'https://www.google.com/maps/photo/keep' };
+    const stale = { ...ref('Stale', 'Old'), googleMapsUri: 'https://www.google.com/maps/photo/s' };
+    let refs = 0;
+    const mediaCalls: string[] = [];
+    const port: PlacePhotoDisplayPort = {
+      photoRefs: async () => {
+        refs += 1;
+        return {
+          providerPlaceId: GOOGLE_ID,
+          photos:
+            refs === 1
+              ? [keep, stale]
+              : // Fresh names, and Google put the photos in the other order.
+                [
+                  { ...stale, reference: `places/${GOOGLE_ID}/photos/StaleNew` },
+                  { ...keep, reference: `places/${GOOGLE_ID}/photos/KeepNew` },
+                ],
+        };
+      },
+      photoMedia: async (reference: string) => {
+        mediaCalls.push(reference);
+        if (reference.endsWith('/Stale')) {
+          throw new ProviderInvalidRequestError('google.places', 'NOT_FOUND');
+        }
+        return JPEG;
+      },
+    } as PlacePhotoDisplayPort;
+    const { service } = setup(port);
+    const result = await service.photos(PLACE);
+    expect(result.photos.map((p) => p.googleMapsUri)).toEqual([
+      'https://www.google.com/maps/photo/keep',
+      'https://www.google.com/maps/photo/s',
+    ]);
+    // The good photo is not bought a second time.
+    expect(mediaCalls.filter((r) => r.includes('Keep'))).toHaveLength(1);
+  });
+
   it('F-02: the refetch happens once — a second expiry is not chased', async () => {
     let refs = 0;
     const port: PlacePhotoDisplayPort = {

@@ -654,6 +654,28 @@ export class GooglePlacesAdapter
       }));
   }
 
+  /**
+   * GoGo-BE#509 F-05: a body read cut off by the caller's deadline is the
+   * caller's abort, not a provider fault — otherwise a handful of slow views
+   * would open the breaker for every other request. `readGoogleError` swallows
+   * read failures, so the signal is checked after the read as well.
+   */
+  private async afterCallerCheck<R>(
+    name: string,
+    caller: AbortSignal | undefined,
+    read: () => Promise<R>,
+  ): Promise<R> {
+    let value: R;
+    try {
+      value = await read();
+    } catch (err) {
+      if (caller?.aborted) throw new ProviderCallAbortedError(name);
+      throw err;
+    }
+    if (caller?.aborted) throw new ProviderCallAbortedError(name);
+    return value;
+  }
+
   private call<T>(
     name: string,
     url: string,
@@ -707,7 +729,7 @@ export class GooglePlacesAdapter
       );
       if (res.ok) {
         this.metrics.increment('places_provider_cost_units', { sku: name });
-        return (await res.json()) as T;
+        return (await this.afterCallerCheck(name, caller, () => res.json())) as T;
       }
 
       // #273: the reason is read before the status, because the status alone
@@ -715,7 +737,7 @@ export class GooglePlacesAdapter
       // RESOURCE_EXHAUSTED still pauses the import rather than retrying into
       // an exhausted budget (spec §9.4); a configuration fault is not retried
       // either, because the answer will not change.
-      const info = await readGoogleError(res);
+      const info = await this.afterCallerCheck(name, caller, () => readGoogleError(res));
       const fault = googleFailure('google.places', res.status, info);
 
       // #314: a request Google rejected is not a provider failure and must not

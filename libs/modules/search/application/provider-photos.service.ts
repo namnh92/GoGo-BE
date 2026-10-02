@@ -91,6 +91,15 @@ type Result = { dto: ProviderPhotosDto; outcome: ProviderPhotoOutcome };
 /** A media call Google refused because the photo name has expired. */
 const EXPIRED = Symbol('expired');
 
+/**
+ * What stays the same about a photo when Google renames it: its Maps link,
+ * else its credit. The name (`reference`) is not stable — it is what expired.
+ */
+function identityOf(ref: ProviderDisplayPhotoRef): string {
+  if (ref.googleMapsUri) return `uri:${ref.googleMapsUri}`;
+  return `by:${ref.authorAttributions.map((a) => `${a.displayName}|${a.uri ?? ''}`).join(',')}`;
+}
+
 function isExpiredName(err: unknown): boolean {
   return (
     err instanceof ProviderInvalidRequestError &&
@@ -174,14 +183,30 @@ export class ProviderPhotosService {
     );
 
     // F-02: photo names expire. Expired ones get exactly one fresh lookup in
-    // the same deadline; the fresh reference at the same position replaces
-    // the stale one, credit included, and its media call is reserved anew.
-    const expiredAt = first.flatMap((m, i) => (m === EXPIRED ? [i] : []));
-    if (expiredAt.length > 0 && !signal.aborted) {
+    // the same deadline, and its media call is reserved anew. F-06: fresh
+    // names differ from the stale ones and Google may reorder the list, so a
+    // replacement is matched by the photo's stable identity — never by
+    // position — and a photo already served is never bought twice.
+    const expired = first.flatMap((m, i) => (m === EXPIRED ? [i] : []));
+    if (expired.length > 0 && !signal.aborted) {
       const fresh = await this.refsFor(providerPlaceId, signal).catch(() => null);
-      const retry = expiredAt
-        .map((i) => ({ i, ref: fresh?.[i] }))
-        .filter((r): r is { i: number; ref: ProviderDisplayPhotoRef } => r.ref !== undefined);
+      const servedKeys = new Set(
+        granted.filter((_, i) => photos[i] !== null).map((ref) => identityOf(ref)),
+      );
+      const retry: { i: number; ref: ProviderDisplayPhotoRef }[] = [];
+      const taken = new Set<string>();
+      for (const i of expired) {
+        const wantedKey = identityOf(granted[i]!);
+        const candidates = (fresh ?? []).filter((f) => {
+          const key = identityOf(f);
+          return !servedKeys.has(key) && !taken.has(key);
+        });
+        // The same photo under its new name, else the first one not shown yet.
+        const match = candidates.find((f) => identityOf(f) === wantedKey) ?? candidates[0];
+        if (!match) continue;
+        taken.add(identityOf(match));
+        retry.push({ i, ref: match });
+      }
       const regranted = await this.grant(
         retry.map((r) => r.ref),
         signal,

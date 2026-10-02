@@ -156,6 +156,44 @@ describe('photoRefs', () => {
     expect((await adapter.photoRefs(PLACE))?.photos).toHaveLength(1);
   });
 
+  it('F-05: a deadline that fires after headers, before the body, is the caller abort', async () => {
+    const controller = new AbortController();
+    /** Headers arrived; the body read is cut off by the caller's abort. */
+    const stalledBody = (status: number) =>
+      ({
+        ok: status < 400,
+        status,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: () =>
+          new Promise((_, reject) => {
+            controller.signal.addEventListener('abort', () =>
+              reject(new DOMException('aborted', 'AbortError')),
+            );
+            setTimeout(() => controller.abort(), 0);
+          }),
+        text: () =>
+          new Promise((_, reject) => {
+            controller.signal.addEventListener('abort', () =>
+              reject(new DOMException('aborted', 'AbortError')),
+            );
+            setTimeout(() => controller.abort(), 0);
+          }),
+        clone() {
+          return this;
+        },
+      }) as unknown as Response;
+    const adapter = new GooglePlacesAdapter('key');
+    for (const status of [200, 503, 200, 503, 200, 503]) {
+      stub(stalledBody(status));
+      await expect(adapter.photoRefs(PLACE, { signal: controller.signal })).rejects.toBeInstanceOf(
+        ProviderCallAbortedError,
+      );
+    }
+    // Six cut-off reads later the breaker is still closed for everyone else.
+    stub(jsonResponse(googlePhotos));
+    expect((await adapter.photoRefs(PLACE))?.photos).toHaveLength(1);
+  });
+
   it('does not retry — a slow photo is simply not shown', async () => {
     stub(jsonResponse({ error: { status: 'UNAVAILABLE' } }, 503));
     await expect(new GooglePlacesAdapter('key').photoRefs(PLACE)).rejects.toThrow();
