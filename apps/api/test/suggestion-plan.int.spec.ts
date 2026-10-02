@@ -7,6 +7,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
 import { PlansRepository } from '../../../libs/modules/plans/infrastructure/plans.repository';
 import {
   ROOM_EVENT_BUS,
@@ -207,6 +208,19 @@ async function matchingRoom(
     await post(token, `/v1/rooms/${room.id}/preferences/complete`);
   }
   return { hostToken, memberToken, roomId: room.id as string };
+}
+
+/**
+ * #560 — attach now asks the bucket whether the bytes arrived. This stands in
+ * for the client's PUT through the presigned URL, into the bucket the key's
+ * prefix names (ADR-0005).
+ */
+function markUploaded(key: string): string {
+  const token = /^(places|banners|campaigns)\//.test(key)
+    ? PUBLIC_STORAGE_PROVIDER
+    : STORAGE_PROVIDER;
+  app.get<FakeStorage>(token).seed(key, new Uint8Array([0xff, 0xd8, 0xff]), 'image/jpeg');
+  return key;
 }
 
 beforeAll(async () => {
@@ -766,10 +780,10 @@ describe('active date + check-in (BE-BFF-014, FR-PLAN-008/009)', () => {
       rating: 5,
       tags: ['would_return', 'photogenic'],
       note: 'Tuyệt vời',
-      photoKeys: [photo.json().key],
+      photoKeys: [markUploaded(photo.json().key)],
       billTotal: 500_000,
       billPeopleCount: 2,
-      billPhotoKey: bill.json().key,
+      billPhotoKey: markUploaded(bill.json().key),
     });
     expect(checkin.statusCode).toBe(201);
     expect(checkin.json().billPerPerson).toBe(250_000);
@@ -1080,6 +1094,42 @@ describe('client upload path (BE-BFF-016, #171)', () => {
     expect(res.json().code).toBe('INVALID_UPLOAD_KEY');
   });
 
+  it('a missing bill photo leaves no photo claimed and no check-in (#560 F-02)', async () => {
+    const { memberToken, planId, stopId } = await activePlan();
+    const upload = async (purpose: string) =>
+      (
+        await post(memberToken, '/v1/uploads', {
+          purpose,
+          contentType: 'image/jpeg',
+          contentLength: 4000,
+        })
+      ).json().key as string;
+    const photoKey = markUploaded(await upload('checkin_photo'));
+    const billKey = await upload('bill_photo'); // never PUT
+
+    const res = await post(memberToken, `/v1/plans/${planId}/stops/${stopId}/checkin`, {
+      rating: 4,
+      tags: [],
+      photoKeys: [photoKey],
+      billTotal: 300_000,
+      billPeopleCount: 2,
+      billPhotoKey: billKey,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('UPLOAD_NOT_RECEIVED');
+
+    const claims = await db
+      .select({ key: schema.mediaUploads.storageKey, status: schema.mediaUploads.status })
+      .from(schema.mediaUploads)
+      .where(sql`${schema.mediaUploads.storageKey} in (${photoKey}, ${billKey})`);
+    expect(claims.map((c) => c.status)).toEqual(['pending', 'pending']);
+    const saved = await db
+      .select()
+      .from(schema.stopCheckins)
+      .where(eq(schema.stopCheckins.planStopId, stopId));
+    expect(saved).toHaveLength(0);
+  });
+
   it('re-saving a check-in with the same photo stays idempotent', async () => {
     const { memberToken, planId, stopId } = await activePlan();
     const key = (
@@ -1089,6 +1139,7 @@ describe('client upload path (BE-BFF-016, #171)', () => {
         contentLength: 9000,
       })
     ).json().key;
+    markUploaded(key);
 
     const body = { rating: 5, tags: ['quiet'], photoKeys: [key] };
     const first = await post(memberToken, `/v1/plans/${planId}/stops/${stopId}/checkin`, body);

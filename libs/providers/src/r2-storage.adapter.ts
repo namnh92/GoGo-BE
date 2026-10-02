@@ -169,13 +169,31 @@ export class R2StorageAdapter implements StoragePort {
     throw new ProviderUnavailableError('r2', `DELETE ${res.status}`);
   }
 
+  async exists(key: string, options: { signal?: AbortSignal } = {}): Promise<boolean> {
+    let res: Response;
+    try {
+      res = await this.signedRequest('HEAD', key, { signal: options.signal });
+    } catch (err) {
+      // #560 F-03 — a refused connection, DNS failure or the request timeout
+      // is storage not answering, not an application error: callers map
+      // ProviderUnavailableError to a retryable 503.
+      throw new ProviderUnavailableError(
+        'r2',
+        `HEAD ${err instanceof Error ? err.name : 'transport error'}`,
+      );
+    }
+    if (res.ok) return true;
+    if (res.status === 404) return false;
+    throw new ProviderUnavailableError('r2', `HEAD ${res.status}`);
+  }
+
   /**
    * SigV4 with the signature in the `Authorization` header. Every header
    * that is sent is signed, so a proxy cannot rewrite the content type or
    * the cache policy of what lands in the bucket.
    */
   private async signedRequest(
-    method: 'GET' | 'PUT' | 'DELETE',
+    method: 'GET' | 'HEAD' | 'PUT' | 'DELETE',
     key: string,
     input: {
       body?: Uint8Array;

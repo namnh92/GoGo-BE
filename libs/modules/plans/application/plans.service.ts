@@ -3,7 +3,7 @@ import { AppError } from '../../shared/app-error';
 import type { Actor } from '../../identity/domain/actor';
 import { RoomPolicy } from '../../rooms/presentation/room-policy';
 import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
-import { UploadsService } from '../../uploads/application/uploads.service';
+import { UploadsService, type Executor } from '../../uploads/application/uploads.service';
 import { FeedbackService } from '../../suggestions/application/feedback.service';
 import type { FeedbackContext } from '../../suggestions/domain/feedback';
 import {
@@ -380,21 +380,44 @@ export class PlansService {
       );
     }
     // #171 — a key is only usable by the actor who asked for it. Claimed
-    // before the write, so a check-in never records a photo the member does
+    // with the write, so a check-in never records a photo the member does
     // not own: without this an upload key is an unowned string and one member
     // could attach another's photo, or their bill.
-    await this.uploads.attach(actor, input.photoKeys, {
+    //
+    // #560 — every object (photos and bill) is checked in storage before
+    // anything is written (F-02: a missing bill used to fail after the photo
+    // claims had committed), and outside the transaction (F-04).
+    const checkinId = `${stopId}:${member.id}`;
+    const verifiedPhotos = await this.uploads.verifyUploaded(actor, input.photoKeys, {
       type: 'stop_checkin',
-      id: `${stopId}:${member.id}`,
+      id: checkinId,
       purposes: ['checkin_photo'],
     });
-    if (input.billPhotoKey) {
-      await this.uploads.attach(actor, [input.billPhotoKey], {
-        type: 'stop_checkin_bill',
-        id: `${stopId}:${member.id}`,
-        purposes: ['bill_photo'],
-      });
-    }
+    const verifiedBill = input.billPhotoKey
+      ? await this.uploads.verifyUploaded(actor, [input.billPhotoKey], {
+          type: 'stop_checkin_bill',
+          id: checkinId,
+          purposes: ['bill_photo'],
+        })
+      : undefined;
+    const claim = async (tx: Executor) => {
+      await this.uploads.attach(
+        actor,
+        input.photoKeys,
+        { type: 'stop_checkin', id: `${stopId}:${member.id}`, purposes: ['checkin_photo'] },
+        tx,
+        verifiedPhotos,
+      );
+      if (input.billPhotoKey) {
+        await this.uploads.attach(
+          actor,
+          [input.billPhotoKey],
+          { type: 'stop_checkin_bill', id: `${stopId}:${member.id}`, purposes: ['bill_photo'] },
+          tx,
+          verifiedBill,
+        );
+      }
+    };
 
     const billPeople =
       input.billTotal !== undefined ? (input.billPeopleCount ?? room.participantCount) : undefined;
@@ -409,6 +432,7 @@ export class PlansService {
       billTotal: input.billTotal,
       billPeopleCount: billPeople,
       billPhotoKey: input.billPhotoKey,
+      beforeWrite: claim,
       event: {
         eventType: 'stop.checkin_saved',
         resourceType: 'plan',

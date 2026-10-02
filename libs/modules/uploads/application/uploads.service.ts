@@ -2,11 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
-import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type StoragePort } from '@gogo/providers';
+import {
+  ProviderUnavailableError,
+  PUBLIC_STORAGE_PROVIDER,
+  STORAGE_PROVIDER,
+  type StoragePort,
+} from '@gogo/providers';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
-import { PUBLIC_UPLOAD_PREFIXES } from '../../shared/media-url';
+import { isPublicKey, PUBLIC_UPLOAD_PREFIXES } from '../../shared/media-url';
 import {
   AVATAR_STORAGE_CONFIGURED,
   CATALOGUE_STORAGE_CONFIGURED,
@@ -71,6 +76,17 @@ export type UploadPurpose = (typeof UPLOAD_PURPOSES)[number] | (typeof CMS_UPLOA
  * the orphan row the ordering fix removed.
  */
 export type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
+
+const VERIFIED = Symbol('verifiedUploads');
+
+/**
+ * #560 F-04 — proof that `verifyUploaded` asked storage about these keys
+ * before the caller opened its transaction. Only `verifyUploaded` mints one.
+ */
+export interface VerifiedUploads {
+  readonly [VERIFIED]: true;
+  readonly keys: ReadonlySet<string>;
+}
 
 /**
  * Enforced server-side, not advertised. The content type is part of what gets
@@ -211,16 +227,48 @@ export class UploadsService {
    * the caller does not learn whether a key exists, only that theirs is not
    * usable.
    */
-  async attach(
+  /**
+   * #560 — ask storage whether the bytes behind these keys arrived, **before**
+   * any transaction is open (F-04: a HEAD inside one would hold its connection
+   * and locks for up to the storage timeout).
+   *
+   * Target-aware (F-07): a key this target could not claim anyway — another
+   * actor's, wrong purpose, expired, or already claimed by a different
+   * resource — is refused with the same 400 `INVALID_UPLOAD_KEY` `attach`
+   * gives, before any HEAD, so the caller is never told "upload and retry" for
+   * a key no upload could make usable. `target.id` is null for a resource the
+   * caller has not inserted yet, which no existing claim can belong to.
+   *
+   * Every key that would be claimable is HEADed, attached-to-this-target ones
+   * included (F-01). Missing → 409 `UPLOAD_NOT_RECEIVED`; storage silent →
+   * 503 `UPLOAD_STORAGE_UNAVAILABLE`. Writes nothing; `attach` re-checks the
+   * claim inside the caller's transaction.
+   */
+  async verifyUploaded(
     actor: Actor,
     keys: string[],
-    target: { type: string; id: string; purposes: UploadPurpose[] },
-    executor: Executor = this.db,
-  ): Promise<void> {
-    if (keys.length === 0) return;
+    target: { type: string; id: string | null; purposes: UploadPurpose[] },
+  ): Promise<VerifiedUploads> {
+    const unique = [...new Set(keys)];
+    if (unique.length === 0) return { [VERIFIED]: true, keys: new Set() };
+    const usable = await this.claimableKeys(this.db, actor, unique, target);
+    this.refuseUnusable(unique, usable);
+    await this.assertUploaded([...usable]);
+    return { [VERIFIED]: true, keys: usable };
+  }
 
-    const db = executor as Db;
-    const rows = await db
+  /**
+   * The keys `target` may claim: this actor's, for one of its purposes, and
+   * either pending and unexpired or already attached to this same resource
+   * (so re-saving is idempotent).
+   */
+  private async claimableKeys(
+    executor: Executor,
+    actor: Actor,
+    keys: string[],
+    target: { type: string; id: string | null; purposes: UploadPurpose[] },
+  ): Promise<Set<string>> {
+    const rows = await (executor as Db)
       .select()
       .from(schema.mediaUploads)
       .where(
@@ -229,27 +277,57 @@ export class UploadsService {
           eq(schema.mediaUploads.actorId, actor.id),
         ),
       );
-
-    const usable = new Set(
+    return new Set(
       rows
         .filter(
           (row) =>
             (row.status === 'pending' || row.status === 'attached') &&
             target.purposes.includes(row.purpose as UploadPurpose) &&
-            // An expired pending key is not usable; one already attached to
-            // this same resource is, so re-saving a check-in is idempotent.
             (row.status === 'attached'
-              ? row.attachedToType === target.type && row.attachedToId === target.id
+              ? target.id !== null &&
+                row.attachedToType === target.type &&
+                row.attachedToId === target.id
               : row.expiresAt.getTime() > Date.now()),
         )
         .map((row) => row.storageKey),
     );
+  }
 
+  /** Same answer for every miss: the caller learns only that a key is not usable. */
+  private refuseUnusable(keys: string[], usable: Set<string>): void {
     const rejected = keys.filter((key) => !usable.has(key));
     if (rejected.length > 0) {
       throw AppError.badRequest('INVALID_UPLOAD_KEY', 'Upload key is not usable', [
         { field: 'photoKeys', code: 'invalid', message: `${rejected.length} key(s) rejected` },
       ]);
+    }
+  }
+
+  async attach(
+    actor: Actor,
+    keys: string[],
+    target: { type: string; id: string; purposes: UploadPurpose[] },
+    executor: Executor = this.db,
+    verified?: VerifiedUploads,
+  ): Promise<void> {
+    if (keys.length === 0) return;
+
+    const db = executor as Db;
+    const usable = await this.claimableKeys(executor, actor, keys, target);
+    this.refuseUnusable(keys, usable);
+
+    // #560 — a valid, unexpired key is a permission to upload, not proof that
+    // anything was. Every usable key must have been seen in storage: either by
+    // `verifyUploaded` before the caller's transaction, or here when the caller
+    // has none. A HEAD is never issued from inside a transaction (F-04).
+    const unverified = [...usable].filter((key) => !verified?.keys.has(key));
+    if (unverified.length > 0) {
+      if (executor !== this.db) {
+        throw new Error(
+          'uploads.attach inside a transaction needs verifyUploaded() first (#560 F-04)',
+        );
+      }
+      await this.assertUploaded(unverified);
     }
 
     await db
@@ -261,5 +339,32 @@ export class UploadsService {
         attachedAt: sql`now()`,
       })
       .where(inArray(schema.mediaUploads.storageKey, [...usable]));
+  }
+
+  private async assertUploaded(keys: string[]): Promise<void> {
+    let found: boolean[];
+    try {
+      // The key's prefix names its bucket, exactly as it did when presigned.
+      found = await Promise.all(
+        keys.map((key) => (isPublicKey(key) ? this.publicStorage : this.storage).exists(key)),
+      );
+    } catch (err) {
+      if (err instanceof ProviderUnavailableError) {
+        throw AppError.serviceUnavailable(
+          'UPLOAD_STORAGE_UNAVAILABLE',
+          'Object storage is not answering, try again shortly',
+        );
+      }
+      throw err;
+    }
+    const missing = keys.filter((_, i) => !found[i]);
+    if (missing.length > 0) {
+      // 409, not 400: the key is fine and the request may succeed once the
+      // upload has finished. Nothing is written — no claim, no resource row.
+      throw AppError.conflict(
+        'UPLOAD_NOT_RECEIVED',
+        'The file for this upload key has not reached storage; upload it, then retry',
+      );
+    }
   }
 }

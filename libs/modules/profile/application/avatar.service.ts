@@ -79,11 +79,29 @@ export class AvatarService {
     // for this purpose, pending and unexpired — or already attached to this
     // same user, so a retry is not a second attachment. Every miss is the
     // same answer.
-    await this.uploads.attach(actor, [uploadKey], {
-      type: 'user',
-      id: userId,
-      purposes: ['avatar'],
-    });
+    try {
+      await this.uploads.attach(actor, [uploadKey], {
+        type: 'user',
+        id: userId,
+        purposes: ['avatar'],
+      });
+    } catch (err) {
+      // #560 moved the "no bytes behind this key" check into attach. This
+      // endpoint has documented that case as AVATAR_UPLOAD_MISSING (400) since
+      // #534, so it keeps saying so.
+      if (err instanceof AppError && err.code === 'UPLOAD_NOT_RECEIVED') {
+        throw AppError.badRequest('AVATAR_UPLOAD_MISSING', 'No file was uploaded for that key');
+      }
+      // #560 F-05 — this endpoint documents its storage outage as
+      // AVATAR_STORAGE_UNAVAILABLE (503, retryable); keep that promise.
+      if (err instanceof AppError && err.code === 'UPLOAD_STORAGE_UNAVAILABLE') {
+        throw AppError.serviceUnavailable(
+          'AVATAR_STORAGE_UNAVAILABLE',
+          'Object storage is not answering, try again shortly',
+        );
+      }
+      throw err;
+    }
     const [upload] = await this.db
       .select({ contentType: schema.mediaUploads.contentType })
       .from(schema.mediaUploads)

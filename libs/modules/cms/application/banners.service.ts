@@ -7,7 +7,11 @@ import { writeAudit } from '../../shared/audit';
 import { decodeKeysetCursor, encodeKeysetCursor, toIso } from '../../shared/cursor';
 import { assertExternalUrl } from '../../shared/external-url';
 import { APP_CONFIG, type MediaConfig } from '../../shared/config';
-import { UploadsService, type Executor } from '../../uploads/application/uploads.service';
+import {
+  UploadsService,
+  type Executor,
+  type VerifiedUploads,
+} from '../../uploads/application/uploads.service';
 import type { Actor } from '../../identity/domain/actor';
 import type { ContentAudience } from '../../shared/audience';
 import { publicCatalogueUrl } from '../../shared/media-url';
@@ -187,6 +191,12 @@ export class BannersService {
      * Attaching on a separate connection would decide correctly and still
      * leave the upload marked `attached` to a banner the rollback removed.
      */
+    // #560 F-04 — storage is asked before the transaction opens.
+    const verified = await this.uploads.verifyUploaded(actor, [input.imageKey], {
+      type: 'banner',
+      id: null,
+      purposes: ['banner_image'],
+    });
     const row = await this.db.transaction(async (tx) => {
       const [inserted] = await tx
         .insert(schema.banners)
@@ -210,7 +220,7 @@ export class BannersService {
           throw this.nameConflict(err, input.name);
         });
 
-      await this.attachImage(actor, inserted!.id, input.imageKey, tx);
+      await this.attachImage(actor, inserted!.id, input.imageKey, tx, verified);
       return inserted!;
     });
 
@@ -242,9 +252,17 @@ export class BannersService {
      * good image was gone from the record with no way to recover it. A failed
      * replacement must leave the banner exactly as it was.
      */
+    const replacing = patch.imageKey && patch.imageKey !== before.image_key;
+    const verified = replacing
+      ? await this.uploads.verifyUploaded(actor, [patch.imageKey!], {
+          type: 'banner',
+          id,
+          purposes: ['banner_image'],
+        })
+      : undefined;
     await this.db.transaction(async (tx) => {
-      if (patch.imageKey && patch.imageKey !== before.image_key) {
-        await this.attachImage(actor, id, patch.imageKey, tx);
+      if (replacing) {
+        await this.attachImage(actor, id, patch.imageKey!, tx, verified);
       }
 
       await tx
@@ -321,12 +339,14 @@ export class BannersService {
     bannerId: string,
     imageKey: string,
     executor: Executor,
+    verified: VerifiedUploads | undefined,
   ): Promise<void> {
     await this.uploads.attach(
       actor,
       [imageKey],
       { type: 'banner', id: bannerId, purposes: ['banner_image'] },
       executor,
+      verified,
     );
   }
 
