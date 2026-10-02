@@ -63,6 +63,39 @@ export const DESTINATION_REFERENCES: Partial<Record<CampaignDestination, 'uuid' 
   external_url: 'url',
 };
 
+/**
+ * GoGo-BE#604, owner decision (c) — destinations the contract still names but
+ * no app can open yet: there is no screen and no public API for a
+ * recommendation or a plan template, and GoGo-MobileApp#264 deliberately never
+ * opens an external URL from a push. A recipient tapping one lands on Home,
+ * which is not what the operator chose, so new use is refused. The enum is
+ * unchanged — rows that already hold one stay readable — until a decision on
+ * supporting them (issue option b) lands.
+ */
+export const UNOPENABLE_CAMPAIGN_DESTINATIONS: readonly CampaignDestination[] = [
+  'recommendation',
+  'plan_template',
+  'external_url',
+];
+
+export function isOpenableDestination(type: CampaignDestination): boolean {
+  return !UNOPENABLE_CAMPAIGN_DESTINATIONS.includes(type);
+}
+
+/** 422, not 400: the value is well formed; the app just cannot open it. */
+export function assertDestinationOpenable(type: CampaignDestination): void {
+  if (isOpenableDestination(type)) return;
+  throw new AppError('INVALID_DESTINATION', 'That destination cannot be opened by the app', 422, {
+    fieldErrors: [
+      {
+        field: 'destinationType',
+        code: 'not_openable',
+        message: `${type} cannot be opened by the app yet`,
+      },
+    ],
+  });
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function badDestination(field: string, message: string): AppError {

@@ -3751,7 +3751,8 @@ export interface paths {
          * Ops: compose a campaign (draft)
          * @description Created as a `draft`; nothing is sent until it is scheduled.
          *
-         *     The destination is validated against real data: a `place`, `recommendation` or `plan_template` id must resolve, and an `external_url` must be https, carry no credentials and not point inside the network. A deep link into content that does not exist is a dead notification on every phone that receives it.
+         *     The destination is validated against real data: a `place` id must resolve. `recommendation`, `plan_template` and `external_url` are refused with 422 until the app can open them (GoGo-BE#604); a malformed value is still a 400. A deep link into content that does not exist is a dead notification on every phone that receives it.
+         *     A due campaign that already holds one of those destinations is not sent: the dispatcher marks it `failed` with `lastError = DESTINATION_NOT_OPENABLE`.
          */
         post: operations["cmsCreateCampaign"];
         delete?: never;
@@ -15793,6 +15794,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description `INVALID_DESTINATION` with `field_errors[0].field = destinationType` — `recommendation`, `plan_template` and `external_url` are not accepted for new campaigns until the app can open them (GoGo-BE#604). They stay in `CampaignDestination` so campaigns that already hold one remain readable. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsGetCampaign: {
@@ -15846,6 +15856,15 @@ export interface operations {
             404: components["responses"]["NotFound"];
             /** @description Not in an editable state (`CAMPAIGN_NOT_EDITABLE`), or already delivered to at least one recipient and the patch changes a field that reaches a phone (`CAMPAIGN_ALREADY_DELIVERED`). */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `INVALID_DESTINATION` with `field_errors[0].field = destinationType` — the patch changes the destination to `recommendation`, `plan_template` or `external_url`, which the app cannot open yet (GoGo-BE#604). A campaign that already holds one can still be edited in every other field, re-saved with the same destination, or moved to an openable one. Changing `destinationType` takes its `destinationValue` from the patch only; the previous value is not carried over. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15917,6 +15936,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description `INVALID_DESTINATION` with `field_errors[0].field = destinationType` — the campaign holds `recommendation`, `plan_template` or `external_url`, which the app cannot open yet (GoGo-BE#604). Move it to an openable destination, then schedule. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsCancelCampaign: {
@@ -15982,6 +16010,15 @@ export interface operations {
                 content?: never;
             };
             404: components["responses"]["NotFound"];
+            /** @description `INVALID_DESTINATION` with `field_errors[0].field = destinationType` — the campaign's destination cannot be opened by the app yet (GoGo-BE#604), so neither a send nor a preview of it is made. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             /** @description Too many test sends */
             429: {
                 headers: {

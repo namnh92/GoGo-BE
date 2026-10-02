@@ -10,6 +10,7 @@ import {
   AUDIENCE_FILTERS,
   CAMPAIGN_TRANSITIONS,
   EDITABLE_STATUSES,
+  assertDestinationOpenable,
   assertDestinationShape,
   type CampaignAudience,
   type CampaignDestination,
@@ -217,7 +218,9 @@ export class CampaignsService {
 
   async create(actor: Actor, input: CampaignInput) {
     const adminId = actor.id;
-    const { audienceFilter, destinationType, destinationValue } = await this.validate(input);
+    const { audienceFilter, destinationType, destinationValue } = await this.validate(input, {
+      requireOpenable: true,
+    });
 
     const [row] = await this.insertCampaign(actor, input, {
       audienceFilter,
@@ -294,6 +297,8 @@ export class CampaignsService {
       );
     }
 
+    const destinationTypeChanged =
+      patch.destinationType !== undefined && patch.destinationType !== before.destination_type;
     const merged = {
       name: patch.name ?? before.name,
       title: patch.title ?? before.title,
@@ -301,7 +306,12 @@ export class CampaignsService {
       audienceType: patch.audienceType ?? before.audience_type,
       audienceFilter: patch.audienceFilter ?? before.audience_filter,
       destinationType: patch.destinationType ?? before.destination_type,
-      destinationValue: patch.destinationValue ?? before.destination_value ?? undefined,
+      // A new destination type brings its own value or none: the old one named
+      // something in a different table (or a URL), and carrying it over made
+      // "move this campaign to Home" impossible (#604).
+      destinationValue: destinationTypeChanged
+        ? patch.destinationValue
+        : (patch.destinationValue ?? before.destination_value ?? undefined),
       imageKey: patch.imageKey ?? before.image_key ?? undefined,
       ctaLabel: patch.ctaLabel ?? before.cta_label ?? undefined,
     };
@@ -330,7 +340,10 @@ export class CampaignsService {
       }
     }
 
-    const validated = await this.validate(merged);
+    // #604: only a *change* of destination is held to the openable set, so a
+    // campaign that already holds an unopenable one can still be renamed or
+    // re-saved — and moved somewhere openable.
+    const validated = await this.validate(merged, { requireOpenable: destinationTypeChanged });
 
     /*
      * Same order as a banner: the replacement is validated before it is
@@ -386,12 +399,18 @@ export class CampaignsService {
 
     // Re-validated at the last editable moment: the referenced place or
     // recommendation may have been deleted since the draft was written.
-    await this.validate({
-      audienceType: before.audience_type,
-      audienceFilter: before.audience_filter,
-      destinationType: before.destination_type,
-      destinationValue: before.destination_value ?? undefined,
-    });
+    // #604 F-01: and the destination must be one the app can open — the API is
+    // the final enforcement, so a legacy campaign is refused here with 422
+    // rather than accepted and failed silently by the worker.
+    await this.validate(
+      {
+        audienceType: before.audience_type,
+        audienceFilter: before.audience_filter,
+        destinationType: before.destination_type,
+        destinationValue: before.destination_value ?? undefined,
+      },
+      { requireOpenable: true },
+    );
 
     const scheduledAt = sendAt ?? new Date();
     // Review fix (#193): a campaign that *failed* mid-send is resumed, not
@@ -509,6 +528,9 @@ export class CampaignsService {
    */
   async requestTestSend(adminId: string, id: string) {
     const row = await this.requireRow(id);
+    // #604 F-02: a preview of a push the app cannot open is the same dead
+    // control as the real send.
+    assertDestinationOpenable(row.destination_type);
 
     const [admin] = await this.db
       .select({ email: schema.adminUsers.email })
@@ -551,12 +573,15 @@ export class CampaignsService {
 
   // ---------------------------------------------------------------- internals
 
-  private async validate(input: {
-    audienceType: CampaignAudience;
-    audienceFilter?: unknown;
-    destinationType?: CampaignDestination | undefined;
-    destinationValue?: string | undefined;
-  }) {
+  private async validate(
+    input: {
+      audienceType: CampaignAudience;
+      audienceFilter?: unknown;
+      destinationType?: CampaignDestination | undefined;
+      destinationValue?: string | undefined;
+    },
+    options: { requireOpenable: boolean } = { requireOpenable: false },
+  ) {
     const parsed = AUDIENCE_FILTERS[input.audienceType].safeParse(input.audienceFilter ?? {});
     if (!parsed.success) {
       throw AppError.badRequest('INVALID_AUDIENCE', 'That audience filter does not fit', [
@@ -570,6 +595,9 @@ export class CampaignsService {
 
     const destinationType = input.destinationType ?? 'home';
     const destinationValue = assertDestinationShape(destinationType, input.destinationValue);
+    // After the shape check (a malformed value is still a 400) and before the
+    // existence check (an id the app could not open anyway need not resolve).
+    if (options.requireOpenable) assertDestinationOpenable(destinationType);
     await this.assertDestinationExists(destinationType, destinationValue);
 
     return {

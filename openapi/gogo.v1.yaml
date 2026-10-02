@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.54
+  version: 1.0.0-alpha.55
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -7459,11 +7459,15 @@ paths:
         Created as a `draft`; nothing is sent until it is scheduled.
 
 
-        The destination is validated against real data: a `place`,
-        `recommendation` or `plan_template` id must resolve, and an
-        `external_url` must be https, carry no credentials and not point inside
-        the network. A deep link into content that does not exist is a dead
-        notification on every phone that receives it.
+        The destination is validated against real data: a `place` id must
+        resolve. `recommendation`, `plan_template` and `external_url` are
+        refused with 422 until the app can open them (GoGo-BE#604); a malformed
+        value is still a 400. A deep link into content that does not exist is a
+        dead notification on every phone that receives it.
+
+        A due campaign that already holds one of those destinations is not sent:
+        the dispatcher marks it `failed` with `lastError =
+        DESTINATION_NOT_OPENABLE`.
       requestBody:
         required: true
         content:
@@ -7481,6 +7485,16 @@ paths:
             destination is malformed or unsafe (`INVALID_DESTINATION`), or it
             points at something that does not exist (`DESTINATION_NOT_FOUND`).
         '409': { description: 'A campaign with that name exists (`CAMPAIGN_NAME_TAKEN`)' }
+        '422':
+          description: >
+            `INVALID_DESTINATION` with `field_errors[0].field = destinationType`
+            — `recommendation`, `plan_template` and `external_url` are not
+            accepted for new campaigns until the app can open them
+            (GoGo-BE#604). They stay in `CampaignDestination` so campaigns that
+            already hold one remain readable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/campaigns/{id}:
     get:
@@ -7533,6 +7547,19 @@ paths:
           description: >-
             Not in an editable state (`CAMPAIGN_NOT_EDITABLE`), or already delivered to at least one
             recipient and the patch changes a field that reaches a phone (`CAMPAIGN_ALREADY_DELIVERED`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: >
+            `INVALID_DESTINATION` with `field_errors[0].field = destinationType`
+            — the patch changes the destination to `recommendation`,
+            `plan_template` or `external_url`, which the app cannot open yet
+            (GoGo-BE#604). A campaign that already holds one can still be edited
+            in every other field, re-saved with the same destination, or moved
+            to an openable one. Changing `destinationType` takes its
+            `destinationValue` from the patch only; the previous value is not
+            carried over.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -7598,6 +7625,15 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Not schedulable from its current state (`INVALID_STATUS_TRANSITION`)
+        '422':
+          description: >
+            `INVALID_DESTINATION` with `field_errors[0].field = destinationType`
+            — the campaign holds `recommendation`, `plan_template` or
+            `external_url`, which the app cannot open yet (GoGo-BE#604). Move it
+            to an openable destination, then schedule.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/campaigns/{id}/cancel:
     post:
@@ -7657,6 +7693,14 @@ paths:
             The caller has no verified consumer account on the same address
             (`NO_TEST_RECIPIENT`).
         '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: >
+            `INVALID_DESTINATION` with `field_errors[0].field = destinationType`
+            — the campaign's destination cannot be opened by the app yet
+            (GoGo-BE#604), so neither a send nor a preview of it is made.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { description: Too many test sends }
 
   /cms/uploads:

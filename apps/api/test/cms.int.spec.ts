@@ -3331,6 +3331,8 @@ describe('notification campaigns (BE-CMS-G4e #226)', () => {
       expect(res.statusCode, url).toBe(400);
       expect(res.json().code).toBe('INVALID_DESTINATION');
     }
+    // A safe URL is well formed, but the app cannot open it from a push yet
+    // (GoGo-BE#604): 422, not 201.
     expect(
       (
         await post(
@@ -3338,7 +3340,7 @@ describe('notification campaigns (BE-CMS-G4e #226)', () => {
           draft({ destinationType: 'external_url', destinationValue: 'https://gogo.id.vn/tet' }),
         )
       ).statusCode,
-    ).toBe(201);
+    ).toBe(422);
   });
 
   it('refuses an audience the backend cannot compute', async () => {
@@ -6623,3 +6625,196 @@ async function seedAdministrativeMapping(): Promise<{ datasetVersion: string }> 
   ]);
   return { datasetVersion };
 }
+
+/**
+ * GoGo-BE#604 — owner decision (c): until the app can open them, a campaign may
+ * not newly point at `recommendation`, `plan_template` or `external_url`. The
+ * contract enum is unchanged; the API refuses with 422 `INVALID_DESTINATION`.
+ * A row that already holds one stays readable and editable in every other
+ * field, and the dispatcher never sends it to a Home screen the operator did not
+ * choose.
+ */
+describe('campaigns cannot newly target a destination the app cannot open (#604)', () => {
+  let ops: { id: string; token: string };
+  const ghost = '00000000-0000-4000-8000-000000000604';
+  const suffix = () => Math.random().toString(36).slice(2, 8);
+  const DEAD = [
+    ['recommendation', ghost],
+    ['plan_template', ghost],
+    ['external_url', 'https://gogo.id.vn/tet'],
+  ] as const;
+
+  beforeAll(async () => {
+    ops = await createAdmin('camp604@gogo.local', 'ops_admin');
+  });
+
+  const call = (method: 'POST' | 'PATCH' | 'GET', url: string, payload?: object) =>
+    api().inject({
+      method,
+      url: `/v1/cms/campaigns${url}`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      ...(payload ? { payload } : {}),
+    });
+  const draft = (extra: Record<string, unknown> = {}) => ({
+    name: `Chiến dịch 604 ${suffix()}`,
+    title: 'Cuối tuần đi đâu?',
+    body: 'Gợi ý mới',
+    audienceType: 'all',
+    ...extra,
+  });
+
+  /** A row written before the rule, straight to the table. */
+  async function legacy(
+    destinationType: (typeof DEAD)[number][0],
+    destinationValue: string,
+    status: 'draft' | 'scheduled' = 'draft',
+  ) {
+    const [row] = await db
+      .insert(schema.notificationCampaigns)
+      .values({
+        name: `Cũ 604 ${suffix()}`,
+        title: 'Cũ',
+        body: 'Cũ',
+        audienceType: 'all',
+        destinationType,
+        destinationValue,
+        status,
+        createdByAdminId: ops.id,
+        ...(status === 'scheduled'
+          ? { scheduledAt: new Date(Date.now() - 60_000), dispatchKey: crypto.randomUUID() }
+          : {}),
+      })
+      .returning({ id: schema.notificationCampaigns.id });
+    return row!.id;
+  }
+
+  it('refuses to create a campaign with a destination the app cannot open', async () => {
+    for (const [destinationType, destinationValue] of DEAD) {
+      const res = await call('POST', '', draft({ destinationType, destinationValue }));
+      expect(res.statusCode, destinationType).toBe(422);
+      expect(res.json().code).toBe('INVALID_DESTINATION');
+      expect(res.json().field_errors?.[0]?.field).toBe('destinationType');
+    }
+    // The openable ones still work.
+    expect((await call('POST', '', draft({ destinationType: 'home' }))).statusCode).toBe(201);
+    expect((await call('POST', '', draft({ destinationType: 'saved' }))).statusCode).toBe(201);
+  });
+
+  it('refuses to change a destination to one the app cannot open', async () => {
+    const id = (await call('POST', '', draft({ destinationType: 'home' }))).json().id as string;
+    for (const [destinationType, destinationValue] of DEAD) {
+      const res = await call('PATCH', `/${id}`, { destinationType, destinationValue });
+      expect(res.statusCode, destinationType).toBe(422);
+      expect(res.json().code).toBe('INVALID_DESTINATION');
+    }
+    expect((await call('GET', `/${id}`)).json().destinationType).toBe('home');
+  });
+
+  it('leaves a campaign that already holds one readable and editable elsewhere', async () => {
+    const id = await legacy('external_url', 'https://gogo.id.vn/tet');
+    const read = await call('GET', `/${id}`);
+    expect(read.statusCode).toBe(200);
+    expect(read.json().destinationType).toBe('external_url');
+
+    // An edit that leaves the destination alone still works…
+    const renamed = await call('PATCH', `/${id}`, { name: `Đổi tên ${suffix()}` });
+    expect(renamed.statusCode, renamed.body).toBe(200);
+    // …and so does repeating the destination it already has.
+    const same = await call('PATCH', `/${id}`, {
+      destinationType: 'external_url',
+      destinationValue: 'https://gogo.id.vn/tet',
+    });
+    expect(same.statusCode, same.body).toBe(200);
+    // Moving it to something openable is the way out.
+    // The old URL is not carried over to a type that takes no value.
+    const fixed = await call('PATCH', `/${id}`, { destinationType: 'home' });
+    expect(fixed.statusCode, fixed.body).toBe(200);
+    expect(fixed.json().destinationType).toBe('home');
+  });
+
+  it('refuses to schedule a campaign that already holds an unopenable destination (F-01)', async () => {
+    // A URL needs no row to exist, so before the rule this scheduled (201).
+    const id = await legacy('external_url', 'https://gogo.id.vn/tet');
+    const res = await call('POST', `/${id}/schedule`, {});
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().code).toBe('INVALID_DESTINATION');
+    expect(res.json().field_errors?.[0]?.field).toBe('destinationType');
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(row!.status).toBe('draft');
+  });
+
+  it('refuses a test send of a campaign with an unopenable destination (F-02)', async () => {
+    // The composer has a verified consumer account, so before the rule this
+    // queued (201) rather than failing on NO_TEST_RECIPIENT.
+    await db
+      .insert(schema.users)
+      .values({ email: 'camp604@gogo.local', displayName: 'Ops 604', emailVerifiedAt: new Date() })
+      .onConflictDoNothing();
+    const id = await legacy('external_url', 'https://gogo.id.vn/tet');
+    const res = await call('POST', `/${id}/test-send`, {});
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().code).toBe('INVALID_DESTINATION');
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(row!.testSendRequestedAt).toBeNull();
+  });
+
+  it('never sends a due campaign whose destination the app cannot open', async () => {
+    // An eligible recipient (live push subscription, push not opted out), so
+    // "nothing was sent" is a decision and not an empty audience (F-03).
+    const [reachable] = await db
+      .insert(schema.users)
+      .values({ email: `camp604-r-${suffix()}@gogo.id.vn`, displayName: 'Reachable' })
+      .returning();
+    await db
+      .insert(schema.pushSubscriptions)
+      .values({ userId: reachable!.id, platform: 'ios', subscriptionId: `sub-604-${suffix()}` });
+    const id = await legacy('plan_template', ghost, 'scheduled');
+    // Only this campaign is due; anything else still scheduled is parked.
+    await db.execute(sql`
+      update notification_campaigns
+      set scheduled_at = case when id = ${id}::uuid
+                              then now() - interval '1 second'
+                              else now() + interval '1 day' end
+      where status = 'scheduled'
+    `);
+    const sent: string[] = [];
+    const push = {
+      async sendToUser(userId: string) {
+        return this.sendToUsers([userId]);
+      },
+      async sendToUsers(userIds: readonly string[]) {
+        sent.push(...userIds);
+        return {
+          providerMessageId: 'x',
+          providerMessageIds: ['x'],
+          emptyResponses: 0,
+          unknownUserIds: [],
+        };
+      },
+    };
+    const { CampaignDispatcher } = await import('@gogo/modules');
+    await new CampaignDispatcher(db as never, push as never).dispatchDue();
+
+    const [row] = await db
+      .select()
+      .from(schema.notificationCampaigns)
+      .where(eq(schema.notificationCampaigns.id, id));
+    expect(row!.status).toBe('failed');
+    expect(row!.lastError).toBe('DESTINATION_NOT_OPENABLE');
+    expect(sent).toHaveLength(0);
+    // The audience was never resolved, let alone pushed to.
+    expect(row!.recipientCount).toBeNull();
+    const { rows } = await db.execute(sql`
+      select count(*)::int as n from notifications
+      where kind = 'campaign' and payload->>'campaignId' = ${id}
+    `);
+    expect((rows[0] as { n: number }).n).toBe(0);
+  });
+});
