@@ -1329,6 +1329,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/places/{id}/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report wrong information about a place ("Báo thông tin sai")
+         * @description BE-BFF-P2 (#218). Files a report into the moderation queue the CMS already reads (`GET /cms/moderation/reports`, `targetType=place`). An app account or a room guest may report; a CMS admin token answers `403 REPORTER_NOT_ALLOWED` and an anonymous call `401`. A place Place Detail does not open answers `404 PLACE_NOT_FOUND`, exactly like a missing one.
+         *
+         *     Deduplicated: while this actor already has an **open** report of the same `reasonCode` on this place, the call files nothing and answers that report with `200`; a new report answers `201`. Submissions for one place are serialized, so simultaneous identical calls file one report. Once a moderator decides it, a new report is a new report. An `Idempotency-Key` replay answers the original status and body.
+         *
+         *     `reasonCode` is a stable key the client labels through i18n — never a sentence. `note` is optional free text (CRLF normalised to LF, then trimmed, then at most 500 characters; control characters other than tab and line feed are refused with `400`; blank means none) delivered to moderators only: it is not echoed in the response and not logged. Do not ask the user for contact details in it. Rate-limited per actor: 5 a minute, 20 an hour.
+         */
+        post: operations["reportPlace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/rooms/{roomId}/suggestions": {
         parameters: {
             query?: never;
@@ -7599,6 +7623,24 @@ export interface components {
             /** @description Ids of the place's published reviews the caller marked helpful. Never anyone else's marks. */
             helpful: string[];
         };
+        /** @description What is wrong, as a stable key the client labels through i18n. Mirrors the facts Place Detail shows plus a catch-all. Extensible: a client offers the keys it knows and treats an unknown one in a response as `other`. */
+        PlaceReportReason: string;
+        PlaceReportRequest: {
+            reasonCode: components["schemas"]["PlaceReportReason"];
+            /** @description Optional detail for moderators. CRLF becomes LF, then the note is trimmed and must be at most 500 characters, so a client enforcing the limit on the raw text is safe. Control characters other than tab and line feed are refused. Blank means no note. */
+            note?: string;
+        };
+        PlaceReport: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            placeId: string;
+            reasonCode: components["schemas"]["PlaceReportReason"];
+            /** @description Moderation state; a freshly filed or deduplicated report is `open`. */
+            status: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
         PlaceReviewPreview: {
             /**
              * @description The order the server applied, echoing the request (default `latest`).
@@ -11162,6 +11204,49 @@ export interface operations {
                     "application/json": components["schemas"]["PlaceReviewPreview"];
                 };
             };
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    reportPlace: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaceReportRequest"];
+            };
+        };
+        responses: {
+            /** @description This actor's open report of the same reason, unchanged */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaceReport"];
+                };
+            };
+            /** @description Report filed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaceReport"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
         };
