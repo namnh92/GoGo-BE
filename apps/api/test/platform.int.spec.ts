@@ -115,6 +115,49 @@ describe('Idempotency-Key (api-contract rule)', () => {
     expect(stored.map((r) => r.status)).toContain(201);
   });
 
+  it('GoGo-BE#440 F-03: takes over an expired key on a generic route', async () => {
+    const token = await register('idem-expired@gogo.id.vn');
+    const key = 'expired-key-0001';
+    const send = (payload: unknown) =>
+      api().inject({
+        method: 'POST',
+        url: '/v1/rooms',
+        remoteAddress: ip(),
+        headers: { ...auth(token), 'idempotency-key': key },
+        payload: payload as Record<string, unknown>,
+      });
+    const first = await send(roomPayload);
+    expect(first.statusCode).toBe(201);
+    await db
+      .update(schema.idempotencyKeys)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.idempotencyKeys.endpoint, 'POST /v1/rooms'));
+
+    // Expired: a different body is a new request, not a 422 reuse.
+    const later = await send({ ...roomPayload, participantCount: 5 });
+    expect(later.statusCode, later.body).toBe(201);
+    expect(later.headers['x-idempotent-replay']).toBeUndefined();
+    expect(later.json().id).not.toBe(first.json().id);
+  });
+
+  it('GoGo-BE#440 F-03: concurrent retries of one key mutate once on a generic route', async () => {
+    const token = await register('idem-race@gogo.id.vn');
+    const results = await Promise.all(
+      [0, 1, 2, 3, 4].map(() =>
+        api().inject({
+          method: 'POST',
+          url: '/v1/rooms',
+          remoteAddress: ip(),
+          headers: { ...auth(token), 'idempotency-key': 'race-key-0001' },
+          payload: roomPayload,
+        }),
+      ),
+    );
+    for (const r of results) expect([201, 409], r.body).toContain(r.statusCode);
+    const ids = new Set(results.filter((r) => r.statusCode === 201).map((r) => r.json().id));
+    expect(ids.size).toBe(1);
+  });
+
   it('replays an @HttpCode(200) POST as 200, not 201 (GoGo-BE#662 F-05)', async () => {
     // POST /rooms/{id}/preferences/complete declares 200 (GoGo-BE#448). Before
     // #662 the interceptor stored every POST 200 as 201, so a replay answered

@@ -20,6 +20,7 @@ import {
 import { evaluateStaleness, type StaleVerdict } from '../domain/staleness';
 import { AdministrativeResolverRepository } from '../infrastructure/administrative-resolver.repository';
 import type { Executor } from './unit-lookup';
+import { CODE_CLAIM_FIELDS, changedCodeFields, dropCodeClaims } from './code-claims';
 
 /**
  * ADM-006 (#459) / ADR-0019 §7, §10 — the resolver, wired to the database.
@@ -376,6 +377,26 @@ export class AdministrativeResolverService {
         .set({ ...next, updatedAt: new Date() })
         .where(eq(schema.places.id, resolution.placeId));
 
+      /**
+       * #440 F-07 — editorial code claims that this write makes obsolete. A
+       * machine derivation (or a clear) supersedes both; otherwise only a
+       * field whose value changed loses its claim. Retained codes keep theirs.
+       * An adopted `trusted_code` assertion is re-stamped by its caller.
+       */
+      const machineDerived =
+        next.administrativeMappingStatus === 'UNMAPPED' ||
+        (resolution.status === 'AUTO_MATCHED' && resolution.method !== 'trusted_code');
+      const supersededClaims = await dropCodeClaims(
+        executor,
+        resolution.placeId,
+        machineDerived
+          ? CODE_CLAIM_FIELDS
+          : changedCodeFields(
+              { provinceCode: row.provinceCode, communeCode: row.communeCode },
+              { provinceCode: next.provinceCode, communeCode: next.communeCode },
+            ),
+      );
+
       await writeAudit(executor, {
         actorType: options.actor?.type ?? 'system',
         actorId: options.actor?.id ?? null,
@@ -408,6 +429,7 @@ export class AdministrativeResolverService {
           evidence: resolution.evidence,
           candidates: resolution.candidates,
           reason: resolution.reason,
+          ...(supersededClaims.length > 0 ? { supersededClaims } : {}),
           ...(options.runId ? { runId: options.runId } : {}),
           ...(clearReviewer
             ? {

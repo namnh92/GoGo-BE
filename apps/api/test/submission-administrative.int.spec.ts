@@ -18,6 +18,7 @@ import {
   AdministrativeImportService,
   AdministrativeResolverService,
 } from '@gogo/modules';
+import { idempotencyHeader, withSourceReferences } from './support/cms-place-create';
 
 /**
  * PI-BE-030 (#525) — a place approved from a Mobile contribution is mapped
@@ -356,8 +357,8 @@ describe('approving a Mobile contribution maps the place it creates', () => {
       method: 'POST',
       url: '/v1/cms/places',
       remoteAddress: ip(),
-      headers: auth(tokens.editor),
-      payload: { name: 'Quán Tạo Từ CMS', lat: inside.lat, lng: inside.lng },
+      headers: { ...auth(tokens.editor), ...idempotencyHeader() },
+      payload: withSourceReferences({ name: 'Quán Tạo Từ CMS', lat: inside.lat, lng: inside.lng }),
     });
     expect(created.statusCode, created.body).toBe(201);
 

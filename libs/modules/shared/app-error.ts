@@ -1,4 +1,22 @@
-export type FieldError = { field: string; code: string; message: string };
+/**
+ * GoGo-BE#440 — `candidate` is the structured near-duplicate a
+ * `PLACE_DUPLICATE_SUSPECTED` names, so a client opens it by id instead of
+ * parsing `message`.
+ */
+export type DuplicateCandidate = {
+  placeId: string;
+  name: string;
+  status: string;
+  distanceM: number;
+  nameSimilarity: number;
+};
+
+export type FieldError = {
+  field: string;
+  code: string;
+  message: string;
+  candidate?: DuplicateCandidate;
+};
 
 /**
  * Canonical application error. Maps 1:1 to the public error envelope

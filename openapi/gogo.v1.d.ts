@@ -3006,22 +3006,24 @@ export interface paths {
         get: operations["cmsListPlaces"];
         put?: never;
         /**
-         * Editor: create a place by hand (GoGo-BE#452)
-         * @description The third way a place enters the catalogue, and the only one where the facts are a person's own. Bulk import resolves rows against a provider; a community submission arrives from the app for review; this is an editor typing what they know from a menu, a phone call or a visit.
+         * Editor: create a place by hand (GoGo-BE#452, GoGo-BE#440)
+         * @description The third way a place enters the catalogue, and the only one where the facts are a person's own. Bulk import resolves rows against a provider; a community submission arrives from the app for review; this is an editor entering what they know from a menu, a phone call or a visit. The link-first form (`cmsResolvePlaceLink` → here) uses the same contract; the resolve contributes an optional identity and a transient, attributed preview, nothing more.
          *
-         *     Always created `draft`. Entering the catalogue and being visible are two decisions, and `cmsTransitionPlace` already owns the second.
+         *     Always created `draft`. Entering the catalogue and being visible are two decisions, and `cmsTransitionPlace` already owns the second (including the verified administrative-mapping gate). Drafts are invisible to search and suggestions.
          *
-         *     **Provenance.** A value the editor typed is recorded `editorial`, including one they read off a preview and retyped — copying does not transfer ownership (GOGO_PRODUCT_DATA_ARCHITECTURE.md). A value *applied* from `cmsResolvePlaceLink` and left alone is recorded `google_derived` with the Google Place ID as its reference, and `googleDerivedFields` says which. Coordinates carry provenance too, under the field name `geom`.
+         *     **Provenance (GoGo-BE#440).** Every supplied non-null canonical fact names its independent evidence in `sourceReferences` and is recorded `editorial` with that reference and the acting editor. A reference is an accountable assertion, never fetched or verified by the server. A value copied from a Google preview is not GoGo-owned however it arrives (GOGO_PRODUCT_DATA_ARCHITECTURE.md, provenance rule), so a non-empty `googleDerivedFields` is refused with `400 GOOGLE_CONTENT_NOT_PERSISTABLE`.
          *
-         *     **Provider facts (PI-BE-021).** Given a `googlePlaceId`, this endpoint makes exactly one `quality` Place Details call and stores what it returns as the *provider's* facts: `ratings.provider`, `priceLevel`, the weekly `hours` at `source: provider`, and the canonical `googleMapsUri` on the place's Google source row. They are attributed to the provider, never presented as GoGo-owned, and never read as recommendation input (`docs/adr/0020-provider-facts-on-editor-created-places.md`).
+         *     **No provider content.** This route calls no Google provider and persists no provider fact — no rating, review count, price level, hours or canonical link. A `googlePlaceId` is stored as identity only. The PI-BE-021 enrichment that did so on this route is withdrawn (`docs/adr/0020-provider-facts-on-editor-created-places.md`, #440 amendment).
          *
-         *     The call is made here rather than replaying the preview because a preview's content may not be carried across requests (ADR-0006 §9.5) — the same reason the submission approve step re-verifies. The request body accepts none of these values: they come from the provider answer, so an editor cannot store their own number wearing Google's attribution.
+         *     **Identity beats similarity.** Given a `googlePlaceId`, the catalogue is asked first whether that Google record already belongs to a place — it does, and the answer is `409 PLACE_ALREADY_LINKED` naming it; two places already claim it, and the answer is `409 PLACE_IDENTITY_CONFLICT` naming both. Checked again inside the creating transaction, and a concurrent create that loses the race gets the same 409, never a 500. `allowDuplicate` does not open this gate.
          *
-         *     A provider that is unreachable, out of quota, does not know the id, or answers about a *different* id (a place that moved) costs the enrichment, not the place: the row is created with its Google identity and no provider facts, exactly as every place created before this change. The outcome is counted as `cms_place_create_provider_enrichment_total`.
+         *     **Duplicate check.** Within 150 m and name similarity above 0.5, archived places excluded, at most five candidates: `409 PLACE_DUPLICATE_SUSPECTED`, each candidate in `field_errors[].candidate`. Advisory — nothing is merged. `allowDuplicate: true` (audited) is how an editor says they looked and these are different places.
          *
-         *     **Identity beats similarity.** Given a `googlePlaceId`, the catalogue is asked first whether that Google record already belongs to a place — it does, and the answer is `409 PLACE_ALREADY_LINKED` naming it; two places already claim it, and the answer is `409 PLACE_IDENTITY_CONFLICT` naming both. `allowDuplicate` does not open this gate: two GoGo places may share a name and a street corner, but never one Google record.
+         *     **One commit.** The place, provenance, identity, administrative mapping, the `place.created` event, the audit entry and the idempotency record's completion commit together or not at all.
          *
-         *     **Duplicate check.** Before inserting, the same rule the duplicate queue uses — within 150 m and name similarity above 0.5 — runs against the catalogue. A hit answers `409 PLACE_DUPLICATE_SUSPECTED` with the candidates in `field_errors` (name and distance in metres), so the console can offer the merge screen it already has. `allowDuplicate: true` is how an editor says they looked and these are different places; two cafés of one chain on the same street are real.
+         *     **Retries.** `Idempotency-Key` is required. Scope is actor + route; a replay within 24 hours returns `201` with `x-idempotent-replay: true` and the place's current record; the same key with a different body is `422 IDEMPOTENCY_KEY_REUSED`; while the first request is still running it is `409 IDEMPOTENT_REQUEST_IN_FLIGHT`.
+         *
+         *     **Rate limit.** 20 requests/minute per actor, independent of `cmsResolvePlaceLink`.
          *
          *     Field limits follow `cmsUpdatePlace` exactly and are stated there.
          */
@@ -7236,6 +7238,17 @@ export interface components {
                 field: string;
                 code: string;
                 message: string;
+                /** @description GoGo-BE#440 — on `PLACE_DUPLICATE_SUSPECTED` only: the near-duplicate this entry names. Similarity is advisory; it never proves two places are one. */
+                candidate?: {
+                    /** Format: uuid */
+                    placeId: string;
+                    name: string;
+                    status: string;
+                    /** @description Metres between the two positions, rounded. */
+                    distanceM: number;
+                    /** @description Trigram similarity of normalized names, 0..1, three decimals. */
+                    nameSimilarity: number;
+                };
             }[];
             request_id: string;
             retryable: boolean;
@@ -7849,7 +7862,11 @@ export interface components {
             taxonomyIds: string[];
             /** @description Alongside the ids so a chip can be labelled without a second call; writes still send ids. */
             taxonomyKeys?: string[];
-            /** @description Per-field origin, keyed by the field name this contract uses. A field absent from this map has **no recorded origin** — which the UI must say in words rather than defaulting it to GoGo. Not backfilled: places predating #425 have fields whose origin nothing recorded, and claiming one would manufacture the provenance this map exists to keep honest. */
+            /**
+             * @description Per-field origin, keyed by the field name this contract uses. A field absent from this map has **no recorded origin** — which the UI must say in words rather than defaulting it to GoGo. Not backfilled: places predating #425 have fields whose origin nothing recorded, and claiming one would manufacture the provenance this map exists to keep honest.
+             *
+             *     **Exception — `provinceCode` / `communeCode` (GoGo-BE#440 F-07).** An entry here means an editor's code assertion was adopted by the resolver, with their reference. Its absence does **not** mean the code has no origin: a code derived from geometry, or decided by a reviewer, carries its provenance in `administrative` (method, dataset version, boundary version, reviewer) and the mapping history. Read those before telling anyone a code is unsourced.
+             */
             provenance?: {
                 [key: string]: {
                     /**
@@ -14218,7 +14235,10 @@ export interface operations {
     cmsCreatePlace: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description Required on this route (GoGo-BE#440). Client-generated per create attempt and reused on every retry of it. */
+                "Idempotency-Key": string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -14258,35 +14278,55 @@ export interface operations {
                     /** @description The Google record this place is the GoGo copy of, from the preceding `cmsResolvePlaceLink`. Stored as a `place_sources` row — identity only, which is what puts the place inside provider dedup and makes a later refresh possible at all. ADR-0006 §9.3 permits storing the id indefinitely. */
                     googlePlaceId?: string;
                     /**
-                     * @description Which fields still hold the value the resolution filled in — the ones the editor looked at and left alone. Their provenance is recorded `google_derived` with `googlePlaceId` as the reference; everything else is `editorial`.
-                     *
-                     *     Only the client knows this. The server keeps no snapshot of the preview to diff against, deliberately (ADR-0006 §9.5 — no cross-request provider content), so an editor who retypes a name over Google's owns it and the console drops that field from the list.
-                     *
-                     *     The enum is short on purpose. `cmsResolvePlaceLink` also returns a rating and a review count, and neither may be applied: per GOGO_PRODUCT_DATA_ARCHITECTURE.md §2 canonical name/address/geo are GoGo-owned and persist, while Google rating/review/photo/hours are "No by default". The preview shows them so an editor can tell two branches of one chain apart, and nothing writes them.
-                     *
-                     *     Requires `googlePlaceId` when non-empty — provenance pointing at nothing is worse than no provenance.
+                     * @deprecated
+                     * @description Withdrawn by GoGo-BE#440. A value applied from a Google preview is not persistable as a GoGo fact, so any non-empty list is refused with `400 GOOGLE_CONTENT_NOT_PERSISTABLE`. Omit it, or send `[]`.
                      */
                     googleDerivedFields?: ("name" | "addressText" | "lat" | "lng")[];
+                    /**
+                     * @description GoGo-BE#440 — the independent evidence behind each canonical fact, keyed by API field name. Required for every supplied non-null fact: `name` and `geom` (covers `lat` + `lng`) always; `description`, `addressText`, `areaKey`, `city`, `district`, `phone`, `website`, `provinceCode`, `communeCode` when sent non-null; `taxonomyIds` when the list is non-empty (one reference for the whole set). Omitting the object is the same as `{}`.
+                     *
+                     *     Every problem is `400 SOURCE_REFERENCE_INVALID` with one `field_errors` entry per key, `field = sourceReferences.<key>` and `code` one of `required` (supplied fact without a reference, or a blank one), `unused` (reference for a fact the body does not supply), `unknown` (not a key listed here), `too_long` (over 500 characters after trimming).
+                     *
+                     *     Values name non-Google evidence — a venue menu, a phone call, a field visit, the signage. A province, commune or category suggested from a Google-attached place is not evidence by itself: the console sends it only with the editor's own reference, or leaves the field out. Recorded as provenance, source type `editorial`, with the reference and the editor; never fetched by the server.
+                     *
+                     *     **Codes are assertions (F-07).** `provinceCode` / `communeCode` are submitted to the resolver; their reference becomes the field's current editorial provenance only if the resolver adopts the code as `trusted_code`. A conflicting assertion (NEEDS_REVIEW, codes left null) is kept in the audit history with its reference, not as field provenance. Codes derived from geometry carry the administrative mapping's own provenance (`administrative` method, dataset, boundary version) and no editorial row.
+                     */
+                    sourceReferences: {
+                        [key: string]: string;
+                    };
                 };
             };
         };
         responses: {
-            /** @description Created as draft; the body is the record the editor screen loads. */
+            /** @description Created as draft; the body is the record the editor screen loads. A replay carries `x-idempotent-replay: true` and the place's current record. */
             201: {
                 headers: {
+                    /** @description Present, `true`, when this answer replays an earlier create. */
+                    "x-idempotent-replay"?: "true";
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["CmsPlaceDetail"];
                 };
             };
-            400: components["responses"]["BadRequest"];
+            /** @description `VALIDATION_FAILED` — a field outside its limits. `IDEMPOTENCY_KEY_REQUIRED` / `INVALID_IDEMPOTENCY_KEY` — the header is missing or malformed. `SOURCE_REFERENCE_INVALID` — a supplied fact without a reference, or a reference for a fact not supplied. `GOOGLE_CONTENT_NOT_PERSISTABLE` — a non-empty `googleDerivedFields`. `ADMINISTRATIVE_*` — see `cmsUpdatePlace`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
             /**
-             * @description `PLACE_DUPLICATE_SUSPECTED` — near-identical places already in the catalogue, listed in `field_errors`; `allowDuplicate: true` proceeds anyway.
+             * @description `PLACE_DUPLICATE_SUSPECTED` — near-identical places already in the catalogue. Each `field_errors` entry carries `candidate` (`placeId`, `name`, `status`, `distanceM`, `nameSimilarity`); `message` keeps its human form. `allowDuplicate: true` proceeds anyway.
              *
              *     `PLACE_ALREADY_LINKED` — the `googlePlaceId` already belongs to a GoGo place, whose id is the single `field_errors` message. The console opens that place rather than creating a second one.
              *
              *     `PLACE_IDENTITY_CONFLICT` — two places already claim that Google ID. Nothing may be added against it until an editor merges them; both ids are in `field_errors`.
+             *
+             *     `IDEMPOTENT_REQUEST_IN_FLIGHT` (`retryable: true`) — the first request with this key is still running, or this request lost its claim on the key while it ran and was rolled back; retry shortly. A key older than 24 hours is taken over as a new request, never answered as a reuse.
              */
             409: {
                 headers: {
@@ -14296,6 +14336,16 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            /** @description `IDEMPOTENCY_KEY_REUSED` — this key was already used with a different body. Generate a new key for a different create. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
         };
     };
     cmsResolvePlaceLink: {
@@ -14556,6 +14606,14 @@ export interface operations {
                      * @description Optimistic concurrency: the `updatedAt` the form was loaded from. A mismatch is refused `409 PLACE_MODIFIED`, with the current value in `field_errors[0].message` so the client can show what it would have overwritten. Omitting it skips the check.
                      */
                     expectedUpdatedAt?: string;
+                    /**
+                     * @description GoGo-BE#440 F-07 — independent evidence for each explicitly supplied **non-null** `provinceCode` / `communeCode` in this edit; omit references for codes that are absent, unchanged or `null`. Same rules as `cmsCreatePlace`: trimmed, 1..500 characters; problems are `400 SOURCE_REFERENCE_INVALID`, one `field_errors` entry per key (`sourceReferences.<key>`, `code` `required | unused | unknown | too_long`). Only these two keys are accepted on an edit.
+                     *
+                     *     A submitted code is an **assertion to the resolver**. It becomes the field's current editorial claim (this editor, this reference) only when the resolver adopts it as `trusted_code` — including a re-assertion of the same pair, which refreshes the evidence. A code the resolver rejects, a mapping it may not change (VERIFIED → stays or goes STALE, REJECTED), or a NEEDS_REVIEW that keeps the old codes leaves the stored codes' provenance as it was. Every assertion and its disposition is kept in the audit history.
+                     */
+                    sourceReferences?: {
+                        [key: string]: string;
+                    };
                 };
             };
         };
@@ -14567,7 +14625,15 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["BadRequest"];
+            /** @description `VALIDATION_FAILED`; `SOURCE_REFERENCE_INVALID` (see `sourceReferences`); `ADMINISTRATIVE_*`, `PROVINCE_NOT_CURRENT`, `COMMUNE_NOT_CURRENT`, `HIERARCHY_INVALID` (see `provinceCode`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
         };

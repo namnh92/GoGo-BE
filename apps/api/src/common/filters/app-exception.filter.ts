@@ -2,12 +2,12 @@ import type { ArgumentsHost, ExceptionFilter } from '@nestjs/common';
 import { Catch, HttpException } from '@nestjs/common';
 import * as Sentry from '@sentry/node';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { AppError } from '../errors/app-error';
+import { AppError, type FieldError } from '../errors/app-error';
 
 type ErrorEnvelope = {
   code: string;
   message: string;
-  field_errors: { field: string; code: string; message: string }[];
+  field_errors: FieldError[];
   request_id: string;
   retryable: boolean;
 };

@@ -1,7 +1,23 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
 import { COST_WINDOWS, isCalendarDay, MANUAL_COST_PERIODS } from '@gogo/cost-observability';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
+import {
+  idempotencyScope,
+  ManualIdempotency,
+  NoIdempotencyReplay,
+} from '../../shared/idempotency.interceptor';
 import { CurrentActor, Public, RateLimit } from '../../identity/presentation/decorators';
 import type { Actor } from '../../identity/domain/actor';
 import { AdminAuthService } from '../application/admin-auth.service';
@@ -692,38 +708,45 @@ const placeEditSchema = z.object({
   taxonomyIds: z.array(z.string().uuid()).max(30).optional(),
   /** Optimistic concurrency — the `updatedAt` the form was loaded from. */
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
+  /**
+   * #440 F-07 — evidence for each explicitly supplied non-null code
+   * (`provinceCode`, `communeCode`). Shape only here; the service answers every
+   * key problem as `SOURCE_REFERENCE_INVALID`.
+   */
+  sourceReferences: z.record(z.string(), z.string()).optional(),
 });
 /**
  * GoGo-BE#452 — manual creation. Same field vocabulary as the edit form, minus
  * the optimistic-concurrency token, plus the two things a new row cannot do
  * without: a name and a position.
+ *
+ * #440 — plus `sourceReferences`, the independent evidence for each canonical
+ * fact. Coverage (every supplied fact named, no reference naming nothing) is
+ * checked by the service, which sees which fields are null; here only the
+ * shape. `googleDerivedFields` stays accepted as a field so that a non-empty
+ * one is answered `GOOGLE_CONTENT_NOT_PERSISTABLE` rather than silently
+ * stripped.
  */
-const placeCreateSchema = placeEditSchema
-  .omit({ expectedUpdatedAt: true })
-  .extend({
-    name: z.string().trim().min(1).max(200),
-    lat: z.number().min(-90).max(90),
-    lng: z.number().min(-180).max(180),
-    allowDuplicate: z.boolean().optional(),
-    /** #465 — same shape Google's own share links carry. */
-    googlePlaceId: z
-      .string()
-      .trim()
-      .regex(/^[\w-]{6,255}$/, 'not a Google Place ID')
-      .optional(),
-    googleDerivedFields: z.array(z.enum(GOOGLE_DERIVABLE_FIELDS)).max(8).optional(),
-  })
-  .superRefine((body, ctx) => {
-    // Provenance pointing at nothing is worse than no provenance: the row would
-    // claim a Google origin with no id to check it against.
-    if (body.googleDerivedFields?.length && body.googlePlaceId === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['googlePlaceId'],
-        message: 'required when googleDerivedFields is set',
-      });
-    }
-  });
+const placeCreateSchema = placeEditSchema.omit({ expectedUpdatedAt: true }).extend({
+  name: z.string().trim().min(1).max(200),
+  lat: z.number().finite().min(-90).max(90),
+  lng: z.number().finite().min(-180).max(180),
+  allowDuplicate: z.boolean().optional(),
+  /** #465 — same shape Google's own share links carry. Identity only. */
+  googlePlaceId: z
+    .string()
+    .trim()
+    .regex(/^[\w-]{6,255}$/, 'not a Google Place ID')
+    .optional(),
+  googleDerivedFields: z.array(z.enum(GOOGLE_DERIVABLE_FIELDS)).max(8).optional(),
+  /**
+   * #440 F-02 — only "an object of strings" here. Which keys are allowed,
+   * which are required and how long each may be are answered by the service
+   * as `SOURCE_REFERENCE_INVALID`, one entry per key, so a client gets the one
+   * documented code whatever it got wrong. Absent means `{}`.
+   */
+  sourceReferences: z.record(z.string(), z.string()).optional(),
+});
 
 /**
  * PI-BE-020 (#465) — the editor's half of add-by-link.
@@ -868,6 +891,7 @@ export class CmsCatalogController {
    * Places Details call at the `quality` tier, and an editor pastes links at
    * human speed. A number that cannot be reached by hand is not a limit.
    */
+  @NoIdempotencyReplay()
   @RateLimit({ action: 'cms.places.resolve_link', limit: 20, windowSeconds: 60, keyBy: 'ip+actor' })
   @Post('resolve-link')
   resolveLink(
@@ -887,12 +911,38 @@ export class CmsCatalogController {
     });
   }
 
+  /**
+   * GoGo-BE#440 — creation is retried by a console on a flaky connection, so
+   * `Idempotency-Key` is required here, and the replay record is completed in
+   * the creating transaction (`ManualIdempotency`: the global interceptor
+   * stands aside for this route only).
+   *
+   * 20/minute per actor, its own bucket — independent of `resolve-link`, and
+   * far below the 900/minute admin baseline that was the only ceiling before.
+   * An editor enters places at human speed.
+   */
+  @ManualIdempotency()
+  @RateLimit({ action: 'cms.places.create', limit: 20, windowSeconds: 60, keyBy: 'actor' })
   @Post()
-  create(
+  async create(
     @CurrentActor() actor: Actor,
+    @Req() req: FastifyRequest & { actor?: Actor },
+    @Res({ passthrough: true }) reply: FastifyReply,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Body(new ZodValidationPipe(placeCreateSchema)) body: z.infer<typeof placeCreateSchema>,
   ) {
-    return this.catalog.createPlace(actor.id, body);
+    if (typeof idempotencyKey !== 'string' || idempotencyKey.length === 0) {
+      throw AppError.badRequest('IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required', [
+        { field: 'Idempotency-Key', code: 'required', message: 'expected [A-Za-z0-9_-]{8,128}' },
+      ]);
+    }
+    const { replayed, place } = await this.catalog.createPlaceOnce(
+      actor.id,
+      body,
+      idempotencyScope(req, idempotencyKey),
+    );
+    if (replayed) void reply.header('x-idempotent-replay', 'true');
+    return place;
   }
 
   /**

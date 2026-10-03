@@ -12,6 +12,11 @@ import { schema } from '@gogo/database';
 /** Set before any import reads the environment; the config is parsed once. */
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 import { AdministrativeBoundaryImportService, AdministrativeImportService } from '@gogo/modules';
+import {
+  idempotencyHeader,
+  withEditReferences,
+  withSourceReferences,
+} from './support/cms-place-create';
 
 /**
  * ADM-016 (#496) — the place create and edit forms, carrying canonical codes.
@@ -62,19 +67,57 @@ const get = (url: string, role: Role) =>
     headers: { authorization: `Bearer ${tokens[role]}` },
   });
 
-function send(
+async function send(
   method: 'POST' | 'PATCH',
   url: string,
   role: Role,
   payload: Record<string, unknown> = {},
 ) {
-  return api().inject({
-    method,
-    url,
-    remoteAddress: ip(),
-    headers: { authorization: `Bearer ${tokens[role]}` },
-    payload,
-  });
+  // #440 — creation requires a key and a source per fact.
+  const creating = method === 'POST' && url === '/v1/cms/places';
+  return sendAs(creating && role === 'editor' ? await creatorToken() : tokens[role]!);
+
+  function sendAs(token: string) {
+    return api().inject({
+      method,
+      url,
+      remoteAddress: ip(),
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(creating ? idempotencyHeader() : {}),
+      },
+      payload: creating
+        ? withSourceReferences(payload)
+        : method === 'PATCH' && /^\/v1\/cms\/places\/[^/]+$/.test(url)
+          ? withEditReferences(payload)
+          : payload,
+    });
+  }
+}
+
+/*
+ * #440 — creation allows 20/minute per actor. This file creates more than
+ * that, none of it about the limit, so creates rotate across editor accounts.
+ */
+let creator: { token: string; uses: number } | undefined;
+let creators = 0;
+async function creatorToken(): Promise<string> {
+  if (!creator || creator.uses >= 10) {
+    const email = `adm016-creator-${++creators}@gogo.local`;
+    const passwordHash = await argon2.hash('admin-password-123', { type: argon2.argon2id });
+    await db
+      .insert(schema.adminUsers)
+      .values({ email, passwordHash, displayName: email, role: 'editor' });
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/login',
+      remoteAddress: ip(),
+      payload: { email, password: 'admin-password-123' },
+    });
+    creator = { token: res.json().accessToken as string, uses: 0 };
+  }
+  creator.uses += 1;
+  return creator.token;
 }
 
 async function createAdmin(role: Role) {
@@ -239,6 +282,36 @@ describe('creating a place with canonical codes', () => {
       provinceCode: mapped.provinceCode,
       communeCode: mapped.communeCode,
     });
+
+    // #440 F-01 — the codes are claimed facts with their own evidence.
+    const claims = await db
+      .select()
+      .from(schema.placeFieldProvenance)
+      .where(eq(schema.placeFieldProvenance.placeId, created.id));
+    expect(claims.map((c) => c.field).sort()).toEqual(
+      ['commune_code', 'geom', 'name', 'province_code'].sort(),
+    );
+    expect(claims.every((c) => c.sourceType === 'editorial' && !!c.sourceReference)).toBe(true);
+
+    // #440 F-05/F-07 — an adopted re-assertion of the same pair refreshes the
+    // evidence: the new reference and the editor who made it.
+    const edited = await send('PATCH', `/v1/cms/places/${created.id}`, 'editor', {
+      provinceCode: mapped.provinceCode,
+      communeCode: mapped.communeCode,
+      sourceReferences: { provinceCode: 'gọi xác nhận', communeCode: 'gọi xác nhận' },
+    });
+    expect(edited.statusCode, edited.body).toBe(200);
+    const restamped = await db
+      .select()
+      .from(schema.placeFieldProvenance)
+      .where(eq(schema.placeFieldProvenance.placeId, created.id));
+    for (const field of ['province_code', 'commune_code']) {
+      expect(restamped.find((c) => c.field === field)).toMatchObject({
+        sourceType: 'editorial',
+        sourceReference: 'gọi xác nhận',
+        actorId: adminIds.editor,
+      });
+    }
 
     const row = await placeRow(created.id);
     expect(row).toMatchObject({
