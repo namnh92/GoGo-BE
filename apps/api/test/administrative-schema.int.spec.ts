@@ -303,7 +303,7 @@ describe('administrative_unit_changes', () => {
 describe('the global override table is gone (#486)', () => {
   // 0051 created `administrative_unit_change_overrides`: a global override that
   // won at resolve time. #484 rejected that semantics (only a PUBLISHED dataset
-  // changes precedence) and ADM-011 replaced it with override sets; 0068 drops
+  // changes precedence) and ADM-011 replaced it with override sets; 0069 drops
   // the table. A fresh database must not carry it, or its indexes, again.
   it('drops the table and both of its indexes', async () => {
     const { rows } = await db.execute(
@@ -321,7 +321,7 @@ describe('the global override table is gone (#486)', () => {
     // The issue's precondition is `count(*) = 0` everywhere. If an environment
     // ever wrote one, the deploy must stop with the data intact, not drop it.
     const statements = readFileSync(
-      path.join(MIGRATIONS, '0068_drop-administrative-unit-change-overrides.sql'),
+      path.join(MIGRATIONS, '0069_drop-administrative-unit-change-overrides.sql'),
       'utf8',
     ).split('--> statement-breakpoint');
     await db.execute(
@@ -371,7 +371,7 @@ describe('the global override table is gone (#486)', () => {
     // (a CMS write) must make the migration abort fast and retryably, not wait
     // indefinitely while every new admin_users query queues behind it.
     const statements = readFileSync(
-      path.join(MIGRATIONS, '0068_drop-administrative-unit-change-overrides.sql'),
+      path.join(MIGRATIONS, '0069_drop-administrative-unit-change-overrides.sql'),
       'utf8',
     ).split('--> statement-breakpoint');
     await db.execute(
@@ -416,7 +416,7 @@ describe('the global override table is gone (#486)', () => {
     // migration sees it and aborts — never both "write committed" and "table
     // dropped".
     const statements = readFileSync(
-      path.join(MIGRATIONS, '0068_drop-administrative-unit-change-overrides.sql'),
+      path.join(MIGRATIONS, '0069_drop-administrative-unit-change-overrides.sql'),
       'utf8',
     ).split('--> statement-breakpoint');
     const guardAt = statements.findIndex((s) => s.includes('DO $$'));
