@@ -7862,7 +7862,11 @@ export interface components {
             taxonomyIds: string[];
             /** @description Alongside the ids so a chip can be labelled without a second call; writes still send ids. */
             taxonomyKeys?: string[];
-            /** @description Per-field origin, keyed by the field name this contract uses. A field absent from this map has **no recorded origin** — which the UI must say in words rather than defaulting it to GoGo. Not backfilled: places predating #425 have fields whose origin nothing recorded, and claiming one would manufacture the provenance this map exists to keep honest. */
+            /**
+             * @description Per-field origin, keyed by the field name this contract uses. A field absent from this map has **no recorded origin** — which the UI must say in words rather than defaulting it to GoGo. Not backfilled: places predating #425 have fields whose origin nothing recorded, and claiming one would manufacture the provenance this map exists to keep honest.
+             *
+             *     **Exception — `provinceCode` / `communeCode` (GoGo-BE#440 F-07).** An entry here means an editor's code assertion was adopted by the resolver, with their reference. Its absence does **not** mean the code has no origin: a code derived from geometry, or decided by a reviewer, carries its provenance in `administrative` (method, dataset version, boundary version, reviewer) and the mapping history. Read those before telling anyone a code is unsourced.
+             */
             provenance?: {
                 [key: string]: {
                     /**
@@ -14284,6 +14288,8 @@ export interface operations {
                      *     Every problem is `400 SOURCE_REFERENCE_INVALID` with one `field_errors` entry per key, `field = sourceReferences.<key>` and `code` one of `required` (supplied fact without a reference, or a blank one), `unused` (reference for a fact the body does not supply), `unknown` (not a key listed here), `too_long` (over 500 characters after trimming).
                      *
                      *     Values name non-Google evidence — a venue menu, a phone call, a field visit, the signage. A province, commune or category suggested from a Google-attached place is not evidence by itself: the console sends it only with the editor's own reference, or leaves the field out. Recorded as provenance, source type `editorial`, with the reference and the editor; never fetched by the server.
+                     *
+                     *     **Codes are assertions (F-07).** `provinceCode` / `communeCode` are submitted to the resolver; their reference becomes the field's current editorial provenance only if the resolver adopts the code as `trusted_code`. A conflicting assertion (NEEDS_REVIEW, codes left null) is kept in the audit history with its reference, not as field provenance. Codes derived from geometry carry the administrative mapping's own provenance (`administrative` method, dataset, boundary version) and no editorial row.
                      */
                     sourceReferences: {
                         [key: string]: string;
@@ -14600,6 +14606,14 @@ export interface operations {
                      * @description Optimistic concurrency: the `updatedAt` the form was loaded from. A mismatch is refused `409 PLACE_MODIFIED`, with the current value in `field_errors[0].message` so the client can show what it would have overwritten. Omitting it skips the check.
                      */
                     expectedUpdatedAt?: string;
+                    /**
+                     * @description GoGo-BE#440 F-07 — independent evidence for each explicitly supplied **non-null** `provinceCode` / `communeCode` in this edit; omit references for codes that are absent, unchanged or `null`. Same rules as `cmsCreatePlace`: trimmed, 1..500 characters; problems are `400 SOURCE_REFERENCE_INVALID`, one `field_errors` entry per key (`sourceReferences.<key>`, `code` `required | unused | unknown | too_long`). Only these two keys are accepted on an edit.
+                     *
+                     *     A submitted code is an **assertion to the resolver**. It becomes the field's current editorial claim (this editor, this reference) only when the resolver adopts it as `trusted_code` — including a re-assertion of the same pair, which refreshes the evidence. A code the resolver rejects, a mapping it may not change (VERIFIED → stays or goes STALE, REJECTED), or a NEEDS_REVIEW that keeps the old codes leaves the stored codes' provenance as it was. Every assertion and its disposition is kept in the audit history.
+                     */
+                    sourceReferences?: {
+                        [key: string]: string;
+                    };
                 };
             };
         };
@@ -14611,7 +14625,15 @@ export interface operations {
                 };
                 content?: never;
             };
-            400: components["responses"]["BadRequest"];
+            /** @description `VALIDATION_FAILED`; `SOURCE_REFERENCE_INVALID` (see `sourceReferences`); `ADMINISTRATIVE_*`, `PROVINCE_NOT_CURRENT`, `COMMUNE_NOT_CURRENT`, `HIERARCHY_INVALID` (see `provinceCode`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
         };

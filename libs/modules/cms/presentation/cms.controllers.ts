@@ -708,6 +708,12 @@ const placeEditSchema = z.object({
   taxonomyIds: z.array(z.string().uuid()).max(30).optional(),
   /** Optimistic concurrency — the `updatedAt` the form was loaded from. */
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
+  /**
+   * #440 F-07 — evidence for each explicitly supplied non-null code
+   * (`provinceCode`, `communeCode`). Shape only here; the service answers every
+   * key problem as `SOURCE_REFERENCE_INVALID`.
+   */
+  sourceReferences: z.record(z.string(), z.string()).optional(),
 });
 /**
  * GoGo-BE#452 — manual creation. Same field vocabulary as the edit form, minus

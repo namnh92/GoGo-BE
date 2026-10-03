@@ -17,6 +17,7 @@ import type { MappingStatus } from '../domain/mapping-status';
 import type { StaleVerdict } from '../domain/staleness';
 import type { Candidate, Evidence, ResolverReason } from '../domain/resolver';
 import { AdministrativeResolverService } from './administrative-resolver.service';
+import { changedCodeFields, dropCodeClaims } from './code-claims';
 import {
   assertCurrentPair,
   currentUnit as currentUnitOf,
@@ -367,9 +368,21 @@ export class AdministrativeModerationService {
         })
         .where(eq(schema.places.id, placeId));
 
+      // #440 F-07 — a reviewer's different code makes the editor's claim on
+      // that field obsolete; an unchanged code keeps its evidence.
+      const supersededClaims = await dropCodeClaims(
+        tx,
+        placeId,
+        changedCodeFields(
+          { provinceCode: place.provinceCode, communeCode: place.communeCode },
+          { provinceCode: input.provinceCode, communeCode: input.communeCode },
+        ),
+      );
+
       return {
         action: 'administrative_mapping.verify',
         diff: {
+          ...(supersededClaims.length > 0 ? { supersededClaims } : {}),
           from: mappingSnapshot(place),
           to: {
             status: 'VERIFIED',

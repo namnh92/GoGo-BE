@@ -12,7 +12,11 @@ import { schema } from '@gogo/database';
 /** Set before any import reads the environment; the config is parsed once. */
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 import { AdministrativeBoundaryImportService, AdministrativeImportService } from '@gogo/modules';
-import { idempotencyHeader, withSourceReferences } from './support/cms-place-create';
+import {
+  idempotencyHeader,
+  withEditReferences,
+  withSourceReferences,
+} from './support/cms-place-create';
 
 /**
  * ADM-016 (#496) — the place create and edit forms, carrying canonical codes.
@@ -82,7 +86,11 @@ async function send(
         authorization: `Bearer ${token}`,
         ...(creating ? idempotencyHeader() : {}),
       },
-      payload: creating ? withSourceReferences(payload) : payload,
+      payload: creating
+        ? withSourceReferences(payload)
+        : method === 'PATCH' && /^\/v1\/cms\/places\/[^/]+$/.test(url)
+          ? withEditReferences(payload)
+          : payload,
     });
   }
 }
@@ -285,11 +293,12 @@ describe('creating a place with canonical codes', () => {
     );
     expect(claims.every((c) => c.sourceType === 'editorial' && !!c.sourceReference)).toBe(true);
 
-    // #440 F-05 — an edit of the codes re-stamps their claims: the create-time
-    // reference and actor no longer vouch for codes they never saw.
+    // #440 F-05/F-07 — an adopted re-assertion of the same pair refreshes the
+    // evidence: the new reference and the editor who made it.
     const edited = await send('PATCH', `/v1/cms/places/${created.id}`, 'editor', {
       provinceCode: mapped.provinceCode,
       communeCode: mapped.communeCode,
+      sourceReferences: { provinceCode: 'gọi xác nhận', communeCode: 'gọi xác nhận' },
     });
     expect(edited.statusCode, edited.body).toBe(200);
     const restamped = await db
@@ -299,7 +308,7 @@ describe('creating a place with canonical codes', () => {
     for (const field of ['province_code', 'commune_code']) {
       expect(restamped.find((c) => c.field === field)).toMatchObject({
         sourceType: 'editorial',
-        sourceReference: null,
+        sourceReference: 'gọi xác nhận',
         actorId: adminIds.editor,
       });
     }

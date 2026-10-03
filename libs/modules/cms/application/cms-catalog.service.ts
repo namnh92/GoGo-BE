@@ -35,6 +35,8 @@ import {
   type Executor,
 } from '../../administrative/application/unit-lookup';
 import { placeAdministrativeSummary } from '../../administrative/application/place-administrative-summary';
+import { dropCodeClaims, type SupersededClaim } from '../../administrative/application/code-claims';
+import type { Resolution } from '../../administrative/domain/resolver';
 import type { MappingMethod, MappingStatus } from '../../administrative/domain/mapping-status';
 import {
   contradictsStoredMapping,
@@ -64,6 +66,11 @@ const PLACE_TRANSITIONS: Record<PlaceStatus, PlaceStatus[]> = {
  * as `undefined` and was skipped.
  */
 export type PlaceEditInput = {
+  /**
+   * #440 F-07 — evidence for each explicitly supplied non-null administrative
+   * code (`provinceCode`, `communeCode`). On create, the full key set.
+   */
+  sourceReferences?: Readonly<Record<string, string>> | undefined;
   name?: string | undefined;
   description?: string | null | undefined;
   addressText?: string | null | undefined;
@@ -147,12 +154,6 @@ export type PlaceCreateInput = Omit<
    * they do.
    */
   googleDerivedFields?: readonly GoogleDerivableField[] | undefined;
-  /**
-   * GoGo-BE#440 — the independent evidence behind each canonical fact, keyed by
-   * API field name (`geom` covers `lat` + `lng`). Required for every supplied
-   * non-null fact; see `assertSourceReferences`.
-   */
-  sourceReferences?: Readonly<Record<string, string>> | undefined;
 };
 
 /**
@@ -207,12 +208,11 @@ const PROVENANCE_COLUMN: Record<string, ProvenanceField> = {
   lat: 'geom',
   lng: 'geom',
   /**
-   * #440 F-05 — claimed at create with their own evidence, so an edit must
-   * re-stamp them like any other field; otherwise the create-time reference
-   * and actor would go on vouching for codes or categories they never saw.
+   * #440 F-05 — claimed at create with its own evidence, so an edit re-stamps
+   * it like any other field. The administrative codes are *not* here (F-07):
+   * an edit asserts them to the resolver, and their claim follows the outcome
+   * (`settleCodeClaims`), not the presence of a key.
    */
-  provinceCode: 'province_code',
-  communeCode: 'commune_code',
   taxonomyIds: 'taxonomy',
 };
 
@@ -262,8 +262,7 @@ const REFERENCE_COLUMN: Record<SourceReferenceKey, ProvenanceField> = {
  * the box. Returns the reference per provenance column.
  */
 export function assertSourceReferences(input: PlaceCreateInput): Map<ProvenanceField, string> {
-  const refs = input.sourceReferences ?? {};
-  const supplied = new Set<SourceReferenceKey>(['name', 'geom']);
+  const supplied = new Set<string>(['name', 'geom']);
   for (const key of SOURCE_REFERENCE_KEYS) {
     if (key === 'name' || key === 'geom') continue;
     const value = (input as Record<string, unknown>)[key];
@@ -271,7 +270,35 @@ export function assertSourceReferences(input: PlaceCreateInput): Map<ProvenanceF
     if (Array.isArray(value) && value.length === 0) continue;
     if (value !== undefined && value !== null) supplied.add(key);
   }
+  const refs = checkReferences(input.sourceReferences, SOURCE_REFERENCE_KEYS, supplied);
+  return new Map([...refs].map(([key, ref]) => [REFERENCE_COLUMN[key as SourceReferenceKey], ref]));
+}
 
+/**
+ * #440 F-07 — the PATCH half: only the administrative codes take references
+ * on an edit, and each explicitly supplied non-null code needs one. Returns
+ * the reference per code key.
+ */
+export const EDIT_REFERENCE_KEYS = ['provinceCode', 'communeCode'] as const;
+export function assertEditReferences(input: PlaceEditInput): Map<string, string> {
+  const supplied = new Set<string>();
+  for (const key of EDIT_REFERENCE_KEYS) {
+    if (input[key] !== undefined && input[key] !== null) supplied.add(key);
+  }
+  return checkReferences(input.sourceReferences, EDIT_REFERENCE_KEYS, supplied);
+}
+
+/**
+ * One rule for both doors: every supplied fact names its evidence, and every
+ * reference names a supplied fact. Refused field by field as
+ * `SOURCE_REFERENCE_INVALID`, so the console can mark the box.
+ */
+function checkReferences(
+  given: Readonly<Record<string, string>> | undefined,
+  allowed: readonly string[],
+  supplied: ReadonlySet<string>,
+): Map<string, string> {
+  const refs = given ?? {};
   const errors: { field: string; code: string; message: string }[] = [];
   for (const key of supplied) {
     const value = refs[key];
@@ -292,17 +319,17 @@ export function assertSourceReferences(input: PlaceCreateInput): Map<ProvenanceF
     }
   }
   for (const key of Object.keys(refs)) {
-    if (!(SOURCE_REFERENCE_KEYS as readonly string[]).includes(key)) {
+    if (!allowed.includes(key)) {
       errors.push({
         field: `sourceReferences.${key}`,
         code: 'unknown',
-        message: `not a canonical fact; one of ${SOURCE_REFERENCE_KEYS.join(', ')}`,
+        message: `not a referenceable fact here; one of ${allowed.join(', ')}`,
       });
-    } else if (!supplied.has(key as SourceReferenceKey)) {
+    } else if (!supplied.has(key)) {
       errors.push({
         field: `sourceReferences.${key}`,
         code: 'unused',
-        message: 'no supplied canonical fact by this name',
+        message: 'no supplied fact by this name',
       });
     }
   }
@@ -313,9 +340,11 @@ export function assertSourceReferences(input: PlaceCreateInput): Map<ProvenanceF
       errors,
     );
   }
-
-  return new Map([...supplied].map((key) => [REFERENCE_COLUMN[key], refs[key]!.trim()]));
+  return new Map([...supplied].map((key) => [key, refs[key]!.trim()]));
 }
+
+type CodeKey = 'provinceCode' | 'communeCode';
+type CodeAssertion = { value: string | null; reference: string | null };
 
 /** Postgres unique violation on one named constraint, through any `cause` chain. */
 function isUniqueViolation(error: unknown, constraint: string): boolean {
@@ -1555,7 +1584,21 @@ export class CmsCatalogService {
       }
     }
 
-    const claimed = [...references.keys()];
+    // F-07 — the codes are assertions to the resolver, settled after it
+    // answers; every other supplied fact is claimed outright.
+    const claimed = [...references.keys()].filter(
+      (field) => field !== 'province_code' && field !== 'commune_code',
+    );
+    const codeAssertions = new Map<CodeKey, CodeAssertion>();
+    for (const key of ['provinceCode', 'communeCode'] as const) {
+      const value = input[key];
+      if (value !== undefined && value !== null) {
+        codeAssertions.set(key, {
+          value,
+          reference: references.get(key === 'provinceCode' ? 'province_code' : 'commune_code')!,
+        });
+      }
+    }
     const origin = input.googlePlaceId !== undefined ? 'cms_link' : 'cms_manual';
 
     const codes = {
@@ -1657,6 +1700,10 @@ export class CmsCatalogService {
           mappingWrite = await this.resolver.persistWithin(tx, resolution, {
             actor: { id: adminId, type: 'admin' },
           });
+          await this.settleCodeClaims(tx, adminId, place!.id, codeAssertions, {
+            resolution,
+            persist: mappingWrite,
+          });
         }
 
         await writeOutbox(tx, {
@@ -1681,6 +1728,7 @@ export class CmsCatalogService {
             status: place!.status,
             origin,
             claimedFields: claimed,
+            ...(codeAssertions.size > 0 ? { assertedCodes: [...codeAssertions.keys()] } : {}),
             allowDuplicate: input.allowDuplicate === true,
             ...(input.googlePlaceId !== undefined ? { googlePlaceId: input.googlePlaceId } : {}),
           },
@@ -1793,6 +1841,19 @@ export class CmsCatalogService {
 
     assertNotStale(before.updatedAt, input.expectedUpdatedAt);
 
+    // F-07 — each explicitly supplied non-null code names its evidence; the
+    // claim itself is settled from what the resolver does with it.
+    const codeReferences = assertEditReferences(input);
+    const codeAssertions = new Map<CodeKey, CodeAssertion>();
+    for (const key of EDIT_REFERENCE_KEYS) {
+      if (input[key] !== undefined) {
+        codeAssertions.set(key, {
+          value: input[key] ?? null,
+          reference: codeReferences.get(key) ?? null,
+        });
+      }
+    }
+
     // `lat` and `lng` both name `geom`, so the pair collapses to one row.
     const claimed = [
       ...new Set(
@@ -1810,14 +1871,10 @@ export class CmsCatalogService {
      * The pair is read as a pair: an absent key means "leave it alone", so the
      * stored value stands in for it. That is what makes a console sending only
      * `communeCode` a cross-province error rather than a silent half-write.
+     * The pair itself is built from the row read locked inside the
+     * transaction (`lockedCodes`), not from this unlocked read.
      */
     const codesAsserted = input.provinceCode !== undefined || input.communeCode !== undefined;
-    const codes = {
-      provinceCode:
-        input.provinceCode !== undefined ? (input.provinceCode ?? null) : before.provinceCode,
-      communeCode:
-        input.communeCode !== undefined ? (input.communeCode ?? null) : before.communeCode,
-    };
     const geometryMoved =
       input.lat !== undefined &&
       input.lng !== undefined &&
@@ -1841,6 +1898,26 @@ export class CmsCatalogService {
      * back.
      */
     const after = await this.db.transaction(async (tx) => {
+      /**
+       * F-07 — the mapping this edit is weighed against is read *locked*, in
+       * the transaction that settles it. A reviewer's verification landing
+       * between the form load and this save is then either fully before it
+       * (and the edit sees VERIFIED) or fully after it.
+       */
+      const [current] = await tx
+        .select()
+        .from(schema.places)
+        .where(eq(schema.places.id, placeId))
+        .limit(1)
+        .for('update');
+      if (!current) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
+      const lockedCodes = {
+        provinceCode:
+          input.provinceCode !== undefined ? (input.provinceCode ?? null) : current.provinceCode,
+        communeCode:
+          input.communeCode !== undefined ? (input.communeCode ?? null) : current.communeCode,
+      };
+
       // #339 — an editor dragging a pin across town invalidates every cached
       // travel time to and from this place, and every live plan built on them.
       // Measured before the write, because afterwards there is nothing to
@@ -1854,7 +1931,7 @@ export class CmsCatalogService {
       const dataset: DatasetRef | null = codesAsserted
         ? await requireActiveDataset(tx)
         : await activeDataset(tx);
-      if (codesAsserted) await assertCurrentPair(tx, dataset!, codes);
+      if (codesAsserted) await assertCurrentPair(tx, dataset!, lockedCodes);
 
       const [row] = await tx
         .update(schema.places)
@@ -1925,10 +2002,12 @@ export class CmsCatalogService {
       }
 
       if (material && dataset) {
-        mappingWrite = await this.settleMapping(tx, adminId, before, row!, {
-          codes,
+        const settled = await this.settleMapping(tx, adminId, current, row!, {
+          codes: lockedCodes,
           codesAsserted,
         });
+        mappingWrite = settled.persist;
+        await this.settleCodeClaims(tx, adminId, placeId, codeAssertions, settled);
       }
 
       return row!;
@@ -1967,19 +2046,20 @@ export class CmsCatalogService {
       codes: { provinceCode: string | null; communeCode: string | null };
       codesAsserted: boolean;
     },
-  ): Promise<PersistResult | null> {
+  ): Promise<{ resolution: Resolution | null; persist: PersistResult | null }> {
     const policy = editPolicyFor(before.administrativeMappingStatus);
     const trusted = selection.codesAsserted ? { trustedCodes: selection.codes } : {};
 
     // A rejection is a judgement that this place should not carry this mapping.
     // An edit is not an appeal against it; the rematch in moderation is.
-    if (policy === 'PROTECTED') return null;
+    if (policy === 'PROTECTED') return { resolution: null, persist: null };
 
     if (policy === 'RESOLVE') {
       const resolution = await this.resolver.resolvePlaceWithin(tx, after.id, trusted);
-      return this.resolver.persistWithin(tx, resolution, {
+      const persist = await this.resolver.persistWithin(tx, resolution, {
         actor: { id: adminId, type: 'admin' },
       });
+      return { resolution, persist };
     }
 
     /**
@@ -2013,7 +2093,111 @@ export class CmsCatalogService {
         proposal: machine,
       });
     }
-    return null;
+    return { resolution: null, persist: null };
+  }
+
+  /**
+   * GoGo-BE#440 F-07 — the current provenance of the administrative codes,
+   * from what the resolver actually did with the editor's assertions.
+   *
+   * A code becomes an editorial claim (with the editor's reference and id)
+   * only when this run adopted it: an `AUTO_MATCHED` resolution decided by
+   * `trusted_code`, persisted (`written`, or `noop` for an identical pair whose
+   * evidence is refreshed), with the stored value equal to the asserted one.
+   * Matching strings alone are not adoption — a conflict keeps the old codes.
+   * The omitted half of a pair is never attributed to this editor.
+   *
+   * Anything else leaves the stored value's provenance as it was: retained
+   * codes (VERIFIED, STALE, PROTECTED, an unresolved proposal) keep theirs;
+   * codes the resolver derived or cleared lost their editorial claims inside
+   * `persistWithin`; an actually-null code loses its claim here. Every
+   * assertion, its disposition and anything superseded go into one audit row —
+   * history, never current provenance. Runs in the caller's transaction, so
+   * mapping, claims and audit commit or roll back together.
+   */
+  private async settleCodeClaims(
+    tx: Executor,
+    adminId: string,
+    placeId: string,
+    asserted: ReadonlyMap<CodeKey, CodeAssertion>,
+    outcome: { resolution: Resolution | null; persist: PersistResult | null },
+  ): Promise<void> {
+    const executor = tx as Db;
+    const [row] = await executor
+      .select({
+        provinceCode: schema.places.provinceCode,
+        communeCode: schema.places.communeCode,
+        status: schema.places.administrativeMappingStatus,
+        source: schema.places.administrativeMappingSource,
+      })
+      .from(schema.places)
+      .where(eq(schema.places.id, placeId))
+      .limit(1);
+    if (!row) return;
+
+    const adoptedRun =
+      outcome.persist !== null &&
+      (outcome.persist.outcome === 'written' || outcome.persist.outcome === 'noop') &&
+      outcome.resolution?.status === 'AUTO_MATCHED' &&
+      outcome.resolution.method === 'trusted_code' &&
+      row.source === 'trusted_code';
+
+    const dispositions: Record<string, unknown>[] = [];
+    const superseded: SupersededClaim[] = [];
+    for (const key of ['provinceCode', 'communeCode'] as const) {
+      const field = key === 'provinceCode' ? 'province_code' : 'commune_code';
+      const claim = asserted.get(key);
+      const stored = row[key];
+      if (claim && claim.value !== null && adoptedRun && stored === claim.value) {
+        await executor
+          .insert(schema.placeFieldProvenance)
+          .values({
+            placeId,
+            field,
+            sourceType: 'editorial',
+            sourceReference: claim.reference,
+            actorId: adminId,
+          })
+          .onConflictDoUpdate({
+            target: [schema.placeFieldProvenance.placeId, schema.placeFieldProvenance.field],
+            set: {
+              sourceType: sql`'editorial'::field_source_type`,
+              sourceReference: claim.reference,
+              actorId: adminId,
+              verifiedAt: sql`now()`,
+              updatedAt: sql`now()`,
+            },
+          });
+        dispositions.push({ field: key, ...claim, disposition: 'adopted' });
+        continue;
+      }
+      if (stored === null) superseded.push(...(await dropCodeClaims(executor, placeId, [field])));
+      if (claim) {
+        dispositions.push({
+          field: key,
+          ...claim,
+          disposition: claim.value === null ? 'cleared_request' : 'not_adopted',
+        });
+      }
+    }
+
+    if (dispositions.length === 0 && superseded.length === 0) return;
+    await writeAudit(executor, {
+      actorType: 'admin',
+      actorId: adminId,
+      action: 'place.administrative_assertion',
+      resourceType: 'place',
+      resourceId: placeId,
+      diff: {
+        assertions: dispositions,
+        mapping: {
+          status: row.status,
+          source: row.source,
+          outcome: outcome.persist?.outcome ?? 'not_resolved',
+        },
+        ...(superseded.length > 0 ? { supersededClaims: superseded } : {}),
+      },
+    });
   }
 
   /**

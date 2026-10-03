@@ -158,3 +158,40 @@ work and are not changed by this amendment. The CMS console must send
 
 **Rollback.** Revert the #440 change. No migration was added; rows written
 under either rule remain valid.
+
+### Refinement — administrative code provenance (GoGo-BE#440 F-07, SA 2026-10-03)
+
+The original #440 shape said "one provenance row per claimed field". For
+`province_code` / `commune_code` that is refined to **outcome-aware
+provenance** (Astra, `dev/handoffs/codex-review-request-sa-GoGo-BE-440-provenance.sa.out`):
+
+- **Assertions vs current provenance.** A submitted code is an assertion to the
+  resolver. Every explicitly supplied non-null code needs an independent
+  reference, on create **and** PATCH (`sourceReferences.provinceCode` /
+  `communeCode`, same validation and `SOURCE_REFERENCE_INVALID` errors), even
+  when the resolver ends up rejecting it. Omitted or `null` codes need none.
+- **Adoption.** After the mapping settles, an `editorial` row (reference +
+  actor) is written only for an asserted field the resolver actually adopted:
+  `AUTO_MATCHED` decided by `trusted_code`, persisted (`written`, or `noop` for
+  an identical pair, which refreshes the evidence), stored value equal to the
+  assertion. Equal strings alone are not adoption. The omitted half of a pair is
+  never attributed to the editor.
+- **Derived codes** keep their provenance in the administrative mapping
+  columns (method, dataset, boundary version) and the mapping audit; any
+  editorial code claim they supersede is removed. No new source type.
+- **Retained codes** (VERIFIED → stays / STALE, PROTECTED/REJECTED, unresolved
+  NEEDS_REVIEW keeping old codes) keep their provenance. A code actually
+  persisted as `null` loses its row. Each field is evaluated on its own.
+- **History.** Assertions, their disposition (`adopted`, `not_adopted`,
+  `cleared_request`) and any superseded claim are written to the audit log
+  (`place.administrative_assertion`, plus `supersededClaims` on
+  `administrative_mapping.resolve` / `.verify`) in the same transaction as the
+  mapping, so mapping, claims and history commit or roll back together.
+- **Every writer** of the codes — CMS create/edit, the resolver's automatic
+  writes (rematch, backfill, import) and a moderator's verify/correct — drops
+  claims it makes obsolete through one helper
+  (`administrative/application/code-claims.ts`). Taxonomy stamping is
+  unchanged.
+
+No migration. Rollback: revert the change; claim rows written under it remain
+valid editorial rows.

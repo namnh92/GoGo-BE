@@ -38,3 +38,18 @@ export function withSourceReferences(payload: Record<string, unknown>): Record<s
 export function idempotencyHeader(key: string = randomUUID()): { 'idempotency-key': string } {
   return { 'idempotency-key': key };
 }
+
+/**
+ * #440 F-07 — a PATCH that sets an administrative code names its evidence.
+ * Fills `sourceReferences` for each explicitly supplied non-null code, unless
+ * the test set it.
+ */
+export function withEditReferences(payload: Record<string, unknown>): Record<string, unknown> {
+  if ('sourceReferences' in payload) return payload;
+  const refs: Record<string, string> = {};
+  for (const key of ['provinceCode', 'communeCode'] as const) {
+    if (payload[key] !== undefined && payload[key] !== null)
+      refs[key] = `xác nhận trực tiếp: ${key}`;
+  }
+  return Object.keys(refs).length > 0 ? { ...payload, sourceReferences: refs } : payload;
+}
