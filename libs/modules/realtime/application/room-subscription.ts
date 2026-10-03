@@ -84,8 +84,18 @@ export class RoomSubscription {
   private queue: SequencedRoomEvent[] = [];
   private overflowed = false;
   private readonly replayIds = new Set<string>();
-  /** Generations an authoritative read showed are not current; their copies drop. */
+  /** Generations an authoritative read showed are superseded; their copies drop. */
   private readonly retired = new Set<string>();
+  /** Recovery reads issued so far. */
+  private reads = 0;
+  /**
+   * Per generation, the value of `reads` when this subscription first saw it.
+   * A read issued *after* a generation was seen reflects Redis at or after
+   * that generation's publication, so if it returns another generation, the
+   * seen one is superseded. A generation first seen while a read is in flight
+   * proves nothing either way — it may be newer than the reply (F-01).
+   */
+  private readonly seenAt = new Map<string, number>();
   private generation = '';
   private delivered = 0;
 
@@ -106,6 +116,7 @@ export class RoomSubscription {
   /** A live message from the transport. */
   push(event: SequencedRoomEvent): void {
     if (this.phase === 'closed') return;
+    if (!this.seenAt.has(event.generation)) this.seenAt.set(event.generation, this.reads);
     if (this.phase === 'active') this.process(event);
     else this.enqueue(event);
   }
@@ -195,11 +206,13 @@ export class RoomSubscription {
     if (this.phase !== 'active') return;
     this.phase = 'recovering';
     const from = { generation: this.generation, seq: this.delivered };
+    const issued = ++this.reads;
     this.read(from).then(
       (snapshot) => {
         if (this.phase !== 'recovering') return;
         const checkpoint = { generation: snapshot.generation, seq: snapshot.high };
         if (snapshot.generation !== this.generation) {
+          // The held generation predates the read, so the reply supersedes it.
           this.retired.add(this.generation);
           this.generation = snapshot.generation;
           this.delivered = snapshot.high;
@@ -216,10 +229,14 @@ export class RoomSubscription {
             this.sink.resync({ reason: 'replay_unavailable', checkpoint });
           }
         }
-        // After an authoritative read, a queued copy from any other generation
-        // is from a superseded one.
+        // Retire only generations seen before this read was issued. One that
+        // first arrived while the read was in flight may be newer than the
+        // reply: it stays queued, and draining it issues another read, which
+        // settles it as generation_changed (adopt) or superseded (retire).
         for (const queued of this.queue) {
-          if (queued.generation !== this.generation) this.retired.add(queued.generation);
+          if (queued.generation === this.generation) continue;
+          const seen = this.seenAt.get(queued.generation);
+          if (seen !== undefined && seen < issued) this.retired.add(queued.generation);
         }
         this.phase = 'paused';
         this.activate();

@@ -177,7 +177,7 @@ function checkLog(log: Log, start: EventCursor | null) {
 }
 
 describe('RoomSubscription state machine (ADR-0027 D3, property-based)', () => {
-  const RUNS = 400;
+  const RUNS = 1000;
 
   it('random interleavings: ordered, gap-free, duplicate-free, or an explicit resync', async () => {
     for (let run = 0; run < RUNS; run++) {
@@ -185,7 +185,10 @@ describe('RoomSubscription state machine (ADR-0027 D3, property-based)', () => {
       const rand = prng(seed);
       const small = rand() < 0.3;
       const room = new ModelRoom(small ? 5 : 200);
-      const withResets = rand() < 0.25;
+      const withResets = rand() < 0.4;
+      // Stands in for anything that opens a live gap (queue overflow): the
+      // subscription must recover it from the buffer or report resync.
+      const withLoss = rand() < 0.3;
       const withExpiry = rand() < 0.15;
       const dupes: SequencedRoomEvent[] = [];
 
@@ -204,43 +207,69 @@ describe('RoomSubscription state machine (ADR-0027 D3, property-based)', () => {
               };
 
       const { log, failures, sink } = recorder();
-      const sub = new RoomSubscription(sink, async (after) => room.snapshot(after));
+      // A recovery read snapshots when it is issued, as Redis does, but its
+      // reply arrives when the test says so: publishes, resets and channel
+      // deliveries interleave between the read and its reply (two sockets).
+      const pendingReads: (() => void)[] = [];
+      const sub = new RoomSubscription(sink, (after) => {
+        const snapshot = room.snapshot(after);
+        return new Promise((resolve) => pendingReads.push(() => resolve(snapshot)));
+      });
+      const answerSome = async () => {
+        if (pendingReads.length && rand() < 0.5) {
+          pendingReads.shift()!();
+          await settle();
+        }
+      };
 
       const deliverSome = () => {
         const n = Math.floor(rand() * (room.channel.length + 1));
         for (const e of room.channel.splice(0, n)) {
+          if (withLoss && rand() < 0.15) continue;
           sub.push(e);
           if (rand() < 0.3) dupes.push(e);
         }
         if (dupes.length && rand() < 0.3) sub.push(dupes[Math.floor(rand() * dupes.length)]!);
       };
-      const chaos = () => {
+      const chaos = async () => {
         for (let k = Math.floor(rand() * 4); k > 0; k--) room.publish();
-        if (withResets && rand() < 0.1) room.reset();
+        if (withResets && rand() < 0.3) room.reset();
         if (withExpiry && rand() < 0.1) room.expire();
+        if (rand() < 0.5) await answerSome();
         deliverSome();
+        await answerSome();
       };
 
       // Boundary: publishes before SUBSCRIBE takes effect are not live.
-      chaos();
+      await chaos();
       room.subscribed = true; // SUBSCRIBE ACK
-      chaos(); // between ACK and snapshot
+      await chaos(); // between ACK and snapshot
       const attachSnapshot = room.snapshot(resume.kind === 'cursor' ? resume.cursor : null);
       const decision = sub.begin(resume, attachSnapshot);
-      chaos(); // between snapshot and activate
+      await chaos(); // between snapshot and activate
       if (decision.resync) sink.resync(decision.resync);
       for (const e of decision.replay) sink.event(e);
       sub.activate();
-      for (let step = Math.floor(rand() * 6); step > 0; step--) {
-        chaos();
+      for (let step = Math.floor(rand() * 8); step > 0; step--) {
+        await chaos();
         await settle();
       }
-      // Drain everything still in flight, plus late duplicates.
-      for (let guard = 0; guard < 50 && (room.channel.length || guard < 2); guard++) {
+      // A dropped copy is only noticed when a later one arrives (as a lost
+      // tail is, in production, by the next event): publish one more.
+      if (withLoss) room.publish();
+      // Drain everything still in flight — channel copies, read replies —
+      // plus late duplicates.
+      for (
+        let guard = 0;
+        guard < 100 && (room.channel.length || pendingReads.length || guard < 2);
+        guard++
+      ) {
         for (const e of room.channel.splice(0)) sub.push(e);
         for (const e of dupes) sub.push(e);
+        pendingReads.shift()?.();
         await settle();
       }
+      expect(pendingReads, `seed ${seed} reads settle`).toEqual([]);
 
       expect(failures, `seed ${seed}`).toEqual([]);
       const start =
@@ -272,7 +301,7 @@ describe('RoomSubscription state machine (ADR-0027 D3, property-based)', () => {
       if (head && (end!.generation === head.generation || room.high > 0)) {
         expect(end, `seed ${seed} head`).toEqual(head);
       }
-      if (!small && !withResets && !withExpiry && resume.kind === 'cursor') {
+      if (!small && !withResets && !withExpiry && !withLoss && resume.kind === 'cursor') {
         // History fully retained: exact replay, no resync at all.
         expect(
           log.some((l) => l.kind === 'resync'),
@@ -392,6 +421,45 @@ describe('RoomSubscription state machine (ADR-0027 D3, property-based)', () => {
     await settle();
     expect(failures.map((e) => e.message)).toEqual(['redis down']);
     expect(sub.closed).toBe(true);
+  });
+
+  it('PR #666 F-01: a newer generation first seen while a read is in flight is adopted, not retired', async () => {
+    const room = new ModelRoom(200);
+    room.subscribed = true;
+    const { log, failures, sink } = recorder();
+    const replies: (() => void)[] = [];
+    const sub = new RoomSubscription(sink, (after) => {
+      const snapshot = room.snapshot(after); // snapshots when issued
+      return new Promise((resolve) => replies.push(() => resolve(snapshot)));
+    });
+    const a1 = room.publish();
+    sub.begin({ kind: 'fresh' }, room.snapshot(null));
+    sub.activate();
+    room.publish(); // A:2 — lost
+    const a3 = room.publish();
+    sub.push(a3); // gap → recovery read issued, snapshot still says A
+    expect(replies).toHaveLength(1);
+    room.reset(); // metadata lost; the next publish creates B
+    const b1 = room.publish();
+    sub.push(b1); // B:1 reaches the subscriber socket before the read reply
+    replies.shift()!(); // reply: generation A
+    await settle();
+    // B was seen during that read, so it is not retired: another read settles it.
+    expect(replies).toHaveLength(1);
+    replies.shift()!();
+    await settle();
+    const b2 = room.publish();
+    sub.push(b2);
+    await settle();
+    expect(failures).toEqual([]);
+    expect(
+      log.map((l) =>
+        l.kind === 'event'
+          ? `${l.e.generation === a1.generation ? 'A' : 'B'}:${l.e.seq}`
+          : `resync:${l.n.reason}`,
+      ),
+    ).toEqual(['A:2', 'A:3', 'resync:generation_changed', 'B:2']);
+    expect(b1.generation).not.toBe(a1.generation);
   });
 
   it('a copy from an old generation after an authoritative read is dropped, not looped on', async () => {
