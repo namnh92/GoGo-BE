@@ -11,6 +11,7 @@ import {
   LOW_CONFIDENCE,
   type LockedAnchor,
 } from '../../suggestions/domain/optimizer';
+import { normalizeStoredTotals } from '../../suggestions/domain/plan-costs';
 import { SuggestionsRepository } from '../../suggestions/infrastructure/suggestions.repository';
 import { PlansRepository, type PlanRow, type StopRow } from '../infrastructure/plans.repository';
 import { PlanBuilderService } from './plan-builder.service';
@@ -22,6 +23,12 @@ import { PlanBuilderService } from './plan-builder.service';
  * contract a client labelled the sum a group total and divided it again.
  */
 export const PLAN_COST_SCOPE = 'per_person' as const;
+
+/**
+ * ADR-0029 — a plan is edited only before the date starts and while the room
+ * is still live. Regenerate keeps its narrower historical check.
+ */
+const EDIT_FORBIDDEN_ROOM_STATUSES = ['active', 'completed', 'cancelled', 'expired'] as const;
 
 /** BE-BFF-008 + BE-BFF-014 — plan read/edit/regenerate/active-date APIs. */
 @Injectable()
@@ -106,7 +113,8 @@ export class PlansService {
       status: plan.status,
       isStale: plan.isStale,
       constraintVersion: plan.constraintVersion,
-      totals: { ...plan.totals, uncertain, costScope: PLAN_COST_SCOPE },
+      // GoGo-BE#228 — plans stored before the split read as all-required.
+      totals: { ...normalizeStoredTotals(plan.totals), uncertain, costScope: PLAN_COST_SCOPE },
       createdAt: plan.createdAt.toISOString(),
       // Plan-level flag so a client can show one banner without scanning stops.
       hasUnavailableStops: [...reasons.values()].some((r) => r !== undefined),
@@ -123,6 +131,7 @@ export class PlansService {
         costMax: s.costMax,
         costScope: PLAN_COST_SCOPE,
         isLocked: s.isLocked,
+        isOptional: s.isOptional,
         status: s.status,
         completedAt: s.completedAt?.toISOString(),
         // `status` above is the stop's own progress; this is the place behind it.
@@ -147,15 +156,24 @@ export class PlansService {
 
   /**
    * FR-PLAN-002/003 — host edits the stop list (reorder/replace/remove/add/
-   * lock). Optimistic concurrency on plan version; times/travel/costs are
-   * recalculated, never trusted from the client.
+   * lock/optional). Optimistic concurrency on plan version; times/travel/costs
+   * are recalculated, never trusted from the client.
+   *
+   * GoGo-BE#228 (ADR-0029) — `isOptional` omitted keeps the value the retained
+   * place already had; a new place starts required; explicit `false` clears
+   * it. Each place may appear once, so "retained" is never ambiguous.
    */
   async editStops(
     actor: Actor,
     planId: string,
     input: {
       expectedVersion: number;
-      stops: { placeId: string; durationMinutes?: number | undefined; isLocked: boolean }[];
+      stops: {
+        placeId: string;
+        durationMinutes?: number | undefined;
+        isLocked: boolean;
+        isOptional?: boolean | undefined;
+      }[];
     },
   ) {
     const plan = await this.repo.getPlan(planId);
@@ -166,20 +184,43 @@ export class PlansService {
     if (['active', 'completed'].includes(room.status)) {
       throw AppError.conflict('ROOM_ACTIVE', 'Plan is locked once the date starts');
     }
+    if ((EDIT_FORBIDDEN_ROOM_STATUSES as readonly string[]).includes(room.status)) {
+      throw AppError.conflict('ROOM_NOT_EDITABLE', 'The room no longer accepts plan changes');
+    }
     if (plan.version !== input.expectedVersion) {
       throw AppError.conflict('PLAN_VERSION_CONFLICT', 'Plan changed concurrently — reload');
     }
+    // ADR-0029 — an edit never clears staleness: the host regenerates against
+    // the current constraints first.
+    if (plan.isStale) {
+      throw AppError.conflict('PLAN_STALE', 'Room constraints changed — regenerate the plan');
+    }
     if (input.stops.length === 0) {
       throw AppError.badRequest('EMPTY_PLAN', 'A plan needs at least one stop');
+    }
+    const seen = new Set<string>();
+    const duplicates = input.stops
+      .map((s, index) => ({ placeId: s.placeId, index }))
+      .filter(({ placeId }) => (seen.has(placeId) ? true : (seen.add(placeId), false)));
+    if (duplicates.length > 0) {
+      throw AppError.badRequest(
+        'DUPLICATE_STOP_PLACE',
+        'Each place may appear only once in a plan',
+        duplicates.map(({ index }) => ({
+          field: `stops[${index}].placeId`,
+          code: 'duplicate',
+          message: 'place already listed',
+        })),
+      );
     }
 
     // BE-IMP-009: a place already in the plan may have been taken down since.
     // Blocking the whole edit on that traps the host — they cannot even remove
     // the offending stop. So an unavailable place blocks only when it is being
     // *added*; keeping or dropping one that is already there stays possible.
-    const existingPlaceIds = new Set(
-      (await this.repo.listStops(planId)).map((stop) => stop.placeId),
-    );
+    const existingStops = await this.repo.listStops(planId);
+    const existingByPlace = new Map(existingStops.map((stop) => [stop.placeId, stop]));
+    const existingPlaceIds = new Set(existingByPlace.keys());
     const facts = await this.repo.placeFacts(input.stops.map((s) => s.placeId));
     const anchors: LockedAnchor[] = input.stops.map((s, position) => {
       const fact = facts.find((f) => f.id === s.placeId);
@@ -204,6 +245,9 @@ export class PlansService {
         costMin: fact.price_min !== null ? Number(fact.price_min) : null,
         costMax: fact.price_max !== null ? Number(fact.price_max) : null,
         isLocked: s.isLocked,
+        isOptional: s.isOptional ?? existingByPlace.get(s.placeId)?.isOptional ?? false,
+        // Edits recalculate every time, locked stops included: the host may
+        // have reordered them.
         lat: Number(fact.lat),
         lng: Number(fact.lng),
         confidence: Number(fact.confidence),
@@ -211,6 +255,9 @@ export class PlansService {
     });
 
     const snapshot = await this.suggestions.buildSnapshot(plan.roomId);
+    if (snapshot.constraintVersion !== plan.constraintVersion) {
+      throw AppError.conflict('PLAN_STALE', 'Room constraints changed — regenerate the plan');
+    }
     // Pool empty: the anchor list IS the plan; materialization recalculates
     // times, travel legs and totals (FR-PLAN-003).
     const built = await buildItinerary({
@@ -228,12 +275,29 @@ export class PlansService {
       stops: built.stops,
       totals: built.totals,
       generatedByRunId: plan.generatedByRunId ?? undefined,
+      // ADR-0029 — publish only over exactly what was read above.
+      guard: {
+        sourcePlanId: plan.id,
+        sourceVersion: plan.version,
+        constraintVersion: snapshot.constraintVersion,
+        forbiddenRoomStatuses: EDIT_FORBIDDEN_ROOM_STATUSES,
+        requireFresh: true,
+        stopFlags: existingStops.map((s) => ({
+          id: s.id,
+          isLocked: s.isLocked,
+          isOptional: s.isOptional,
+        })),
+      },
       events: [
         {
           eventType: 'plan.changed',
           resourceType: 'plan',
           resourceId: planId,
-          payload: { action: 'edit', stopCount: built.stops.length },
+          payload: {
+            action: 'edit',
+            stopCount: built.stops.length,
+            optionalStopCount: built.stops.filter((s) => s.isOptional).length,
+          },
         },
       ],
     });
@@ -316,7 +380,8 @@ export class PlansService {
     if (!stop || stop.planId !== planId) {
       throw AppError.notFound('STOP_NOT_FOUND', 'Stop not found');
     }
-    await this.repo.setStopLock(stopId, locked, member.id);
+    // Lock/unlock never touches optionality (ADR-0029).
+    await this.repo.setStopLock(planId, plan.roomId, stopId, locked, member.id);
     await this.publishPlan(
       plan.roomId,
       planId,
