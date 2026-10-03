@@ -676,6 +676,48 @@ describe('regenerate with optional and locked stops (ADR-0028)', () => {
     expect(current.isStale).toBe(true);
   });
 
+  it('with startAt cleared, an unreachable locked pair still refuses and writes nothing (F-03)', async () => {
+    const { hostToken, roomId, plan } = await plannedRoom();
+    const v1 = (
+      await patch(hostToken, `/v1/plans/${plan.id}`, {
+        expectedVersion: plan.version,
+        stops: [
+          { placeId: placeIds['Cafe Uno'], isLocked: true },
+          { placeId: placeIds['Quán Ngon'], isLocked: true },
+        ],
+      })
+    ).json() as PlanDto;
+    const [first, second] = v1.stops;
+    const slot = (id: string, arrive: string, depart: string) =>
+      db
+        .update(schema.planStops)
+        .set({ arriveAt: new Date(arrive), departAt: new Date(depart) })
+        .where(eq(schema.planStops.id, id));
+    await slot(first!.id, '2026-08-29T05:00:00Z', '2026-08-29T06:00:00Z');
+    await slot(second!.id, '2026-08-29T06:00:00Z', '2026-08-29T07:00:00Z');
+    await patch(hostToken, `/v1/rooms/${roomId}/status`, { status: 'matching' });
+    const room = (await get(hostToken, `/v1/rooms/${roomId}`)).json();
+    const cleared = await patch(hostToken, `/v1/rooms/${roomId}/constraints`, {
+      budgetMode: 'per_person',
+      budgetAmount: 400_000,
+      currency: 'VND',
+      originLat: 10.776,
+      originLng: 106.7,
+      radiusM: 5000,
+      startAt: null,
+      endAt: null,
+      expectedConstraintVersion: room.constraintVersion,
+    });
+    expect(cleared.statusCode).toBe(200);
+
+    const regen = await post(hostToken, `/v1/plans/${v1.id}/regenerate`, {});
+    expect(regen.statusCode).toBe(409);
+    expect(regen.json().code).toBe('PLAN_TIME_CONFLICT');
+    const plans = await plansOf(roomId);
+    expect(plans).toHaveLength(3);
+    expect(plans.find((p) => p.status === 'current')!.id).toBe(v1.id);
+  });
+
   it('lock/unlock never changes optionality', async () => {
     const { hostToken, plan } = await plannedRoom();
     const v1 = (
@@ -797,6 +839,36 @@ describe('publication rechecks against interleaved writers (ADR-0028, FAIL-befor
 });
 
 describe('migration 0068 (ADR-0028)', () => {
+  it('gives up on a held conflicting lock with 55P03 instead of waiting (F-04)', async () => {
+    const holder = await pool.connect();
+    const migrator = await pool.connect();
+    const up = readFileSync(
+      path.resolve(__dirname, '../../../migrations/0068_plan-stops-optional.sql'),
+      'utf8',
+    );
+    try {
+      await holder.query('begin');
+      await holder.query('lock table plan_stops in access share mode');
+      const outcome = await Promise.race([
+        migrator.query(up).then(
+          () => 'applied',
+          (e: { code?: string }) => e.code ?? 'error',
+        ),
+        new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), 12_000)),
+      ]);
+      expect(outcome).toBe('55P03');
+      const column = await migrator.query<{ column_default: string }>(
+        `select column_default from information_schema.columns
+         where table_name = 'plan_stops' and column_name = 'is_optional'`,
+      );
+      expect(column.rows[0]!.column_default).toBe('false');
+    } finally {
+      await holder.query('rollback');
+      holder.release();
+      migrator.release();
+    }
+  }, 60_000);
+
   it('defaults historical rows to required, and the documented down/up rehearses cleanly', async () => {
     const { plan } = await plannedRoom();
     const client = await pool.connect();
@@ -830,6 +902,84 @@ describe('migration 0068 (ADR-0028)', () => {
     } finally {
       await client.query('delete from plan_stops where position = 99');
       client.release();
+    }
+  });
+
+  it('the rollback guard refuses an older writer that would drop optionality (F-05)', async () => {
+    const script = (name: string) =>
+      readFileSync(path.resolve(__dirname, `../../../scripts/rollback/${name}`), 'utf8');
+    const withOptional = await plannedRoom();
+    const marked = await patch(withOptional.hostToken, `/v1/plans/${withOptional.plan.id}`, {
+      expectedVersion: withOptional.plan.version,
+      stops: withOptional.plan.stops.map((s, i) => ({ placeId: s.placeId, isOptional: i === 0 })),
+    });
+    expect(marked.statusCode).toBe(200);
+    const plain = await plannedRoom();
+
+    const client = await pool.connect();
+    /** What a pre-#228 build's insert looks like: no `is_optional` column. */
+    const legacyInsert = async (roomId: string) => {
+      const [planRow] = await db
+        .insert(schema.plans)
+        .values({
+          roomId,
+          version: 99,
+          status: 'draft',
+          totals: {
+            costMin: 0,
+            costMax: 0,
+            currency: 'VND',
+            durationMinutes: 0,
+            travelDistanceM: 0,
+            overBudget: false,
+            uncertain: false,
+          },
+          constraintVersion: 1,
+        })
+        .returning();
+      try {
+        const res = await client.query<{ is_optional: boolean }>(
+          `insert into plan_stops (plan_id, place_id, position, duration_minutes)
+           values ($1, $2, 0, 30) returning is_optional`,
+          [planRow!.id, placeIds['Bar Vui']],
+        );
+        return { ok: true as const, isOptional: res.rows[0]!.is_optional };
+      } catch (e) {
+        return { ok: false as const, code: (e as { code?: string }).code };
+      } finally {
+        await db.delete(schema.plans).where(eq(schema.plans.id, planRow!.id));
+      }
+    };
+    try {
+      await client.query(script('0068-plan-stops-optional-guard.install.sql'));
+
+      expect(await legacyInsert(withOptional.roomId)).toEqual({ ok: false, code: 'GG228' });
+      expect(await legacyInsert(plain.roomId)).toEqual({ ok: true, isOptional: false });
+
+      // The current build writes the column explicitly and keeps working.
+      const current = marked.json() as PlanDto;
+      const again = await patch(withOptional.hostToken, `/v1/plans/${current.id}`, {
+        expectedVersion: current.version,
+        stops: current.stops.map((s) => ({ placeId: s.placeId })),
+      });
+      expect(again.statusCode).toBe(200);
+      expect((again.json() as PlanDto).stops.map((s) => s.isOptional)).toEqual([
+        true,
+        false,
+        false,
+      ]);
+    } finally {
+      await client.query(script('0068-plan-stops-optional-guard.remove.sql'));
+      const restored = await client.query<{ column_default: string }>(
+        `select column_default from information_schema.columns
+         where table_name = 'plan_stops' and column_name = 'is_optional'`,
+      );
+      const triggers = await client.query(
+        `select 1 from pg_trigger where tgname = 'plan_stops_optional_rollback_guard'`,
+      );
+      client.release();
+      expect(restored.rows[0]!.column_default).toBe('false');
+      expect(triggers.rowCount).toBe(0);
     }
   });
 });

@@ -386,6 +386,35 @@ describe('locked stops keep their stored schedule (FAIL-before)', () => {
     ).rejects.toMatchObject({ code: 'PLAN_TIME_CONFLICT', httpStatus: 409 });
   });
 
+  it('with startAt cleared, travel between locked stops still conflicts (F-03)', async () => {
+    await expect(
+      buildItinerary({
+        ranked: [],
+        snapshot: snapshot({ timeWindow: { startAt: null, endAt: null } }),
+        lockedStops: [
+          anchor({
+            placeId: 'a',
+            position: 0,
+            isLocked: true,
+            arriveAt: at('2026-08-29T05:00:00Z'),
+            departAt: at('2026-08-29T06:00:00Z'),
+          }),
+          anchor({
+            placeId: 'b',
+            position: 1,
+            isLocked: true,
+            lat: 10.79,
+            lng: 106.71,
+            // Zero gap: any travel from `a` makes this unreachable.
+            arriveAt: at('2026-08-29T06:00:00Z'),
+            departAt: at('2026-08-29T07:00:00Z'),
+          }),
+        ],
+        maxStops: 2,
+      }),
+    ).rejects.toMatchObject({ code: 'PLAN_TIME_CONFLICT', httpStatus: 409 });
+  });
+
   it('an unlocked anchor with stored times is rescheduled, not pinned', async () => {
     const result = await buildItinerary({
       ranked: [],

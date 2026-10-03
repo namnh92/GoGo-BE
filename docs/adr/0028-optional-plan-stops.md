@@ -103,13 +103,34 @@ boolean NOT NULL DEFAULT false` — catalogue-only on Postgres 11+, no rewrite.
 Every historical stop is required. Stored `totals` JSON is not rewritten;
 totals without the split read as required = totals, optional = 0.
 
+The ACCESS EXCLUSIVE lock wait is bounded with `SET LOCAL lock_timeout = '5s'`
+(reset right after). If a long transaction holds `plan_stops`, the deploy's
+migration run fails with SQLSTATE `55P03` and — the migrator runs all pending
+files in one transaction — changes nothing. Abort the deploy, find the holder
+(`pg_locks` / `pg_stat_activity` on `plan_stops`), let it finish or end it, and
+retry the deploy. Covered by an integration test that holds a conflicting lock.
+
 ## Rollback
 
-1. Stop optional edits first (revert the API to a build that ignores
-   `isOptional` only after clients stop sending it, or accept that it is
-   ignored).
-2. Keep the column: dropping it loses host decisions. A reader that predates
-   it ignores the column, but its regenerate/edit would write `false` for
-   every stop it re-versions — so roll readers back only after optional edits
-   are disabled and accept that later versions lose the flag.
-3. Rehearsal-only down: `ALTER TABLE plan_stops DROP COLUMN is_optional;`.
+An API build older than this change inserts `plan_stops` without
+`is_optional`. Unguarded, every plan version it writes — edit, regenerate,
+including the locked stops regenerate keeps — would silently turn optional
+stops back into required ones. The rollback therefore blocks those lossy writes
+at the database before the older build runs:
+
+1. **Install the guard** — `scripts/rollback/0068-plan-stops-optional-guard.install.sql`.
+   It drops the column default and adds a `BEFORE INSERT` trigger: an insert
+   that omits `is_optional` gets `false` only when the room's previous plan
+   version has no optional stop (nothing to lose, e.g. a first finalize);
+   otherwise it fails with SQLSTATE `GG228` and the writer's transaction rolls
+   back, so the plan in place keeps its optional stops. The current build
+   writes the column explicitly and is unaffected (integration-tested).
+2. **Deploy the older API.** Hosts of rooms whose plan has optional stops get a
+   server error on edit/regenerate for as long as the older build runs; reads,
+   locks, check-ins and rooms without optional stops work. That is the
+   accepted cost of not losing host decisions.
+3. **Keep the column.** Dropping it loses host decisions.
+4. **Roll forward**, then remove the guard —
+   `scripts/rollback/0068-plan-stops-optional-guard.remove.sql` restores the
+   default and drops the trigger.
+5. Rehearsal-only down: `ALTER TABLE plan_stops DROP COLUMN is_optional;`.

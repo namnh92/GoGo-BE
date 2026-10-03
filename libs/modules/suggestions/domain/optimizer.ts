@@ -286,7 +286,10 @@ export async function buildItinerary(input: {
       }
       arriveAt = new Date(entry.pinned.arriveAt);
       departAt = new Date(entry.pinned.departAt);
-      if (cursor) cursor = new Date(departAt);
+      // F-03 — a pinned departure is a fixed point in time even when the room
+      // has no start: the clock starts here, so the travel into the next
+      // pinned stop is still checked instead of silently skipped.
+      cursor = new Date(departAt);
     } else {
       arriveAt = cursor ? new Date(cursor) : null;
       if (cursor) cursor = new Date(cursor.getTime() + entry.durationMinutes * 60000);
