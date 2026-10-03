@@ -794,6 +794,15 @@ paths:
         history is retained (bounded buffer, 15-minute window); `resync`
         restores state, not evicted event history.
 
+        `resync` is not only an attach outcome. It can arrive at any point of
+        a live connection, after domain events and more than once: when the
+        server sees a gap in live delivery its buffer can no longer cover
+        (`replay_unavailable`), when the room's sequence is reset while the
+        stream is open (`generation_changed`), or when the connection's
+        delivery queue overflows. Each time, the client handles it exactly as
+        at attach — refetch, then resume from that frame's
+        `checkpoint.cursor`.
+
 
         Payloads carry facts, never composed copy, and never another member's
         preference selections — `participant.selection_changed` reports
@@ -16152,9 +16161,10 @@ components:
       description: >
         `data` of an SSE `event: resync` frame on `/rooms/{id}/events`
         (ADR-0027). Stream-level, not a domain event: it has no envelope and
-        its frame carries no resume cursor. Sent at most once per connection,
-        before any domain event that follows it, whenever the client's resume
-        point cannot be honoured exactly. The client must refetch
+        its frame carries no resume cursor. Sent whenever the server cannot
+        guarantee exact delivery from the client's resume point — at attach
+        or later on a live connection, possibly more than once — and always
+        before any domain event that follows it. The client must refetch
         authoritative state; see the operation description for the recovery
         rules.
       required: [roomId, reason, checkpoint]

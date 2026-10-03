@@ -135,8 +135,9 @@ emits the replay → calls `activate()` to drain live.
 `event_version`, `occurred_at` and the domain envelope are unchanged. The
 existing `resync` frame is reused with `{roomId, reason, checkpoint}`; reasons
 distinguish unavailable replay, generation change and invalid/legacy cursor.
-`resync` is emitted before any subsequent domain event; `heartbeat` carries no
-cursor. `checkpoint` is the atomic current `(generation, H)`. The client
+`resync` is emitted before any domain event that follows it, at attach or
+later on a live connection (live gap, generation change, queue overflow — D3),
+possibly more than once; `heartbeat` carries no cursor. `checkpoint` is the atomic current `(generation, H)`. The client
 refetches authoritative room/plan state while queuing later events, reconciles
 by resource version, and keeps "snapshot required" across reconnects until a
 refetch succeeds.

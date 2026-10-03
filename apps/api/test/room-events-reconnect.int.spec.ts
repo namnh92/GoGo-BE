@@ -37,6 +37,8 @@ let url: string;
 let app: NestFastifyApplication;
 let baseUrl: string;
 let publisher: RedisRoomEventBus;
+/** The SSE instance's subscriber connection — SA-F-03 kills it. */
+let streamingSubscriber: IORedis;
 const clients: IORedis[] = [];
 /** Runs once, right after the SSE instance's next attach read resolves. */
 let afterAttachRead: (() => Promise<void>) | null = null;
@@ -156,9 +158,10 @@ beforeAll(async () => {
   // The SSE instance runs with the production connection options (lazy
   // connect, no offline queue, no resend, no auto-resubscribe). On the
   // pre-ADR code these exports do not exist and the defaults apply.
+  streamingSubscriber = connect(ROOM_EVENTS_SUBSCRIBER_OPTIONS);
   const streaming = new RedisRoomEventBus(
     hooked(connect(ROOM_EVENTS_COMMANDS_OPTIONS)) as never,
-    connect(ROOM_EVENTS_SUBSCRIBER_OPTIONS) as never,
+    streamingSubscriber as never,
   );
   publisher = new RedisRoomEventBus(connect() as never, connect() as never);
 
@@ -286,5 +289,39 @@ describe('room event stream reconnect over Redis (GoGo-BE#638, ADR-0027)', () =>
     expect(await resumed.until((f) => f.length >= 1, 8_000)).toBe(true);
     expect(resumed.frames[0]!.type).toBe('resync');
     resumed.close();
+  });
+
+  it('SA-F-03: losing the subscriber connection ends the HTTP stream; a reopen with the last cursor loses nothing', async () => {
+    const roomId = randomUUID();
+    const first = await open(roomId);
+    await settle();
+    const seen = await publisher.publish({ roomId, type: 'participant.joined' });
+    expect(await first.until((f) => domain(f).length >= 1, 5_000)).toBe(true);
+    const cursor = domain(first.frames)[0]!.id!;
+    expect(eventIdOf(domain(first.frames)[0]!)).toBe(seen.event.event_id);
+
+    const admin = connect();
+    const id = await streamingSubscriber.client('ID');
+    await admin.client('KILL', 'ID', String(id));
+
+    // Ended well inside one keep-alive interval (20 s) — never a connected
+    // stream that keeps pinging while it receives nothing.
+    const deadline = Date.now() + 5_000;
+    while (!first.ended && Date.now() < deadline) await settle(20);
+    expect(first.ended).toBe(true);
+
+    // Published while the client has no stream: the reopen must replay it.
+    const missed = await publisher.publish({ roomId, type: 'vote.changed' });
+    const reopened = await open(roomId, cursor);
+    expect(
+      await reopened.until(
+        (f) => f.some((frame) => eventIdOf(frame) === missed.event.event_id),
+        8_000,
+      ),
+    ).toBe(true);
+    await settle(300);
+    expect(domain(reopened.frames).map(eventIdOf)).toEqual([missed.event.event_id]);
+    expect(reopened.frames.some((f) => f.type === 'resync')).toBe(false);
+    reopened.close();
   });
 });
