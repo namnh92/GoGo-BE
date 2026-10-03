@@ -312,6 +312,22 @@ whose sequence numbers were already handed out. Recovery must rotate the
 generation of affected rooms before serving (delete metadata → next publish
 creates a fresh generation; clients get `generation_changed`).
 
+Tooling: `pnpm realtime:rotate-generations [--execute] [--room <uuid>]`
+(`scripts/rotate-room-event-generations.ts`). Procedure: `docs/runbooks.md`
+§4, "Redis restore / failover". It applies to **any** Upstash restore or
+failover, not only a restore someone ran on purpose.
+
+**Residual risk — asynchronous replication.** A managed failover can promote a
+replica that missed the last writes, so `seq` rolls back by a few without any
+restore. Until someone runs the rotation, a client can resume onto a reused
+`(generation, seq)` and receive a different event under a cursor it thinks it
+has seen, or miss one. Nothing in the bus detects this by itself: a rolled-back
+`seq` in the same generation is indistinguishable from a normal one. The
+mitigation is operational — rotate on every failover notice — and the exposure
+is bounded by the 15-minute buffer and by clients refetching on any later
+`resync`. Detecting it automatically (for example, a generation epoch checked
+against a durable store) is out of scope here.
+
 **Code rollback.** Reverting to the numeric bus: v2 cursors (`v2:` prefix) fail
 `Number()` parsing and the old code starts a fresh stream — a silent gap, the
 pre-ADR behaviour. Mobile's safety poll covers it. The spec change is
@@ -352,8 +368,10 @@ two independently connected bus instances, HTTP SSE end-to-end.
 
 - Exact replay is guaranteed only while history is retained; `resync`
   restores state, not evicted event history.
-- Redis restore can resurrect an old generation — rotation before serving is
-  mandatory (see above).
+- Redis restore, or a managed failover with asynchronous replication, can
+  resurrect an old generation or roll `seq` back — rotation before serving is
+  mandatory (`pnpm realtime:rotate-generations`, runbook §4). Without it a
+  rollback goes undetected (see _Migration & rollback_).
 - Mixed publication algorithms during cutover invalidate ordering — drain
   first.
 - The 14.3 s cause in #638 is still unproven; the latency test (7) is the

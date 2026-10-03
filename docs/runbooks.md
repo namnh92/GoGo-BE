@@ -64,6 +64,25 @@ acceptance for this doc.
   3. Run `pnpm eval:search` (EVAL_REPORT_ONLY=1) against restored DB as functional smoke.
   4. Measure wall-clock vs RTO; record in drill log.
 - **Redis:** cache/queues only — safe to flush; outbox re-drives notifications; rate-limit windows reset (accepted).
+  A flush is also safe for the room event bus: missing metadata starts a new
+  generation and clients get `resync` (ADR-0027).
+- **Redis restore / failover — rotate room event generations (ADR-0027, mandatory).**
+  A restore, a point-in-time rollback, or a managed failover (Upstash replicas
+  replicate asynchronously) can bring back a room's `room:{<id>}:v2:meta` with
+  a `seq` behind cursors clients already hold, so the same cursor would name a
+  different event. Before the API serves streams again:
+  1. Stop or drain the API instances (no publisher may run on the old state).
+  2. Dry run, then rotate every room:
+     `REDIS_URL=<from SSM> pnpm realtime:rotate-generations` (prints `matched`),
+     then the same command with `--execute`. One room only: `--execute --room <uuid>`.
+  3. Start the API. Clients holding old cursors receive `resync`
+     (`generation_changed`) and refetch — one refetch per open room screen.
+  4. Record in the incident notes: the time, the `matched`/`deleted` counts, and
+     the provider event (restore id / failover time).
+     Rotation deletes only the metadata hashes. The next publish or attach creates
+     a fresh generation and discards the orphaned buffer. It is idempotent.
+     When unsure whether a failover happened, rotate anyway: the only cost is the
+     refetch.
 
 ## 5. Data-fix / privacy operations
 
