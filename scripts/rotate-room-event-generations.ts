@@ -11,25 +11,16 @@
  * Prints counts only — never key contents.
  */
 import { runRoomEventGenerationRotation } from '@gogo/modules';
-
-function flag(name: string): string | undefined {
-  const index = process.argv.indexOf(`--${name}`);
-  return index === -1 ? undefined : process.argv[index + 1];
-}
+import { parseRotationArgs } from './rotate-room-event-generations-args';
 
 async function main(): Promise<void> {
+  // Arguments first: a bad invocation never opens a connection.
+  const args = parseRotationArgs(process.argv.slice(2));
   const url = process.env.REDIS_URL;
   if (!url) throw new Error('REDIS_URL is required');
-  const roomId = flag('room');
-  if (roomId && !/^[0-9a-f-]{36}$/.test(roomId)) throw new Error('--room must be a room uuid');
-  const execute = process.argv.includes('--execute');
-  const result = await runRoomEventGenerationRotation({
-    url,
-    execute,
-    ...(roomId ? { roomId } : {}),
-  });
+  const result = await runRoomEventGenerationRotation({ url, ...args });
   process.stdout.write(
-    `${JSON.stringify({ mode: execute ? 'execute' : 'dry-run', matched: result.matched, deleted: result.deleted })}\n`,
+    `${JSON.stringify({ mode: args.execute ? 'execute' : 'dry-run', matched: result.matched, deleted: result.deleted })}\n`,
   );
 }
 

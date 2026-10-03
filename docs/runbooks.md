@@ -79,6 +79,10 @@ acceptance for this doc.
      (`generation_changed`) and refetch — one refetch per open room screen.
   4. Record in the incident notes: the time, the `matched`/`deleted` counts, and
      the provider event (restore id / failover time).
+     `--room` without a valid room uuid, or any unknown argument, exits non-zero
+     and rotates nothing. Without `--room` the command `SCAN`s one node: that
+     covers the single Upstash endpoint, but **not** a sharded Redis Cluster —
+     there, run it against every primary.
      Rotation deletes only the metadata hashes. The next publish or attach creates
      a fresh generation and discards the orphaned buffer. It is idempotent.
      When unsure whether a failover happened, rotate anyway: the only cost is the
