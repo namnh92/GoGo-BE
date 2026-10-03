@@ -1,4 +1,4 @@
--- GoGo-BE#228, ADR-0028 §Rollback, step 1. Run BEFORE deploying an API build
+-- GoGo-BE#228, ADR-0029 §Rollback, step 1. Run BEFORE deploying an API build
 -- older than optional stops. Not a migration: the migrator never reads this.
 --
 -- An older build inserts plan_stops without `is_optional`, so every plan
@@ -32,7 +32,7 @@ BEGIN
           LIMIT 1
         )
     ) THEN
-      RAISE EXCEPTION 'plan_stops.is_optional omitted while the room has optional stops (ADR-0028 rollback guard)'
+      RAISE EXCEPTION 'plan_stops.is_optional omitted while the room has optional stops (ADR-0029 rollback guard)'
         USING ERRCODE = 'GG228';
     END IF;
     NEW.is_optional := false;

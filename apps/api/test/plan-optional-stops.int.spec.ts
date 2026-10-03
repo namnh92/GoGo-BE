@@ -11,7 +11,7 @@ import { schema } from '@gogo/database';
 import { PlansRepository } from '../../../libs/modules/plans/infrastructure/plans.repository';
 
 /**
- * GoGo-BE#228 (ADR-0028) — optional stops over real HTTP + PostGIS: who may
+ * GoGo-BE#228 (ADR-0029) — optional stops over real HTTP + PostGIS: who may
  * set `isOptional`, in which states, omission/clear/default semantics, the
  * required/optional totals, anchors vs locks, locked schedules through
  * regenerate, and publication rechecks against interleaved writers.
@@ -344,7 +344,7 @@ async function changeConstraints(hostToken: string, roomId: string) {
   expect(res.statusCode).toBe(200);
 }
 
-describe('who may set isOptional (ADR-0028)', () => {
+describe('who may set isOptional (ADR-0029)', () => {
   it('host sets it; member, guest and another room’s host cannot; everyone in the room reads it', async () => {
     const { hostToken, memberToken, roomId, plan } = await plannedRoom();
     const body = {
@@ -372,7 +372,7 @@ describe('who may set isOptional (ADR-0028)', () => {
   });
 });
 
-describe('edit semantics (ADR-0028)', () => {
+describe('edit semantics (ADR-0029)', () => {
   it('omission keeps, explicit false clears, a new place starts required', async () => {
     const { hostToken, plan } = await plannedRoom();
     const marked = await patch(hostToken, `/v1/plans/${plan.id}`, {
@@ -457,7 +457,7 @@ describe('edit semantics (ADR-0028)', () => {
   });
 });
 
-describe('forbidden states (ADR-0028)', () => {
+describe('forbidden states (ADR-0029)', () => {
   it('refuses an active room with ROOM_ACTIVE', async () => {
     const { hostToken, roomId, plan } = await plannedRoom();
     await patch(hostToken, `/v1/rooms/${roomId}/status`, { status: 'active' });
@@ -501,7 +501,7 @@ describe('forbidden states (ADR-0028)', () => {
   });
 });
 
-describe('totals (ADR-0028)', () => {
+describe('totals (ADR-0029)', () => {
   it('splits required and optional; overBudget follows the required upper bound', async () => {
     const { hostToken, plan } = await plannedRoom();
     // Budget 400k per person. Required: Cafe Uno 50–90k + Quán Ngon 80–150k.
@@ -579,7 +579,7 @@ describe('totals (ADR-0028)', () => {
   });
 });
 
-describe('regenerate with optional and locked stops (ADR-0028)', () => {
+describe('regenerate with optional and locked stops (ADR-0029)', () => {
   it('keeps a locked optional noninitial stop at its stored time (FAIL-before: rescheduled)', async () => {
     const { hostToken, plan } = await plannedRoom();
     const v1 = (
@@ -738,7 +738,7 @@ describe('regenerate with optional and locked stops (ADR-0028)', () => {
   });
 });
 
-describe('publication rechecks against interleaved writers (ADR-0028, FAIL-before)', () => {
+describe('publication rechecks against interleaved writers (ADR-0029, FAIL-before)', () => {
   it('a lock that lands while an edit computes makes the edit 409, never lost', async () => {
     const { hostToken, roomId, plan } = await plannedRoom();
     const target = plan.stops[2]!;
@@ -838,7 +838,7 @@ describe('publication rechecks against interleaved writers (ADR-0028, FAIL-befor
   });
 });
 
-describe('migration 0068 (ADR-0028)', () => {
+describe('migration 0068 (ADR-0029)', () => {
   it('gives up on a held conflicting lock with 55P03 instead of waiting (F-04)', async () => {
     const holder = await pool.connect();
     const migrator = await pool.connect();

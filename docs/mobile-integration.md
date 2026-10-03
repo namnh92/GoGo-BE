@@ -56,7 +56,7 @@ submission. Do **not** generate a fresh key per retry — that defeats it.
   stop's `costScope` say what `costMin`/`costMax` are per — `per_person` today.
   A group figure is that amount × `participantCount`; never divide it. A stop
   whose cost is `null` has no known price, which is not the same as free (`0`).
-- **Optional stops (GoGo-BE#228, ADR-0028; APP-028).** `stop.isOptional` is
+- **Optional stops (GoGo-BE#228, ADR-0029; APP-028).** `stop.isOptional` is
   independent of `isLocked` — render Locked / Optional / Required from the two
   flags. `totals.requiredCost*` and `totals.optionalCost*` split
   `costMin`/`costMax` (which still cover every stop). `overBudget` judges the

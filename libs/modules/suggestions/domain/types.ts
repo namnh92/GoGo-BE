@@ -110,7 +110,7 @@ export type PlanStopDraft = {
   costMax: number | null;
   isLocked: boolean;
   /**
-   * GoGo-BE#228 (ADR-0028) — host intent, independent of `isLocked`. Generated
+   * GoGo-BE#228 (ADR-0029) — host intent, independent of `isLocked`. Generated
    * stops are always required (`false`); only a host edit sets it.
    */
   isOptional: boolean;

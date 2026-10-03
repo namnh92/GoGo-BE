@@ -5,7 +5,7 @@ import { scoreCandidate } from './scoring';
 import { DEFAULT_SCORING_WEIGHTS, type Candidate, type RoomSnapshot } from './types';
 
 /**
- * GoGo-BE#228 (ADR-0028) — optional stops: cost split, required-only budget,
+ * GoGo-BE#228 (ADR-0029) — optional stops: cost split, required-only budget,
  * anchors vs locks, and locked schedules kept through regenerate.
  */
 
@@ -73,7 +73,7 @@ function candidate(partial: Partial<Candidate> & { placeId: string }): Candidate
   };
 }
 
-describe('aggregatePlanCosts (ADR-0028)', () => {
+describe('aggregatePlanCosts (ADR-0029)', () => {
   it('splits a mixed plan and keeps costMin/costMax as the all-stop sums', () => {
     const totals = aggregatePlanCosts([
       { costMin: 50_000, costMax: 100_000, isOptional: false },
@@ -168,7 +168,7 @@ describe('optimizer anchors are not locks (FAIL-before: optimizer.ts:109)', () =
   });
 });
 
-describe('required-only budget (ADR-0028)', () => {
+describe('required-only budget (ADR-0029)', () => {
   it('an optional stop over the budget does not make the plan over budget', async () => {
     const result = await buildItinerary({
       ranked: [],

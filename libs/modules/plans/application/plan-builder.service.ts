@@ -146,7 +146,7 @@ export class PlanBuilderService {
 
   /**
    * SG-008 — regenerate: locked stops are invariant (place, order-anchor,
-   * duration, cost, optionality and stored schedule — ADR-0028); unlocked
+   * duration, cost, optionality and stored schedule — ADR-0029); unlocked
    * stops are rebuilt from a fresh snapshot, with structured feedback
    * exclusions, and come back required.
    */
@@ -193,7 +193,7 @@ export class PlanBuilderService {
         placeId: s.placeId,
         name: fact.name,
         position: s.position,
-        // ADR-0028 — the stored schedule travels with the lock; the optimizer
+        // ADR-0029 — the stored schedule travels with the lock; the optimizer
         // keeps it or refuses with PLAN_TIME_CONFLICT.
         arriveAt: s.arriveAt,
         departAt: s.departAt,
@@ -244,7 +244,7 @@ export class PlanBuilderService {
       stops: built.stops,
       totals: built.totals,
       generatedByRunId: plan.generatedByRunId ?? undefined,
-      // ADR-0028 — publish only over the exact plan this run read: still the
+      // ADR-0029 — publish only over the exact plan this run read: still the
       // current version, its lock/optional flags unchanged, the room on the
       // constraint version the snapshot was built from and not yet started.
       // Regenerate is how a stale plan is refreshed, so staleness is allowed.

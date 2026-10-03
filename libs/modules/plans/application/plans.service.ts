@@ -25,7 +25,7 @@ import { PlanBuilderService } from './plan-builder.service';
 export const PLAN_COST_SCOPE = 'per_person' as const;
 
 /**
- * ADR-0028 — a plan is edited only before the date starts and while the room
+ * ADR-0029 — a plan is edited only before the date starts and while the room
  * is still live. Regenerate keeps its narrower historical check.
  */
 const EDIT_FORBIDDEN_ROOM_STATUSES = ['active', 'completed', 'cancelled', 'expired'] as const;
@@ -159,7 +159,7 @@ export class PlansService {
    * lock/optional). Optimistic concurrency on plan version; times/travel/costs
    * are recalculated, never trusted from the client.
    *
-   * GoGo-BE#228 (ADR-0028) — `isOptional` omitted keeps the value the retained
+   * GoGo-BE#228 (ADR-0029) — `isOptional` omitted keeps the value the retained
    * place already had; a new place starts required; explicit `false` clears
    * it. Each place may appear once, so "retained" is never ambiguous.
    */
@@ -190,7 +190,7 @@ export class PlansService {
     if (plan.version !== input.expectedVersion) {
       throw AppError.conflict('PLAN_VERSION_CONFLICT', 'Plan changed concurrently — reload');
     }
-    // ADR-0028 — an edit never clears staleness: the host regenerates against
+    // ADR-0029 — an edit never clears staleness: the host regenerates against
     // the current constraints first.
     if (plan.isStale) {
       throw AppError.conflict('PLAN_STALE', 'Room constraints changed — regenerate the plan');
@@ -275,7 +275,7 @@ export class PlansService {
       stops: built.stops,
       totals: built.totals,
       generatedByRunId: plan.generatedByRunId ?? undefined,
-      // ADR-0028 — publish only over exactly what was read above.
+      // ADR-0029 — publish only over exactly what was read above.
       guard: {
         sourcePlanId: plan.id,
         sourceVersion: plan.version,
@@ -380,7 +380,7 @@ export class PlansService {
     if (!stop || stop.planId !== planId) {
       throw AppError.notFound('STOP_NOT_FOUND', 'Stop not found');
     }
-    // Lock/unlock never touches optionality (ADR-0028).
+    // Lock/unlock never touches optionality (ADR-0029).
     await this.repo.setStopLock(planId, plan.roomId, stopId, locked, member.id);
     await this.publishPlan(
       plan.roomId,

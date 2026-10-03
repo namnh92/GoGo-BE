@@ -1,4 +1,4 @@
-# ADR-0028: Optional plan stops (`isOptional`)
+# ADR-0029: Optional plan stops (`isOptional`)
 
 - **Status:** accepted — shape decided by SA review (Astra) on 2026-10-02 under the owner's delegation on GoGo-BE#228; CODEOWNER approval of the contract/migration diff still required before merge
 - **Date:** 2026-10-02

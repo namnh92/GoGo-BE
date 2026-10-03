@@ -43,7 +43,7 @@ export const LOW_CONFIDENCE = 0.6;
  * place's data confidence (0..1). GoGo-BE#603 — required, so every caller that
  * builds an anchor has to say how sure the place's facts are.
  *
- * GoGo-BE#228 (ADR-0028) — an anchor is a stop the caller supplies, which is
+ * GoGo-BE#228 (ADR-0029) — an anchor is a stop the caller supplies, which is
  * not the same thing as a locked stop: a host edit supplies every stop and
  * says per stop whether it is locked. `isLocked` and `isOptional` are carried
  * through as given. A **locked** anchor that arrives with both `arriveAt` and
@@ -63,7 +63,7 @@ type SeqEntry = {
   costMax: number | null;
   isLocked: boolean;
   isOptional: boolean;
-  /** Stored schedule a locked anchor keeps (ADR-0028); null = scheduled here. */
+  /** Stored schedule a locked anchor keeps (ADR-0029); null = scheduled here. */
   pinned: { arriveAt: Date; departAt: Date } | null;
   category: string | null;
   lowConfidence: boolean;
@@ -80,7 +80,7 @@ export type OptimizerResult = {
  * Per-stop constraints: window duration, per-person budget accumulation,
  * travel time, consecutive-category diversity. Anchors (SG-008) keep their
  * place, order, duration, cost and optionality — never replaced; locked ones
- * also keep a stored schedule (ADR-0028). Optional anchors do not count
+ * also keep a stored schedule (ADR-0029). Optional anchors do not count
  * towards the budget the greedy fill works within.
  */
 export async function buildItinerary(input: {
@@ -137,7 +137,7 @@ export async function buildItinerary(input: {
     // anchor is kept as it is, but how sure its facts are is not waived.
     lowConfidence: s.confidence < LOW_CONFIDENCE || s.costMin === null || s.costMax === null,
   }));
-  // ADR-0028 — the greedy fill budgets against required spend only; an
+  // ADR-0029 — the greedy fill budgets against required spend only; an
   // optional anchor's price stays visible in the totals but is not a commitment.
   let costMax = sequence.reduce((a, s) => a + (s.isOptional ? 0 : (s.costMax ?? 0)), 0);
   let usedMinutes = sequence.reduce((a, s) => a + s.durationMinutes, 0);
@@ -265,7 +265,7 @@ export async function buildItinerary(input: {
     let arriveAt: Date | null;
     let departAt: Date | null;
     if (entry.pinned) {
-      // ADR-0028 — a locked stop keeps its stored schedule. Arriving early
+      // ADR-0029 — a locked stop keeps its stored schedule. Arriving early
       // means waiting; arriving late would move it, and that is refused here,
       // before anything is written, so the plan in place stays as it was.
       // F-01 — the kept interval must also be well-formed and fit the room's
@@ -317,7 +317,7 @@ export async function buildItinerary(input: {
 
   const costs = aggregatePlanCosts(stops);
   // FR-SUG-006: over-budget flag comes from the UPPER bound — of the required
-  // stops only (ADR-0028).
+  // stops only (ADR-0029).
   const overBudget = isRequiredOverBudget(costs.requiredCostMax, perPersonBudget);
   // A generic "within budget" claim needs every stop, optional ones included,
   // to fit, and every price to be known: unknown is not free.

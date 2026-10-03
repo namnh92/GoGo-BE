@@ -7,7 +7,7 @@ import type { PlansRepository } from '../infrastructure/plans.repository';
 import { PlanBuilderService } from './plan-builder.service';
 
 /**
- * GoGo-BE#228 (ADR-0028) — regenerate keeps every locked stop's optionality and
+ * GoGo-BE#228 (ADR-0029) — regenerate keeps every locked stop's optionality and
  * stored schedule, replaces unlocked stops with required ones, publishes only
  * over the plan it read, and commits nothing when a locked stop cannot keep
  * its time.
@@ -120,7 +120,7 @@ const stop = (partial: Partial<Stop> & { id: string; placeId: string }): Stop =>
   ...partial,
 });
 
-describe('PlanBuilderService.regenerate with optional stops (ADR-0028)', () => {
+describe('PlanBuilderService.regenerate with optional stops (ADR-0029)', () => {
   it('keeps a locked optional stop optional, at its stored time; replacements are required', async () => {
     const { service, created } = builder([
       stop({ id: 's0', placeId: 'gone', position: 0, isOptional: true }),

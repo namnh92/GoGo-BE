@@ -1465,7 +1465,7 @@ export interface paths {
          * Host-only: replace stop list; times/travel/costs recalculated server-side
          * @description Full-list replacement: reorder, add, remove, lock and mark stops optional in one versioned write. Each `placeId` may appear once (`400 DUPLICATE_STOP_PLACE`), so a retained stop is never ambiguous.
          *
-         *     `isOptional` (GoGo-BE#228, ADR-0028): omitted keeps the value the retained place already had, a newly added place starts required, and explicit `false` clears it. Optional stops still count towards duration, distance and schedule; their cost is reported apart in `totals` and never makes the plan `overBudget`. `isOptional` and `isLocked` are independent.
+         *     `isOptional` (GoGo-BE#228, ADR-0029): omitted keeps the value the retained place already had, a newly added place starts required, and explicit `false` clears it. Optional stops still count towards duration, distance and schedule; their cost is reported apart in `totals` and never makes the plan `overBudget`. `isOptional` and `isLocked` are independent.
          *
          *     Refused with `409` when the plan is not current (`PLAN_NOT_CURRENT`), `expectedVersion` is behind (`PLAN_VERSION_CONFLICT`), the plan is stale — regenerate first (`PLAN_STALE`) — the date has started (`ROOM_ACTIVE`) or the room is cancelled/expired (`ROOM_NOT_EDITABLE`). The write rechecks plan identity, version, stop flags and the room's constraint version atomically, so a lock, edit, regenerate or constraint change that lands meanwhile also yields `409`.
          */
@@ -1491,7 +1491,7 @@ export interface paths {
          *
          *     When AI parsing is disabled, times out, runs out of quota, or returns output that fails validation, a deterministic parser produces the result instead. There is no failure path that surfaces a model error to the user.
          *
-         *     Locked stops keep their stored schedule (ADR-0028); when one can no longer be reached in time the answer is `409 PLAN_TIME_CONFLICT` and nothing is written. A lock, edit or constraint change that lands while the plan is being rebuilt yields `409 PLAN_VERSION_CONFLICT` or `PLAN_STALE` instead of a plan built from older state.
+         *     Locked stops keep their stored schedule (ADR-0029); when one can no longer be reached in time the answer is `409 PLAN_TIME_CONFLICT` and nothing is written. A lock, edit or constraint change that lands while the plan is being rebuilt yields `409 PLAN_VERSION_CONFLICT` or `PLAN_STALE` instead of a plan built from older state.
          */
         post: operations["regeneratePlan"];
         delete?: never;
@@ -1515,7 +1515,7 @@ export interface paths {
         head?: never;
         /**
          * Host-only: lock/unlock a stop
-         * @description Never changes `isOptional`. A superseded plan answers `409 PLAN_NOT_CURRENT` — lock the stop on the current plan (ADR-0028).
+         * @description Never changes `isOptional`. A superseded plan answers `409 PLAN_NOT_CURRENT` — lock the stop on the current plan (ADR-0029).
          */
         patch: operations["lockPlanStop"];
         trace?: never;
@@ -7032,7 +7032,7 @@ export interface components {
         /**
          * @description GoGo-BE#593 — `costMin` and `costMax` are amounts per `costScope`, which is `per_person` today: each stop's per-person price, summed. A group figure is that amount times `participantCount`; nothing here is a group total to divide.
          *
-         *     GoGo-BE#228 (ADR-0028) — `costMin`/`costMax` stay the sums over **all** stops. `required*` and `optional*` split them by `PlanStop.isOptional`: `costMin = requiredCostMin + optionalCostMin`, likewise for max. Plans stored before the split report required = the totals, optional = 0.
+         *     GoGo-BE#228 (ADR-0029) — `costMin`/`costMax` stay the sums over **all** stops. `required*` and `optional*` split them by `PlanStop.isOptional`: `costMin = requiredCostMin + optionalCostMin`, likewise for max. Plans stored before the split report required = the totals, optional = 0.
          */
         PlanTotals: {
             /** @description Sum of every stop's lower price bound, per `costScope`. A stop with no price in that scope adds nothing and sets `uncertain`, so `0` with `uncertain: true` means no price is known — never "free". */
@@ -7051,7 +7051,7 @@ export interface components {
             currency?: string;
             durationMinutes?: number;
             travelDistanceM?: number;
-            /** @description Computed from the UPPER bound of the **required** stops (`requiredCostMax`) — never show "trong ngân sách" when true. False does not cover optional stops: compare `costMax` before claiming the whole plan fits (ADR-0028). */
+            /** @description Computed from the UPPER bound of the **required** stops (`requiredCostMax`) — never show "trong ngân sách" when true. False does not cover optional stops: compare `costMax` before claiming the whole plan fits (ADR-0029). */
             overBudget?: boolean;
             /** @description Some stop has unknown/low-confidence price — surface the uncertainty. */
             uncertain?: boolean;
@@ -11505,7 +11505,7 @@ export interface operations {
                         durationMinutes?: number;
                         /** @default false */
                         isLocked?: boolean;
-                        /** @description Omitted keeps the retained place's value; a new place starts required; `false` clears it (ADR-0028). */
+                        /** @description Omitted keeps the retained place's value; a new place starts required; `false` clears it (ADR-0029). */
                         isOptional?: boolean;
                     }[];
                 };

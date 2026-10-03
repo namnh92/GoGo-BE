@@ -1,4 +1,4 @@
--- GoGo-BE#228, ADR-0028 §Rollback, final step. Run after the current build is
+-- GoGo-BE#228, ADR-0029 §Rollback, final step. Run after the current build is
 -- back (roll forward). Restores the migration's state exactly.
 BEGIN;
 SET LOCAL lock_timeout = '5s';

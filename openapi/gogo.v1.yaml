@@ -2898,7 +2898,7 @@ paths:
         (`400 DUPLICATE_STOP_PLACE`), so a retained stop is never ambiguous.
 
 
-        `isOptional` (GoGo-BE#228, ADR-0028): omitted keeps the value the
+        `isOptional` (GoGo-BE#228, ADR-0029): omitted keeps the value the
         retained place already had, a newly added place starts required, and
         explicit `false` clears it. Optional stops still count towards
         duration, distance and schedule; their cost is reported apart in
@@ -2939,7 +2939,7 @@ paths:
                         type: boolean
                         description: >
                           Omitted keeps the retained place's value; a new place
-                          starts required; `false` clears it (ADR-0028).
+                          starts required; `false` clears it (ADR-0029).
       responses:
         '200':
           description: New plan version (times, travel and totals recalculated server-side)
@@ -2978,7 +2978,7 @@ paths:
         to the user.
 
 
-        Locked stops keep their stored schedule (ADR-0028); when one can no
+        Locked stops keep their stored schedule (ADR-0029); when one can no
         longer be reached in time the answer is `409 PLAN_TIME_CONFLICT` and
         nothing is written. A lock, edit or constraint change that lands while
         the plan is being rebuilt yields `409 PLAN_VERSION_CONFLICT` or
@@ -3018,7 +3018,7 @@ paths:
       summary: 'Host-only: lock/unlock a stop'
       description: >
         Never changes `isOptional`. A superseded plan answers
-        `409 PLAN_NOT_CURRENT` — lock the stop on the current plan (ADR-0028).
+        `409 PLAN_NOT_CURRENT` — lock the stop on the current plan (ADR-0029).
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: stopId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -13320,7 +13320,7 @@ components:
         total to divide.
 
 
-        GoGo-BE#228 (ADR-0028) — `costMin`/`costMax` stay the sums over **all**
+        GoGo-BE#228 (ADR-0029) — `costMin`/`costMax` stay the sums over **all**
         stops. `required*` and `optional*` split them by `PlanStop.isOptional`:
         `costMin = requiredCostMin + optionalCostMin`, likewise for max. Plans
         stored before the split report required = the totals, optional = 0.
@@ -13365,7 +13365,7 @@ components:
             Computed from the UPPER bound of the **required** stops
             (`requiredCostMax`) — never show "trong ngân sách" when true. False
             does not cover optional stops: compare `costMax` before claiming
-            the whole plan fits (ADR-0028).
+            the whole plan fits (ADR-0029).
         uncertain:
           type: boolean
           description: Some stop has unknown/low-confidence price — surface the uncertainty.

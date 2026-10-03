@@ -1,5 +1,5 @@
 /**
- * GoGo-BE#228 (ADR-0028) — one place that turns stop costs into plan cost
+ * GoGo-BE#228 (ADR-0029) — one place that turns stop costs into plan cost
  * totals, so the optimizer, a host edit and a legacy read can never disagree
  * on what "required" and "optional" add up to.
  *
@@ -49,7 +49,7 @@ export function aggregatePlanCosts(stops: readonly CostedStop[]): PlanCostTotals
 }
 
 /**
- * FR-SUG-006 + ADR-0028 — over budget is judged on the UPPER bound of the
+ * FR-SUG-006 + ADR-0029 — over budget is judged on the UPPER bound of the
  * **required** stops only. An optional stop is visible, never silently counted
  * as a commitment. `perPersonBudget <= 0` means the room set no ceiling.
  */

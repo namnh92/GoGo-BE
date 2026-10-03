@@ -1,4 +1,4 @@
--- GoGo-BE#228, ADR-0028. A plan stop is required or optional; only the host
+-- GoGo-BE#228, ADR-0029. A plan stop is required or optional; only the host
 -- sets it, and every historical stop stays required.
 --
 -- Additive: ADD COLUMN with a constant DEFAULT is a catalogue-only change on
@@ -13,7 +13,7 @@
 -- holder is gone (pg_stat_activity / pg_locks on plan_stops). The timeout is
 -- reset right after so later files in the same run keep the server default.
 --
--- Rollback (ADR-0028 §Rollback): install the rollback guard before deploying
+-- Rollback (ADR-0029 §Rollback): install the rollback guard before deploying
 -- an older API, keep the column. Rehearsal-only down:
 -- ALTER TABLE plan_stops DROP COLUMN is_optional;
 SET LOCAL lock_timeout = '5s';

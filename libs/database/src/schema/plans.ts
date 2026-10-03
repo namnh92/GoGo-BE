@@ -127,7 +127,7 @@ export type PlanTotals = {
   overBudget: boolean;
   uncertain: boolean;
   /**
-   * GoGo-BE#228 (ADR-0028) — the split of `costMin`/`costMax` by stop
+   * GoGo-BE#228 (ADR-0029) — the split of `costMin`/`costMax` by stop
    * optionality. Absent on plans stored before it existed; those read as
    * required = costMin/costMax, optional = 0 (every historical stop is required).
    */
@@ -187,7 +187,7 @@ export const planStops = pgTable(
     // FR-SUG-007: locked stops are invariant across regenerate.
     isLocked: boolean('is_locked').notNull().default(false),
     lockedByMemberId: uuid('locked_by_member_id'),
-    // GoGo-BE#228 (ADR-0028): host intent, independent of the lock. Optional
+    // GoGo-BE#228 (ADR-0029): host intent, independent of the lock. Optional
     // costs are reported apart and never count towards `overBudget`.
     isOptional: boolean('is_optional').notNull().default(false),
     status: stopStatus('status').notNull().default('planned'),

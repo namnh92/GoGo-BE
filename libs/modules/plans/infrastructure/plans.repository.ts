@@ -10,7 +10,7 @@ import type { PlanStopDraft, PlanTotalsDraft } from '../../suggestions/domain/ty
 type RoomStatus = (typeof schema.rooms.$inferSelect)['status'];
 
 /**
- * GoGo-BE#228 (ADR-0028) — what a plan write read before computing, rechecked
+ * GoGo-BE#228 (ADR-0029) — what a plan write read before computing, rechecked
  * inside the publishing transaction under the room row lock. The computation
  * (snapshot, provider travel) runs outside any transaction; this is what keeps
  * an interleaved constraint change, edit, regenerate or lock from being
@@ -259,7 +259,7 @@ export class PlansRepository {
   }
 
   /**
-   * ADR-0028 — the room row lock every plan writer takes first, then the room
+   * ADR-0029 — the room row lock every plan writer takes first, then the room
    * facts the computation assumed. A constraint change updates the same row,
    * so it either commits before this (and the version check refuses) or waits
    * and then marks the new plan stale.
@@ -315,7 +315,7 @@ export class PlansRepository {
   }
 
   /**
-   * ADR-0028 — a lock lands on the current plan or not at all. Without the
+   * ADR-0029 — a lock lands on the current plan or not at all. Without the
    * room lock and the `current` recheck, a lock racing an edit could be
    * written to the version the edit had just superseded and silently lost.
    */
