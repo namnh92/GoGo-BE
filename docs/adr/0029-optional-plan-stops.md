@@ -57,6 +57,9 @@ be reached at its stored time — or whose stored interval is inverted or falls
 outside the room's current window — fails the build with `409 PLAN_TIME_CONFLICT`,
 before anything is written. Unavailable locked stops stay (with their existing
 warning); exclusions, budget pressure and a reduced stop limit never drop them.
+A pinned departure is a fixed point even when the room has no `startAt`: the
+schedule continues from it, and stops added after the last locked stop must
+fit — with their travel — between that departure and `endAt`.
 
 **Totals.** `costMin`/`costMax` stay the sums over all stops. New required
 fields `requiredCostMin`, `requiredCostMax`, `optionalCostMin`,

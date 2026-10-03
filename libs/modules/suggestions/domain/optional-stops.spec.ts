@@ -415,6 +415,85 @@ describe('locked stops keep their stored schedule (FAIL-before)', () => {
     ).rejects.toMatchObject({ code: 'PLAN_TIME_CONFLICT', httpStatus: 409 });
   });
 
+  it('with startAt cleared, a stop added after a locked one still ends by endAt (F-06)', async () => {
+    // 30 minutes are left after the locked stop; a 60-minute candidate must not
+    // be scheduled past the window end.
+    const snap = snapshot({ timeWindow: { startAt: null, endAt: '2026-08-29T10:00:00Z' } });
+    const result = await buildItinerary({
+      ranked: [
+        scoreCandidate(
+          candidate({ placeId: 'long', avgVisitMinutes: 60 }),
+          snap,
+          DEFAULT_SCORING_WEIGHTS,
+        ),
+      ],
+      snapshot: snap,
+      lockedStops: [
+        anchor({
+          placeId: 'kept',
+          isLocked: true,
+          arriveAt: at('2026-08-29T08:30:00Z'),
+          departAt: at('2026-08-29T09:30:00Z'),
+        }),
+      ],
+      maxStops: 2,
+    });
+    expect(result.stops.map((s) => s.placeId)).toEqual(['kept']);
+  });
+
+  it('with startAt cleared, a stop that fits before endAt is still added (F-06)', async () => {
+    const snap = snapshot({ timeWindow: { startAt: null, endAt: '2026-08-29T10:00:00Z' } });
+    const result = await buildItinerary({
+      ranked: [
+        scoreCandidate(
+          candidate({ placeId: 'short', avgVisitMinutes: 15 }),
+          snap,
+          DEFAULT_SCORING_WEIGHTS,
+        ),
+      ],
+      snapshot: snap,
+      lockedStops: [
+        anchor({
+          placeId: 'kept',
+          isLocked: true,
+          arriveAt: at('2026-08-29T08:30:00Z'),
+          departAt: at('2026-08-29T09:30:00Z'),
+        }),
+      ],
+      maxStops: 2,
+    });
+    expect(result.stops.map((s) => s.placeId)).toEqual(['kept', 'short']);
+    const end = new Date('2026-08-29T10:00:00Z').getTime();
+    for (const stop of result.stops) expect(stop.departAt!.getTime()).toBeLessThanOrEqual(end);
+  });
+
+  it('an unpinned anchor after the locked stop uses up the time left before endAt (F-06)', async () => {
+    const snap = snapshot({ timeWindow: { startAt: null, endAt: '2026-08-29T10:00:00Z' } });
+    const result = await buildItinerary({
+      ranked: [
+        scoreCandidate(
+          candidate({ placeId: 'short', avgVisitMinutes: 15 }),
+          snap,
+          DEFAULT_SCORING_WEIGHTS,
+        ),
+      ],
+      snapshot: snap,
+      lockedStops: [
+        anchor({
+          placeId: 'kept',
+          position: 0,
+          isLocked: true,
+          arriveAt: at('2026-08-29T08:30:00Z'),
+          departAt: at('2026-08-29T09:30:00Z'),
+        }),
+        // Unlocked anchor: 10 min + travel leaves no room for a 15-minute stop.
+        anchor({ placeId: 'next', position: 1, durationMinutes: 10 }),
+      ],
+      maxStops: 3,
+    });
+    expect(result.stops.map((s) => s.placeId)).toEqual(['kept', 'next']);
+  });
+
   it('an unlocked anchor with stored times is rescheduled, not pinned', async () => {
     const result = await buildItinerary({
       ranked: [],

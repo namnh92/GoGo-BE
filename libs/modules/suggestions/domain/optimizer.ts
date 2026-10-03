@@ -151,6 +151,20 @@ export async function buildItinerary(input: {
     );
   }
 
+  // F-06 — greedy stops are scheduled after the last pinned departure, so with
+  // an `endAt` they must fit the time left from that departure, whether or not
+  // the room has a start (the fallback window above knows nothing about it).
+  const lastPinnedIndex = sequence.map((s) => s.pinned !== null).lastIndexOf(true);
+  const tailBudgetMinutes =
+    endAt && lastPinned
+      ? Math.floor((endAt.getTime() - lastPinned.departAt.getTime()) / 60000)
+      : null;
+  let tailUsedMinutes = 0;
+  for (let i = lastPinnedIndex + 1; i < sequence.length && lastPinnedIndex >= 0; i++) {
+    tailUsedMinutes += travelEstimate(sequence[i - 1]!, sequence[i]!).minutes;
+    tailUsedMinutes += sequence[i]!.durationMinutes;
+  }
+
   const pool = input.ranked.filter((s) => !anchorIds.has(s.candidate.placeId));
 
   // Legs measured by the provider, keyed `from|to`. Everything not in here is
@@ -199,6 +213,8 @@ export async function buildItinerary(input: {
       const visit = c.avgVisitMinutes ?? DEFAULT_VISIT_MIN;
       const travel = legTo(c).minutes;
       if (usedMinutes + visit + travel > windowMinutes) continue;
+      if (tailBudgetMinutes !== null && tailUsedMinutes + visit + travel > tailBudgetMinutes)
+        continue;
       if (perPersonBudget > 0 && costMax + (c.pricePerPersonMax ?? 0) > perPersonBudget) continue;
       const category = (c.taxonomyKeys['category'] ?? [])[0] ?? null;
       if (category !== null && category === lastCategory && i + 1 < pool.length) continue;
@@ -212,6 +228,7 @@ export async function buildItinerary(input: {
     const visit = c.avgVisitMinutes ?? DEFAULT_VISIT_MIN;
     const travel = legTo(c).minutes;
     usedMinutes += visit + travel;
+    tailUsedMinutes += visit + travel;
     costMax += c.pricePerPersonMax ?? 0;
     sequence.push({
       placeId: c.placeId,
