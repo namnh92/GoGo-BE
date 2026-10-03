@@ -1475,6 +1475,23 @@ export class PlaceImportJobService {
     return new Set((rows as { field: string }[]).map((r) => r.field));
   }
 
+  /**
+   * GoGo-BE#280 — who an `update_existing` write is recorded under: the admin
+   * who created the job, since the row is applied by the worker, not a request.
+   */
+  private async jobActor(rowId: string): Promise<string | null> {
+    const [row] = await this.db
+      .select({ adminId: schema.placeIngestJobs.createdByAdminId })
+      .from(schema.placeIngestRows)
+      .innerJoin(
+        schema.placeIngestJobs,
+        eq(schema.placeIngestJobs.id, schema.placeIngestRows.jobId),
+      )
+      .where(eq(schema.placeIngestRows.id, rowId))
+      .limit(1);
+    return row?.adminId ?? null;
+  }
+
   private countRow(status: string, errorCode?: string): void {
     this.metrics.increment('place_import_rows_total', { status, error_code: errorCode });
   }
@@ -1583,6 +1600,7 @@ export class PlaceImportJobService {
     }
 
     const score = await this.resolver.scoreFor(details, null, normalized.categoryKey);
+    const actorId = await this.jobActor(rowId);
     await this.db.transaction(async (tx) => {
       /**
        * GoGo-BE#440 F-08 — one lock order for every writer that moves a place:
@@ -1625,7 +1643,9 @@ export class PlaceImportJobService {
            * ownership; this is the same rule read in the other direction.
            */
           ...(editorial.has('name') ? {} : { name: details.name }),
-          ...(editorial.has('address_text') ? {} : { addressText: details.addressText }),
+          // GoGo-BE#280 — never the provider's address. `address_text` is
+          // GoGo-owned (owner decision 2026-10-02): a Google disagreement can
+          // neither overwrite it, nor resurrect one an editor cleared.
           ...(editorial.has('geom') ? {} : { geom: { x: details.lng, y: details.lat } }),
           // Provider aggregates are never a person's to own — nobody types a
           // rating — so these are written unconditionally and stay attributed
@@ -1636,9 +1656,17 @@ export class PlaceImportJobService {
           freshnessCheckedAt: new Date(),
           // Sheet owns this one; an empty cell leaves what is already there.
           ...(normalized.highlight ? { description: normalized.highlight } : {}),
+          /**
+           * GoGo-BE#280 — the sheet's address, phone and website replace what
+           * is stored, each with the evidence it came with; a blank cell
+           * leaves the stored value alone. Before #280 this mode parsed and
+           * validated phone/website and then never wrote them.
+           */
+          ...contactValues(normalized),
           updatedAt: sql`now()`,
         })
         .where(eq(schema.places.id, placeId));
+      await writeImportContactProvenance(tx, placeId, actorId, normalized);
 
       const unit = dbPriceUnit(normalized.priceUnit);
       if (normalized.priceMin !== null && normalized.priceMax !== null && unit) {
@@ -1652,20 +1680,40 @@ export class PlaceImportJobService {
           source: 'editor',
         });
       }
-    });
 
-    await this.dedup.upsertProviderSource({
-      placeId,
-      details,
-      derivedScore: score,
-      fetchTier: details.fetchTier,
+      /**
+       * GoGo-BE#280 (Sol F-02) — everything the row's outcome depends on, in
+       * the transaction that wrote the place: the provider source, the audit,
+       * the reindex event and the row status. Before, a failure after the
+       * place commit left contact values and their evidence written, with no
+       * event announcing them and a row that said it had not been imported.
+       */
+      await this.dedup.upsertProviderSource(
+        { placeId, details, derivedScore: score, fetchTier: details.fetchTier },
+        tx,
+      );
+      const contact = contactValues(normalized);
+      await writeAudit(tx, {
+        actorType: actorId ? 'admin' : 'system',
+        actorId,
+        action: 'place.updated',
+        resourceType: 'place',
+        resourceId: placeId,
+        // Field names only — never the values or their references.
+        diff: {
+          source: 'import_update_existing',
+          rowId,
+          contact: {
+            written: Object.keys(contact).map((k) => (k === 'addressText' ? 'address_text' : k)),
+          },
+        },
+      });
+      await this.dedup.emitReindex(placeId, 'updated', tx);
+      await tx
+        .update(schema.placeIngestRows)
+        .set({ ...base, status: 'imported', matchedPlaceId: placeId })
+        .where(eq(schema.placeIngestRows.id, rowId));
     });
-    await this.dedup.emitReindex(placeId, 'updated');
-
-    await this.db
-      .update(schema.placeIngestRows)
-      .set({ ...base, status: 'imported', matchedPlaceId: placeId })
-      .where(eq(schema.placeIngestRows.id, rowId));
     this.countRow('imported');
   }
 
@@ -1847,7 +1895,7 @@ export class PlaceImportJobService {
 
     for (const row of rows) {
       try {
-        const placeId = await this.createPlaceFromRow(row, job.mode as ImportMode);
+        const placeId = await this.createPlaceFromRow(row, job.mode as ImportMode, adminId);
         created.push(placeId);
       } catch (err) {
         failed.push({
@@ -1869,7 +1917,12 @@ export class PlaceImportJobService {
     return { created: created.length, failed, jobId };
   }
 
-  private async createPlaceFromRow(row: IngestRow, mode: ImportMode): Promise<string> {
+  private async createPlaceFromRow(
+    row: IngestRow,
+    mode: ImportMode,
+    /** GoGo-BE#280 — the admin publishing the row: the actor its evidence is recorded under. */
+    actorId: string,
+  ): Promise<string> {
     if (!row.resolvedGooglePlaceId) {
       throw AppError.conflict('ROW_NOT_RESOLVED', 'Dòng chưa resolve được provider place');
     }
@@ -1926,7 +1979,13 @@ export class PlaceImportJobService {
           description: normalized.highlight ?? null,
           status,
           geom: { x: details.lng, y: details.lat },
-          addressText: details.addressText,
+          /**
+           * GoGo-BE#280 — the address, phone and website are the sheet's, with
+           * their evidence, or nothing. The provider's formatted address used
+           * to fill `address_text` here; it is GoGo-owned data now (owner
+           * decision 2026-10-02, option A), and Google is not its source.
+           */
+          ...contactValues(normalized),
           rating: details.rating !== null ? details.rating.toFixed(2) : null,
           ratingCount: details.ratingCount,
           priceLevel: details.priceLevel,
@@ -1940,8 +1999,6 @@ export class PlaceImportJobService {
            * means. They are normalized at parse time, so what lands here is the
            * same shape the console would have written.
            */
-          ...(normalized.phone !== null ? { phone: normalized.phone } : {}),
-          ...(normalized.website !== null ? { website: normalized.website } : {}),
           ...(normalized.avgVisitMinutes !== null
             ? { avgVisitMinutes: normalized.avgVisitMinutes }
             : {}),
@@ -1966,8 +2023,6 @@ export class PlaceImportJobService {
       const claimed: string[] = [
         ...(normalized.name ? ['name'] : []),
         ...(normalized.highlight ? ['description'] : []),
-        ...(normalized.phone !== null ? ['phone'] : []),
-        ...(normalized.website !== null ? ['website'] : []),
       ];
       if (claimed.length > 0) {
         await tx.insert(schema.placeFieldProvenance).values(
@@ -1980,6 +2035,8 @@ export class PlaceImportJobService {
           })),
         );
       }
+      // GoGo-BE#280 — the contact columns carry the evidence the sheet gave.
+      await writeImportContactProvenance(tx, place!.id, actorId, normalized);
 
       for (const h of details.hours) {
         await tx.insert(schema.placeHours).values({
@@ -2381,11 +2438,12 @@ function toCandidate(c: {
   confidence: number;
 }): MatchCandidate {
   // #347 — `c.target` carries lat/lng for scoring; the persisted candidate
-  // deliberately does not. See the note on `MatchCandidate`.
+  // deliberately does not. GoGo-BE#280 (Sol F-01) — nor the formatted address:
+  // it is Google's, and this JSON is persistence like any other column. The
+  // reviewer tells branches apart by name and confidence, then confirms by id.
   return {
     googlePlaceId: c.target.googlePlaceId,
     name: c.target.name,
-    address: c.target.address,
     confidence: c.confidence,
   };
 }
@@ -2397,6 +2455,69 @@ function confidenceBucket(value: number | undefined): string {
   if (value >= 0.7) return '0.7-0.9';
   if (value >= 0.5) return '0.5-0.7';
   return '0-0.5';
+}
+
+/**
+ * GoGo-BE#280 — the contact columns a row may write: only those whose value
+ * arrived with evidence. A row stored before #280 has phone/website and no
+ * evidence, and is therefore written without them rather than with an
+ * unsourced value. An absent key leaves the column untouched.
+ */
+function contactValues(normalized: NormalizedImportRow): {
+  addressText?: string;
+  phone?: string;
+  website?: string;
+} {
+  const evidence = normalized.contactEvidence ?? {};
+  return {
+    ...(normalized.address && evidence.address_text ? { addressText: normalized.address } : {}),
+    ...(normalized.phone && evidence.phone ? { phone: normalized.phone } : {}),
+    ...(normalized.website && evidence.website ? { website: normalized.website } : {}),
+  };
+}
+
+/**
+ * GoGo-BE#280 — the provenance half of `contactValues`, in the caller's
+ * transaction. The sheet's evidence replaces the field's previous origin, and
+ * `verified_at` moves because this write is the verification.
+ */
+async function writeImportContactProvenance(
+  tx: Pick<Db, 'insert'>,
+  placeId: string,
+  actorId: string | null,
+  normalized: NormalizedImportRow,
+): Promise<void> {
+  const written = contactValues(normalized);
+  const evidence = normalized.contactEvidence ?? {};
+  const fields = [
+    ...(written.addressText !== undefined ? (['address_text'] as const) : []),
+    ...(written.phone !== undefined ? (['phone'] as const) : []),
+    ...(written.website !== undefined ? (['website'] as const) : []),
+  ];
+  for (const field of fields) {
+    const ev = evidence[field]!;
+    await tx
+      .insert(schema.placeFieldProvenance)
+      .values({
+        placeId,
+        field,
+        sourceType: ev.sourceType,
+        sourceReference: ev.sourceReference,
+        collectedAt: new Date(ev.collectedAt),
+        actorId,
+      })
+      .onConflictDoUpdate({
+        target: [schema.placeFieldProvenance.placeId, schema.placeFieldProvenance.field],
+        set: {
+          sourceType: ev.sourceType,
+          sourceReference: ev.sourceReference,
+          collectedAt: new Date(ev.collectedAt),
+          actorId,
+          verifiedAt: sql`now()`,
+          updatedAt: sql`now()`,
+        },
+      });
+  }
 }
 
 /** `normalized_input` is stored as jsonb; the writer is the only shape source. */

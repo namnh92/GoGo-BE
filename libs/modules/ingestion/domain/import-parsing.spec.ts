@@ -586,13 +586,12 @@ describe('/v1 legacy mapping compatibility', () => {
     expect(viaLegacy).toEqual(viaCanonical);
   });
 
-  it('keeps accepting a retired field, mapping it nowhere', () => {
-    // `/v1` answered 200 and ignored them. Turning that into a 400 would be a
-    // behavioural break for the sake of tidiness.
+  it('maps `address` onto the canonical field now that GoGo owns it (#280)', () => {
+    // FAIL-before: `address` was retired — accepted, mapped nowhere, dropped.
     const result = parseColumnMapping({ 'Địa chỉ': 'address' });
 
-    expect(result.mapping).toEqual({});
-    expect(result.retired).toEqual([{ header: 'Địa chỉ', value: 'address' }]);
+    expect(result.retired).toEqual([]);
+    expect(result.mapping).toEqual({ 'Địa chỉ': 'address' });
   });
 
   it('now stores what `phone` and `website` used to drop (PI-BE-025)', () => {
@@ -769,17 +768,73 @@ describe('google_place_id', () => {
 describe('GoGo-owned import columns', () => {
   const ctx = { knownCategoryKeys: new Set(['cafe']) };
   const base = { source_row_id: '1', google_place_id: 'ChIJabcdef', category: 'cafe' };
+  /** GoGo-BE#280 — the evidence a contact cell must carry. */
+  const ev = (field: 'address' | 'phone' | 'website') => ({
+    [`${field}_source_type`]: 'editorial',
+    [`${field}_source_reference`]: 'Gọi chủ quán ngày 2026-09-30',
+    [`${field}_collected_at`]: '2026-09-30T02:00:00Z',
+  });
 
   it('normalizes a phone the way the console does', () => {
-    const { normalized, errors } = validateRow({ ...base, phone: '028 3822 9999' }, ctx);
+    const { normalized, errors } = validateRow(
+      { ...base, phone: '028 3822 9999', ...ev('phone') },
+      ctx,
+    );
     expect(errors).toEqual([]);
     expect(normalized.phone).toBe('+842838229999');
+    expect(normalized.contactEvidence?.phone).toEqual({
+      sourceType: 'editorial',
+      sourceReference: 'Gọi chủ quán ngày 2026-09-30',
+      collectedAt: '2026-09-30T02:00:00.000Z',
+    });
   });
 
   it('upgrades a bare host to https and keeps the path', () => {
-    const { normalized, errors } = validateRow({ ...base, website: 'chaoban.vn/menu' }, ctx);
+    const { normalized, errors } = validateRow(
+      { ...base, website: 'chaoban.vn/menu', ...ev('website') },
+      ctx,
+    );
     expect(errors).toEqual([]);
     expect(normalized.website).toBe('https://chaoban.vn/menu');
+  });
+
+  it('refuses a contact value with no evidence, naming each missing column (#280)', () => {
+    // FAIL-before: a bare phone cell validated clean and was stored `editorial`.
+    const { errors, normalized } = validateRow({ ...base, phone: '028 3822 9999' }, ctx);
+    expect(errors.map((e) => [e.code, e.field])).toEqual([
+      ['PHONE_EVIDENCE_REQUIRED', 'phone_source_type'],
+      ['PHONE_EVIDENCE_REQUIRED', 'phone_source_reference'],
+      ['PHONE_EVIDENCE_REQUIRED', 'phone_collected_at'],
+    ]);
+    expect(normalized.phone).toBeNull();
+  });
+
+  it('reads the sheet address with its evidence, and refuses Google as the source (#280)', () => {
+    const ok = validateRow({ ...base, address: ' 12 Lê Lợi, Quận 1 ', ...ev('address') }, ctx);
+    expect(ok.errors).toEqual([]);
+    expect(ok.normalized.address).toBe('12 Lê Lợi, Quận 1');
+    expect(ok.normalized.contactEvidence?.address_text?.sourceType).toBe('editorial');
+
+    const google = validateRow(
+      {
+        ...base,
+        address: '12 Lê Lợi',
+        ...ev('address'),
+        address_source_reference: 'https://maps.app.goo.gl/x',
+      },
+      ctx,
+    );
+    expect(google.errors.map((e) => [e.code, e.field])).toEqual([
+      ['ADDRESS_EVIDENCE_INVALID', 'address_source_reference'],
+    ]);
+    expect(google.normalized.address).toBeNull();
+  });
+
+  it('treats a blank value cell as unknown even when evidence sits beside it', () => {
+    const { errors, warnings, normalized } = validateRow({ ...base, ...ev('website') }, ctx);
+    expect(errors).toEqual([]);
+    expect(warnings.map((w) => w.code)).toEqual(['WEBSITE_EVIDENCE_WITHOUT_VALUE']);
+    expect(normalized.website).toBeNull();
   });
 
   it('refuses a javascript: URL', () => {
@@ -857,12 +912,12 @@ describe('GoGo-owned import columns', () => {
     ]).toEqual([null, null, null, null, null]);
   });
 
-  it('offers phone and website as canonical fields instead of retiring them', () => {
+  it('offers phone, website and address as canonical fields instead of retiring them', () => {
     expect(CANONICAL_FIELDS).toContain('phone');
     expect(CANONICAL_FIELDS).toContain('website');
-    // `address` stays retired: `address_text` comes from the provider, and a
-    // sheet's own address string has no writer beside it.
-    expect(RETIRED_FIELDS).toEqual(['address']);
+    // GoGo-BE#280 — `address` is GoGo-owned data now, with its own evidence.
+    expect(CANONICAL_FIELDS).toContain('address');
+    expect(RETIRED_FIELDS).toEqual([]);
     const { mapping } = resolveMapping(['source_row_id', 'Số điện thoại', 'website', 'category']);
     expect(mapping['Số điện thoại']).toBe('phone');
     expect(mapping['website']).toBe('website');

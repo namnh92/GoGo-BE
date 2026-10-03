@@ -376,7 +376,9 @@ export class PlaceImportService {
           nameNormalized: 'set-by-trigger',
           status: 'community_submitted',
           geom: { x: details.lng, y: details.lat },
-          addressText: details.addressText,
+          // GoGo-BE#280 — no `address_text` from the provider. The address is
+          // GoGo-owned data (owner decision 2026-10-02, option A) and arrives
+          // only with independent evidence, through the console or an import.
           rating: details.rating !== null ? details.rating.toFixed(2) : null,
           ratingCount: details.ratingCount,
           priceLevel: details.priceLevel,

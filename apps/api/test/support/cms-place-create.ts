@@ -8,19 +8,32 @@ import { randomUUID } from 'node:crypto';
  */
 const FACT_KEYS = [
   'description',
-  'addressText',
   'areaKey',
   'city',
   'district',
-  'phone',
-  'website',
   'provinceCode',
   'communeCode',
 ] as const;
 
-/** Fills `sourceReferences` for every supplied fact, unless the test set it. */
+/**
+ * GoGo-BE#280 — the three contact fields take structured evidence under
+ * `provenance`, never a `sourceReferences` key.
+ */
+const CONTACT_KEYS = ['addressText', 'phone', 'website'] as const;
+export const CONTACT_EVIDENCE = {
+  sourceType: 'editorial',
+  sourceReference: 'Gọi điện chủ quán 2026-09-30',
+  collectedAt: '2026-09-30T02:00:00Z',
+} as const;
+
+/**
+ * Fills `sourceReferences` for every supplied fact, and `provenance` for every
+ * supplied contact value, unless the test set the object itself.
+ */
 export function withSourceReferences(payload: Record<string, unknown>): Record<string, unknown> {
-  if ('sourceReferences' in payload) return payload;
+  const out = withContactProvenance(payload);
+  if ('sourceReferences' in out) return out;
+  payload = out;
   const refs: Record<string, string> = {};
   if (payload.name !== undefined) refs.name = 'menu tại quán, ảnh chụp 2026-10-01';
   if (payload.lat !== undefined || payload.lng !== undefined) refs.geom = 'khảo sát thực địa';
@@ -52,4 +65,13 @@ export function withEditReferences(payload: Record<string, unknown>): Record<str
       refs[key] = `xác nhận trực tiếp: ${key}`;
   }
   return Object.keys(refs).length > 0 ? { ...payload, sourceReferences: refs } : payload;
+}
+
+function withContactProvenance(payload: Record<string, unknown>): Record<string, unknown> {
+  if ('provenance' in payload) return payload;
+  const provenance: Record<string, unknown> = {};
+  for (const key of CONTACT_KEYS) {
+    if (payload[key] !== undefined && payload[key] !== null) provenance[key] = CONTACT_EVIDENCE;
+  }
+  return Object.keys(provenance).length > 0 ? { ...payload, provenance } : payload;
 }

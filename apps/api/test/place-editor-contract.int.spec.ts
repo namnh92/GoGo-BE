@@ -113,6 +113,36 @@ const patch = (id: string, payload: Record<string, unknown>, token = editor.toke
 const detail = (id: string, token = editor.token) =>
   api().inject({ method: 'GET', url: `/v1/cms/places/${id}`, headers: auth(token) });
 
+/**
+ * GoGo-BE#280 — a contact write needs evidence for each value and the version
+ * the form was loaded from. This adds both, reading the version from the row.
+ */
+const EVIDENCE = {
+  sourceType: 'editorial',
+  sourceReference: 'Gọi điện chủ quán 2026-09-30',
+  collectedAt: '2026-09-30T02:00:00Z',
+};
+async function contactPatch(id: string, payload: Record<string, unknown>, token = editor.token) {
+  const [row] = await db
+    .select({ updatedAt: schema.places.updatedAt })
+    .from(schema.places)
+    .where(eq(schema.places.id, id));
+  const provenance = Object.fromEntries(
+    ['addressText', 'phone', 'website']
+      .filter((f) => typeof payload[f] === 'string')
+      .map((f) => [f, EVIDENCE]),
+  );
+  return patch(
+    id,
+    {
+      ...payload,
+      ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
+      expectedUpdatedAt: row!.updatedAt.toISOString(),
+    },
+    token,
+  );
+}
+
 describe('#425 regression — the save that always failed', () => {
   it('refuses avgVisitMinutes 0 with a field path, not a bare toast', async () => {
     const place = await makePlace();
@@ -152,7 +182,8 @@ describe('#425 regression — the save that always failed', () => {
       description: 'cũ',
     });
     expect(
-      (await patch(place.id, { areaKey: null, addressText: null, description: null })).statusCode,
+      (await contactPatch(place.id, { areaKey: null, addressText: null, description: null }))
+        .statusCode,
     ).toBe(200);
     const body = (await detail(place.id)).json();
     expect(body.areaKey).toBeNull();
@@ -168,13 +199,13 @@ describe('#425 contact fields, normalized on the way in', () => {
     ['+84 28 3822 9999', '+842838229999'],
   ])('stores %s as %s', async (input, expected) => {
     const place = await makePlace();
-    expect((await patch(place.id, { phone: input })).statusCode).toBe(200);
+    expect((await contactPatch(place.id, { phone: input })).statusCode).toBe(200);
     expect((await detail(place.id)).json().phone).toBe(expected);
   });
 
   it('upgrades a bare host to https and keeps the path', async () => {
     const place = await makePlace();
-    await patch(place.id, { website: 'chaoban.vn/menu' });
+    await contactPatch(place.id, { website: 'chaoban.vn/menu' });
     expect((await detail(place.id)).json().website).toBe('https://chaoban.vn/menu');
   });
 
@@ -206,7 +237,7 @@ describe('#425 contact fields, normalized on the way in', () => {
 
   it('clears phone and website with null', async () => {
     const place = await makePlace({ phone: '+842838229999', website: 'https://chaoban.vn/' });
-    await patch(place.id, { phone: null, website: null });
+    await contactPatch(place.id, { phone: null, website: null });
     const body = (await detail(place.id)).json();
     expect(body.phone).toBeNull();
     expect(body.website).toBeNull();
@@ -224,10 +255,16 @@ describe('#425 contact fields, normalized on the way in', () => {
 describe('#425 field provenance', () => {
   it('records an editor claim per written field and leaves the rest unclaimed', async () => {
     const place = await makePlace();
-    await patch(place.id, { phone: '0283 822 9999', city: 'TP.HCM' });
+    await contactPatch(place.id, { phone: '0283 822 9999', city: 'TP.HCM' });
 
     const body = (await detail(place.id)).json();
-    expect(body.provenance.phone).toMatchObject({ sourceType: 'editorial', sourceReference: null });
+    // GoGo-BE#280 — a contact field records the evidence it came with.
+    expect(body.provenance.phone).toMatchObject({
+      sourceType: 'editorial',
+      sourceReference: EVIDENCE.sourceReference,
+      collectedAt: '2026-09-30T02:00:00.000Z',
+      ownership: 'gogo',
+    });
     expect(body.provenance.city).toMatchObject({ sourceType: 'editorial' });
     // Never written through this endpoint, so nothing claims it. An absent
     // entry is the honest answer, not a default of "GoGo".
@@ -244,14 +281,30 @@ describe('#425 field provenance', () => {
 
   it('re-typing a value keeps it editorial and never becomes google_derived', async () => {
     // GOGO_PRODUCT_DATA_ARCHITECTURE.md: copying Google's answer into the form
-    // does not make it GoGo-owned, and it does not make it Google's either —
-    // the person typed it, so the person owns the claim. `google_derived` is
-    // reserved for an apply-from-preview path this endpoint does not offer.
+    // does not make it GoGo-owned, and it does not make it Google's either.
+    // `google_derived` is reserved for an apply-from-preview path this
+    // endpoint does not offer — and since GoGo-BE#280 a contact value needs
+    // independent evidence to be written at all.
     const place = await makePlace();
-    await patch(place.id, { phone: '0283 822 9999' });
-    await patch(place.id, { phone: '+84 28 3822 9999' });
+    await contactPatch(place.id, { phone: '0283 822 9999' });
+    await contactPatch(place.id, { phone: '+84 28 3822 9999' });
     const body = (await detail(place.id)).json();
     expect(body.provenance.phone.sourceType).toBe('editorial');
+  });
+
+  it('refuses a typed contact value with no evidence (#280)', async () => {
+    // FAIL-before: this stored the phone and claimed it `editorial` with a
+    // null reference — a person typing something was enough to own it.
+    const place = await makePlace();
+    const res = await patch(place.id, {
+      phone: '0283 822 9999',
+      expectedUpdatedAt: place.updatedAt.toISOString(),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().field_errors[0]).toMatchObject({
+      field: 'provenance.phone',
+      code: 'required',
+    });
   });
 });
 
@@ -576,7 +629,7 @@ describe('#425 RBAC', () => {
     });
     expect(read.statusCode).toBe(200);
 
-    const write = await patch(place.id, { phone: '0283 822 9999' }, moderator.token);
+    const write = await contactPatch(place.id, { phone: '0283 822 9999' }, moderator.token);
     expect(write.statusCode).toBe(403);
     expect(write.json().code).toBe('ROLE_DENIED');
   });
@@ -589,7 +642,7 @@ describe('#425 RBAC', () => {
 describe('#425 audit', () => {
   it('records which fields an editor claimed, not just that a write happened', async () => {
     const place = await makePlace();
-    await patch(place.id, { phone: '0283 822 9999', district: 'Quận 1' });
+    await contactPatch(place.id, { phone: '0283 822 9999', district: 'Quận 1' });
 
     const rows = await db
       .select()
@@ -598,10 +651,14 @@ describe('#425 audit', () => {
       .orderBy(asc(schema.auditLogs.createdAt));
     const entry = rows.find((r) => r.action === 'place.updated');
     expect(entry).toBeDefined();
-    expect((entry!.diff as { claimedFields: string[] }).claimedFields.sort()).toEqual([
-      'district',
-      'phone',
-    ]);
+    // GoGo-BE#280 — the contact field is recorded with its source type under
+    // `contact`, not as a bare claim.
+    const diff = entry!.diff as {
+      claimedFields: string[];
+      contact: { written: { field: string; sourceType: string }[] };
+    };
+    expect(diff.claimedFields.sort()).toEqual(['district']);
+    expect(diff.contact.written).toEqual([{ field: 'phone', sourceType: 'editorial' }]);
   });
 });
 
@@ -644,6 +701,7 @@ describe('#452 create a place by hand', () => {
       lng: 106.7009,
       district: 'Quận 1',
       phone: '0283 822 9999',
+      provenance: { phone: EVIDENCE },
       avgVisitMinutes: 60,
     });
 
@@ -723,6 +781,7 @@ describe('#452 create a place by hand', () => {
       lat: 10.8,
       lng: 106.72,
       website: 'quanghinguon.vn',
+      provenance: { website: EVIDENCE },
       areaKey: 'hcm_q3',
     });
     const placeId = res.json().id;
@@ -885,8 +944,10 @@ describe('#465 add a place by Google Maps link', () => {
       name: 'Nhà Hàng Từ Link',
       lat: 10.7801,
       lng: 106.6991,
+      // GoGo-BE#280 — the address is GoGo-owned: the editor walked past it.
       addressText: '44 Lê Lợi, Quận 1',
       phone: '0283 822 1111',
+      provenance: { addressText: EVIDENCE, phone: EVIDENCE },
       googlePlaceId,
     });
     expect(res.statusCode).toBe(201);
@@ -906,15 +967,22 @@ describe('#465 add a place by Google Maps link', () => {
       .select()
       .from(schema.placeFieldProvenance)
       .where(eq(schema.placeFieldProvenance.placeId, placeId));
-    expect(provenance.map((row) => row.field).sort()).toEqual([
-      'address_text',
-      'geom',
-      'name',
-      'phone',
-    ]);
+    const byField = new Map(provenance.map((row) => [row.field, row]));
+    expect([...byField.keys()].sort()).toEqual(['address_text', 'geom', 'name', 'phone']);
     for (const row of provenance) {
       expect(row.sourceType).toBe('editorial');
       expect(row.sourceReference).not.toBe(googlePlaceId);
+    }
+    // GoGo-BE#280 — contact fields carry their structured evidence; the other
+    // facts keep their `sourceReferences` entry and no collected-at.
+    for (const field of ['address_text', 'phone']) {
+      expect(byField.get(field)).toMatchObject({
+        sourceReference: EVIDENCE.sourceReference,
+        collectedAt: new Date(EVIDENCE.collectedAt),
+      });
+    }
+    for (const field of ['name', 'geom']) {
+      expect(byField.get(field)!.collectedAt).toBeNull();
     }
   });
 
