@@ -1,6 +1,8 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { schema, type Db, type SubmissionReviewDraft } from '@gogo/database';
+import { CONTACT_API_FIELD } from '../../shared/place-contact';
+import { planContactWrite, type ContactWritePlan } from '../../shared/place-contact-write';
 import {
   ProviderConfigurationError,
   ProviderQuotaExceededError,
@@ -1200,11 +1202,12 @@ export class PlaceSubmissionService {
       throw AppError.conflict('ALREADY_DECIDED', 'Submission already decided');
     }
     await this.assertTaxonomiesExist(draft.taxonomyIds);
+    const stored = normalizeDraftContact(draft, 'save');
 
     const [updated] = await this.db
       .update(schema.placeSubmissions)
       .set({
-        reviewDraft: draft,
+        reviewDraft: stored,
         reviewedByAdminId: adminId,
         reviewedAt: sql`now()`,
         updatedAt: sql`now()`,
@@ -1380,6 +1383,13 @@ export class PlaceSubmissionService {
     const draft: SubmissionReviewDraft = row.reviewDraft ?? {};
     const has = <K extends keyof SubmissionReviewDraft>(key: K): boolean =>
       Object.prototype.hasOwnProperty.call(draft, key) && draft[key] !== undefined;
+    /**
+     * GoGo-BE#280 — re-checked at approval, not trusted from the save: a draft
+     * saved before #280 carries contact values with no evidence, and approving
+     * it must not turn them into GoGo-owned facts. The moderator re-saves the
+     * draft with its sources; nothing is silently dropped.
+     */
+    const contact = normalizeDraftContact(draft, 'approve');
 
     const price =
       has('priceMin') || has('priceMax')
@@ -1408,10 +1418,11 @@ export class PlaceSubmissionService {
             nameNormalized: 'set-by-trigger',
             status: 'community_submitted',
             geom: { x: d.lng, y: d.lat },
-            addressText: has('addressText') ? draft.addressText : d.addressText,
+            // GoGo-BE#280 — address, phone and website come from the
+            // reviewer's evidence or not at all. The provider's formatted
+            // address used to be the fallback; it is GoGo-owned data now.
+            ...contact.plan.values,
             ...(has('description') ? { description: draft.description } : {}),
-            ...(has('phone') ? { phone: draft.phone } : {}),
-            ...(has('website') ? { website: draft.website } : {}),
             ...(has('avgVisitMinutes') ? { avgVisitMinutes: draft.avgVisitMinutes } : {}),
             ...(has('suitability') ? { suitability: draft.suitability } : {}),
             ...(has('isLodging') ? { isLodging: draft.isLodging } : {}),
@@ -1471,21 +1482,27 @@ export class PlaceSubmissionService {
          */
         const provenance = [
           { field: 'name' as const, edited: has('name') },
-          { field: 'address_text' as const, edited: has('addressText') },
           { field: 'geom' as const, edited: false },
           ...(has('description') ? [{ field: 'description' as const, edited: true }] : []),
-          ...(has('phone') ? [{ field: 'phone' as const, edited: true }] : []),
-          ...(has('website') ? [{ field: 'website' as const, edited: true }] : []),
         ];
-        await tx.insert(schema.placeFieldProvenance).values(
-          provenance.map(({ field, edited }) => ({
+        await tx.insert(schema.placeFieldProvenance).values([
+          ...provenance.map(({ field, edited }) => ({
             placeId: place!.id,
             field,
             sourceType: edited ? ('editorial' as const) : ('google_derived' as const),
             sourceReference: edited ? null : row.googlePlaceId,
             actorId: adminId,
           })),
-        );
+          // GoGo-BE#280 — contact fields carry the reviewer's evidence.
+          ...contact.plan.claims.map(({ field, evidence }) => ({
+            placeId: place!.id,
+            field,
+            sourceType: evidence.sourceType,
+            sourceReference: evidence.sourceReference,
+            collectedAt: new Date(evidence.collectedAt),
+            actorId: adminId,
+          })),
+        ]);
 
         /**
          * ADM-017 (#525) — the mapping is written in the transaction that
@@ -1608,4 +1625,47 @@ export function placeProviderUnavailable(err: unknown): AppError {
     503,
     { retryable: true, cause: err },
   );
+}
+
+/**
+ * GoGo-BE#280 — a review draft's contact fields through the shared rule.
+ *
+ * On save, the draft is stored normalized — phone in E.164, website with its
+ * scheme, `collectedAt` in UTC — so what approval reads is what the editor
+ * would have written. On approve, the same check runs again and a failure is a
+ * conflict naming the fields, because the draft on the row is what is wrong,
+ * not the approve request.
+ */
+function normalizeDraftContact(draft: SubmissionReviewDraft, when: 'save'): SubmissionReviewDraft;
+function normalizeDraftContact(
+  draft: SubmissionReviewDraft,
+  when: 'approve',
+): { plan: ContactWritePlan };
+function normalizeDraftContact(
+  draft: SubmissionReviewDraft,
+  when: 'save' | 'approve',
+): SubmissionReviewDraft | { plan: ContactWritePlan } {
+  const result = planContactWrite(draft, null);
+  if (!result.ok) {
+    if (when === 'save') {
+      throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', result.issues);
+    }
+    throw AppError.conflict(
+      'REVIEW_EVIDENCE_REQUIRED',
+      'Bản nháp duyệt có địa chỉ / điện thoại / website chưa kèm nguồn — lưu lại bản nháp kèm nguồn',
+      result.issues,
+    );
+  }
+  if (when === 'approve') return { plan: result.plan };
+
+  const { provenance: _ignored, ...rest } = draft;
+  void _ignored;
+  const evidence = Object.fromEntries(
+    result.plan.claims.map(({ field, evidence }) => [CONTACT_API_FIELD[field], evidence]),
+  );
+  return {
+    ...rest,
+    ...result.plan.values,
+    ...(Object.keys(evidence).length > 0 ? { provenance: evidence } : {}),
+  };
 }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.65
+  version: 1.0.0-alpha.66
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3796,6 +3796,15 @@ paths:
         a later provider refresh can tell what it may overwrite.
 
 
+        **Address, phone and website (GoGo-BE#280)** are GoGo-owned and come
+        only from the review draft, each with the evidence in its
+        `provenance`. The provider's formatted address is no longer a fallback:
+        a place approved with no reviewer address has none. A draft saved
+        before #280 that carries one of these values without evidence is
+        refused `409 REVIEW_EVIDENCE_REQUIRED`, naming the fields in
+        `field_errors`; re-save the draft with its sources and approve again.
+
+
         `rejected` creates no place. `merged` points the proposal at an existing
         one and writes nothing to it.
 
@@ -3869,8 +3878,24 @@ paths:
         persisted, validated by the same rules the console uses: phone
         normalises to E.164, website to `http(s)`, `avg_visit_minutes` is
         10–720. Every one of them fails the row explicitly rather than being
-        dropped on commit. Values from the file are recorded `editorial` in
-        `place_field_provenance`.
+        dropped on commit.
+
+
+        **Address, phone and website need evidence (GoGo-BE#280).** They are
+        GoGo-owned place data, written to `address_text` / `phone` / `website`.
+        A non-blank `address`, `phone` or `website` cell is written only
+        together with its three evidence columns — `<field>_source_type`
+        (`editorial`, `community` or `provider`; never Google),
+        `<field>_source_reference` (≤ 500 characters, naming the non-Google
+        origin: a merchant statement, the official website, a field visit or a
+        permitted dataset — not a sheet or job id) and `<field>_collected_at`
+        (ISO-8601 with a zone, not in the future). A missing or invalid one fails
+        the row with `<FIELD>_EVIDENCE_REQUIRED` / `<FIELD>_EVIDENCE_INVALID`
+        against that column, in dry-run and commit alike. A blank value cell
+        leaves the stored value alone (clearing belongs to the console). In
+        `update_existing` a non-blank value replaces the stored one together
+        with its evidence; the provider's address is never written, in any
+        mode.
 
 
         `places.suitability` is deliberately **not** an import column.
@@ -3882,9 +3907,8 @@ paths:
         other API path that writes it are unchanged.
 
 
-        `phone` and `website` are no longer retired mapping values; `address`
-        still is, because `address_text` is written from the provider's
-        formatted address and a sheet's own address string has no writer.
+        No mapping value is retired any more: `phone` and `website` left the
+        list in PI-BE-025 and `address` in GoGo-BE#280.
 
 
         **Price units (PI-BE-026).** `place_prices.unit` is `per_person`,
@@ -3994,9 +4018,8 @@ paths:
                     enforced at runtime, not in the wire type. A header left
                     out is auto-detected; a header mapped to `""` is ignored.
                     No value here is rejected: three legacy spellings
-                    (`googleMapsUrl`, `priceMin`, `priceMax`) normalise, three
-                    retired values (`address`, `phone`, `website`) are accepted
-                    and skipped, and any other value leaves its column
+                    (`googleMapsUrl`, `priceMin`, `priceMax`) normalise, and
+                    any other value leaves its column
                     unmapped — reported in `unmappedHeaders` and counted as
                     `place_import_unknown_mapping_total`, never auto-detected
                     into some other field. A mapping that is not a JSON object
@@ -5911,6 +5934,22 @@ paths:
         `googleDerivedFields` is refused with `400 GOOGLE_CONTENT_NOT_PERSISTABLE`.
 
 
+        **Contact evidence (1.0.0-alpha.66, GoGo-BE#280).** `addressText`,
+        `phone` and `website` are the exception to `sourceReferences`: each
+        non-null value carries its structured evidence in `provenance.<field>`
+        (`sourceType` `editorial | community | provider`, `sourceReference`,
+        `collectedAt`) and is recorded with that evidence, the acting editor and
+        `verifiedAt` = now — never `google_derived`. A non-null value without
+        its entry is `400 VALIDATION_FAILED` (`provenance.<field>`, `required`);
+        an entry without a value is `value_missing`; an entry beside `null` is
+        `not_allowed`; `null` alone writes nothing. A `sourceReferences` key for
+        any of the three is refused `400 SOURCE_REFERENCE_INVALID` with `code:
+        unknown` and a message naming `provenance.<field>` — there is no
+        fallback or alias, even when both carry the same text. **Breaking
+        versus alpha.65** (as introduced in alpha.62), which accepted `sourceReferences.<contact>` and
+        required it for a contact value.
+
+
         **No provider content.** This route calls no Google provider and
         persists no provider fact — no rating, review count, price level, hours
         or canonical link. A `googlePlaceId` is stored as identity only. The
@@ -5952,7 +5991,9 @@ paths:
         `cmsResolvePlaceLink`.
 
 
-        Field limits follow `cmsUpdatePlace` exactly and are stated there.
+        Field limits follow `cmsUpdatePlace` exactly and are stated there, and
+        so does the full **evidence rule for `addressText`, `phone` and
+        `website`** (GoGo-BE#280).
       parameters:
         - name: Idempotency-Key
           in: header
@@ -5981,7 +6022,10 @@ paths:
                   description: 'Enforced: -90..90. Required — a place with no position cannot be searched, routed to, or checked for duplicates.'
                 lng: { type: number, description: 'Enforced: -180..180.' }
                 description: { type: [string, 'null'] }
-                addressText: { type: [string, 'null'] }
+                addressText:
+                  type: [string, 'null']
+                  description: 'GoGo-owned postal address (GoGo-BE#280). Rules and evidence: see `cmsUpdatePlace`.'
+                provenance: { $ref: '#/components/schemas/PlaceContactProvenanceInput' }
                 areaKey: { type: [string, 'null'] }
                 city:
                   type: [string, 'null']
@@ -6059,11 +6103,16 @@ paths:
                     GoGo-BE#440 — the independent evidence behind each canonical
                     fact, keyed by API field name. Required for every supplied
                     non-null fact: `name` and `geom` (covers `lat` + `lng`)
-                    always; `description`, `addressText`, `areaKey`, `city`,
-                    `district`, `phone`, `website`, `provinceCode`, `communeCode`
-                    when sent non-null; `taxonomyIds` when the list is non-empty
-                    (one reference for the whole set). Omitting the object is the
-                    same as `{}`.
+                    always; `description`, `areaKey`, `city`, `district`,
+                    `provinceCode`, `communeCode` when sent non-null;
+                    `taxonomyIds` when the list is non-empty (one reference for
+                    the whole set). Omitting the object is the same as `{}`.
+
+
+                    **Not `addressText`, `phone` or `website`** (alpha.66,
+                    GoGo-BE#280): their evidence is `provenance.<field>`, and a
+                    `sourceReferences` key for one of them is refused with `code:
+                    unknown`, the message naming `provenance.<field>`.
 
 
                     Every problem is `400 SOURCE_REFERENCE_INVALID` with one
@@ -6098,12 +6147,9 @@ paths:
                       [
                         name,
                         description,
-                        addressText,
                         areaKey,
                         city,
                         district,
-                        phone,
-                        website,
                         geom,
                         provinceCode,
                         communeCode,
@@ -6469,7 +6515,13 @@ paths:
                   description: 'Enforced: at most 4000 characters.'
                 addressText:
                   type: [string, 'null']
-                  description: 'Enforced: at most 400 characters.'
+                  description: >
+                    GoGo-owned postal address (GoGo-BE#280). Enforced: trimmed,
+                    non-blank, at most 400 characters, plain text — control
+                    characters and angle brackets are refused; Unicode is kept
+                    as written. An address edit never moves the pin or changes
+                    the administrative codes. A non-null value needs
+                    `provenance.addressText`.
                 areaKey:
                   type: [string, 'null']
                   description: >
@@ -6552,14 +6604,25 @@ paths:
                     Normalized to E.164 on write (`0283 822 9999` →
                     `+842838229999`). A bare subscriber number with neither a
                     trunk `0` nor a country code is refused rather than assumed
-                    Vietnamese.
+                    Vietnamese. Since GoGo-BE#280 the result must match
+                    `^\+[1-9][0-9]{7,14}$` (a country code never starts with
+                    0), extensions and letters are refused, and a non-null
+                    value needs `provenance.phone`. A valid shape says nothing
+                    about whether the number answers.
                 website:
                   type: [string, 'null']
                   maxLength: 500
                   description: >
                     `http`/`https` only, host required. A bare host is upgraded
                     to `https://`. Other schemes are refused — the value is
-                    rendered as an href in three clients.
+                    rendered as an href in three clients. Since GoGo-BE#280 the
+                    host must be a public DNS name — no credentials
+                    (`code: credentials`), IP literals, `localhost` or private
+                    suffixes — path, query and fragment are kept, and a non-null
+                    value needs `provenance.website`. GoGo never fetches the URL
+                    to check it.
+                provenance:
+                  $ref: '#/components/schemas/PlaceContactProvenanceInput'
                 lat:
                   {
                     type: number,
@@ -6592,8 +6655,13 @@ paths:
                     Optimistic concurrency: the `updatedAt` the form was loaded
                     from. A mismatch is refused `409 PLACE_MODIFIED`, with the
                     current value in `field_errors[0].message` so the client can
-                    show what it would have overwritten. Omitting it skips the
-                    check.
+                    show what it would have overwritten. The comparison is made
+                    under the row lock, so of two saves loaded from the same
+                    version exactly one commits. Omitting it skips the check —
+                    except for a request that writes or clears `addressText`,
+                    `phone` or `website` (GoGo-BE#280), which is refused `400
+                    VALIDATION_FAILED` with `field: expectedUpdatedAt`, `code:
+                    required`.
                 sourceReferences:
                   type: object
                   description: >
@@ -6604,7 +6672,9 @@ paths:
                     characters; problems are `400 SOURCE_REFERENCE_INVALID`, one
                     `field_errors` entry per key (`sourceReferences.<key>`,
                     `code` `required | unused | unknown | too_long`). Only these
-                    two keys are accepted on an edit.
+                    two keys are accepted on an edit; `sourceReferences.addressText`,
+                    `.phone` or `.website` is `unknown` — contact evidence goes
+                    in `provenance` (GoGo-BE#280).
 
 
                     A submitted code is an **assertion to the resolver**. It
@@ -13304,12 +13374,28 @@ components:
         name: { type: string }
         description: { type: string }
         status: { type: string }
-        addressText: { type: string }
+        addressText:
+          type: string
+          description: >
+            GoGo-owned postal address (GoGo-BE#280). Absent when unknown —
+            never an empty string. Render as plain text.
         areaKey: { type: string }
         lat: { type: number }
         lng: { type: number }
-        phone: { type: string }
-        website: { type: string }
+        phone:
+          type: string
+          description: >
+            E.164 business phone. Absent when unknown, or when a legacy stored
+            value would not pass today's rules (GoGo-BE#280).
+        website:
+          type: string
+          description: >
+            `http(s)` URL on a public host. Absent when unknown, or when a
+            legacy stored value would not pass today's rules — so a client may
+            render it as an external link without re-validating. Never fetched
+            or previewed by GoGo.
+        provenance:
+          $ref: '#/components/schemas/PlaceContactProvenance'
         rating:
           type: number
           description: >
@@ -13392,6 +13478,120 @@ components:
               attribution: { type: string }
         providerStatus:
           $ref: '#/components/schemas/PlaceProviderStatus'
+    PlaceContactProvenance:
+      type: object
+      description: >
+        GoGo-BE#280 — whose each contact value is, keyed by the field name. An
+        entry appears exactly when its value does; the whole object is absent
+        when the place has none of the three. Evidence references and actors
+        are CMS-only and never appear here.
+      additionalProperties: false
+      properties:
+        addressText: { $ref: '#/components/schemas/PlaceContactFieldProvenance' }
+        phone: { $ref: '#/components/schemas/PlaceContactFieldProvenance' }
+        website: { $ref: '#/components/schemas/PlaceContactFieldProvenance' }
+    PlaceContactFieldProvenance:
+      type: object
+      required: [sourceType]
+      properties:
+        sourceType:
+          type: string
+          description: >
+            `gogo` — independently sourced and verified by GoGo; `google` — a
+            value seeded from Google before #280, shown with the attribution of
+            the `sources` entry named by `provider`; `unknown` — no adequate
+            evidence was recorded (most values written before #280). Do not
+            present `unknown` as GoGo-verified. Treat a value you do not know
+            as `unknown`.
+          x-extensible-enum: [gogo, google, unknown]
+        verifiedAt:
+          type: string
+          format: date-time
+          description: >
+            `gogo` only — when the value was last independently verified. It
+            moves only on verification, never on an unrelated save or a
+            provider fetch. No freshness window is implied.
+        provider:
+          type: string
+          description: >
+            `google` only — the `sources[].provider` entry, present in this same
+            response, that attributes the value. A Google-seeded value whose
+            place no longer has a Google source is reported `unknown` instead,
+            never as `google` pointing at attribution that is not there.
+    PlaceContactEvidence:
+      type: object
+      description: >
+        GoGo-BE#280 — where one contact value came from. All three properties
+        are required (missing ones are reported per property as
+        `provenance.<field>.<property>` with code `required`); they are not
+        marked `required` here so that the gate reports them, not the schema
+        layer. Who submitted it and when it was verified are recorded by the
+        server from the authenticated admin and are not accepted from clients.
+      additionalProperties: false
+      properties:
+        sourceType:
+          type: string
+          description: >
+            `editorial` (a merchant statement, the official website, a field
+            visit), `community` (a contributor's own report) or `provider` (a
+            permitted, non-Google dataset). `google_derived` is refused with
+            code `google_not_independent`: copying, retyping or confirming
+            Google content does not make it GoGo's.
+        sourceReference:
+          type: string
+          description: >
+            Enforced: trimmed, 1..500 characters, no control characters. Names
+            the non-Google origin — a phone call with the owner, the official
+            URL, a visit, a dataset release. CMS-only; never public. Checked in
+            this order (ADR-0031 §Transport guard):
+
+
+            1. A Google Maps link, share link, Place ID or "Google" is refused
+            `google_not_independent`.
+
+            2. A reference that is, as a whole, a website (`pho24.vn`,
+            `https://chaoban.vn/lien-he#2`) is accepted as an origin — the
+            shape only; GoGo does not fetch it.
+
+            3. A reference that **starts with** a transport keyword (`job`,
+            `jobs`, `sheet`, `sheets`, `tab`, `row`, `rows`, `dòng`, `dong`,
+            `cột`, `cot`, `col`, `column`, `cell`, `import`, `batch`, `file`,
+            `upload`, `csv`, `xlsx`, `spreadsheet`, `id`, `r`;
+            case-insensitive) followed by nothing or a non-letter is refused
+            `transport_only`, whatever follows: `job 123`, `Sheet1!B7`,
+            `Tab Quận 1`, `R12`.
+
+            4. A reference that is only an identifier is refused
+            `transport_only`: a decimal number, a UUID, an A1 cell or range
+            with an optional `label!` (`'HCM'!A2:C9`), or `label#digits`
+            (`HCM#12`).
+
+
+            This is a bounded lexical guard, not a classifier. Put the origin
+            first — `job 123; gọi chủ quán` is refused. Passing it (`Bảng
+            Quận 1`, `123, row 4`) does not make a reference adequate evidence;
+            that remains an editorial assertion.
+          example: 'Gọi điện chủ quán ngày 2026-09-30'
+        collectedAt:
+          type: string
+          format: date-time
+          description: >
+            Enforced: ISO-8601 with a zone, not more than 5 minutes in the
+            future. When the evidence was gathered, not when it was typed in.
+    PlaceContactProvenanceInput:
+      type: object
+      description: >
+        GoGo-BE#280 — evidence for the GoGo-owned contact fields written in the
+        same request. A non-null `addressText` / `phone` / `website` needs its
+        entry (`provenance.<field>` code `required`); an entry for a field the
+        request does not write is `value_missing`, and one beside a `null`
+        clear is `not_allowed`. Re-sending a field's stored value unchanged and
+        without evidence is not a write and needs nothing.
+      additionalProperties: false
+      properties:
+        addressText: { $ref: '#/components/schemas/PlaceContactEvidence' }
+        phone: { $ref: '#/components/schemas/PlaceContactEvidence' }
+        website: { $ref: '#/components/schemas/PlaceContactEvidence' }
     PlaceProviderStatus:
       type: object
       description: >
@@ -14009,6 +14209,16 @@ components:
         - note
         - phone
         - website
+        - address
+        - address_source_type
+        - address_source_reference
+        - address_collected_at
+        - phone_source_type
+        - phone_source_reference
+        - phone_collected_at
+        - website_source_type
+        - website_source_reference
+        - website_collected_at
         - avg_visit_minutes
         - is_lodging
         - curated_rank
@@ -14083,7 +14293,13 @@ components:
       properties:
         googlePlaceId: { type: string }
         name: { type: string }
-        address: { type: string }
+        address:
+          type: string
+          deprecated: true
+          description: >
+            No longer written (GoGo-BE#280): Google's formatted address is not
+            persisted, candidate JSON included. Present only on rows stored
+            before #280. Do not depend on it.
         confidence: { type: number, format: float, minimum: 0, maximum: 1 }
         lat: { type: number }
         lng: { type: number }
@@ -14516,6 +14732,13 @@ components:
           type: string
           enum: [per_person, per_item, per_hour, per_night]
           nullable: true
+        provenance:
+          $ref: '#/components/schemas/PlaceContactProvenanceInput'
+          description: >
+            GoGo-BE#280 — evidence for `addressText`, `phone` and `website`,
+            under the same rule as `cmsUpdatePlace`: a non-null value needs its
+            entry, `null` needs none. Values and evidence are stored normalized
+            (E.164, `https://`, `collectedAt` in UTC) and returned that way.
     PlaceSubmissionDetail:
       type: object
       description: >
@@ -14989,6 +15212,22 @@ components:
                   second but not the first.
               sourceReference: { type: [string, 'null'] }
               verifiedAt: { type: [string, 'null'], format: date-time }
+              collectedAt:
+                type: [string, 'null']
+                format: date-time
+                description: >
+                  GoGo-BE#280 — when the evidence named by `sourceReference` was
+                  gathered. Null on every row that is not independently
+                  sourced, including all rows written before #280.
+              ownership:
+                type: string
+                description: >
+                  GoGo-BE#280, on `addressText` / `phone` / `website` only — the
+                  same verdict the public `PlaceDetail.provenance` gives. `gogo`
+                  requires an independent source, a non-Google reference and a
+                  collection time; a legacy `editorial` row without them is
+                  `unknown`. Treat a value you do not know as `unknown`.
+                x-extensible-enum: [gogo, google, unknown]
         hours:
           type: array
           description: >

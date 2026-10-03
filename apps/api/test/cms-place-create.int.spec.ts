@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PLACE_PROVIDER } from '@gogo/providers';
+import { CONTACT_EVIDENCE } from './support/cms-place-create';
 
 /**
  * GoGo-BE#440 — creating a place from the CMS, against the SA shape
@@ -142,11 +143,9 @@ describe('#440 manual creation', () => {
         lng: 106.601,
         phone: '0283 822 9999',
         description: null,
-        sourceReferences: {
-          name: 'biển hiệu, ảnh 2026-10-01',
-          geom: 'khảo sát thực địa',
-          phone: 'gọi xác nhận 2026-10-01',
-        },
+        sourceReferences: { name: 'biển hiệu, ảnh 2026-10-01', geom: 'khảo sát thực địa' },
+        // GoGo-BE#280 (alpha.66) — contact evidence is structured, under provenance.
+        provenance: { phone: CONTACT_EVIDENCE },
       }),
       editor.token,
     );
@@ -167,10 +166,16 @@ describe('#440 manual creation', () => {
     expect([...byField.keys()].sort()).toEqual(['geom', 'name', 'phone']);
     expect(byField.get('phone')).toMatchObject({
       sourceType: 'editorial',
-      sourceReference: 'gọi xác nhận 2026-10-01',
+      sourceReference: CONTACT_EVIDENCE.sourceReference,
+      collectedAt: new Date(CONTACT_EVIDENCE.collectedAt),
       actorId: editor.id,
     });
-    expect(byField.get('geom')).toMatchObject({ sourceReference: 'khảo sát thực địa' });
+    expect(byField.get('phone')!.verifiedAt).toBeInstanceOf(Date);
+    expect(byField.get('geom')).toMatchObject({
+      sourceReference: 'khảo sát thực địa',
+      collectedAt: null,
+    });
+    expect(byField.get('name')!.collectedAt).toBeNull();
 
     const [event] = await db
       .select()
@@ -198,7 +203,15 @@ describe('#440 manual creation', () => {
     expect(audit!.requestId).toBeTruthy();
     const diff = audit!.diff as Record<string, unknown>;
     expect(diff).toMatchObject({ origin: 'cms_manual', allowDuplicate: false });
-    expect((diff.claimedFields as string[]).sort()).toEqual(['geom', 'name', 'phone']);
+    // GoGo-BE#280 — the contact columns are not generic claims; their write is
+    // audited by name and source type under `contact`, never by value.
+    expect((diff.claimedFields as string[]).sort()).toEqual(['geom', 'name']);
+    expect(diff.contact).toEqual({
+      written: [{ field: 'phone', sourceType: 'editorial' }],
+      cleared: [],
+    });
+    expect(JSON.stringify(diff)).not.toContain('822');
+    expect(JSON.stringify(diff)).not.toContain(CONTACT_EVIDENCE.sourceReference);
     // No raw coordinates and no payload in the audit line.
     expect(JSON.stringify(diff)).not.toContain('10.701');
     expect(diff).not.toHaveProperty('sourceReferences');
@@ -385,9 +398,9 @@ describe('#440 field boundaries and evidence coverage', () => {
     const res = await create(
       body({
         ...at(4),
-        phone: '0283 822 1234',
-        addressText: '1 Lê Lợi',
-        sourceReferences: { name: 'menu', geom: 'khảo sát', website: 'không có website' },
+        description: 'Quán cà phê sân vườn',
+        city: 'Hồ Chí Minh',
+        sourceReferences: { name: 'menu', geom: 'khảo sát', areaKey: 'không có khu vực' },
       }),
       await tok(),
     );
@@ -396,9 +409,9 @@ describe('#440 field boundaries and evidence coverage', () => {
     const errors = res.json().field_errors as { field: string; code: string }[];
     expect(errors).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ field: 'sourceReferences.phone', code: 'required' }),
-        expect.objectContaining({ field: 'sourceReferences.addressText', code: 'required' }),
-        expect.objectContaining({ field: 'sourceReferences.website', code: 'unused' }),
+        expect.objectContaining({ field: 'sourceReferences.description', code: 'required' }),
+        expect.objectContaining({ field: 'sourceReferences.city', code: 'required' }),
+        expect.objectContaining({ field: 'sourceReferences.areaKey', code: 'unused' }),
       ]),
     );
     expect(errors).toHaveLength(3);
@@ -702,7 +715,8 @@ describe('#440 retries', () => {
         lat: 10.91,
         lng: 106.91,
         phone: '0283 822 4444',
-        sourceReferences: { name: 'a', geom: 'b', phone: 'gọi xác nhận' },
+        sourceReferences: { name: 'a', geom: 'b' },
+        provenance: { phone: CONTACT_EVIDENCE },
       }),
       who,
       key,
@@ -883,5 +897,238 @@ describe('#440 rate limit', () => {
 
     const other = await createAdmin('editor');
     expect((await create(body({ lat: 12.6, lng: 108.6 }), other.token)).statusCode).toBe(201);
+  });
+});
+
+/**
+ * GoGo-BE#280 reconciled with #440 (SA shape 2026-10-03, contract alpha.66):
+ * the evidence for `addressText`, `phone` and `website` is `provenance.<field>`
+ * on create as on edit. `sourceReferences` no longer carries those three — a
+ * key for one is `unknown`, with no alias and no fallback.
+ */
+describe('#280 × #440 contact evidence on create', () => {
+  const REFS = { name: 'thực đơn tại quán', geom: 'khảo sát thực địa 2026-10-01' };
+  const CONTACT_VALUE = {
+    addressText: '12 Lê Lợi, Bến Nghé',
+    phone: '0283 822 5555',
+    website: 'chaoban.vn',
+  } as const;
+  type ContactKey = keyof typeof CONTACT_VALUE;
+  const keys = Object.keys(CONTACT_VALUE) as ContactKey[];
+
+  async function contactRows(placeId: string) {
+    const rows = await db
+      .select()
+      .from(schema.placeFieldProvenance)
+      .where(eq(schema.placeFieldProvenance.placeId, placeId));
+    return new Map(rows.map((r) => [r.field, r]));
+  }
+
+  it.each(keys)(
+    'refuses sourceReferences.%s as unknown, naming provenance, writes nothing and releases the key',
+    async (field) => {
+      const key = randomUUID();
+      const who = await tok();
+      const name = `Quán Nguồn Cũ ${field} ${uniq()}`;
+      const refused = await create(
+        {
+          name,
+          lat: 10.81,
+          lng: 106.81,
+          [field]: CONTACT_VALUE[field],
+          sourceReferences: { ...REFS, [field]: 'gọi điện chủ quán 2026-09-30' },
+        },
+        who,
+        key,
+      );
+      expect(refused.statusCode, refused.body).toBe(400);
+      expect(refused.json().code).toBe('SOURCE_REFERENCE_INVALID');
+      expect(refused.json().field_errors).toEqual([
+        expect.objectContaining({ field: `sourceReferences.${field}`, code: 'unknown' }),
+      ]);
+      expect(refused.json().field_errors[0].message).toContain(`provenance.${field}`);
+      expect(await placesNamed(name)).toHaveLength(0);
+
+      // Released: the same key with the alpha.66 body is a fresh create.
+      const corrected = await create(
+        {
+          name,
+          lat: 10.81,
+          lng: 106.81,
+          [field]: CONTACT_VALUE[field],
+          sourceReferences: REFS,
+          provenance: { [field]: CONTACT_EVIDENCE },
+        },
+        who,
+        key,
+      );
+      expect(corrected.statusCode, corrected.body).toBe(201);
+      expect(corrected.headers['x-idempotent-replay']).toBeUndefined();
+    },
+  );
+
+  it('accepts a contact value with provenance alone and records its evidence as GoGo’s', async () => {
+    const who = await anEditor();
+    const res = await create(
+      {
+        name: `Quán Bằng Chứng ${uniq()}`,
+        lat: 10.82,
+        lng: 106.82,
+        phone: '0912 345 678',
+        sourceReferences: REFS,
+        provenance: { phone: CONTACT_EVIDENCE },
+      },
+      who.token,
+    );
+    expect(res.statusCode, res.body).toBe(201);
+    const place = res.json();
+    expect(place.phone).toBe('+84912345678');
+    expect(place.provenance.phone).toMatchObject({
+      sourceType: 'editorial',
+      sourceReference: CONTACT_EVIDENCE.sourceReference,
+      collectedAt: '2026-09-30T02:00:00.000Z',
+      ownership: 'gogo',
+    });
+    // Additive read model: collectedAt everywhere, null outside the contacts;
+    // ownership only on the three.
+    expect(place.provenance.name.collectedAt).toBeNull();
+    expect(place.provenance.name).not.toHaveProperty('ownership');
+
+    const rows = await contactRows(place.id);
+    expect(rows.get('phone')).toMatchObject({
+      sourceType: 'editorial',
+      sourceReference: CONTACT_EVIDENCE.sourceReference,
+      collectedAt: new Date(CONTACT_EVIDENCE.collectedAt),
+      actorId: who.id,
+    });
+    expect(rows.get('phone')!.verifiedAt).toBeInstanceOf(Date);
+
+    const events = await db
+      .select()
+      .from(schema.outboxEvents)
+      .where(
+        and(
+          eq(schema.outboxEvents.resourceId, place.id),
+          eq(schema.outboxEvents.eventType, 'place.created'),
+        ),
+      );
+    expect(events).toHaveLength(1);
+  });
+
+  it.each([
+    ['equal', 'Gọi điện chủ quán 2026-09-30'],
+    ['differing', 'biển hiệu tại quán'],
+  ])(
+    'refuses a body carrying both channels (%s text) as unknown, writing nothing',
+    async (_label, legacyRef) => {
+      const name = `Quán Hai Kênh ${uniq()}`;
+      const res = await create(
+        {
+          name,
+          lat: 10.83,
+          lng: 106.83,
+          phone: '0283 822 6666',
+          sourceReferences: { ...REFS, phone: legacyRef },
+          provenance: { phone: CONTACT_EVIDENCE },
+        },
+        await tok(),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(res.json().code).toBe('SOURCE_REFERENCE_INVALID');
+      expect(res.json().field_errors).toEqual([
+        expect.objectContaining({ field: 'sourceReferences.phone', code: 'unknown' }),
+      ]);
+      expect(await placesNamed(name)).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ['a value without provenance', { phone: '0283 822 7777' }, 'provenance.phone', 'required'],
+    [
+      'provenance without a value',
+      { provenance: { website: CONTACT_EVIDENCE } },
+      'provenance.website',
+      'value_missing',
+    ],
+    [
+      'provenance beside a null',
+      { addressText: null, provenance: { addressText: CONTACT_EVIDENCE } },
+      'provenance.addressText',
+      'not_allowed',
+    ],
+    [
+      'Google as the source type',
+      {
+        phone: '0283 822 8888',
+        provenance: { phone: { ...CONTACT_EVIDENCE, sourceType: 'google_derived' } },
+      },
+      'provenance.phone.sourceType',
+      'google_not_independent',
+    ],
+  ])('refuses %s as VALIDATION_FAILED', async (_label, extra, field, code) => {
+    const name = `Quán Thiếu Nguồn ${uniq()}`;
+    const res = await create(
+      { name, lat: 10.84, lng: 106.84, sourceReferences: REFS, ...extra },
+      await tok(),
+    );
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json().code).toBe('VALIDATION_FAILED');
+    expect(res.json().field_errors).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field, code })]),
+    );
+    expect(await placesNamed(name)).toHaveLength(0);
+  });
+
+  it('refuses googleDerivedFields naming addressText as Google content, not as a contact rule', async () => {
+    const res = await create(
+      {
+        name: `Quán Link ${uniq()}`,
+        lat: 10.85,
+        lng: 106.85,
+        addressText: CONTACT_VALUE.addressText,
+        googlePlaceId: `ChIJaddr${uniq()}`,
+        googleDerivedFields: ['addressText'],
+        sourceReferences: REFS,
+        provenance: { addressText: CONTACT_EVIDENCE },
+      },
+      await tok(),
+    );
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('GOOGLE_CONTENT_NOT_PERSISTABLE');
+  });
+
+  it('treats a null contact on create as nothing to write', async () => {
+    const res = await create(
+      {
+        name: `Quán Trống ${uniq()}`,
+        lat: 10.86,
+        lng: 106.86,
+        website: null,
+        sourceReferences: REFS,
+      },
+      await tok(),
+    );
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json().website ?? null).toBeNull();
+    expect((await contactRows(res.json().id)).has('website')).toBe(false);
+  });
+
+  it('still requires a reference for every other supplied fact', async () => {
+    const res = await create(
+      {
+        name: `Quán Mô Tả ${uniq()}`,
+        lat: 10.87,
+        lng: 106.87,
+        description: 'Quán nhỏ',
+        phone: '0283 822 9090',
+        sourceReferences: REFS,
+        provenance: { phone: CONTACT_EVIDENCE },
+      },
+      await tok(),
+    );
+    expect(res.statusCode).toBe(400);
+    expect(res.json().field_errors).toEqual([
+      expect.objectContaining({ field: 'sourceReferences.description', code: 'required' }),
+    ]);
   });
 });

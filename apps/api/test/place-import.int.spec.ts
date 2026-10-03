@@ -507,7 +507,7 @@ describe('PI-BE-019 — explicit column mapping is strict', () => {
     expect(normalized.googleMapsUrl).toContain('place_id=fake-a');
   });
 
-  it('still accepts the three retired fields, and says the column was skipped', async () => {
+  it('maps `address` now, and fails a row whose address has no evidence (#280)', async () => {
     const editor = await createAdmin('mapping-retired@gogo.local', 'editor');
     sheets.seed('8MappingRetiredMappingRetir01234567', 'HCM', [
       ['Địa chỉ', 'name', 'category', 'city'],
@@ -527,11 +527,12 @@ describe('PI-BE-019 — explicit column mapping is strict', () => {
       },
     });
 
-    // `/v1` answered 200 and ignored it; that stays true.
+    // GoGo-BE#280 — FAIL-before: retired, skipped, reported as unmapped.
+    // `address` is GoGo-owned data now, so the column maps, and a value with
+    // no evidence fails its row instead of being silently dropped.
     expect(res.statusCode).toBe(201);
-    expect(res.json().totals.failed).toBe(0);
-    // But the outcome is visible now instead of silent.
-    expect(res.json().unmappedHeaders).toContain('HCM:Địa chỉ');
+    expect(res.json().unmappedHeaders).not.toContain('HCM:Địa chỉ');
+    expect(res.json().totals.failed).toBe(1);
   });
 
   it('accepts every mapping value the shipped CMS could emit', async () => {
@@ -2542,12 +2543,20 @@ describe('PI-BE-025 — GoGo-owned columns persist', () => {
     'google_place_id',
     'category',
     'phone',
+    'phone_source_type',
+    'phone_source_reference',
+    'phone_collected_at',
     'website',
+    'website_source_type',
+    'website_source_reference',
+    'website_collected_at',
     'avg_visit_minutes',
     'is_lodging',
     'curated_rank',
     'highlight',
   ];
+  // GoGo-BE#280 — every contact value carries its evidence.
+  const EV = ['editorial', 'Danh thiếp của quán, 2026-09-30', '2026-09-30T02:00:00Z'];
 
   it('writes every column the sheet supplied, and records who claimed them', async () => {
     const editor = await createAdmin('gogo-cols@gogo.local', 'editor');
@@ -2568,7 +2577,9 @@ describe('PI-BE-025 — GoGo-owned columns persist', () => {
         'fake-gogo-cols',
         'cafe',
         '028 3822 9999',
+        ...EV,
         'chaoban.vn/menu',
+        ...EV,
         '90',
         'true',
         '3',
@@ -2632,6 +2643,11 @@ describe('PI-BE-025 — GoGo-owned columns persist', () => {
     for (const field of ['description', 'phone', 'website']) {
       expect(byField.get(field), field).toMatchObject({ sourceType: 'editorial' });
     }
+    // GoGo-BE#280 — and the contact fields say where they came from.
+    expect(byField.get('phone')).toMatchObject({
+      sourceReference: 'Danh thiếp của quán, 2026-09-30',
+      actorId: ops.id,
+    });
     // The sheet let the provider name the place, so it claimed no name.
     expect(byField.has('name')).toBe(false);
   });
@@ -2647,7 +2663,9 @@ describe('PI-BE-025 — GoGo-owned columns persist', () => {
         'fake-cols-bad',
         'cafe',
         'gọi cho Nam',
+        ...EV,
         'javascript:alert(1)',
+        ...EV,
         '5',
         'couple:0.9',
         'có lẽ',

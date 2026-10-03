@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
+import { contactProvenanceSchema } from '../../shared/place-contact-schema';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import type { Actor } from '../../identity/domain/actor';
 import { CurrentActor, Public, RateLimit } from '../../identity/presentation/decorators';
@@ -114,6 +115,11 @@ const reviewDraftSchema = z
     priceMin: z.number().int().min(0).nullable(),
     priceMax: z.number().int().min(0).nullable(),
     priceUnit: z.enum(['per_person', 'per_item', 'per_hour', 'per_night']).nullable(),
+    /**
+     * GoGo-BE#280 — evidence for `addressText` / `phone` / `website`, the same
+     * shape and rule as the place editor's: a non-null value needs its entry.
+     */
+    provenance: contactProvenanceSchema,
   })
   .partial()
   .strict()

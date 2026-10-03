@@ -488,6 +488,13 @@ export const placeFieldProvenance = pgTable(
     /** Admin who made the claim, when it was a person. */
     actorId: uuid('actor_id'),
     verifiedAt: timestamp('verified_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * GoGo-BE#280 — when the evidence named by `sourceReference` was gathered
+     * (a phone call, a visit, a dataset release). Null on every row written
+     * before it existed, and on any row that is not independently sourced;
+     * `contactOwnership` reads a null here as "not GoGo's", never as "now".
+     */
+    collectedAt: timestamp('collected_at', { withTimezone: true }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

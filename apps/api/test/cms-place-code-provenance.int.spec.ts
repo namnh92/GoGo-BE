@@ -12,6 +12,7 @@ import { schema } from '@gogo/database';
 
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 import { AdministrativeBoundaryImportService, AdministrativeImportService } from '@gogo/modules';
+import { CONTACT_EVIDENCE } from './support/cms-place-create';
 
 /**
  * GoGo-BE#440 F-07 — province/commune provenance is outcome-aware (Astra,
@@ -524,7 +525,12 @@ describe('F-07 PATCH outcomes', () => {
 
   it('an unrelated edit preserves code provenance', async () => {
     const { id, by } = await createAdopted();
-    const res = await patch(id, { phone: '0283 822 7777' });
+    // GoGo-BE#280 — a contact write carries its evidence and the form version.
+    const res = await patch(id, {
+      phone: '0283 822 7777',
+      provenance: { phone: CONTACT_EVIDENCE },
+      expectedUpdatedAt: (await placeRow(id)).updatedAt.toISOString(),
+    });
     expect(res.statusCode, res.body).toBe(200);
     const { province, commune } = await codeClaims(id);
     expect(province).toMatchObject({ sourceReference: R1.province, actorId: by.id });
@@ -620,6 +626,7 @@ describe('F-07 later writers', () => {
       );
       const pending = patch(id, {
         phone: '0283 822 1111',
+        provenance: { phone: CONTACT_EVIDENCE },
         expectedUpdatedAt: loaded.updatedAt.toISOString(),
       });
       // The PATCH has read the (still old) row and is now waiting on the lock.

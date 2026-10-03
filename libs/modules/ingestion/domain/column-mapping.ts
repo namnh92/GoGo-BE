@@ -34,6 +34,27 @@ export const CANONICAL_FIELDS = [
    */
   'phone',
   'website',
+  /**
+   * GoGo-BE#280 (option A, 2026-10-02) — the postal address is GoGo's own
+   * data, written to `places.address_text`. It was retired until now because
+   * nothing could store it.
+   */
+  'address',
+  /**
+   * GoGo-BE#280 — the evidence behind each of the three contact columns. A
+   * non-blank `address` / `phone` / `website` cell is written only with all
+   * three of its evidence cells; without them the row fails validation, in
+   * dry-run and commit alike, rather than storing an unsourced value.
+   */
+  'address_source_type',
+  'address_source_reference',
+  'address_collected_at',
+  'phone_source_type',
+  'phone_source_reference',
+  'phone_collected_at',
+  'website_source_type',
+  'website_source_reference',
+  'website_collected_at',
   'avg_visit_minutes',
   'is_lodging',
   'curated_rank',
@@ -83,20 +104,13 @@ export const LEGACY_FIELD_ALIASES: Readonly<Record<string, CanonicalField>> = {
  * Shipped mapping values that never had anywhere to go: no canonical field, no
  * column on `places`, nothing downstream that could store them.
  *
- * `phone` and `website` were here until PI-BE-025 and are not any more — they
- * are canonical fields now, with columns, normalization and provenance, so
- * mapping a header onto them stores a value instead of dropping one. `address`
- * stays: `places.address_text` is written from the provider's formatted
- * address, and a sheet's own address string has no writer and no meaning
- * beside it.
- *
- * `/v1` answered 200 and ignored them, so turning them into a hard 400 would
- * be a behavioural break for the sake of tidiness. They stay accepted and the
- * column is skipped — but the header is now reported in `unmappedHeaders`, so
- * the outcome is visible instead of silent. Whether GoGo should hold this data
- * at all is a catalog question, not an import one.
+ * Empty since GoGo-BE#280. `phone` and `website` left in PI-BE-025, and
+ * `address` left when the owner decided (2026-10-02, option A) that the
+ * address is GoGo-owned data with its own evidence. The mechanism stays: a
+ * value retired later is accepted, skipped and reported in `unmappedHeaders`
+ * rather than turned into a `/v1` 400.
  */
-export const RETIRED_FIELDS: readonly string[] = ['address'];
+export const RETIRED_FIELDS: readonly string[] = [];
 
 export type ColumnMappingResult = {
   mapping: Record<string, CanonicalField>;

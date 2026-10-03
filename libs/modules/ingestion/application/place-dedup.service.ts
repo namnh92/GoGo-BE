@@ -404,13 +404,20 @@ export class PlaceDedupService {
    * PI-BE-007/009 — upsert the provider snapshot. Raw aggregates and the
    * derived score are stored side by side with freshness + attribution.
    */
-  async upsertProviderSource(input: {
-    placeId: string;
-    details: ResolvedProviderPlace;
-    derivedScore: number;
-    fetchTier: PlaceDescriptionTier;
-    refreshAfterDays?: number;
-  }): Promise<void> {
+  async upsertProviderSource(
+    input: {
+      placeId: string;
+      details: ResolvedProviderPlace;
+      derivedScore: number;
+      fetchTier: PlaceDescriptionTier;
+      refreshAfterDays?: number;
+    },
+    /**
+     * GoGo-BE#280 (Sol F-02) — a transaction, when the caller's write must
+     * commit or roll back together with this one. Defaults to the pool.
+     */
+    runner: Pick<Db, 'insert'> = this.db,
+  ): Promise<void> {
     const refreshAfter = new Date(Date.now() + (input.refreshAfterDays ?? 30) * 24 * 3600 * 1000);
     // `CLOSED_TEMPORARILY` used to land on 'unknown', which conflated "shut for
     // now" with "we have no idea" — and the two lead to different decisions.
@@ -451,7 +458,7 @@ export class PlaceDedupService {
           : input.details.businessStatus === 'FUTURE_OPENING'
             ? 'unknown'
             : 'active';
-    await this.db
+    await runner
       .insert(schema.placeProviderSources)
       .values({
         placeId: input.placeId,
@@ -489,8 +496,13 @@ export class PlaceDedupService {
   }
 
   /** PI-BE-010 — publish/merge must nudge search; consumers are idempotent. */
-  async emitReindex(placeId: string, reason: 'published' | 'merged' | 'updated'): Promise<void> {
-    await writeOutbox(this.db, {
+  async emitReindex(
+    placeId: string,
+    reason: 'published' | 'merged' | 'updated',
+    /** GoGo-BE#280 (Sol F-02) — a transaction, to commit with the write it announces. */
+    runner: Parameters<typeof writeOutbox>[0] = this.db,
+  ): Promise<void> {
+    await writeOutbox(runner, {
       eventType: 'place.updated',
       resourceType: 'place',
       resourceId: placeId,
