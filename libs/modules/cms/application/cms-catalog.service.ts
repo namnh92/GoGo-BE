@@ -1911,6 +1911,10 @@ export class CmsCatalogService {
         .limit(1)
         .for('update');
       if (!current) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
+      // F-09 — the optimistic-concurrency check that counts is the one under
+      // the lock: a save committed between the unlocked read and here must be
+      // refused, not silently overwritten.
+      assertNotStale(current.updatedAt, input.expectedUpdatedAt);
       const lockedCodes = {
         provinceCode:
           input.provinceCode !== undefined ? (input.provinceCode ?? null) : current.provinceCode,

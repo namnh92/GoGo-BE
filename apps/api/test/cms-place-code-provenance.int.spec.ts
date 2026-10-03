@@ -562,7 +562,7 @@ describe('F-07 later writers', () => {
     expect(JSON.stringify(superseding[0]!.diff)).toContain(R1.province);
   });
 
-  it('a concurrent verification is respected', async () => {
+  it('F-10: a concurrent verification is respected, whichever lands first', async () => {
     const { id } = await create();
     const place = await placeRow(id);
     const [edit, verify] = await Promise.all([
@@ -578,18 +578,60 @@ describe('F-07 later writers', () => {
         payload: { ...mapped, expectedUpdatedAt: place.updatedAt.toISOString() },
       }),
     ]);
-    expect([200, 409]).toContain(edit.statusCode);
-    expect([201, 409]).toContain(verify.statusCode);
+    // The edit carries no expectedUpdatedAt, so it always lands.
+    expect(edit.statusCode, edit.body).toBe(200);
     const row = await placeRow(id);
     const { province, commune } = await codeClaims(id);
-    if (row.administrativeMappingStatus === 'VERIFIED') {
-      expect(row.administrativeMappedBy).toBe(moderator.id);
-    }
-    // A claim exists only for codes that are the ones it vouches for.
-    for (const claim of [province, commune]) {
-      if (claim) expect(claim.sourceReference).toMatch(/^(gọi|giấy)/);
-    }
     expect(row).toMatchObject(mapped);
+
+    if (verify.statusCode === 201) {
+      // Verification first: the edit met a VERIFIED mapping it may not change,
+      // so its assertion was not adopted and nothing was stamped.
+      expect(row).toMatchObject({
+        administrativeMappingStatus: 'VERIFIED',
+        administrativeMappedBy: moderator.id,
+      });
+      expect(province).toBeUndefined();
+      expect(commune).toBeUndefined();
+    } else {
+      // Edit first: adopted as trusted_code with the editor's evidence; the
+      // verification then saw a changed row and was refused.
+      expect(verify.statusCode, verify.body).toBe(409);
+      expect(row).toMatchObject({
+        administrativeMappingStatus: 'AUTO_MATCHED',
+        administrativeMappingSource: 'trusted_code',
+      });
+      expect(province).toMatchObject({ sourceReference: R2.province, actorId: editor.id });
+      expect(commune).toMatchObject({ sourceReference: R2.commune, actorId: editor.id });
+    }
+  });
+
+  it('F-09: a save committed between the form load and the lock is refused, not overwritten', async () => {
+    const { id } = await create();
+    const loaded = await placeRow(id);
+    const other = await pool.connect();
+    try {
+      // Another save holds the row and is about to commit a newer version.
+      await other.query('begin');
+      await other.query('select id from places where id = $1 for update', [id]);
+      await other.query(
+        "update places set phone = '+842838220000', updated_at = now() where id = $1",
+        [id],
+      );
+      const pending = patch(id, {
+        phone: '0283 822 1111',
+        expectedUpdatedAt: loaded.updatedAt.toISOString(),
+      });
+      // The PATCH has read the (still old) row and is now waiting on the lock.
+      await new Promise((r) => setTimeout(r, 400));
+      await other.query('commit');
+      const res = await pending;
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json().code).toBe('PLACE_MODIFIED');
+    } finally {
+      other.release();
+    }
+    expect((await placeRow(id)).phone).toBe('+842838220000');
   });
 
   it('a provenance or audit failure rolls back mapping and claims together', async () => {

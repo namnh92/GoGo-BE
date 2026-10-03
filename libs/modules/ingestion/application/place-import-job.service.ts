@@ -1584,6 +1584,19 @@ export class PlaceImportJobService {
 
     const score = await this.resolver.scoreFor(details, null, normalized.categoryKey);
     await this.db.transaction(async (tx) => {
+      /**
+       * GoGo-BE#440 F-08 — one lock order for every writer that moves a place:
+       * the `places` row first, then the travel cache and plans it invalidates.
+       * The CMS edit locks the row before `invalidateTravelOnMove`; taking the
+       * travel/plan row locks here first and the place row last would let the
+       * two wait on each other (40P01) for a concurrent move of one place.
+       */
+      await tx
+        .select({ id: schema.places.id })
+        .from(schema.places)
+        .where(eq(schema.places.id, placeId))
+        .limit(1)
+        .for('update');
       // #339 — before the new coordinate lands, not after: the measurement is
       // against the stored position, and once it is overwritten the move
       // cannot be seen. "The place may have been renamed or moved" was already
