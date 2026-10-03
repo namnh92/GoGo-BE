@@ -2716,7 +2716,7 @@ paths:
       tags: [places]
       summary: Transient Google photos for one Place Detail view (never stored)
       description: >
-        GoGo-BE#509 (owner decision 2026-10-02, ADR-0029). Fetched from Google
+        GoGo-BE#509 (owner decision 2026-10-02, ADR-0030). Fetched from Google
         when Place Detail is opened and returned once: photo names, image URLs
         and bytes are not stored anywhere (database, object storage, cache,
         jobs, snapshots), and the response is `Cache-Control: private,

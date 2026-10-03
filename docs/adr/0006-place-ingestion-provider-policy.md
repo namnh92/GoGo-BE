@@ -43,7 +43,7 @@ parsing, resolution, scoring, dedup and enrichment; the provider sits behind
 | `quality`  | row accepted / preview shown / publish    | Details Enterprise          | 20   | `+ rating,userRatingCount,regularOpeningHours,priceLevel`                                 |
 | `detail`   | explicit open by admin/user               | Details E + Atmosphere      | 25   | `+ reviews`                                                                               |
 
-GoGo-BE#509 (ADR-0029) removed `photos` from `core` and `priceRange` from
+GoGo-BE#509 (ADR-0030) removed `photos` from `core` and `priceRange` from
 `quality`: both were bought on every call and read by nothing. Neither removal
 changes the tier's SKU. Photos are fetched only for display, by a separate
 operation (`google.details.photos`, mask `id,photos`, IDs Only) plus one

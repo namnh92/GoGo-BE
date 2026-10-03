@@ -1,4 +1,4 @@
-# ADR-0029: Transient Google photos on Place Detail; no provider price range
+# ADR-0030: Transient Google photos on Place Detail; no provider price range
 
 - **Status:** accepted (owner decision 2026-10-02 on GoGo-BE#509; shape by SA review, Astra)
 - **Date:** 2026-10-02

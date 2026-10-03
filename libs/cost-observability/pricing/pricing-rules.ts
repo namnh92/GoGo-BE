@@ -550,7 +550,7 @@ export const PRICING_RULES: readonly PricingRule[] = [
   }),
   /**
    * GoGo-BE#509 — transient Place Detail photos (owner decision 2026-10-02,
-   * ADR-0029). Each displayed photo is one Place Details Photos call. The
+   * ADR-0030). Each displayed photo is one Place Details Photos call. The
    * reference lookup before it (`google.details.photos`) is IDs Only and free,
    * and is metered as calls only — see the registry.
    */

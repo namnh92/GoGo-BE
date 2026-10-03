@@ -16,7 +16,7 @@ process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-test
  * GoGo-BE#509 — transient Google photos on Place Detail, over real HTTP and a
  * real Postgres, with the provider faked (never a real Google call).
  *
- * Owner decision 2026-10-02 (ADR-0029): display only. What these cases hold:
+ * Owner decision 2026-10-02 (ADR-0030): display only. What these cases hold:
  * - nothing about a photo — its name, a URL, its bytes — lands in **any** table;
  * - the response is `private, no-store`;
  * - the kill switch is off by default and a `feature_flags` row flips it;

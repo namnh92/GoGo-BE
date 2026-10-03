@@ -9,7 +9,7 @@ import { ProviderCallAbortedError } from './ports';
 import { resetBreakers } from './resilience';
 
 /**
- * GoGo-BE#509 — transient display photos (owner decision 2026-10-02, ADR-0029).
+ * GoGo-BE#509 — transient display photos (owner decision 2026-10-02, ADR-0030).
  *
  * What these hold: the display operations ask Google for exactly `id,photos`
  * and nothing billed beside it; the whole author credit survives (the adapter

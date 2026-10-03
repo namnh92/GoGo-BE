@@ -349,7 +349,7 @@ and fix the role model rather than the people.
 ## Transient Google photos on Place Detail (GoGo-BE#509)
 
 `GET /v1/places/{id}/provider-photos` fetches up to three Google photos per
-view and stores nothing (ADR-0029). It always answers 200; `status` says why
+view and stores nothing (ADR-0030). It always answers 200; `status` says why
 `photos` is empty. Three things have to allow it before Google is called:
 
 | Check       | Where                                                                                  | Off looks like                                                                                                                                      |

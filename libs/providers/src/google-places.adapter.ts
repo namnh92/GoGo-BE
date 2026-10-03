@@ -169,7 +169,7 @@ async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array 
  * it carried the quality aggregates while missing `types`, `googleMapsUri` and
  * `photos`, all three of which the ADR puts in `core`.
  *
- * GoGo-BE#509 (owner decision 2026-10-02, ADR-0029) took two fields back out:
+ * GoGo-BE#509 (owner decision 2026-10-02, ADR-0030) took two fields back out:
  * `photos` from `core` and `priceRange` from `quality`. Both were bought on
  * every call and read by nothing. Photos are now fetched only for display, on
  * their own operation (`PHOTO_DISPLAY_FIELD_MASK`); `priceRange` has no unit,

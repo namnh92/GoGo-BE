@@ -25,7 +25,7 @@ import { DB } from '../../shared/tokens';
 /**
  * GoGo-BE#509 — transient Google photos for Place Detail.
  *
- * Owner decision 2026-10-02 (ADR-0029): **display only, never stored.** A photo
+ * Owner decision 2026-10-02 (ADR-0030): **display only, never stored.** A photo
  * name, its image URL and its bytes exist only inside this one request — they
  * are not written to the database, R2, Redis, a job or a snapshot, and the
  * response is `Cache-Control: no-store`. The only provider value GoGo keeps is

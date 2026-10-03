@@ -25,7 +25,7 @@ import type { PlaceFetchTier } from './ports';
  */
 const ADR_LIVENESS = ['id', 'movedPlaceId'];
 /**
- * GoGo-BE#509 (owner decision 2026-10-02, ADR-0029): `photos` left `core` and
+ * GoGo-BE#509 (owner decision 2026-10-02, ADR-0030): `photos` left `core` and
  * `priceRange` left `quality`. Photos are bought only by the display operation;
  * `priceRange` has no unit, so core rule 13 forbids showing it and nothing asks.
  */

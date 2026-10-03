@@ -207,7 +207,7 @@ resolved by text search, not data GoGo keeps.
 
 ### Photos are not part of ingestion
 
-GoGo-BE#509 (owner decision 2026-10-02, ADR-0029) removed `photos` from the
+GoGo-BE#509 (owner decision 2026-10-02, ADR-0030) removed `photos` from the
 `core` mask: no import, resolve or refresh step asks for a photo, and
 `ResolvedProviderPlace` no longer carries one. Google photos reach a user only
 through `GET /v1/places/{id}/provider-photos`, fetched when Place Detail opens
