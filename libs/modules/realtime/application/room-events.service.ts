@@ -3,14 +3,21 @@ import { Observable } from 'rxjs';
 import { AppError } from '../../shared/app-error';
 import type { Actor } from '../../identity/domain/actor';
 import { RoomPolicy } from '../../rooms/presentation/room-policy';
-import { ROOM_EVENT_BUS, type RoomEventBus } from './room-event-bus';
+import {
+  ROOM_EVENT_BUS,
+  type ResyncNotice,
+  type RoomEventBus,
+  type Subscription,
+  type SubscriptionSink,
+} from './room-event-bus';
+import { formatCursor, parseResumePoint } from '../domain/room-event-cursor';
 import type { SequencedRoomEvent } from '../domain/room-event';
 
 /**
  * Idle connections die in proxies. 20s is comfortably under the common 30–60s
- * idle timeouts and cheap: one small frame per connection per interval.
+ * idle timeouts and cheap: one comment line per connection per interval.
  */
-export const HEARTBEAT_INTERVAL_MS = 20_000;
+export const KEEP_ALIVE_INTERVAL_MS = 20_000;
 
 /**
  * One member on several devices is normal; one actor holding dozens of streams
@@ -20,7 +27,10 @@ export const HEARTBEAT_INTERVAL_MS = 20_000;
 export const MAX_STREAMS_PER_ACTOR = 5;
 
 /** What the SSE layer emits, in the framework's message shape. */
-export type SseMessage = { id?: string; type: string; data: string };
+export type SseMessage =
+  | { id?: string; type: string; data: string }
+  /** Comment-only: written as `: <comment>`, never numbered by the framework. */
+  | { comment: string };
 
 @Injectable()
 export class RoomEventsService {
@@ -39,6 +49,10 @@ export class RoomEventsService {
    * committed; this repeats the check because the stream is what actually
    * carries other members' activity, and the cost of re-asking is one query
    * per connection.
+   *
+   * ADR-0027 order on the wire: `resync` (if the resume point cannot be
+   * honoured) → replay → live. Live delivery starts only when `activate()` is
+   * called after the replay has been handed to the stream.
    */
   async stream(
     actor: Actor,
@@ -52,78 +66,112 @@ export class RoomEventsService {
       throw AppError.tooManyRequests('Too many open event streams for this session');
     }
 
-    const afterSeq = parseLastEventId(lastEventId);
+    // Legacy numeric and malformed cursors are accepted and answered with
+    // `resync`, never rejected and never treated as a fresh stream.
+    const resume = parseResumePoint(lastEventId);
     this.streamsPerActor.set(actor.id, open + 1);
 
     return new Observable<SseMessage>((subscriber) => {
       let closed = false;
-      let heartbeat: NodeJS.Timeout | undefined;
-      let unsubscribe: (() => void) | undefined;
+      let keepAlive: NodeJS.Timeout | undefined;
+      let subscription: Subscription | undefined;
 
       const release = () => {
         if (closed) return;
         closed = true;
-        if (heartbeat) clearInterval(heartbeat);
-        unsubscribe?.();
+        if (keepAlive) clearInterval(keepAlive);
+        subscription?.unsubscribe();
         const remaining = (this.streamsPerActor.get(actor.id) ?? 1) - 1;
         if (remaining <= 0) this.streamsPerActor.delete(actor.id);
         else this.streamsPerActor.set(actor.id, remaining);
       };
 
+      /*
+       * Ending, not erroring: after the headers are out the framework turns an
+       * error into an `event: error` frame with a numbered id, which a browser
+       * EventSource would adopt as its resume point. A completed stream makes
+       * the client reconnect and run the full attach protocol (ADR-0027 D5).
+       */
+      const terminate = () => {
+        if (closed) return;
+        release();
+        subscriber.complete();
+      };
+
+      const sink: SubscriptionSink = {
+        event: (event) => {
+          if (!closed) subscriber.next(domainFrame(event));
+        },
+        resync: (notice) => {
+          if (!closed) subscriber.next(resyncFrame(roomId, notice));
+        },
+        fail: terminate,
+      };
+
       void this.bus
-        .subscribe(roomId, afterSeq, (event) => {
-          if (!closed) subscriber.next(toMessage(event));
-        })
-        .then((subscription) => {
+        .subscribe(roomId, resume, sink)
+        .then((attached) => {
           if (closed) {
-            subscription.unsubscribe();
+            attached.unsubscribe();
             return;
           }
-          unsubscribe = subscription.unsubscribe;
+          subscription = attached;
+          if (attached.resync) sink.resync(attached.resync);
+          for (const event of attached.replay) sink.event(event);
 
-          if (subscription.resync) {
-            // The gap is wider than the buffer. Say so; a client that refetches
-            // is correct, a client that resumes into a hole is silently wrong.
-            subscriber.next({
-              type: 'resync',
-              data: JSON.stringify({
-                reason: 'replay_window_exceeded',
-                roomId,
-              }),
-            });
-          }
-          for (const event of subscription.replay) subscriber.next(toMessage(event));
+          keepAlive = setInterval(() => {
+            if (!closed) subscriber.next({ comment: 'ping' });
+          }, KEEP_ALIVE_INTERVAL_MS);
+          // Node keeps the process alive for a pending timer; a keep-alive
+          // must not be the reason a shutdown hangs.
+          keepAlive.unref?.();
 
-          heartbeat = setInterval(() => {
-            subscriber.next({ type: 'heartbeat', data: '{}' });
-          }, HEARTBEAT_INTERVAL_MS);
-          // Node keeps the process alive for a pending timer; a heartbeat must
-          // not be the reason a shutdown hangs.
-          heartbeat.unref?.();
+          attached.activate();
         })
-        .catch((error: unknown) => {
-          release();
-          subscriber.error(error);
-        });
+        .catch(terminate);
 
       return release;
     });
   }
 }
 
-function toMessage(event: SequencedRoomEvent): SseMessage {
-  // `id:` is the per-room sequence, which is what the client hands back as
-  // Last-Event-ID. The event's own uuid stays in the payload for correlation.
+/** A domain event: its SSE `id` is the opaque resume cursor (ADR-0027). */
+export function domainFrame(event: SequencedRoomEvent): SseMessage {
   return {
-    id: String(event.seq),
+    id: formatCursor({ generation: event.generation, seq: event.seq }),
     type: event.event.event_type,
     data: JSON.stringify(event.event),
   };
 }
 
-/** A malformed resume point starts a fresh stream rather than failing it. */
-export function parseLastEventId(value: string | null): number | null {
-  if (!value) return null;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+/**
+ * `resync` carries no SSE `id` (contract, ADR-0027): a client's resume point
+ * moves only with domain events.
+ *
+ * The framework's `SseStream.writeMessage` assigns a per-connection counter to
+ * every non-comment message whose `id` is nil, and a browser EventSource would
+ * then resume with that counter. `id` is therefore pinned to `undefined` — the
+ * framework's assignment is discarded — so the frame is written with no `id:`
+ * line at all and EventSource keeps the last domain cursor. Guarded by the
+ * "no numeric id on non-domain frames" tests against the real framework.
+ */
+export function resyncFrame(roomId: string, notice: ResyncNotice): SseMessage {
+  const frame = {
+    type: 'resync',
+    data: JSON.stringify({
+      roomId,
+      reason: notice.reason,
+      checkpoint: {
+        cursor: formatCursor(notice.checkpoint),
+        generation: notice.checkpoint.generation,
+        seq: notice.checkpoint.seq,
+      },
+    }),
+  };
+  Object.defineProperty(frame, 'id', {
+    get: () => undefined,
+    set: () => undefined,
+    enumerable: false,
+  });
+  return frame;
 }

@@ -23,9 +23,12 @@ export const UPSTASH_REDIS_OPERATIONS = {
   sessionRevoke: { ...UPSTASH, operation: 'upstash.redis.session.revoke' },
   /** `RedisRevocationStore.isRevoked` — GET, behind the in-process cache. */
   sessionIsRevoked: { ...UPSTASH, operation: 'upstash.redis.session.is_revoked' },
-  /** `RedisRoomEventBus.publish` — INCR, EXPIRE, ZADD, ZREMRANGEBYRANK, EXPIRE, PUBLISH. */
+  /** `RedisRoomEventBus.publish` — one Lua script (sequence, ZADD, trim, EXPIRE, PUBLISH; ADR-0027). */
   roomEventsPublish: { ...UPSTASH, operation: 'upstash.redis.room_events.publish' },
-  /** `RedisRoomEventBus.subscribe` — the replay ZRANGEBYSCORE and the channel SUBSCRIBE. */
+  /**
+   * `RedisRoomEventBus.subscribe` — the channel SUBSCRIBE and the snapshot
+   * script; a live-gap recovery read counts as one more call (ADR-0027).
+   */
   roomEventsSubscribe: { ...UPSTASH, operation: 'upstash.redis.room_events.subscribe' },
   /**
    * #427 — `RateLimitRedisWarmup`: the one `connect()` at API boot, recorded

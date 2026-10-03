@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.64
+  version: 1.0.0-alpha.65
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -748,17 +748,60 @@ paths:
         `participant.left`, `participant.selection_changed`,
         `matching.started`, `matching.completed`, `matching.failed`,
         `suggestions.generated`, `suggestions.updated`, `vote.changed`,
-        `plan.updated`, plus two stream-level types — `heartbeat`, which keeps
-        idle connections alive through proxies, and `resync`, which says the
-        client's resume point is older than the replay buffer and it must
-        refetch. `resync` exists so a gap is reported rather than silently
-        skipped: a client that is wrong without knowing it is the failure this
-        endpoint is meant to prevent.
+        `plan.updated`, plus one stream-level type — `resync`, which says the
+        client's resume point cannot be honoured exactly and it must refetch.
+        `resync` exists so a gap is reported rather than silently skipped: a
+        client that is wrong without knowing it is the failure this endpoint is
+        meant to prevent.
 
 
-        Each message's `id` is a per-room sequence number. Send it back as
-        `Last-Event-ID` (or the `lastEventId` query parameter, which browsers
-        need because `EventSource` cannot set headers) to resume.
+        Keep-alive is an SSE **comment frame** (`: ping`) sent while the stream
+        is idle so proxies do not close it. It has no `event:` name, no `id:`
+        and no `data:`; `EventSource` and conforming parsers never surface it
+        as an event and it never changes the resume point. There is no
+        `heartbeat` event any more (ADR-0027) — a client must not rely on
+        receiving one.
+
+
+        Each domain event's SSE `id` is an **opaque resume cursor** (ADR-0027,
+        GoGo-BE#638). Its current form is `v2:<generation>:<seq>`, but clients
+        must treat it as an uninterpreted string: store the `id` of the last
+        domain event received, send it back verbatim as `Last-Event-ID` (or the
+        `lastEventId` query parameter, which browsers need because
+        `EventSource` cannot set headers) to resume, and never parse, compare
+        or construct one. The event's own UUID stays in the payload as
+        `event_id`; dedupe on `event_id`, order by arrival. Only domain events
+        move the resume point — a `resync` frame carries no `id`, and the
+        keep-alive comment carries nothing at all.
+
+
+        Resume outcomes. A fresh connection (no cursor) replays nothing and
+        delivers only events published after it attached; the client fetches
+        state itself. A resumable cursor replays every retained event after it,
+        in order and once each, then continues live. A cursor the server
+        cannot honour exactly yields one `resync` frame (schema
+        `RoomEventResync`) **before** any later domain event, and no partial
+        replay: the replay window was exceeded or the requested events are no
+        longer retained (`replay_unavailable`), the room's event sequence was
+        reset since the cursor was issued (`generation_changed`), or the cursor
+        is malformed, ahead of the server, or a legacy bare sequence number
+        from before ADR-0027 (`invalid_or_legacy_cursor`). On `resync` the
+        client refetches authoritative room/plan state, queues domain events
+        that arrive meanwhile and reconciles them by resource version, and
+        keeps treating its snapshot as required — across reconnects — until a
+        refetch succeeds. `checkpoint.cursor` is the resume point that is
+        valid once that refetch has completed; send it back verbatim. Replay is exact only while
+        history is retained (bounded buffer, 15-minute window); `resync`
+        restores state, not evicted event history.
+
+        `resync` is not only an attach outcome. It can arrive at any point of
+        a live connection, after domain events and more than once: when the
+        server sees a gap in live delivery its buffer can no longer cover
+        (`replay_unavailable`), when the room's sequence is reset while the
+        stream is open (`generation_changed`), or when the connection's
+        delivery queue overflows. Each time, the client handles it exactly as
+        at attach — refetch, then resume from that frame's
+        `checkpoint.cursor`.
 
 
         Payloads carry facts, never composed copy, and never another member's
@@ -775,18 +818,34 @@ paths:
           in: header
           required: false
           schema: { type: string }
-          description: The last sequence number received, to resume after a reconnect.
+          description: >
+            The opaque cursor (SSE `id`) of the last domain event received,
+            sent back verbatim to resume after a reconnect. Any value is
+            accepted; one the server cannot honour exactly — including a
+            legacy bare sequence number — answers with a `resync` frame rather
+            than an error or a silently fresh stream.
         - name: lastEventId
           in: query
           required: false
           schema: { type: string }
-          description: Same as the header, for browser EventSource which cannot set one.
+          description: >
+            Same as the header, for browser EventSource which cannot set one.
+            Same opaque-cursor semantics; the header wins when both are sent.
       responses:
         '200':
-          description: An event stream
+          description: >
+            An event stream. Each frame's `data` is one of the schemas below,
+            selected by the frame's SSE `event:` name: a domain event type
+            (`room.status_changed` … `plan.updated`) carries `RoomEvent` and an
+            opaque `id`; `resync` carries `RoomEventResync` and no `id`. The
+            keep-alive `: ping` comment frame carries no data and is not
+            listed.
           content:
             text/event-stream:
-              schema: { $ref: '#/components/schemas/RoomEvent' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RoomEvent'
+                  - $ref: '#/components/schemas/RoomEventResync'
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429':
@@ -16056,7 +16115,11 @@ components:
       description: >
         The domain-event envelope from the api-contract rules, unchanged.
         Field names are snake_case here because that is the event convention,
-        not the REST DTO convention.
+        not the REST DTO convention. This is the `data` of every domain-event
+        frame; the frame's SSE `id` is the opaque resume cursor (ADR-0027),
+        not `event_id`. Only domain events use this envelope: the stream-level
+        `resync` frame carries `RoomEventResync`, and the keep-alive is a
+        comment frame with no data.
       required:
         [event_id, event_type, event_version, occurred_at, resource_type, resource_id, payload]
       properties:
@@ -16075,8 +16138,6 @@ components:
             - suggestions.updated
             - vote.changed
             - plan.updated
-            - resync
-            - heartbeat
         event_version: { type: integer }
         occurred_at: { type: string, format: date-time }
         actor_id:
@@ -16094,6 +16155,57 @@ components:
             Facts, never composed copy. Carries the version a client should
             compare against — `constraintVersion` for suggestions, `version`
             for a plan — so a stale event is distinguishable from a fresh one.
+
+    RoomEventResync:
+      type: object
+      description: >
+        `data` of an SSE `event: resync` frame on `/rooms/{id}/events`
+        (ADR-0027). Stream-level, not a domain event: it has no envelope and
+        its frame carries no resume cursor. Sent whenever the server cannot
+        guarantee exact delivery from the client's resume point — at attach
+        or later on a live connection, possibly more than once — and always
+        before any domain event that follows it. The client must refetch
+        authoritative state; see the operation description for the recovery
+        rules.
+      required: [roomId, reason, checkpoint]
+      properties:
+        roomId: { type: string, format: uuid }
+        reason: { $ref: '#/components/schemas/RoomEventResyncReason' }
+        checkpoint: { $ref: '#/components/schemas/RoomEventCheckpoint' }
+
+    RoomEventResyncReason:
+      type: string
+      description: >
+        Why the resume point could not be honoured. Declared extensible: a
+        client treats a value it does not know exactly like a known one —
+        refetch — never as a malformed frame.
+        `replay_unavailable` — some event after the cursor is no longer
+        retained (window exceeded, buffer trimmed or expired).
+        `generation_changed` — the room's event sequence was reset after the
+        cursor was issued, so its sequence numbers no longer identify the same
+        events.
+        `invalid_or_legacy_cursor` — the cursor is malformed, ahead of the
+        server's high-water mark, or a pre-ADR-0027 bare sequence number.
+      x-extensible-enum: [replay_unavailable, generation_changed, invalid_or_legacy_cursor]
+
+    RoomEventCheckpoint:
+      type: object
+      description: >
+        The room's current position, read atomically with the decision to
+        resync: the generation and the highest sequence published in it. A
+        client resumes from `cursor` only after its refetch has succeeded; it
+        must not build a cursor from `generation` and `seq`, which are
+        informational.
+      required: [cursor, generation, seq]
+      properties:
+        cursor:
+          type: string
+          description: Opaque resume cursor for this checkpoint, same format as an SSE `id`.
+        generation: { type: string, format: uuid }
+        seq:
+          type: integer
+          minimum: 0
+          description: Highest sequence in `generation`; 0 when nothing has been published in it yet.
 
     CmsSearchAnalytics:
       type: object

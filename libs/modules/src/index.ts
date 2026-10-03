@@ -189,6 +189,10 @@ export { RealtimeBusModule } from '../realtime/presentation/realtime.module';
 export { RoomEventsModule } from '../realtime/presentation/room-events.module';
 export { ROOM_EVENT_BUS, type RoomEventBus } from '../realtime/application/room-event-bus';
 export {
+  rotateRoomEventGenerations,
+  runRoomEventGenerationRotation,
+} from '../realtime/infrastructure/rotate-room-event-generations';
+export {
   ROOM_EVENT_TYPES,
   type RoomEvent,
   type RoomEventType,

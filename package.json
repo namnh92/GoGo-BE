@@ -23,6 +23,7 @@
     "db:seed": "tsx libs/database/src/seed.ts",
     "db:seed-admin": "tsx libs/database/src/seed-admin.ts",
     "dev": "pnpm --filter @gogo/api dev",
+    "realtime:rotate-generations": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/rotate-room-event-generations.ts",
     "eval:search": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register libs/modules/search/eval/run-eval.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

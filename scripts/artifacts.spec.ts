@@ -30,6 +30,7 @@ describe('contract artifacts', () => {
       'openapi/gogo.v1.d.ts',
       'events/domain-event.schema.json',
       'events/room-event.schema.json',
+      'events/room-event-resync.schema.json',
       'design-tokens/tokens.json',
       'analytics/taxonomy.json',
       'fixtures/golden-scenarios.json',
@@ -75,9 +76,19 @@ describe('contract artifacts', () => {
       readFileSync(path.join(artifacts, 'events/room-event.schema.json'), 'utf8'),
     ) as { properties: { event_type: { enum: string[] } } };
     expect(schema.properties.event_type.enum).toContain('participant.selection_changed');
-    // Stream-level types are part of the contract too: a client that ignores
-    // `resync` resumes into a hole without knowing it.
-    expect(schema.properties.event_type.enum).toContain('resync');
+    // ADR-0027: stream-level frames never carry the domain envelope.
+    expect(schema.properties.event_type.enum).not.toContain('resync');
+    expect(schema.properties.event_type.enum).not.toContain('heartbeat');
+  });
+
+  it('publishes the resync frame schema from the spec — a client that ignores it resumes into a hole', () => {
+    const schema = JSON.parse(
+      readFileSync(path.join(artifacts, 'events/room-event-resync.schema.json'), 'utf8'),
+    ) as { $ref: string; $defs: Record<string, { required?: string[] }> };
+    expect(schema.$ref).toBe('#/$defs/RoomEventResync');
+    expect(schema.$defs.RoomEventResync?.required).toEqual(['roomId', 'reason', 'checkpoint']);
+    expect(schema.$defs.RoomEventCheckpoint?.required).toEqual(['cursor', 'generation', 'seq']);
+    expect(JSON.stringify(schema)).not.toContain('#/components/');
   });
 
   it('the JSON spec is the YAML spec, not a separate document', () => {

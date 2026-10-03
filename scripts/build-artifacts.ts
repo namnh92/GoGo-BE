@@ -84,9 +84,54 @@ function roomEventSchema(): string {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
       $id: 'https://gogo.id.vn/schemas/room-event.json',
       title: 'GoGo room realtime event',
-      description: 'Payload of the SSE stream at GET /v1/rooms/{id}/events.',
+      description:
+        'Payload of a domain-event frame on the SSE stream at GET /v1/rooms/{id}/events. Stream-level frames are not domain events: `resync` is room-event-resync.schema.json, and the keep-alive is a comment frame with no data (ADR-0027).',
       allOf: [{ $ref: 'https://gogo.id.vn/schemas/domain-event.json' }],
       properties: { event_type: { enum: [...ROOM_EVENT_TYPES] } },
+    },
+    null,
+    2,
+  );
+}
+
+type SpecSchemas = Record<string, Record<string, unknown>>;
+
+/**
+ * ADR-0027 — `data` of the stream's `event: resync` frame, transcribed from the
+ * OpenAPI components so the two cannot drift: the spec is the source.
+ */
+function roomEventResyncSchema(schemas: SpecSchemas): string {
+  const names = ['RoomEventResync', 'RoomEventResyncReason', 'RoomEventCheckpoint'];
+  const rewrite = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(rewrite);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, inner]) => [
+          key,
+          key === '$ref' && typeof inner === 'string'
+            ? inner.replace('#/components/schemas/', '#/$defs/')
+            : rewrite(inner),
+        ]),
+      );
+    }
+    return value;
+  };
+  const defs = Object.fromEntries(
+    names.map((name) => {
+      const schema = schemas[name];
+      if (!schema) throw new Error(`OpenAPI component ${name} is missing`);
+      return [name, rewrite(schema)];
+    }),
+  );
+  return JSON.stringify(
+    {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      $id: 'https://gogo.id.vn/schemas/room-event-resync.json',
+      title: 'GoGo room stream resync',
+      description:
+        'data of an SSE `event: resync` frame on GET /v1/rooms/{id}/events (ADR-0027). The frame carries no SSE id.',
+      $ref: '#/$defs/RoomEventResync',
+      $defs: defs,
     },
     null,
     2,
@@ -228,7 +273,10 @@ function main(): void {
   mkdirSync(outDir, { recursive: true });
 
   const specYaml = read('openapi/gogo.v1.yaml');
-  const spec = parse(specYaml) as { info: { version: string } };
+  const spec = parse(specYaml) as {
+    info: { version: string };
+    components: { schemas: SpecSchemas };
+  };
   const version = spec.info.version;
 
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' })
@@ -241,6 +289,10 @@ function main(): void {
     write('openapi/gogo.v1.d.ts', read('openapi/gogo.v1.d.ts')),
     write('events/domain-event.schema.json', `${eventEnvelopeSchema()}\n`),
     write('events/room-event.schema.json', `${roomEventSchema()}\n`),
+    write(
+      'events/room-event-resync.schema.json',
+      `${roomEventResyncSchema(spec.components.schemas)}\n`,
+    ),
     write('design-tokens/tokens.json', `${designTokens()}\n`),
     write('analytics/taxonomy.json', `${analyticsTaxonomy()}\n`),
     write('fixtures/golden-scenarios.json', `${goldenScenarios()}\n`),

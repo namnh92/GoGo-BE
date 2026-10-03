@@ -21,6 +21,17 @@ import type { SequencedRoomEvent } from '../../../libs/modules/realtime/domain/r
  * (release gate E2E #3), stale-on-constraint-change, check-in rules.
  */
 
+/** A fresh, activated subscription that records every delivered event. */
+async function listen(bus: RoomEventBus, roomId: string, seen: SequencedRoomEvent[]) {
+  const subscription = await bus.subscribe(
+    roomId,
+    { kind: 'fresh' },
+    { event: (event) => seen.push(event), resync: () => undefined, fail: () => undefined },
+  );
+  subscription.activate();
+  return subscription;
+}
+
 let container: StartedPostgreSqlContainer;
 let pool: Pool;
 let db: ReturnType<typeof drizzle<typeof schema>>;
@@ -295,7 +306,7 @@ describe('group vote flow (SG-002..006, BE-BFF-007)', () => {
      */
     const seen: SequencedRoomEvent[] = [];
     const bus = app.get<RoomEventBus>(ROOM_EVENT_BUS);
-    const subscription = await bus.subscribe(roomId, null, (event) => seen.push(event));
+    const subscription = await listen(bus, roomId, seen);
 
     const finalize = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`);
     expect(finalize.statusCode).toBe(201);
@@ -622,7 +633,7 @@ describe('couple match flow (FR-SUG-003)', () => {
     // believed was matching.
     const seen: SequencedRoomEvent[] = [];
     const bus = app.get<RoomEventBus>(ROOM_EVENT_BUS);
-    const subscription = await bus.subscribe(roomId, null, (event) => seen.push(event));
+    const subscription = await listen(bus, roomId, seen);
 
     const v2 = await put(memberToken, `/v1/rooms/${roomId}/votes/${target}`, { value: 'yes' });
     expect(v2.json().matched).toBe(true);

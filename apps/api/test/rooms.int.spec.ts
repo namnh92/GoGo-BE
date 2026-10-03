@@ -1470,10 +1470,11 @@ describe('room realtime stream (BE-BFF-013, #154)', () => {
       const frames = buffer.split('\n\n');
       buffer = frames.pop() ?? '';
       for (const frame of frames) {
+        // ADR-0027: the keep-alive is a comment-only frame — not an event.
+        if (frame.split('\n').every((line) => line.startsWith(':'))) continue;
         const type = /^event: (.*)$/m.exec(frame)?.[1] ?? 'message';
         const id = /^id: (.*)$/m.exec(frame)?.[1] ?? null;
         const data = /^data: (.*)$/m.exec(frame)?.[1];
-        if (type === 'heartbeat') continue;
         events.push({ type, id, data: data ? JSON.parse(data) : null });
       }
     }
@@ -1510,7 +1511,8 @@ describe('room realtime stream (BE-BFF-013, #154)', () => {
 
     const [joined] = await events;
     expect(joined!.type).toBe('participant.joined');
-    expect(joined!.id).toBe('1');
+    // ADR-0027: an opaque cursor, not a bare sequence number.
+    expect(joined!.id).toMatch(/^v2:[0-9a-f-]{36}:1$/);
     expect((joined!.data as { event_type: string }).event_type).toBe('participant.joined');
     // The room-scoped member id, not the account id.
     expect((joined!.data as { actor_id: string }).actor_id).toMatch(/^[0-9a-f-]{36}$/);
@@ -1586,7 +1588,77 @@ describe('room realtime stream (BE-BFF-013, #154)', () => {
     });
     const replayed = await readEvents(resumed, 1);
     expect(replayed[0]!.type).toBe('participant.joined');
-    expect(Number(replayed[0]!.id)).toBeGreaterThan(Number(lastEventId));
+    // Opaque cursors: a new one, never compared numerically by a client.
+    expect(replayed[0]!.id).not.toBe(lastEventId);
+    expect(replayed[0]!.id).toMatch(/^v2:[0-9a-f-]{36}:\d+$/);
+  });
+
+  it('#638: after a real reconnect, a mutation reaches the open stream once, in order, under 8 s', async () => {
+    const hostToken = (await registerUser('sse-latency-host@gogo.local')).token;
+    const first = (await registerUser('sse-latency-a@gogo.local')).token;
+    const second = (await registerUser('sse-latency-b@gogo.local')).token;
+    const room = await createGroupRoom(hostToken);
+    const invite = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(hostToken),
+      payload: { maxUses: 5 },
+    });
+    const join = (token: string) =>
+      api().inject({
+        method: 'POST',
+        url: '/v1/rooms/join',
+        remoteAddress: ip(),
+        headers: auth(token),
+        payload: { inviteCode: invite.json().code },
+      });
+
+    const initial = await fetch(`${baseUrl}/v1/rooms/${room.id}/events`, {
+      headers: { ...auth(hostToken), accept: 'text/event-stream' },
+    });
+    const seen = readEvents(initial, 1);
+    await join(first);
+    const [firstJoin] = await seen; // readEvents cancels the reader: the connection drops
+
+    const resumed = await fetch(`${baseUrl}/v1/rooms/${room.id}/events`, {
+      headers: { ...auth(hostToken), accept: 'text/event-stream', 'last-event-id': firstJoin!.id! },
+    });
+    expect(resumed.status).toBe(200);
+    const live = readEvents(resumed, 2, 8_000);
+    const mutationAt = Date.now();
+    await join(second);
+    const transition = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/status`,
+      remoteAddress: ip(),
+      headers: auth(hostToken),
+      payload: { status: 'cancelled' },
+    });
+    expect(transition.statusCode).toBe(200);
+    const events = await live;
+    expect(Date.now() - mutationAt).toBeLessThan(8_000);
+    expect(events.map((e) => e.type)).toEqual(['participant.joined', 'room.status_changed']);
+    const ids = events.map((e) => (e.data as { event_id: string }).event_id);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it('answers a legacy numeric Last-Event-ID with resync, not a fresh stream (ADR-0027)', async () => {
+    const hostToken = (await registerUser('sse-legacy-host@gogo.local')).token;
+    const room = await createGroupRoom(hostToken);
+    const res = await fetch(`${baseUrl}/v1/rooms/${room.id}/events`, {
+      headers: { ...auth(hostToken), accept: 'text/event-stream', 'last-event-id': '3' },
+    });
+    expect(res.status).toBe(200);
+    const [resync] = await readEvents(res, 1);
+    expect(resync!.type).toBe('resync');
+    // No numeric id from the framework's per-connection counter, no id at all.
+    expect(resync!.id).toBeNull();
+    expect(resync!.data).toMatchObject({
+      roomId: room.id,
+      reason: 'invalid_or_legacy_cursor',
+      checkpoint: { cursor: expect.stringMatching(/^v2:[0-9a-f-]{36}:\d+$/) },
+    });
   });
 
   it('never puts another member’s selections on the wire', async () => {
