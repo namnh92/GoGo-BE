@@ -190,8 +190,12 @@ export class ProviderPhotosService {
     const expired = first.flatMap((m, i) => (m === EXPIRED ? [i] : []));
     if (expired.length > 0 && !signal.aborted) {
       const fresh = await this.refsFor(providerPlaceId, signal).catch(() => null);
+      // F-07: every photo already paid for in the first round and not expired
+      // — served or failed for any other reason — is off limits. Only an
+      // expired photo may come back, under its new name.
+      const expiredSet = new Set(expired);
       const servedKeys = new Set(
-        granted.filter((_, i) => photos[i] !== null).map((ref) => identityOf(ref)),
+        granted.filter((_, i) => !expiredSet.has(i)).map((ref) => identityOf(ref)),
       );
       const retry: { i: number; ref: ProviderDisplayPhotoRef }[] = [];
       const taken = new Set<string>();

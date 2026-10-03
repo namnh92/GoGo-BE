@@ -180,6 +180,41 @@ describe('ProviderPhotosService', () => {
     expect(mediaCalls.filter((r) => r.includes('Keep'))).toHaveLength(1);
   });
 
+  it('F-07: a photo that failed for another reason is not bought again by the retry', async () => {
+    const broken = {
+      ...ref('Broken', 'Bao'),
+      googleMapsUri: 'https://www.google.com/maps/photo/b',
+    };
+    const stale = { ...ref('Stale', 'Old'), googleMapsUri: 'https://www.google.com/maps/photo/s' };
+    let refs = 0;
+    const mediaCalls: string[] = [];
+    const port: PlacePhotoDisplayPort = {
+      photoRefs: async () => {
+        refs += 1;
+        return {
+          providerPlaceId: GOOGLE_ID,
+          photos:
+            refs === 1
+              ? [broken, stale]
+              : // Fresh names; the stale photo is gone, the broken one is first.
+                [{ ...broken, reference: `places/${GOOGLE_ID}/photos/BrokenNew` }],
+        };
+      },
+      photoMedia: async (reference: string) => {
+        mediaCalls.push(reference);
+        if (reference.endsWith('/Stale')) {
+          throw new ProviderInvalidRequestError('google.places', 'NOT_FOUND');
+        }
+        // Image host answered 5xx / wrong type / too large → no bytes.
+        return null;
+      },
+    } as PlacePhotoDisplayPort;
+    const { service, reserve } = setup(port);
+    expect(await service.photos(PLACE)).toMatchObject({ status: 'unavailable', photos: [] });
+    expect(mediaCalls.filter((r) => r.includes('Broken'))).toHaveLength(1);
+    expect(reserve).toHaveBeenCalledTimes(2);
+  });
+
   it('F-02: the refetch happens once — a second expiry is not chased', async () => {
     let refs = 0;
     const port: PlacePhotoDisplayPort = {
