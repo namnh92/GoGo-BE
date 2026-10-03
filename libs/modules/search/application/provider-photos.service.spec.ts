@@ -215,6 +215,40 @@ describe('ProviderPhotosService', () => {
     expect(reserve).toHaveBeenCalledTimes(2);
   });
 
+  it('F-09 (SA): a deadline during the retry still serves the photos already bought', async () => {
+    let refsCalls = 0;
+    const port: PlacePhotoDisplayPort = {
+      photoRefs: (_id: string) => {
+        refsCalls += 1;
+        if (refsCalls === 1) {
+          return Promise.resolve({
+            providerPlaceId: GOOGLE_ID,
+            photos: [ref('A'), ref('B'), ref('Stale')],
+          });
+        }
+        // The fresh lookup for the expired name never answers in time.
+        return new Promise(() => undefined);
+      },
+      photoMedia: async (reference: string) => {
+        if (reference.endsWith('/Stale')) {
+          throw new ProviderInvalidRequestError('google.places', 'NOT_FOUND');
+        }
+        return JPEG;
+      },
+    } as PlacePhotoDisplayPort;
+    const { service, outcomes, reserve } = setup(port);
+
+    const pending = service.photos(PLACE);
+    await flush();
+    await vi.advanceTimersByTimeAsync(PROVIDER_PHOTOS_DEADLINE_MS);
+    const result = await pending;
+
+    expect(result.status).toBe('ok');
+    expect(result.photos).toHaveLength(2);
+    expect(reserve).toHaveBeenCalledTimes(3);
+    expect(outcomes).toEqual(['served']);
+  });
+
   it('F-02: the refetch happens once — a second expiry is not chased', async () => {
     let refs = 0;
     const port: PlacePhotoDisplayPort = {

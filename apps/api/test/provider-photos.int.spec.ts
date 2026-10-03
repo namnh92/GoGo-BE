@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
 import { FakePlacePhotoDisplay, PLACE_PHOTO_DISPLAY } from '@gogo/providers';
+import { ProviderPhotosService } from '../../../libs/modules/search/application/provider-photos.service';
 
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 
@@ -337,6 +338,45 @@ describe('GET /v1/places/:id/provider-photos', () => {
     const res = await read(p.id);
     expect(res.json()).toMatchObject({ status: 'unavailable', photos: [] });
     expect(fake.mediaCalls).toEqual([]);
+  });
+
+  it('F-10 (SA): reads Google identity through the provenance reader and its rollback switch', async () => {
+    // Canonical row and a legacy import row disagree about the Google id.
+    const p = await place({ googleId: 'ChIJ-canonical-f10' });
+    await db.execute(sql`
+      insert into place_sources (place_id, provider, external_id)
+      values (${p.id}, 'google', 'ChIJ-legacy-f10')
+    `);
+    seedPhotos('ChIJ-canonical-f10', 1);
+    seedPhotos('ChIJ-legacy-f10', 1);
+    const config = {
+      APP_ENV: 'dev' as const,
+      FLAG_PLACE_PROVIDER_PHOTOS: true,
+      PLACE_DISPLAY_DAILY_MAX_CALLS: 100,
+      PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD: 1,
+      PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA: 5,
+    };
+    const unified = new ProviderPhotosService(db as never, fake, config);
+    const rolledBack = new ProviderPhotosService(db as never, fake, {
+      ...config,
+      PROVENANCE_UNIFIED_READS: false,
+    });
+
+    await unified.photos(p.id);
+    expect(fake.refCalls.at(-1)).toBe('ChIJ-canonical-f10');
+    // #334 rollback: Place Detail reads `place_sources` alone — so does this.
+    await rolledBack.photos(p.id);
+    expect(fake.refCalls.at(-1)).toBe('ChIJ-legacy-f10');
+  });
+
+  it('F-10 (SA): a canonical row the place moved away from is not asked about', async () => {
+    const p = await place({ googleId: 'ChIJ-moved-f10' });
+    await db.execute(sql`
+      update place_provider_sources set source_status = 'moved' where place_id = ${p.id}
+    `);
+    const res = await read(p.id);
+    expect(res.json()).toMatchObject({ status: 'not_linked', photos: [] });
+    expect(fake.refCalls).toEqual([]);
   });
 
   it('the kill switch row turns it off on the next request', async () => {

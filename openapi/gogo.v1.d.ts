@@ -6941,8 +6941,8 @@ export interface components {
         PlaceProviderPhotos: {
             /** @description Why `photos` may be empty. Unknown values mean "no photos". */
             status: string;
-            /** @enum {string} */
-            provider: "google";
+            /** @description Display provider. Unknown values are allowed; render `attribution` as given. */
+            provider: string;
             /** @description Provider attribution to render whenever a photo is shown ("Google Maps"). */
             attribution: string;
             photos: components["schemas"]["PlaceProviderPhoto"][];

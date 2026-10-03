@@ -16,10 +16,10 @@ import {
   type ProviderPhotoAuthor,
   type ProviderPhotoMedia,
 } from '@gogo/providers';
-import { APP_CONFIG, type ProviderPhotosConfig } from '../../shared/config';
+import { APP_CONFIG, type ProvenanceConfig, type ProviderPhotosConfig } from '../../shared/config';
 import { AppError } from '../../shared/app-error';
 import { flagEnvironmentOf, resolveFlag } from '../../shared/feature-flags';
-import { GOOGLE_PROVIDER } from '../../shared/google-provenance';
+import { GOOGLE_PROVIDER_PUBLIC, googleProvenanceRows } from '../../shared/google-provenance';
 import { DB } from '../../shared/tokens';
 
 /**
@@ -87,6 +87,8 @@ export const PROVIDER_PHOTO_OUTCOMES = [
 type ProviderPhotoOutcome = (typeof PROVIDER_PHOTO_OUTCOMES)[number];
 
 type Result = { dto: ProviderPhotosDto; outcome: ProviderPhotoOutcome };
+/** Photos paid for so far in this request, by position; `null` = not shown. */
+type Bought = { photos: (ProviderPhotoDto | null)[] };
 
 /** A media call Google refused because the photo name has expired. */
 const EXPIRED = Symbol('expired');
@@ -117,7 +119,8 @@ export class ProviderPhotosService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(PLACE_PHOTO_DISPLAY) private readonly provider: PlacePhotoDisplayPort,
-    @Inject(APP_CONFIG) private readonly config: ProviderPhotosConfig,
+    @Inject(APP_CONFIG)
+    private readonly config: ProviderPhotosConfig & Partial<ProvenanceConfig>,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
     @Optional() budget?: ProviderBudgetService,
   ) {
@@ -152,12 +155,16 @@ export class ProviderPhotosService {
         resolve('deadline');
       }, this.deadlineMs);
     });
-    const work = this.fetch(providerPlaceId, controller.signal).catch((): Result =>
+    // F-09 (SA): photos already bought stay visible here, so a deadline that
+    // fires during the expired-name retry still shows what was paid for.
+    const bought: Bought = { photos: [] };
+    const work = this.fetch(providerPlaceId, controller.signal, bought).catch((): Result =>
       this.result('unavailable', 'provider_error'),
     );
     try {
       const winner = await Promise.race([work, deadline]);
-      if (winner === 'deadline') return this.result('unavailable', 'timeout');
+      if (winner === 'deadline')
+        return this.served(bought) ?? this.result('unavailable', 'timeout');
       return winner;
     } finally {
       clearTimeout(timer);
@@ -165,7 +172,11 @@ export class ProviderPhotosService {
     }
   }
 
-  private async fetch(providerPlaceId: string, signal: AbortSignal): Promise<Result> {
+  private async fetch(
+    providerPlaceId: string,
+    signal: AbortSignal,
+    bought: Bought,
+  ): Promise<Result> {
     const refs = await this.refsFor(providerPlaceId, signal);
     if (!refs) return this.result('unavailable', 'identity_mismatch');
 
@@ -181,6 +192,7 @@ export class ProviderPhotosService {
     const photos: (ProviderPhotoDto | null)[] = first.map((m, i) =>
       m === EXPIRED || m === null ? null : this.toDto(granted[i]!, m),
     );
+    bought.photos = photos;
 
     // F-02: photo names expire. Expired ones get exactly one fresh lookup in
     // the same deadline, and its media call is reserved anew. F-06: fresh
@@ -221,10 +233,17 @@ export class ProviderPhotosService {
       });
     }
 
+    const served = this.served(bought);
+    if (served) return served;
     if (signal.aborted) return this.result('unavailable', 'timeout');
-    const served = photos.filter((p): p is ProviderPhotoDto => p !== null);
-    if (served.length === 0) return this.result('unavailable', 'provider_error');
-    return { dto: { ...this.answer('ok'), photos: served }, outcome: 'served' };
+    return this.result('unavailable', 'provider_error');
+  }
+
+  /** `ok` with every photo already in hand, or `null` when there is none. */
+  private served(bought: Bought): Result | null {
+    const photos = bought.photos.filter((p): p is ProviderPhotoDto => p !== null);
+    if (photos.length === 0) return null;
+    return { dto: { ...this.answer('ok'), photos }, outcome: 'served' };
   }
 
   /** References for the id GoGo holds, or `null` when Google answers as another id. */
@@ -294,22 +313,31 @@ export class ProviderPhotosService {
    * `null` when it has none. 404 for a place Place Detail would not show.
    */
   private async googleIdOf(placeId: string): Promise<string | null> {
+    // F-10 (SA): one reader for Google identity — the same rows, and the same
+    // #334 rollback switch, Place Detail attributes the place with. A canonical
+    // row the place has moved away from is never an identity to ask Google for;
+    // a canonical row outranks a legacy one, then the freshest wins.
     const { rows } = await this.db.execute(sql`
       select
-        (select ps.external_id from place_provider_sources ps
-          where ps.place_id = p.id and ps.provider = ${GOOGLE_PROVIDER}
-            and ps.source_status <> 'moved'
-          order by ps.fetched_at desc nulls last limit 1) as provider_id,
-        (select s.external_id from place_sources s
-          where s.place_id = p.id and s.provider = 'google'
-          order by s.imported_at desc limit 1) as legacy_id
+        (select src.external_id
+          from (${googleProvenanceRows(sql`p.id`, this.unifiedProvenance)}) src
+          left join place_provider_sources canon on canon.id = src.id
+          where src.provider = ${GOOGLE_PROVIDER_PUBLIC}
+            and coalesce(canon.source_status <> 'moved', true)
+          order by (canon.id is not null) desc, src.fetched_at desc nulls last
+          limit 1) as provider_id
       from places p
       where p.id = ${placeId} and p.status in ('published', 'community_submitted')
       limit 1
     `);
-    const row = rows[0] as { provider_id: string | null; legacy_id: string | null } | undefined;
+    const row = rows[0] as { provider_id: string | null } | undefined;
     if (!row) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
-    return row.provider_id ?? row.legacy_id ?? null;
+    return row.provider_id ?? null;
+  }
+
+  /** #334 rollback switch, as Place Detail reads it. */
+  private get unifiedProvenance(): boolean {
+    return this.config.PROVENANCE_UNIFIED_READS ?? true;
   }
 
   private async enabled(): Promise<boolean> {

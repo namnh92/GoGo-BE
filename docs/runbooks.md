@@ -360,4 +360,8 @@ view and stores nothing (ADR-0029). It always answers 200; `status` says why
 
 Incident: insert/update the flag row with `enabled = false` — the next request
 answers `disabled` with no provider call. Spend: `google.photoMedia` on the
-cost ledger (Place Details Photos, $7 / 1,000, 1,000 free per month).
+cost ledger (Place Details Photos, $7 / 1,000, 1,000 free per month). One
+view bills at most 6 media calls — three photos plus one retry per expired
+photo name — so size `PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA` at 6 per
+expected view, not 3. A deadline during the retry still returns the photos
+already fetched.

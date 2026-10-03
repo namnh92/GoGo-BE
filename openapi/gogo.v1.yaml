@@ -13185,7 +13185,8 @@ components:
           x-extensible-enum: [ok, disabled, not_linked, budget_exhausted, unavailable]
         provider:
           type: string
-          enum: [google]
+          description: Display provider. Unknown values are allowed; render `attribution` as given.
+          x-extensible-enum: [google]
         attribution:
           type: string
           description: Provider attribution to render whenever a photo is shown ("Google Maps").

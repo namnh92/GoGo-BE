@@ -50,8 +50,9 @@ rule 13 ("a price never leaves its unit behind") forbids rendering it.
 
 ## Consequences
 
-- Each Place Detail view with photos enabled costs up to 3 × $0.007 at list
-  price; tracked as `google.photoMedia` on the cost ledger and capped by the
+- Each Place Detail view with photos enabled shows at most 3 photos and bills
+  at most 6 media calls (× $0.007 at list price): one bounded retry per
+  expired photo name, each reserved against the budget; tracked as `google.photoMedia` on the cost ledger and capped by the
   budget. Latency is added to the photo request only, not to Place Detail.
 - base64 adds ~33% payload overhead on a bounded response.
 - Removing `photos`/`priceRange` does not lower the `core`/`quality` SKU.
