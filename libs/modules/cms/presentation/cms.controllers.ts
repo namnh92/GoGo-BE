@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { COST_WINDOWS, isCalendarDay, MANUAL_COST_PERIODS } from '@gogo/cost-observability';
 import { z } from 'zod';
+import { contactProvenanceSchema } from '../../shared/place-contact-schema';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import {
   idempotencyScope,
@@ -699,6 +700,8 @@ const placeEditSchema = z.object({
   communeCode: ADMINISTRATIVE_CODE.nullable().optional(),
   phone: z.string().trim().max(40).nullable().optional(),
   website: z.string().trim().max(500).nullable().optional(),
+  /** GoGo-BE#280 — evidence for `addressText` / `phone` / `website`. */
+  provenance: contactProvenanceSchema.optional(),
   lat: z.number().min(-90).max(90).optional(),
   lng: z.number().min(-180).max(180).optional(),
   avgVisitMinutes: z.number().int().min(10).max(720).nullable().optional(),

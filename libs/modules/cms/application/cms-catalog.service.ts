@@ -1,5 +1,5 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { eq, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { METRICS, type MetricsPort } from '@gogo/observability';
 import { PlaceDedupService } from '../../ingestion/application/place-dedup.service';
@@ -44,7 +44,13 @@ import {
   isMaterialForMapping,
 } from '../../administrative/domain/edit-impact';
 import { validateWeek, type HoursEntry, type HoursEntryKind } from '../domain/place-hours';
-import { normalizePhone, normalizeWebsite } from '../domain/place-contact';
+import { CONTACT_API_FIELD, CONTACT_FIELDS, contactOwnership } from '../../shared/place-contact';
+import {
+  planContactWrite,
+  planIsEmpty,
+  type ContactWriteInput,
+  type ContactWritePlan,
+} from '../../shared/place-contact-write';
 import { publicCatalogueUrl } from '../../shared/media-url';
 
 type PlaceStatus = (typeof schema.places.$inferSelect)['status'];
@@ -103,6 +109,12 @@ export type PlaceEditInput = {
   communeCode?: string | null | undefined;
   phone?: string | null | undefined;
   website?: string | null | undefined;
+  /**
+   * GoGo-BE#280 — the evidence behind `addressText`, `phone` and `website`.
+   * A supplied non-null value of any of the three needs its entry here; see
+   * `planContactWrite` for the full rule.
+   */
+  provenance?: ContactWriteInput['provenance'];
   lat?: number | undefined;
   lng?: number | undefined;
   avgVisitMinutes?: number | null | undefined;
@@ -216,20 +228,27 @@ const PROVENANCE_COLUMN: Record<string, ProvenanceField> = {
   taxonomyIds: 'taxonomy',
 };
 
+/** GoGo-BE#280 — the contact columns, which carry evidence rather than a bare claim. */
+const CONTACT_COLUMNS = new Set<string>(CONTACT_FIELDS);
+/** The same three by their API names — the keys `provenance` carries. */
+const CONTACT_API_KEYS = new Set<string>(Object.values(CONTACT_API_FIELD));
+
 /**
  * GoGo-BE#440 — `sourceReferences` keys: the API's own field names, with `geom`
  * standing for the coordinate pair, mapped to the provenance column each one
  * names. A key outside this list is not a canonical fact.
+ *
+ * GoGo-BE#280 — `addressText`, `phone` and `website` are not here: their
+ * evidence is the structured `provenance.<field>` entry (source type,
+ * reference, collected-at), and a `sourceReferences` key for one of them is
+ * refused as `unknown` rather than accepted as a second, weaker channel.
  */
 export const SOURCE_REFERENCE_KEYS = [
   'name',
   'description',
-  'addressText',
   'areaKey',
   'city',
   'district',
-  'phone',
-  'website',
   'geom',
   'provinceCode',
   'communeCode',
@@ -240,12 +259,9 @@ export type SourceReferenceKey = (typeof SOURCE_REFERENCE_KEYS)[number];
 const REFERENCE_COLUMN: Record<SourceReferenceKey, ProvenanceField> = {
   name: 'name',
   description: 'description',
-  addressText: 'address_text',
   areaKey: 'area_key',
   city: 'city',
   district: 'district',
-  phone: 'phone',
-  website: 'website',
   geom: 'geom',
   provinceCode: 'province_code',
   communeCode: 'commune_code',
@@ -323,7 +339,10 @@ function checkReferences(
       errors.push({
         field: `sourceReferences.${key}`,
         code: 'unknown',
-        message: `not a referenceable fact here; one of ${allowed.join(', ')}`,
+        // GoGo-BE#280 — a contact field's evidence has its own home; say where.
+        message: CONTACT_API_KEYS.has(key)
+          ? `evidence for ${key} goes in provenance.${key}, not sourceReferences`
+          : `not a referenceable fact here; one of ${allowed.join(', ')}`,
       });
     } else if (!supplied.has(key)) {
       errors.push({
@@ -656,6 +675,7 @@ type PlaceProvenanceRow = {
   source_type: string;
   source_reference: string | null;
   verified_at: Date | string | null;
+  collected_at: Date | string | null;
 };
 
 /** Column name → the name the public contract uses for the same field. */
@@ -757,6 +777,80 @@ export function decodePlaceCursor(cursor: string): { value: string; id: string }
   } catch {
     throw AppError.badRequest('INVALID_CURSOR', 'Cursor is not valid');
   }
+}
+
+/**
+ * The generic `editorial` claim a typed field makes — every provenance field
+ * the input carries except the three contact columns, which GoGo-BE#280 moved
+ * onto evidence (`writeContactProvenance`). `lat`/`lng` collapse to `geom`.
+ */
+function claimedFields(input: object): ProvenanceField[] {
+  return [
+    ...new Set(
+      Object.keys(input)
+        .filter((key) => PROVENANCE_COLUMN[key] !== undefined)
+        .map((key) => PROVENANCE_COLUMN[key]!)
+        .filter((field) => !CONTACT_COLUMNS.has(field)),
+    ),
+  ];
+}
+
+/**
+ * GoGo-BE#280 — the provenance half of a contact write, in the caller's
+ * transaction.
+ *
+ * A claim replaces whatever origin the field had with the evidence it brought;
+ * `verified_at` moves because a person has just verified it, and only then. A
+ * clear removes the row with the value: there is nothing left to have an
+ * origin, and recording one for an empty field would invent evidence.
+ */
+async function writeContactProvenance(
+  tx: Executor,
+  placeId: string,
+  adminId: string,
+  plan: ContactWritePlan,
+): Promise<void> {
+  for (const { field, evidence } of plan.claims) {
+    await tx
+      .insert(schema.placeFieldProvenance)
+      .values({
+        placeId,
+        field,
+        sourceType: evidence.sourceType,
+        sourceReference: evidence.sourceReference,
+        collectedAt: new Date(evidence.collectedAt),
+        actorId: adminId,
+      })
+      .onConflictDoUpdate({
+        target: [schema.placeFieldProvenance.placeId, schema.placeFieldProvenance.field],
+        set: {
+          sourceType: evidence.sourceType,
+          sourceReference: evidence.sourceReference,
+          collectedAt: new Date(evidence.collectedAt),
+          actorId: adminId,
+          verifiedAt: sql`now()`,
+          updatedAt: sql`now()`,
+        },
+      });
+  }
+  if (plan.cleared.length > 0) {
+    await tx
+      .delete(schema.placeFieldProvenance)
+      .where(
+        and(
+          eq(schema.placeFieldProvenance.placeId, placeId),
+          inArray(schema.placeFieldProvenance.field, plan.cleared),
+        ),
+      );
+  }
+}
+
+/** Names and source types only — contact values and references stay out of the log. */
+function contactAudit(plan: ContactWritePlan) {
+  return {
+    written: plan.claims.map((c) => ({ field: c.field, sourceType: c.evidence.sourceType })),
+    cleared: plan.cleared,
+  };
 }
 
 /** CMS-002/003/004 — canonical place editing, sources/hours/prices, dedup. */
@@ -1234,7 +1328,7 @@ export class CmsCatalogService {
                  select jsonb_agg(jsonb_build_object(
                    'field', fp.field, 'source_type', fp.source_type,
                    'source_reference', fp.source_reference,
-                   'verified_at', fp.verified_at))
+                   'verified_at', fp.verified_at, 'collected_at', fp.collected_at))
                  from place_field_provenance fp where fp.place_id = p.id
                ), '[]'::jsonb) as provenance,
                -- GoGo-BE#360 — the same fact and severity rule as the consumer
@@ -1425,6 +1519,10 @@ export class CmsCatalogService {
               sourceType: r.source_type,
               sourceReference: r.source_reference,
               verifiedAt: toIso(r.verified_at),
+              // GoGo-BE#280 — when the evidence was gathered; null on every
+              // row that is not independently sourced.
+              collectedAt: toIso(r.collected_at) ?? null,
+              ...(CONTACT_COLUMNS.has(r.field) ? { ownership: contactOwnership(r) } : {}),
             },
           ];
         }),
@@ -1499,7 +1597,9 @@ export class CmsCatalogService {
    * `editorial`; a field declared as applied from the Google preview is
    * refused, because copying a Google value never makes it GoGo-owned
    * (`GOGO_PRODUCT_DATA_ARCHITECTURE.md`, provenance rule). ADR-0020's
-   * enrichment on this door is withdrawn — see its #440 amendment.
+   * enrichment on this door is withdrawn — see its #440 amendment. The three
+   * contact fields are the exception to "a `sourceReferences` entry": since
+   * GoGo-BE#280 their evidence is `provenance.<field>` (ADR-0031).
    *
    * **One commit.** The place, its provenance, identity, administrative
    * mapping, the `place.created` event, the audit line and the replay record's
@@ -1519,7 +1619,10 @@ export class CmsCatalogService {
       );
     }
     const references = assertSourceReferences(input);
-    const contact = this.normalizeContact(input);
+    // GoGo-BE#280 — address, phone and website carry `provenance` evidence, not
+    // a `sourceReferences` entry; checked after the reference keys, so a body
+    // still sending `sourceReferences.<contact>` is told where the evidence goes.
+    const contact = this.planContact(input, null);
 
     /**
      * #465 — identity beats similarity. When the editor arrived by link, the
@@ -1636,12 +1739,10 @@ export class CmsCatalogService {
             status: 'draft',
             geom: { x: input.lng, y: input.lat },
             ...(input.description !== undefined ? { description: input.description } : {}),
-            ...(input.addressText !== undefined ? { addressText: input.addressText } : {}),
+            ...contact.values,
             ...(input.areaKey !== undefined ? { areaKey: input.areaKey } : {}),
             ...(input.city !== undefined ? { city: input.city } : {}),
             ...(input.district !== undefined ? { district: input.district } : {}),
-            ...(contact.phone !== undefined ? { phone: contact.phone } : {}),
-            ...(contact.website !== undefined ? { website: contact.website } : {}),
             ...(input.avgVisitMinutes !== undefined
               ? { avgVisitMinutes: input.avgVisitMinutes }
               : {}),
@@ -1687,6 +1788,7 @@ export class CmsCatalogService {
             })),
           );
         }
+        await writeContactProvenance(tx, place!.id, adminId, contact);
 
         /**
          * The mapping is written in the transaction that wrote the place. The
@@ -1728,6 +1830,8 @@ export class CmsCatalogService {
             status: place!.status,
             origin,
             claimedFields: claimed,
+            // GoGo-BE#280 — field names and source types only, never values.
+            contact: contactAudit(contact),
             ...(codeAssertions.size > 0 ? { assertedCodes: [...codeAssertions.keys()] } : {}),
             allowDuplicate: input.allowDuplicate === true,
             ...(input.googlePlaceId !== undefined ? { googlePlaceId: input.googlePlaceId } : {}),
@@ -1797,38 +1901,19 @@ export class CmsCatalogService {
   }
 
   /**
-   * Phone and website are stored normalised, and a bad one is reported against
-   * its own field so the console can point at the box rather than raise a
-   * toast. Shared by create and update because a value typed into either form
-   * has to end up in the same shape.
+   * GoGo-BE#280 — address, phone and website, normalized and checked for
+   * independent evidence. Every bad field is reported against its own path at
+   * once, so the console can point at each box rather than raise a toast.
    */
-  private normalizeContact(input: {
-    phone?: string | null | undefined;
-    website?: string | null | undefined;
-  }): { phone?: string | null | undefined; website?: string | null | undefined } {
-    const fieldErrors: { field: string; code: string; message: string }[] = [];
-    const out: { phone?: string | null; website?: string | null } = {};
-
-    if (input.phone !== undefined) {
-      if (input.phone === null) out.phone = null;
-      else {
-        const result = normalizePhone(input.phone);
-        if (result.ok) out.phone = result.value;
-        else fieldErrors.push(result.issue);
-      }
+  private planContact(
+    input: ContactWriteInput,
+    current: { addressText: string | null; phone: string | null; website: string | null } | null,
+  ): ContactWritePlan {
+    const result = planContactWrite(input, current);
+    if (!result.ok) {
+      throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', result.issues);
     }
-    if (input.website !== undefined) {
-      if (input.website === null) out.website = null;
-      else {
-        const result = normalizeWebsite(input.website);
-        if (result.ok) out.website = result.value;
-        else fieldErrors.push(result.issue);
-      }
-    }
-    if (fieldErrors.length > 0) {
-      throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', fieldErrors);
-    }
-    return out;
+    return result.plan;
   }
 
   async updatePlace(adminId: string, placeId: string, input: PlaceEditInput) {
@@ -1855,15 +1940,25 @@ export class CmsCatalogService {
     }
 
     // `lat` and `lng` both name `geom`, so the pair collapses to one row.
-    const claimed = [
-      ...new Set(
-        Object.keys(input)
-          .filter((key) => PROVENANCE_COLUMN[key] !== undefined)
-          .map((key) => PROVENANCE_COLUMN[key]!),
-      ),
-    ];
+    const claimed = claimedFields(input);
 
-    const { phone, website } = this.normalizeContact(input);
+    /**
+     * GoGo-BE#280 — a contact write is a claim about the world with evidence
+     * behind it, and two editors making different claims about one phone
+     * number at once must not resolve as "the later one silently wins". So a
+     * real contact write requires the version the form was loaded from, and
+     * the comparison happens again under the row lock below.
+     */
+    const contact = this.planContact(input, before);
+    if (!planIsEmpty(contact) && input.expectedUpdatedAt === undefined) {
+      throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', [
+        {
+          field: 'expectedUpdatedAt',
+          code: 'required',
+          message: 'Sửa địa chỉ, điện thoại hoặc website cần phiên bản biểu mẫu',
+        },
+      ]);
+    }
 
     /**
      * ADM-016 — what the edit says about the administrative identity.
@@ -1942,12 +2037,10 @@ export class CmsCatalogService {
         .set({
           ...(input.name !== undefined ? { name: input.name } : {}),
           ...(input.description !== undefined ? { description: input.description } : {}),
-          ...(input.addressText !== undefined ? { addressText: input.addressText } : {}),
+          ...contact.values,
           ...(input.areaKey !== undefined ? { areaKey: input.areaKey } : {}),
           ...(input.city !== undefined ? { city: input.city } : {}),
           ...(input.district !== undefined ? { district: input.district } : {}),
-          ...(phone !== undefined ? { phone } : {}),
-          ...(website !== undefined ? { website } : {}),
           ...(input.lat !== undefined && input.lng !== undefined
             ? { geom: { x: input.lng, y: input.lat } }
             : {}),
@@ -2005,6 +2098,8 @@ export class CmsCatalogService {
           });
       }
 
+      await writeContactProvenance(tx, placeId, adminId, contact);
+
       if (material && dataset) {
         const settled = await this.settleMapping(tx, adminId, current, row!, {
           codes: lockedCodes,
@@ -2014,17 +2109,39 @@ export class CmsCatalogService {
         await this.settleCodeClaims(tx, adminId, placeId, codeAssertions, settled);
       }
 
+      // GoGo-BE#280 — the existing reindex event, so search and every cache
+      // keyed on the place see the new contact facts. Only for a real contact
+      // write: other edits keep the behaviour they had.
+      if (!planIsEmpty(contact)) {
+        await writeOutbox(tx, {
+          eventType: 'place.updated',
+          resourceType: 'place',
+          resourceId: placeId,
+          payload: { reason: 'updated' },
+        });
+      }
+
+      // FR-CMS-008: before/after diff of the sensitive write — inside the
+      // transaction since #280, so value, evidence and audit commit together.
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: adminId,
+        action: 'place.updated',
+        resourceType: 'place',
+        resourceId: placeId,
+        diff: {
+          before: { name: before.name, status: before.status },
+          changed: Object.keys(input).filter((key) => key !== 'expectedUpdatedAt'),
+          claimedFields: claimed,
+          contact: contactAudit(contact),
+        },
+      });
+
       return row!;
     });
 
     if (mappingWrite) this.resolver.countPersist(mappingWrite);
 
-    // FR-CMS-008: before/after diff of the sensitive write.
-    await this.audit(adminId, 'place.updated', placeId, {
-      before: { name: before.name, status: before.status },
-      changed: Object.keys(input).filter((key) => key !== 'expectedUpdatedAt'),
-      claimedFields: claimed,
-    });
     return { id: after.id, status: after.status, updatedAt: after.updatedAt.toISOString() };
   }
 

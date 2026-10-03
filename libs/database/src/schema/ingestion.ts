@@ -133,7 +133,12 @@ export type IngestMessage = { code: string; field?: string; message: string };
 export type MatchCandidate = {
   googlePlaceId: string;
   name: string;
-  address: string;
+  /**
+   * @deprecated GoGo-BE#280 (Sol F-01) — no longer written. Google's formatted
+   * address is not GoGo data and is not persisted anywhere, this JSON
+   * included; rows written before #280 may still carry it until purged.
+   */
+  address?: string;
   confidence: number;
 };
 
@@ -351,6 +356,24 @@ export type SubmissionReviewDraft = {
   priceMin?: number | null | undefined;
   priceMax?: number | null | undefined;
   priceUnit?: string | null | undefined;
+  /**
+   * GoGo-BE#280 — the evidence behind `addressText` / `phone` / `website`,
+   * normalized when the draft is saved (`collectedAt` as ISO-8601 UTC).
+   * Approval writes a contact value only with its entry here.
+   */
+  provenance?:
+    | Partial<
+        Record<
+          'addressText' | 'phone' | 'website',
+          | {
+              sourceType?: string | undefined;
+              sourceReference?: string | undefined;
+              collectedAt?: string | undefined;
+            }
+          | undefined
+        >
+      >
+    | undefined;
 };
 
 export const placeSubmissions = pgTable(

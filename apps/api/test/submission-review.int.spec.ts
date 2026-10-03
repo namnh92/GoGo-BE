@@ -71,6 +71,13 @@ async function rows<T>(query: ReturnType<typeof sql>): Promise<T[]> {
 
 let seq = 0;
 
+/** GoGo-BE#280 — the evidence a reviewer's contact value must carry. */
+const EVIDENCE = {
+  sourceType: 'editorial',
+  sourceReference: 'Gọi điện chủ quán 2026-09-30',
+  collectedAt: '2026-09-30T02:00:00Z',
+};
+
 /**
  * A contribution as it really arrives: the app resolves a link, the person
  * submits what it named, and it lands in the queue as `pending`.
@@ -291,7 +298,8 @@ describe('supplementing before the decision (#528)', () => {
     name: 'Cà phê Ngọc Hà',
     description: 'Quán nhỏ, sân vườn, hợp nhóm bạn.',
     phone: '024 3456 7890',
-    website: 'https://ngocha.example',
+    website: 'https://ngocha.vn',
+    provenance: { phone: EVIDENCE, website: EVIDENCE },
     avgVisitMinutes: 75,
     suitability: { couple: 0.9, friends: 0.8 },
     priceMin: 60_000,
@@ -429,7 +437,8 @@ describe('the decision applies what the reviewer wrote (#528)', () => {
         description: 'Sân vườn, hợp nhóm bạn.',
         addressText: '12 Ngọc Hà, Ba Đình, Hà Nội',
         phone: '024 3456 7890',
-        website: 'https://ngocha.example',
+        website: 'https://ngocha.vn',
+        provenance: { addressText: EVIDENCE, phone: EVIDENCE, website: EVIDENCE },
         avgVisitMinutes: 75,
         suitability: { couple: 0.9 },
         priceMin: 60_000,
@@ -453,8 +462,9 @@ describe('the decision applies what the reviewer wrote (#528)', () => {
       name: 'Cà phê Ngọc Hà',
       description: 'Sân vườn, hợp nhóm bạn.',
       addressText: '12 Ngọc Hà, Ba Đình, Hà Nội',
-      phone: '024 3456 7890',
-      website: 'https://ngocha.example',
+      // GoGo-BE#280 — stored normalized, the way the editor would have.
+      phone: '+842434567890',
+      website: 'https://ngocha.vn/',
       avgVisitMinutes: 75,
     });
     expect(place.json().suitability).toMatchObject({ couple: 0.9 });
@@ -489,11 +499,13 @@ describe('the decision applies what the reviewer wrote (#528)', () => {
     // Typed by a person: theirs, and a later provider refresh has no claim.
     expect(byField.get('name')).toMatchObject({ source_type: 'editorial' });
     // Left as Google answered it: derived, and it says which record from.
-    expect(byField.get('address_text')).toMatchObject({
+    expect(byField.get('geom')).toMatchObject({
       source_type: 'google_derived',
       source_reference: googlePlaceId,
     });
-    expect(byField.get('geom')).toMatchObject({ source_type: 'google_derived' });
+    // GoGo-BE#280 — the address is GoGo-owned: never Google's, so a place
+    // whose reviewer gave none has neither an address nor a claim on one.
+    expect(byField.has('address_text')).toBe(false);
   });
 
   it('keeps the provider’s figures the provider’s', async () => {
@@ -725,7 +737,11 @@ describe('a reviewer’s edit outlives the next provider fetch (#528)', () => {
   it('keeps the name and address a reviewer wrote, and takes Google’s new rating', async () => {
     const { submissionId, googlePlaceId } = await contribute({ name: 'Tên Google Ban Đầu' });
     await saveReview(submissionId, {
-      draft: { name: 'Cà phê Ngọc Hà', addressText: '12 Ngọc Hà, Ba Đình, Hà Nội' },
+      draft: {
+        name: 'Cà phê Ngọc Hà',
+        addressText: '12 Ngọc Hà, Ba Đình, Hà Nội',
+        provenance: { addressText: EVIDENCE },
+      },
     });
     const approved = await decide(submissionId, {
       decision: 'approved',
@@ -799,7 +815,8 @@ describe('a reviewer’s edit outlives the next provider fetch (#528)', () => {
     // This row is the whole mechanism: without it the refresh has no way to
     // tell a name a person chose from one it fetched last month.
     expect(byField.get('name')).toBe('editorial');
-    expect(byField.get('address_text')).toBe('google_derived');
+    // GoGo-BE#280 — no Google address, so no `google_derived` claim on one.
+    expect(byField.has('address_text')).toBe(false);
   });
 });
 

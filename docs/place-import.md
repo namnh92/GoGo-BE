@@ -80,8 +80,16 @@ What it catches is a typo or a future client's invented vocabulary — precisely
 the case where silence hides the mistake.
 
 Legacy aliases are compatibility only: never offered as a choice, never added
-to. Whether GoGo should hold address/phone/website at all is a catalog
-question, tracked separately.
+to.
+
+**Update (GoGo-BE#280, ADR-0031).** `phone`/`website` became canonical in
+PI-BE-025 and `address` in #280, so `RETIRED_FIELDS` is now empty and the row
+above is historical. All three are GoGo-owned data and need evidence: a
+non-blank cell is written only together with `<field>_source_type`,
+`<field>_source_reference` and `<field>_collected_at`; a missing or invalid one
+fails the row (`<FIELD>_EVIDENCE_REQUIRED` / `_INVALID`) in dry-run and commit.
+Blank cells preserve the stored value. The provider's formatted address is no
+longer written in any mode.
 
 Free text becomes structured facts: `45 - 75k` → `{min: 45000, max: 75000,
 unit: per_person}`, `Cặp đôi|Bạn bè` → `['couple','group']`. A tab named
