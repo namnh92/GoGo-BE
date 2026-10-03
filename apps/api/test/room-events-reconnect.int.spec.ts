@@ -12,6 +12,7 @@ import { RedisRoomEventBus } from '../../../libs/modules/realtime/infrastructure
 import { RoomEventsController } from '../../../libs/modules/realtime/presentation/room-events.controller';
 import { RoomMemberGuard } from '../../../libs/modules/realtime/presentation/room-member.guard';
 import { REALTIME_ENABLED } from '../../../libs/modules/realtime/presentation/realtime.tokens';
+import * as realtimeModule from '../../../libs/modules/realtime/presentation/realtime.module';
 import { RoomPolicy } from '../../../libs/modules/rooms/presentation/room-policy';
 
 /**
@@ -25,6 +26,11 @@ import { RoomPolicy } from '../../../libs/modules/rooms/presentation/room-policy
  * connection is wrapped, and the moment its attach read (the replay read)
  * returns, the other instance publishes — the mutation the client must see.
  */
+
+/* Namespace access: absent on the pre-ADR code this file also runs against. */
+const { ROOM_EVENTS_COMMANDS_OPTIONS, ROOM_EVENTS_SUBSCRIBER_OPTIONS } = realtimeModule as Partial<
+  typeof realtimeModule
+>;
 
 let redis: StartedTestContainer;
 let url: string;
@@ -62,8 +68,8 @@ function hooked(client: IORedis): IORedis {
   });
 }
 
-function connect(): IORedis {
-  const client = new IORedis(url, { maxRetriesPerRequest: 1 });
+function connect(options: Record<string, unknown> = {}): IORedis {
+  const client = new IORedis(url, { maxRetriesPerRequest: 1, ...options });
   client.on('error', () => undefined);
   clients.push(client);
   return client;
@@ -147,7 +153,13 @@ beforeAll(async () => {
   redis = await new GenericContainer('redis:7-alpine').withExposedPorts(6379).start();
   url = `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`;
 
-  const streaming = new RedisRoomEventBus(hooked(connect()) as never, connect() as never);
+  // The SSE instance runs with the production connection options (lazy
+  // connect, no offline queue, no resend, no auto-resubscribe). On the
+  // pre-ADR code these exports do not exist and the defaults apply.
+  const streaming = new RedisRoomEventBus(
+    hooked(connect(ROOM_EVENTS_COMMANDS_OPTIONS)) as never,
+    connect(ROOM_EVENTS_SUBSCRIBER_OPTIONS) as never,
+  );
   publisher = new RedisRoomEventBus(connect() as never, connect() as never);
 
   @Module({

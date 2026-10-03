@@ -11,6 +11,11 @@ import {
 import type { ResumePoint } from '../../../libs/modules/realtime/domain/room-event-cursor';
 import type { SequencedRoomEvent } from '../../../libs/modules/realtime/domain/room-event';
 import { RedisRoomEventBus } from '../../../libs/modules/realtime/infrastructure/redis-room-event-bus';
+import { runRoomEventGenerationRotation } from '../../../libs/modules/realtime/infrastructure/rotate-room-event-generations';
+import {
+  ROOM_EVENTS_COMMANDS_OPTIONS,
+  ROOM_EVENTS_SUBSCRIBER_OPTIONS,
+} from '../../../libs/modules/realtime/presentation/realtime.module';
 
 /**
  * ADR-0027 D6 — the bus against a real Redis: the Lua scripts, two
@@ -20,6 +25,8 @@ import { RedisRoomEventBus } from '../../../libs/modules/realtime/infrastructure
 
 let redis: StartedTestContainer;
 let url: string;
+/** Raw access for assertions and fault injection; not a bus connection. */
+let admin: IORedis;
 const clients: IORedis[] = [];
 
 function connect(options: Record<string, unknown> = {}): IORedis {
@@ -36,8 +43,10 @@ function instance(
     afterSubscribe?: (() => Promise<void>) | undefined;
   } = {},
 ) {
-  const commands = connect({ enableOfflineQueue: true, autoResendUnfulfilledCommands: false });
-  const subscriber = connect({ autoResubscribe: false, autoResendUnfulfilledCommands: false });
+  // Exactly the production options: lazy connect, no offline queue, no
+  // resend, no auto-resubscribe (the bus connects the commands client itself).
+  const commands = connect(ROOM_EVENTS_COMMANDS_OPTIONS);
+  const subscriber = connect(ROOM_EVENTS_SUBSCRIBER_OPTIONS);
   const wrappedCommands = new Proxy(commands, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
@@ -114,6 +123,7 @@ const buffer = (roomId: string) => `room:{${roomId}}:v2:buffer`;
 beforeAll(async () => {
   redis = await new GenericContainer('redis:7-alpine').withExposedPorts(6379).start();
   url = `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`;
+  admin = connect();
 }, 180_000);
 
 afterAll(async () => {
@@ -132,7 +142,7 @@ describe('RedisRoomEventBus on real Redis (ADR-0027)', () => {
       await b.bus.subscribe(roomId, { kind: 'fresh' }, listeners[1]!.value),
     ];
     subs.forEach((s, i) => emit(s, listeners[i]!));
-    const generation = (await a.commands.hget(meta(roomId), 'generation'))!;
+    const generation = (await admin.hget(meta(roomId), 'generation'))!;
 
     const rounds = 10;
     const perRound = 20;
@@ -198,13 +208,13 @@ describe('RedisRoomEventBus on real Redis (ADR-0027)', () => {
     const s = sink();
     const subscription = await reader.bus.subscribe(roomId, at(first.generation, 1), s.value);
     emit(subscription, s);
-    const raw = await pub.commands.zrange(buffer(roomId), '0', '-1');
+    const raw = await admin.zrange(buffer(roomId), '0', '-1');
     const realNow = Date.now;
     try {
       Date.now = () => realNow() + 31_000;
-      for (const message of raw) await pub.commands.publish(`room:{${roomId}}:v2:events`, message);
+      for (const message of raw) await admin.publish(`room:{${roomId}}:v2:events`, message);
       Date.now = () => realNow() + 3_600_000;
-      for (const message of raw) await pub.commands.publish(`room:{${roomId}}:v2:events`, message);
+      for (const message of raw) await admin.publish(`room:{${roomId}}:v2:events`, message);
     } finally {
       Date.now = realNow;
     }
@@ -221,9 +231,9 @@ describe('RedisRoomEventBus on real Redis (ADR-0027)', () => {
     for (let i = 0; i < REPLAY_BUFFER_SIZE + 5; i++)
       last = await pub.bus.publish({ roomId, type: 'vote.changed' });
     const { generation } = last;
-    expect(await pub.commands.zcard(buffer(roomId))).toBe(REPLAY_BUFFER_SIZE);
-    expect(await pub.commands.ttl(meta(roomId))).toBe(-1); // metadata never expires
-    expect(await pub.commands.ttl(buffer(roomId))).toBeGreaterThan(0);
+    expect(await admin.zcard(buffer(roomId))).toBe(REPLAY_BUFFER_SIZE);
+    expect(await admin.ttl(meta(roomId))).toBe(-1); // metadata never expires
+    expect(await admin.ttl(buffer(roomId))).toBeGreaterThan(0);
 
     const decide = async (resume: ResumePoint) => {
       const s = await reader.bus.subscribe(roomId, resume, sink().value);
@@ -244,18 +254,18 @@ describe('RedisRoomEventBus on real Redis (ADR-0027)', () => {
     });
 
     // Buffer-only expiry: metadata survives, so H > cursor with an empty buffer is a gap.
-    await pub.commands.del(buffer(roomId));
+    await admin.del(buffer(roomId));
     expect((await decide(at(generation, high - 1))).resync?.reason).toBe('replay_unavailable');
     expect((await decide(at(generation, high))).resync).toBeNull();
 
     // Missing metadata: a fresh generation, the orphaned buffer discarded.
     await pub.bus.publish({ roomId, type: 'vote.changed' });
-    await pub.commands.del(meta(roomId));
+    await admin.del(meta(roomId));
     const reset = await decide(at(generation, high + 1));
     expect(reset.resync?.reason).toBe('generation_changed');
     expect(reset.resync?.checkpoint.seq).toBe(0);
     expect(reset.resync?.checkpoint.generation).not.toBe(generation);
-    expect(await pub.commands.zcard(buffer(roomId))).toBe(0);
+    expect(await admin.zcard(buffer(roomId))).toBe(0);
     const next = await pub.bus.publish({ roomId, type: 'vote.changed' });
     expect(next.seq).toBe(1);
     expect(next.generation).toBe(reset.resync?.checkpoint.generation);
@@ -269,7 +279,7 @@ describe('RedisRoomEventBus on real Redis (ADR-0027)', () => {
       const two = await pub.bus.publish({ roomId, type: 'vote.changed' });
       const reader = instance({
         afterSubscribe: async () => {
-          await pub.commands.del(meta(roomId), buffer(roomId));
+          await admin.del(meta(roomId), buffer(roomId));
           for (let i = 0; i < newEvents; i++)
             await pub.bus.publish({ roomId, type: 'vote.changed' });
         },
@@ -296,7 +306,7 @@ describe('RedisRoomEventBus on real Redis (ADR-0027)', () => {
     const s = sink();
     emit(await reader.bus.subscribe(roomId, { kind: 'fresh' }, s.value), s);
     await pub.bus.publish({ roomId, type: 'vote.changed' });
-    await pub.commands.del(meta(roomId));
+    await admin.del(meta(roomId));
     await pub.bus.publish({ roomId, type: 'vote.changed' });
     await pub.bus.publish({ roomId, type: 'vote.changed' });
     expect(await until(() => s.order.length >= 2)).toBe(true);
@@ -310,10 +320,42 @@ describe('RedisRoomEventBus on real Redis (ADR-0027)', () => {
     );
   });
 
+  it('restore runbook: rotation after a rolled-back seq answers old cursors with generation_changed', async () => {
+    const roomId = randomUUID();
+    const other = randomUUID();
+    const pub = instance();
+    await pub.bus.publish({ roomId, type: 'vote.changed' });
+    await pub.bus.publish({ roomId, type: 'vote.changed' });
+    const three = await pub.bus.publish({ roomId, type: 'vote.changed' });
+    await pub.bus.publish({ roomId: other, type: 'vote.changed' });
+    // A restore/failover rolls the counter back: seq 3 will be handed out again.
+    await admin.hset(meta(roomId), 'seq', '1');
+    const live = sink();
+    const reader = instance();
+    emit(await reader.bus.subscribe(roomId, { kind: 'fresh' }, live.value), live);
+
+    const dry = await runRoomEventGenerationRotation({ url, execute: false });
+    expect(dry.matched).toBeGreaterThanOrEqual(2);
+    expect(dry.deleted).toBe(0);
+    expect(await admin.exists(meta(roomId))).toBe(1);
+
+    const rotated = await runRoomEventGenerationRotation({ url, execute: true, roomId });
+    expect(rotated).toMatchObject({ matched: 1, deleted: 1 });
+    expect(await admin.exists(meta(other))).toBe(1); // scoped to the one room
+
+    const resumed = await reader.bus.subscribe(roomId, at(three.generation, 3), sink().value);
+    expect(resumed.resync?.reason).toBe('generation_changed');
+    resumed.unsubscribe();
+    // A stream that stayed open learns it from the next event.
+    await pub.bus.publish({ roomId, type: 'vote.changed' });
+    expect(await until(() => live.resyncs.length === 1)).toBe(true);
+    expect(live.resyncs[0]!.reason).toBe('generation_changed');
+  });
+
   it('rejects keys of the wrong type instead of corrupting them', async () => {
     const roomId = randomUUID();
     const pub = instance();
-    await pub.commands.set(meta(roomId), 'not-a-hash');
+    await admin.set(meta(roomId), 'not-a-hash');
     await expect(pub.bus.publish({ roomId, type: 'vote.changed' })).rejects.toThrow(
       /ROOM_EVENTS_BAD_KEY_TYPE/,
     );
@@ -326,7 +368,7 @@ describe('RedisRoomEventBus on real Redis (ADR-0027)', () => {
     const s = sink();
     emit(await reader.bus.subscribe(roomId, { kind: 'fresh' }, s.value), s);
     const id = await reader.subscriber.client('ID');
-    await pub.commands.client('KILL', 'ID', String(id));
+    await admin.client('KILL', 'ID', String(id));
     expect(await until(() => s.failures.length === 1)).toBe(true);
     // Ended, not deaf-and-heartbeating: nothing more reaches the failed sink.
     await pub.bus.publish({ roomId, type: 'vote.changed' });
