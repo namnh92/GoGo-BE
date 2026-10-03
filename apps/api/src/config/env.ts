@@ -418,6 +418,27 @@ const envSchema = z
     PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_CORE: z.coerce.number().int().min(0).optional(),
     PLACE_REFRESH_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY: z.coerce.number().int().min(0).optional(),
     /**
+     * GoGo-BE#509 — the hard budget for transient Place Detail photos
+     * (`google.places.display`). Same rule as the refresh scope: **unset means
+     * refuse**, so an environment with no values shows no Google photos and
+     * spends nothing — not even the free reference lookup, which is skipped
+     * when no photo could be paid for. `…_GOOGLE_PHOTOMEDIA` counts the billed
+     * photo calls.
+     */
+    PLACE_DISPLAY_DAILY_MAX_CALLS: z.coerce.number().int().min(0).optional(),
+    PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD: z.coerce.number().min(0).optional(),
+    PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA: z.coerce.number().int().min(0).optional(),
+    /**
+     * GoGo-BE#509 — the deploy-time default of the `place_provider_photos.enabled`
+     * kill switch. Off: transient Google photos are a paid call per view, so
+     * shipping the code must not start spending. A `feature_flags` row
+     * overrides this without a deploy.
+     */
+    FLAG_PLACE_PROVIDER_PHOTOS: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    /**
      * #337 — the key that signs the short-lived resolution attestation
      * `POST /v1/place-submissions` accepts in place of a second Google Details
      * fetch (plan §2.8). Ours to generate; never collected from a provider,

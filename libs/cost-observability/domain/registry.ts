@@ -484,6 +484,13 @@ const GOOGLE_SKUS: readonly BillingSkuDefinition[] = [
     displayName: 'Places API (New) — Place Details Pro',
   },
   {
+    // GoGo-BE#509 — one call per displayed photo; billed separately from the
+    // Details request that named the photo.
+    id: 'places.details.photos',
+    providerId: 'google',
+    displayName: 'Places API (New) — Place Details Photos',
+  },
+  {
     id: 'places.details.enterprise',
     providerId: 'google',
     displayName: 'Places API (New) — Place Details Enterprise',
@@ -592,6 +599,30 @@ const GOOGLE: ProviderDefinition = {
             PLACES,
             'places.details.enterpriseAtmosphere',
           ),
+        },
+        {
+          /**
+           * GoGo-BE#509 — photo references for one Place Detail display. Mask
+           * `id,photos`, which Google lists under Place Details Essentials IDs
+           * Only (free, unlimited): its own operation so a free call is never
+           * reported as a Pro one under `google.details.core`. Calls only, no
+           * billable meter: the registry gives each SKU to exactly one
+           * operation, and the IDs-Only SKU already folds onto
+           * `google.details.liveness`.
+           */
+          id: 'google.details.photos',
+          serviceId: PLACES,
+          displayName: 'Place Details (photo references, IDs only)',
+          instrumented: true,
+          usageMeters: callMeters('google.details.photos', PLACES, null),
+        },
+        {
+          /** GoGo-BE#509 — one photo's bytes, transient; never stored. */
+          id: 'google.photoMedia',
+          serviceId: PLACES,
+          displayName: 'Place Photo (media)',
+          instrumented: true,
+          usageMeters: callMeters('google.photoMedia', PLACES, 'places.details.photos'),
         },
         {
           id: 'google.expand',

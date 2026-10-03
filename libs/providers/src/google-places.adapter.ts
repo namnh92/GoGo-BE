@@ -1,6 +1,7 @@
 import {
   GOOGLE_ATTRIBUTION,
   NO_PROVIDER_METRICS,
+  ProviderCallAbortedError,
   ProviderConfigurationError,
   ProviderInvalidRequestError,
   ProviderQuotaExceededError,
@@ -14,12 +15,16 @@ import {
   type ProviderCandidateIdentity,
   type ProviderPlaceIdentity,
   type ProviderMetrics,
-  type ProviderPhotoRef,
+  type PlacePhotoDisplayPort,
+  type ProviderDisplayPhotoRef,
+  type ProviderPhotoAuthor,
+  type ProviderPhotoMedia,
   type ResolvedProviderPlace,
 } from './ports';
 import { boundedReason, googleFailure, readGoogleError } from './google-error';
 import { expandShortLink, parseMapsUrl, type Fetcher, type UrlParseResult } from './maps-url';
 import { withResilience } from './resilience';
+import { IMAGE_HOSTS, safeProviderUri } from './provider-links';
 
 /**
  * GoGo is a Vietnamese product, and Google answers in whatever language it is
@@ -49,11 +54,127 @@ const RESILIENCE = {
 };
 
 /**
+ * GoGo-BE#509 — the display path waits on a person looking at a screen, and
+ * every media retry is another billed call. Short timeout, no retry: a photo
+ * that does not arrive in time is simply not shown, and Place Detail is
+ * already on screen without it.
+ */
+const DISPLAY_RESILIENCE = {
+  timeoutMs: 2500,
+  retries: 0,
+  breakerThreshold: 5,
+  breakerCooldownMs: 30_000,
+};
+
+/** The unauthenticated image read after a media call, bounded the same way. */
+const PHOTO_BYTES_TIMEOUT_MS = 2500;
+
+/**
+ * GoGo-BE#509 — the display mask. `photos` is listed by Google under Place
+ * Details Essentials **IDs Only**, so this call is free; the media call that
+ * follows is what costs ($7 / 1,000, Place Details Photos).
+ */
+export const PHOTO_DISPLAY_FIELD_MASK = 'id,photos';
+
+/** `places/<id>/photos/<id>` — anything else never reaches a media URL. */
+const PHOTO_NAME = /^places\/[A-Za-z0-9_-]{1,256}\/photos\/[A-Za-z0-9_-]{1,1024}$/;
+
+const PHOTO_CONTENT_TYPES = new Set<ProviderPhotoMedia['contentType']>([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
+type GooglePhoto = {
+  name?: string;
+  widthPx?: number;
+  heightPx?: number;
+  authorAttributions?: { displayName?: string; uri?: string; photoUri?: string }[];
+  googleMapsUri?: string;
+};
+
+/**
+ * Google's photo objects → display references, keeping the whole credit.
+ *
+ * A photo is dropped when its name is not one this adapter would put in a URL
+ * (or names a different place), or when no author survives: a photo that
+ * cannot be shown with its credit is not shown.
+ */
+export function toDisplayPhotos(
+  providerPlaceId: string,
+  photos: readonly GooglePhoto[] | undefined,
+): ProviderDisplayPhotoRef[] {
+  const prefix = `places/${providerPlaceId}/photos/`;
+  const out: ProviderDisplayPhotoRef[] = [];
+  for (const p of photos ?? []) {
+    if (typeof p.name !== 'string' || !PHOTO_NAME.test(p.name) || !p.name.startsWith(prefix)) {
+      continue;
+    }
+    const authorAttributions: ProviderPhotoAuthor[] = (p.authorAttributions ?? [])
+      .filter((a) => typeof a.displayName === 'string' && a.displayName.trim() !== '')
+      .map((a) => ({
+        displayName: a.displayName!.trim().slice(0, 200),
+        uri: safeProviderUri(a.uri),
+        photoUri: safeProviderUri(a.photoUri, IMAGE_HOSTS),
+      }));
+    if (authorAttributions.length === 0) continue;
+    out.push({
+      reference: p.name,
+      widthPx: typeof p.widthPx === 'number' ? p.widthPx : null,
+      heightPx: typeof p.heightPx === 'number' ? p.heightPx : null,
+      authorAttributions,
+      googleMapsUri: safeProviderUri(p.googleMapsUri),
+    });
+  }
+  return out;
+}
+
+/**
+ * Read at most `maxBytes` of a body; `null` when it is longer. The stream is
+ * cancelled at the limit, so an oversized image costs at most the limit.
+ */
+async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array | null> {
+  const declared = Number(res.headers.get('content-length') ?? '');
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  if (!res.body) return null;
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+/**
  * ADR-0006 §2, verbatim. Each tier is the one before it plus its own fields, so
  * the relationship is expressed once instead of three drifting strings — which
  * is how the adapter came to send a mask that was neither `core` nor `quality`:
  * it carried the quality aggregates while missing `types`, `googleMapsUri` and
  * `photos`, all three of which the ADR puts in `core`.
+ *
+ * GoGo-BE#509 (owner decision 2026-10-02, ADR-0030) took two fields back out:
+ * `photos` from `core` and `priceRange` from `quality`. Both were bought on
+ * every call and read by nothing. Photos are now fetched only for display, on
+ * their own operation (`PHOTO_DISPLAY_FIELD_MASK`); `priceRange` has no unit,
+ * so core rule 13 forbids showing it and nothing asks for it. Removing them
+ * does **not** lower either tier's SKU — the remaining fields still decide it.
  *
  * Exported because the field mask *is* the cost decision. A test that asserts
  * the exact string is the only thing standing between a one-word edit and a
@@ -83,16 +204,9 @@ const CORE_FIELDS = [
   'primaryType',
   'types',
   'googleMapsUri',
-  'photos',
 ] as const;
 
-const QUALITY_FIELDS = [
-  'rating',
-  'userRatingCount',
-  'regularOpeningHours',
-  'priceLevel',
-  'priceRange',
-] as const;
+const QUALITY_FIELDS = ['rating', 'userRatingCount', 'regularOpeningHours', 'priceLevel'] as const;
 
 const DETAIL_FIELDS = ['reviews'] as const;
 
@@ -122,7 +236,9 @@ function locationBiasOf(bias: PlaceSearchOptions['bias']): Record<string, unknow
  * cache windows follow FR-PLACE-006. Only exercised when GOOGLE_PLACES_API_KEY
  * is configured — CI and dev use the fakes.
  */
-export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompletePort {
+export class GooglePlacesAdapter
+  implements PlaceProviderPort, AreaAutocompletePort, PlacePhotoDisplayPort
+{
   /**
    * PI-SRE-001: cost is billed per SKU, so the counter is labelled by the call
    * that produced it — that is the only way an invoice can be reconciled.
@@ -302,12 +418,6 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       googleMapsUri?: string;
       /** IDs-Only: the successor Google names for a place id that moved. */
       movedPlaceId?: string;
-      photos?: {
-        name?: string;
-        widthPx?: number;
-        heightPx?: number;
-        authorAttributions?: { displayName?: string }[];
-      }[];
       regularOpeningHours?: {
         periods?: {
           open?: { day: number; hour: number; minute: number };
@@ -385,20 +495,6 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       PRICE_LEVEL_VERY_EXPENSIVE: 4,
     };
 
-    // `photos[].name` is the whole reference — width/height describe the
-    // original, and the author attributions travel with it because a photo
-    // rendered without them breaches the licence.
-    const photos: ProviderPhotoRef[] = (data.photos ?? [])
-      .filter((p): p is { name: string } & typeof p => typeof p.name === 'string' && p.name !== '')
-      .map((p) => ({
-        reference: p.name,
-        widthPx: p.widthPx ?? null,
-        heightPx: p.heightPx ?? null,
-        attributions: (p.authorAttributions ?? [])
-          .map((a) => a.displayName)
-          .filter((n): n is string => typeof n === 'string' && n !== ''),
-      }));
-
     // `primaryType` is not guaranteed to appear in `types`, and a caller
     // reading `types` alone must not lose it.
     const types = [
@@ -421,7 +517,6 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       primaryType: data.primaryType ?? null,
       types,
       googleMapsUri: data.googleMapsUri ?? null,
-      photos,
       fetchTier: tier,
       attribution: GOOGLE_ATTRIBUTION,
       raw: data,
@@ -465,6 +560,79 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
     }
   }
 
+  /**
+   * GoGo-BE#509 — photo references for one display, never for storage.
+   *
+   * Its own operation label (`google.details.photos`) because it is its own
+   * SKU: IDs Only, free. Folding it into `google.details.core` would report a
+   * free call as a Pro one.
+   */
+  async photoRefs(
+    providerPlaceId: string,
+    options: { signal?: AbortSignal | undefined } = {},
+  ): Promise<{ providerPlaceId: string; photos: ProviderDisplayPhotoRef[] } | null> {
+    const data = await this.call<{ id?: string; photos?: GooglePhoto[] }>(
+      'google.details.photos',
+      `https://places.googleapis.com/v1/places/${encodeURIComponent(providerPlaceId)}` +
+        `?languageCode=${GOOGLE_LOCALE.languageCode}&regionCode=${GOOGLE_LOCALE.regionCode}`,
+      { method: 'GET', fieldMask: PHOTO_DISPLAY_FIELD_MASK, signal: options.signal },
+      DISPLAY_RESILIENCE,
+    );
+    if (!data?.id) return null;
+    return { providerPlaceId: data.id, photos: toDisplayPhotos(data.id, data.photos) };
+  }
+
+  /**
+   * GoGo-BE#509 — one photo's bytes, for one response.
+   *
+   * `skipHttpRedirect=true` makes Google answer with the image URL as JSON
+   * instead of a 302. Following the redirect would carry the API-key header to
+   * the image host; reading the URL first lets it be checked (https, Google
+   * image host) and fetched with no credential and no redirects — the URL is an
+   * address this server is told to request, so it is treated as untrusted.
+   */
+  async photoMedia(
+    reference: string,
+    options: { maxWidthPx: number; maxBytes: number; signal?: AbortSignal | undefined },
+  ): Promise<ProviderPhotoMedia | null> {
+    if (!PHOTO_NAME.test(reference)) return null;
+    const width = Math.max(1, Math.min(4800, Math.trunc(options.maxWidthPx)));
+    const media = await this.call<{ photoUri?: string }>(
+      'google.photoMedia',
+      `https://places.googleapis.com/v1/${reference}/media?maxWidthPx=${width}&skipHttpRedirect=true`,
+      { method: 'GET', signal: options.signal },
+      DISPLAY_RESILIENCE,
+    );
+    const imageUrl = safeProviderUri(media?.photoUri, IMAGE_HOSTS);
+    if (!imageUrl) return null;
+
+    if (options.signal?.aborted) throw new ProviderCallAbortedError('google.places');
+    const timeout = AbortSignal.timeout(PHOTO_BYTES_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(imageUrl, {
+        method: 'GET',
+        redirect: 'error',
+        signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
+      });
+    } catch (err) {
+      if (options.signal?.aborted) throw new ProviderCallAbortedError('google.places');
+      throw err;
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    const contentType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+    if (!PHOTO_CONTENT_TYPES.has(contentType as ProviderPhotoMedia['contentType'])) {
+      await res.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    const bytes = await readBounded(res, options.maxBytes);
+    if (!bytes || bytes.byteLength === 0) return null;
+    return { contentType: contentType as ProviderPhotoMedia['contentType'], bytes };
+  }
+
   async suggest(query: string, sessionToken: string): Promise<AreaPrediction[]> {
     const data = await this.call<{
       suggestions?: { placePrediction?: { placeId: string; text?: { text: string } } }[];
@@ -486,23 +654,59 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       }));
   }
 
+  /**
+   * GoGo-BE#509 F-05: a body read cut off by the caller's deadline is the
+   * caller's abort, not a provider fault — otherwise a handful of slow views
+   * would open the breaker for every other request. `readGoogleError` swallows
+   * read failures, so the signal is checked after the read as well.
+   */
+  private async afterCallerCheck<R>(
+    name: string,
+    caller: AbortSignal | undefined,
+    read: () => Promise<R>,
+  ): Promise<R> {
+    let value: R;
+    try {
+      value = await read();
+    } catch (err) {
+      if (caller?.aborted) throw new ProviderCallAbortedError(name);
+      throw err;
+    }
+    if (caller?.aborted) throw new ProviderCallAbortedError(name);
+    return value;
+  }
+
   private call<T>(
     name: string,
     url: string,
-    init: { method: string; body?: string; fieldMask: string },
+    init: { method: string; body?: string; fieldMask?: string; signal?: AbortSignal | undefined },
+    resilience: typeof RESILIENCE = RESILIENCE,
   ): Promise<T> {
-    return withResilience({ name, ...RESILIENCE }, async (signal) => {
+    const caller = init.signal;
+    return withResilience({ name, ...resilience }, async (timeoutSignal) => {
+      // GoGo-BE#509 F-01: a caller's deadline stops the request too. A call
+      // that never left is not counted; one cut off mid-flight is reported as
+      // the caller's abort, not as a provider failure.
+      if (caller?.aborted) throw new ProviderCallAbortedError(name);
+      const signal = caller ? AbortSignal.any([caller, timeoutSignal]) : timeoutSignal;
       const started = Date.now();
-      const res = await fetch(url, {
-        method: init.method,
-        ...(init.body !== undefined ? { body: init.body } : {}),
-        signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': this.apiKey,
-          'X-Goog-FieldMask': init.fieldMask,
-        },
-      });
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: init.method,
+          ...(init.body !== undefined ? { body: init.body } : {}),
+          signal,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': this.apiKey,
+            // The media endpoint takes no field mask; every other call sends one.
+            ...(init.fieldMask !== undefined ? { 'X-Goog-FieldMask': init.fieldMask } : {}),
+          },
+        });
+      } catch (err) {
+        if (caller?.aborted) throw new ProviderCallAbortedError(name);
+        throw err;
+      }
       // #313: `status` and `method` are finite; a duration is not. Emitted as
       // a label it gave every request a series of its own — 10 requests, 10
       // series, each stuck at 1 — which is a log line wearing a counter's
@@ -525,7 +729,7 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       );
       if (res.ok) {
         this.metrics.increment('places_provider_cost_units', { sku: name });
-        return (await res.json()) as T;
+        return (await this.afterCallerCheck(name, caller, () => res.json())) as T;
       }
 
       // #273: the reason is read before the status, because the status alone
@@ -533,7 +737,7 @@ export class GooglePlacesAdapter implements PlaceProviderPort, AreaAutocompleteP
       // RESOURCE_EXHAUSTED still pauses the import rather than retrying into
       // an exhausted budget (spec §9.4); a configuration fault is not retried
       // either, because the answer will not change.
-      const info = await readGoogleError(res);
+      const info = await this.afterCallerCheck(name, caller, () => readGoogleError(res));
       const fault = googleFailure('google.places', res.status, info);
 
       // #314: a request Google rejected is not a provider failure and must not

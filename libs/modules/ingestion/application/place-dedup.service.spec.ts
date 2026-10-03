@@ -61,7 +61,6 @@ const details = (over: Partial<ResolvedProviderPlace> = {}): ResolvedProviderPla
     primaryType: null,
     types: [],
     googleMapsUri: null,
-    photos: [],
     fetchTier: 'quality',
     attribution: '',
     raw: {},

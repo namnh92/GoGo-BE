@@ -10,7 +10,8 @@
  * `liveness` asks only *which id this is now* and is billed at Google's
  * IDs-Only SKU, which is free; `core` identifies a place (Pro); `quality` adds
  * the facts a preview or a catalog row needs (Enterprise); `detail` adds
- * reviews (Enterprise + Atmosphere) and is never requested by a bulk job. The
+ * reviews (Enterprise + Atmosphere) and has no production caller at all today
+ * — not a bulk job, not anything else (GoGo-BE#509). The
  * tier a snapshot was taken at is recorded on `place_provider_sources`, so a
  * row always says which fields it could legitimately have.
  *
@@ -64,20 +65,81 @@ export type ProviderPlaceIdentity = {
 };
 
 /**
- * A photo the provider holds, **not** an image.
+ * GoGo-BE#509 — the credit Google attaches to one photo, as Google sent it.
  *
- * `reference` is an opaque provider handle; turning it into bytes is a second,
- * separately billed call (Google: `places/*\/photos/*\/media`). Nothing in GoGo
- * stores provider images yet, so these are carried through the boundary and
- * left for whoever builds that stage — see `docs/place-import.md`.
+ * All three fields are kept. The adapter used to keep `displayName` alone and
+ * drop the link to the author's profile and their avatar, which is the part of
+ * the credit the attribution policy asks a client to be able to show. Links are
+ * validated before they leave the adapter: `https` only (Google sends them
+ * scheme-relative, `//maps.google.com/…`, which is normalised), no userinfo,
+ * Google hosts only. A link that fails is `null`, never passed through.
  */
-export type ProviderPhotoRef = {
+export type ProviderPhotoAuthor = {
+  displayName: string;
+  uri: string | null;
+  photoUri: string | null;
+};
+
+/**
+ * A photo the provider holds, **not** an image — fetched for one display and
+ * then forgotten (GoGo-BE#509, owner decision 2026-10-02).
+ *
+ * `reference` is Google's photo `name`. Google forbids caching it, so it lives
+ * only inside one request: nothing writes it to the database, R2, Redis, a job
+ * or a snapshot. Turning it into bytes is a second, separately billed call
+ * (`google.photoMedia`).
+ */
+export type ProviderDisplayPhotoRef = {
   reference: string;
   widthPx: number | null;
   heightPx: number | null;
   /** Licence obligation: rendering a photo means rendering these with it. */
-  attributions: string[];
+  authorAttributions: ProviderPhotoAuthor[];
+  /** Google's link to this photo on Maps, validated like the author links. */
+  googleMapsUri: string | null;
 };
+
+/** Image bytes from one media call, bounded in size and type by the adapter. */
+export type ProviderPhotoMedia = {
+  contentType: 'image/jpeg' | 'image/png' | 'image/webp';
+  bytes: Uint8Array;
+};
+
+/**
+ * GoGo-BE#509 — the display-only photo operations, kept off
+ * `PlaceProviderPort` on purpose.
+ *
+ * Ingestion never needs a photo, and the field masks it buys no longer carry
+ * one. A separate port is what keeps a bulk job from reaching for photos by
+ * accident: nothing that imports or refreshes places is handed this interface.
+ */
+export interface PlacePhotoDisplayPort {
+  /**
+   * The place's photo references with their credits. Billed as Place Details
+   * Essentials **IDs Only** (`id,photos`), which Google lists as free.
+   * `providerPlaceId` is the id Google answered with — a caller compares it.
+   *
+   * `signal` is the caller's deadline: once it aborts, the call stops and
+   * rejects with `ProviderCallAbortedError` (review F-01).
+   */
+  photoRefs(
+    providerPlaceId: string,
+    options?: { signal?: AbortSignal | undefined },
+  ): Promise<{ providerPlaceId: string; photos: ProviderDisplayPhotoRef[] } | null>;
+  /**
+   * One photo's bytes: one Place Details Photos call (billed per call), then an
+   * unauthenticated read of the short-lived image URL it returns. `null` when
+   * the image is missing, too large or not an allowed image type.
+   *
+   * A photo name Google no longer accepts (names expire) rejects with
+   * `ProviderInvalidRequestError` (`NOT_FOUND` / `INVALID_ARGUMENT`), which a
+   * caller may answer with one fresh `photoRefs` (review F-02).
+   */
+  photoMedia(
+    reference: string,
+    options: { maxWidthPx: number; maxBytes: number; signal?: AbortSignal | undefined },
+  ): Promise<ProviderPhotoMedia | null>;
+}
 
 /**
  * The attribution Google's terms require beside anything sourced from Maps.
@@ -148,7 +210,6 @@ export type ResolvedProviderPlace = {
   types: string[];
   /** Provider's own canonical link to the place, when it published one. */
   googleMapsUri: string | null;
-  photos: ProviderPhotoRef[];
   /** The tier this snapshot was fetched at; fields outside it are absent. */
   fetchTier: PlaceDescriptionTier;
   attribution: string;
@@ -445,6 +506,8 @@ export class ProviderUnavailableError extends Error {
 }
 
 export const PLACE_PROVIDER = Symbol('PLACE_PROVIDER');
+/** GoGo-BE#509 — transient, display-only provider photos. */
+export const PLACE_PHOTO_DISPLAY = Symbol('PLACE_PHOTO_DISPLAY');
 export const AREA_AUTOCOMPLETE = Symbol('AREA_AUTOCOMPLETE');
 export const PUSH_PROVIDER = Symbol('PUSH_PROVIDER');
 export const STORAGE_PROVIDER = Symbol('STORAGE_PROVIDER');
@@ -585,6 +648,17 @@ export const NO_PROVIDER_METRICS: ProviderMetrics = {
   increment: () => undefined,
   observe: () => undefined,
 };
+
+/**
+ * GoGo-BE#509 — the caller gave up (its deadline aborted the signal). Not a
+ * provider fault: it is never retried and never counted toward a breaker.
+ */
+export class ProviderCallAbortedError extends Error {
+  constructor(readonly provider: string) {
+    super(`provider ${provider} call aborted by the caller`);
+    this.name = 'ProviderCallAbortedError';
+  }
+}
 
 export class ProviderInvalidRequestError extends Error {
   constructor(

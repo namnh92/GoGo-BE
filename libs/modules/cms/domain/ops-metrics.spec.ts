@@ -97,6 +97,8 @@ describe('provider grouping', () => {
     ['google.details.core', 'places'],
     ['google.details.quality', 'places'],
     ['google.details.detail', 'places'],
+    ['google.details.photos', 'places'],
+    ['google.photoMedia', 'places'],
     ['google.autocomplete', 'places'],
     ['google.expand', 'places'],
     ['google.routeMatrix', 'routes'],

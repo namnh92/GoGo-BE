@@ -3,6 +3,7 @@ import {
   type AreaAutocompletePort,
   type AreaPrediction,
   type PlaceFetchTier,
+  type PlacePhotoDisplayPort,
   type PlaceProviderPort,
 } from './ports';
 
@@ -22,7 +23,9 @@ import {
  * on existing places — has nothing to do with this port, and taking the whole
  * API down over it would turn one broken feature into an outage.
  */
-export class UnconfiguredPlaceProvider implements PlaceProviderPort, AreaAutocompletePort {
+export class UnconfiguredPlaceProvider
+  implements PlaceProviderPort, AreaAutocompletePort, PlacePhotoDisplayPort
+{
   constructor(private readonly provider = 'google.places') {}
 
   private refuse(): never {
@@ -50,6 +53,15 @@ export class UnconfiguredPlaceProvider implements PlaceProviderPort, AreaAutocom
   }
 
   async suggest(_query: string, _sessionToken: string): Promise<AreaPrediction[]> {
+    this.refuse();
+  }
+
+  // GoGo-BE#509: a refusal the photo endpoint turns into "no photos", never 503.
+  async photoRefs(_providerPlaceId: string): Promise<never> {
+    this.refuse();
+  }
+
+  async photoMedia(_reference: string, _options: unknown): Promise<never> {
     this.refuse();
   }
 }

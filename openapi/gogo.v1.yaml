@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.63
+  version: 1.0.0-alpha.64
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -2707,6 +2707,47 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PlaceReviewPreview' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /places/{id}/provider-photos:
+    get:
+      operationId: getPlaceProviderPhotos
+      tags: [places]
+      summary: Transient Google photos for one Place Detail view (never stored)
+      description: >
+        GoGo-BE#509 (owner decision 2026-10-02, ADR-0030). Fetched from Google
+        when Place Detail is opened and returned once: photo names, image URLs
+        and bytes are not stored anywhere (database, object storage, cache,
+        jobs, snapshots), and the response is `Cache-Control: private,
+        no-store` — clients must not persist it in a disk/offline image cache
+        or persisted query state either. Images arrive inline as base64 so the
+        client never calls Google directly. At most three photos, each with
+        its author credit (`authorAttributions`) to render beside it, plus the
+        `attribution` text (Google Maps) whenever any photo is shown. Never
+        call this per list card.
+
+
+        Always 200 for a place Place Detail opens (404 otherwise). `status`
+        says why `photos` is empty: `disabled` (kill switch off), `not_linked`
+        (no Google Place ID), `budget_exhausted` (daily provider budget
+        reached or not configured), `unavailable` (provider error, timeout or
+        moved place). Treat an unknown `status` like `unavailable`. GoGo
+        imagery stays on `PlaceDetail.photos`; Google price ranges are never
+        returned (core rule 13: a price without its unit).
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Zero to three provider photos with attribution, for this view only
+          headers:
+            Cache-Control:
+              description: Always `private, no-store`.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceProviderPhotos' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
@@ -13132,6 +13173,70 @@ components:
         max: { type: integer }
         currency: { type: string }
         confidence: { type: number, minimum: 0, maximum: 1 }
+    PlaceProviderPhotos:
+      type: object
+      description: >
+        GoGo-BE#509 — transient provider photos. Display once, never persist.
+      required: [status, provider, attribution, photos]
+      properties:
+        status:
+          type: string
+          description: Why `photos` may be empty. Unknown values mean "no photos".
+          x-extensible-enum: [ok, disabled, not_linked, budget_exhausted, unavailable]
+        provider:
+          type: string
+          description: Display provider. Unknown values are allowed; render `attribution` as given.
+          x-extensible-enum: [google]
+        attribution:
+          type: string
+          description: Provider attribution to render whenever a photo is shown ("Google Maps").
+        photos:
+          type: array
+          maxItems: 3
+          items: { $ref: '#/components/schemas/PlaceProviderPhoto' }
+    PlaceProviderPhoto:
+      type: object
+      required: [contentType, dataBase64, widthPx, heightPx, authorAttributions, googleMapsUri]
+      properties:
+        contentType:
+          type: string
+          x-extensible-enum: [image/jpeg, image/png, image/webp]
+        dataBase64:
+          type: string
+          format: byte
+          description: Image bytes (at most 400 KiB before encoding, 800 px wide).
+        widthPx:
+          type: integer
+          nullable: true
+          description: Width of Google's original, not of these bytes.
+        heightPx:
+          type: integer
+          nullable: true
+        authorAttributions:
+          type: array
+          minItems: 1
+          description: Credit to render with this photo — never a generic gallery footer.
+          items: { $ref: '#/components/schemas/ProviderPhotoAuthor' }
+        googleMapsUri:
+          type: string
+          format: uri
+          nullable: true
+          description: This photo on Google Maps. `https`, Google host; else null.
+    ProviderPhotoAuthor:
+      type: object
+      required: [displayName, uri, photoUri]
+      properties:
+        displayName: { type: string, maxLength: 200 }
+        uri:
+          type: string
+          format: uri
+          nullable: true
+          description: Author profile link (`https`, Google host); null when absent or unsafe.
+        photoUri:
+          type: string
+          format: uri
+          nullable: true
+          description: Author avatar (`https`, Google image host); null when absent or unsafe.
     PlaceDetail:
       type: object
       required: [gogoRatingCount]

@@ -36,14 +36,20 @@ parsing, resolution, scoring, dedup and enrichment; the provider sits behind
 
 ### 2. Field-mask tiers (cost control)
 
-| Tier       | When                                      | SKU                         | $/1k | Fields                                                                                           |
-| ---------- | ----------------------------------------- | --------------------------- | ---- | ------------------------------------------------------------------------------------------------ |
-| `liveness` | refresh; id/moved-place verification only | Details Essentials IDs-Only | 0    | `id,movedPlaceId`                                                                                |
-| `core`     | every resolve                             | Details Pro                 | 17   | `id,displayName,formattedAddress,location,businessStatus,primaryType,types,googleMapsUri,photos` |
-| `quality`  | row accepted / preview shown / publish    | Details Enterprise          | 20   | `+ rating,userRatingCount,regularOpeningHours,priceLevel,priceRange`                             |
-| `detail`   | explicit open by admin/user               | Details E + Atmosphere      | 25   | `+ reviews`                                                                                      |
+| Tier       | When                                      | SKU                         | $/1k | Fields                                                                                    |
+| ---------- | ----------------------------------------- | --------------------------- | ---- | ----------------------------------------------------------------------------------------- |
+| `liveness` | refresh; id/moved-place verification only | Details Essentials IDs-Only | 0    | `id,movedPlaceId`                                                                         |
+| `core`     | every resolve                             | Details Pro                 | 17   | `id,displayName,formattedAddress,location,businessStatus,primaryType,types,googleMapsUri` |
+| `quality`  | row accepted / preview shown / publish    | Details Enterprise          | 20   | `+ rating,userRatingCount,regularOpeningHours,priceLevel`                                 |
+| `detail`   | explicit open by admin/user               | Details E + Atmosphere      | 25   | `+ reviews`                                                                               |
 
-Bulk jobs never request `detail`. Each call records its tier so cost per SKU
+GoGo-BE#509 (ADR-0030) removed `photos` from `core` and `priceRange` from
+`quality`: both were bought on every call and read by nothing. Neither removal
+changes the tier's SKU. Photos are fetched only for display, by a separate
+operation (`google.details.photos`, mask `id,photos`, IDs Only) plus one
+`google.photoMedia` call per shown photo, and are never stored.
+
+`detail` has no production caller today. Each call records its tier so cost per SKU
 is attributable (`places_provider_requests_total{method,status}`), and the
 masks are pinned by equality in `google-places-field-mask.spec.ts`: the field
 mask _is_ the cost decision, so changing one is a cost change that needs the

@@ -1,5 +1,6 @@
 import {
   MetricsQueryError,
+  ProviderCallAbortedError,
   ProviderConfigurationError,
   ProviderQuotaExceededError,
   ProviderInvalidRequestError,
@@ -106,6 +107,9 @@ export async function withResilience<T>(
       // Quota exhaustion is a budget decision, not a transient fault: retrying
       // only burns more of it, so it propagates untouched to the caller.
       if (err instanceof ProviderQuotaExceededError) throw err;
+      // GoGo-BE#509: the caller's own deadline. Nothing about the provider is
+      // learned from it, so no retry and no breaker count.
+      if (err instanceof ProviderCallAbortedError) throw err;
       // #273: neither is a configuration fault. An API that is not enabled on
       // our project answers the second and third attempt exactly as it
       // answered the first, and each of those attempts counts toward the

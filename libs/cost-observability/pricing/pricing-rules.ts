@@ -548,6 +548,25 @@ export const PRICING_RULES: readonly PricingRule[] = [
     freeAllowance: monthlySku(1_000, 'request'),
     sourceReference: `${FETCHED}. Mask is \`PLACE_FIELD_MASKS.detail\` — adds \`reviews\`, which is the Atmosphere field.`,
   }),
+  /**
+   * GoGo-BE#509 — transient Place Detail photos (owner decision 2026-10-02,
+   * ADR-0030). Each displayed photo is one Place Details Photos call. The
+   * reference lookup before it (`google.details.photos`) is IDs Only and free,
+   * and is metered as calls only — see the registry.
+   */
+  googleRule({
+    serviceId: 'google.places',
+    operationId: 'google.photoMedia',
+    usageMetricId: 'google.photoMedia/requests',
+    billingSkuId: 'places.details.photos',
+    // The operation is new in #509, so no earlier day carries usage for it and
+    // dating the rule from the seed's start re-prices nothing.
+    effectiveFrom: '2026-09-01',
+    pricingModel: 'PER_1K_REQUESTS',
+    unitPriceMicros: 7_000_000,
+    freeAllowance: monthlySku(1_000, 'request'),
+    sourceReference: `developers.google.com/maps/billing-and-pricing/pricing, fetched 2026-10-02: "Places API Place Details Photos" (Enterprise category), "$7.00" per 1,000 in the first paid band, 1,000 free events per month. One call per displayed photo; the image read that follows (googleusercontent.com, no key) is not a Places request.`,
+  }),
   googleRule({
     serviceId: 'google.places',
     operationId: 'google.autocomplete',
@@ -609,6 +628,18 @@ export const PRICING_RULES: readonly PricingRule[] = [
       'Google Maps Platform pricing — Routes API, Compute Route Matrix Essentials (developers.google.com/maps/billing-and-pricing/pricing, page updated 2026-09-01; billing rules developers.google.com/maps/documentation/routes/usage-and-billing), verified 2026-09-05: billable unit = element returned, elements = origins × destinations; free usage cap 10,000 elements/month; first paid tier $5.00 / 1,000; later volume tiers $4.00 / $3.00 / $1.50 / $0.38 per 1,000 are NOT modelled — exact only through the first paid tier (≤ 100,000 elements month-to-date), a ceiling above it. Essentials because the adapter sends no routingPreference (TRAFFIC_UNAWARE), travelMode DRIVE, no extraComputations / routeModifiers / departureTime, Essentials-only field mask; TRAFFIC_AWARE would be Pro (5,000 free, $10 / 1,000). Billed per matrix element, which is why the adapter increments by destinations.length and not by one.',
     reviewedAt: '2026-09-05',
   },
+  googleRule({
+    serviceId: 'google.places',
+    operationId: 'google.details.photos',
+    usageMetricId: 'google.details.photos/calls',
+    billingSkuId: null,
+    effectiveFrom: '2026-09-01',
+    pricingModel: 'FREE',
+    unitPriceMicros: 0,
+    freeAllowance: null,
+    sourceReference:
+      'GoGo-BE#509 — photo references for one Place Detail view, mask `id,photos` (`PHOTO_DISPLAY_FIELD_MASK`). developers.google.com/maps/documentation/places/web-service/data-fields, fetched 2026-10-02, lists `photos` under "Place Details Essentials (IDs Only)" (unlimited free). Calls-only: the IDs-Only SKU is registered to `google.details.liveness`. New operation, so no earlier day carries usage.',
+  }),
   googleRule({
     serviceId: 'google.places',
     operationId: 'google.expand',

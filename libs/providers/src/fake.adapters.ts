@@ -1,4 +1,6 @@
 import {
+  ProviderCallAbortedError,
+  ProviderInvalidRequestError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   SheetAccessError,
@@ -14,8 +16,11 @@ import type {
   PlaceDescriptionTier,
   PlaceFetchTier,
   NotificationProviderPort,
+  PlacePhotoDisplayPort,
   PlaceProviderPort,
   PlaceSearchOptions,
+  ProviderDisplayPhotoRef,
+  ProviderPhotoMedia,
   ProviderCandidateIdentity,
   ProviderPlaceIdentity,
   PushSendResult,
@@ -38,6 +43,75 @@ const defaultHours = Array.from({ length: 7 }, (_, day) => ({
   closeMinute: 22 * 60,
   isOvernight: false,
 }));
+
+/**
+ * GoGo-BE#509 — the display-photo port, deterministic and inspectable.
+ *
+ * Records every call so a test can assert what a request would have been
+ * billed for, and can be told to fail, hang or answer about another id.
+ */
+export class FakePlacePhotoDisplay implements PlacePhotoDisplayPort {
+  readonly photos = new Map<string, ProviderDisplayPhotoRef[]>();
+  readonly media = new Map<string, ProviderPhotoMedia>();
+  /** Provider ids asked for, in order. */
+  readonly refCalls: string[] = [];
+  /** Photo references turned into bytes, in order — each one a billed call. */
+  readonly mediaCalls: string[] = [];
+  /** Answer as if Google had moved the place to this id. */
+  answerAs: string | null = null;
+  failing = false;
+  /** Never settle — the caller's deadline (its signal) is what ends the wait. */
+  hanging = false;
+  /** Photo names Google would reject as expired (`NOT_FOUND`). */
+  readonly expired = new Set<string>();
+  /** Calls that ran after the caller had already given up — must stay 0. */
+  callsAfterAbort = 0;
+
+  private async hang(signal: AbortSignal | undefined): Promise<never> {
+    return new Promise<never>((_, reject) => {
+      signal?.addEventListener('abort', () => reject(new ProviderCallAbortedError('fake.photos')), {
+        once: true,
+      });
+    });
+  }
+
+  seed(providerPlaceId: string, photos: ProviderDisplayPhotoRef[]): void {
+    this.photos.set(providerPlaceId, photos);
+  }
+
+  seedMedia(reference: string, media: ProviderPhotoMedia): void {
+    this.media.set(reference, media);
+  }
+
+  async photoRefs(
+    providerPlaceId: string,
+    options: { signal?: AbortSignal | undefined } = {},
+  ): Promise<{ providerPlaceId: string; photos: ProviderDisplayPhotoRef[] } | null> {
+    if (options.signal?.aborted) this.callsAfterAbort += 1;
+    this.refCalls.push(providerPlaceId);
+    if (this.hanging) await this.hang(options.signal);
+    if (this.failing) throw new ProviderUnavailableError('fake.photos');
+    const photos = this.photos.get(providerPlaceId);
+    if (!photos) return null;
+    return { providerPlaceId: this.answerAs ?? providerPlaceId, photos };
+  }
+
+  async photoMedia(
+    reference: string,
+    options: { maxWidthPx: number; maxBytes: number; signal?: AbortSignal | undefined },
+  ): Promise<ProviderPhotoMedia | null> {
+    if (options.signal?.aborted) this.callsAfterAbort += 1;
+    this.mediaCalls.push(reference);
+    if (this.hanging) await this.hang(options.signal);
+    if (this.failing) throw new ProviderUnavailableError('fake.photos');
+    if (this.expired.has(reference)) {
+      throw new ProviderInvalidRequestError('fake.photos', 'NOT_FOUND');
+    }
+    const media = this.media.get(reference);
+    if (!media || media.bytes.byteLength > options.maxBytes) return null;
+    return media;
+  }
+}
 
 export class FakePlaceProvider implements PlaceProviderPort {
   readonly registry = new Map<string, ResolvedProviderPlace>();
@@ -76,7 +150,6 @@ export class FakePlaceProvider implements PlaceProviderPort {
       // generic parents that hang off almost every commercial place.
       types: ['cafe', 'coffee_shop', 'food', 'point_of_interest', 'establishment'],
       googleMapsUri: `https://maps.google.com/?cid=${place.providerPlaceId}`,
-      photos: [],
       fetchTier: 'quality',
       attribution: 'Data © Fake Provider',
       raw: {},
