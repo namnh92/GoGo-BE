@@ -78,13 +78,14 @@ GoGo-BE issue for the email change), never a SQL edit.
 - `accessSso: true` means Access is configured. It does not mean Access is healthy.
 - An agent cannot sign in on its own while the owner's Access session has expired. Script actions
   are audited under the person whose assertion was used.
-- Refusals appear in the request log as `request failed {code: PASSWORD_LOGIN_DISABLED}`. Boot logs
-  one line when the door is closed.
+- Every refusal (login, and refresh of a password-born session) logs a warning with no email or IP.
+  Boot logs one line when the door is closed.
 
 ## Migration & rollback
 
-Migration `0071` adds a nullable column with a check constraint. It is catalogue-only, with a bounded
-lock wait. An older API ignores the column, so keep it on rollback.
+Migration `0071` adds a nullable column with no table rewrite and a bounded lock wait. Its check
+constraint is added `NOT VALID`, so no scan of existing rows happens under the exclusive lock (every
+existing row is NULL, which satisfies it). An older API ignores the column, so keep it on rollback.
 
 Rollout order (each step leaves a working door): API with this change → CMS that reads `methods` →
 `CF_ACCESS_*` in SSM → observe an SSO session authorise a super-admin request → only then

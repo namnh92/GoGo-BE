@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { authenticator } from 'otplib';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
@@ -150,6 +150,7 @@ export class AdminAuthService {
   }
 
   private readonly secrets: SecretBox;
+  private readonly logger = new Logger(AdminAuthService.name);
 
   /** The step a code belongs to, used to refuse a replay of one already spent. */
   private static stepOf(delta: number): number {
@@ -166,6 +167,10 @@ export class AdminAuthService {
     // correct and a wrong password get the identical answer, no lockout row
     // and no audit row are written: there is no oracle and no actor here.
     if (!this.config.CMS_PASSWORD_LOGIN_ENABLED) {
+      // A warning, not the filter's info line: password traffic against a
+      // closed door is either a stale client or someone probing, and either
+      // is worth seeing at the warn level operators watch. No email, no IP.
+      this.logger.warn('cms.login refused: password door closed (PASSWORD_LOGIN_DISABLED)');
       throw AppError.forbidden(
         'PASSWORD_LOGIN_DISABLED',
         'Password sign-in is turned off for this environment; sign in through Cloudflare Access',
@@ -339,6 +344,7 @@ export class AdminAuthService {
     // it keeps being used. NULL predates the column and fails closed.
     const authMethod: AdminAuthMethod = session.authMethod ?? 'password';
     if (!this.config.CMS_PASSWORD_LOGIN_ENABLED && authMethod !== 'access_sso') {
+      this.logger.warn('cms.refresh refused: password-born session after the door closed');
       await this.revokeFamily(session.familyId, 'password_login_disabled');
       throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
     }

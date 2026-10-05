@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
 import { authenticator } from 'otplib';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -751,6 +751,29 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
         .where(eq(schema.adminUsers.email, email))
     ).filter((row) => !before.includes(row.id));
 
+  /*
+   * Migration 0071 adds the CHECK NOT VALID so no scan runs under the
+   * exclusive lock (review F-01). NOT VALID still binds every write.
+   */
+  it('refuses an unknown door on write even though the check was added NOT VALID', async () => {
+    const [constraint] = (
+      await pool.query(
+        `select convalidated from pg_constraint where conname = 'admin_sessions_auth_method_check'`,
+      )
+    ).rows as { convalidated: boolean }[];
+    expect(constraint?.convalidated).toBe(false);
+
+    const email = 'bad-door@gogo.local';
+    await createAdmin(email, 'editor');
+    await expect(
+      pool.query(
+        `update admin_sessions set auth_method = 'magic_link'
+           where admin_id = (select id from admin_users where email = $1)`,
+        [email],
+      ),
+    ).rejects.toThrow(/admin_sessions_auth_method_check/);
+  });
+
   it('reports which doors are open, without a session and without caching', async () => {
     const before = await api().inject({ method: 'GET', url: '/v1/cms/auth/methods' });
     expect(before.statusCode).toBe(200);
@@ -820,22 +843,43 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
     expect(family.some((row) => row.reason === 'password_login_disabled')).toBe(true);
   });
 
-  it('treats a session from before the column existed as password-born', async () => {
+  /*
+   * A session from before the column existed (NULL) counts as password-born:
+   * it refreshes while the door is open, and once the door closes the first
+   * refresh revokes the whole family — every row, with the reason.
+   */
+  it('treats a session from before the column existed as password-born, both ways', async () => {
     const email = 'legacy-session@gogo.local';
     await createAdmin(email, 'editor');
+    const before = await sessionIds(email);
     const opened = await login(email, ADMIN_PASSWORD);
-    await db
-      .update(schema.adminSessions)
-      .set({ authMethod: null })
-      .where(
-        sql`${schema.adminSessions.adminId} = (select id from admin_users where email = ${email})`,
-      );
+    const legacy = async () => {
+      const ids = (await sessionsAfter(email, before)).map((row) => row.id);
+      await db
+        .update(schema.adminSessions)
+        .set({ authMethod: null })
+        .where(inArray(schema.adminSessions.id, ids));
+    };
+    await legacy();
+
+    // Door open: a legacy session rotates as it always did.
+    const rotated = await refresh(opened.json().refreshToken as string);
+    expect(rotated.statusCode).toBe(201);
+    await legacy();
 
     await withDoors(false, async () => {
-      const refused = await refresh(opened.json().refreshToken as string);
+      const refused = await refresh(rotated.json().refreshToken as string);
       expect(refused.statusCode).toBe(401);
       expect(refused.json().code).toBe('SESSION_REVOKED');
     });
+
+    const family = await sessionsAfter(email, before);
+    expect(family).toHaveLength(2);
+    for (const row of family) {
+      expect(row.method).toBeNull();
+      expect(row.revokedAt).not.toBeNull();
+      expect(row.reason).toBe('password_login_disabled');
+    }
   });
 
   it('keeps Access as a working door: exchange opens a session that refreshes and stays SSO', async () => {
@@ -857,20 +901,49 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
     expect(methods.every((row) => row.method === 'access_sso')).toBe(true);
   });
 
+  /*
+   * The refusal comes before any verification: a malformed assertion still
+   * gets CROSS_SITE_REQUEST, and the verifier is never reached. A repeated
+   * header arrives joined ("same-origin, cross-site") and is refused too.
+   */
   it('refuses an exchange a browser labels cross-origin, before verifying anything', async () => {
     const email = 'cross-site@gogo.local';
     await createAdmin(email, 'editor');
+    const verify = vi.spyOn(app.get(CloudflareAccessService), 'verify');
 
-    await withDoors(false, async () => {
-      for (const site of ['cross-site', 'same-site', 'none']) {
-        const res = await exchange(email, { 'sec-fetch-site': site });
-        expect(res.statusCode).toBe(403);
-        expect(res.json().code).toBe('CROSS_SITE_REQUEST');
-      }
-      // A script presenting its own assertion sends no Sec-Fetch-Site.
-      const headless = await exchange(email);
-      expect(headless.statusCode).toBe(201);
-    });
+    try {
+      await withDoors(false, async () => {
+        for (const site of ['cross-site', 'same-site', 'none']) {
+          const res = await api().inject({
+            method: 'POST',
+            url: '/v1/cms/auth/access-exchange',
+            remoteAddress: ip(),
+            headers: { 'cf-access-jwt-assertion': 'not.a.jwt', 'sec-fetch-site': site },
+          });
+          expect(res.statusCode).toBe(403);
+          expect(res.json().code).toBe('CROSS_SITE_REQUEST');
+        }
+        const repeated = await api().inject({
+          method: 'POST',
+          url: '/v1/cms/auth/access-exchange',
+          remoteAddress: ip(),
+          headers: {
+            'cf-access-jwt-assertion': 'not.a.jwt',
+            'sec-fetch-site': ['same-origin', 'cross-site'],
+          },
+        });
+        expect(repeated.statusCode).toBe(403);
+        expect(repeated.json().code).toBe('CROSS_SITE_REQUEST');
+        expect(verify).not.toHaveBeenCalled();
+
+        // A script presenting its own assertion sends no Sec-Fetch-Site.
+        const headless = await exchange(email);
+        expect(headless.statusCode).toBe(201);
+        expect(verify).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      verify.mockRestore();
+    }
   });
 });
 

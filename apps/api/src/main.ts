@@ -45,7 +45,7 @@ export async function createApp(
   if (!config.CMS_PASSWORD_LOGIN_ENABLED) {
     // #679 / ADR-0032 — say at boot which CMS door is closed, so a deploy log
     // answers "why does password sign-in refuse" without reading SSM. Each
-    // refusal is already logged by the exception filter with its code.
+    // refusal is also logged at warn by AdminAuthService.
     logger.info(
       { cmsPasswordLogin: false, cmsAccessSso: Boolean(config.CF_ACCESS_TEAM_DOMAIN) },
       'CMS password sign-in is disabled; Cloudflare Access is the only way in',
