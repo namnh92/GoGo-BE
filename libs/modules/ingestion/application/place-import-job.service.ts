@@ -1524,6 +1524,27 @@ export class PlaceImportJobService {
     return true;
   }
 
+  /**
+   * SA-F-12 — the decision paths' form of `refuseStaleContact`: the row is
+   * marked `validation_failed` with its column errors, and the request is
+   * refused with the same errors, so the console can show them.
+   */
+  private async assertContactCurrent(
+    jobId: string,
+    rowId: string,
+    normalized: NormalizedImportRow,
+  ): Promise<void> {
+    const errors = staleContactErrors(normalized);
+    if (errors.length === 0) return;
+    await this.refuseStaleContact(rowId, normalized);
+    await this.refreshCounters(jobId);
+    throw AppError.conflict(
+      'CONTACT_EVIDENCE_REQUIRED',
+      'Dòng có địa chỉ / điện thoại / website chưa đạt quy tắc nguồn — sửa sheet và tải lại',
+      errors.map((e) => ({ field: e.field ?? 'contact', code: e.code, message: e.message })),
+    );
+  }
+
   private countRow(status: string, errorCode?: string): void {
     this.metrics.increment('place_import_rows_total', { status, error_code: errorCode });
   }
@@ -1767,6 +1788,9 @@ export class PlaceImportJobService {
 
   async confirmCandidate(jobId: string, rowId: string, googlePlaceId: string, adminId: string) {
     const row = await this.requireRow(jobId, rowId);
+    // SA-F-12 — a decision is a path to `imported` like any other: the row's
+    // stored contacts are checked before the catalogue or Google is asked.
+    await this.assertContactCurrent(jobId, rowId, normalizedOf(row));
     const allowed = row.candidates.some((c) => c.googlePlaceId === googlePlaceId);
     if (!allowed) {
       // Only ids the resolver actually surfaced — never an arbitrary provider
@@ -1835,6 +1859,9 @@ export class PlaceImportJobService {
 
   async mergeRow(jobId: string, rowId: string, placeId: string, adminId: string) {
     const row = await this.requireRow(jobId, rowId);
+    // SA-F-12 — merging reports the row `imported`; a row whose contacts fail
+    // today's rules must not get there, and must not spend a provider call.
+    await this.assertContactCurrent(jobId, rowId, normalizedOf(row));
     if (!row.resolvedGooglePlaceId) {
       throw AppError.conflict('ROW_NOT_RESOLVED', 'Dòng chưa resolve được provider place');
     }
@@ -1967,6 +1994,14 @@ export class PlaceImportJobService {
     /** GoGo-BE#280 — the admin publishing the row: the actor its evidence is recorded under. */
     actorId: string,
   ): Promise<string> {
+    // SA-F-12 — guarded at its caller too; kept here so no future caller can
+    // publish a row whose stored contacts fail today's rules.
+    if (staleContactErrors(normalizedOf(row)).length > 0) {
+      throw AppError.conflict(
+        'CONTACT_EVIDENCE_REQUIRED',
+        'Dòng có liên hệ chưa đạt quy tắc nguồn',
+      );
+    }
     if (!row.resolvedGooglePlaceId) {
       throw AppError.conflict('ROW_NOT_RESOLVED', 'Dòng chưa resolve được provider place');
     }

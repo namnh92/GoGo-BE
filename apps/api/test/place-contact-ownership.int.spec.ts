@@ -1163,6 +1163,153 @@ describe('#280 review round 3 (DEV-F-11, DEV-F-12, SA-F-11)', () => {
     expect(await placeLinkedTo('fake-legacy-ready')).toBeUndefined();
   });
 
+  const decision = (jobId: string, rowId: string, path: string, payload: object) =>
+    api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${jobId}/rows/${rowId}/${path}`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload,
+    });
+
+  async function legacyReadyRow(googlePlaceId: string, name: string, lat: number) {
+    places.seed({ providerPlaceId: googlePlaceId, name, lat, lng: 106.71 });
+    const jobId = await runImport(
+      [importRow(`M-${googlePlaceId}`, googlePlaceId, {})],
+      'create_drafts',
+      `${googlePlaceId}.csv`,
+    );
+    const rows = await imports.listRows(jobId, { limit: 10, offset: 0 });
+    expect(rows.items[0]!.status).toBe('ready');
+    await makeLegacy(jobId);
+    return { jobId, rowId: rows.items[0]!.id as string };
+  }
+
+  it('SA-F-12: mergeRow refuses a legacy row instead of reporting it imported', async () => {
+    const target = await makePlace({ status: 'published' });
+    const { jobId, rowId } = await legacyReadyRow('fake-legacy-merge', 'Quán Gộp', 10.81);
+    const calls = places.tiersRequested.length;
+    const res = await decision(jobId, rowId, 'merge', { placeId: target.id });
+    // FAIL-before: 201, row `imported`, the phone dropped without a word.
+    expect(res.statusCode, res.body).toBe(409);
+    expect(res.json().code).toBe('CONTACT_EVIDENCE_REQUIRED');
+    expect(res.json().field_errors[0]).toMatchObject({
+      field: 'phone_source_type',
+      code: 'PHONE_EVIDENCE_REQUIRED',
+    });
+    const after = await imports.listRows(jobId, { limit: 10, offset: 0 });
+    expect(after.items[0]!.status).toBe('validation_failed');
+    expect(places.tiersRequested.length).toBe(calls);
+  });
+
+  it('SA-F-12: mergeRow refuses a legacy row that publish already marked validation_failed', async () => {
+    const target = await makePlace({ status: 'published' });
+    const { jobId, rowId } = await legacyReadyRow('fake-legacy-merge2', 'Quán Gộp Hai', 10.82);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${jobId}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect((await imports.listRows(jobId, { limit: 10, offset: 0 })).items[0]!.status).toBe(
+      'validation_failed',
+    );
+    const calls = places.tiersRequested.length;
+    const res = await decision(jobId, rowId, 'merge', { placeId: target.id });
+    expect(res.statusCode, res.body).toBe(409);
+    expect((await imports.listRows(jobId, { limit: 10, offset: 0 })).items[0]!.status).toBe(
+      'validation_failed',
+    );
+    expect(places.tiersRequested.length).toBe(calls);
+  });
+
+  it('SA-F-12: confirmCandidate refuses a legacy row before asking Google', async () => {
+    places.seed({
+      providerPlaceId: 'fake-legacy-twin-a',
+      name: 'Bún Song Sinh',
+      lat: 10.83,
+      lng: 106.72,
+    });
+    places.seed({
+      providerPlaceId: 'fake-legacy-twin-b',
+      name: 'Bún Song Sinh',
+      lat: 10.8301,
+      lng: 106.7201,
+    });
+    const jobId = await runImport(
+      ['C-9,Bún Song Sinh,Hồ Chí Minh,cafe'],
+      'create_drafts',
+      'legacy-twins.csv',
+      'source_row_id,name,city,category',
+    );
+    const rows = await imports.listRows(jobId, { limit: 10, offset: 0 });
+    const row = rows.items[0]!;
+    expect(row.candidates.length, row.status).toBeGreaterThan(0);
+    await makeLegacy(jobId);
+    const calls = places.tiersRequested.length;
+    const res = await decision(jobId, row.id as string, 'confirm-candidate', {
+      googlePlaceId: row.candidates[0]!.googlePlaceId,
+    });
+    // FAIL-before: Google was asked first and the row went on to `ready`.
+    expect(res.statusCode, res.body).toBe(409);
+    expect(res.json().code).toBe('CONTACT_EVIDENCE_REQUIRED');
+    expect(places.tiersRequested.length).toBe(calls);
+    expect((await imports.listRows(jobId, { limit: 10, offset: 0 })).items[0]!.status).toBe(
+      'validation_failed',
+    );
+  });
+
+  it('SA-F-14: the previous console’s whole save sequence is refused and changes nothing', async () => {
+    const place = await makePlace();
+    expect(
+      (
+        await patch(place.id, {
+          phone: '0283 822 4444',
+          provenance: { phone: EVIDENCE },
+          expectedUpdatedAt: place.updatedAt.toISOString(),
+        })
+      ).statusCode,
+    ).toBe(200);
+    const before = (await provenanceOf(place.id)).get('phone')!;
+
+    // The release before #280, step for step: its UPDATE of the row first, then
+    // its provenance rewrite (`editorial`, null reference), in one transaction,
+    // never declaring a #280 writer. In the API this surfaces as 500 INTERNAL.
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await expect(
+        client.query(
+          `update places set phone = '+842838229999', updated_at = now() where id = $1`,
+          [place.id],
+        ),
+      ).rejects.toMatchObject({ code: 'P0280' });
+      // The aborted transaction cannot reach its provenance rewrite at all.
+      await expect(
+        client.query(
+          `insert into place_field_provenance (place_id, field, source_type, source_reference)
+           values ($1, 'phone', 'editorial', null)
+           on conflict (place_id, field) do update set source_type = 'editorial',
+             source_reference = null, verified_at = now(), updated_at = now()`,
+          [place.id],
+        ),
+      ).rejects.toMatchObject({ code: '25P02' });
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+
+    const [after] = await db.select().from(schema.places).where(eq(schema.places.id, place.id));
+    expect(after!.phone).toBe('+842838224444');
+    const prov = (await provenanceOf(place.id)).get('phone')!;
+    expect(prov).toMatchObject({
+      sourceType: before.sourceType,
+      sourceReference: before.sourceReference,
+    });
+    expect((await cmsDetail(place.id)).json().provenance.phone.ownership).toBe('gogo');
+  });
+
   it('SA-F-11: forward → rollback → forward keeps evidenced contacts GoGo’s', async () => {
     // Forward: a community-evidenced address, written by this release.
     const place = await makePlace();

@@ -198,26 +198,41 @@ phone, website ON places` trigger `places_guard_evidenced_contacts`. An
 `editorial`, and never touches the provenance table. Rolled back onto data this
 release wrote, it would overwrite a `community`- or `provider`-evidenced address
 with Google's while the evidence row stayed — and a later roll-forward would
-report Google's text as `gogo`. The trigger makes that write fail instead: the
-old worker marks that import row failed and the evidenced value survives.
-Rows without `collected_at` (everything written before #280) are not guarded,
-so the old release behaves exactly as before on old data. Test:
-`place-contact-ownership.int.spec.ts` "SA-F-11: forward → rollback → forward".
+report Google's text as `gogo`. The trigger refuses that write instead. Rows
+without `collected_at` (everything written before #280) are not guarded, so the
+old release behaves exactly as before on old data.
+
+**What the previous release can and cannot do on evidenced data.** Exactly
+these old-release writes are refused, and these are the errors operators see:
+
+| Old-release write                                                                              | When refused                                               | What the operator sees                                                                                                                                                     |
+| ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Worker `update_existing` refreshing `address_text` from Google                                 | the place's address has evidence and Google's text differs | the import row turns `failed` with `ROW_PROCESSING_FAILED`; its message carries the database error text `GOGO_CONTACT_EVIDENCE_GUARD: …`                                   |
+| Console place edit (`PATCH /cms/places/{id}`) that changes `addressText`, `phone` or `website` | that field has evidence                                    | `500 INTERNAL` — the old code runs its `UPDATE places` _before_ rewriting provenance and never declares a writer, so the trigger aborts the whole save; nothing is written |
+
+Not refused: old console edits that leave the evidenced contact values as they
+are (a whole-form save re-sending the same value changes nothing the trigger
+looks at), edits of places or fields without evidence, and every insert (link
+import, bulk create, submission approval). Tests:
+`place-contact-ownership.int.spec.ts` "SA-F-11: forward → rollback → forward"
+(old worker's write) and "SA-F-14: the previous console's whole save sequence"
+(old `UPDATE` followed by its provenance rewrite → `P0280`, nothing changed).
 
 **Rollback procedure.**
 
-1. Roll back API and worker **together** to the previous release (one
+1. **Before rolling back**, freeze contact edits: tell editors not to change
+   address, phone or website in the console, and pause `update_existing`
+   imports. Both would fail during the window (table above); the freeze
+   turns those failures from surprises into a known pause.
+2. Roll back API and worker **together** to the previous release (one
    `deploy-dev` run pins both). Do not run a new API against an old worker or
-   the reverse: the old worker's `update_existing` is the writer the guard
-   exists for, and a mixed pair only makes its failures harder to read.
-2. Leave migration 0070 applied — column, evidence and trigger stay. During the
-   rollback window, `update_existing` rows for places with evidenced contacts
-   fail with `GOGO_CONTACT_EVIDENCE_GUARD`; that is the guard working, not a
-   defect. Re-run them after rolling forward.
-3. The previous console's contact edits still succeed: they rewrite the
-   provenance row as `editorial` with no reference, which reads as `unknown`
-   after roll-forward — honest, and re-verifiable with evidence.
-4. Roll forward with the same single `deploy-dev` run; nothing needs repair.
+   the reverse.
+3. Leave migration 0070 applied — column, evidence and trigger stay. A
+   `500 INTERNAL` on a contact edit or a `ROW_PROCESSING_FAILED` import row in
+   this window, with `GOGO_CONTACT_EVIDENCE_GUARD` in the API/worker log, is the
+   guard working, not a defect to fix on the old release.
+4. Roll forward with the same single `deploy-dev` run, then lift the freeze
+   and re-run the failed import rows (`retry`). Nothing needs repair.
 
 Rehearsal-only down (never in a rollback): `DROP TRIGGER
 places_guard_evidenced_contacts ON places; DROP FUNCTION
