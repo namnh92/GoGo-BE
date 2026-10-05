@@ -1092,6 +1092,93 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
       expect(await live(target.id)).toHaveLength(0);
     });
 
+    // Round 1 F-01 (SA): password login re-checks the address under the
+    // same lock, so a login that read the old address cannot outlive the change.
+    it('does not let a password login racing the change keep a session under the old address', async () => {
+      const email = 'race-login@gogo.local';
+      const target = await createAdmin(email, 'editor');
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select id from admin_users where id = $1 for update', [target.id]);
+        await client.query(
+          `update admin_users set email = 'race-login-new@gogo.local' where id = $1`,
+          [target.id],
+        );
+        await client.query(
+          `update admin_sessions set revoked_at = now(), revoke_reason = 'email_changed'
+             where admin_id = $1 and revoked_at is null`,
+          [target.id],
+        );
+        const pending = login(email, ADMIN_PASSWORD);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await client.query('commit');
+        const res = await pending;
+        expect(res.statusCode).toBe(401);
+        expect(res.json().code).toBe('INVALID_CREDENTIALS');
+      } finally {
+        client.release();
+      }
+      expect(await live(target.id)).toHaveLength(0);
+    });
+
+    // Round 1 F-01 (DEV) / F-02 (SA): simultaneous exchanges for one account
+    // must all succeed — a share lock upgraded by the last-login write would
+    // deadlock one of them into a 500.
+    it('serves simultaneous exchanges for one account without a deadlock', async () => {
+      const email = 'parallel-sso@gogo.local';
+      await createAdmin(email, 'editor');
+      await withDoors(false, async () => {
+        const results = await Promise.all(Array.from({ length: 5 }, () => exchange(email)));
+        expect(results.map((r) => r.statusCode)).toEqual([201, 201, 201, 201, 201]);
+      });
+    });
+
+    // Round 1 F-02 (DEV): one refresh token presented twice at once rotates
+    // once; the second is reuse and revokes the family — and that revoke
+    // persists.
+    it('rotates a refresh token presented twice at once only once, and revokes the family', async () => {
+      const email = 'parallel-refresh@gogo.local';
+      await createAdmin(email, 'editor');
+      const before = await sessionIds(email);
+      const opened = await login(email, ADMIN_PASSWORD);
+      const token = opened.json().refreshToken as string;
+
+      const results = await Promise.all([refresh(token), refresh(token)]);
+      expect(results.map((r) => r.statusCode).sort()).toEqual([201, 401]);
+
+      const family = await sessionsAfter(email, before);
+      expect(family).toHaveLength(2);
+      for (const row of family) expect(row.revokedAt).not.toBeNull();
+      expect(family.some((row) => row.reason === 'refresh_token_reuse')).toBe(true);
+    });
+
+    // Round 1 F-03: two claims on one address that both pass the pre-check —
+    // the loser gets the documented 409, not a 500.
+    it('answers a concurrent claim on the same address with 409', async () => {
+      const boss = await superAdmin();
+      const first = await createAdmin('claim-a@gogo.local', 'editor');
+      const second = await createAdmin('claim-b@gogo.local', 'editor');
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query(`update admin_users set email = 'claimed@gogo.local' where id = $1`, [
+          first.id,
+        ]);
+        const pending = patch(boss.token, second.id, {
+          email: 'claimed@gogo.local',
+          reason: 'races another claim',
+        });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await client.query('commit');
+        const res = await pending;
+        expect(res.statusCode).toBe(409);
+        expect(res.json().code).toBe('ADMIN_EMAIL_TAKEN');
+      } finally {
+        client.release();
+      }
+    });
+
     it('does not let a refresh racing the change rotate into a revoked family', async () => {
       const email = 'race-refresh@gogo.local';
       const target = await createAdmin(email, 'editor');

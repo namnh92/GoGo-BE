@@ -227,25 +227,38 @@ export class AdminAuthService {
       throw AppError.forbidden('MFA_SETUP_REQUIRED', 'Set up MFA before logging in');
     }
 
-    await this.db
-      .update(schema.adminUsers)
-      .set({ lastLoginAt: sql`now()` })
-      .where(eq(schema.adminUsers.id, admin.id));
-    await writeAudit(this.db, {
-      actorType: 'admin',
-      actorId: admin.id,
-      action: 'admin.login',
-      resourceType: 'admin_user',
-      resourceId: admin.id,
+    // #681 (review F-01, SA) — the identity checked above is checked again
+    // under the admin row's update lock before a session is issued, the lock
+    // an email change holds while it revokes. A login that read the old
+    // address and a change that moved it then serialise: either the session
+    // exists before the change revokes it, or the address no longer matches.
+    const session = await this.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(schema.adminUsers)
+        .where(eq(schema.adminUsers.id, admin.id))
+        .limit(1)
+        .for('update');
+      if (
+        !current ||
+        current.status !== 'active' ||
+        current.email.toLowerCase() !== input.email.toLowerCase()
+      ) {
+        throw AppError.unauthorized('INVALID_CREDENTIALS', 'Email or password is incorrect');
+      }
+      await tx
+        .update(schema.adminUsers)
+        .set({ lastLoginAt: sql`now()` })
+        .where(eq(schema.adminUsers.id, admin.id));
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: admin.id,
+        action: 'admin.login',
+        resourceType: 'admin_user',
+        resourceId: admin.id,
+      });
+      return this.openSession(admin.id, randomUUID(), undefined, 'password', input.meta, tx);
     });
-
-    const session = await this.openSession(
-      admin.id,
-      randomUUID(),
-      undefined,
-      'password',
-      input.meta,
-    );
     return {
       ...session,
       role: admin.role,
@@ -280,9 +293,11 @@ export class AdminAuthService {
    * know which door was used.
    */
   async loginWithAccessIdentity(identity: { email: string }, meta?: ClientMeta) {
-    // #681 (review F-08) — the identity is read and the session opened under a
-    // share lock on the admin row, so an email change (which holds the row for
-    // update while it revokes) serialises with this. Either the exchange
+    // #681 (review F-08) — the identity is read and the session opened under
+    // the admin row's update lock, the same lock an email change holds while it
+    // revokes, so the two serialise. An update lock rather than a share lock:
+    // this transaction writes `last_login_at` to the same row, and two
+    // exchanges each holding a share lock would deadlock upgrading it. Either the exchange
     // commits first and the change then revokes its session, or the change
     // commits first and this re-read no longer matches the old address.
     const { admin, session } = await this.db.transaction(async (tx) => {
@@ -291,7 +306,7 @@ export class AdminAuthService {
         .from(schema.adminUsers)
         .where(sql`lower(${schema.adminUsers.email}) = lower(${identity.email})`)
         .limit(1)
-        .for('share');
+        .for('update');
 
       // Deliberately distinguishable from a bad assertion: the caller proved a
       // real identity, and "you are not staff here" is the true and actionable
@@ -341,76 +356,83 @@ export class AdminAuthService {
    */
   async refresh(refreshToken: string, meta?: ClientMeta) {
     const hash = this.tokens.hashOpaqueToken(refreshToken);
-    const [session] = await this.db
-      .select()
+    // Unlocked, and only to learn whose row to lock. Every decision below is
+    // taken on rows read again under lock.
+    const [found] = await this.db
+      .select({ id: schema.adminSessions.id, adminId: schema.adminSessions.adminId })
       .from(schema.adminSessions)
       .where(eq(schema.adminSessions.refreshTokenHash, hash))
       .limit(1);
-    if (!session) throw AppError.unauthorized('INVALID_REFRESH_TOKEN', 'Session is not valid');
-    if (session.revokedAt) {
-      throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
-    }
-    if (session.supersededAt) {
-      await this.revokeFamily(session.familyId, 'refresh_token_reuse');
-      throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
-    }
-    if (session.expiresAt.getTime() <= Date.now()) {
-      throw AppError.unauthorized('SESSION_EXPIRED', 'Session is not valid');
-    }
-    // #679 / ADR-0032 — refresh slides the expiry forward, so without this a
-    // session opened by password before the door closed would live as long as
-    // it keeps being used. NULL predates the column and fails closed.
-    const authMethod: AdminAuthMethod = session.authMethod ?? 'password';
-    if (!this.config.CMS_PASSWORD_LOGIN_ENABLED && authMethod !== 'access_sso') {
-      this.logger.warn('cms.refresh refused: password-born session after the door closed');
-      await this.revokeFamily(session.familyId, 'password_login_disabled');
-      throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
-    }
+    if (!found) throw AppError.unauthorized('INVALID_REFRESH_TOKEN', 'Session is not valid');
 
-    const [admin] = await this.db
-      .select()
-      .from(schema.adminUsers)
-      .where(eq(schema.adminUsers.id, session.adminId))
-      .limit(1);
-    // The admin row is re-read rather than trusted from the token: a suspended
-    // or demoted admin must not be able to refresh their way onward.
-    if (!admin || admin.status !== 'active') {
-      await this.revokeFamily(session.familyId, 'admin_inactive');
-      throw AppError.forbidden('ADMIN_ONLY', 'Staff account is not active');
-    }
-
-    // #681 (review F-08) — rotate under a share lock on the admin row, taken
-    // before the session is re-read. An email change holds that row for
-    // update while it revokes every session; without the lock a rotation that
-    // read the session just before the revoke would insert a live successor
-    // into a family the change had just revoked.
-    const next = await this.db.transaction(async (tx) => {
-      await tx
-        .select({ id: schema.adminUsers.id })
+    // #681 (review F-08, round 1 F-02). Lock order is the admin row, then the
+    // session row — the order an email change uses — so the two never
+    // deadlock, and a change that revokes the account's sessions cannot
+    // interleave with a rotation. The session row is locked for update, so two
+    // requests presenting the same token serialise: the second sees it
+    // superseded and revokes the family.
+    //
+    // Refusals that revoke return instead of throwing, so the revoke commits
+    // with the transaction; the error is thrown after it.
+    const outcome = await this.db.transaction(async (tx) => {
+      const [admin] = await tx
+        .select()
         .from(schema.adminUsers)
-        .where(eq(schema.adminUsers.id, admin.id))
+        .where(eq(schema.adminUsers.id, found.adminId))
+        .limit(1)
         .for('share');
-      const [current] = await tx
-        .select({
-          revokedAt: schema.adminSessions.revokedAt,
-          supersededAt: schema.adminSessions.supersededAt,
-        })
+      const [session] = await tx
+        .select()
         .from(schema.adminSessions)
-        .where(eq(schema.adminSessions.id, session.id))
-        .limit(1);
-      // Revoked or rotated since the first read: whoever did it already dealt
-      // with the family.
-      if (!current || current.revokedAt || current.supersededAt) {
-        throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
+        .where(eq(schema.adminSessions.id, found.id))
+        .limit(1)
+        .for('update');
+      if (!session) {
+        return { error: AppError.unauthorized('INVALID_REFRESH_TOKEN', 'Session is not valid') };
       }
+      if (session.revokedAt) {
+        return { error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid') };
+      }
+      if (session.supersededAt) {
+        await this.revokeFamily(session.familyId, 'refresh_token_reuse', tx);
+        return { error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid') };
+      }
+      if (session.expiresAt.getTime() <= Date.now()) {
+        return { error: AppError.unauthorized('SESSION_EXPIRED', 'Session is not valid') };
+      }
+      // #679 / ADR-0032 — refresh slides the expiry forward, so without this a
+      // session opened by password before the door closed would live as long
+      // as it keeps being used. NULL predates the column and fails closed.
+      const authMethod: AdminAuthMethod = session.authMethod ?? 'password';
+      if (!this.config.CMS_PASSWORD_LOGIN_ENABLED && authMethod !== 'access_sso') {
+        this.logger.warn('cms.refresh refused: password-born session after the door closed');
+        await this.revokeFamily(session.familyId, 'password_login_disabled', tx);
+        return { error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid') };
+      }
+      // The admin row is re-read rather than trusted from the token: a
+      // suspended or demoted admin must not be able to refresh their way onward.
+      if (!admin || admin.status !== 'active') {
+        await this.revokeFamily(session.familyId, 'admin_inactive', tx);
+        return { error: AppError.forbidden('ADMIN_ONLY', 'Staff account is not active') };
+      }
+
       await tx
         .update(schema.adminSessions)
         .set({ supersededAt: sql`now()`, lastUsedAt: sql`now()` })
         .where(eq(schema.adminSessions.id, session.id));
-
       // A family never changes door: the rotation inherits how it was opened.
-      return this.openSession(admin.id, session.familyId, session.id, authMethod, meta, tx);
+      const next = await this.openSession(
+        admin.id,
+        session.familyId,
+        session.id,
+        authMethod,
+        meta,
+        tx,
+      );
+      return { next, admin };
     });
+    if ('error' in outcome) throw outcome.error;
+    const { next, admin } = outcome;
     return {
       ...next,
       role: admin.role,
@@ -475,8 +497,12 @@ export class AdminAuthService {
     };
   }
 
-  private async revokeFamily(familyId: string, reason: string): Promise<void> {
-    const rows = await this.db
+  private async revokeFamily(
+    familyId: string,
+    reason: string,
+    db: Pick<Db, 'update'> = this.db,
+  ): Promise<void> {
+    const rows = await db
       .update(schema.adminSessions)
       .set({ revokedAt: sql`now()`, revokeReason: reason })
       .where(
@@ -788,6 +814,28 @@ export class AdminAuthService {
     }
     AdminAuthService.assertRoleAssignable(input.role);
     const email = input.email?.trim().toLowerCase();
+    try {
+      return await this.updateAdminLocked({ ...input, email });
+    } catch (error) {
+      // Two changes that both passed the pre-check: the index decides, and the
+      // loser gets the same answer the pre-check would have given (round 1 F-03).
+      if (isUniqueViolation(error, 'admin_users_email_unique')) {
+        throw AppError.conflict('ADMIN_EMAIL_TAKEN', 'Another staff account uses that email');
+      }
+      throw error;
+    }
+  }
+
+  private async updateAdminLocked(input: {
+    id: string;
+    role?: AdminRole | undefined;
+    displayName?: string | undefined;
+    email?: string | undefined;
+    reason: string;
+    actorId: string;
+    actorSessionId?: string | undefined;
+  }) {
+    const email = input.email;
     return this.db.transaction(async (tx) => {
       // Locked for the whole change when the address moves: exchange and
       // refresh take a share lock on this row, so neither can open or rotate a
@@ -1075,4 +1123,13 @@ export class AdminAuthService {
       totalCount: (total.rows[0] as { n: number }).n,
     };
   }
+}
+
+/** Postgres unique violation on one named constraint, through any `cause` chain. */
+function isUniqueViolation(error: unknown, constraint: string): boolean {
+  for (let e: unknown = error; e; e = (e as { cause?: unknown }).cause) {
+    const c = e as { code?: unknown; constraint?: unknown };
+    if (c.code === '23505' && c.constraint === constraint) return true;
+  }
+  return false;
 }
