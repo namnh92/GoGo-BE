@@ -1297,6 +1297,8 @@ describe('#280 review round 3 (DEV-F-11, DEV-F-12, SA-F-11)', () => {
       ).rejects.toMatchObject({ code: '25P02' });
       await client.query('rollback');
     } finally {
+      // Never hand a client back mid-transaction, even when an assertion threw.
+      await client.query('rollback').catch(() => undefined);
       client.release();
     }
 
@@ -1308,6 +1310,88 @@ describe('#280 review round 3 (DEV-F-11, DEV-F-12, SA-F-11)', () => {
       sourceReference: before.sourceReference,
     });
     expect((await cmsDetail(place.id)).json().provenance.phone.ownership).toBe('gogo');
+  });
+
+  it('SA-F-14: the previous console re-saving UNCHANGED evidenced contacts cannot erase their evidence', async () => {
+    const place = await makePlace();
+    expect(
+      (
+        await patch(place.id, {
+          phone: '0283 822 5555',
+          provenance: { phone: EVIDENCE },
+          expectedUpdatedAt: place.updatedAt.toISOString(),
+        })
+      ).statusCode,
+    ).toBe(200);
+    const before = (await provenanceOf(place.id)).get('phone')!;
+
+    // The release before #280's whole-form save: the phone is re-sent as it
+    // is (so the place-column guard has nothing to object to), then its
+    // provenance is rewritten to `editorial` with a NULL reference.
+    // FAIL-before: the rewrite succeeded and roll-forward read `unknown`.
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(
+        `update places set phone = '+842838225555', name = 'Tên sửa bằng console cũ', updated_at = now() where id = $1`,
+        [place.id],
+      );
+      await expect(
+        client.query(
+          `insert into place_field_provenance (place_id, field, source_type, source_reference, actor_id)
+           values ($1, 'phone', 'editorial', null, null)
+           on conflict (place_id, field) do update set source_type = 'editorial',
+             source_reference = null, verified_at = now(), updated_at = now()`,
+          [place.id],
+        ),
+      ).rejects.toMatchObject({ code: 'P0280' });
+      await client.query('rollback');
+    } finally {
+      // Never hand a client back mid-transaction, even when an assertion threw.
+      await client.query('rollback').catch(() => undefined);
+      client.release();
+    }
+
+    const prov = (await provenanceOf(place.id)).get('phone')!;
+    expect(prov).toMatchObject({
+      sourceType: before.sourceType,
+      sourceReference: before.sourceReference,
+      collectedAt: before.collectedAt,
+      verifiedAt: before.verifiedAt,
+    });
+    expect((await cmsDetail(place.id)).json().provenance.phone.ownership).toBe('gogo');
+  });
+
+  it('SA-F-14: an undeclared delete of evidence is refused; deleting the place still cascades', async () => {
+    const place = await makePlace();
+    await patch(place.id, {
+      website: 'chaoban.vn',
+      provenance: { website: EVIDENCE },
+      expectedUpdatedAt: place.updatedAt.toISOString(),
+    });
+    await expect(
+      pool.query(`delete from place_field_provenance where place_id = $1 and field = 'website'`, [
+        place.id,
+      ]),
+    ).rejects.toMatchObject({ code: 'P0280' });
+    expect((await provenanceOf(place.id)).has('website')).toBe(true);
+
+    await pool.query(`delete from places where id = $1`, [place.id]);
+    expect((await provenanceOf(place.id)).size).toBe(0);
+  });
+
+  it('SA-F-14: non-contact provenance and unevidenced contact rows stay writable', async () => {
+    const place = await makePlace({ phone: '+842838226666' });
+    await db.insert(schema.placeFieldProvenance).values([
+      { placeId: place.id, field: 'phone', sourceType: 'editorial' },
+      { placeId: place.id, field: 'city', sourceType: 'editorial' },
+    ]);
+    await pool.query(
+      `update place_field_provenance set source_reference = 'x' where place_id = $1`,
+      [place.id],
+    );
+    await pool.query(`delete from place_field_provenance where place_id = $1`, [place.id]);
+    expect((await provenanceOf(place.id)).size).toBe(0);
   });
 
   it('SA-F-11: forward → rollback → forward keeps evidenced contacts GoGo’s', async () => {

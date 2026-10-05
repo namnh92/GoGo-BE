@@ -184,14 +184,24 @@ retained by an application rollback:
 1. adds one nullable `place_field_provenance.collected_at` column with no
    default — a catalog-only change, no rewrite, short lock — guarded on the
    table existing;
-2. installs the **ownership guard** (SA-F-11): `BEFORE UPDATE OF address_text,
-phone, website ON places` trigger `places_guard_evidenced_contacts`. An
-   UPDATE that changes a contact column whose provenance row carries
-   `collected_at` is refused (`SQLSTATE P0280`) unless the transaction ran
-   `set_config('gogo.contact_write', 'on', true)` — which only this release's
-   writers do (`declareContactWriter`: console edit, import `update_existing`),
-   inside the transaction that rewrites or removes the evidence. Inserts are
-   not guarded; new places have no evidence to protect yet.
+2. installs the **ownership guard**, two triggers, both refusing with
+   `SQLSTATE P0280` unless the transaction ran
+   `set_config('gogo.contact_write', 'on', true)` (`declareContactWriter`):
+   - `places_guard_evidenced_contacts` (SA-F-11) — `BEFORE UPDATE OF
+address_text, phone, website ON places`: refuses changing a contact
+     column whose provenance row carries `collected_at`;
+   - `place_field_provenance_guard_evidence` (SA-F-14) — `BEFORE UPDATE OR
+DELETE ON place_field_provenance`: refuses rewriting or removing an
+     `address_text` / `phone` / `website` provenance row that carries
+     `collected_at` (an `INSERT … ON CONFLICT DO UPDATE` is an update). A
+     cascade from deleting the place itself is allowed.
+
+   Only this release's writers declare: the console edit (when it writes or
+   clears a contact) and import `update_existing`, each inside the
+   transaction that rewrites or removes the evidence. Inserts of new rows are
+   not guarded — a new place has no evidence to protect yet. Non-contact
+   provenance (`name`, `geom`, `province_code`, …) and contact rows without
+   `collected_at` are untouched.
 
 **Why the guard is in the database.** The release before #280 refreshes
 `address_text` from Google in `update_existing` unless the field is claimed
@@ -205,36 +215,44 @@ old release behaves exactly as before on old data.
 **What the previous release can and cannot do on evidenced data.** Exactly
 these old-release writes are refused, and these are the errors operators see:
 
-| Old-release write                                                                              | When refused                                               | What the operator sees                                                                                                                                                     |
-| ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Worker `update_existing` refreshing `address_text` from Google                                 | the place's address has evidence and Google's text differs | the import row turns `failed` with `ROW_PROCESSING_FAILED`; its message carries the database error text `GOGO_CONTACT_EVIDENCE_GUARD: …`                                   |
-| Console place edit (`PATCH /cms/places/{id}`) that changes `addressText`, `phone` or `website` | that field has evidence                                    | `500 INTERNAL` — the old code runs its `UPDATE places` _before_ rewriting provenance and never declares a writer, so the trigger aborts the whole save; nothing is written |
+| Old-release write                                                                                                                                                    | When refused                                                                                                                                           | What the operator sees                                                                                                  |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Worker `update_existing` refreshing `address_text` from Google                                                                                                       | the place's address has evidence and Google's text differs                                                                                             | the import row turns `failed` with `ROW_PROCESSING_FAILED`; its message carries `GOGO_CONTACT_EVIDENCE_GUARD: …`        |
+| Console place save (`PATCH /cms/places/{id}`) whose body carries `addressText`, `phone` or `website` — **changed or not** — on a place where that field has evidence | always: a changed value trips the place guard; an unchanged one trips the evidence guard when the old code rewrites its provenance to `editorial`/NULL | `500 INTERNAL`; the whole save rolls back and nothing is written — the edit to any other field in that save is lost too |
 
-Not refused: old console edits that leave the evidenced contact values as they
-are (a whole-form save re-sending the same value changes nothing the trigger
-looks at), edits of places or fields without evidence, and every insert (link
-import, bulk create, submission approval). Tests:
-`place-contact-ownership.int.spec.ts` "SA-F-11: forward → rollback → forward"
-(old worker's write) and "SA-F-14: the previous console's whole save sequence"
-(old `UPDATE` followed by its provenance rewrite → `P0280`, nothing changed).
+Not refused: old saves that do not carry an evidenced contact field, places
+whose contact fields have no evidence, non-contact provenance, and every insert
+(link import, bulk create, submission approval). Because the previous console
+sends the whole form, in practice **any old-console save of a place with
+evidenced contacts fails**. Tests in `place-contact-ownership.int.spec.ts`:
+"SA-F-11: forward → rollback → forward" (old worker), "SA-F-14: the previous
+console's whole save sequence" (changed value), "SA-F-14: the previous console
+re-saving UNCHANGED evidenced contacts cannot erase their evidence", and the
+delete / non-contact cases.
 
 **Rollback procedure.**
 
-1. **Before rolling back**, freeze contact edits: tell editors not to change
-   address, phone or website in the console, and pause `update_existing`
-   imports. Both would fail during the window (table above); the freeze
-   turns those failures from surprises into a known pause.
+1. **Before rolling back**, freeze: no console edits of places that have
+   evidenced contacts (in practice, any place edited or imported with evidence
+   since #280), and pause `update_existing` imports. Every such write fails
+   during the window (table above); the freeze makes that a planned pause
+   rather than a stream of 500s and lost edits.
 2. Roll back API and worker **together** to the previous release (one
-   `deploy-dev` run pins both). Do not run a new API against an old worker or
-   the reverse.
-3. Leave migration 0070 applied — column, evidence and trigger stay. A
-   `500 INTERNAL` on a contact edit or a `ROW_PROCESSING_FAILED` import row in
-   this window, with `GOGO_CONTACT_EVIDENCE_GUARD` in the API/worker log, is the
-   guard working, not a defect to fix on the old release.
-4. Roll forward with the same single `deploy-dev` run, then lift the freeze
-   and re-run the failed import rows (`retry`). Nothing needs repair.
+   `deploy-dev` run pins both). Never run them on mixed releases.
+3. Leave migration 0070 applied — column, evidence and both triggers stay. A
+   `500 INTERNAL` or `ROW_PROCESSING_FAILED` carrying
+   `GOGO_CONTACT_EVIDENCE_GUARD` in this window is the guard refusing an
+   evidence-destroying write: no data was changed. Do not "fix" it on the old
+   release, and do not drop the triggers to unblock it — that is exactly the
+   evidence loss they prevent.
+4. Roll forward with the same single `deploy-dev` run, lift the freeze, and
+   re-run the failed import rows (`retry`). Edits that failed during the
+   window were never written and must be made again by the editor; no stored
+   value or evidence needs repair, because the guards refused every write that
+   would have damaged them.
 
 Rehearsal-only down (never in a rollback): `DROP TRIGGER
-places_guard_evidenced_contacts ON places; DROP FUNCTION
-guard_evidenced_place_contacts(); ALTER TABLE place_field_provenance DROP
-COLUMN collected_at;`.
+place_field_provenance_guard_evidence ON place_field_provenance; DROP FUNCTION
+guard_contact_evidence(); DROP TRIGGER places_guard_evidenced_contacts ON
+places; DROP FUNCTION guard_evidenced_place_contacts(); ALTER TABLE
+place_field_provenance DROP COLUMN collected_at;`.

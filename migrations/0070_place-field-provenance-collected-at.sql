@@ -74,3 +74,49 @@ DROP TRIGGER IF EXISTS places_guard_evidenced_contacts ON places;
 CREATE TRIGGER places_guard_evidenced_contacts
   BEFORE UPDATE OF address_text, phone, website ON places
   FOR EACH ROW EXECUTE FUNCTION guard_evidenced_place_contacts();
+--> statement-breakpoint
+-- SA-F-14 (Astra, second round) — the evidence itself is guarded too. The
+-- previous release's console rewrites the provenance of every contact field
+-- a whole-form save carries, even unchanged ones, to `editorial` with a NULL
+-- reference; the place-column guard cannot see that (the value does not
+-- change), and the evidence would be lost. So an UPDATE or DELETE of a
+-- contact provenance row that carries #280 evidence (`collected_at`) needs
+-- the same transaction-local declaration as the place columns. An
+-- `INSERT … ON CONFLICT DO UPDATE` is an UPDATE here.
+--
+-- A cascade from deleting the place itself is allowed: the row's place no
+-- longer exists by the time the cascade reaches it, and there is nothing
+-- left to protect.
+--
+-- Rehearsal-only down:
+-- DROP TRIGGER place_field_provenance_guard_evidence ON place_field_provenance;
+-- DROP FUNCTION guard_contact_evidence();
+CREATE OR REPLACE FUNCTION guard_contact_evidence() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.field NOT IN ('address_text', 'phone', 'website') OR OLD.collected_at IS NULL THEN
+    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+  END IF;
+  IF current_setting('gogo.contact_write', true) = 'on' THEN
+    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'DELETE' AND NOT EXISTS (SELECT 1 FROM places WHERE id = OLD.place_id) THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION 'GOGO_CONTACT_EVIDENCE_GUARD: evidence for % on place % may only be changed by a #280 contact writer', OLD.field, OLD.place_id
+    USING ERRCODE = 'P0280';
+END
+$$;
+--> statement-breakpoint
+DO $$
+BEGIN
+  IF to_regclass('public.place_field_provenance') IS NOT NULL THEN
+    DROP TRIGGER IF EXISTS place_field_provenance_guard_evidence ON place_field_provenance;
+    CREATE TRIGGER place_field_provenance_guard_evidence
+      BEFORE UPDATE OR DELETE ON place_field_provenance
+      FOR EACH ROW EXECUTE FUNCTION guard_contact_evidence();
+  END IF;
+END
+$$;

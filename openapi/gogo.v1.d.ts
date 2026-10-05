@@ -12765,6 +12765,15 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            /** @description `CONTACT_EVIDENCE_REQUIRED` (GoGo-BE#280) — the row's stored address / phone / website do not pass today's evidence rules (a row parsed before #280, or with evidence the current guard refuses). Checked before any catalogue or provider lookup, so no provider request is spent. `field_errors` names each column, with the codes a fresh upload would give (`PHONE_EVIDENCE_REQUIRED` on `phone_source_type`, `ADDRESS_EVIDENCE_INVALID` on `address_source_reference`, `WEBSITE_INVALID` on `website`, …). The refusal is **persisted**: the row becomes `validation_failed` with those errors, the job counters are refreshed, and the row can never become `imported` from here — correct the sheet and upload it again. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     mergePlaceImportRow: {
@@ -12797,7 +12806,15 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description `CONTACT_EVIDENCE_REQUIRED` (GoGo-BE#280), besides `ROW_NOT_RESOLVED` — the row's stored address / phone / website do not pass today's evidence rules (a row parsed before #280, or with evidence the current guard refuses). Checked before any catalogue or provider lookup, so no provider request is spent. `field_errors` names each column, with the codes a fresh upload would give (`PHONE_EVIDENCE_REQUIRED` on `phone_source_type`, `ADDRESS_EVIDENCE_INVALID` on `address_source_reference`, `WEBSITE_INVALID` on `website`, …). The refusal is **persisted**: the row becomes `validation_failed` with those errors, the job counters are refreshed, and the row can never become `imported` from here — correct the sheet and upload it again. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     skipPlaceImportRow: {

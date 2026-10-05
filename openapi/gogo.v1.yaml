@@ -4237,6 +4237,23 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `CONTACT_EVIDENCE_REQUIRED` (GoGo-BE#280) — the row's stored
+            address / phone / website do not pass today's evidence rules (a row
+            parsed before #280, or with evidence the current guard refuses).
+            Checked before any catalogue or provider lookup, so no provider
+            request is spent. `field_errors` names each column, with the codes
+            a fresh upload would give (`PHONE_EVIDENCE_REQUIRED` on
+            `phone_source_type`, `ADDRESS_EVIDENCE_INVALID` on
+            `address_source_reference`, `WEBSITE_INVALID` on `website`, …).
+            The refusal is **persisted**: the row becomes `validation_failed`
+            with those errors, the job counters are refreshed, and the row can
+            never become `imported` from here — correct the sheet and upload it
+            again.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/place-imports/{jobId}/rows/{rowId}/merge:
     post:
@@ -4263,7 +4280,23 @@ paths:
               schema: { $ref: '#/components/schemas/ImportRowDecision' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: >
+            `CONTACT_EVIDENCE_REQUIRED` (GoGo-BE#280), besides `ROW_NOT_RESOLVED` — the row's stored
+            address / phone / website do not pass today's evidence rules (a row
+            parsed before #280, or with evidence the current guard refuses).
+            Checked before any catalogue or provider lookup, so no provider
+            request is spent. `field_errors` names each column, with the codes
+            a fresh upload would give (`PHONE_EVIDENCE_REQUIRED` on
+            `phone_source_type`, `ADDRESS_EVIDENCE_INVALID` on
+            `address_source_reference`, `WEBSITE_INVALID` on `website`, …).
+            The refusal is **persisted**: the row becomes `validation_failed`
+            with those errors, the job counters are refreshed, and the row can
+            never become `imported` from here — correct the sheet and upload it
+            again.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/place-imports/{jobId}/rows/{rowId}/skip:
     post:
