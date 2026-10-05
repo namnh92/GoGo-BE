@@ -79,3 +79,9 @@ this ADR can pre-authorize.
 **Rollback.** The behaviour change is additive deletion of three personal
 tables. Reverting the commit restores the previous behaviour; rows already
 deleted are not recoverable from the application, only from a database restore.
+
+**Amendment 2026-10-05 (GoGo-BE#256, ADR-0031).** Deletion also revokes every
+outstanding secure privacy export: the transition to `deleted` bumps
+`users.export_epoch` by trigger, which revokes the artifacts and clears their
+wrapped keys in the same transaction, and the request then deletes their
+ciphertext from storage (the worker sweep retries any refusal).

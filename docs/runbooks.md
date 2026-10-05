@@ -92,7 +92,31 @@ acceptance for this doc.
 
 - Ad-hoc data fixes: through a reviewed migration or CMS API (audited) — never raw psql in prod without a paired audit_logs insert.
 - Retention: worker runs `PrivacyJobs` daily 03:00 ICT; manual dry-run: `PrivacyJobs.run(true)` prints report without writing.
-- Account deletion/export are self-serve (`DELETE /v1/me`, `GET /v1/me/export`); support-initiated equivalents go through the same code path.
+- Account deletion/export are self-serve (`DELETE /v1/me`, `GET /v1/me/export`, secure `POST /v1/me/exports`); support-initiated equivalents go through the same code path.
+
+### Secure privacy exports (GoGo-BE#256, ADR-0031)
+
+- **Never send a raw privacy export by ordinary email, chat or attachment.** Staff
+  never receive the payload: `execute` on an export request and
+  `POST /cms/users/{id}/export` return metadata only. Tell the requester to sign in
+  and open the in-app notification (or `GET /v1/me/exports/{id}`); the download is
+  single-use and expires 24 h after it is ready.
+- **Requester cannot sign in?** There is no alternative channel (owner decision
+  2026-10-05). Recover the account first, then issue the export.
+- **Interrupted download:** single-use means one admitted transfer. Issue a new
+  export (max 3 per account per hour).
+- **Secrets:** `EXPORT_WRAPPING_KEY_V<n>` (SSM, 32 random bytes base64). Rotate by
+  adding the next version and setting `EXPORT_WRAPPING_KEY_ACTIVE`; keep the old
+  version until no artifact wrapped by it remains (24 h + cleanup). Removing every
+  version disables issuance (503) — that is also the rollback.
+- **Alerts:** `privacy_export_cleanup_overdue > 0` (deletion slower than 5 min) or
+  `privacy_export_cleanup_dead_lettered > 0` (log `PRIVACY_EXPORT_CLEANUP_STUCK`).
+  Fix storage, then redrive: `update privacy_export_artifacts set cleanup_dead_at =
+null, cleanup_attempts = 0, cleanup_due_at = now() where cleanup_dead_at is not
+null and cleaned_at is null;` (or `PrivacyExportProcessor.redriveDeadLettered()`),
+  with a paired audit note. BFF access to an expired/revoked export is already denied.
+- **Backstop:** R2 lifecycle deletes `privacy-exports/` objects after 2 days
+  (GoGo-Infra). It is a backstop for orphans, not the expiry mechanism.
 
 ### Google-content purges (ADR-0006 §9.4)
 

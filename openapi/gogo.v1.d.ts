@@ -1717,10 +1717,78 @@ export interface paths {
         /**
          * Export all actor-owned data (privacy rule)
          * @description Everything the account owns, as JSON, from an explicit allowlist: profile (display name, email, locale, avatar URL, home area, interests, usual budget — ADR-0022, date of birth — PROF-BE-013), memberships, preferences, votes, saved items, reviews, review reactions given (ADR-0026), and the push switch (`notificationSettings`, ADR-0025). Never a credential, a session, or an upload key. Audit-logged and recorded in the privacy ledger.
+         *
+         *     Kept for compatibility (GoGo-BE#256). New clients use the secure, asynchronous flow under `/me/exports`.
          */
         get: operations["exportMyData"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a secure, single-use export of this account's data (GoGo-BE#256)
+         * @description ADR-0031. Accepted for generation (202); the worker builds the same allowlisted document as `/me/export`, encrypts it (AES-256-GCM, per-artifact key wrapped by a versioned server key) and stores it privately. When it is ready an in-app notification of kind `privacy_export_ready` carries the export id and expiry — never data, a key or a URL that authorizes anything.
+         *
+         *     `Idempotency-Key` is **required**. A retry with the same key answers the same export's current status (`x-idempotent-replay: true`) and does not spend another generation. One active export per account (pending, generating or ready) across every entry point — a second request is `409 EXPORT_ALREADY_ACTIVE` with the active id in `field_errors[0].message`. At most three generations per account per rolling hour (`429` with `Retry-After`).
+         *
+         *     Only a registered account that can sign in has an export; guests and staff get 403. There is no path for an account that cannot sign in — account recovery comes first.
+         */
+        post: operations["requestSecureExport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/exports/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Status of one of this account's secure exports
+         * @description Never consumes (neither does `HEAD`). Another account's id is a 404 — the id addresses an export, it does not authorize anything.
+         */
+        get: operations["getSecureExport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/exports/{id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Redeem a ready export — consume-once
+         * @description **Consume-once.** The first admitted request moves the export from `ready` to `consumed` atomically and receives the JSON as an attachment (`Content-Disposition: attachment`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, no ranges). Every concurrent or later attempt — including a retry with the same `Idempotency-Key` — is `410` and carries no bytes. Single-use means one admitted transfer, not guaranteed receipt: a transfer interrupted after it was admitted is not reopened; request a new export. An admitted transfer has 60 seconds.
+         *
+         *     Only the account's own active session redeems it; the session is checked against the server's records, so a sign-out elsewhere is honoured. A cookie session must send the CSRF header. A password change or account deletion revokes every outstanding export. The ciphertext is fully authenticated before any byte is sent; a failed check is `500 EXPORT_INTEGRITY_FAILED` and the export is not consumed.
+         */
+        post: operations["downloadSecureExport"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2797,9 +2865,9 @@ export interface paths {
         put?: never;
         /**
          * Ops: subject-access export, made through support
-         * @description The same payload as `/me/export`. The audit entry is the point: a staff member reading somebody's data is an event, and it must be attributable even though the bytes are identical to the self-service export.
+         * @description **Changed in alpha.66 (GoGo-BE#256, ADR-0031): no payload is returned.** Issues a secure export for the account holder to redeem from their own signed-in session (`POST /me/exports/{id}/download`), and records its own linked privacy request (`source: cms`, `in_progress` until the export is available). Staff never receive or forward the data. The account must be able to sign in (`409 SUBJECT_CANNOT_SIGN_IN` otherwise — account recovery first).
          *
-         *     Rate limited per actor — the payload is one person's whole history, and a loop over the user list is a data export nobody authorized.
+         *     Rate limited per actor; one active export per account across every entry point (`409 EXPORT_ALREADY_ACTIVE`).
          */
         post: operations["cmsExportUser"];
         delete?: never;
@@ -2883,7 +2951,9 @@ export interface paths {
          * Ops: run the export or delete for THIS request and close it
          * @description **Explicit linkage.** Same user is not same request: one person may have an export, a delete, a duplicate and a rejected request open at once. Only the request executed here transitions to `completed`. A `POST /cms/users/{id}/delete` outside this workflow never touches the ledger; the console warns instead (`openPrivacyRequestCount`).
          *
-         *     Executing a **delete** requires `super_admin` — the same bar as the direct user delete. An export returns the payload to the caller and nowhere else; the ledger then records only delivery metadata. Correction requests are worked by hand and cannot be executed.
+         *     Executing a **delete** requires `super_admin` — the same bar as the direct user delete. Correction requests are worked by hand and cannot be executed.
+         *
+         *     **Export (changed in alpha.66, GoGo-BE#256, ADR-0031): no payload is returned.** Executing an export issues a secure export for the account holder to redeem from their own session; the request moves to `in_progress` and closes `completed` when the export becomes available. `deliveredAt` is set only when the server observes the holder's download complete. Staff never receive or forward the data.
          */
         post: operations["cmsExecutePrivacyRequest"];
         delete?: never;
@@ -2923,7 +2993,9 @@ export interface paths {
         put?: never;
         /**
          * Ops: record how an export was handed over
-         * @description Metadata only, ever — never the bytes, never a signed URL. The record outlives any artifact and must not be a way back to the data. `secure_download` is the target method (BE-CMS-G13); the runbook forbids raw exports over ordinary email.
+         * @description Metadata only, ever — never the bytes, never a signed URL. The record outlives any artifact and must not be a way back to the data. The runbook forbids raw exports over ordinary email.
+         *
+         *     `secure_download` cannot be asserted here (`400 SECURE_DELIVERY_NOT_ASSERTABLE`, GoGo-BE#256): the server records it when the holder's download completes.
          */
         post: operations["cmsPrivacyRequestDelivered"];
         delete?: never;
@@ -6721,6 +6793,36 @@ export interface components {
          * @enum {string}
          */
         PrivacyRequestOutcome: "completed" | "no_account_found" | "identity_not_verified" | "rejected" | "failed";
+        /** @description GoGo-BE#256, ADR-0031. Facts only. `ready` exports expire 24 hours after `readyAt` (immutable). Terminal states: `consumed`, `expired`, `revoked` (password change or account deletion), `failed`. */
+        PrivacyExportStatus: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            status: "pending" | "generating" | "ready" | "consumed" | "expired" | "revoked" | "failed";
+            /** @enum {string} */
+            initiatedBy: "self" | "support";
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            readyAt?: string;
+            /** Format: date-time */
+            expiresAt?: string;
+            /** Format: date-time */
+            consumedAt?: string;
+            failureCode?: string;
+            revokeReason?: string;
+        };
+        /** @description The CMS view — adds delivery facts, never data, keys or object locations. */
+        PrivacyExportAdminStatus: components["schemas"]["PrivacyExportStatus"] & {
+            /** Format: date-time */
+            transferCompletedAt?: string;
+            transferOutcome?: string;
+            /**
+             * Format: date-time
+             * @description When storage confirmed the ciphertext was deleted.
+             */
+            cleanedAt?: string;
+        };
         PrivacyRequest: {
             /** Format: uuid */
             id: string;
@@ -6760,8 +6862,13 @@ export interface components {
             closedAt?: string;
             /** @enum {string} */
             deliveryMethod?: "in_app" | "secure_download" | "other";
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description For `secure_download`, the server-observed completion of the holder's download (GoGo-BE#256) — never generation or notification.
+             */
             deliveredAt?: string;
+            /** @description GoGo-BE#256 — the latest secure export issued for this request (detail view only). */
+            secureExport?: components["schemas"]["PrivacyExportAdminStatus"];
             /**
              * Format: date-time
              * @description Stamped at closure: closed_at + the retention policy. The job hard-deletes the row at this time unless a hold is in place.
@@ -6818,8 +6925,11 @@ export interface components {
              */
             updatedAt: string | null;
         };
-        /** @enum {string} */
-        NotificationKind: "invite" | "preference_reminder" | "plan_ready" | "plan_changed" | "date_reminder" | "moderation_update";
+        /**
+         * @description `privacy_export_ready` (GoGo-BE#256) is in-app only: its payload is `{ exportId, expiresAt }` and is never pushed.
+         * @enum {string}
+         */
+        NotificationKind: "invite" | "preference_reminder" | "plan_ready" | "plan_changed" | "date_reminder" | "moderation_update" | "privacy_export_ready";
         Review: {
             /** Format: uuid */
             id: string;
@@ -12084,6 +12194,192 @@ export interface operations {
             429: components["responses"]["RateLimited"];
         };
     };
+    requestSecureExport: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted; poll `GET /me/exports/{id}` or wait for the notification. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyExportStatus"];
+                };
+            };
+            /** @description `IDEMPOTENCY_KEY_REQUIRED` or `INVALID_IDEMPOTENCY_KEY`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description `USER_ONLY` — guests and staff have no export. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `EXPORT_ALREADY_ACTIVE` (active id in `field_errors[0].message`), `SUBJECT_CANNOT_SIGN_IN`, or `IDEMPOTENT_REQUEST_IN_FLIGHT`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `IDEMPOTENCY_KEY_REUSED` — same key, different request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description `EXPORT_UNAVAILABLE` — not configured in this environment (not retryable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getSecureExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyExportStatus"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description `USER_ONLY` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    downloadSecureExport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The export document (same allowlist as `GET /me/export`). */
+            200: {
+                headers: {
+                    /** @description `attachment; filename="gogo-export-YYYY-MM-DD.json"` */
+                    "Content-Disposition"?: string;
+                    /** @description `no-store, private, max-age=0` */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description `UNAUTHORIZED`, `INVALID_TOKEN` or `SESSION_REVOKED`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `USER_ONLY` or `CSRF_FAILED`. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `EXPORT_NOT_READY` — still pending or generating. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `EXPORT_GONE` — already consumed, expired, revoked or failed. Request a new export. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description `EXPORT_INTEGRITY_FAILED` — not consumed; request a new export. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `STORAGE_UNAVAILABLE` / `EXPORT_BUSY` (retryable), `EXPORT_UNAVAILABLE` / `EXPORT_KEY_UNAVAILABLE` (not retryable). Nothing is consumed. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     listNotifications: {
         parameters: {
             query?: {
@@ -13963,17 +14259,39 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The account's own data */
-            201: {
+            /** @description Accepted for secure delivery — metadata only */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": {
+                        /** Format: uuid */
+                        privacyRequestId: string;
+                        export: components["schemas"]["PrivacyExportAdminStatus"];
+                    };
                 };
             };
             404: components["responses"]["NotFound"];
+            /** @description `SUBJECT_CANNOT_SIGN_IN` or `EXPORT_ALREADY_ACTIVE`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             429: components["responses"]["RateLimited"];
+            /** @description `EXPORT_UNAVAILABLE` — secure export is not configured here. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsListPrivacyRequests: {
@@ -14113,7 +14431,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Executed and closed as `completed` */
+            /** @description Delete executed and closed as `completed` */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -14121,8 +14439,18 @@ export interface operations {
                 content: {
                     "application/json": {
                         request: components["schemas"]["PrivacyRequest"];
-                        /** @description Present for an export — the same payload `/me/export` returns. */
-                        data?: Record<string, never>;
+                    };
+                };
+            };
+            /** @description Export accepted for secure delivery — metadata only */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        request: components["schemas"]["PrivacyRequest"];
+                        export: components["schemas"]["PrivacyExportAdminStatus"];
                     };
                 };
             };
@@ -14136,7 +14464,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
-            /** @description `ALREADY_CLOSED`, `NOT_EXECUTABLE` (correction), or `IDENTITY_NOT_MATCHED` — match the request to an account first. */
+            /** @description `ALREADY_CLOSED`, `NOT_EXECUTABLE` (correction), `IDENTITY_NOT_MATCHED` — match the request to an account first —, or for an export `SUBJECT_CANNOT_SIGN_IN` / `EXPORT_ALREADY_ACTIVE`. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -14214,6 +14542,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            /** @description `SECURE_DELIVERY_NOT_ASSERTABLE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             404: components["responses"]["NotFound"];
