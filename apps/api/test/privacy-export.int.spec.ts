@@ -100,6 +100,24 @@ async function artifact(id: string) {
   return row!;
 }
 
+/**
+ * The transfer's outcome, the ledger's delivery and the immediate cleanup are
+ * recorded by the finalization that runs once the bytes have left — after the
+ * response, by definition (ADR-0031 §6: `delivered_at` is a server-observed
+ * completion). What the consuming transaction guarantees synchronously is the
+ * durable part: `consumed`, key material cleared, cleanup due. A test that
+ * wants the eventual facts waits for them; the bound only trips on a defect.
+ */
+async function finalized(id: string) {
+  const started = Date.now();
+  for (;;) {
+    const row = await artifact(id);
+    if (row.transferOutcome !== null && row.cleanedAt !== null) return row;
+    if (Date.now() - started > 5_000) throw new Error('transfer never finalized');
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 /** Creates an export for a fresh user and runs the worker until it is ready. */
 async function readyExport(prefix: string) {
   const user = await register(prefix);
@@ -442,12 +460,15 @@ describe('redemption (POST /me/exports/{id}/download)', () => {
     expect(replay.json().code).toBe('EXPORT_GONE');
     expect(replay.body).not.toContain(user.email);
 
-    const row = await artifact(id);
-    expect(row.state).toBe('consumed');
-    expect(row.wrappedKey).toBeNull();
+    // Durable, synchronous with the response: consumed, keys gone, cleanup due.
+    const consumed = await artifact(id);
+    expect(consumed.state).toBe('consumed');
+    expect(consumed.wrappedKey).toBeNull();
+    expect(consumed.cleanupDueAt).not.toBeNull();
+    // Observed once the transfer finalized: outcome, immediate cleanup, delivery.
+    const row = await finalized(id);
     expect(row.transferOutcome).toBe('completed');
     expect(row.transferCompletedAt).not.toBeNull();
-    // Immediate cleanup after consumption.
     expect(row.cleanedAt).not.toBeNull();
     expect(row.objectKey).toBeNull();
     const [request] = await db
@@ -846,6 +867,7 @@ describe('no leakage', () => {
   it('no export content or key material in audit, outbox, ledger, notifications, replay records or logs', async () => {
     const { user, id } = await readyExport('leak');
     expect((await download(user.token, id)).statusCode).toBe(200);
+    await finalized(id); // the audit rows of the transfer are in the dump too
     const needles = [user.email, 'Marker leak', WRAPPING_KEY];
     const dumps = await Promise.all([
       db.execute(sql`select diff::text as t from audit_logs`),
