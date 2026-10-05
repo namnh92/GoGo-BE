@@ -1345,6 +1345,19 @@ export class PlaceSubmissionService {
     row: typeof schema.placeSubmissions.$inferSelect,
     adminId: string,
   ): Promise<string> {
+    const draft: SubmissionReviewDraft = row.reviewDraft ?? {};
+    /**
+     * GoGo-BE#280 — re-checked at approval, not trusted from the save: a draft
+     * saved before #280 carries contact values with no evidence, and approving
+     * it must not turn them into GoGo-owned facts. The moderator re-saves the
+     * draft with its sources; nothing is silently dropped.
+     *
+     * DEV-F-13 — before the provider call: a draft that cannot be approved
+     * must answer 409 without spending a Details request, and must not turn
+     * into a 503 when Google is down.
+     */
+    const contact = normalizeDraftContact(draft, 'approve');
+
     // The approve step re-verifies against Google on purpose: moderation delay
     // outlives any attestation, and this is the fetch that becomes the
     // catalogue row (plan §2.8, §3 PR4).
@@ -1380,16 +1393,8 @@ export class PlaceSubmissionService {
      * confidence, because a person who moderates the catalogue checked it. The
      * submission row keeps both, so the original suggestion is never lost.
      */
-    const draft: SubmissionReviewDraft = row.reviewDraft ?? {};
     const has = <K extends keyof SubmissionReviewDraft>(key: K): boolean =>
       Object.prototype.hasOwnProperty.call(draft, key) && draft[key] !== undefined;
-    /**
-     * GoGo-BE#280 — re-checked at approval, not trusted from the save: a draft
-     * saved before #280 carries contact values with no evidence, and approving
-     * it must not turn them into GoGo-owned facts. The moderator re-saves the
-     * draft with its sources; nothing is silently dropped.
-     */
-    const contact = normalizeDraftContact(draft, 'approve');
 
     const price =
       has('priceMin') || has('priceMax')

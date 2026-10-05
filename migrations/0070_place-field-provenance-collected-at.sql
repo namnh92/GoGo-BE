@@ -25,3 +25,52 @@ BEGIN
   END IF;
 END
 $$;
+--> statement-breakpoint
+-- SA-F-11 (Astra, GoGo-BE#280 review) — the ownership guard lives in the one
+-- layer an application rollback keeps: the database.
+--
+-- The release before #280 refreshes `address_text` from Google in
+-- `update_existing` unless the field is claimed `editorial`. Rolled back onto
+-- data this release wrote, it would overwrite a `community`- or
+-- `provider`-evidenced address with Google's and leave the evidence row in
+-- place, and rolling forward again would report Google's text as GoGo's.
+--
+-- So an UPDATE that changes an evidenced contact column (a provenance row with
+-- `collected_at`) is refused unless the transaction declared itself a #280
+-- contact writer with `set_config('gogo.contact_write', 'on', true)` — which
+-- only this release's writers do, inside the transaction that also rewrites
+-- or removes the evidence. The old writer's update fails loudly (its import
+-- row is marked failed) instead of silently relabelling Google content.
+-- Legacy rows without `collected_at` are unaffected, so the old release keeps
+-- its old behaviour on old data.
+--
+-- Rehearsal-only down:
+-- DROP TRIGGER places_guard_evidenced_contacts ON places;
+-- DROP FUNCTION guard_evidenced_place_contacts();
+CREATE OR REPLACE FUNCTION guard_evidenced_place_contacts() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF current_setting('gogo.contact_write', true) = 'on' THEN
+    RETURN NEW;
+  END IF;
+  IF (NEW.address_text IS DISTINCT FROM OLD.address_text AND EXISTS (
+        SELECT 1 FROM place_field_provenance
+        WHERE place_id = OLD.id AND field = 'address_text' AND collected_at IS NOT NULL))
+     OR (NEW.phone IS DISTINCT FROM OLD.phone AND EXISTS (
+        SELECT 1 FROM place_field_provenance
+        WHERE place_id = OLD.id AND field = 'phone' AND collected_at IS NOT NULL))
+     OR (NEW.website IS DISTINCT FROM OLD.website AND EXISTS (
+        SELECT 1 FROM place_field_provenance
+        WHERE place_id = OLD.id AND field = 'website' AND collected_at IS NOT NULL)) THEN
+    RAISE EXCEPTION 'GOGO_CONTACT_EVIDENCE_GUARD: place % has evidenced contact fields; only a #280 contact writer may change them', OLD.id
+      USING ERRCODE = 'P0280';
+  END IF;
+  RETURN NEW;
+END
+$$;
+--> statement-breakpoint
+DROP TRIGGER IF EXISTS places_guard_evidenced_contacts ON places;
+--> statement-breakpoint
+CREATE TRIGGER places_guard_evidenced_contacts
+  BEFORE UPDATE OF address_text, phone, website ON places
+  FOR EACH ROW EXECUTE FUNCTION guard_evidenced_place_contacts();

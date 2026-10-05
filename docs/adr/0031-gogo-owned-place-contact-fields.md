@@ -178,9 +178,48 @@ reconciliation is:
 
 ## Migration & rollback
 
-`migrations/0070_place-field-provenance-collected-at.sql` adds one nullable
-column with no default — a catalog-only change, no rewrite, short lock — guarded
-on the table existing. Rollback is application-only: the previous release
-neither reads nor writes `collected_at`, so the column and the evidence in it
-are retained. Rehearsal-only down: `ALTER TABLE place_field_provenance DROP
+`migrations/0070_place-field-provenance-collected-at.sql` does two things, both
+retained by an application rollback:
+
+1. adds one nullable `place_field_provenance.collected_at` column with no
+   default — a catalog-only change, no rewrite, short lock — guarded on the
+   table existing;
+2. installs the **ownership guard** (SA-F-11): `BEFORE UPDATE OF address_text,
+phone, website ON places` trigger `places_guard_evidenced_contacts`. An
+   UPDATE that changes a contact column whose provenance row carries
+   `collected_at` is refused (`SQLSTATE P0280`) unless the transaction ran
+   `set_config('gogo.contact_write', 'on', true)` — which only this release's
+   writers do (`declareContactWriter`: console edit, import `update_existing`),
+   inside the transaction that rewrites or removes the evidence. Inserts are
+   not guarded; new places have no evidence to protect yet.
+
+**Why the guard is in the database.** The release before #280 refreshes
+`address_text` from Google in `update_existing` unless the field is claimed
+`editorial`, and never touches the provenance table. Rolled back onto data this
+release wrote, it would overwrite a `community`- or `provider`-evidenced address
+with Google's while the evidence row stayed — and a later roll-forward would
+report Google's text as `gogo`. The trigger makes that write fail instead: the
+old worker marks that import row failed and the evidenced value survives.
+Rows without `collected_at` (everything written before #280) are not guarded,
+so the old release behaves exactly as before on old data. Test:
+`place-contact-ownership.int.spec.ts` "SA-F-11: forward → rollback → forward".
+
+**Rollback procedure.**
+
+1. Roll back API and worker **together** to the previous release (one
+   `deploy-dev` run pins both). Do not run a new API against an old worker or
+   the reverse: the old worker's `update_existing` is the writer the guard
+   exists for, and a mixed pair only makes its failures harder to read.
+2. Leave migration 0070 applied — column, evidence and trigger stay. During the
+   rollback window, `update_existing` rows for places with evidenced contacts
+   fail with `GOGO_CONTACT_EVIDENCE_GUARD`; that is the guard working, not a
+   defect. Re-run them after rolling forward.
+3. The previous console's contact edits still succeed: they rewrite the
+   provenance row as `editorial` with no reference, which reads as `unknown`
+   after roll-forward — honest, and re-verifiable with evidence.
+4. Roll forward with the same single `deploy-dev` run; nothing needs repair.
+
+Rehearsal-only down (never in a rollback): `DROP TRIGGER
+places_guard_evidenced_contacts ON places; DROP FUNCTION
+guard_evidenced_place_contacts(); ALTER TABLE place_field_provenance DROP
 COLUMN collected_at;`.

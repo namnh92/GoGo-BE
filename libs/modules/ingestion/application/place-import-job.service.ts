@@ -42,6 +42,14 @@ import { validateRow, type NormalizedImportRow } from '../domain/template';
 import { PlaceDedupService, type KnownProviderPlace } from './place-dedup.service';
 import { PlaceResolverService, type ResolveOutcome } from './place-resolver.service';
 import { writeAudit } from '../../shared/audit';
+import { declareContactWriter } from '../../shared/place-contact-write';
+import {
+  normalizeAddress,
+  normalizePhone,
+  normalizeWebsite,
+  validateEvidence,
+  type ContactField,
+} from '../../shared/place-contact';
 import { invalidateTravelOnMove } from '../../shared/place-relocation';
 import {
   evaluatePlaceApproval,
@@ -742,6 +750,10 @@ export class PlaceImportJobService {
     const knownCategories = (await this.taxonomyKeys()).category;
 
     for (const row of rows) {
+      // DEV-F-12 — a row stored before #280 (or before the evidence rules it
+      // was parsed under changed) is revalidated before it costs a provider
+      // request or writes anything.
+      if (await this.refuseStaleContact(row.id, row.normalized_input)) continue;
       try {
         await this.resolveRow(
           row.id,
@@ -1492,6 +1504,26 @@ export class PlaceImportJobService {
     return row?.adminId ?? null;
   }
 
+  /**
+   * DEV-F-12 — fails the row with column-specific errors when its stored
+   * contact values do not pass today's rules. `validation_failed` rows are not
+   * retried: the operator corrects the sheet and re-uploads. Returns whether
+   * the row was refused.
+   */
+  private async refuseStaleContact(
+    rowId: string,
+    normalized: NormalizedImportRow,
+  ): Promise<boolean> {
+    const errors = staleContactErrors(normalized);
+    if (errors.length === 0) return false;
+    await this.db
+      .update(schema.placeIngestRows)
+      .set({ status: 'validation_failed', errors, updatedAt: new Date() })
+      .where(eq(schema.placeIngestRows.id, rowId));
+    this.countRow('validation_failed', errors[0]!.code);
+    return true;
+  }
+
   private countRow(status: string, errorCode?: string): void {
     this.metrics.increment('place_import_rows_total', { status, error_code: errorCode });
   }
@@ -1520,6 +1552,9 @@ export class PlaceImportJobService {
     normalized: NormalizedImportRow,
     base: Record<string, unknown>,
   ): Promise<void> {
+    // DEV-F-12 — every path into this write, not only the chunk loop
+    // (a confirmed candidate arrives here too).
+    if (await this.refuseStaleContact(rowId, normalized)) return;
     const [snapshot] = await this.db
       .select({
         name: schema.places.name,
@@ -1602,6 +1637,9 @@ export class PlaceImportJobService {
     const score = await this.resolver.scoreFor(details, null, normalized.categoryKey);
     const actorId = await this.jobActor(rowId);
     await this.db.transaction(async (tx) => {
+      // SA-F-11 — this writer rewrites the evidence of every contact value it
+      // changes, in this transaction; declare it to the database guard.
+      await declareContactWriter(tx);
       /**
        * GoGo-BE#440 F-08 — one lock order for every writer that moves a place:
        * the `places` row first, then the travel cache and plans it invalidates.
@@ -1894,6 +1932,12 @@ export class PlaceImportJobService {
     const failed: { rowId: string; code: string }[] = [];
 
     for (const row of rows) {
+      // DEV-F-12 — a `ready` row validated before #280 is checked again here:
+      // its contact values must not be dropped while the row reports success.
+      if (await this.refuseStaleContact(row.id, normalizedOf(row))) {
+        failed.push({ rowId: row.id, code: 'CONTACT_EVIDENCE_REQUIRED' });
+        continue;
+      }
       try {
         const placeId = await this.createPlaceFromRow(row, job.mode as ImportMode, adminId);
         created.push(placeId);
@@ -2518,6 +2562,79 @@ async function writeImportContactProvenance(
         },
       });
   }
+}
+
+const STALE_CONTACT_COLUMNS: {
+  field: ContactField;
+  column: 'address' | 'phone' | 'website';
+  code: 'ADDRESS' | 'PHONE' | 'WEBSITE';
+  value: (n: NormalizedImportRow) => string | null | undefined;
+  normalize: (raw: string) => { ok: boolean };
+}[] = [
+  {
+    field: 'address_text',
+    column: 'address',
+    code: 'ADDRESS',
+    value: (n) => n.address,
+    normalize: normalizeAddress,
+  },
+  {
+    field: 'phone',
+    column: 'phone',
+    code: 'PHONE',
+    value: (n) => n.phone,
+    normalize: normalizePhone,
+  },
+  {
+    field: 'website',
+    column: 'website',
+    code: 'WEBSITE',
+    value: (n) => n.website,
+    normalize: normalizeWebsite,
+  },
+];
+
+/**
+ * DEV-F-12 / SA-F-12 — the stored row's contact values and evidence, checked
+ * again by today's shared rules. A row parsed before #280 carries phone or
+ * website with no `contactEvidence`; before this, the writer skipped those
+ * values and still reported the row `imported`. Same codes and columns as a
+ * fresh parse (`validateRow`), so the operator reads one vocabulary.
+ */
+export function staleContactErrors(normalized: NormalizedImportRow): IngestMessage[] {
+  const errors: IngestMessage[] = [];
+  const evidence = normalized.contactEvidence ?? {};
+  for (const col of STALE_CONTACT_COLUMNS) {
+    const value = col.value(normalized);
+    if (value === null || value === undefined || value === '') continue;
+    if (!col.normalize(value).ok) {
+      errors.push({
+        code: `${col.code}_INVALID`,
+        field: col.column,
+        message: `${col.column} không còn hợp lệ theo quy tắc hiện tại — sửa sheet và tải lại`,
+      });
+    }
+    const paths = {
+      sourceType: `${col.column}_source_type`,
+      sourceReference: `${col.column}_source_reference`,
+      collectedAt: `${col.column}_collected_at`,
+    };
+    const ev = evidence[col.field];
+    const checked = validateEvidence(ev ?? {}, paths);
+    if (!checked.ok) {
+      for (const issue of checked.issues) {
+        errors.push({
+          code:
+            issue.code === 'required'
+              ? `${col.code}_EVIDENCE_REQUIRED`
+              : `${col.code}_EVIDENCE_INVALID`,
+          field: issue.field,
+          message: `${col.column}: ${issue.message} — sửa sheet và tải lại`,
+        });
+      }
+    }
+  }
+  return errors;
 }
 
 /** `normalized_input` is stored as jsonb; the writer is the only shape source. */

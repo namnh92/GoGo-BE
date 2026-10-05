@@ -3898,6 +3898,15 @@ paths:
         mode.
 
 
+        **Rows stored before these rules** (pending, retried or `ready` rows
+        whose stored phone / website / address has no evidence, or evidence
+        today's rules refuse) are checked again before they are resolved or
+        published. They become `validation_failed` with the same column
+        errors as a fresh upload, are never reported `imported`, and appear in
+        a publish result's `failed[]` with code `CONTACT_EVIDENCE_REQUIRED`.
+        Correct the sheet and upload it again.
+
+
         `places.suitability` is deliberately **not** an import column.
         `audiences` is the operator-facing vocabulary for the same product
         concept — who a place suits — and `suitability` is the weighted score

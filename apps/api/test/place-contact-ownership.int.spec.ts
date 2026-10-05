@@ -881,6 +881,25 @@ describe('#280 submission approval', () => {
     expect(prov.get('phone')).toMatchObject({ sourceType: 'editorial', actorId: moderator.id });
   });
 
+  it('DEV-F-13: refuses a pre-#280 draft before asking Google — no call spent, no 503 in an outage', async () => {
+    const id = await contribute('fake-sub-outage');
+    await db
+      .update(schema.placeSubmissions)
+      .set({ reviewDraft: { website: 'https://ngocha.vn/' } })
+      .where(eq(schema.placeSubmissions.id, id));
+    const before = places.tiersRequested.length;
+    places.failing = true;
+    try {
+      const res = await decide(id);
+      // FAIL-before: 503 PLACE_PROVIDER_UNAVAILABLE, after a Details request.
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json().code).toBe('REVIEW_EVIDENCE_REQUIRED');
+    } finally {
+      places.failing = false;
+    }
+    expect(places.tiersRequested.length).toBe(before);
+  });
+
   it('refuses to approve a pre-#280 draft whose contact values carry no evidence', async () => {
     const id = await contribute('fake-sub-3');
     await db
@@ -1030,6 +1049,164 @@ describe('#280 review round 1 (Sol F-01, F-02, F-05, F-06)', () => {
         code: 'invalid_datetime',
       });
     }
+  });
+});
+
+// ---------------------------------------------------------------- review round 3
+
+describe('#280 review round 3 (DEV-F-11, DEV-F-12, SA-F-11)', () => {
+  it('DEV-F-11: a whole-form save re-sending unchanged legacy-invalid contacts succeeds', async () => {
+    // Stored before today's rules: none of these would pass them now.
+    const place = await makePlace({
+      addressText: '<b>12 Lê Lợi</b>',
+      phone: '+0912345678',
+      website: 'javascript:alert(1)',
+    });
+    const res = await patch(place.id, {
+      name: 'Tên mới qua cả biểu mẫu',
+      addressText: '<b>12 Lê Lợi</b>',
+      phone: '+0912345678',
+      website: 'javascript:alert(1)',
+      expectedUpdatedAt: place.updatedAt.toISOString(),
+    });
+    // FAIL-before: 400 on addressText/phone/website the editor never touched.
+    expect(res.statusCode, res.body).toBe(200);
+    const [after] = await db.select().from(schema.places).where(eq(schema.places.id, place.id));
+    expect(after).toMatchObject({ name: 'Tên mới qua cả biểu mẫu', phone: '+0912345678' });
+    // The rename is claimed; the untouched contact fields are not.
+    const prov = await provenanceOf(place.id);
+    expect(['address_text', 'phone', 'website'].filter((f) => prov.has(f))).toEqual([]);
+  });
+
+  /** A row as the release before #280 stored it: a phone, and no evidence. */
+  async function makeLegacy(jobId: string) {
+    await db.execute(sql`
+      update place_ingest_rows
+      set normalized_input = (normalized_input - 'contactEvidence')
+        || jsonb_build_object('phone', '+842838227777')
+      where job_id = ${jobId}::uuid
+    `);
+  }
+
+  it('DEV-F-12: a legacy pending row fails with column errors instead of importing without its phone', async () => {
+    places.seed({
+      providerPlaceId: 'fake-legacy-pending',
+      name: 'Quán Cũ',
+      lat: 10.78,
+      lng: 106.69,
+    });
+    const content = Buffer.from(
+      [IMPORT_HEADER, importRow('L-1', 'fake-legacy-pending', {})].join('\n'),
+      'utf8',
+    );
+    const uploader = await createAdmin(`legacy-pending-${Date.now()}@gogo.local`, 'editor');
+    const body = multipart({ mode: 'create_drafts' }, { name: 'legacy-p.csv', content });
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/place-imports',
+      remoteAddress: ip(),
+      headers: { ...auth(uploader.token), ...body.headers },
+      payload: body.payload,
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const jobId = created.json().id as string;
+    await makeLegacy(jobId);
+    await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${jobId}/start`,
+      remoteAddress: ip(),
+      headers: auth(uploader.token),
+    });
+    const before = places.tiersRequested.length;
+    await imports.processJob(jobId);
+
+    const rows = await imports.listRows(jobId, { limit: 10, offset: 0 });
+    // FAIL-before: `ready`, then `imported` with the phone silently gone.
+    expect(rows.items[0]!.status).toBe('validation_failed');
+    expect(
+      rows.items[0]!.errors.map((e: { code: string; field?: string }) => [e.code, e.field]),
+    ).toEqual([
+      ['PHONE_EVIDENCE_REQUIRED', 'phone_source_type'],
+      ['PHONE_EVIDENCE_REQUIRED', 'phone_source_reference'],
+      ['PHONE_EVIDENCE_REQUIRED', 'phone_collected_at'],
+    ]);
+    expect(places.tiersRequested.length).toBe(before);
+  });
+
+  it('DEV-F-12: a legacy ready row is refused at publish, and no place is created', async () => {
+    places.seed({ providerPlaceId: 'fake-legacy-ready', name: 'Quán Sẵn', lat: 10.79, lng: 106.7 });
+    const jobId = await runImport(
+      [importRow('L-2', 'fake-legacy-ready', {})],
+      'create_drafts',
+      'legacy-r.csv',
+    );
+    const ready = await imports.listRows(jobId, { limit: 10, offset: 0 });
+    expect(ready.items[0]!.status).toBe('ready');
+    await makeLegacy(jobId);
+
+    const res = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-imports/${jobId}/publish`,
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: {},
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    // FAIL-before: created 1, and the place carried no phone.
+    expect(res.json().created).toBe(0);
+    expect(res.json().failed).toEqual([
+      expect.objectContaining({ code: 'CONTACT_EVIDENCE_REQUIRED' }),
+    ]);
+    const after = await imports.listRows(jobId, { limit: 10, offset: 0 });
+    expect(after.items[0]!.status).toBe('validation_failed');
+    expect(after.items[0]!.errors[0]).toMatchObject({ code: 'PHONE_EVIDENCE_REQUIRED' });
+    expect(await placeLinkedTo('fake-legacy-ready')).toBeUndefined();
+  });
+
+  it('SA-F-11: forward → rollback → forward keeps evidenced contacts GoGo’s', async () => {
+    // Forward: a community-evidenced address, written by this release.
+    const place = await makePlace();
+    const written = await patch(place.id, {
+      addressText: '7 Hồ Tùng Mậu',
+      provenance: { addressText: { ...EVIDENCE, sourceType: 'community' } },
+      expectedUpdatedAt: place.updatedAt.toISOString(),
+    });
+    expect(written.statusCode, written.body).toBe(200);
+
+    // Rollback: the previous release's update_existing writes Google's address
+    // straight onto the row (it guards only `editorial`) and never touches the
+    // provenance table. The database guard survives an application rollback.
+    // FAIL-before: the UPDATE succeeded, and roll-forward reported Google's
+    // text as `gogo`.
+    await expect(
+      pool.query(
+        `update places set address_text = '1 Fake St, HCMC', updated_at = now() where id = $1`,
+        [place.id],
+      ),
+    ).rejects.toMatchObject({ code: 'P0280' });
+
+    // Roll forward: the value and its verdict are what this release wrote.
+    const [after] = await db.select().from(schema.places).where(eq(schema.places.id, place.id));
+    expect(after!.addressText).toBe('7 Hồ Tùng Mậu');
+    expect((await cmsDetail(place.id)).json().provenance.addressText).toMatchObject({
+      sourceType: 'community',
+      ownership: 'gogo',
+    });
+  });
+
+  it('SA-F-11: the guard leaves legacy, unevidenced rows to the old writer', async () => {
+    const place = await makePlace({ addressText: 'Địa chỉ cũ' });
+    await db.insert(schema.placeFieldProvenance).values({
+      placeId: place.id,
+      field: 'address_text',
+      sourceType: 'google_derived',
+      sourceReference: 'fake-legacy',
+    });
+    await pool.query(`update places set address_text = 'Địa chỉ Google mới' where id = $1`, [
+      place.id,
+    ]);
+    const [after] = await db.select().from(schema.places).where(eq(schema.places.id, place.id));
+    expect(after!.addressText).toBe('Địa chỉ Google mới');
   });
 });
 

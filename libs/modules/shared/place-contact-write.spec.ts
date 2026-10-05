@@ -103,4 +103,18 @@ describe('planContactWrite (#280)', () => {
       ],
     });
   });
+
+  it('DEV-F-11: re-sending an unchanged legacy-invalid value without evidence is no write', () => {
+    const legacy = {
+      addressText: '<b>12 Lê Lợi</b>',
+      phone: '+0912345678',
+      website: 'javascript:alert(1)',
+    };
+    expect(planContactWrite({ ...legacy }, legacy, NOW)).toEqual({
+      ok: true,
+      plan: { values: {}, claims: [], cleared: [] },
+    });
+    // Changing it is still held to today's rules.
+    expect(planContactWrite({ phone: '+0912345679' }, legacy, NOW).ok).toBe(false);
+  });
 });

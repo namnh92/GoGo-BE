@@ -48,6 +48,7 @@ import { CONTACT_API_FIELD, CONTACT_FIELDS, contactOwnership } from '../../share
 import {
   planContactWrite,
   planIsEmpty,
+  declareContactWriter,
   type ContactWriteInput,
   type ContactWritePlan,
 } from '../../shared/place-contact-write';
@@ -2010,6 +2011,9 @@ export class CmsCatalogService {
       // the lock: a save committed between the unlocked read and here must be
       // refused, not silently overwritten.
       assertNotStale(current.updatedAt, input.expectedUpdatedAt);
+      // SA-F-11 — this transaction rewrites contact evidence with any contact
+      // value it changes, so the database guard may let it through.
+      if (!planIsEmpty(contact)) await declareContactWriter(tx);
       const lockedCodes = {
         provinceCode:
           input.provinceCode !== undefined ? (input.provinceCode ?? null) : current.provinceCode,

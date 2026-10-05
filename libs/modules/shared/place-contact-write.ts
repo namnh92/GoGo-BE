@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   CONTACT_API_FIELD,
   CONTACT_FIELDS,
@@ -106,6 +107,12 @@ export function planContactWrite(
       continue;
     }
 
+    // DEV-F-11 — the exact stored string, re-sent without evidence, is no
+    // write at all. Checked before normalizing: a legacy value written before
+    // today's rules may not pass them, and a whole-form save that never
+    // touched it must not be refused for it.
+    if (!hasEvidence && current !== null && current[api] === value) continue;
+
     const normalized = NORMALIZE[field](value);
     if (!normalized.ok) {
       issues.push({ ...normalized.issue, field: api });
@@ -143,4 +150,18 @@ export function planContactWrite(
 
 export function planIsEmpty(plan: ContactWritePlan): boolean {
   return Object.keys(plan.values).length === 0;
+}
+
+/**
+ * SA-F-11 — declares the current transaction a GoGo-BE#280 contact writer, so
+ * the `places_guard_evidenced_contacts` trigger (migration 0070) lets it change
+ * an evidenced `address_text` / `phone` / `website`. Transaction-local: it ends
+ * with the transaction, and a writer from the release before #280 never sets
+ * it — which is what keeps evidence honest across an application rollback.
+ * Call it inside the transaction that also rewrites or removes the evidence.
+ */
+export async function declareContactWriter(tx: {
+  execute: (query: ReturnType<typeof sql>) => Promise<unknown>;
+}): Promise<void> {
+  await tx.execute(sql`select set_config('gogo.contact_write', 'on', true)`);
 }
