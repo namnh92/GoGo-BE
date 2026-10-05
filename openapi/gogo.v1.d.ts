@@ -6927,6 +6927,11 @@ export interface components {
         };
         /** @description Declared extensible (alpha.66): a client treats a kind it does not know as an opaque notification it cannot render specially — never as a malformed item — so a new kind is not a breaking change on the inbox or the preference list. `privacy_export_ready` (GoGo-BE#256) is in-app only: its payload is `{ exportId, expiresAt }` and is never pushed. */
         NotificationKind: string;
+        /**
+         * @description The kinds a legacy client may opt in or out of on `PUT /me/notification-preferences` — closed, exactly what the route accepts. `privacy_export_ready` is not among them: it is in-app only and has no channel to switch.
+         * @enum {string}
+         */
+        NotificationPreferenceKind: "invite" | "preference_reminder" | "plan_ready" | "plan_changed" | "date_reminder" | "moderation_update";
         Review: {
             /** Format: uuid */
             id: string;
@@ -13569,7 +13574,7 @@ export interface operations {
                 "application/json": {
                     /** @enum {string} */
                     channel: "push" | "email";
-                    kind: components["schemas"]["NotificationKind"];
+                    kind: components["schemas"]["NotificationPreferenceKind"];
                     enabled: boolean;
                 };
             };
