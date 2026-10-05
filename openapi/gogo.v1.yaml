@@ -13502,9 +13502,12 @@ components:
     NotificationKind:
       type: string
       description: >
-        `privacy_export_ready` (GoGo-BE#256) is in-app only: its payload is
-        `{ exportId, expiresAt }` and is never pushed.
-      enum:
+        Declared extensible (alpha.66): a client treats a kind it does not know
+        as an opaque notification it cannot render specially — never as a
+        malformed item — so a new kind is not a breaking change on the inbox or
+        the preference list. `privacy_export_ready` (GoGo-BE#256) is in-app
+        only: its payload is `{ exportId, expiresAt }` and is never pushed.
+      x-extensible-enum:
         [
           invite,
           preference_reminder,

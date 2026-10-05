@@ -134,8 +134,8 @@ const mediaCleanupPollMs = () => pollIntervalMs('MEDIA_CLEANUP_POLL_MS', 60_000)
  * a durable row, not a message); the sweep that expires and deletes artifacts
  * runs every minute, so a healthy deletion lands within five.
  */
-const PRIVACY_EXPORT_POLL_MS = pollIntervalMs('PRIVACY_EXPORT_POLL_MS', 15_000);
-const PRIVACY_EXPORT_SWEEP_MS = pollIntervalMs('PRIVACY_EXPORT_SWEEP_MS', 60_000);
+const privacyExportPollMs = () => pollIntervalMs('PRIVACY_EXPORT_POLL_MS', 15_000);
+const privacyExportSweepMs = () => pollIntervalMs('PRIVACY_EXPORT_SWEEP_MS', 60_000);
 /**
  * How often this process says it is alive. Its own job, on its own cadence:
  * tying it to a business tick would make "worker alive" mean "outbox tick
@@ -176,6 +176,8 @@ async function bootstrap(): Promise<void> {
   const INGEST_POLL_MS = ingestPollMs();
   const PLACE_REFRESH_POLL_MS = placeRefreshPollMs();
   const MEDIA_CLEANUP_POLL_MS = mediaCleanupPollMs();
+  const PRIVACY_EXPORT_POLL_MS = privacyExportPollMs();
+  const PRIVACY_EXPORT_SWEEP_MS = privacyExportSweepMs();
   const logger = createLogger({
     level: process.env.LOG_LEVEL ?? 'info',
     name: 'gogo-worker',

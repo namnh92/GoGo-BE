@@ -265,13 +265,20 @@ export class PrivacyExportProcessor {
     // PUT, re-arms both or refuses the upload. Never a byte after a lost fence.
     if (signal?.aborted) return this.retryLater(claim);
     const permit = await this.permitUpload(claim, objectKey);
-    if (permit !== 'permitted') return permit === 'fenced' ? 'fenced' : this.retryLater(claim);
-    const permittedAt = performance.now();
+    if (permit.outcome !== 'permitted') {
+      return permit.outcome === 'fenced' ? 'fenced' : this.retryLater(claim);
+    }
 
     try {
-      // A-F-01: the cover allows one upload deadline between permit and PUT;
-      // a process that stalled longer must not start a PUT it cannot cover.
-      if (performance.now() - permittedAt > this.uploadTimeoutMs) throw new Error('permit stale');
+      // A-F-01: the record covers the PUT only if it starts by the deadline
+      // the database computed when it armed the record — the same clock the
+      // reaper reads. Judged here, as late as possible, on the local clock
+      // with a margin for drift: a process that stalled between the permit's
+      // commit and this line (where no local timer could have been running)
+      // must not start a PUT the reaper may already have stopped covering.
+      if (Date.now() > permit.putStartBy.getTime() - this.uploadTimeoutMs / 4) {
+        throw new Error('permit stale');
+      }
       // Bounded even when a lease signal is passed: the attempt record now
       // covers `uploadCoverMs` from the permit, which outlasts this deadline.
       const deadline = AbortSignal.timeout(this.uploadTimeoutMs);
@@ -299,11 +306,13 @@ export class PrivacyExportProcessor {
    * its `delete_after` is moved to now + upload cover. `fenced` means another
    * attempt owns the artifact; `reaped` means this attempt's object key has
    * already been handed to deletion and a fresh attempt must take a new key.
+   * `putStartBy` is the database's own clock reading plus one upload
+   * deadline: the latest moment a PUT may begin and still end inside the cover.
    */
   private async permitUpload(
     claim: Claim,
     objectKey: string,
-  ): Promise<'permitted' | 'fenced' | 'reaped'> {
+  ): Promise<{ outcome: 'fenced' | 'reaped' } | { outcome: 'permitted'; putStartBy: Date }> {
     return this.db.transaction(async (tx) => {
       const a = schema.privacyExportArtifacts;
       const o = schema.privacyExportAttemptObjects;
@@ -322,15 +331,18 @@ export class PrivacyExportProcessor {
         })
         .where(and(this.fence(claim), eq(a.objectKey, objectKey)))
         .returning({ id: a.id });
-      if (fenced.length === 0) return 'fenced';
-      const armed = await tx
+      if (fenced.length === 0) return { outcome: 'fenced' as const };
+      const [armed] = await tx
         .update(o)
         .set({
           deleteAfter: sql`clock_timestamp() + make_interval(secs => ${this.uploadCoverMs / 1000})`,
         })
         .where(and(eq(o.objectKey, objectKey), isNull(o.reapingSince), isNull(o.deadAt)))
-        .returning({ id: o.id });
-      return armed.length === 0 ? 'reaped' : 'permitted';
+        .returning({
+          putStartBy: sql<Date>`clock_timestamp() + make_interval(secs => ${this.uploadTimeoutMs / 1000})`,
+        });
+      if (!armed) return { outcome: 'reaped' as const };
+      return { outcome: 'permitted' as const, putStartBy: new Date(armed.putStartBy) };
     });
   }
 

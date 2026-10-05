@@ -183,4 +183,8 @@ Shape unchanged; each item closes a gap the second round's enforcement left.
   purges everything else unversioned.
 - **The permit reads the clock after its locks** (A-F-01): both rows are locked
   first, the lease and the cover are computed from `clock_timestamp()`, and the
-  worker refuses to start a PUT more than one upload deadline after its permit.
+  permit returns the database's own PUT-start deadline (that clock reading plus one
+  upload deadline). The worker judges it immediately before the PUT on its local
+  clock, minus a drift margin of a quarter deadline — so a continuation that stalled
+  after the permit's commit, where no local timer could have been running, cannot
+  start a PUT the reaper may already have stopped covering.

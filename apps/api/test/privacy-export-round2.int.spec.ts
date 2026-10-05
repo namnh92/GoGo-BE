@@ -548,6 +548,61 @@ describe('A-F-01: permit delayed by a lock wait', () => {
   });
 });
 
+describe('A-F-01: stall after the permit committed', () => {
+  it('a continuation that stalls past the cover after the permit, with a sweep in between, makes no PUT', async () => {
+    const user = await register('af01b');
+    const id = (await createExport(user.token)).json().id as string;
+    const puts: string[] = [];
+    const original = storage.putObject.bind(storage);
+    storage.putObject = async (key, body, contentType, options) => {
+      if (key.includes(id)) puts.push(key);
+      return original(key, body, contentType, options);
+    };
+    // The permit transaction commits, then the worker's continuation stalls
+    // (no local timer can be running yet) while the reaper's sweep runs.
+    let stalled = false;
+    const stalling = new Proxy(db as unknown as Db, {
+      get(target, prop, receiver) {
+        if (prop !== 'transaction') return Reflect.get(target, prop, receiver);
+        return async (...args: Parameters<Db['transaction']>) => {
+          const result = await target.transaction(...args);
+          const permitted =
+            result === 'permitted' ||
+            (result as { outcome?: string } | null)?.outcome === 'permitted';
+          if (permitted && !stalled) {
+            stalled = true;
+            await sleep(1_000); // the cover (900 ms at a 300 ms deadline) has run out
+            await reapAttemptObjects(db as unknown as Db, storage);
+          }
+          return result;
+        };
+      },
+    });
+    try {
+      const stale = new PrivacyExportProcessor(stalling, storage, keyring, {
+        workerId: 'worker-stalled',
+        mediaPublicBaseUrl: '',
+        retentionMonths: 12,
+        uploadTimeoutMs: 300,
+      });
+      expect(await stale.runDue(1)).toMatchObject({ published: 0, retry_scheduled: 1 });
+      expect(puts).toEqual([]);
+      expect(await orphansFor(id)).toEqual([]);
+      await db
+        .update(schema.privacyExportArtifacts)
+        .set({ nextAttemptAt: sql`now()` })
+        .where(eq(schema.privacyExportArtifacts.id, id));
+      expect((await processor().runDue(1)).published).toBe(1);
+    } finally {
+      storage.putObject = original;
+    }
+    const row = await artifact(id);
+    expect(row).toMatchObject({ state: 'ready', attempt: 2 });
+    expect(puts).toHaveLength(1);
+    expect(await orphansFor(id)).toEqual([]);
+  });
+});
+
 describe('A-F-04: upload permit', () => {
   it('a deletion record reaped during a slow collection cannot leave the upload orphaned', async () => {
     const user = await register('af04a');
