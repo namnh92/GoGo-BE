@@ -116,7 +116,7 @@ null, cleanup_attempts = 0, cleanup_due_at = now() where cleanup_dead_at is not
 null and cleaned_at is null;` (or `PrivacyExportProcessor.redriveDeadLettered()`),
   with a paired audit note. Upload-attempt records dead-letter the same way:
   `update privacy_export_attempt_objects set dead_at = null, attempts = 0,
-  delete_after = now() where dead_at is not null;` (the redrive method covers both). BFF access to an expired/revoked export is already denied.
+delete_after = now() where dead_at is not null;` (the redrive method covers both). BFF access to an expired/revoked export is already denied.
 - **Backstop:** R2 lifecycle deletes `privacy-exports/` objects after 2 days
   (GoGo-Infra). It is a backstop for orphans, not the expiry mechanism.
 
