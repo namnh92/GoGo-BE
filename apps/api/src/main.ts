@@ -33,7 +33,9 @@ export async function createApp(
     // Error monitoring (FND-007). captureException elsewhere is a safe no-op
     // until this init runs.
     // #588: coordinates are redacted from every event and breadcrumb.
-    Sentry.init(sentryInitOptions({ dsn: config.SENTRY_DSN, environment: config.NODE_ENV }));
+    // #674: tagged with the deployment (APP_ENV), not the build — every deployed
+    // environment runs NODE_ENV=production, DEV included.
+    Sentry.init(sentryInitOptions({ dsn: config.SENTRY_DSN, environment: config.APP_ENV }));
   }
   const logger = createLogger({
     level: config.LOG_LEVEL,
