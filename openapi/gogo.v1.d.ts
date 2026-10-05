@@ -2516,6 +2516,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/auth/methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Which sign-in doors this deployment has open
+         * @description ADR-0032. Facts for the console's sign-in screen, read at runtime so that closing or re-opening the password door is one API setting with no console deploy. `password` is false when `cmsLogin` answers `PASSWORD_LOGIN_DISABLED`; `accessSso` is true when `cmsAccessExchange` is configured — configured, not known to be reachable.
+         */
+        get: operations["cmsAuthMethods"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/auth/access-exchange": {
         parameters: {
             query?: never;
@@ -7637,6 +7657,12 @@ export interface components {
         EmergencyTakedownRequest: {
             /** @description Why this was taken down. Required and stored in the audit record — it is the only explanation anyone reviewing the incident later has. */
             reason: string;
+        };
+        CmsAuthMethods: {
+            /** @description `cmsLogin` accepts credentials in this deployment. */
+            password: boolean;
+            /** @description `cmsAccessExchange` is configured in this deployment. */
+            accessSso: boolean;
         };
         AdminSession: {
             /** @description For non-browser callers. Browser clients use the cookie. */
@@ -13442,13 +13468,34 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Production refuses accounts without MFA (`MFA_SETUP_REQUIRED`) */
+            /** @description Production refuses accounts without MFA (`MFA_SETUP_REQUIRED`), or the password door is turned off for this environment (`PASSWORD_LOGIN_DISABLED`, not retryable — ADR-0032). The second is answered before any credential is checked, so a correct and a wrong password get the same answer. `cmsAuthMethods` says in advance which doors are open. */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    cmsAuthMethods: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The open doors. Not cached (`Cache-Control: no-store`). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAuthMethods"];
                 };
             };
             429: components["responses"]["RateLimited"];
@@ -13484,7 +13531,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description The identity is genuine but has no active staff account (`ADMIN_ONLY`). Being on the Access allow-list does not make somebody staff. */
+            /** @description The identity is genuine but has no active staff account (`ADMIN_ONLY`). Being on the Access allow-list does not make somebody staff. Or a browser labelled the request as not same-origin (`Sec-Fetch-Site`), answered before any verification (`CROSS_SITE_REQUEST`, ADR-0032); callers that send no `Sec-Fetch-Site` are unaffected. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13494,7 +13541,7 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
-            /** @description SSO is not configured for this environment (`ACCESS_SSO_NOT_CONFIGURED`, not retryable), or the identity provider's key set is unreachable (`ACCESS_KEYS_UNAVAILABLE`, retryable). Password + TOTP remains available in both cases. */
+            /** @description SSO is not configured for this environment (`ACCESS_SSO_NOT_CONFIGURED`, not retryable), or the identity provider's key set is unreachable (`ACCESS_KEYS_UNAVAILABLE`, retryable). Password + TOTP remains available in both cases where the password door is open (`cmsAuthMethods`). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -13529,7 +13576,7 @@ export interface operations {
                     "application/json": components["schemas"]["AdminSession"];
                 };
             };
-            /** @description INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED */
+            /** @description INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED. `SESSION_REVOKED` also answers a session opened by password once the password door is closed; its whole family is revoked (ADR-0032). */
             401: {
                 headers: {
                     [name: string]: unknown;

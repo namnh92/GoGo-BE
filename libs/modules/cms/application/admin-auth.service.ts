@@ -102,6 +102,8 @@ const sha256 = (value: string) => createHash('sha256').update(value).digest('hex
  * Namespaced so an admin's failures cannot be counted against the consumer
  * account with the same address, in either direction.
  */
+type AdminAuthMethod = schema.AdminAuthMethod;
+
 const adminIdentifier = (email: string) => sha256(`admin:${email.trim().toLowerCase()}`);
 
 /**
@@ -123,6 +125,9 @@ export class AdminAuthService {
    * rather than a literal buried in a condition — if this ever appears in a
    * production login path, it should be obvious in review rather than
    * discoverable by guessing six digits.
+   *
+   * Unreachable where CMS_PASSWORD_LOGIN_ENABLED is false (ADR-0032): login
+   * refuses before any factor is checked.
    */
   static readonly DEV_TOTP_CODE = '123456';
 
@@ -157,6 +162,16 @@ export class AdminAuthService {
     totp?: string | undefined;
     meta?: ClientMeta | undefined;
   }) {
+    // #679 / ADR-0032 — a closed door says so before any credential work. A
+    // correct and a wrong password get the identical answer, no lockout row
+    // and no audit row are written: there is no oracle and no actor here.
+    if (!this.config.CMS_PASSWORD_LOGIN_ENABLED) {
+      throw AppError.forbidden(
+        'PASSWORD_LOGIN_DISABLED',
+        'Password sign-in is turned off for this environment; sign in through Cloudflare Access',
+      );
+    }
+
     // Per-account lockout, which the console did not have. A per-IP limit
     // alone means an attacker rotating addresses gets unlimited attempts at a
     // named admin — on the door with the most privilege behind it.
@@ -217,7 +232,13 @@ export class AdminAuthService {
       resourceId: admin.id,
     });
 
-    const session = await this.openSession(admin.id, randomUUID(), undefined, input.meta);
+    const session = await this.openSession(
+      admin.id,
+      randomUUID(),
+      undefined,
+      'password',
+      input.meta,
+    );
     return {
       ...session,
       role: admin.role,
@@ -281,7 +302,7 @@ export class AdminAuthService {
       resourceId: admin.id,
     });
 
-    const session = await this.openSession(admin.id, randomUUID(), undefined, meta);
+    const session = await this.openSession(admin.id, randomUUID(), undefined, 'access_sso', meta);
     return {
       ...session,
       role: admin.role,
@@ -313,6 +334,14 @@ export class AdminAuthService {
     if (session.expiresAt.getTime() <= Date.now()) {
       throw AppError.unauthorized('SESSION_EXPIRED', 'Session is not valid');
     }
+    // #679 / ADR-0032 — refresh slides the expiry forward, so without this a
+    // session opened by password before the door closed would live as long as
+    // it keeps being used. NULL predates the column and fails closed.
+    const authMethod: AdminAuthMethod = session.authMethod ?? 'password';
+    if (!this.config.CMS_PASSWORD_LOGIN_ENABLED && authMethod !== 'access_sso') {
+      await this.revokeFamily(session.familyId, 'password_login_disabled');
+      throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
+    }
 
     const [admin] = await this.db
       .select()
@@ -331,7 +360,8 @@ export class AdminAuthService {
       .set({ supersededAt: sql`now()`, lastUsedAt: sql`now()` })
       .where(eq(schema.adminSessions.id, session.id));
 
-    const next = await this.openSession(admin.id, session.familyId, session.id, meta);
+    // A family never changes door: the rotation inherits how it was opened.
+    const next = await this.openSession(admin.id, session.familyId, session.id, authMethod, meta);
     return {
       ...next,
       role: admin.role,
@@ -363,6 +393,7 @@ export class AdminAuthService {
     adminId: string,
     familyId: string,
     rotatedFromId: string | undefined,
+    authMethod: AdminAuthMethod,
     meta?: ClientMeta,
   ) {
     const refreshToken = this.tokens.generateOpaqueToken();
@@ -373,6 +404,7 @@ export class AdminAuthService {
         refreshTokenHash: this.tokens.hashOpaqueToken(refreshToken),
         familyId,
         rotatedFromId: rotatedFromId ?? null,
+        authMethod,
         expiresAt: new Date(Date.now() + this.config.AUTH_ADMIN_REFRESH_TTL_SECONDS * 1000),
         ipHash: meta?.ip ? createHash('sha256').update(meta.ip).digest('hex') : null,
         userAgent: meta?.userAgent ?? null,

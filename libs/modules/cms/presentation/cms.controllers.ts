@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   Headers,
   Param,
   Patch,
@@ -184,6 +185,25 @@ export class CmsAuthController {
   }
 
   /**
+   * #679 / ADR-0032 — which doors this deployment has open, so the console
+   * renders the ones that exist instead of a form that can only say no. Facts,
+   * not copy, and nothing `login` and `access-exchange` would not answer
+   * anyway. Read at runtime rather than baked into the CMS build: rolling the
+   * password door back is then one API setting, with no CMS deploy and no
+   * console session needed.
+   */
+  @Public()
+  @RateLimit({ action: 'cms.auth_methods', limit: 30, windowSeconds: 60, keyBy: 'ip' })
+  @Header('cache-control', 'no-store')
+  @Get('methods')
+  methods() {
+    return {
+      password: this.config.CMS_PASSWORD_LOGIN_ENABLED,
+      accessSso: this.access.configured,
+    };
+  }
+
+  /**
    * #62 / ADR-0010 — exchange a Cloudflare Access assertion for a console
    * session. `@Public()` in the sense that no GoGo session is required yet;
    * the request still has to carry an assertion this deployment can verify.
@@ -202,6 +222,19 @@ export class CmsAuthController {
     @Req() req: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
+    // #679 / ADR-0032 — `@Public()` puts this outside the CSRF double-submit,
+    // so a page elsewhere could make a browser holding an Access cookie open a
+    // session as itself. Harmless today; refused anyway. A browser that labels
+    // the request anything but same-origin is turned away before any
+    // verification. No header (a script presenting its own assertion) passes:
+    // that caller holds the credential itself.
+    const fetchSite = req.headers['sec-fetch-site'];
+    if (fetchSite !== undefined && fetchSite !== 'same-origin') {
+      throw AppError.forbidden(
+        'CROSS_SITE_REQUEST',
+        'Single sign-on must be started from the console itself',
+      );
+    }
     const assertion = req.headers[CF_ACCESS_ASSERTION_HEADER];
     if (typeof assertion !== 'string' || !assertion) {
       throw AppError.unauthorized(

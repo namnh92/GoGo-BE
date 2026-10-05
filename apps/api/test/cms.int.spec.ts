@@ -10,7 +10,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
-import { AdminAuthService, audiencePredicate, respectsPushPreference } from '@gogo/modules';
+import {
+  AdminAuthService,
+  APP_CONFIG,
+  audiencePredicate,
+  CloudflareAccessService,
+  respectsPushPreference,
+} from '@gogo/modules';
+import { generateKeyPairSync, sign as signBytes } from 'node:crypto';
 
 /**
  * CMS-001..010 acceptance: RBAC enforced server-side, place workflow +
@@ -642,6 +649,228 @@ describe('CMS single sign-on exchange (#62, ADR-0010)', () => {
     expect(res.json().code).toBe('ACCESS_SSO_NOT_CONFIGURED');
     // Not retryable: retrying a missing configuration produces load, not a fix.
     expect(res.json().retryable).toBe(false);
+  });
+});
+
+/**
+ * #679 / ADR-0032 — DEV is Access-only: the password door closes, and the
+ * sessions it already opened stop refreshing. One app serves the whole file,
+ * so each test flips the live config object and puts it back; the boot-time
+ * rule that refuses a door-less configuration is `env.spec.ts`'s to prove.
+ */
+describe('CMS password door closed (#679, ADR-0032)', () => {
+  const TEAM = 'gogo-test.cloudflareaccess.com';
+  const AUD = 'b'.repeat(64);
+  const KID = 'it-key-1';
+  const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  type DoorConfig = {
+    CMS_PASSWORD_LOGIN_ENABLED: boolean;
+    CF_ACCESS_TEAM_DOMAIN: string;
+    CF_ACCESS_AUD: string;
+  };
+
+  /** An RS256 assertion signed by the key this test publishes as the team's. */
+  const assertionFor = (email: string) => {
+    const now = Math.floor(Date.now() / 1000);
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const unsigned = `${part({ alg: 'RS256', kid: KID, typ: 'JWT' })}.${part({
+      iss: `https://${TEAM}`,
+      aud: AUD,
+      sub: `sub-${email}`,
+      email,
+      iat: now,
+      exp: now + 60,
+    })}`;
+    return `${unsigned}.${signBytes('RSA-SHA256', Buffer.from(unsigned), pair.privateKey).toString('base64url')}`;
+  };
+
+  /** Runs `fn` with Access configured and the password door as given. */
+  async function withDoors<T>(passwordOpen: boolean, fn: () => Promise<T>): Promise<T> {
+    const config = app.get<DoorConfig>(APP_CONFIG);
+    const access = app.get(CloudflareAccessService) as unknown as { fetchImpl: typeof fetch };
+    const saved = { ...config };
+    const savedFetch = access.fetchImpl;
+    config.CMS_PASSWORD_LOGIN_ENABLED = passwordOpen;
+    config.CF_ACCESS_TEAM_DOMAIN = TEAM;
+    config.CF_ACCESS_AUD = AUD;
+    access.fetchImpl = (async () =>
+      Response.json({
+        keys: [{ ...pair.publicKey.export({ format: 'jwk' }), kid: KID, alg: 'RS256' }],
+      })) as typeof fetch;
+    try {
+      return await fn();
+    } finally {
+      Object.assign(config, saved);
+      access.fetchImpl = savedFetch;
+    }
+  }
+
+  const login = (email: string, password: string) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/login',
+      remoteAddress: ip(),
+      payload: { email, password },
+    });
+  const refresh = (refreshToken: string) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/refresh',
+      remoteAddress: ip(),
+      payload: { refreshToken },
+    });
+  const exchange = (email: string, headers: Record<string, string> = {}) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/access-exchange',
+      remoteAddress: ip(),
+      headers: { 'cf-access-jwt-assertion': assertionFor(email), ...headers },
+    });
+
+  /** Session ids of this account, so a test can tell its own family from the login `createAdmin` did. */
+  const sessionIds = async (email: string) =>
+    (
+      await db
+        .select({ id: schema.adminSessions.id })
+        .from(schema.adminSessions)
+        .innerJoin(schema.adminUsers, eq(schema.adminUsers.id, schema.adminSessions.adminId))
+        .where(eq(schema.adminUsers.email, email))
+    ).map((row) => row.id);
+
+  const sessionsAfter = async (email: string, before: string[]) =>
+    (
+      await db
+        .select({
+          id: schema.adminSessions.id,
+          revokedAt: schema.adminSessions.revokedAt,
+          reason: schema.adminSessions.revokeReason,
+          method: schema.adminSessions.authMethod,
+        })
+        .from(schema.adminSessions)
+        .innerJoin(schema.adminUsers, eq(schema.adminUsers.id, schema.adminSessions.adminId))
+        .where(eq(schema.adminUsers.email, email))
+    ).filter((row) => !before.includes(row.id));
+
+  it('reports which doors are open, without a session and without caching', async () => {
+    const before = await api().inject({ method: 'GET', url: '/v1/cms/auth/methods' });
+    expect(before.statusCode).toBe(200);
+    expect(before.json()).toEqual({ password: true, accessSso: false });
+    expect(before.headers['cache-control']).toBe('no-store');
+
+    await withDoors(false, async () => {
+      const after = await api().inject({ method: 'GET', url: '/v1/cms/auth/methods' });
+      expect(after.json()).toEqual({ password: false, accessSso: true });
+    });
+  });
+
+  it('refuses a correct and a wrong password identically, and records nothing', async () => {
+    const email = 'door-closed@gogo.local';
+    const { id } = await createAdmin(email, 'editor');
+    const attemptsBefore = await db.select().from(schema.loginAttempts);
+    const auditBefore = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.actorId, id));
+
+    await withDoors(false, async () => {
+      const right = await login(email, ADMIN_PASSWORD);
+      const wrong = await login(email, 'not-the-password-at-all');
+      for (const res of [right, wrong]) {
+        expect(res.statusCode).toBe(403);
+        expect(res.json().code).toBe('PASSWORD_LOGIN_DISABLED');
+        expect(res.json().retryable).toBe(false);
+        expect(res.headers['set-cookie']).toBeUndefined();
+      }
+    });
+
+    // No lockout row and no audit row: there was no credential check and no actor.
+    expect(await db.select().from(schema.loginAttempts)).toHaveLength(attemptsBefore.length);
+    expect(
+      await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.actorId, id)),
+    ).toHaveLength(auditBefore.length);
+  });
+
+  /*
+   * Refresh slides the expiry forward, so without this a session opened by
+   * password before the flip would outlive the decision for as long as it
+   * kept being used.
+   */
+  it('stops a password-born session from refreshing once the door closes, and revokes its family', async () => {
+    const email = 'pre-flip@gogo.local';
+    await createAdmin(email, 'editor');
+    const before = await sessionIds(email);
+    const opened = await login(email, ADMIN_PASSWORD);
+    const first = opened.json().refreshToken as string;
+    // Still open: rotation works and inherits the door.
+    const rotated = await refresh(first);
+    expect(rotated.statusCode).toBe(201);
+
+    await withDoors(false, async () => {
+      const refused = await refresh(rotated.json().refreshToken as string);
+      expect(refused.statusCode).toBe(401);
+      expect(refused.json().code).toBe('SESSION_REVOKED');
+    });
+
+    const family = await sessionsAfter(email, before);
+    expect(family).toHaveLength(2);
+    for (const row of family) {
+      expect(row.method).toBe('password');
+      expect(row.revokedAt).not.toBeNull();
+    }
+    expect(family.some((row) => row.reason === 'password_login_disabled')).toBe(true);
+  });
+
+  it('treats a session from before the column existed as password-born', async () => {
+    const email = 'legacy-session@gogo.local';
+    await createAdmin(email, 'editor');
+    const opened = await login(email, ADMIN_PASSWORD);
+    await db
+      .update(schema.adminSessions)
+      .set({ authMethod: null })
+      .where(
+        sql`${schema.adminSessions.adminId} = (select id from admin_users where email = ${email})`,
+      );
+
+    await withDoors(false, async () => {
+      const refused = await refresh(opened.json().refreshToken as string);
+      expect(refused.statusCode).toBe(401);
+      expect(refused.json().code).toBe('SESSION_REVOKED');
+    });
+  });
+
+  it('keeps Access as a working door: exchange opens a session that refreshes and stays SSO', async () => {
+    const email = 'sso-only@gogo.local';
+    await createAdmin(email, 'editor');
+    const before = await sessionIds(email);
+
+    await withDoors(false, async () => {
+      const opened = await exchange(email, { 'sec-fetch-site': 'same-origin' });
+      expect(opened.statusCode).toBe(201);
+      const rotated = await refresh(opened.json().refreshToken as string);
+      expect(rotated.statusCode).toBe(201);
+      const again = await refresh(rotated.json().refreshToken as string);
+      expect(again.statusCode).toBe(201);
+    });
+
+    const methods = await sessionsAfter(email, before);
+    expect(methods).toHaveLength(3);
+    expect(methods.every((row) => row.method === 'access_sso')).toBe(true);
+  });
+
+  it('refuses an exchange a browser labels cross-origin, before verifying anything', async () => {
+    const email = 'cross-site@gogo.local';
+    await createAdmin(email, 'editor');
+
+    await withDoors(false, async () => {
+      for (const site of ['cross-site', 'same-site', 'none']) {
+        const res = await exchange(email, { 'sec-fetch-site': site });
+        expect(res.statusCode).toBe(403);
+        expect(res.json().code).toBe('CROSS_SITE_REQUEST');
+      }
+      // A script presenting its own assertion sends no Sec-Fetch-Site.
+      const headless = await exchange(email);
+      expect(headless.statusCode).toBe(201);
+    });
   });
 });
 

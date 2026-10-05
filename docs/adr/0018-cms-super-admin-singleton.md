@@ -156,6 +156,12 @@ directly against SSM. No part of it shipped.
   directly, since reaching them over HTTP would require the second super admin
   that cannot exist.
 
+### Bootstrap address where the password door is closed (ADR-0032)
+
+Where `CMS_PASSWORD_LOGIN_ENABLED=false`, the super admin signs in only through Access. Access matches
+on `admin_users.email`, so the bootstrap address in SSM must be an address the Access policy admits.
+Correcting the address of an existing row is an audited API act, never a SQL edit.
+
 ## Migration & rollback
 
 `migrations/0050_cms-single-super-admin.sql` demotes and suspends any surplus

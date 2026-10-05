@@ -1,6 +1,6 @@
 # ADR-0010 — CMS identity comes from Cloudflare Access
 
-- **Status:** Accepted
+- **Status:** Accepted — amended by ADR-0032 (password door switchable; DEV Access-only)
 - **Date:** 2026-08-31
 - **Issue:** GoGo-BE#62 (CMS-001)
 - **Supersedes:** nothing. Extends ADR-0003 (auth token model) with a second
@@ -101,9 +101,13 @@ becomes staff with a role nobody chose. An unknown identity gets 403
 provider is unavailable, and it remains the second factor for `super_admin`.
 Two doors onto one session model, not a migration.
 
+> **Amended by ADR-0032 (2026-10-06).** The password door is now a per-environment switch,
+> `CMS_PASSWORD_LOGIN_ENABLED`. It is open by default and in production; it is closed on DEV. Where it
+> is closed, Access is the only door, and sessions opened by password stop refreshing.
+
 ### Session lifetime
 
-Already satisfied, and now aligned end to end: `AUTH_ADMIN_REFRESH_TTL_SECONDS`
+Each refresh rotation re-issues the 8-hour lifetime (a sliding window). Already satisfied, and now aligned end to end: `AUTH_ADMIN_REFRESH_TTL_SECONDS`
 is 8 hours against 30 days for the consumer refresh, and the Access application
 is created with `session_duration = "8h"`. One shift, two layers, same number.
 
@@ -148,6 +152,9 @@ Until then this code path is present, tested, and answers 503 in every
 environment — which is the honest state, not a hidden one.
 
 ## Rollback
+
+Since ADR-0032, clearing `CF_ACCESS_*` is refused while `CMS_PASSWORD_LOGIN_ENABLED=false`. Re-open
+the password door first.
 
 Clear `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` outside production. The
 endpoint starts answering 503, password + TOTP is unaffected, and existing

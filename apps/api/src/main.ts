@@ -42,6 +42,15 @@ export async function createApp(
     pretty: config.NODE_ENV === 'development',
     ...(options.logDestination ? { destination: options.logDestination } : {}),
   });
+  if (!config.CMS_PASSWORD_LOGIN_ENABLED) {
+    // #679 / ADR-0032 — say at boot which CMS door is closed, so a deploy log
+    // answers "why does password sign-in refuse" without reading SSM. Each
+    // refusal is already logged by the exception filter with its code.
+    logger.info(
+      { cmsPasswordLogin: false, cmsAccessSso: Boolean(config.CF_ACCESS_TEAM_DOMAIN) },
+      'CMS password sign-in is disabled; Cloudflare Access is the only way in',
+    );
+  }
 
   const adapter = new FastifyAdapter({
     loggerInstance: logger,

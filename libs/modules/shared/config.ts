@@ -60,6 +60,12 @@ export type IdentityConfig = {
   /** Encrypts admin TOTP secrets at rest (#62). */
   CMS_MFA_ENCRYPTION_KEY: string;
   COOKIE_SECURE: boolean;
+  /**
+   * #679 / ADR-0032 — whether the CMS password door is open. Off means
+   * `POST /cms/auth/login` refuses and password-born sessions stop refreshing;
+   * Cloudflare Access (`access-exchange`) is then the only way in.
+   */
+  CMS_PASSWORD_LOGIN_ENABLED: boolean;
 };
 
 /**

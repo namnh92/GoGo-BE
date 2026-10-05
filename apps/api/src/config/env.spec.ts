@@ -167,4 +167,35 @@ describe('SHARE_LINK_EDGE_AUTH_TOKEN (SEC-004)', () => {
       /SHARE_LINK_EDGE_AUTH_TOKEN/,
     );
   });
+
+  describe('CMS password door (#679, ADR-0032)', () => {
+    const access = { CF_ACCESS_TEAM_DOMAIN: 'gogo.cloudflareaccess.com', CF_ACCESS_AUD: 'aud-tag' };
+
+    it('is open by default, so no existing environment changes', () => {
+      expect(loadEnv({ ...base, NODE_ENV: 'development' }).CMS_PASSWORD_LOGIN_ENABLED).toBe(true);
+    });
+
+    it('refuses to close it when Access is not configured: the console would have no door', () => {
+      expect(() =>
+        loadEnv({ ...base, NODE_ENV: 'development', CMS_PASSWORD_LOGIN_ENABLED: 'false' }),
+      ).toThrow(/CMS_PASSWORD_LOGIN_ENABLED=false requires CF_ACCESS_TEAM_DOMAIN/);
+    });
+
+    it('closes it when Access is configured', () => {
+      const env = loadEnv({
+        ...base,
+        NODE_ENV: 'development',
+        APP_ENV: 'dev',
+        CMS_PASSWORD_LOGIN_ENABLED: 'false',
+        ...access,
+      });
+      expect(env.CMS_PASSWORD_LOGIN_ENABLED).toBe(false);
+    });
+
+    it('accepts only true or false, so a typo cannot read as either', () => {
+      expect(() =>
+        loadEnv({ ...base, NODE_ENV: 'development', CMS_PASSWORD_LOGIN_ENABLED: 'no', ...access }),
+      ).toThrow(/CMS_PASSWORD_LOGIN_ENABLED/);
+    });
+  });
 });

@@ -94,6 +94,8 @@ export const adminUsers = pgTable(
  * answer "where is this account signed in" — the question a compromised staff
  * account makes urgent.
  */
+export type AdminAuthMethod = 'password' | 'access_sso';
+
 export const adminSessions = pgTable(
   'admin_sessions',
   {
@@ -112,11 +114,20 @@ export const adminSessions = pgTable(
     userAgent: text('user_agent'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    /**
+     * #679 / ADR-0032 — the door that opened this session's family. NULL is a
+     * session from before the column existed and counts as `password`.
+     */
+    authMethod: text('auth_method').$type<AdminAuthMethod>(),
   },
   (t) => [
     uniqueIndex('admin_sessions_refresh_unique').on(t.refreshTokenHash),
     index('admin_sessions_admin_idx').on(t.adminId, t.createdAt),
     index('admin_sessions_family_idx').on(t.familyId),
+    check(
+      'admin_sessions_auth_method_check',
+      sql`${t.authMethod} is null or ${t.authMethod} in ('password', 'access_sso')`,
+    ),
   ],
 );
 

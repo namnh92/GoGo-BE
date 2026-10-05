@@ -106,6 +106,7 @@ export { PlaceImportService } from '../places/application/place-import.service';
 // CMS (CMS-001..010)
 export { CmsModule } from '../cms/presentation/cms.module';
 export { AdminAuthService } from '../cms/application/admin-auth.service';
+export { CloudflareAccessService } from '../cms/application/cf-access.service';
 
 // Place ingestion (PI-*)
 export { IngestionModule } from '../ingestion/presentation/ingestion.module';
