@@ -142,10 +142,16 @@ const updateAdminSchema = z
   .object({
     role: assignableAdminRole.optional(),
     displayName: z.string().trim().min(1).max(50).optional(),
+    /**
+     * #681 — where the password door is closed this address is the single
+     * sign-on binding (ADR-0032), so changing it is an audited act that
+     * revokes the account's other sessions.
+     */
+    email: z.string().trim().email().max(254).optional(),
     reason: reasonSchema,
   })
-  .refine((v) => v.role !== undefined || v.displayName !== undefined, {
-    message: 'Nothing to change: provide role or displayName',
+  .refine((v) => v.role !== undefined || v.displayName !== undefined || v.email !== undefined, {
+    message: 'Nothing to change: provide role, displayName or email',
   });
 const adminReasonSchema = z.object({ reason: reasonSchema });
 const changePasswordSchema = z.object({
@@ -348,7 +354,12 @@ export class CmsAuthController {
     @Param('id', Uuid) id: string,
     @Body(new ZodValidationPipe(updateAdminSchema)) body: z.infer<typeof updateAdminSchema>,
   ) {
-    return this.auth.updateAdmin({ ...body, id, actorId: actor.id });
+    return this.auth.updateAdmin({
+      ...body,
+      id,
+      actorId: actor.id,
+      actorSessionId: actor.sessionId,
+    });
   }
 
   @RequireRole('super_admin')

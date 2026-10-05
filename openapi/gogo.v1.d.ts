@@ -4006,8 +4006,10 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Super admin: change a staff account's role or display name
+         * Super admin: change a staff account's role, display name or email
          * @description BE-CMS-G9. An admin cannot change their own role — not because self-promotion is the risk, a `super_admin` is already the top of the model, but because a one-person path from any role to any other removes the only check the model has.
+         *
+         *     GoGo-BE#681 (ADR-0032). `email` is the single sign-on binding where the password door is closed, so changing it is its own audited act (`admin.email_changed`, before and after) that revokes every session of the account — except the caller's own when a `super_admin` changes its own address, which it may. Compared case-insensitively and stored lower-case. Not combinable with `role` in one request (`400 EMAIL_WITH_ROLE`).
          */
         patch: operations["cmsUpdateAdmin"];
         trace?: never;
@@ -16630,6 +16632,8 @@ export interface operations {
                 "application/json": {
                     role?: components["schemas"]["AdminAssignableRole"];
                     displayName?: string;
+                    /** Format: email */
+                    email?: string;
                     /** @description Recorded in the audit log. Mandatory on every staff-account mutation. */
                     reason: string;
                 };
@@ -16662,6 +16666,8 @@ export interface operations {
              *     `SUPER_ADMIN_SINGLETON` — nor can `role` be set to `super_admin`: an environment holds at most one before it is bootstrapped and exactly one after, and that account is bootstrapped rather than promoted. The request schema (`AdminAssignableRole`) refuses the value with a 400 first; this is the service's own refusal behind it.
              *
              *     Neither freezes the account's credentials. It rotates its password through `POST /cms/auth/change-password` like every other account.
+             *
+             *     `ADMIN_EMAIL_TAKEN` — another staff account already uses that address (case-insensitive).
              */
             409: {
                 headers: {

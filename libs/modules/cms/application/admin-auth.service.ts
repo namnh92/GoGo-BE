@@ -57,6 +57,8 @@ export type AdminListPage = {
  * methods actually used is both honest and portable.
  */
 type DbLike = Pick<Db, 'select' | 'update' | 'execute'>;
+/** What opening a session needs: the pool, or the transaction holding the admin row lock. */
+type SessionWriter = Pick<Db, 'insert'>;
 
 type AdminRow = {
   id: string;
@@ -278,36 +280,52 @@ export class AdminAuthService {
    * know which door was used.
    */
   async loginWithAccessIdentity(identity: { email: string }, meta?: ClientMeta) {
-    const [admin] = await this.db
-      .select()
-      .from(schema.adminUsers)
-      .where(sql`lower(${schema.adminUsers.email}) = lower(${identity.email})`)
-      .limit(1);
+    // #681 (review F-08) — the identity is read and the session opened under a
+    // share lock on the admin row, so an email change (which holds the row for
+    // update while it revokes) serialises with this. Either the exchange
+    // commits first and the change then revokes its session, or the change
+    // commits first and this re-read no longer matches the old address.
+    const { admin, session } = await this.db.transaction(async (tx) => {
+      const [admin] = await tx
+        .select()
+        .from(schema.adminUsers)
+        .where(sql`lower(${schema.adminUsers.email}) = lower(${identity.email})`)
+        .limit(1)
+        .for('share');
 
-    // Deliberately distinguishable from a bad assertion: the caller proved a
-    // real identity, and "you are not staff here" is the true and actionable
-    // answer. Enumeration is not a risk on this path — reaching it already
-    // required an assertion signed by Cloudflare for this application.
-    if (!admin || admin.status !== 'active') {
-      throw AppError.forbidden('ADMIN_ONLY', 'This identity has no active staff account');
-    }
+      // Deliberately distinguishable from a bad assertion: the caller proved a
+      // real identity, and "you are not staff here" is the true and actionable
+      // answer. Enumeration is not a risk on this path — reaching it already
+      // required an assertion signed by Cloudflare for this application.
+      if (!admin || admin.status !== 'active') {
+        throw AppError.forbidden('ADMIN_ONLY', 'This identity has no active staff account');
+      }
 
-    await this.db
-      .update(schema.adminUsers)
-      .set({ lastLoginAt: sql`now()` })
-      .where(eq(schema.adminUsers.id, admin.id));
-    // A distinct action from `admin.login`: which door someone came through is
-    // the first question asked when reviewing an incident, and it is
-    // unrecoverable if both write the same row.
-    await writeAudit(this.db, {
-      actorType: 'admin',
-      actorId: admin.id,
-      action: 'admin.login.sso',
-      resourceType: 'admin_user',
-      resourceId: admin.id,
+      await tx
+        .update(schema.adminUsers)
+        .set({ lastLoginAt: sql`now()` })
+        .where(eq(schema.adminUsers.id, admin.id));
+      // A distinct action from `admin.login`: which door someone came through is
+      // the first question asked when reviewing an incident, and it is
+      // unrecoverable if both write the same row.
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: admin.id,
+        action: 'admin.login.sso',
+        resourceType: 'admin_user',
+        resourceId: admin.id,
+      });
+
+      const session = await this.openSession(
+        admin.id,
+        randomUUID(),
+        undefined,
+        'access_sso',
+        meta,
+        tx,
+      );
+      return { admin, session };
     });
-
-    const session = await this.openSession(admin.id, randomUUID(), undefined, 'access_sso', meta);
     return {
       ...session,
       role: admin.role,
@@ -361,13 +379,38 @@ export class AdminAuthService {
       throw AppError.forbidden('ADMIN_ONLY', 'Staff account is not active');
     }
 
-    await this.db
-      .update(schema.adminSessions)
-      .set({ supersededAt: sql`now()`, lastUsedAt: sql`now()` })
-      .where(eq(schema.adminSessions.id, session.id));
+    // #681 (review F-08) — rotate under a share lock on the admin row, taken
+    // before the session is re-read. An email change holds that row for
+    // update while it revokes every session; without the lock a rotation that
+    // read the session just before the revoke would insert a live successor
+    // into a family the change had just revoked.
+    const next = await this.db.transaction(async (tx) => {
+      await tx
+        .select({ id: schema.adminUsers.id })
+        .from(schema.adminUsers)
+        .where(eq(schema.adminUsers.id, admin.id))
+        .for('share');
+      const [current] = await tx
+        .select({
+          revokedAt: schema.adminSessions.revokedAt,
+          supersededAt: schema.adminSessions.supersededAt,
+        })
+        .from(schema.adminSessions)
+        .where(eq(schema.adminSessions.id, session.id))
+        .limit(1);
+      // Revoked or rotated since the first read: whoever did it already dealt
+      // with the family.
+      if (!current || current.revokedAt || current.supersededAt) {
+        throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
+      }
+      await tx
+        .update(schema.adminSessions)
+        .set({ supersededAt: sql`now()`, lastUsedAt: sql`now()` })
+        .where(eq(schema.adminSessions.id, session.id));
 
-    // A family never changes door: the rotation inherits how it was opened.
-    const next = await this.openSession(admin.id, session.familyId, session.id, authMethod, meta);
+      // A family never changes door: the rotation inherits how it was opened.
+      return this.openSession(admin.id, session.familyId, session.id, authMethod, meta, tx);
+    });
     return {
       ...next,
       role: admin.role,
@@ -401,9 +444,10 @@ export class AdminAuthService {
     rotatedFromId: string | undefined,
     authMethod: AdminAuthMethod,
     meta?: ClientMeta,
+    db: SessionWriter = this.db,
   ) {
     const refreshToken = this.tokens.generateOpaqueToken();
-    const [row] = await this.db
+    const [row] = await db
       .insert(schema.adminSessions)
       .values({
         adminId,
@@ -705,12 +749,9 @@ export class AdminAuthService {
     }
   }
 
-  private async loadAdmin(tx: DbLike, id: string) {
-    const [admin] = await tx
-      .select()
-      .from(schema.adminUsers)
-      .where(eq(schema.adminUsers.id, id))
-      .limit(1);
+  private async loadAdmin(tx: DbLike, id: string, lock = false) {
+    const query = tx.select().from(schema.adminUsers).where(eq(schema.adminUsers.id, id)).limit(1);
+    const [admin] = lock ? await query.for('update') : await query;
     if (!admin) throw AppError.notFound('ADMIN_NOT_FOUND', 'No such staff account');
     return admin;
   }
@@ -727,26 +768,83 @@ export class AdminAuthService {
     id: string;
     role?: AdminRole | undefined;
     displayName?: string | undefined;
+    email?: string | undefined;
     reason: string;
     actorId: string;
+    /** The caller's own session, kept when an admin changes their own address. */
+    actorSessionId?: string | undefined;
   }) {
     if (input.role && input.id === input.actorId) {
       throw AppError.forbidden('SELF_ROLE_CHANGE', 'Another super_admin must change your role');
     }
+    // #681 — an identity change is reviewed on its own. Mixed with a role
+    // change in one request, the audit trail would have to explain two
+    // independent decisions with one reason.
+    if (input.role && input.email) {
+      throw AppError.badRequest(
+        'EMAIL_WITH_ROLE',
+        'Change the email and the role in separate requests',
+      );
+    }
     AdminAuthService.assertRoleAssignable(input.role);
+    const email = input.email?.trim().toLowerCase();
     return this.db.transaction(async (tx) => {
-      const before = await this.loadAdmin(tx, input.id);
+      // Locked for the whole change when the address moves: exchange and
+      // refresh take a share lock on this row, so neither can open or rotate a
+      // session between the revoke below and the commit (#681, review F-08).
+      const before = await this.loadAdmin(tx, input.id, Boolean(email));
       AdminAuthService.assertRoleSurvives(before, input.role);
+
+      const emailChanges = email !== undefined && email !== before.email.toLowerCase();
+      if (emailChanges) {
+        const [taken] = await tx
+          .select({ id: schema.adminUsers.id })
+          .from(schema.adminUsers)
+          .where(
+            and(
+              sql`lower(${schema.adminUsers.email}) = ${email}`,
+              sql`${schema.adminUsers.id} <> ${input.id}::uuid`,
+            ),
+          )
+          .limit(1);
+        if (taken) {
+          throw AppError.conflict('ADMIN_EMAIL_TAKEN', 'Another staff account uses that email');
+        }
+      }
 
       const [after] = await tx
         .update(schema.adminUsers)
         .set({
           ...(input.role ? { role: input.role } : {}),
           ...(input.displayName ? { displayName: input.displayName } : {}),
+          ...(emailChanges ? { email } : {}),
           updatedAt: sql`now()`,
         })
         .where(eq(schema.adminUsers.id, input.id))
         .returning();
+
+      if (emailChanges) {
+        // The address is the single sign-on binding (ADR-0032): every session
+        // opened under the old one goes, except the one making this change
+        // when an admin moves their own address.
+        await this.revokeAllSessions(input.id, 'email_changed', {
+          tx,
+          ...(input.id === input.actorId && input.actorSessionId
+            ? { keepSessionId: input.actorSessionId }
+            : {}),
+        });
+        // Its own action, like `admin.login.sso`: an identity re-binding is the
+        // first thing an incident review looks for.
+        await writeAudit(tx, {
+          actorType: 'admin',
+          actorId: input.actorId,
+          action: 'admin.email_changed',
+          resourceType: 'admin_user',
+          resourceId: input.id,
+          diff: { reason: input.reason, before: { email: before.email }, after: { email } },
+        });
+        if (!input.role && !input.displayName) return toAdminEntry(after!);
+      }
 
       await writeAudit(tx, {
         actorType: 'admin',

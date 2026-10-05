@@ -938,6 +938,188 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
   });
 
   /*
+   * #681 — where the password door is closed the address is the single
+   * sign-on binding, so changing it is an audited act that revokes sessions.
+   */
+  describe('changing a staff account email (#681)', () => {
+    const patch = (token: string, id: string, payload: Record<string, unknown>) =>
+      api().inject({
+        method: 'PATCH',
+        url: `/v1/cms/auth/admins/${id}`,
+        headers: auth(token),
+        payload,
+      });
+    const live = async (adminId: string) =>
+      db
+        .select({ id: schema.adminSessions.id })
+        .from(schema.adminSessions)
+        .where(
+          and(
+            eq(schema.adminSessions.adminId, adminId),
+            sql`${schema.adminSessions.revokedAt} is null`,
+          ),
+        );
+
+    it('re-binds the identity, audits before and after, and revokes the account’s sessions', async () => {
+      const boss = await superAdmin();
+      const target = await createAdmin('rebind-old@gogo.local', 'editor');
+      expect(await live(target.id)).not.toHaveLength(0);
+
+      const res = await patch(boss.token, target.id, {
+        email: 'Rebind-New@GoGo.local',
+        reason: 'address moved to the SSO mailbox',
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().email).toBe('rebind-new@gogo.local');
+      expect(await live(target.id)).toHaveLength(0);
+
+      const [audit] = await db
+        .select()
+        .from(schema.auditLogs)
+        .where(
+          and(
+            eq(schema.auditLogs.action, 'admin.email_changed'),
+            eq(schema.auditLogs.resourceId, target.id),
+          ),
+        );
+      expect(audit?.actorId).toBe(boss.id);
+      expect(audit?.diff).toEqual({
+        reason: 'address moved to the SSO mailbox',
+        before: { email: 'rebind-old@gogo.local' },
+        after: { email: 'rebind-new@gogo.local' },
+      });
+
+      await withDoors(false, async () => {
+        expect((await exchange('rebind-new@gogo.local')).statusCode).toBe(201);
+        const old = await exchange('rebind-old@gogo.local');
+        expect(old.statusCode).toBe(403);
+        expect(old.json().code).toBe('ADMIN_ONLY');
+      });
+    });
+
+    it('lets the super admin move its own address and keeps the session doing it', async () => {
+      const boss = await superAdmin();
+      const sessionsBefore = await live(boss.id);
+      expect(sessionsBefore.length).toBeGreaterThan(0);
+      try {
+        const res = await patch(boss.token, boss.id, {
+          email: 'owner-sso@gogo.local',
+          reason: 'bootstrap address to the SSO mailbox',
+        });
+        expect(res.statusCode).toBe(200);
+        // Only the session that made the change survives.
+        expect(await live(boss.id)).toHaveLength(1);
+        const still = await api().inject({
+          method: 'GET',
+          url: '/v1/cms/auth/admins',
+          headers: auth(boss.token),
+        });
+        expect(still.statusCode).toBe(200);
+      } finally {
+        await db
+          .update(schema.adminUsers)
+          .set({ email: SUPER_ADMIN_EMAIL })
+          .where(eq(schema.adminUsers.id, boss.id));
+      }
+    });
+
+    it('refuses an address another account uses, in any case', async () => {
+      const boss = await superAdmin();
+      await createAdmin('taken-a@gogo.local', 'editor');
+      const other = await createAdmin('taken-b@gogo.local', 'editor');
+      const res = await patch(boss.token, other.id, {
+        email: 'TAKEN-A@gogo.local',
+        reason: 'collides with another account',
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().code).toBe('ADMIN_EMAIL_TAKEN');
+    });
+
+    it('refuses an email change bundled with a role change', async () => {
+      const boss = await superAdmin();
+      const other = await createAdmin('bundle@gogo.local', 'editor');
+      const res = await patch(boss.token, other.id, {
+        email: 'bundle-new@gogo.local',
+        role: 'moderator',
+        reason: 'two decisions in one request',
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().code).toBe('EMAIL_WITH_ROLE');
+    });
+
+    it('is super_admin only', async () => {
+      const ops = await createAdmin('ops-rebind@gogo.local', 'ops_admin');
+      const other = await createAdmin('victim-rebind@gogo.local', 'editor');
+      const res = await patch(ops.token, other.id, {
+        email: 'attacker@gogo.local',
+        reason: 'not allowed to do this',
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    /*
+     * Review F-08. An exchange that read the old address just before the
+     * change must not come out holding a session. The change is held open on
+     * a second connection, exactly where the service holds it: row locked,
+     * address updated, sessions revoked, not yet committed.
+     */
+    it('does not let an exchange racing the change keep a session under the old address', async () => {
+      const target = await createAdmin('race-exchange@gogo.local', 'editor');
+      await withDoors(false, async () => {
+        const client = await pool.connect();
+        try {
+          await client.query('begin');
+          await client.query('select id from admin_users where id = $1 for update', [target.id]);
+          await client.query(
+            `update admin_users set email = 'race-exchange-new@gogo.local' where id = $1`,
+            [target.id],
+          );
+          await client.query(
+            `update admin_sessions set revoked_at = now(), revoke_reason = 'email_changed'
+               where admin_id = $1 and revoked_at is null`,
+            [target.id],
+          );
+          const pending = exchange('race-exchange@gogo.local');
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          await client.query('commit');
+          const res = await pending;
+          expect(res.statusCode).toBe(403);
+          expect(res.json().code).toBe('ADMIN_ONLY');
+        } finally {
+          client.release();
+        }
+      });
+      expect(await live(target.id)).toHaveLength(0);
+    });
+
+    it('does not let a refresh racing the change rotate into a revoked family', async () => {
+      const email = 'race-refresh@gogo.local';
+      const target = await createAdmin(email, 'editor');
+      const opened = await login(email, ADMIN_PASSWORD);
+
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select id from admin_users where id = $1 for update', [target.id]);
+        await client.query(
+          `update admin_sessions set revoked_at = now(), revoke_reason = 'email_changed'
+             where admin_id = $1 and revoked_at is null`,
+          [target.id],
+        );
+        const pending = refresh(opened.json().refreshToken as string);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await client.query('commit');
+        const res = await pending;
+        expect(res.statusCode).toBe(401);
+        expect(res.json().code).toBe('SESSION_REVOKED');
+      } finally {
+        client.release();
+      }
+      expect(await live(target.id)).toHaveLength(0);
+    });
+  });
+
+  /*
    * The refusal comes before any verification: a malformed assertion still
    * gets CROSS_SITE_REQUEST, and the verifier is never reached. A repeated
    * header arrives joined ("same-origin, cross-site") and is refused too.
