@@ -14,11 +14,12 @@ const ALLOWED: Record<string, RegExp[]> = {
   'libs/observability/src/sentry.ts': [
     /Sentry\.getDefaultIntegrations\(\{\}\)/,
     /Sentry\.httpIntegration\(\{ maxIncomingRequestBodySize: 'none' \}\)/,
+    /Sentry\.onUnhandledRejectionIntegration\(\{ mode: 'strict' \}\)/,
   ],
   'apps/api/src/main.ts': [/Sentry\.init\(sentryInitOptions\(/],
   // BE#675 — the worker's init, its job-failure capture (job name only) and flush.
   'apps/worker/src/sentry.ts': [
-    /Sentry\.init\(sentryInitOptions\(\{ dsn, environment: env\.APP_ENV \?\? 'dev' \}\)\)/,
+    /Sentry\.init\(\s*sentryInitOptions\(\{ dsn, environment: env\.APP_ENV \?\? 'dev', unhandledRejection: 'strict' \}\),?\s*\)/,
     /Sentry\.captureException\(err, \{ tags: \{ periodic_job: job \} \}\)/,
     /else Sentry\.captureException\(err\);/,
     /Sentry\.flush\(2_000\)/,

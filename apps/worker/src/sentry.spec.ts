@@ -40,7 +40,12 @@ describe('initWorkerSentry', () => {
       expect(initWorkerSentry({ SENTRY_DSN: DSN, APP_ENV: appEnv, NODE_ENV: 'production' })).toBe(
         true,
       );
-      expect(sentryInitOptions).toHaveBeenCalledExactlyOnceWith({ dsn: DSN, environment: appEnv });
+      expect(sentryInitOptions).toHaveBeenCalledExactlyOnceWith({
+        dsn: DSN,
+        environment: appEnv,
+        // F-01: an unhandled rejection still ends the process, as before Sentry.
+        unhandledRejection: 'strict',
+      });
       expect(Sentry.init).toHaveBeenCalledExactlyOnceWith(
         vi.mocked(sentryInitOptions).mock.results[0]?.value,
       );

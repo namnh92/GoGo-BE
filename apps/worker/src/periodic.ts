@@ -104,6 +104,12 @@ export interface PeriodicOptions {
    * seconds would spend the whole error quota on one problem. The first
    * failure after a success (or since boot) is reported; the job has to run
    * `ok` once before its next failure is reported again.
+   *
+   * The streak lives in this process. Every environment runs one worker
+   * (`docker/docker-compose.prod.yml`, no replicas), so that is the job's
+   * streak. With several replicas, each would report its own streak, and an
+   * `ok` on one would not reset another — move the streak onto the lease row
+   * before scaling out.
    */
   errors?: PeriodicErrorReporter;
 }

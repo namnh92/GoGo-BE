@@ -73,24 +73,45 @@ export function sanitizeRequest<T extends WithRequest>(event: T): T {
 export const HTTP_INTEGRATION_NAME = /^Http(?:$|\.)/;
 
 /**
+ * BE#675 — what an unhandled promise rejection does once Sentry is up. The
+ * SDK default, `warn`, only logs: a process Node would have crashed keeps
+ * running. `strict` captures, logs and exits, which is what the worker needs
+ * for its restart policy to recover it. The API keeps the default.
+ */
+export type UnhandledRejectionMode = 'warn' | 'strict';
+
+/**
  * The SDK's default integrations with every HTTP integration removed, plus one
  * HTTP integration that never captures an incoming body. Tracing is off, so the
- * defaults are computed without span options.
+ * defaults are computed without span options. With `strict`, the default
+ * rejection handler is replaced in place by a strict one.
  */
-export function sentryIntegrations(): Integration[] {
-  const defaults = Sentry.getDefaultIntegrations({}).filter(
-    (integration) => !HTTP_INTEGRATION_NAME.test(integration.name),
-  );
+export function sentryIntegrations(
+  opts: { unhandledRejection?: UnhandledRejectionMode } = {},
+): Integration[] {
+  const defaults = Sentry.getDefaultIntegrations({})
+    .filter((integration) => !HTTP_INTEGRATION_NAME.test(integration.name))
+    .map((integration) =>
+      opts.unhandledRejection === 'strict' && integration.name === 'OnUnhandledRejection'
+        ? Sentry.onUnhandledRejectionIntegration({ mode: 'strict' })
+        : integration,
+    );
   return [...defaults, Sentry.httpIntegration({ maxIncomingRequestBodySize: 'none' })];
 }
 
-export function sentryInitOptions(opts: { dsn: string; environment: string }): NodeOptions {
+export function sentryInitOptions(opts: {
+  dsn: string;
+  environment: string;
+  unhandledRejection?: UnhandledRejectionMode;
+}): NodeOptions {
   return {
     dsn: opts.dsn,
     environment: opts.environment,
     sendDefaultPii: false,
     defaultIntegrations: false,
-    integrations: sentryIntegrations(),
+    integrations: sentryIntegrations(
+      opts.unhandledRejection ? { unhandledRejection: opts.unhandledRejection } : {},
+    ),
     beforeSend: (event: ErrorEvent) => redactCoordinatesDeep(sanitizeRequest(event)),
     beforeSendTransaction: (event: TransactionEvent) =>
       redactCoordinatesDeep(sanitizeRequest(event)),

@@ -28,4 +28,5 @@ export {
   sanitizeRequest,
   sentryInitOptions,
   sentryIntegrations,
+  type UnhandledRejectionMode,
 } from './sentry';

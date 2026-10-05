@@ -139,7 +139,10 @@ Tạo check → copy ping URL vào `.env.prod` → restart. Xong.
 capture mọi 5xx kèm request_id. Worker (BE#675) dùng cùng DSN và cùng option
 che toạ độ: báo lỗi khởi động, và mỗi job định kỳ **một lần cho mỗi chuỗi
 lỗi** (job phải chạy `ok` lại một lần thì lần lỗi sau mới được báo), để một
-job hỏng chạy vài giây/lần không đốt hết quota 5k lỗi/tháng.
+job hỏng chạy vài giây/lần không đốt hết quota 5k lỗi/tháng. Chuỗi lỗi
+nằm trong process: đúng khi mỗi môi trường chạy một worker như hiện nay; scale
+nhiều replica thì phải chuyển chuỗi lỗi lên dòng lease trước. Rejection không
+bắt trong worker vẫn làm process thoát (`strict`) để compose khởi động lại.
 
 ## 3b. Metrics & alert cho ingestion (PI-SRE-001)
 

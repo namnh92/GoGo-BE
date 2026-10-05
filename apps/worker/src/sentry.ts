@@ -8,11 +8,16 @@ import { sentryInitOptions } from '@gogo/observability';
  *
  * Same options as the API, environment from APP_ENV for the same reason as
  * BE#674: the deploy writes NODE_ENV=production for every environment.
+ * `strict` rejections (F-01 on PR #678): without it the SDK only warns, and a
+ * stray rejection would leave a half-broken worker running — and reporting on
+ * every repeat — where Node used to crash it for compose to restart.
  */
 export function initWorkerSentry(env: NodeJS.ProcessEnv): boolean {
   const dsn = env.SENTRY_DSN ?? '';
   if (!dsn) return false;
-  Sentry.init(sentryInitOptions({ dsn, environment: env.APP_ENV ?? 'dev' }));
+  Sentry.init(
+    sentryInitOptions({ dsn, environment: env.APP_ENV ?? 'dev', unhandledRejection: 'strict' }),
+  );
   return true;
 }
 
