@@ -471,7 +471,7 @@ một chỗ: `.env.prod` trên VPS (chmod 600) + GitHub Actions secrets nếu CI
 | 2   | R2 S3 token                      | `R2_ACCOUNT_ID/ACCESS_KEY_ID/SECRET_ACCESS_KEY/R2_BUCKET/R2_BACKUP_BUCKET`          | Token scope đúng 2 bucket; bucket backup riêng                                                                  |
 | 3   | Sentry DSN                       | `SENTRY_DSN`                                                                        | DSN không phải secret nghiêm ngặt nhưng vẫn để .env                                                             |
 | 4   | OneSignal                        | `ONESIGNAL_APP_ID`, `ONESIGNAL_REST_API_KEY`, `ONESIGNAL_IDENTITY_VERIFICATION_KEY` | REST key chỉ worker dùng. APNs `.p8` và FCM V1 nằm **trong OneSignal app**, không đi qua BE — xem GoGo-Infra#13 |
-| 5   | Secure export wrapping keys      | `EXPORT_WRAPPING_KEY_V1` (+`_V2`, `_ACTIVE` khi xoay)                               | API + worker cùng giá trị; 32 byte random base64; giữ version cũ ≥48h khi xoay (ADR-0031)                       |
+| 5   | Secure export wrapping keys      | `EXPORT_WRAPPING_KEY_V1` (+`_V2`, `_ACTIVE` khi xoay)                               | API + worker cùng giá trị; 32 byte random base64; giữ version cũ ≥48h khi xoay (ADR-0032)                       |
 
 Khi nhận key: tôi bật adapter thật tương ứng (place import/areas → #80,
 media presign → #81/#70, push → #193 OneSignal adapter) + smoke test từng cái.

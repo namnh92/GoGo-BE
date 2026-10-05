@@ -17,7 +17,7 @@ import { transferExport } from './export-transfer';
 const UuidPipe = new ZodValidationPipe(z.string().uuid());
 
 /**
- * GoGo-BE#256, ADR-0031 — self-service secure export.
+ * GoGo-BE#256, ADR-0032 — self-service secure export.
  *
  * The export id addresses an artifact; it authorizes nothing. Only the
  * subject's own active session can redeem it, once, through the explicit POST

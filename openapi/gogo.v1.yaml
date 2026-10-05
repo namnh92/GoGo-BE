@@ -3377,7 +3377,7 @@ paths:
       tags: [me]
       summary: Request a secure, single-use export of this account's data (GoGo-BE#256)
       description: >
-        ADR-0031. Accepted for generation (202); the worker builds the same
+        ADR-0032. Accepted for generation (202); the worker builds the same
         allowlisted document as `/me/export`, encrypts it (AES-256-GCM, per-artifact
         key wrapped by a versioned server key) and stores it privately. When it
         is ready an in-app notification of kind `privacy_export_ready` carries
@@ -5534,7 +5534,7 @@ paths:
       tags: [cms]
       summary: 'Ops: subject-access export, made through support'
       description: >
-        **Changed in alpha.66 (GoGo-BE#256, ADR-0031): no payload is returned.**
+        **Changed in alpha.67 (GoGo-BE#256, ADR-0032): no payload is returned.**
         Issues a secure export for the account holder to redeem from their own
         signed-in session (`POST /me/exports/{id}/download`), and records its
         own linked privacy request (`source: cms`, `in_progress` until the
@@ -5721,7 +5721,7 @@ paths:
         executed.
 
 
-        **Export (changed in alpha.66, GoGo-BE#256, ADR-0031): no payload is
+        **Export (changed in alpha.67, GoGo-BE#256, ADR-0032): no payload is
         returned.** Executing an export issues a secure export for the account
         holder to redeem from their own session; the request moves to
         `in_progress` and closes `completed` when the export becomes available.
@@ -13337,7 +13337,7 @@ components:
     PrivacyExportStatus:
       type: object
       description: >
-        GoGo-BE#256, ADR-0031. Facts only. `ready` exports expire 24 hours after
+        GoGo-BE#256, ADR-0032. Facts only. `ready` exports expire 24 hours after
         `readyAt` (immutable). Terminal states: `consumed`, `expired`,
         `revoked` (password change or account deletion), `failed`.
       required: [id, status, initiatedBy, createdAt]
@@ -13502,7 +13502,7 @@ components:
     NotificationKind:
       type: string
       description: >
-        Declared extensible (alpha.66): a client treats a kind it does not know
+        Declared extensible (alpha.67): a client treats a kind it does not know
         as an opaque notification it cannot render specially — never as a
         malformed item — so a new kind is not a breaking change on the inbox or
         the preference list. `privacy_export_ready` (GoGo-BE#256) is in-app

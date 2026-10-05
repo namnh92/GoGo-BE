@@ -1,4 +1,4 @@
--- GoGo-BE#256, ADR-0031 — secure export delivery: encrypted artifact,
+-- GoGo-BE#256, ADR-0032 — secure export delivery: encrypted artifact,
 -- expiring single-use redemption, auto-delete.
 --
 -- Additive only:
@@ -15,7 +15,7 @@
 -- up after 5s (SQLSTATE 55P03) and the whole migrator run rolls back; retry
 -- once the holder is gone.
 --
--- Rollback (ADR-0031 §Rollback): disable issuance (unset
+-- Rollback (ADR-0032 §Rollback): disable issuance (unset
 -- EXPORT_WRAPPING_KEY_* on the API so creation answers 503) and keep the
 -- worker sweep running until every artifact is cleaned; the schema stays.
 -- Rehearsal-only down, in this order (the enum value cannot be removed from

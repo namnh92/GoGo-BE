@@ -46,7 +46,7 @@ describe('export keyring (GoGo-BE#256)', () => {
   });
 });
 
-describe('export envelope (ADR-0031 §1)', () => {
+describe('export envelope (ADR-0032 §1)', () => {
   const keyring = parseExportKeyring({ EXPORT_WRAPPING_KEY_V1: key() })!;
 
   it('round-trips, and the stored object carries no plaintext', () => {
@@ -159,7 +159,7 @@ describe('bounded serialization', () => {
 });
 
 /*
- * ADR-0031 §1: "No plaintext temporary files." The privacy module and the
+ * ADR-0032 §1: "No plaintext temporary files." The privacy module and the
  * export builder must never reach for the filesystem; this guard fails the
  * moment one of them imports it.
  */

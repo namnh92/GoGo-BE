@@ -58,7 +58,7 @@ export const IDEMPOTENCY_REPLAY_VERSION_KEY = 'gogo:idempotency_replay_version';
  * When a route's response changes shape — the two CMS export routes used to
  * answer with the raw export and now answer with metadata — every record the
  * old handler wrote is a record the new handler would never produce, and the
- * interceptor would still hand it back for 24 hours. Migration 0070 purges the
+ * interceptor would still hand it back for 24 hours. Migration 0071 purges the
  * records that exist at deploy time; an instance still running the old code
  * during the rollout writes more. So a versioned route stores
  * `{ v, body }` and replays only a record carrying its own version: any other

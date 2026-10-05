@@ -88,7 +88,7 @@ const isUniqueViolation = (err: unknown, constraint: string) => {
 };
 
 /**
- * GoGo-BE#256, ADR-0031 — the API half of secure export delivery.
+ * GoGo-BE#256, ADR-0032 — the API half of secure export delivery.
  *
  * Issuance (self-service and CMS) creates a durable `pending` artifact and its
  * ledger link in one transaction; the worker generates it. Redemption is an

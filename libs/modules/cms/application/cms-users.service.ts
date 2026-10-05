@@ -329,7 +329,7 @@ export class CmsUsersService {
       .limit(1);
     if (!user) throw AppError.notFound('USER_NOT_FOUND', 'No such account');
 
-    // GoGo-BE#256, ADR-0031 — a secure export for the subject to redeem from
+    // GoGo-BE#256, ADR-0032 — a secure export for the subject to redeem from
     // their own session, with its own linked ledger request. The operator
     // receives metadata, never the payload.
     return this.exports.createForCmsSubject({

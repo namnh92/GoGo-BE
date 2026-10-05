@@ -69,7 +69,7 @@ export const users = pgTable(
      */
     dateOfBirth: date('date_of_birth', { mode: 'string' }),
     /**
-     * GoGo-BE#256, ADR-0031 — bumped by trigger (migration 0070) whenever the
+     * GoGo-BE#256, ADR-0032 — bumped by trigger (migration 0071) whenever the
      * password hash changes or the account is deleted. A secure export is
      * published and redeemed only while the epoch it was requested under still
      * holds, so a credential change or erasure revokes every outstanding one.

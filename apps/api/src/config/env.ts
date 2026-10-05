@@ -695,7 +695,7 @@ const envSchema = z
 
 export type AppConfig = z.infer<typeof envSchema> & {
   /**
-   * GoGo-BE#256, ADR-0031, PR #677 F-08 — every `EXPORT_WRAPPING_KEY_V<n>` (any
+   * GoGo-BE#256, ADR-0032, PR #677 F-08 — every `EXPORT_WRAPPING_KEY_V<n>` (any
    * n) and `EXPORT_WRAPPING_KEY_ACTIVE`, picked from the raw environment by the
    * same helper the worker uses. 32 random bytes, base64, from SSM. Empty means
    * secure export answers 503, never that it runs unencrypted. Rotation: add the

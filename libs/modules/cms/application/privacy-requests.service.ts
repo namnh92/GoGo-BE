@@ -279,7 +279,7 @@ export class PrivacyRequestsService {
 
     const now = new Date();
     if (row.type === 'export') {
-      // GoGo-BE#256, ADR-0031 — the payload never comes back to the operator.
+      // GoGo-BE#256, ADR-0032 — the payload never comes back to the operator.
       // Execution issues a secure export artifact; the request stays
       // `in_progress` until the artifact is available, and only the subject's
       // own session can redeem it. Staff never forward raw data.
@@ -391,7 +391,7 @@ export class PrivacyRequestsService {
     deliveryMethod: 'in_app' | 'secure_download' | 'other';
     actorId: string;
   }) {
-    // GoGo-BE#256, ADR-0031 §6 — a secure download is observed by the server
+    // GoGo-BE#256, ADR-0032 §6 — a secure download is observed by the server
     // when the holder's transfer completes; an operator cannot assert one.
     if (input.deliveryMethod === 'secure_download') {
       throw AppError.badRequest(

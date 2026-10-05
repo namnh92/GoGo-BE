@@ -20,7 +20,7 @@ import {
 import { STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
 
 /**
- * GoGo-BE#256, ADR-0031 — secure export delivery, end to end against a real
+ * GoGo-BE#256, ADR-0032 — secure export delivery, end to end against a real
  * Postgres: issuance, fenced generation, single-use redemption, revocation by
  * export epoch, expiry, cleanup, and the CMS paths that used to hand the raw
  * payload to an operator.
@@ -103,7 +103,7 @@ async function artifact(id: string) {
 /**
  * The transfer's outcome, the ledger's delivery and the immediate cleanup are
  * recorded by the finalization that runs once the bytes have left — after the
- * response, by definition (ADR-0031 §6: `delivered_at` is a server-observed
+ * response, by definition (ADR-0032 §6: `delivered_at` is a server-observed
  * completion). What the consuming transaction guarantees synchronously is the
  * durable part: `consumed`, key material cleared, cleanup due. A test that
  * wants the eventual facts waits for them; the bound only trips on a defect.
@@ -889,10 +889,10 @@ describe('no leakage', () => {
   });
 });
 
-describe('migration 0070', () => {
+describe('migration 0071', () => {
   it('the documented rehearsal down path runs cleanly (rolled back)', async () => {
     const file = readFileSync(
-      path.resolve(__dirname, '../../../migrations/0070_privacy-export-artifacts.sql'),
+      path.resolve(__dirname, '../../../migrations/0071_privacy-export-artifacts.sql'),
       'utf8',
     );
     const down = file

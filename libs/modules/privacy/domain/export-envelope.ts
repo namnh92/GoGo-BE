@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 
 /**
- * GoGo-BE#256, ADR-0031 §1 — envelope encryption for one privacy export.
+ * GoGo-BE#256, ADR-0032 §1 — envelope encryption for one privacy export.
  *
  * A fresh 256-bit data key per artifact encrypts the JSON with AES-256-GCM
  * (96-bit random nonce, 128-bit tag). The data key is wrapped by a versioned,

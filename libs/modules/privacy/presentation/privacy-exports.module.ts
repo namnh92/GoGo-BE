@@ -14,7 +14,7 @@ import {
 import { PrivacyExportsController } from './privacy-exports.controller';
 
 /**
- * GoGo-BE#256, ADR-0031 — secure export delivery. Exported so the CMS can
+ * GoGo-BE#256, ADR-0032 — secure export delivery. Exported so the CMS can
  * issue an export for a ledger request without a second implementation.
  */
 @Module({
