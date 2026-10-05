@@ -5764,6 +5764,14 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: >
+            `EXPORT_UNAVAILABLE` — an export request cannot be executed here:
+            secure export is not configured in this environment (no wrapping
+            key or no private bucket). Not retryable; the request is unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/privacy-requests/{id}/close:
     post:

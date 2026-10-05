@@ -513,6 +513,15 @@ export const PUSH_PROVIDER = Symbol('PUSH_PROVIDER');
 export const STORAGE_PROVIDER = Symbol('STORAGE_PROVIDER');
 /** The public bucket, served by the edge. Write and delete only (ADR-0022). */
 export const PUBLIC_STORAGE_PROVIDER = Symbol('PUBLIC_STORAGE_PROVIDER');
+/**
+ * GoGo-BE#256, PR #677 S-F-13 — the private bucket as the privacy module may
+ * use it: `StoragePort | null`. The real adapter when R2 is configured, the
+ * in-memory fake under `NODE_ENV=test`, otherwise `null`. Never the fake
+ * elsewhere: a fake "deletes" an export that stays in R2, and the record then
+ * says the bytes are gone. `null` means issuance and redemption answer 503 and
+ * every cleanup is left due for a worker that has the bucket.
+ */
+export const PRIVACY_EXPORT_STORAGE = Symbol('PRIVACY_EXPORT_STORAGE');
 export const CACHE_PURGE = Symbol('CACHE_PURGE');
 
 export type SheetTab = { title: string; index: number };

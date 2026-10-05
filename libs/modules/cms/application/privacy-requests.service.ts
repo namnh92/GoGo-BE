@@ -391,19 +391,6 @@ export class PrivacyRequestsService {
     deliveryMethod: 'in_app' | 'secure_download' | 'other';
     actorId: string;
   }) {
-    const row = await this.load(input.id);
-    if (row.type !== 'export') {
-      throw AppError.conflict('NOT_AN_EXPORT', 'Only an export request has a delivery');
-    }
-    // PR #677 F-06 — once a request is backed by a secure export artifact, the
-    // server owns its delivery fields: no manual method may be recorded over
-    // (or instead of) the transfer the server observes.
-    if (await this.exports.forRequest(row.id)) {
-      throw AppError.conflict(
-        'DELIVERY_SERVER_OWNED',
-        'This request is delivered by secure export; the server records its delivery',
-      );
-    }
     // GoGo-BE#256, ADR-0031 §6 — a secure download is observed by the server
     // when the holder's transfer completes; an operator cannot assert one.
     if (input.deliveryMethod === 'secure_download') {
@@ -413,20 +400,47 @@ export class PrivacyRequestsService {
         [{ field: 'deliveryMethod', code: 'not_assertable', message: 'secure_download' }],
       );
     }
-    const [updated] = await this.db
-      .update(schema.privacyRequests)
-      .set({ deliveryMethod: input.deliveryMethod, deliveredAt: sql`now()`, updatedAt: sql`now()` })
-      .where(eq(schema.privacyRequests.id, input.id))
-      .returning();
-    await writeAudit(this.db, {
-      actorType: 'admin',
-      actorId: input.actorId,
-      action: 'privacy_request.delivered',
-      resourceType: 'privacy_request',
-      resourceId: input.id,
-      diff: { deliveryMethod: input.deliveryMethod },
+    const updated = await this.db.transaction(async (tx) => {
+      // PR #677 A-F-06 / S-F-12 — decided under the request row lock, the same
+      // lock an export execution takes when it links its artifact to this row,
+      // so the check and the write cannot straddle a concurrent execution. The
+      // ownership is the ledger's own column, set when the artifact was
+      // issued: it outlives the artifact and its tombstone.
+      const [row] = await tx
+        .select()
+        .from(schema.privacyRequests)
+        .where(eq(schema.privacyRequests.id, input.id))
+        .for('update');
+      if (!row) throw AppError.notFound('PRIVACY_REQUEST_NOT_FOUND', 'No such request');
+      if (row.type !== 'export') {
+        throw AppError.conflict('NOT_AN_EXPORT', 'Only an export request has a delivery');
+      }
+      if (row.secureDelivery) {
+        throw AppError.conflict(
+          'DELIVERY_SERVER_OWNED',
+          'This request is delivered by secure export; the server records its delivery',
+        );
+      }
+      const [written] = await tx
+        .update(schema.privacyRequests)
+        .set({
+          deliveryMethod: input.deliveryMethod,
+          deliveredAt: sql`now()`,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(schema.privacyRequests.id, input.id))
+        .returning();
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: input.actorId,
+        action: 'privacy_request.delivered',
+        resourceType: 'privacy_request',
+        resourceId: input.id,
+        diff: { deliveryMethod: input.deliveryMethod },
+      });
+      return written!;
     });
-    return toDto(updated!);
+    return toDto(updated);
   }
 
   /**

@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import type { Db } from '@gogo/database';
-import { STORAGE_PROVIDER, type StoragePort } from '@gogo/providers';
+import { PRIVACY_EXPORT_STORAGE, type StoragePort } from '@gogo/providers';
 import { IdentityModule } from '../../identity/presentation/identity.module';
 import { APP_CONFIG, type PrivacyExportConfig } from '../../shared/config';
 import { slaConfigFrom } from '../../shared/privacy-ledger';
@@ -25,20 +25,18 @@ import { PrivacyExportsController } from './privacy-exports.controller';
       provide: PRIVACY_EXPORT_OPTIONS,
       useFactory: (config: PrivacyExportConfig): PrivacyExportOptions => ({
         keyring: parseExportKeyring(config.EXPORT_WRAPPING_KEYS),
-        storageReady:
-          config.NODE_ENV === 'test' ||
-          Boolean(config.R2_ACCESS_KEY_ID && config.R2_SECRET_ACCESS_KEY && config.R2_BUCKET),
         sla: slaConfigFrom(config.PRIVACY_SLA_JSON),
         retentionMonths: config.PRIVACY_RETENTION_MONTHS,
       }),
       inject: [APP_CONFIG],
     },
     {
-      // Plain class, like the processor the worker builds by hand.
+      // Plain class, like the processor the worker builds by hand. The storage
+      // is the fail-closed private bucket (PR #677 S-F-13): null means 503.
       provide: PrivacyExportService,
-      useFactory: (db: Db, storage: StoragePort, options: PrivacyExportOptions) =>
+      useFactory: (db: Db, storage: StoragePort | null, options: PrivacyExportOptions) =>
         new PrivacyExportService(db, storage, options),
-      inject: [DB, STORAGE_PROVIDER, PRIVACY_EXPORT_OPTIONS],
+      inject: [DB, PRIVACY_EXPORT_STORAGE, PRIVACY_EXPORT_OPTIONS],
     },
   ],
   exports: [PrivacyExportService],

@@ -130,6 +130,8 @@ export const privacyExportAttemptObjects = pgTable(
     attempts: integer('attempts').notNull().default(0),
     lastError: text('last_error'),
     deadAt: timestamp('dead_at', { withTimezone: true }),
+    /** A-F-10: the reaper's deletion claim; publication removes only unclaimed records. */
+    reapingSince: timestamp('reaping_since', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

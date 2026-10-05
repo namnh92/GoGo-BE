@@ -543,6 +543,11 @@ export const privacyRequests = pgTable(
 
     deliveryMethod: privacyDeliveryMethod('delivery_method'),
     deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    /**
+     * PR #677 A-F-06 — a secure export was issued for this request, so its
+     * delivery fields are the server's (set by migration 0070's column).
+     */
+    secureDelivery: boolean('secure_delivery').notNull().default(false),
 
     retentionAt: timestamp('retention_at', { withTimezone: true }),
     retentionHoldAt: timestamp('retention_hold_at', { withTimezone: true }),

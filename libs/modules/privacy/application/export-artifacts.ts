@@ -227,10 +227,18 @@ export async function cleanupDueArtifacts(
 export type AttemptReapReport = { deleted: number; retried: number; dead: number };
 
 /**
- * PR #677 F-04 — deletes the object of every unpublished upload attempt whose
- * grace has passed. The row goes only after storage confirmed the delete, so
- * an object that a late PUT re-created after an earlier cleanup is still
- * covered: its record was never removed.
+ * PR #677 F-04 / A-F-10 — deletes the object of every unpublished upload
+ * attempt whose cover has passed.
+ *
+ * Ownership first, storage second. Before any storage call the reaper claims
+ * the record in a committed statement (`reaping_since`), under `skip locked`:
+ * a record a publication transaction is holding — it deleted the record but has
+ * not committed — is skipped, not read from a stale snapshot and then deleted
+ * from storage underneath a ready artifact. Once claimed, a record is the
+ * reaper's for good: publication refuses it, the permit before an upload
+ * refuses it, and a failed storage delete keeps the claim through its retries.
+ * The row itself goes only after storage confirmed the delete, so an object a
+ * late PUT re-creates after an earlier cleanup is still covered.
  */
 export async function reapAttemptObjects(
   db: Db,
@@ -240,13 +248,26 @@ export async function reapAttemptObjects(
   const report: AttemptReapReport = { deleted: 0, retried: 0, dead: 0 };
   const maxAttempts = options.maxAttempts ?? PRIVACY_EXPORT_DEFAULTS.maxCleanupAttempts;
   const t = schema.privacyExportAttemptObjects;
-  const rows = await db
-    .select()
+  const due = await db
+    .select({ id: t.id })
     .from(t)
     .where(and(sql`${t.deleteAfter} <= now()`, isNull(t.deadAt)))
     .orderBy(t.deleteAfter)
     .limit(options.limit ?? 50);
-  for (const row of rows) {
+  for (const { id } of due) {
+    const { rows } = await db.execute(sql`
+      update privacy_export_attempt_objects o
+      set reaping_since = coalesce(o.reaping_since, now())
+      where o.id = (
+        select id from privacy_export_attempt_objects
+        where id = ${id}::uuid and dead_at is null and delete_after <= now()
+        for update skip locked
+      )
+      returning o.id, o.artifact_id as "artifactId", o.object_key as "objectKey", o.attempts
+    `);
+    const row = rows[0] as
+      { id: string; artifactId: string; objectKey: string; attempts: number } | undefined;
+    if (!row) continue; // published meanwhile, or held by a publication deciding now
     try {
       await storage.deleteObject(row.objectKey);
       await db.transaction(async (tx) => {
@@ -264,6 +285,8 @@ export async function reapAttemptObjects(
     } catch (err) {
       const attempts = row.attempts + 1;
       const exhausted = attempts >= maxAttempts;
+      // `reaping_since` stays: the claim outlives the retry, so publication
+      // can never adopt an object whose deletion has already been attempted.
       await db
         .update(t)
         .set({

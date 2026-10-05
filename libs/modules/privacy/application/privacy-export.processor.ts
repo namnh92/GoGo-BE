@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import type { StoragePort } from '@gogo/providers';
 import { RETRY_BACKOFF_SECONDS } from '../../notifications/application/outbox-dispatcher';
@@ -33,14 +33,22 @@ export type PrivacyExportProcessorOptions = {
   /** Hard deadline on one upload (default 30 s). */
   uploadTimeoutMs?: number;
   /**
-   * How long an attempt's deletion record waits before deleting its object
-   * (default lease TTL + 2 × upload deadline): past any moment that attempt's
-   * upload could still land. Publication must happen inside it.
+   * How long an attempt's deletion record waits before its first reap when the
+   * attempt never reaches the upload (default lease TTL + 2 × upload deadline).
+   * It is the crash backstop for the collection phase only: immediately before
+   * the PUT the record is refreshed to cover the upload itself (PR #677
+   * A-F-04), so a slow collection cannot let the record expire under a PUT.
    */
   attemptGraceMs?: number;
   maxPlaintextBytes?: number;
   ttlMs?: number;
   generationDeadlineMs?: number;
+  /**
+   * Test seam: runs after the export is sealed and before the upload is
+   * permitted — where a lapsed lease, a fencing claim or a reaped record has
+   * to be noticed before any byte leaves.
+   */
+  beforeUpload?: (artifactId: string) => Promise<void>;
   /**
    * Test seam: runs after the ciphertext is in storage and before publication
    * is attempted — exactly where a crash, a stale lease or a revocation race
@@ -74,12 +82,15 @@ export type SweepReport = {
  *
  * `runDue` generates: claim one due artifact under a fenced lease (the
  * `attempt` counter is the fencing token), persist an attempt-specific object
- * key, build the allowlisted export, encrypt it in memory, upload it, then
+ * key, build the allowlisted export, encrypt it in memory, re-arm the fence and
+ * the attempt's deletion record immediately before the upload, upload it, then
  * publish in one short transaction that rechecks the fence and the subject's
  * export epoch under the user row lock. Publication, ledger completion, the
  * monthly counter and the in-app notification commit together, once.
  *
- * `sweep` expires, times out stuck generations and deletes what is due.
+ * `sweep` expires, times out stuck generations and deletes what is due. It
+ * needs the bucket and nothing else: a worker without wrapping keys still
+ * sweeps (PR #677 S-F-11); only generation is gated on the keyring.
  *
  * Plain class: the worker builds it by hand, tests build it with fakes.
  */
@@ -94,7 +105,8 @@ export class PrivacyExportProcessor {
   constructor(
     private readonly db: Db,
     private readonly storage: StoragePort,
-    private readonly keyring: ExportKeyring,
+    /** `null` = this worker sweeps but does not generate. */
+    private readonly keyring: ExportKeyring | null,
     private readonly options: PrivacyExportProcessorOptions,
   ) {
     this.leaseTtlMs = options.leaseTtlMs ?? PRIVACY_EXPORT_DEFAULTS.leaseTtlMs;
@@ -104,6 +116,20 @@ export class PrivacyExportProcessor {
     this.ttlMs = options.ttlMs ?? PRIVACY_EXPORT_DEFAULTS.ttlMs;
     this.generationDeadlineMs =
       options.generationDeadlineMs ?? PRIVACY_EXPORT_DEFAULTS.generationDeadlineMs;
+  }
+
+  /** Whether this worker holds a wrapping key, i.e. may generate at all. */
+  get canGenerate(): boolean {
+    return this.keyring !== null;
+  }
+
+  /**
+   * The window a permitted upload may occupy, from the moment it is permitted:
+   * the upload deadline plus one more for a PUT the abort could not recall.
+   * The attempt's deletion record is re-armed to exactly this before the PUT.
+   */
+  private get uploadCoverMs(): number {
+    return 2 * this.uploadTimeoutMs;
   }
 
   /** Bounded: at most `limit` generations per tick, one at a time. */
@@ -116,11 +142,13 @@ export class PrivacyExportProcessor {
       retry_scheduled: 0,
       too_large: 0,
     };
+    // No key, no claim: the artifact waits for a worker that can seal it.
+    if (!this.keyring) return report;
     for (let i = 0; i < limit; i += 1) {
       if (signal?.aborted) break;
       const claim = await this.claim();
       if (!claim) break;
-      report[await this.generate(claim, signal)] += 1;
+      report[await this.generate(claim, this.keyring, signal)] += 1;
     }
     return report;
   }
@@ -172,7 +200,11 @@ export class PrivacyExportProcessor {
     );
   }
 
-  private async generate(claim: Claim, signal?: AbortSignal): Promise<GenerationOutcome> {
+  private async generate(
+    claim: Claim,
+    keyring: ExportKeyring,
+    signal?: AbortSignal,
+  ): Promise<GenerationOutcome> {
     const objectKey = `${PRIVACY_EXPORT_PREFIX}${claim.id}/${claim.attempt}-${randomUUID()}.bin`;
     // PR #677 F-04 — the key and its durable deletion record are written
     // together, before any byte is uploaded. The record outlives every way
@@ -211,7 +243,7 @@ export class PrivacyExportProcessor {
         sealed = sealExport(
           plaintext,
           { exportId: claim.id, subjectUserId: claim.subjectUserId },
-          this.keyring,
+          keyring,
         );
       } finally {
         plaintext.fill(0);
@@ -223,10 +255,19 @@ export class PrivacyExportProcessor {
       return this.retryLater(claim);
     }
 
+    await this.options.beforeUpload?.(claim.id);
+
+    // PR #677 A-F-04 — collection is unbounded, so nothing decided before it
+    // still holds: the lease may have lapsed and been re-claimed, and the
+    // attempt record may have been reaped. One statement, right before the
+    // PUT, re-arms both or refuses the upload. Never a byte after a lost fence.
+    if (signal?.aborted) return this.retryLater(claim);
+    const permit = await this.permitUpload(claim, objectKey);
+    if (permit !== 'permitted') return permit === 'fenced' ? 'fenced' : this.retryLater(claim);
+
     try {
-      if (signal?.aborted) throw new Error('lease lost');
-      // Bounded even when a lease signal is passed: the attempt record's grace
-      // is sized to outlast this deadline, which is what makes it safe.
+      // Bounded even when a lease signal is passed: the attempt record now
+      // covers `uploadCoverMs` from the permit, which outlasts this deadline.
       const deadline = AbortSignal.timeout(this.uploadTimeoutMs);
       await this.storage.putObject(objectKey, sealed.object, 'application/octet-stream', {
         cacheControl: 'no-store',
@@ -243,6 +284,38 @@ export class PrivacyExportProcessor {
     // once its grace passes, even if storage saw the PUT after a cleanup ran.
     if (outcome === 'grace_expired') return this.retryLater(claim);
     return outcome;
+  }
+
+  /**
+   * The upload permit: in one transaction, the artifact row must still be this
+   * attempt's (fence) — its lease is renewed — and this attempt's deletion
+   * record must still exist, unclaimed by the reaper (A-F-10) and not dead —
+   * its `delete_after` is moved to now + upload cover. `fenced` means another
+   * attempt owns the artifact; `reaped` means this attempt's object key has
+   * already been handed to deletion and a fresh attempt must take a new key.
+   */
+  private async permitUpload(
+    claim: Claim,
+    objectKey: string,
+  ): Promise<'permitted' | 'fenced' | 'reaped'> {
+    return this.db.transaction(async (tx) => {
+      const fenced = await tx
+        .update(schema.privacyExportArtifacts)
+        .set({
+          leaseExpiresAt: sql`now() + make_interval(secs => ${this.leaseTtlMs / 1000})`,
+          updatedAt: sql`now()`,
+        })
+        .where(and(this.fence(claim), eq(schema.privacyExportArtifacts.objectKey, objectKey)))
+        .returning({ id: schema.privacyExportArtifacts.id });
+      if (fenced.length === 0) return 'fenced';
+      const o = schema.privacyExportAttemptObjects;
+      const armed = await tx
+        .update(o)
+        .set({ deleteAfter: sql`now() + make_interval(secs => ${this.uploadCoverMs / 1000})` })
+        .where(and(eq(o.objectKey, objectKey), isNull(o.reapingSince), isNull(o.deadAt)))
+        .returning({ id: o.id });
+      return armed.length === 0 ? 'reaped' : 'permitted';
+    });
   }
 
   private async publish(
@@ -288,16 +361,19 @@ export class PrivacyExportProcessor {
         return 'revoked';
       }
 
-      // PR #677 F-04 — publication takes this attempt's deletion record out of
-      // the reaper's hands, and only while its grace has not run out: a record
-      // already due may be deleting the object right now.
+      // PR #677 F-04 / A-F-10 — publication takes this attempt's deletion
+      // record out of the reaper's hands: only while its cover has not run
+      // out, and only if the reaper has not already claimed it (`reaping_since`
+      // is the reaper's committed ownership; once set, the object is on its
+      // way out and this attempt must not become the ready artifact).
       const kept = await tx
         .delete(schema.privacyExportAttemptObjects)
         .where(
           and(
             eq(schema.privacyExportAttemptObjects.objectKey, objectKey),
             sql`${schema.privacyExportAttemptObjects.deleteAfter} > clock_timestamp()`,
-            sql`${schema.privacyExportAttemptObjects.deadAt} is null`,
+            isNull(schema.privacyExportAttemptObjects.deadAt),
+            isNull(schema.privacyExportAttemptObjects.reapingSince),
           ),
         )
         .returning({ id: schema.privacyExportAttemptObjects.id });
@@ -543,19 +619,25 @@ export class PrivacyExportProcessor {
     let closed = 0;
     for (const { request_id } of rows as { request_id: string }[]) {
       const done = await this.db.transaction(async (tx) => {
-        // Re-checked under the request row lock, so a concurrent re-execution
-        // that just issued a new artifact is not closed underneath it.
+        // PR #677 A-F-07 — the lock first, on its own. A re-execution holding
+        // this row inserts its artifact and commits while we wait; a
+        // `not exists` in the same statement as the lock would still be
+        // evaluated against the snapshot taken before that commit. The
+        // live-artifact check is therefore a second statement, taken after
+        // the lock is granted, with a snapshot of its own.
         const { rows: locked } = await tx.execute(sql`
-          select 1 from privacy_requests r
-          where r.id = ${request_id}::uuid and r.status <> 'closed'
-            and not exists (
-              select 1 from privacy_export_artifacts live
-              where live.privacy_request_id = r.id
-                and live.state in ('pending', 'generating', 'ready')
-            )
+          select 1 from privacy_requests
+          where id = ${request_id}::uuid and status <> 'closed'
           for update
         `);
         if (locked.length === 0) return false;
+        const { rows: live } = await tx.execute(sql`
+          select 1 from privacy_export_artifacts
+          where privacy_request_id = ${request_id}::uuid
+            and state in ('pending', 'generating', 'ready')
+          limit 1
+        `);
+        if (live.length > 0) return false;
         await closeLinkedRequestFailed(tx, request_id, this.options.retentionMonths);
         await writeAudit(tx, {
           actorType: 'system',

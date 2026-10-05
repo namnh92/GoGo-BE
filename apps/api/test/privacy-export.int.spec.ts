@@ -877,7 +877,7 @@ describe('migration 0070', () => {
       .split('\n')
       .filter((l) => /^-- {3}(DROP|ALTER)/.test(l))
       .map((l) => l.replace(/^--\s+/, ''));
-    expect(down.length).toBe(8);
+    expect(down.length).toBe(9);
     const client = await pool.connect();
     try {
       await client.query('begin');

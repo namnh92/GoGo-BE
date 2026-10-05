@@ -108,7 +108,16 @@ acceptance for this doc.
 - **Secrets:** `EXPORT_WRAPPING_KEY_V<n>` (SSM, 32 random bytes base64). Rotate by
   adding the next version and setting `EXPORT_WRAPPING_KEY_ACTIVE`; keep the old
   version until no artifact wrapped by it remains (24 h + cleanup). Removing every
-  version disables issuance (503) — that is also the rollback.
+  version disables issuance (503) — that is also the rollback. The worker's sweep
+  (expiry, deletion, alerts, redrive) keeps running without any key; only
+  generation stops, and pending artifacts wait for a keyed worker (boot log:
+  `sweep registered WITHOUT generation`). An API instance without the private
+  bucket answers 503 and leaves every cleanup to the worker — it never marks an
+  export deleted on its own.
+- **Deploying alpha.66 over a database with stored CMS export replays:** migration
+  0070 purges the old raw-payload replay records of both CMS export routes; a
+  record an old instance writes during the rollout is refused by the new routes
+  (they replay only versioned metadata). No manual step.
 - **Alerts:** `privacy_export_cleanup_overdue > 0` (deletion slower than 5 min) or
   `privacy_export_cleanup_dead_lettered > 0` (log `PRIVACY_EXPORT_CLEANUP_STUCK`).
   Fix storage, then redrive: `update privacy_export_artifacts set cleanup_dead_at =

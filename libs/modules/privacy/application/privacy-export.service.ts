@@ -44,8 +44,6 @@ export const PRIVACY_EXPORT_OPTIONS = Symbol('PRIVACY_EXPORT_OPTIONS');
 export type PrivacyExportOptions = {
   /** `null` = no wrapping key configured: issuance and redemption are unavailable. */
   keyring: ExportKeyring | null;
-  /** False in an environment that must not keep exports in the in-memory fake. */
-  storageReady: boolean;
   sla: SlaConfig;
   retentionMonths: number;
   maxPlaintextBytes?: number;
@@ -66,6 +64,18 @@ export type RedeemedExport = {
   /** Called exactly once by the transport: did the bytes leave the server? */
   finalize(outcome: 'completed' | 'aborted'): Promise<void>;
 };
+
+/**
+ * PR #677 A-F-02 — the client went away while its redemption was still being
+ * decided. Nothing was consumed and nothing is held; the transport has nobody
+ * to answer, so this is not an `AppError` and carries no status.
+ */
+export class ExportClientGoneError extends Error {
+  override readonly name = 'ExportClientGoneError';
+  constructor() {
+    super('Client disconnected before the export was consumed');
+  }
+}
 
 const isUniqueViolation = (err: unknown, constraint: string) => {
   const e = err as {
@@ -91,20 +101,26 @@ const isUniqueViolation = (err: unknown, constraint: string) => {
 export class PrivacyExportService {
   private activeDownloads = 0;
 
+  /**
+   * `storage` is the fail-closed private bucket (`PRIVACY_EXPORT_STORAGE`,
+   * PR #677 S-F-13): `null` when this process has no real bucket and is not
+   * under test, in which case issuance and redemption answer 503.
+   */
   constructor(
     private readonly db: Db,
-    private readonly storage: StoragePort,
+    private readonly storage: StoragePort | null,
     private readonly options: PrivacyExportOptions,
   ) {}
 
-  private assertAvailable(): void {
-    if (!this.options.keyring || !this.options.storageReady) {
+  private assertAvailable(): { keyring: ExportKeyring; storage: StoragePort } {
+    if (!this.options.keyring || !this.storage) {
       throw AppError.serviceUnavailable(
         'EXPORT_UNAVAILABLE',
         'Secure export is not configured in this environment',
         false,
       );
     }
+    return { keyring: this.options.keyring, storage: this.storage };
   }
 
   // --- issuance -------------------------------------------------------------
@@ -274,6 +290,9 @@ export class PrivacyExportService {
    * The ledger row this artifact fulfils: born `in_progress` for a new
    * request, moved to `in_progress` for an executed one. It closes
    * `completed` only when the artifact becomes available (worker).
+   * `secure_delivery` (PR #677 A-F-06) is stamped here, in the same
+   * transaction as the artifact: from this point the row's delivery fields
+   * are the server's, whatever later happens to the artifact or its tombstone.
    */
   private async linkLedger(
     tx: Tx,
@@ -288,6 +307,7 @@ export class PrivacyExportService {
           acknowledgedAt: sql`coalesce(${schema.privacyRequests.acknowledgedAt}, now())`,
           executedAt: now,
           executedByAdminId: input.initiator.id,
+          secureDelivery: true,
           updatedAt: sql`now()`,
         })
         .where(
@@ -314,6 +334,7 @@ export class PrivacyExportService {
         ackDueAt,
         acknowledgedAt: now,
         fulfillmentDueAt,
+        secureDelivery: true,
         ...(input.link.kind === 'cms_direct'
           ? {
               executedAt: now,
@@ -364,10 +385,16 @@ export class PrivacyExportService {
    * 4. one short transaction locks the user, rechecks expiry and epoch and
    *    moves `ready → consumed`. Only the winner gets bytes; every other
    *    concurrent or replayed attempt is a 410.
+   *
+   * `clientGone` (PR #677 A-F-02) is the transport's word that nobody is
+   * listening any more. It is consulted once, right before consumption: a
+   * client that left during the fetch has not been admitted, so its export is
+   * not spent and the plaintext is zeroed here. After consumption the transfer
+   * is admitted and its outcome is the transport's to report via `finalize`.
    */
-  async redeem(actor: Actor, id: string): Promise<RedeemedExport> {
+  async redeem(actor: Actor, id: string, clientGone?: AbortSignal): Promise<RedeemedExport> {
     const userId = requireUserActor(actor);
-    this.assertAvailable();
+    const { keyring, storage } = this.assertAvailable();
     await this.assertLiveSession(userId, actor.sessionId);
 
     const row = await this.loadOwned(userId, id);
@@ -389,7 +416,11 @@ export class PrivacyExportService {
       this.activeDownloads -= 1;
     };
     try {
-      const plaintext = await this.decryptVerified(row);
+      const plaintext = await this.decryptVerified(row, keyring, storage);
+      if (clientGone?.aborted) {
+        plaintext.fill(0);
+        throw new ExportClientGoneError();
+      }
       const outcome = await this.consume(row, userId, actor.sessionId);
       if (outcome !== 'consumed') {
         plaintext.fill(0);
@@ -434,12 +465,16 @@ export class PrivacyExportService {
     }
   }
 
-  private async decryptVerified(row: ArtifactRow): Promise<Buffer> {
+  private async decryptVerified(
+    row: ArtifactRow,
+    keyring: ExportKeyring,
+    storage: StoragePort,
+  ): Promise<Buffer> {
     const maxPlain = this.options.maxPlaintextBytes ?? PRIVACY_EXPORT_DEFAULTS.maxPlaintextBytes;
     let object: Uint8Array;
     try {
       object = (
-        await this.storage.getObject(row.objectKey!, {
+        await storage.getObject(row.objectKey!, {
           maxBytes: maxPlain + EXPORT_ENVELOPE_OVERHEAD,
         })
       ).body;
@@ -467,7 +502,7 @@ export class PrivacyExportService {
           wrapTag: row.wrapTag!,
         },
         { exportId: row.id, subjectUserId: row.subjectUserId },
-        this.options.keyring,
+        keyring,
       );
     } catch (err) {
       if (err instanceof ExportKeyUnavailableError) {
@@ -516,7 +551,13 @@ export class PrivacyExportService {
         diff: { reason: code },
       });
     });
-    await cleanupDueArtifacts(this.db, this.storage, { ids: [row.id] }).catch(() => undefined);
+    await this.cleanupNow(row.id);
+  }
+
+  /** Immediate cleanup with the real bucket; the worker sweep retries whatever is refused. */
+  private async cleanupNow(artifactId: string): Promise<void> {
+    if (!this.storage) return;
+    await cleanupDueArtifacts(this.db, this.storage, { ids: [artifactId] }).catch(() => undefined);
   }
 
   /**
@@ -634,8 +675,7 @@ export class PrivacyExportService {
         resourceId: row.id,
       });
     });
-    // Immediate cleanup; the worker sweep retries whatever storage refuses.
-    await cleanupDueArtifacts(this.db, this.storage, { ids: [row.id] }).catch(() => undefined);
+    await this.cleanupNow(row.id);
   }
 }
 

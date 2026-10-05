@@ -17,6 +17,7 @@ import { contactProvenanceSchema } from '../../shared/place-contact-schema';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import {
   idempotencyScope,
+  IdempotencyReplayVersion,
   ManualIdempotency,
   NoIdempotencyReplay,
 } from '../../shared/idempotency.interceptor';
@@ -519,6 +520,9 @@ export class CmsUsersController {
    * over the user list is a data export nobody authorized.
    */
   @RateLimit({ action: 'cms.user_export', limit: 10, windowSeconds: 300, keyBy: 'actor' })
+  // PR #677 A-F-09: this route once answered with the raw export, and the
+  // interceptor stored it for replay. Only a v1 metadata record is replayed.
+  @IdempotencyReplayVersion(1)
   @Post('users/:id/export')
   @HttpCode(202)
   exportUser(
@@ -660,6 +664,9 @@ export class PrivacyRequestsController {
    * `ops_admin` executing a delete request gets 403 from there.
    */
   @RateLimit({ action: 'cms.privacy_execute', limit: 10, windowSeconds: 300, keyBy: 'actor' })
+  // PR #677 A-F-09: an export execution once answered `{ request, data }`;
+  // the interceptor stored it. Only a v1 metadata record is replayed.
+  @IdempotencyReplayVersion(1)
   @Post(':id/execute')
   async execute(
     @CurrentActor() actor: AdminActor,

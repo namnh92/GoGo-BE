@@ -49,6 +49,32 @@ export const ManualIdempotency = (): CustomDecorator => SetMetadata(MANUAL_IDEMP
  */
 export const NoIdempotencyReplay = (): CustomDecorator => SetMetadata(MANUAL_IDEMPOTENCY_KEY, true);
 
+export const IDEMPOTENCY_REPLAY_VERSION_KEY = 'gogo:idempotency_replay_version';
+
+/**
+ * GoGo-BE#256, PR #677 A-F-09 — a route whose replay records carry a version.
+ *
+ * The interceptor replays whatever a route stored, before the handler runs.
+ * When a route's response changes shape — the two CMS export routes used to
+ * answer with the raw export and now answer with metadata — every record the
+ * old handler wrote is a record the new handler would never produce, and the
+ * interceptor would still hand it back for 24 hours. Migration 0070 purges the
+ * records that exist at deploy time; an instance still running the old code
+ * during the rollout writes more. So a versioned route stores
+ * `{ v, body }` and replays only a record carrying its own version: any other
+ * shape under that key is purged and the request executes as a first one.
+ */
+export const IdempotencyReplayVersion = (version: number): CustomDecorator =>
+  SetMetadata(IDEMPOTENCY_REPLAY_VERSION_KEY, version);
+
+type VersionedRecord = { v: number; body: unknown };
+
+function versionedRecord(stored: unknown, version: number): VersionedRecord | null {
+  if (typeof stored !== 'object' || stored === null || Array.isArray(stored)) return null;
+  const record = stored as Partial<VersionedRecord>;
+  return record.v === version && 'body' in record ? (record as VersionedRecord) : null;
+}
+
 /** One replay record's identity: scoped per actor + method + route + client key. */
 export type IdempotencyScope = {
   storedKey: string;
@@ -99,8 +125,17 @@ const CLAIM_ATTEMPTS = 3;
  * could both mutate, and the completion matched nothing. A row that vanishes
  * between the claim and the read now sends the caller round again; it never
  * executes unclaimed.
+ *
+ * With `replayVersion` (PR #677 A-F-09), a completed record that is not
+ * `{ v: replayVersion, body }` is a record another shape of this route wrote:
+ * it is purged — by its own identity, so a record re-claimed meanwhile is
+ * untouched — and the claim is made again. It is never replayed.
  */
-export async function beginIdempotent(db: Db, scope: IdempotencyScope): Promise<IdempotencyBegin> {
+export async function beginIdempotent(
+  db: Db,
+  scope: IdempotencyScope,
+  options: { replayVersion?: number | undefined } = {},
+): Promise<IdempotencyBegin> {
   for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
     // Millisecond precision on purpose: the value round-trips through a JS
     // Date unchanged, so later matches on it are exact.
@@ -154,7 +189,25 @@ export async function beginIdempotent(db: Db, scope: IdempotencyScope): Promise<
         'Original request is still processing',
       );
     }
-    return { kind: 'replay', status: existing.responseStatus, body: existing.responseBody };
+    if (options.replayVersion === undefined) {
+      return { kind: 'replay', status: existing.responseStatus, body: existing.responseBody };
+    }
+    const record = versionedRecord(existing.responseBody, options.replayVersion);
+    if (record) return { kind: 'replay', status: existing.responseStatus, body: record.body };
+    // The shape is judged in SQL, not by row identity: a row re-claimed in
+    // the meantime is in flight (no status) or already versioned, and either
+    // way is left alone. Only a completed record of another shape goes.
+    await db.execute(sql`
+      delete from idempotency_keys
+      where key = ${existing.key}
+        and response_status is not null
+        and not (
+          jsonb_typeof(response_body) = 'object'
+          and response_body->>'v' = ${String(options.replayVersion)}
+          and jsonb_exists(response_body, 'body')
+        )
+    `);
+    // Legacy shape gone; the next pass claims the key for a first execution.
   }
   // The key kept changing hands under us; never execute without a claim.
   throw new AppError('IDEMPOTENT_REQUEST_IN_FLIGHT', 'Original request is still processing', 409, {
@@ -225,8 +278,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
     }
 
     const scope = idempotencyScope(req, clientKey);
+    const replayVersion = this.reflector.get<number | undefined>(
+      IDEMPOTENCY_REPLAY_VERSION_KEY,
+      context.getHandler(),
+    );
+    const stored = (body: unknown) =>
+      replayVersion === undefined ? body : ({ v: replayVersion, body } satisfies VersionedRecord);
 
-    return from(beginIdempotent(this.db, scope)).pipe(
+    return from(beginIdempotent(this.db, scope, { replayVersion })).pipe(
       switchMap((begun) => {
         if (begun.kind === 'replay') {
           void reply.status(begun.status);
@@ -241,7 +300,12 @@ export class IdempotencyInterceptor implements NestInterceptor {
           // `ManualIdempotency` and complete inside their transaction.
           switchMap((body) =>
             from(
-              completeIdempotentWithin(this.db, claim, this.statusFor(req.method, reply), body),
+              completeIdempotentWithin(
+                this.db,
+                claim,
+                this.statusFor(req.method, reply),
+                stored(body),
+              ),
             ).pipe(switchMap(() => of(body))),
           ),
           // A failed mutation releases the key so the client can retry.

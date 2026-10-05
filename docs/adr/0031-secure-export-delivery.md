@@ -92,11 +92,14 @@ Account recovery comes first; staff never forward raw data.
 
 ## Migration & rollback
 
-Migration 0070 is additive (column with constant default, enum, table, triggers,
-notification kind). Rollback = disable issuance (remove `EXPORT_WRAPPING_KEY_*` from
-the API so creation answers 503) while the worker sweep keeps running until every
-artifact is cleaned; the raw CMS payload is **not** restored. Rehearsal-only down SQL is
-in the migration header (exercised in `privacy-export.int.spec.ts`).
+Migration 0070 is additive in schema (two columns with constant defaults —
+`users.export_epoch`, `privacy_requests.secure_delivery` —, an enum, two tables,
+triggers, a notification kind) plus one one-way data step: it deletes the stored
+replay records of the two CMS export routes, which held raw payloads (A-F-09). Rollback
+= disable issuance (remove `EXPORT_WRAPPING_KEY_*` from the API so creation answers 503) while the worker sweep keeps running until every artifact is cleaned; the raw CMS
+payload is **not** restored. Rehearsal-only down SQL is in the migration header
+(exercised in `privacy-export.int.spec.ts`; the upgrade from a populated database in
+`privacy-export-round2.int.spec.ts`).
 
 ## Amendment — SA review of PR #677 (2026-10-05)
 
@@ -114,3 +117,46 @@ in the migration header (exercised in `privacy-export.int.spec.ts`).
 - The sweep closes a request whose artifact was revoked/failed before it was ready
   as `failed`, once (F-07).
 - API and worker read wrapping keys through one generic picker, any `V<n>` (F-08).
+
+## Amendment — second review round of PR #677 (2026-10-05, Fable under owner decision §8)
+
+Shape unchanged (DECISION 1–6 stand); these sharpen how the shape is enforced.
+
+- **Replay records are versioned on the two CMS export routes** (A-F-09). The
+  generic interceptor replays before the handler runs, so a record the raw-payload
+  handler stored before this deploy would have been handed back for 24 h. Migration
+  0070 purges every stored record of `POST /v1/cms/users/:id/export` and
+  `POST /v1/cms/privacy-requests/:id/execute` as a one-way data step, and both
+  routes now store `{ v: 1, body }` and replay only that shape
+  (`@IdempotencyReplayVersion(1)`); a record of any other shape — one an old
+  instance writes during the rollout — is purged and the request executes fresh.
+- **A disconnect during redemption is observed before redemption** (A-F-02). The
+  transport attaches its close listener before awaiting `redeem`, passes the signal
+  in, and the service refuses to consume a client that has already left (the export
+  stays `ready`, nothing is held). After consumption every ending — finish, close,
+  error, deadline, a throwing send — finalizes exactly once (`transferExport`).
+- **The upload is permitted, not assumed** (A-F-04). Collection is unbounded, so
+  immediately before the PUT one transaction re-checks the fence, renews the lease
+  and moves the attempt record's `delete_after` to now + 2 × the upload deadline;
+  if the fence is lost or the record is gone/claimed, nothing is uploaded. The
+  pre-collection grace is only the crash backstop. Publication must still land
+  inside the record's cover.
+- **Deletion ownership is claimed before storage is touched** (A-F-10). The reaper
+  marks `reaping_since` in a committed statement under `for update skip locked`
+  before calling storage; a record a publication holds is skipped, and a claimed
+  record is refused by publication and by the upload permit for good, through
+  every retry. Publication and deletion of one object are mutually exclusive.
+- **The sweep does not depend on the wrapping keys** (S-F-11). The worker registers
+  the sweep with the bucket alone and generation only with a key; a keyless
+  processor never claims.
+- **Privacy cleanup never runs against a fake outside tests** (S-F-13).
+  `PRIVACY_EXPORT_STORAGE` is the real bucket, the shared fake under `NODE_ENV=test`,
+  or `null`; the export service answers 503 on `null`, and account deletion leaves
+  cleanup due for a configured worker instead of "confirming" it.
+- **Reconciliation locks first, then looks** (A-F-07): the live-artifact check is a
+  second statement after the request lock, with its own snapshot.
+- **Delivery ownership is the ledger's own column** (A-F-06, S-F-12):
+  `privacy_requests.secure_delivery` is set in the transaction that links an
+  artifact and outlives the artifact and its tombstone; `/delivered` decides under
+  the request row lock, the lock an execution takes to link.
+- **CMS execute declares `503 EXPORT_UNAVAILABLE`** (S-F-15).

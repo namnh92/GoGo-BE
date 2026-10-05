@@ -14474,6 +14474,15 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+            /** @description `EXPORT_UNAVAILABLE` — an export request cannot be executed here: secure export is not configured in this environment (no wrapping key or no private bucket). Not retryable; the request is unchanged. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsClosePrivacyRequest: {

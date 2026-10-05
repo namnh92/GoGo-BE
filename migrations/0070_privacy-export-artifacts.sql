@@ -27,10 +27,17 @@
 --   DROP TABLE privacy_export_attempt_objects;
 --   DROP TABLE privacy_export_artifacts;
 --   DROP TYPE privacy_export_state;
+--   ALTER TABLE privacy_requests DROP COLUMN secure_delivery;
 --   ALTER TABLE users DROP COLUMN export_epoch;
+-- The idempotency purge below is a one-way data step (it removes stored raw
+-- export payloads); it has nothing to undo.
 SET LOCAL lock_timeout = '5s';
 --> statement-breakpoint
 ALTER TABLE users ADD COLUMN IF NOT EXISTS export_epoch integer NOT NULL DEFAULT 0;
+--> statement-breakpoint
+-- PR #677 A-F-06 — the ledger row itself records that its delivery belongs to
+-- the server (a secure export was issued for it). Outlives artifact purges.
+ALTER TABLE privacy_requests ADD COLUMN IF NOT EXISTS secure_delivery boolean NOT NULL DEFAULT false;
 --> statement-breakpoint
 SET LOCAL lock_timeout TO DEFAULT;
 --> statement-breakpoint
@@ -114,6 +121,9 @@ CREATE TABLE privacy_export_attempt_objects (
   attempts integer NOT NULL DEFAULT 0,
   last_error text,
   dead_at timestamptz,
+  -- PR #677 A-F-10: set when the reaper takes deletion ownership; publication
+  -- only removes an unclaimed record, so the two are mutually exclusive.
+  reaping_since timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT privacy_export_attempt_objects_key_unique UNIQUE (object_key)
 );
@@ -180,3 +190,15 @@ $$;
 CREATE TRIGGER users_export_epoch_revoke
   AFTER UPDATE OF password_hash, status ON users
   FOR EACH ROW EXECUTE FUNCTION privacy_export_revoke_on_epoch();
+--> statement-breakpoint
+-- PR #677 A-F-09 — data step, run once by this migration before the new API
+-- serves: the two CMS export routes used to return the raw export, and the
+-- generic idempotency interceptor stored that response for replay (24 h).
+-- Those stored payloads are purged here; the new routes also refuse to replay
+-- any record that is not a versioned metadata-only record (rows an old
+-- instance writes during a rolling deploy).
+DELETE FROM idempotency_keys
+WHERE endpoint IN (
+  'POST /v1/cms/users/:id/export',
+  'POST /v1/cms/privacy-requests/:id/execute'
+);

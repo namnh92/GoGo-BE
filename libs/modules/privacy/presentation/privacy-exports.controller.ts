@@ -11,7 +11,8 @@ import {
 import type { Actor } from '../../identity/domain/actor';
 import { CurrentActor, RateLimit } from '../../identity/presentation/decorators';
 import { PRIVACY_EXPORT_DEFAULTS } from '../application/export-artifacts';
-import { PrivacyExportService } from '../application/privacy-export.service';
+import { PrivacyExportService, type RedeemedExport } from '../application/privacy-export.service';
+import { transferExport } from './export-transfer';
 
 const UuidPipe = new ZodValidationPipe(z.string().uuid());
 
@@ -68,7 +69,9 @@ export class PrivacyExportsController {
    * The one consuming verb. The response body is the export itself, so it
    * stays out of everything that stores or captures responses: no replay
    * record (`NoIdempotencyReplay`), `Cache-Control: no-store`, no ranges, and
-   * the request logger records method/status only (never bodies).
+   * the request logger records method/status only (never bodies). The
+   * transfer itself — disconnects before and after admission, the deadline,
+   * exactly-once finalization — is `transferExport` (PR #677 A-F-02).
    */
   @NoIdempotencyReplay()
   @RateLimit({ action: 'me.exports.download', limit: 10, windowSeconds: 3600, keyBy: 'ip+actor' })
@@ -78,32 +81,23 @@ export class PrivacyExportsController {
     @Param('id', UuidPipe) id: string,
     @Res() reply: FastifyReply,
   ): Promise<void> {
-    const redeemed = await this.exports.redeem(actor, id);
-    const raw = reply.raw;
-    let settled = false;
-    const settle = (outcome: 'completed' | 'aborted') => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadline);
-      void redeemed.finalize(outcome).catch(() => undefined);
-    };
-    // A transfer admitted before expiry or revocation gets this long, no more.
-    const deadline = setTimeout(() => {
-      if (!raw.writableFinished) raw.destroy();
-    }, PRIVACY_EXPORT_DEFAULTS.transferDeadlineMs);
-    deadline.unref?.();
-    raw.once('finish', () => settle('completed'));
-    raw.once('close', () => settle(raw.writableFinished ? 'completed' : 'aborted'));
-
-    void reply
-      .status(200)
-      .header('content-type', 'application/json; charset=utf-8')
-      .header('content-disposition', `attachment; filename="${redeemed.filename}"`)
-      .header('content-length', String(redeemed.body.byteLength))
-      .header('cache-control', 'no-store, private, max-age=0')
-      .header('pragma', 'no-cache')
-      .header('x-content-type-options', 'nosniff')
-      .header('accept-ranges', 'none')
-      .send(redeemed.body);
+    await transferExport(
+      {
+        raw: reply.raw,
+        send: (redeemed: RedeemedExport) =>
+          reply
+            .status(200)
+            .header('content-type', 'application/json; charset=utf-8')
+            .header('content-disposition', `attachment; filename="${redeemed.filename}"`)
+            .header('content-length', String(redeemed.body.byteLength))
+            .header('cache-control', 'no-store, private, max-age=0')
+            .header('pragma', 'no-cache')
+            .header('x-content-type-options', 'nosniff')
+            .header('accept-ranges', 'none')
+            .send(redeemed.body),
+      },
+      (clientGone) => this.exports.redeem(actor, id, clientGone),
+      PRIVACY_EXPORT_DEFAULTS.transferDeadlineMs,
+    );
   }
 }

@@ -174,6 +174,7 @@ export { PrivacyJobs, type PrivacyRunReport } from '../shared/privacy-jobs';
 // Secure export delivery (GoGo-BE#256, ADR-0031)
 export { PrivacyExportsModule } from '../privacy/presentation/privacy-exports.module';
 export {
+  ExportClientGoneError,
   PrivacyExportService,
   PRIVACY_EXPORT_OPTIONS,
   type PrivacyExportOptions,
@@ -189,7 +190,13 @@ export {
   PRIVACY_EXPORT_DEFAULTS,
   PRIVACY_EXPORT_PREFIX,
   cleanupDueArtifacts,
+  reapAttemptObjects,
 } from '../privacy/application/export-artifacts';
+export {
+  privacyExportStorageFor,
+  type PrivacyExportStorageConfig,
+} from '../privacy/application/export-storage';
+export { transferExport } from '../privacy/presentation/export-transfer';
 export {
   EXPORT_ENVELOPE_OVERHEAD,
   EXPORT_FORMAT_VERSION,

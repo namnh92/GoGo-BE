@@ -292,25 +292,31 @@ async function bootstrap(): Promise<void> {
     );
   }
 
-  // GoGo-BE#256: secure exports. Registered only with the real private bucket
-  // and a wrapping key — see privacy-export.ts for why a fake is refused.
+  // GoGo-BE#256: secure exports. The sweep needs the real private bucket and
+  // nothing else; generation also needs a wrapping key (PR #677 S-F-11). See
+  // privacy-export.ts for why a fake bucket is refused.
   const privacyExportWiring = privacyExportFromEnv(process.env);
-  const privacyExports = privacyExportWiring.ok
+  const privacyExports = privacyExportWiring.storage
     ? new PrivacyExportProcessor(db, privacyExportWiring.storage, privacyExportWiring.keyring, {
         workerId: WORKER_ID,
         mediaPublicBaseUrl: process.env.MEDIA_PUBLIC_BASE_URL ?? '',
         retentionMonths: Number(process.env.PRIVACY_RETENTION_MONTHS ?? 12),
       })
     : null;
-  if (privacyExportWiring.ok) {
+  if (!privacyExports) {
+    logger.warn(
+      { missing: privacyExportWiring.missing.storage },
+      'secure privacy export NOT registered — no private bucket; artifacts and cleanup wait for a configured worker',
+    );
+  } else if (privacyExportWiring.keyring) {
     logger.info(
       { activeKeyVersion: privacyExportWiring.keyring.activeVersion },
-      'secure privacy export registered',
+      'secure privacy export registered (generation + sweep)',
     );
   } else {
     logger.warn(
-      { missing: privacyExportWiring.missing },
-      'secure privacy export NOT registered — artifacts wait for a configured worker',
+      { missing: privacyExportWiring.missing.keyring },
+      'secure privacy export sweep registered WITHOUT generation — no wrapping key; pending artifacts wait for a keyed worker',
     );
   }
 
@@ -630,7 +636,7 @@ async function bootstrap(): Promise<void> {
             },
           ]
         : []),
-      ...(privacyExports
+      ...(privacyExports?.canGenerate
         ? [
             {
               name: 'gogo:worker:privacy-export',
@@ -641,6 +647,10 @@ async function bootstrap(): Promise<void> {
                 if (total > 0) logger.info({ report }, 'privacy export generation tick');
               },
             },
+          ]
+        : []),
+      ...(privacyExports
+        ? [
             {
               name: 'gogo:worker:privacy-export-sweep',
               schedule: { everyMs: PRIVACY_EXPORT_SWEEP_MS },

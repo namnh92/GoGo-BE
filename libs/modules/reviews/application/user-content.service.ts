@@ -9,7 +9,7 @@ import { recordSelfServiceRequest, slaConfigFrom } from '../../shared/privacy-le
 import type { Actor } from '../../identity/domain/actor';
 import { writeAudit } from '../../shared/audit';
 import { MediaCleanupService } from '../../profile/application/media-cleanup.service';
-import { STORAGE_PROVIDER, type StoragePort } from '@gogo/providers';
+import { PRIVACY_EXPORT_STORAGE, type StoragePort } from '@gogo/providers';
 import { cleanupDueArtifacts } from '../../privacy/application/export-artifacts';
 import {
   collectUserExport,
@@ -97,7 +97,13 @@ export class UserContentService {
     @Inject(DB) private readonly db: Db,
     @Inject(APP_CONFIG) private readonly config: PrivacyLedgerConfig & MediaConfig,
     private readonly cleanup: MediaCleanupService,
-    @Inject(STORAGE_PROVIDER) private readonly privateStorage: StoragePort,
+    /**
+     * PR #677 S-F-13 — the fail-closed private bucket: `null` when this process
+     * has no real one and is not under test. Never the general fake: a fake
+     * delete returns, and `cleanupDueArtifacts` would then record the export
+     * as gone while its bytes stayed in R2.
+     */
+    @Inject(PRIVACY_EXPORT_STORAGE) private readonly privateStorage: StoragePort | null,
   ) {}
 
   // --- saved (FR-USER-001) --------------------------------------------------
@@ -456,20 +462,23 @@ export class UserContentService {
     await this.cleanup.attemptNow(enqueued);
     // GoGo-BE#256 — the status change above bumped the export epoch, and the
     // trigger revoked every live export in the same transaction. Their bytes
-    // go now; the worker sweep retries whatever storage refuses.
-    const revoked = await this.db
-      .select({ id: schema.privacyExportArtifacts.id })
-      .from(schema.privacyExportArtifacts)
-      .where(
-        and(
-          eq(schema.privacyExportArtifacts.subjectUserId, userId),
-          isNull(schema.privacyExportArtifacts.cleanedAt),
-          sql`${schema.privacyExportArtifacts.cleanupDueAt} is not null`,
-        ),
-      );
-    await cleanupDueArtifacts(this.db, this.privateStorage, {
-      ids: revoked.map((r) => r.id),
-    }).catch(() => undefined);
+    // go now when this process has the bucket; otherwise the cleanup stays due
+    // and the worker sweep deletes them (S-F-13: never "confirmed" by a fake).
+    if (this.privateStorage) {
+      const revoked = await this.db
+        .select({ id: schema.privacyExportArtifacts.id })
+        .from(schema.privacyExportArtifacts)
+        .where(
+          and(
+            eq(schema.privacyExportArtifacts.subjectUserId, userId),
+            isNull(schema.privacyExportArtifacts.cleanedAt),
+            sql`${schema.privacyExportArtifacts.cleanupDueAt} is not null`,
+          ),
+        );
+      await cleanupDueArtifacts(this.db, this.privateStorage, {
+        ids: revoked.map((r) => r.id),
+      }).catch(() => undefined);
+    }
     return { deleted: true };
   }
 
