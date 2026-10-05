@@ -136,7 +136,16 @@ Alert → email + Telegram. Status page public cho team.
 Tạo check → copy ping URL vào `.env.prod` → restart. Xong.
 
 **Sentry:** tạo project Node → `SENTRY_DSN` vào `.env.prod`. Filter đã
-capture mọi 5xx kèm request_id.
+capture mọi 5xx kèm request_id. Worker (BE#675) dùng cùng DSN và cùng option
+che toạ độ: báo lỗi khởi động, và mỗi job định kỳ **một lần cho mỗi chuỗi
+lỗi** (job phải chạy `ok` lại một lần thì lần lỗi sau mới được báo), để một
+job hỏng chạy vài giây/lần không đốt hết quota 5k lỗi/tháng. Chuỗi lỗi
+nằm trong process: đúng khi mỗi môi trường chạy một worker như hiện nay; scale
+nhiều replica thì phải chuyển chuỗi lỗi lên dòng lease trước. Rejection không
+bắt trong worker vẫn làm process thoát (handler riêng của worker, không dựa
+vào `strict` của SDK — SDK bỏ qua `AbortError`) để compose khởi động lại.
+Breadcrumb tới các `HEARTBEAT_URL_*` chỉ giữ origin: path của ping URL là
+khoá bí mật.
 
 ## 3b. Metrics & alert cho ingestion (PI-SRE-001)
 

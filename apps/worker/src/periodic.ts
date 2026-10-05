@@ -78,6 +78,15 @@ export interface PeriodicMetrics {
   observe(name: string, value: number, labels?: Record<string, string | number | undefined>): void;
 }
 
+/**
+ * BE#675 — where a failed job goes beyond the log. Structural for the same
+ * reason as the lock and the metrics: this file is a runner, not a Sentry
+ * client, and a test about timers should not have to stand one up.
+ */
+export interface PeriodicErrorReporter {
+  capture(err: unknown, job: string): void;
+}
+
 export interface PeriodicOptions {
   lock: JobLock;
   logger: PeriodicLogger;
@@ -88,6 +97,21 @@ export interface PeriodicOptions {
    * search should have to answer (plan §2.5).
    */
   metrics?: PeriodicMetrics;
+  /**
+   * BE#675 — told once per failure streak, not once per failed tick. A tick
+   * has no retry of its own: each one is the last attempt at that work, so
+   * every failed tick is a "final" failure, and a broken job polling every few
+   * seconds would spend the whole error quota on one problem. The first
+   * failure after a success (or since boot) is reported; the job has to run
+   * `ok` once before its next failure is reported again.
+   *
+   * The streak lives in this process. Every environment runs one worker
+   * (`docker/docker-compose.prod.yml`, no replicas), so that is the job's
+   * streak. With several replicas, each would report its own streak, and an
+   * `ok` on one would not reset another — move the streak onto the lease row
+   * before scaling out.
+   */
+  errors?: PeriodicErrorReporter;
 }
 
 export interface PeriodicHandle {
@@ -101,6 +125,19 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
   let stopping = false;
 
   const delayFor = (job: PeriodicJob): number => job.schedule.everyMs;
+  /** BE#675 — jobs whose current failure streak has already been reported. */
+  const failing = new Set<string>();
+
+  const reportFailure = (job: PeriodicJob, err: unknown) => {
+    if (failing.has(job.name)) return;
+    failing.add(job.name);
+    try {
+      options.errors?.capture(err, job.name);
+    } catch (reportErr) {
+      // A reporter that is down must not take the schedule with it.
+      options.logger.warn({ err: reportErr, job: job.name }, 'periodic job error report failed');
+    }
+  };
 
   const schedule = (job: PeriodicJob, delayMs: number) => {
     if (stopping) return;
@@ -122,6 +159,9 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
     const work = (async () => {
       const lease = await options.lock.tryAcquire(job.name).catch((err: unknown) => {
         options.logger.error({ err, job: job.name }, 'periodic job could not reach the lock');
+        // The job did not run because something is broken, not because a
+        // replica has it — the same streak as a failed run.
+        reportFailure(job, err);
         return undefined;
       });
       if (!lease) {
@@ -137,8 +177,10 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
         // BE#539: finishing is not the same as having been entitled to finish.
         // If the lease went while the job ran, another replica has been running
         // it too, and reporting `ok` would hide that.
-        if (lease.isHeld()) record(job, 'ok');
-        else {
+        if (lease.isHeld()) {
+          failing.delete(job.name);
+          record(job, 'ok');
+        } else {
           options.logger.warn(
             { job: job.name },
             'periodic job lost its lease while running — another replica may have run it too',
@@ -149,6 +191,7 @@ export function startPeriodic(jobs: PeriodicJob[], options: PeriodicOptions): Pe
         if (lease.isHeld()) {
           options.logger.error({ err, job: job.name }, 'periodic job failed');
           record(job, 'failed');
+          reportFailure(job, err);
         } else {
           // An abort caused by losing the lease is the job doing as it was
           // told, not a fault.

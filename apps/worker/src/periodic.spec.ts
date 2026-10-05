@@ -291,3 +291,140 @@ describe('startPeriodic', () => {
     await skipped.stop();
   });
 });
+
+/**
+ * BE#675 — a failing job reaches the error reporter once per failure streak.
+ *
+ * A tick has no retry of its own: each one is the last attempt at that work,
+ * and the next tick is a fresh run. Reporting every failed tick would spend the
+ * Sentry quota on one broken job polling every few seconds, so the runner
+ * reports the transition into failing and stays quiet until the job succeeds.
+ */
+describe('startPeriodic error reporting (BE#675)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function reporter() {
+    const captured: { err: unknown; job: string }[] = [];
+    return { captured, capture: (err: unknown, job: string) => void captured.push({ err, job }) };
+  }
+
+  it('reports a job that keeps failing once, then again after it recovered and failed anew', async () => {
+    const errors = reporter();
+    const outcomes = ['fail', 'fail', 'fail', 'ok', 'fail', 'fail'];
+    let tick = 0;
+    const handle = startPeriodic(
+      [
+        {
+          name: 'outbox',
+          schedule: { everyMs: 1_000 },
+          run: async () => {
+            const outcome = outcomes[tick];
+            tick += 1;
+            if (outcome === 'fail') throw new Error(`boom ${tick}`);
+          },
+        },
+      ],
+      { lock: lock(), logger, errors },
+    );
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(errors.captured).toHaveLength(1);
+    expect(errors.captured[0]).toEqual({ err: new Error('boom 1'), job: 'outbox' });
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(tick).toBe(6);
+    expect(errors.captured).toHaveLength(2);
+    expect(errors.captured[1]).toEqual({ err: new Error('boom 5'), job: 'outbox' });
+    await handle.stop();
+  });
+
+  it('keeps a streak per job', async () => {
+    const errors = reporter();
+    const handle = startPeriodic(
+      ['a', 'b'].map((name) => ({
+        name,
+        schedule: { everyMs: 1_000 },
+        run: async () => {
+          throw new Error(name);
+        },
+      })),
+      { lock: lock(), logger, errors },
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(errors.captured.map((c) => c.job).sort()).toEqual(['a', 'b']);
+    await handle.stop();
+  });
+
+  it('does not report a run that threw after losing its lease', async () => {
+    const errors = reporter();
+    const l = lock();
+    const handle = startPeriodic(
+      [
+        {
+          name: 'j',
+          schedule: { everyMs: 1_000 },
+          run: async () => {
+            l.lose();
+            throw new Error('aborted');
+          },
+        },
+      ],
+      { lock: l, logger, errors },
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(errors.captured).toHaveLength(0);
+    await handle.stop();
+  });
+
+  it('reports an unreachable lock once per streak, and not a lock another replica holds', async () => {
+    const errors = reporter();
+    const unreachable: JobLock = {
+      tryAcquire: () => Promise.reject(new Error('connection refused')),
+    };
+    const down = startPeriodic(
+      [{ name: 'j', schedule: { everyMs: 1_000 }, run: async () => undefined }],
+      { lock: unreachable, logger, errors },
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(errors.captured).toEqual([{ err: new Error('connection refused'), job: 'j' }]);
+    await down.stop();
+
+    const busy = reporter();
+    const held = startPeriodic(
+      [{ name: 'j', schedule: { everyMs: 1_000 }, run: async () => undefined }],
+      { lock: lock(false), logger, errors: busy },
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(busy.captured).toHaveLength(0);
+    await held.stop();
+  });
+
+  it('a reporter that throws does not stop the schedule', async () => {
+    let runs = 0;
+    const handle = startPeriodic(
+      [
+        {
+          name: 'j',
+          schedule: { everyMs: 1_000 },
+          run: async () => {
+            runs += 1;
+            throw new Error('boom');
+          },
+        },
+      ],
+      {
+        lock: lock(),
+        logger,
+        errors: {
+          capture: () => {
+            throw new Error('reporter down');
+          },
+        },
+      },
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(runs).toBe(3);
+    await handle.stop();
+  });
+});

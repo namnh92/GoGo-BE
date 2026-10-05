@@ -3,7 +3,7 @@ import * as Sentry from '@sentry/node';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AppExceptionFilter } from './common/filters/app-exception.filter';
-import { sentryInitOptions } from './sentry';
+import { sentryInitOptions } from '@gogo/observability';
 
 /**
  * #588 — a real HTTP request, with a JSON body carrying positions, fails inside

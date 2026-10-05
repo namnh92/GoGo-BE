@@ -3,7 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * #588 — the boundary in `sentry.ts` holds only while nothing else feeds Sentry.
+ * #588 — the boundary in `libs/observability/src/sentry.ts` holds only while nothing else feeds Sentry.
  * A new import of the SDK, or a new call that attaches data (`setContext`,
  * `setExtra`, `setTag`, `setUser`, `addBreadcrumb`, `captureMessage`, …), must
  * come through a review of that boundary; this test is what makes it fail.
@@ -11,11 +11,20 @@ import { describe, expect, it } from 'vitest';
 
 const ROOT = path.resolve(__dirname, '../../..');
 const ALLOWED: Record<string, RegExp[]> = {
-  'apps/api/src/sentry.ts': [
+  'libs/observability/src/sentry.ts': [
     /Sentry\.getDefaultIntegrations\(\{\}\)/,
     /Sentry\.httpIntegration\(\{ maxIncomingRequestBodySize: 'none' \}\)/,
+    /Sentry\.onUnhandledRejectionIntegration\(\{ mode: 'none' \}\)/,
   ],
   'apps/api/src/main.ts': [/Sentry\.init\(sentryInitOptions\(/],
+  // BE#675 — the worker's init, its job-failure capture (job name only) and flush.
+  'apps/worker/src/sentry.ts': [
+    // Heartbeat URLs are passed to be redacted (F-03), never attached.
+    /Sentry\.init\(\s*sentryInitOptions\(\{\s*dsn,\s*environment: env\.APP_ENV \?\? 'dev',\s*unhandledRejection: 'none',\s*secretUrls: \[env\.HEARTBEAT_URL_OUTBOX, env\.HEARTBEAT_URL_INGEST, env\.HEARTBEAT_URL_PRIVACY\],\s*\}\),?\s*\)/,
+    /Sentry\.captureException\(err, \{ tags: \{ periodic_job: job \} \}\)/,
+    /else Sentry\.captureException\(err\);/,
+    /Sentry\.flush\(2_000\)/,
+  ],
   'apps/api/src/common/filters/app-exception.filter.ts': [
     /Sentry\.captureException\(exception, \{ extra: \{ request_id: requestId \} \}\)/,
   ],

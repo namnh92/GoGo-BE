@@ -4,7 +4,7 @@ import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
-import { createLogger, type LogDestination } from '@gogo/observability';
+import { createLogger, sentryInitOptions, type LogDestination } from '@gogo/observability';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
@@ -12,7 +12,6 @@ import type { IncomingMessage } from 'node:http';
 import { CSRF_HEADER, createEdgeClientIpHook, runWithRequestContext } from '@gogo/modules';
 import { AppModule } from './app.module';
 import { loadEnv } from './config/env';
-import { sentryInitOptions } from './sentry';
 
 /** '1' → hop count, 'false' → no trust, otherwise a CIDR/IP allowlist. */
 function parseTrustProxy(value: string): boolean | number | string[] {
