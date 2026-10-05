@@ -52,6 +52,7 @@ import { startPeriodic } from './periodic';
 import { WorkerLease } from '@gogo/database';
 import { mediaCleanupFromEnv } from './media-cleanup';
 import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
+import { captureWorkerError, flushWorkerSentry, initWorkerSentry } from './sentry';
 
 /**
  * Poll intervals, in milliseconds.
@@ -613,6 +614,8 @@ async function bootstrap(): Promise<void> {
       }),
       logger,
       metrics,
+      // BE#675 — once per failure streak per job; see PeriodicOptions.errors.
+      errors: { capture: captureWorkerError },
     },
   );
 
@@ -640,14 +643,20 @@ async function bootstrap(): Promise<void> {
       logger.error({ err }, 'usage ledger flush failed on shutdown');
     });
     await pool.end();
+    await flushWorkerSentry();
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
 }
 
-bootstrap().catch((err) => {
+// BE#675 — before bootstrap, so a failure to boot is reported too.
+initWorkerSentry(process.env);
+
+bootstrap().catch(async (err) => {
   // eslint-disable-next-line no-console
   console.error(err);
+  captureWorkerError(err);
+  await flushWorkerSentry();
   process.exit(1);
 });

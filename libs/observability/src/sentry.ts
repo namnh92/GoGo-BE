@@ -1,12 +1,13 @@
 import * as Sentry from '@sentry/node';
 import type { Breadcrumb, ErrorEvent, NodeOptions } from '@sentry/node';
-import { redactCoordinatesDeep } from '@gogo/observability';
+import { redactCoordinatesDeep } from './telemetry-redaction';
 
 type Integration = ReturnType<typeof Sentry.getDefaultIntegrations>[number];
 
 /**
- * #588 — the only way this API initialises Sentry, and the protection boundary
- * for exact positions in error events.
+ * #588 — the only way the API and the worker initialise Sentry, and the
+ * protection boundary for exact positions in error events. Lives in this lib
+ * since BE#675 so both processes build the same options from one place.
  *
  * Structural limits (nothing to pattern-match, so nothing to miss):
  *
@@ -27,10 +28,11 @@ type Integration = ReturnType<typeof Sentry.getDefaultIntegrations>[number];
  * `redactCoordinatesDeep` — see `libs/observability/src/telemetry-redaction.ts`
  * for exactly what it matches.
  *
- * Also relied on, and pinned by `sentry-usage.spec.ts`: no code outside this
- * file and the global exception filter calls the Sentry API, the filter attaches
- * only `request_id`, tracing is off, `includeLocalVariables` is unset, and the
- * worker process does not initialise Sentry.
+ * Also relied on, and pinned by `apps/api/src/sentry-usage.spec.ts`: no code
+ * outside this file, the API's `main.ts` and global exception filter, and the
+ * worker's `apps/worker/src/sentry.ts` calls the Sentry API; the filter attaches
+ * only `request_id`, the worker only the periodic job name; tracing is off and
+ * `includeLocalVariables` is unset.
  */
 
 export const SENTRY_REQUEST_HEADERS: ReadonlySet<string> = new Set([

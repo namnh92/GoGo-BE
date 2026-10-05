@@ -136,7 +136,10 @@ Alert → email + Telegram. Status page public cho team.
 Tạo check → copy ping URL vào `.env.prod` → restart. Xong.
 
 **Sentry:** tạo project Node → `SENTRY_DSN` vào `.env.prod`. Filter đã
-capture mọi 5xx kèm request_id.
+capture mọi 5xx kèm request_id. Worker (BE#675) dùng cùng DSN và cùng option
+che toạ độ: báo lỗi khởi động, và mỗi job định kỳ **một lần cho mỗi chuỗi
+lỗi** (job phải chạy `ok` lại một lần thì lần lỗi sau mới được báo), để một
+job hỏng chạy vài giây/lần không đốt hết quota 5k lỗi/tháng.
 
 ## 3b. Metrics & alert cho ingestion (PI-SRE-001)
 

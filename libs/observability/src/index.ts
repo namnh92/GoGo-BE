@@ -22,3 +22,10 @@ export { meterRuntimeCall, recordRuntimeCall } from './runtime-telemetry';
 export { RUNTIME_STATE, RuntimeStateStore } from './runtime-state';
 export type { RuntimeState, RuntimeStateReader } from './runtime-state';
 export type { RuntimeOperation, RuntimeCallStatus } from './runtime-telemetry';
+export {
+  HTTP_INTEGRATION_NAME,
+  SENTRY_REQUEST_HEADERS,
+  sanitizeRequest,
+  sentryInitOptions,
+  sentryIntegrations,
+} from './sentry';

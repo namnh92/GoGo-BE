@@ -5,7 +5,7 @@
  * raw exact location. This module is the *pattern* half of that boundary. The
  * *structural* half lives where the telemetry is assembled: Sentry never
  * captures request bodies and keeps only allowlisted request fields and headers
- * (`apps/api/src/sentry.ts`); the request log keeps only method, URL, host and
+ * (`libs/observability/src/sentry.ts`); the request log keeps only method, URL, host and
  * remote address (`logger.ts`). What remains to scan is text the operator needs:
  * URLs and query strings, exception messages, breadcrumb messages and data.
  *
