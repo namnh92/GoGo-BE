@@ -389,6 +389,16 @@ export class SearchRepository {
         -- GoGo-BE#360: what the provider last said about the business, most
         -- severe report first. The rule is shared with the CMS place detail.
         ${providerStatusSubquery(sql`p.id`)} as provider_status,
+        -- GoGo-BE#280: the origin of the three GoGo-owned contact fields. The
+        -- mapper reduces this to gogo|google|unknown; references and actors
+        -- never leave the CMS.
+        (select json_agg(json_build_object(
+            'field', fp.field, 'source_type', fp.source_type,
+            'source_reference', fp.source_reference,
+            'collected_at', fp.collected_at, 'verified_at', fp.verified_at))
+          from place_field_provenance fp
+          where fp.place_id = p.id
+            and fp.field in ('address_text', 'phone', 'website')) as contact_provenance,
         -- #151: photos travel with their attribution and moderation state.
         -- Community imagery that has not been approved never leaves the CMS.
         (select json_agg(json_build_object(

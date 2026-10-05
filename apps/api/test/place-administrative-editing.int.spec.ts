@@ -504,10 +504,19 @@ describe('editing a place that already has a mapping', () => {
     const created = await createPlace();
     const before = await placeRow(created.id);
 
+    // GoGo-BE#280 — a contact write carries its evidence and the form version.
     const res = await send('PATCH', `/v1/cms/places/${created.id}`, 'editor', {
       phone: '0283 822 9999',
+      provenance: {
+        phone: {
+          sourceType: 'editorial',
+          sourceReference: 'Gọi điện chủ quán 2026-09-30',
+          collectedAt: '2026-09-30T02:00:00Z',
+        },
+      },
+      expectedUpdatedAt: before.updatedAt.toISOString(),
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode, res.body).toBe(200);
 
     const after = await placeRow(created.id);
     expect(after.administrativeMappedAt).toEqual(before.administrativeMappedAt);

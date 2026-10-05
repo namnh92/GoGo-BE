@@ -477,6 +477,13 @@
       "when": 1790899200000,
       "tag": "0069_drop-administrative-unit-change-overrides",
       "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1790985600000,
+      "tag": "0070_place-field-provenance-collected-at",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,15 @@
 import type { IngestMessage } from '@gogo/database';
 import { parseMapsUrl } from './maps-url';
 import { parseAudiences, parsePrice, parseVibes, type PriceUnit } from './normalize-row';
-import { normalizePhone, normalizeWebsite } from '../../shared/place-contact';
+import {
+  normalizeAddress,
+  normalizePhone,
+  normalizeWebsite,
+  validateEvidence,
+  type ContactEvidence,
+  type ContactField,
+  type ContactIssue,
+} from '../../shared/place-contact';
 import type { CanonicalField } from './column-mapping';
 import { INGEST_LIMITS } from './tabular/limits';
 
@@ -55,6 +63,15 @@ export type NormalizedImportRow = {
    */
   phone: string | null;
   website: string | null;
+  /** GoGo-BE#280 — the sheet's own postal address, normalized. */
+  address?: string | null;
+  /**
+   * GoGo-BE#280 — the evidence each contact value arrived with, keyed by
+   * column. A value with no entry here is never written: rows stored before
+   * #280 carry phone/website without it, and publishing one of those must not
+   * turn an unsourced cell into a GoGo-owned fact.
+   */
+  contactEvidence?: Partial<Record<ContactField, ContactEvidence>>;
   avgVisitMinutes: number | null;
   isLodging: boolean | null;
   curatedRank: number | null;
@@ -335,21 +352,8 @@ export function validateRow(
    * typed and GoGo cannot store is a value that would vanish silently on
    * commit, which is the exact defect the price unit had.
    */
-  let phone: string | null = null;
-  const rawPhone = raw.phone?.trim();
-  if (rawPhone) {
-    const normalizedPhone = normalizePhone(rawPhone);
-    if (normalizedPhone.ok) phone = normalizedPhone.value;
-    else errors.push(msg('PHONE_INVALID', 'phone', normalizedPhone.issue.message));
-  }
-
-  let website: string | null = null;
-  const rawWebsite = raw.website?.trim();
-  if (rawWebsite) {
-    const normalizedWebsite = normalizeWebsite(rawWebsite);
-    if (normalizedWebsite.ok) website = normalizedWebsite.value;
-    else errors.push(msg('WEBSITE_INVALID', 'website', normalizedWebsite.issue.message));
-  }
+  const contact = validateContactColumns(raw, errors, warnings);
+  const { phone, website, address } = contact.values;
 
   let avgVisitMinutes: number | null = null;
   const rawVisit = raw.avg_visit_minutes?.trim();
@@ -421,6 +425,8 @@ export function validateRow(
       note: raw.note?.trim() || null,
       phone,
       website,
+      address,
+      contactEvidence: contact.evidence,
       avgVisitMinutes,
       isLodging,
       curatedRank,
@@ -428,6 +434,91 @@ export function validateRow(
     errors,
     warnings,
   };
+}
+
+/**
+ * GoGo-BE#280 — the three GoGo-owned contact columns and their evidence.
+ *
+ * Validated by the console's own rules (`shared/place-contact`), so a value
+ * one door accepts every door accepts. A non-blank value needs all three
+ * evidence cells; a missing or invalid one is an **error** naming its own
+ * column, because a value GoGo cannot store would otherwise vanish on commit.
+ * A blank value cell means "unknown" and leaves the stored value alone, so
+ * evidence beside it is only a warning — there is nothing for it to prove.
+ */
+const CONTACT_COLUMNS: {
+  field: ContactField;
+  value: 'address' | 'phone' | 'website';
+  code: 'ADDRESS' | 'PHONE' | 'WEBSITE';
+  normalize: (raw: string) => { ok: true; value: string } | { ok: false; issue: ContactIssue };
+}[] = [
+  { field: 'address_text', value: 'address', code: 'ADDRESS', normalize: normalizeAddress },
+  { field: 'phone', value: 'phone', code: 'PHONE', normalize: normalizePhone },
+  { field: 'website', value: 'website', code: 'WEBSITE', normalize: normalizeWebsite },
+];
+
+function validateContactColumns(
+  raw: Partial<Record<CanonicalField, string>>,
+  errors: IngestMessage[],
+  warnings: IngestMessage[],
+): {
+  values: { address: string | null; phone: string | null; website: string | null };
+  evidence: Partial<Record<ContactField, ContactEvidence>>;
+} {
+  const values = { address: null, phone: null, website: null } as {
+    address: string | null;
+    phone: string | null;
+    website: string | null;
+  };
+  const evidence: Partial<Record<ContactField, ContactEvidence>> = {};
+
+  for (const col of CONTACT_COLUMNS) {
+    const typeCol = `${col.value}_source_type` as CanonicalField;
+    const refCol = `${col.value}_source_reference` as CanonicalField;
+    const atCol = `${col.value}_collected_at` as CanonicalField;
+    const rawValue = raw[col.value]?.trim();
+    const anyEvidence = Boolean(raw[typeCol] || raw[refCol] || raw[atCol]);
+
+    if (!rawValue) {
+      if (anyEvidence) {
+        warnings.push(
+          msg(
+            `${col.code}_EVIDENCE_WITHOUT_VALUE`,
+            col.value,
+            `Có nguồn cho ${col.value} nhưng ô giá trị trống — giữ nguyên giá trị hiện có`,
+          ),
+        );
+      }
+      continue;
+    }
+
+    const normalized = col.normalize(rawValue);
+    const checked = validateEvidence(
+      { sourceType: raw[typeCol], sourceReference: raw[refCol], collectedAt: raw[atCol] },
+      { sourceType: typeCol, sourceReference: refCol, collectedAt: atCol },
+    );
+    if (!normalized.ok) {
+      errors.push(msg(`${col.code}_INVALID`, col.value, normalized.issue.message));
+    }
+    if (!checked.ok) {
+      for (const issue of checked.issues) {
+        errors.push(
+          msg(
+            issue.code === 'required'
+              ? `${col.code}_EVIDENCE_REQUIRED`
+              : `${col.code}_EVIDENCE_INVALID`,
+            issue.field,
+            `${col.value}: ${issue.message}`,
+          ),
+        );
+      }
+    }
+    if (normalized.ok && checked.ok) {
+      values[col.value] = normalized.value;
+      evidence[col.field] = checked.value;
+    }
+  }
+  return { values, evidence };
 }
 
 function collectKeys(

@@ -9,6 +9,15 @@ import { normalizeGoogleAttribution } from '../../shared/attribution';
 import { iso, num, toPhotos, type PlacePhotoRow } from '../domain/place-dto';
 import { writeOutbox } from '../../shared/outbox';
 import { toProviderStatus } from '../../shared/provider-status';
+import { GOOGLE_PROVIDER_PUBLIC } from '../../shared/google-provenance';
+import {
+  CONTACT_API_FIELD,
+  CONTACT_FIELDS,
+  contactOwnership,
+  normalizePhone,
+  normalizeWebsite,
+  type ContactField,
+} from '../../shared/place-contact';
 import { DB } from '../../shared/tokens';
 import { validateAreaSelection } from '../../administrative/application/area-selection';
 import { gogoRatingOutcome, toGogoRating } from '../../reviews/domain/gogo-rating';
@@ -354,17 +363,30 @@ export class SearchService {
       sources.find((s) => s.attribution)?.attribution,
     );
 
+    const contact = publicContact(
+      {
+        address_text: (row['address_text'] as string | null) ?? null,
+        phone: (row['phone'] as string | null) ?? null,
+        website: (row['website'] as string | null) ?? null,
+      },
+      (row['contact_provenance'] as ContactProvenanceRow[] | null) ?? [],
+      sources,
+    );
+
     return {
       id: row['id'] as string,
       name: row['name'] as string,
       description: (row['description'] as string | null) ?? undefined,
       status: row['status'] as string,
-      addressText: (row['address_text'] as string | null) ?? undefined,
+      addressText: contact.values.addressText,
       areaKey: (row['area_key'] as string | null) ?? undefined,
       lat: num(row['lat'])!,
       lng: num(row['lng'])!,
-      phone: (row['phone'] as string | null) ?? undefined,
-      website: (row['website'] as string | null) ?? undefined,
+      phone: contact.values.phone,
+      website: contact.values.website,
+      // GoGo-BE#280 — whose each contact value is. Absent when the place has
+      // none of the three.
+      ...(Object.keys(contact.provenance).length > 0 ? { provenance: contact.provenance } : {}),
       rating: num(row['rating']),
       ratingCount: num(row['rating_count']) ?? 0,
       // GoGo-BE#217 (ADR-0028) — the community rating beside the provider's,
@@ -399,4 +421,79 @@ export class SearchService {
       ),
     };
   }
+}
+
+type ContactProvenanceRow = {
+  field: string;
+  source_type: string;
+  source_reference: string | null;
+  collected_at: string | null;
+  verified_at: string | null;
+};
+
+type PublicContactProvenance = {
+  sourceType: 'gogo' | 'google' | 'unknown';
+  verifiedAt?: string;
+  /** Google only: names the `sources[].provider` entry that attributes it. */
+  provider?: string;
+};
+
+/**
+ * GoGo-BE#280 — the three contact fields as the public may see them.
+ *
+ * A missing value is omitted, never an empty string. A stored phone or website
+ * that would not pass today's rules — written before they existed — is
+ * suppressed rather than rendered as a link (`javascript:`, credentials, a
+ * private host), and so is its provenance. Each value present gets one
+ * provenance entry: `gogo` with its verification time only when the evidence
+ * is independent (`contactOwnership`), `google` for a known Google seed, and
+ * `unknown` for everything else — including a legacy editorial row, because a
+ * timestamp alone proves nothing. Evidence references and actors stay CMS-only.
+ */
+export function publicContact(
+  stored: Record<ContactField, string | null>,
+  provenanceRows: ContactProvenanceRow[],
+  /**
+   * The `sources[]` this same response returns. A `google` entry must name one
+   * of them (Sol F-04): a legacy `google_derived` row on a place with no Google
+   * source left would otherwise point the client at attribution that is not
+   * there, so it is downgraded to `unknown`.
+   */
+  sources: readonly { provider: string }[],
+): {
+  values: { addressText?: string; phone?: string; website?: string };
+  provenance: Partial<Record<'addressText' | 'phone' | 'website', PublicContactProvenance>>;
+} {
+  const byField = new Map(provenanceRows.map((r) => [r.field, r]));
+  const values: { addressText?: string; phone?: string; website?: string } = {};
+  const provenance: Partial<Record<'addressText' | 'phone' | 'website', PublicContactProvenance>> =
+    {};
+
+  for (const field of CONTACT_FIELDS) {
+    const raw = stored[field];
+    if (raw === null || raw.trim() === '') continue;
+    let value: string | null = raw;
+    if (field === 'phone') {
+      const checked = normalizePhone(raw);
+      value = checked.ok ? checked.value : null;
+    } else if (field === 'website') {
+      const checked = normalizeWebsite(raw);
+      value = checked.ok ? checked.value : null;
+    }
+    if (value === null) continue;
+
+    const api = CONTACT_API_FIELD[field];
+    values[api] = value;
+    const row = byField.get(field);
+    const verdict = contactOwnership(row);
+    const attributed = sources.some((s) => s.provider === GOOGLE_PROVIDER_PUBLIC);
+    const ownership = verdict === 'google' && !attributed ? 'unknown' : verdict;
+    const verifiedAt = ownership === 'gogo' ? iso(row?.verified_at) : undefined;
+    provenance[api] = {
+      sourceType: ownership,
+      ...(verifiedAt ? { verifiedAt } : {}),
+      ...(ownership === 'google' ? { provider: GOOGLE_PROVIDER_PUBLIC } : {}),
+    };
+  }
+  return { values, provenance };
 }

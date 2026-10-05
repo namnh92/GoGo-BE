@@ -167,3 +167,12 @@ table and both enums, drop `entry_kind` and its constraint, drop
 this migration added, so backing out loses only what was written through the new
 contract. `places.area_key` is untouched in both directions: it was free text
 before and stays free text after.
+
+## Amendment 2026-10-02 — contact fields need evidence (ADR-0031)
+
+For `address_text`, `phone` and `website`, an editor typing a value no longer
+records an `editorial` claim by itself. The write must carry independent
+evidence (`source_type`, `source_reference`, `collected_at`), and a legacy
+`editorial` row without it reads as ownership `unknown`. The other fields this
+ADR covers keep the behaviour described above. See
+`docs/adr/0031-gogo-owned-place-contact-fields.md`.
