@@ -322,6 +322,42 @@ describe('A-F-09: legacy CMS replay records', () => {
     expect(JSON.stringify(record!.responseBody)).not.toContain(user.email);
   });
 
+  it('S-F-18: a pre-deploy deletion replay (`{ request }`) on execute is adopted as v1 and still replays', async () => {
+    const ops = await createAdmin('sf18');
+    const user = await register('sf18');
+    const created = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/privacy-requests',
+      remoteAddress: ip(),
+      headers: auth(ops.token),
+      payload: { type: 'delete', subjectType: 'user', userId: user.userId },
+    });
+    const requestId = created.json().id as string;
+    // Executed and closed before the deploy; its old answer is in the record.
+    await db
+      .update(schema.privacyRequests)
+      .set({ status: 'closed', outcome: 'completed', closedAt: sql`now()` })
+      .where(eq(schema.privacyRequests.id, requestId));
+    const legacy = { request: { id: requestId, type: 'delete', status: 'closed' } };
+    const clientKey = `legacy-${randomUUID()}`;
+    const storedKey = await seedLegacyRecord({
+      adminId: ops.id,
+      endpoint: 'POST /v1/cms/privacy-requests/:id/execute',
+      clientKey,
+      body: null,
+      stored: legacy,
+    });
+    const res = await execute(ops, requestId, { 'idempotency-key': clientKey });
+    expect(res.statusCode).toBe(201);
+    expect(res.headers['x-idempotent-replay']).toBe('true');
+    expect(res.json()).toEqual(legacy);
+    const [record] = await db
+      .select()
+      .from(schema.idempotencyKeys)
+      .where(eq(schema.idempotencyKeys.key, storedKey));
+    expect(record!.responseBody).toEqual({ v: 1, body: legacy });
+  });
+
   it('migration 0070 purges the stored raw payloads of both routes (upgrade from a populated database)', async () => {
     const dbName = `gogo_upgrade_${randomUUID().slice(0, 8)}`;
     await pool.query(`create database ${dbName}`);
@@ -344,16 +380,27 @@ describe('A-F-09: legacy CMS replay records', () => {
       writeFileSync(journalPath, JSON.stringify(journal));
       await migrate(upgradeDb, { migrationsFolder: staged });
 
-      const legacy = [
+      const legacy: { endpoint: string; status: number | null; body: unknown }[] = [
         {
           endpoint: 'POST /v1/cms/users/:id/export',
+          status: 201,
           body: { profile: { email: 'legacy-user@example.com' } },
         },
         {
           endpoint: 'POST /v1/cms/privacy-requests/:id/execute',
+          status: 201,
           body: { request: { id: 'r' }, data: { profile: { email: 'legacy-exec@example.com' } } },
         },
-        { endpoint: 'POST /v1/rooms', body: { id: 'room-untouched' } },
+        // S-F-18: a deletion's answer is metadata and must keep replaying.
+        {
+          endpoint: 'POST /v1/cms/privacy-requests/:id/execute',
+          status: 201,
+          body: { request: { id: 'deletion-replay' } },
+        },
+        // S-F-17: a claim still in flight is not a stored payload; purging it
+        // would let the retry re-claim the key and run beside the original.
+        { endpoint: 'POST /v1/cms/users/:id/export', status: null, body: null },
+        { endpoint: 'POST /v1/rooms', status: 201, body: { id: 'room-untouched' } },
       ];
       for (const row of legacy) {
         await upgradeDb.insert(schema.idempotencyKeys).values({
@@ -361,7 +408,7 @@ describe('A-F-09: legacy CMS replay records', () => {
           actorId: 'admin:legacy',
           endpoint: row.endpoint,
           requestHash: 'h',
-          responseStatus: 201,
+          responseStatus: row.status,
           responseBody: row.body,
           expiresAt: new Date(Date.now() + 23 * 3_600_000),
         });
@@ -369,9 +416,21 @@ describe('A-F-09: legacy CMS replay records', () => {
 
       await migrate(upgradeDb, { migrationsFolder: MIGRATIONS });
       const left = await upgradeDb
-        .select({ endpoint: schema.idempotencyKeys.endpoint })
+        .select({
+          endpoint: schema.idempotencyKeys.endpoint,
+          status: schema.idempotencyKeys.responseStatus,
+          body: schema.idempotencyKeys.responseBody,
+        })
         .from(schema.idempotencyKeys);
-      expect(left.map((r) => r.endpoint)).toEqual(['POST /v1/rooms']);
+      expect(
+        left
+          .map((r) => `${r.endpoint} ${r.status ?? 'in-flight'} ${JSON.stringify(r.body)}`)
+          .sort(),
+      ).toEqual([
+        'POST /v1/cms/privacy-requests/:id/execute 201 {"request":{"id":"deletion-replay"}}',
+        'POST /v1/cms/users/:id/export in-flight null',
+        'POST /v1/rooms 201 {"id":"room-untouched"}',
+      ]);
     } finally {
       rmSync(staged, { recursive: true, force: true });
       await upgradePool.end();
@@ -422,6 +481,70 @@ describe('A-F-02: disconnect during redemption', () => {
     expect(row.transferOutcome).toBeNull();
     // The slot is free and the export is still the subject's to redeem.
     expect((await download(user.token, id)).statusCode).toBe(200);
+  });
+});
+
+describe('S-F-16: disconnect during the consumption lock wait', () => {
+  it('a client that leaves while consumption waits on the user row is not consumed', async () => {
+    const { user, id } = await readyExport('sf16');
+    const service = app.get(PrivacyExportService);
+    if (!api().server.listening) await api().listen({ port: 0, host: '127.0.0.1' });
+    const { port } = api().server.address() as { port: number };
+    const holder = await pool.connect();
+    await holder.query('begin');
+    await holder.query('select 1 from users where id = $1 for update', [user.userId]);
+    const serverSocketClosed = new Promise<void>((resolve) => {
+      api().server.once('connection', (socket) => socket.once('close', () => resolve()));
+    });
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      method: 'POST',
+      path: `/v1/me/exports/${id}/download`,
+      headers: auth(user.token),
+    });
+    req.on('error', () => undefined);
+    req.end();
+    try {
+      // The ciphertext is read and authenticated; consumption now waits on
+      // the user row. The client leaves during that wait.
+      await until(async () => (await lockWaiters()) >= 1);
+      req.destroy();
+      await serverSocketClosed;
+    } finally {
+      await holder.query('commit');
+      holder.release();
+    }
+    await until(() => service.downloadsInFlight === 0, 5_000);
+    const row = await artifact(id);
+    expect(row.state).toBe('ready');
+    expect(row.consumedAt).toBeNull();
+    expect((await download(user.token, id)).statusCode).toBe(200);
+  });
+});
+
+describe('A-F-01: permit delayed by a lock wait', () => {
+  it('covers the upload from the wall clock after the wait, not the transaction start', async () => {
+    const user = await register('af01');
+    const id = (await createExport(user.token)).json().id as string;
+    const holder = await pool.connect();
+    try {
+      const report = await processor({
+        uploadTimeoutMs: 300, // cover 900 ms from the permit
+        beforeUpload: async () => {
+          await holder.query('begin');
+          await holder.query('select 1 from privacy_export_artifacts where id = $1 for update', [
+            id,
+          ]);
+          // The permit waits on this row for longer than the whole cover.
+          setTimeout(() => void holder.query('commit').catch(() => undefined), 1_500);
+        },
+      }).runDue(1);
+      expect(report).toMatchObject({ published: 1, retry_scheduled: 0 });
+    } finally {
+      holder.release();
+    }
+    expect((await artifact(id)).state).toBe('ready');
   });
 });
 
@@ -700,6 +823,41 @@ describe('A-F-06 / S-F-12: delivery ownership on the ledger', () => {
     const row = await request(requestId);
     expect(row.deliveredAt).toBeNull();
     expect(row.deliveryMethod).toBeNull();
+  });
+
+  it('S-F-19: a manual delivery that wins the request lock first makes the execution refuse', async () => {
+    const ops = await createAdmin('sf19');
+    const user = await register('sf19');
+    const requestId = await createExportRequest(ops, user.userId);
+    const holder = await pool.connect();
+    await holder.query('begin');
+    await holder.query('select 1 from privacy_requests where id = $1 for update', [requestId]);
+    let settled: [Awaited<ReturnType<typeof deliver>>, Awaited<ReturnType<typeof execute>>];
+    try {
+      // The manual delivery queues on the row first...
+      const delivering = deliver(ops, requestId, 'in_app');
+      await until(async () => (await lockWaiters()) >= 1);
+      // ...and the execution behind it.
+      const executing = execute(ops, requestId);
+      await until(async () => (await lockWaiters()) >= 2);
+      await holder.query('commit');
+      settled = await Promise.all([delivering, executing]);
+    } finally {
+      holder.release();
+    }
+    const [delivered, executed] = settled;
+    expect(delivered.statusCode).toBe(201);
+    expect(executed.statusCode).toBe(409);
+    expect(executed.json().code).toBe('ALREADY_DELIVERED');
+    const row = await request(requestId);
+    expect(row).toMatchObject({ secureDelivery: false, deliveryMethod: 'in_app' });
+    expect(row.deliveredAt).not.toBeNull();
+    expect(
+      await db
+        .select()
+        .from(schema.privacyExportArtifacts)
+        .where(eq(schema.privacyExportArtifacts.privacyRequestId, requestId)),
+    ).toHaveLength(0);
   });
 
   it('/delivered cannot slip a manual method under a concurrent execution', async () => {

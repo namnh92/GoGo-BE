@@ -103,6 +103,10 @@ acceptance for this doc.
   single-use and expires 24 h after it is ready.
 - **Requester cannot sign in?** There is no alternative channel (owner decision
   2026-10-05). Recover the account first, then issue the export.
+- **`409 ALREADY_DELIVERED` on execute:** a manual delivery (`in_app` / `other`)
+  is already recorded on that request, so no secure export is issued over it. If
+  that record was wrong, open a new export request for the subject; the ledger
+  keeps what was asserted.
 - **Interrupted download:** single-use means one admitted transfer. Issue a new
   export (max 3 per account per hour).
 - **Secrets:** `EXPORT_WRAPPING_KEY_V<n>` (SSM, 32 random bytes base64). Rotate by

@@ -624,6 +624,17 @@ const retentionHoldSchema = z.object({
 });
 
 /**
+ * PR #677 S-F-18 — a stored pre-alpha.66 answer of `/execute` is safe to replay
+ * only when it is the deletion shape: `{ request }` and nothing else. Anything
+ * carrying `data` (the export payload) or any other key is purged.
+ */
+export function adoptLegacyExecuteReplay(stored: unknown): unknown | null {
+  if (typeof stored !== 'object' || stored === null || Array.isArray(stored)) return null;
+  const keys = Object.keys(stored as Record<string, unknown>);
+  return keys.length === 1 && keys[0] === 'request' ? stored : null;
+}
+
+/**
  * BE-CMS-G12 (#255) — the privacy-request compliance ledger. ADR-0011.
  *
  * `ops_admin` and above for the workflow; `super_admin` for the two actions
@@ -664,9 +675,11 @@ export class PrivacyRequestsController {
    * `ops_admin` executing a delete request gets 403 from there.
    */
   @RateLimit({ action: 'cms.privacy_execute', limit: 10, windowSeconds: 300, keyBy: 'actor' })
-  // PR #677 A-F-09: an export execution once answered `{ request, data }`;
-  // the interceptor stored it. Only a v1 metadata record is replayed.
-  @IdempotencyReplayVersion(1)
+  // PR #677 A-F-09 / S-F-18: before alpha.66 this route answered
+  // `{ request, data }` for an export — the raw payload, purged, never
+  // replayed — and `{ request }` for a deletion — metadata, still a correct
+  // answer to the retry of a deletion that already happened, adopted as v1.
+  @IdempotencyReplayVersion(1, { adoptLegacy: adoptLegacyExecuteReplay })
   @Post(':id/execute')
   async execute(
     @CurrentActor() actor: AdminActor,

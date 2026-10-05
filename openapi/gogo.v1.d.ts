@@ -14464,7 +14464,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
-            /** @description `ALREADY_CLOSED`, `NOT_EXECUTABLE` (correction), `IDENTITY_NOT_MATCHED` — match the request to an account first —, or for an export `SUBJECT_CANNOT_SIGN_IN` / `EXPORT_ALREADY_ACTIVE`. */
+            /** @description `ALREADY_CLOSED`, `NOT_EXECUTABLE` (correction), `IDENTITY_NOT_MATCHED` — match the request to an account first —, or for an export `SUBJECT_CANNOT_SIGN_IN` / `EXPORT_ALREADY_ACTIVE` / `ALREADY_DELIVERED` (a manual delivery is already recorded; a secure export is not issued over it). */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -197,8 +197,18 @@ CREATE TRIGGER users_export_epoch_revoke
 -- Those stored payloads are purged here; the new routes also refuse to replay
 -- any record that is not a versioned metadata-only record (rows an old
 -- instance writes during a rolling deploy).
+--   * S-F-17: completed records only — a claim still in flight
+--     (response_status IS NULL) stays, or its retry would re-claim the key and
+--     run the mutation a second time beside the first.
+--   * S-F-18: on /execute only the export answer (`{ request, data }`) was a
+--     payload; the deletion answer (`{ request }`) is metadata and stays, so a
+--     retried deletion keeps replaying instead of answering ALREADY_CLOSED.
 DELETE FROM idempotency_keys
-WHERE endpoint IN (
-  'POST /v1/cms/users/:id/export',
-  'POST /v1/cms/privacy-requests/:id/execute'
-);
+WHERE response_status IS NOT NULL
+  AND (
+    endpoint = 'POST /v1/cms/users/:id/export'
+    OR (
+      endpoint = 'POST /v1/cms/privacy-requests/:id/execute'
+      AND jsonb_exists(response_body, 'data')
+    )
+  );

@@ -263,11 +263,11 @@ describe('PR #677 SA review findings', () => {
     };
     let key = '';
     try {
-      // Round 2 (A-F-04): the record covers 2 × the upload deadline from the
-      // permit, so a short deadline keeps this test's wait short.
+      // Round 2 (A-F-04/A-F-01): the record covers 3 × the upload deadline
+      // from the permit, so a short deadline keeps this test's wait short.
       await processor({
         attemptGraceMs: 1_000,
-        uploadTimeoutMs: 500,
+        uploadTimeoutMs: 300,
         afterUpload: async () => {
           key = [...storage.objects.keys()].find((k) => k.includes(id)) ?? '';
         },

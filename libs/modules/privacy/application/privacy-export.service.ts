@@ -300,6 +300,26 @@ export class PrivacyExportService {
   ): Promise<string> {
     const now = new Date();
     if (input.link.kind === 'existing') {
+      // PR #677 S-F-19 — decided under the request row lock, the same lock
+      // `/delivered` takes: a manual delivery already recorded is refused
+      // here, so the two can never both stand on one row whichever wins it.
+      const [current] = await tx
+        .select({
+          status: schema.privacyRequests.status,
+          deliveredAt: schema.privacyRequests.deliveredAt,
+        })
+        .from(schema.privacyRequests)
+        .where(eq(schema.privacyRequests.id, input.link.requestId))
+        .for('update');
+      if (!current || current.status === 'closed') {
+        throw AppError.conflict('ALREADY_CLOSED', 'This request is already closed');
+      }
+      if (current.deliveredAt) {
+        throw AppError.conflict(
+          'ALREADY_DELIVERED',
+          'A delivery is already recorded for this request; a secure export cannot be issued over it',
+        );
+      }
       const [moved] = await tx
         .update(schema.privacyRequests)
         .set({
@@ -310,15 +330,9 @@ export class PrivacyExportService {
           secureDelivery: true,
           updatedAt: sql`now()`,
         })
-        .where(
-          and(
-            eq(schema.privacyRequests.id, input.link.requestId),
-            sql`${schema.privacyRequests.status} <> 'closed'`,
-          ),
-        )
+        .where(eq(schema.privacyRequests.id, input.link.requestId))
         .returning({ id: schema.privacyRequests.id });
-      if (!moved) throw AppError.conflict('ALREADY_CLOSED', 'This request is already closed');
-      return moved.id;
+      return moved!.id;
     }
     const { ackDueAt, fulfillmentDueAt } = dueDates(this.options.sla, 'export', now);
     const [created] = await tx
@@ -421,9 +435,10 @@ export class PrivacyExportService {
         plaintext.fill(0);
         throw new ExportClientGoneError();
       }
-      const outcome = await this.consume(row, userId, actor.sessionId);
+      const outcome = await this.consume(row, userId, actor.sessionId, clientGone);
       if (outcome !== 'consumed') {
         plaintext.fill(0);
+        if (outcome === 'client_gone') throw new ExportClientGoneError();
         if (outcome === 'session_revoked') {
           throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
         }
@@ -570,13 +585,17 @@ export class PrivacyExportService {
    *   for this decision (PR #677 F-01);
    * - expiry against `clock_timestamp()` — the wall clock after the locks were
    *   granted, not the transaction's start (`now()`), which may predate a long
-   *   lock wait (PR #677 F-05).
+   *   lock wait (PR #677 F-05);
+   * - the client's presence, read after every lock including the artifact's
+   *   own row (PR #677 S-F-16): a client that left during the wait has not
+   *   been admitted, so nothing is consumed and the transaction rolls back.
    */
   private async consume(
     row: ArtifactRow,
     userId: string,
     sessionId: string,
-  ): Promise<'consumed' | 'gone' | 'session_revoked'> {
+    clientGone?: AbortSignal,
+  ): Promise<'consumed' | 'gone' | 'session_revoked' | 'client_gone'> {
     return this.db.transaction(async (tx) => {
       const { rows } = await tx.execute(sql`
         select export_epoch, status from users where id = ${userId}::uuid for no key update
@@ -590,6 +609,8 @@ export class PrivacyExportService {
       `);
       if (session.length === 0) return 'session_revoked';
       const t = schema.privacyExportArtifacts;
+      await tx.execute(sql`select 1 from ${t} where ${t.id} = ${row.id}::uuid for update`);
+      if (clientGone?.aborted) return 'client_gone';
       const won = await tx
         .update(t)
         .set({

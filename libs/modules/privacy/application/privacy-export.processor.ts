@@ -125,11 +125,13 @@ export class PrivacyExportProcessor {
 
   /**
    * The window a permitted upload may occupy, from the moment it is permitted:
-   * the upload deadline plus one more for a PUT the abort could not recall.
-   * The attempt's deletion record is re-armed to exactly this before the PUT.
+   * one upload deadline of slack between the permit and the PUT (bounded in
+   * `generate`), the PUT itself, and one more for a PUT the abort could not
+   * recall. The attempt's deletion record is re-armed to exactly this, from
+   * the wall clock after the permit's locks were granted (A-F-01).
    */
   private get uploadCoverMs(): number {
-    return 2 * this.uploadTimeoutMs;
+    return 3 * this.uploadTimeoutMs;
   }
 
   /** Bounded: at most `limit` generations per tick, one at a time. */
@@ -264,8 +266,12 @@ export class PrivacyExportProcessor {
     if (signal?.aborted) return this.retryLater(claim);
     const permit = await this.permitUpload(claim, objectKey);
     if (permit !== 'permitted') return permit === 'fenced' ? 'fenced' : this.retryLater(claim);
+    const permittedAt = performance.now();
 
     try {
+      // A-F-01: the cover allows one upload deadline between permit and PUT;
+      // a process that stalled longer must not start a PUT it cannot cover.
+      if (performance.now() - permittedAt > this.uploadTimeoutMs) throw new Error('permit stale');
       // Bounded even when a lease signal is passed: the attempt record now
       // covers `uploadCoverMs` from the permit, which outlasts this deadline.
       const deadline = AbortSignal.timeout(this.uploadTimeoutMs);
@@ -299,19 +305,29 @@ export class PrivacyExportProcessor {
     objectKey: string,
   ): Promise<'permitted' | 'fenced' | 'reaped'> {
     return this.db.transaction(async (tx) => {
+      const a = schema.privacyExportArtifacts;
+      const o = schema.privacyExportAttemptObjects;
+      // A-F-01: both rows are locked first, on their own, so that however long
+      // the waits take they are over before any clock is read. The cover is
+      // then computed from `clock_timestamp()` — the wall clock now — never
+      // from `now()`, the transaction's start, which the wait may already
+      // have put outside the cover.
+      await tx.execute(sql`select 1 from ${a} where ${a.id} = ${claim.id}::uuid for update`);
+      await tx.execute(sql`select 1 from ${o} where ${o.objectKey} = ${objectKey} for update`);
       const fenced = await tx
-        .update(schema.privacyExportArtifacts)
+        .update(a)
         .set({
-          leaseExpiresAt: sql`now() + make_interval(secs => ${this.leaseTtlMs / 1000})`,
+          leaseExpiresAt: sql`clock_timestamp() + make_interval(secs => ${this.leaseTtlMs / 1000})`,
           updatedAt: sql`now()`,
         })
-        .where(and(this.fence(claim), eq(schema.privacyExportArtifacts.objectKey, objectKey)))
-        .returning({ id: schema.privacyExportArtifacts.id });
+        .where(and(this.fence(claim), eq(a.objectKey, objectKey)))
+        .returning({ id: a.id });
       if (fenced.length === 0) return 'fenced';
-      const o = schema.privacyExportAttemptObjects;
       const armed = await tx
         .update(o)
-        .set({ deleteAfter: sql`now() + make_interval(secs => ${this.uploadCoverMs / 1000})` })
+        .set({
+          deleteAfter: sql`clock_timestamp() + make_interval(secs => ${this.uploadCoverMs / 1000})`,
+        })
         .where(and(eq(o.objectKey, objectKey), isNull(o.reapingSince), isNull(o.deadAt)))
         .returning({ id: o.id });
       return armed.length === 0 ? 'reaped' : 'permitted';

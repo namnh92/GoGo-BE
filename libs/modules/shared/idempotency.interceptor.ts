@@ -64,8 +64,25 @@ export const IDEMPOTENCY_REPLAY_VERSION_KEY = 'gogo:idempotency_replay_version';
  * `{ v, body }` and replays only a record carrying its own version: any other
  * shape under that key is purged and the request executes as a first one.
  */
-export const IdempotencyReplayVersion = (version: number): CustomDecorator =>
-  SetMetadata(IDEMPOTENCY_REPLAY_VERSION_KEY, version);
+export type ReplayVersioning = {
+  version: number;
+  /**
+   * PR #677 S-F-18 — for a route whose old answers were not all unsafe: maps a
+   * stored, unversioned body to the body to replay (it is then migrated to
+   * `{ v, body }` in place), or returns `null` for a body that must be purged.
+   * Absent, every unversioned record of the route is purged.
+   */
+  adoptLegacy?: ((stored: unknown) => unknown | null) | undefined;
+};
+
+export const IdempotencyReplayVersion = (
+  version: number,
+  options: { adoptLegacy?: (stored: unknown) => unknown | null } = {},
+): CustomDecorator =>
+  SetMetadata(IDEMPOTENCY_REPLAY_VERSION_KEY, {
+    version,
+    adoptLegacy: options.adoptLegacy,
+  } satisfies ReplayVersioning);
 
 type VersionedRecord = { v: number; body: unknown };
 
@@ -134,7 +151,10 @@ const CLAIM_ATTEMPTS = 3;
 export async function beginIdempotent(
   db: Db,
   scope: IdempotencyScope,
-  options: { replayVersion?: number | undefined } = {},
+  options: {
+    replayVersion?: number | undefined;
+    adoptLegacy?: ReplayVersioning['adoptLegacy'];
+  } = {},
 ): Promise<IdempotencyBegin> {
   for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
     // Millisecond precision on purpose: the value round-trips through a JS
@@ -196,17 +216,26 @@ export async function beginIdempotent(
     if (record) return { kind: 'replay', status: existing.responseStatus, body: record.body };
     // The shape is judged in SQL, not by row identity: a row re-claimed in
     // the meantime is in flight (no status) or already versioned, and either
-    // way is left alone. Only a completed record of another shape goes.
-    await db.execute(sql`
-      delete from idempotency_keys
-      where key = ${existing.key}
+    // way is left alone. Only a completed, unversioned record is touched.
+    const unversioned = sql`
+      key = ${existing.key}
         and response_status is not null
         and not (
           jsonb_typeof(response_body) = 'object'
           and response_body->>'v' = ${String(options.replayVersion)}
           and jsonb_exists(response_body, 'body')
-        )
-    `);
+        )`;
+    const adopted = options.adoptLegacy?.(existing.responseBody) ?? null;
+    if (adopted !== null) {
+      // A safe legacy answer: migrated to the versioned shape and replayed.
+      await db.execute(sql`
+        update idempotency_keys
+        set response_body = ${JSON.stringify({ v: options.replayVersion, body: adopted })}::jsonb
+        where ${unversioned}
+      `);
+      return { kind: 'replay', status: existing.responseStatus, body: adopted };
+    }
+    await db.execute(sql`delete from idempotency_keys where ${unversioned}`);
     // Legacy shape gone; the next pass claims the key for a first execution.
   }
   // The key kept changing hands under us; never execute without a claim.
@@ -278,14 +307,17 @@ export class IdempotencyInterceptor implements NestInterceptor {
     }
 
     const scope = idempotencyScope(req, clientKey);
-    const replayVersion = this.reflector.get<number | undefined>(
+    const versioning = this.reflector.get<ReplayVersioning | undefined>(
       IDEMPOTENCY_REPLAY_VERSION_KEY,
       context.getHandler(),
     );
+    const replayVersion = versioning?.version;
     const stored = (body: unknown) =>
       replayVersion === undefined ? body : ({ v: replayVersion, body } satisfies VersionedRecord);
 
-    return from(beginIdempotent(this.db, scope, { replayVersion })).pipe(
+    return from(
+      beginIdempotent(this.db, scope, { replayVersion, adoptLegacy: versioning?.adoptLegacy }),
+    ).pipe(
       switchMap((begun) => {
         if (begun.kind === 'replay') {
           void reply.status(begun.status);

@@ -137,10 +137,10 @@ Shape unchanged (DECISION 1–6 stand); these sharpen how the shape is enforced.
   error, deadline, a throwing send — finalizes exactly once (`transferExport`).
 - **The upload is permitted, not assumed** (A-F-04). Collection is unbounded, so
   immediately before the PUT one transaction re-checks the fence, renews the lease
-  and moves the attempt record's `delete_after` to now + 2 × the upload deadline;
-  if the fence is lost or the record is gone/claimed, nothing is uploaded. The
-  pre-collection grace is only the crash backstop. Publication must still land
-  inside the record's cover.
+  and moves the attempt record's `delete_after` to now + 3 × the upload deadline
+  (slack between permit and PUT, the PUT, a straggler margin); if the fence is lost
+  or the record is gone/claimed, nothing is uploaded. The pre-collection grace is
+  only the crash backstop. Publication must still land inside the record's cover.
 - **Deletion ownership is claimed before storage is touched** (A-F-10). The reaper
   marks `reaping_since` in a committed statement under `for update skip locked`
   before calling storage; a record a publication holds is skipped, and a claimed
@@ -160,3 +160,27 @@ Shape unchanged (DECISION 1–6 stand); these sharpen how the shape is enforced.
   artifact and outlives the artifact and its tombstone; `/delivered` decides under
   the request row lock, the lock an execution takes to link.
 - **CMS execute declares `503 EXPORT_UNAVAILABLE`** (S-F-15).
+
+## Amendment — confirm review of PR #677 @429dfb0 (2026-10-05, Fable)
+
+Shape unchanged; each item closes a gap the second round's enforcement left.
+
+- **Consumption rechecks the client after every lock** (S-F-16 = A-F-02): the
+  consuming transaction locks the user, the session and the artifact row, then reads
+  the disconnect signal; a client that left during the lock wait is not admitted,
+  nothing is consumed, the plaintext is zeroed.
+- **A delivered request cannot be executed** (S-F-19 = A-F-03): under the request
+  row lock, an existing manual delivery is `409 ALREADY_DELIVERED`; a secure export
+  is never issued over it, so `secure_delivery` and a manual method cannot both
+  stand on one row whichever order wins the lock. Reject, not overwrite: the ledger
+  records what an operator asserted, and silently replacing it would be destroying
+  evidence (ADR-0011).
+- **The 0070 purge is precise** (S-F-17, S-F-18): completed records only — an
+  in-flight claim stays, or its retry would re-claim the key and run beside the
+  original — and on `/execute` only the export answer (`{ request, data }`); the
+  deletion answer `{ request }` is metadata and keeps replaying. At runtime the
+  route adopts a legacy `{ request }` record as v1 in place (`adoptLegacy`), and
+  purges everything else unversioned.
+- **The permit reads the clock after its locks** (A-F-01): both rows are locked
+  first, the lease and the cover are computed from `clock_timestamp()`, and the
+  worker refuses to start a PUT more than one upload deadline after its permit.
