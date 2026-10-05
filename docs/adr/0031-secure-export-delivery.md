@@ -97,3 +97,20 @@ notification kind). Rollback = disable issuance (remove `EXPORT_WRAPPING_KEY_*` 
 the API so creation answers 503) while the worker sweep keeps running until every
 artifact is cleaned; the raw CMS payload is **not** restored. Rehearsal-only down SQL is
 in the migration header (exercised in `privacy-export.int.spec.ts`).
+
+## Amendment — SA review of PR #677 (2026-10-05)
+
+- Consumption locks and rechecks the session row (`for share`) and judges expiry
+  on `clock_timestamp()` after the locks (F-01, F-05).
+- A download's concurrency slot is held until the transfer is finalized (F-02).
+- Export collection is paged (500 rows, keyset) and charged against the byte
+  budget while rows are read (F-03).
+- Every upload attempt writes a durable deletion record
+  (`privacy_export_attempt_objects`) before uploading; only publication — inside
+  the record's grace (lease TTL + 2 × 30 s upload deadline) — removes it. All other
+  attempts' objects are deleted by the sweep after the grace, so a late PUT cannot
+  outlive its record (F-04).
+- A request backed by an artifact accepts no manual delivery method (F-06).
+- The sweep closes a request whose artifact was revoked/failed before it was ready
+  as `failed`, once (F-07).
+- API and worker read wrapping keys through one generic picker, any `V<n>` (F-08).
