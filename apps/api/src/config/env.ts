@@ -5,7 +5,11 @@ import {
   TenjinAcquisitionLinkProvider,
   resolveR2AccountId,
 } from '@gogo/providers';
-import { EDGE_AUTH_TOKEN_MIN_LENGTH, parseIdentitySigningKey } from '@gogo/modules';
+import {
+  EDGE_AUTH_TOKEN_MIN_LENGTH,
+  parseExportKeyring,
+  parseIdentitySigningKey,
+} from '@gogo/modules';
 
 /**
  * FND-006: config validation — the process must fail fast on invalid config.
@@ -133,6 +137,19 @@ const envSchema = z
      * production.
      */
     PRIVACY_RETENTION_MONTHS: z.coerce.number().int().min(1).max(120).default(12),
+    /**
+     * GoGo-BE#256, ADR-0031 — versioned wrapping keys for secure privacy
+     * exports: 32 random bytes, base64 (`openssl rand -base64 32`), one per
+     * version, from SSM. Empty means the feature answers 503, never that it
+     * runs unencrypted. Rotation: add V2, set ACTIVE=2, keep V1 until every
+     * artifact it wrapped is gone (24h + cleanup). Validated below.
+     */
+    EXPORT_WRAPPING_KEY_V1: z.string().default(''),
+    EXPORT_WRAPPING_KEY_V2: z.string().default(''),
+    EXPORT_WRAPPING_KEY_ACTIVE: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.coerce.number().int().min(1).max(9999).optional(),
+    ),
     /**
      * #154 — the SSE transport, per environment. Default on: a client that
      * cannot open the stream falls back to polling, so the failure mode of
@@ -480,6 +497,17 @@ const envSchema = z
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
   })
   .superRefine((env, ctx) => {
+    // #256 — a malformed wrapping key is refused at boot, never at the first
+    // export a person asks for.
+    try {
+      parseExportKeyring(env as unknown as Record<string, unknown>);
+    } catch (err) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['EXPORT_WRAPPING_KEY_V1'],
+        message: err instanceof Error ? err.message : 'invalid export wrapping key',
+      });
+    }
     // GoGo-BE#548: a credential with no resolvable account id signs for the
     // host `.r2.cloudflarestorage.com`. Refusing at boot is the only place
     // that failure is cheap — later it is a presigned URL a client trusts.

@@ -92,7 +92,7 @@ import { ExperimentsAdminService } from '../application/experiments-admin.servic
 import { RankingEvaluationService } from '../application/ranking-evaluation.service';
 import { SearchAnalyticsService } from '../application/search-analytics.service';
 import { AllowWhilePasswordChangePending, RequireRole, type AdminActor } from './admin.guard';
-import { Inject, Req, Res } from '@nestjs/common';
+import { HttpCode, Inject, Req, Res } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { AppError } from '../../shared/app-error';
@@ -520,6 +520,7 @@ export class CmsUsersController {
    */
   @RateLimit({ action: 'cms.user_export', limit: 10, windowSeconds: 300, keyBy: 'actor' })
   @Post('users/:id/export')
+  @HttpCode(202)
   exportUser(
     @CurrentActor() actor: Actor,
     @Param('id', Uuid) id: string,
@@ -660,8 +661,15 @@ export class PrivacyRequestsController {
    */
   @RateLimit({ action: 'cms.privacy_execute', limit: 10, windowSeconds: 300, keyBy: 'actor' })
   @Post(':id/execute')
-  execute(@CurrentActor() actor: AdminActor, @Param('id', Uuid) id: string) {
-    return this.requests.execute({ id, actorId: actor.id, actorRole: actor.role });
+  async execute(
+    @CurrentActor() actor: AdminActor,
+    @Param('id', Uuid) id: string,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    const result = await this.requests.execute({ id, actorId: actor.id, actorRole: actor.role });
+    // GoGo-BE#256 — an export is accepted for secure delivery, not completed.
+    if ('export' in result) void reply.status(202);
+    return result;
   }
 
   @Post(':id/close')

@@ -1,0 +1,46 @@
+import { Module } from '@nestjs/common';
+import type { Db } from '@gogo/database';
+import { STORAGE_PROVIDER, type StoragePort } from '@gogo/providers';
+import { IdentityModule } from '../../identity/presentation/identity.module';
+import { APP_CONFIG, type PrivacyExportConfig } from '../../shared/config';
+import { slaConfigFrom } from '../../shared/privacy-ledger';
+import { DB } from '../../shared/tokens';
+import { parseExportKeyring } from '../domain/export-envelope';
+import {
+  PRIVACY_EXPORT_OPTIONS,
+  PrivacyExportService,
+  type PrivacyExportOptions,
+} from '../application/privacy-export.service';
+import { PrivacyExportsController } from './privacy-exports.controller';
+
+/**
+ * GoGo-BE#256, ADR-0031 — secure export delivery. Exported so the CMS can
+ * issue an export for a ledger request without a second implementation.
+ */
+@Module({
+  imports: [IdentityModule],
+  controllers: [PrivacyExportsController],
+  providers: [
+    {
+      provide: PRIVACY_EXPORT_OPTIONS,
+      useFactory: (config: PrivacyExportConfig): PrivacyExportOptions => ({
+        keyring: parseExportKeyring(config as unknown as Record<string, unknown>),
+        storageReady:
+          config.NODE_ENV === 'test' ||
+          Boolean(config.R2_ACCESS_KEY_ID && config.R2_SECRET_ACCESS_KEY && config.R2_BUCKET),
+        sla: slaConfigFrom(config.PRIVACY_SLA_JSON),
+        retentionMonths: config.PRIVACY_RETENTION_MONTHS,
+      }),
+      inject: [APP_CONFIG],
+    },
+    {
+      // Plain class, like the processor the worker builds by hand.
+      provide: PrivacyExportService,
+      useFactory: (db: Db, storage: StoragePort, options: PrivacyExportOptions) =>
+        new PrivacyExportService(db, storage, options),
+      inject: [DB, STORAGE_PROVIDER, PRIVACY_EXPORT_OPTIONS],
+    },
+  ],
+  exports: [PrivacyExportService],
+})
+export class PrivacyExportsModule {}

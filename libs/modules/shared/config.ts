@@ -109,3 +109,20 @@ export type PushIdentityConfig = {
  * and revoke do not need it.
  */
 export type ShareLinksConfig = { SHARE_LINK_BASE_URL: string };
+
+/**
+ * GoGo-BE#256, ADR-0031 — secure export delivery. The wrapping keys come from
+ * the secret manager (SSM → env), never from source; empty means issuance and
+ * redemption answer 503 `EXPORT_UNAVAILABLE`. The R2 values decide whether the
+ * private bucket is real: outside tests, an export is never kept in the
+ * in-memory fake.
+ */
+export type PrivacyExportConfig = PrivacyLedgerConfig & {
+  NODE_ENV: 'development' | 'test' | 'production';
+  EXPORT_WRAPPING_KEY_V1: string;
+  EXPORT_WRAPPING_KEY_V2: string;
+  EXPORT_WRAPPING_KEY_ACTIVE?: number | undefined;
+  R2_ACCESS_KEY_ID: string;
+  R2_SECRET_ACCESS_KEY: string;
+  R2_BUCKET: string;
+};

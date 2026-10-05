@@ -171,6 +171,39 @@ export {
 export { IdempotencyInterceptor } from '../shared/idempotency.interceptor';
 export { writeOutbox, type DomainEventInput } from '../shared/outbox';
 export { PrivacyJobs, type PrivacyRunReport } from '../shared/privacy-jobs';
+// Secure export delivery (GoGo-BE#256, ADR-0031)
+export { PrivacyExportsModule } from '../privacy/presentation/privacy-exports.module';
+export {
+  PrivacyExportService,
+  PRIVACY_EXPORT_OPTIONS,
+  type PrivacyExportOptions,
+  type RedeemedExport,
+} from '../privacy/application/privacy-export.service';
+export {
+  PrivacyExportProcessor,
+  type GenerationReport,
+  type PrivacyExportProcessorOptions,
+  type SweepReport,
+} from '../privacy/application/privacy-export.processor';
+export {
+  PRIVACY_EXPORT_DEFAULTS,
+  PRIVACY_EXPORT_PREFIX,
+  cleanupDueArtifacts,
+} from '../privacy/application/export-artifacts';
+export {
+  EXPORT_ENVELOPE_OVERHEAD,
+  EXPORT_FORMAT_VERSION,
+  ExportIntegrityError,
+  ExportKeyUnavailableError,
+  ExportKeyringConfigError,
+  ExportTooLargeError,
+  openExport,
+  parseExportKeyring,
+  sealExport,
+  serializeBounded,
+  type ExportKeyring,
+} from '../privacy/domain/export-envelope';
+export { collectUserExport } from '../reviews/application/user-export';
 export {
   currentRequestContext,
   runWithRequestContext,

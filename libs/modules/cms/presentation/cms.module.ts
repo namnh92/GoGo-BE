@@ -14,6 +14,9 @@ import { SuggestionsModule } from '../../suggestions/presentation/suggestions.mo
 // #246 — the console reuses the consumer erase/export rather than growing a
 // second implementation of them.
 import { ReviewsModule } from '../../reviews/presentation/reviews.module';
+// GoGo-BE#256 — execute/export issue a secure artifact through the same module
+// the self-service route uses.
+import { PrivacyExportsModule } from '../../privacy/presentation/privacy-exports.module';
 import { AdminAuthService } from '../application/admin-auth.service';
 import { CloudflareAccessService } from '../application/cf-access.service';
 import { CmsAuditService } from '../application/cms-audit.service';
@@ -64,6 +67,7 @@ import {
     IngestionModule,
     SuggestionsModule,
     ReviewsModule,
+    PrivacyExportsModule,
     AdministrativeModule,
   ],
   controllers: [
