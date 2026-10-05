@@ -2995,7 +2995,7 @@ export interface paths {
          * Ops: record how an export was handed over
          * @description Metadata only, ever — never the bytes, never a signed URL. The record outlives any artifact and must not be a way back to the data. The runbook forbids raw exports over ordinary email.
          *
-         *     `secure_download` cannot be asserted here (`400 SECURE_DELIVERY_NOT_ASSERTABLE`, GoGo-BE#256): the server records it when the holder's download completes.
+         *     `secure_download` cannot be asserted here (`400 SECURE_DELIVERY_NOT_ASSERTABLE`, GoGo-BE#256): the server records it when the holder's download completes. A request backed by a secure export accepts no manual delivery method at all (`409 DELIVERY_SERVER_OWNED`): its delivery fields are the server's.
          */
         post: operations["cmsPrivacyRequestDelivered"];
         delete?: never;
@@ -14554,7 +14554,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
-            /** @description `NOT_AN_EXPORT` */
+            /** @description `NOT_AN_EXPORT` or `DELIVERY_SERVER_OWNED` */
             409: {
                 headers: {
                     [name: string]: unknown;

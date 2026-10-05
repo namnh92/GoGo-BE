@@ -378,12 +378,24 @@ export class PrivacyExportService {
     if (this.activeDownloads >= limit) {
       throw AppError.serviceUnavailable('EXPORT_BUSY', 'Too many downloads in progress', true);
     }
+    // PR #677 F-02 — the slot covers the plaintext's whole life: it is held
+    // through the transfer and released exactly once, by `finalize` or by a
+    // failure before any byte could be sent — never when this method returns.
     this.activeDownloads += 1;
+    let slotHeld = true;
+    const releaseSlot = () => {
+      if (!slotHeld) return;
+      slotHeld = false;
+      this.activeDownloads -= 1;
+    };
     try {
       const plaintext = await this.decryptVerified(row);
-      const consumed = await this.consume(row, userId, actor.sessionId);
-      if (!consumed) {
+      const outcome = await this.consume(row, userId, actor.sessionId);
+      if (outcome !== 'consumed') {
         plaintext.fill(0);
+        if (outcome === 'session_revoked') {
+          throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
+        }
         throw AppError.gone('EXPORT_GONE', 'This export is no longer available');
       }
       let finalized = false;
@@ -391,16 +403,23 @@ export class PrivacyExportService {
         artifactId: row.id,
         body: plaintext,
         filename: `gogo-export-${row.readyAt!.toISOString().slice(0, 10)}.json`,
-        finalize: async (outcome) => {
+        finalize: async (transfer) => {
           if (finalized) return;
           finalized = true;
           plaintext.fill(0);
-          await this.finalizeTransfer(row, userId, outcome);
+          releaseSlot();
+          await this.finalizeTransfer(row, userId, transfer);
         },
       };
-    } finally {
-      this.activeDownloads -= 1;
+    } catch (err) {
+      releaseSlot();
+      throw err;
     }
+  }
+
+  /** Downloads currently holding plaintext (admitted, not yet finalized). */
+  get downloadsInFlight(): number {
+    return this.activeDownloads;
   }
 
   private async assertLiveSession(userId: string, sessionId: string): Promise<void> {
@@ -500,20 +519,41 @@ export class PrivacyExportService {
     await cleanupDueArtifacts(this.db, this.storage, { ids: [row.id] }).catch(() => undefined);
   }
 
-  /** The atomic single-use transition. False = someone else won, or it lapsed. */
-  private async consume(row: ArtifactRow, userId: string, sessionId: string): Promise<boolean> {
+  /**
+   * The atomic single-use transition, decided under locks:
+   *
+   * - the user row (`for no key update`), the lock deletion and credential
+   *   changes take, so the epoch read is current;
+   * - the session row (`for share`), so a sign-out committed while the
+   *   ciphertext was being fetched is seen here and one still running waits
+   *   for this decision (PR #677 F-01);
+   * - expiry against `clock_timestamp()` — the wall clock after the locks were
+   *   granted, not the transaction's start (`now()`), which may predate a long
+   *   lock wait (PR #677 F-05).
+   */
+  private async consume(
+    row: ArtifactRow,
+    userId: string,
+    sessionId: string,
+  ): Promise<'consumed' | 'gone' | 'session_revoked'> {
     return this.db.transaction(async (tx) => {
       const { rows } = await tx.execute(sql`
         select export_epoch, status from users where id = ${userId}::uuid for no key update
       `);
       const user = rows[0] as { export_epoch: number; status: string } | undefined;
-      if (!user || user.status !== 'active') return false;
+      if (!user || user.status !== 'active') return 'gone';
+      const { rows: session } = await tx.execute(sql`
+        select 1 from auth_sessions
+        where id = ${sessionId}::uuid and user_id = ${userId}::uuid and revoked_at is null
+        for share
+      `);
+      if (session.length === 0) return 'session_revoked';
       const t = schema.privacyExportArtifacts;
       const won = await tx
         .update(t)
         .set({
           state: 'consumed',
-          consumedAt: sql`now()`,
+          consumedAt: sql`clock_timestamp()`,
           consumedSessionId: sessionId,
           wrappedKey: null,
           wrapNonce: null,
@@ -525,12 +565,12 @@ export class PrivacyExportService {
           and(
             eq(t.id, row.id),
             eq(t.state, 'ready'),
-            sql`${t.expiresAt} > now()`,
+            sql`${t.expiresAt} > clock_timestamp()`,
             eq(t.subjectEpoch, user.export_epoch),
           ),
         )
         .returning({ id: t.id });
-      if (won.length === 0) return false;
+      if (won.length === 0) return 'gone';
       await writeAudit(tx, {
         actorType: 'user',
         actorId: userId,
@@ -538,7 +578,7 @@ export class PrivacyExportService {
         resourceType: 'privacy_export',
         resourceId: row.id,
       });
-      return true;
+      return 'consumed';
     });
   }
 

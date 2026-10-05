@@ -24,7 +24,7 @@ import { PrivacyExportsController } from './privacy-exports.controller';
     {
       provide: PRIVACY_EXPORT_OPTIONS,
       useFactory: (config: PrivacyExportConfig): PrivacyExportOptions => ({
-        keyring: parseExportKeyring(config as unknown as Record<string, unknown>),
+        keyring: parseExportKeyring(config.EXPORT_WRAPPING_KEYS),
         storageReady:
           config.NODE_ENV === 'test' ||
           Boolean(config.R2_ACCESS_KEY_ID && config.R2_SECRET_ACCESS_KEY && config.R2_BUCKET),

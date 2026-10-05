@@ -18,6 +18,8 @@ import {
   PRIVACY_EXPORT_PREFIX,
   cleanupDueArtifacts,
   closeLinkedRequestCompleted,
+  reapAttemptObjects,
+  type AttemptReapReport,
   closeLinkedRequestFailed,
   type ArtifactRow,
   type CleanupReport,
@@ -28,6 +30,14 @@ export type PrivacyExportProcessorOptions = {
   mediaPublicBaseUrl: string;
   retentionMonths: number;
   leaseTtlMs?: number;
+  /** Hard deadline on one upload (default 30 s). */
+  uploadTimeoutMs?: number;
+  /**
+   * How long an attempt's deletion record waits before deleting its object
+   * (default lease TTL + 2 × upload deadline): past any moment that attempt's
+   * upload could still land. Publication must happen inside it.
+   */
+  attemptGraceMs?: number;
   maxPlaintextBytes?: number;
   ttlMs?: number;
   generationDeadlineMs?: number;
@@ -49,7 +59,9 @@ export type GenerationReport = Record<GenerationOutcome, number>;
 export type SweepReport = {
   expired: number;
   timedOut: number;
+  requestsReconciled: number;
   cleanup: CleanupReport;
+  attemptObjects: AttemptReapReport;
   tombstonesPurged: number;
   cleanupPending: number;
   cleanupDeadLettered: number;
@@ -73,6 +85,8 @@ export type SweepReport = {
  */
 export class PrivacyExportProcessor {
   private readonly leaseTtlMs: number;
+  private readonly uploadTimeoutMs: number;
+  private readonly attemptGraceMs: number;
   private readonly maxPlaintextBytes: number;
   private readonly ttlMs: number;
   private readonly generationDeadlineMs: number;
@@ -84,6 +98,8 @@ export class PrivacyExportProcessor {
     private readonly options: PrivacyExportProcessorOptions,
   ) {
     this.leaseTtlMs = options.leaseTtlMs ?? PRIVACY_EXPORT_DEFAULTS.leaseTtlMs;
+    this.uploadTimeoutMs = options.uploadTimeoutMs ?? PRIVACY_EXPORT_DEFAULTS.uploadTimeoutMs;
+    this.attemptGraceMs = options.attemptGraceMs ?? this.leaseTtlMs + 2 * this.uploadTimeoutMs;
     this.maxPlaintextBytes = options.maxPlaintextBytes ?? PRIVACY_EXPORT_DEFAULTS.maxPlaintextBytes;
     this.ttlMs = options.ttlMs ?? PRIVACY_EXPORT_DEFAULTS.ttlMs;
     this.generationDeadlineMs =
@@ -110,51 +126,39 @@ export class PrivacyExportProcessor {
   }
 
   /**
-   * One due artifact: pending and due, or generating with a lapsed lease. The
-   * key a previous attempt persisted is handed to the media cleanup queue in
-   * the same transaction — that attempt may have uploaded before it died, and
-   * the new attempt gets a fresh key of its own.
+   * One due artifact: pending and due, or generating with a lapsed lease. A
+   * previous attempt's object needs nothing here: its durable attempt record
+   * (written before it uploaded) deletes it once its grace has passed, and the
+   * new attempt gets a fresh key of its own.
    */
   private async claim(): Promise<Claim | null> {
-    return this.db.transaction(async (tx) => {
-      const { rows } = await tx.execute(sql`
-        with due as (
-          select id, object_key from privacy_export_artifacts
-          where (state = 'pending' and next_attempt_at <= now())
-             or (state = 'generating' and lease_expires_at < now())
-          order by next_attempt_at, created_at
-          limit 1
-          for update skip locked
-        )
-        update privacy_export_artifacts a
-        set state = 'generating',
-            attempt = a.attempt + 1,
-            lease_owner = ${this.options.workerId},
-            lease_expires_at = now() + make_interval(secs => ${this.leaseTtlMs / 1000}),
-            object_key = null,
-            updated_at = now()
-        from due
-        where a.id = due.id
-        returning a.id, due.object_key as stale_key
-      `);
-      const claimed = rows[0] as { id: string; stale_key: string | null } | undefined;
-      if (!claimed) return null;
-      if (claimed.stale_key) {
-        await tx
-          .insert(schema.mediaCleanupQueue)
-          .values({
-            bucket: 'private',
-            objectKey: claimed.stale_key,
-            reason: 'privacy_export_abandoned',
-          })
-          .onConflictDoNothing();
-      }
-      const [row] = await tx
-        .select()
-        .from(schema.privacyExportArtifacts)
-        .where(eq(schema.privacyExportArtifacts.id, claimed.id));
-      return row ?? null;
-    });
+    const { rows } = await this.db.execute(sql`
+      with due as (
+        select id from privacy_export_artifacts
+        where (state = 'pending' and next_attempt_at <= now())
+           or (state = 'generating' and lease_expires_at < now())
+        order by next_attempt_at, created_at
+        limit 1
+        for update skip locked
+      )
+      update privacy_export_artifacts a
+      set state = 'generating',
+          attempt = a.attempt + 1,
+          lease_owner = ${this.options.workerId},
+          lease_expires_at = now() + make_interval(secs => ${this.leaseTtlMs / 1000}),
+          object_key = null,
+          updated_at = now()
+      from due
+      where a.id = due.id
+      returning a.id
+    `);
+    const claimed = rows[0] as { id: string } | undefined;
+    if (!claimed) return null;
+    const [row] = await this.db
+      .select()
+      .from(schema.privacyExportArtifacts)
+      .where(eq(schema.privacyExportArtifacts.id, claimed.id));
+    return row ?? null;
   }
 
   /** The `where` every write of this attempt carries: it fails once fenced off. */
@@ -170,12 +174,24 @@ export class PrivacyExportProcessor {
 
   private async generate(claim: Claim, signal?: AbortSignal): Promise<GenerationOutcome> {
     const objectKey = `${PRIVACY_EXPORT_PREFIX}${claim.id}/${claim.attempt}-${randomUUID()}.bin`;
-    const persisted = await this.db
-      .update(schema.privacyExportArtifacts)
-      .set({ objectKey, updatedAt: sql`now()` })
-      .where(this.fence(claim))
-      .returning({ id: schema.privacyExportArtifacts.id });
-    if (persisted.length === 0) return 'fenced';
+    // PR #677 F-04 — the key and its durable deletion record are written
+    // together, before any byte is uploaded. The record outlives every way
+    // this attempt can end except publication.
+    const persisted = await this.db.transaction(async (tx) => {
+      const updated = await tx
+        .update(schema.privacyExportArtifacts)
+        .set({ objectKey, updatedAt: sql`now()` })
+        .where(this.fence(claim))
+        .returning({ id: schema.privacyExportArtifacts.id });
+      if (updated.length === 0) return false;
+      await tx.insert(schema.privacyExportAttemptObjects).values({
+        artifactId: claim.id,
+        objectKey,
+        deleteAfter: sql`now() + make_interval(secs => ${this.attemptGraceMs / 1000})`,
+      });
+      return true;
+    });
+    if (!persisted) return 'fenced';
 
     let sealed: SealedExport;
     try {
@@ -187,7 +203,8 @@ export class PrivacyExportProcessor {
           actorId: claim.initiatorId,
           reason: `privacy_export:${claim.id}`,
         },
-        { mediaPublicBaseUrl: this.options.mediaPublicBaseUrl },
+        // F-03: the budget is charged while rows are read, page by page.
+        { mediaPublicBaseUrl: this.options.mediaPublicBaseUrl, maxBytes: this.maxPlaintextBytes },
       );
       const plaintext = serializeBounded(doc, this.maxPlaintextBytes);
       try {
@@ -208,9 +225,12 @@ export class PrivacyExportProcessor {
 
     try {
       if (signal?.aborted) throw new Error('lease lost');
+      // Bounded even when a lease signal is passed: the attempt record's grace
+      // is sized to outlast this deadline, which is what makes it safe.
+      const deadline = AbortSignal.timeout(this.uploadTimeoutMs);
       await this.storage.putObject(objectKey, sealed.object, 'application/octet-stream', {
         cacheControl: 'no-store',
-        ...(signal ? { signal } : {}),
+        signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
       });
     } catch {
       return this.retryLater(claim);
@@ -219,14 +239,9 @@ export class PrivacyExportProcessor {
     await this.options.afterUpload?.(claim.id);
 
     const outcome = await this.publish(claim, objectKey, sealed);
-    if (outcome === 'fenced') {
-      // Another attempt owns the row now; this object is ours alone to remove.
-      await this.db
-        .insert(schema.mediaCleanupQueue)
-        .values({ bucket: 'private', objectKey, reason: 'privacy_export_fenced' })
-        .onConflictDoNothing();
-    }
-    // 'revoked': the row still names this key, so its own cleanup removes it.
+    // Unpublished ('fenced', 'revoked'): the attempt record deletes this object
+    // once its grace passes, even if storage saw the PUT after a cleanup ran.
+    if (outcome === 'grace_expired') return this.retryLater(claim);
     return outcome;
   }
 
@@ -234,7 +249,7 @@ export class PrivacyExportProcessor {
     claim: Claim,
     objectKey: string,
     sealed: SealedExport,
-  ): Promise<'published' | 'fenced' | 'revoked'> {
+  ): Promise<'published' | 'fenced' | 'revoked' | 'grace_expired'> {
     return this.db.transaction(async (tx) => {
       // The user row first, the same lock deletion and credential changes take
       // (an UPDATE of the row), so an epoch bump either committed before this
@@ -272,6 +287,21 @@ export class PrivacyExportProcessor {
         await this.audit(tx, row.id, 'privacy_export.revoked', { reason: 'epoch_mismatch' });
         return 'revoked';
       }
+
+      // PR #677 F-04 — publication takes this attempt's deletion record out of
+      // the reaper's hands, and only while its grace has not run out: a record
+      // already due may be deleting the object right now.
+      const kept = await tx
+        .delete(schema.privacyExportAttemptObjects)
+        .where(
+          and(
+            eq(schema.privacyExportAttemptObjects.objectKey, objectKey),
+            sql`${schema.privacyExportAttemptObjects.deleteAfter} > clock_timestamp()`,
+            sql`${schema.privacyExportAttemptObjects.deadAt} is null`,
+          ),
+        )
+        .returning({ id: schema.privacyExportAttemptObjects.id });
+      if (kept.length === 0) return 'grace_expired';
 
       // Both from the transaction clock, so the window is exactly the TTL.
       const [published] = await tx
@@ -428,7 +458,9 @@ export class PrivacyExportProcessor {
       if (ok) timedOut += 1;
     }
 
+    const reconciled = await this.reconcileStrandedRequests();
     const cleanup = await cleanupDueArtifacts(this.db, this.storage);
+    const attempts = await reapAttemptObjects(this.db, this.storage);
 
     const purged = await this.db.execute(sql`
       delete from privacy_export_artifacts
@@ -447,15 +479,27 @@ export class PrivacyExportProcessor {
       where cleanup_due_at is not null and cleaned_at is null
     `);
     const counts = rows[0] as { pending: number; dead: number; overdue: number };
+    const { rows: attemptRows } = await this.db.execute(sql`
+      select
+        count(*) filter (where dead_at is null)::int as pending,
+        count(*) filter (where dead_at is not null)::int as dead,
+        count(*) filter (where dead_at is null
+          and delete_after < now() - interval '5 minutes')::int as overdue
+      from privacy_export_attempt_objects
+    `);
+    const attemptCounts = attemptRows[0] as { pending: number; dead: number; overdue: number };
 
     return {
       expired: expired.rows.length,
       timedOut,
+      requestsReconciled: reconciled,
       cleanup,
+      attemptObjects: attempts,
       tombstonesPurged: purged.rows.length,
-      cleanupPending: counts.pending,
-      cleanupDeadLettered: counts.dead,
-      cleanupOverdue: counts.overdue,
+      // Attempt records are deletion work too: one gauge covers both queues.
+      cleanupPending: counts.pending + attemptCounts.pending,
+      cleanupDeadLettered: counts.dead + attemptCounts.dead,
+      cleanupOverdue: counts.overdue + attemptCounts.overdue,
     };
   }
 
@@ -467,6 +511,63 @@ export class PrivacyExportProcessor {
       where cleanup_dead_at is not null and cleaned_at is null
       returning id
     `);
-    return res.rows.length;
+    const attempts = await this.db.execute(sql`
+      update privacy_export_attempt_objects
+      set dead_at = null, attempts = 0, delete_after = now()
+      where dead_at is not null
+      returning id
+    `);
+    return res.rows.length + attempts.rows.length;
+  }
+
+  /**
+   * PR #677 F-07 — a request whose artifact was revoked (or failed) before it
+   * became available would otherwise stay `in_progress` forever. Closed
+   * `failed` once — retention stamped, `export_failed` counted — unless another
+   * artifact for the same request is still live (a CMS re-execution).
+   */
+  private async reconcileStrandedRequests(): Promise<number> {
+    const { rows } = await this.db.execute(sql`
+      select distinct a.privacy_request_id as request_id
+      from privacy_export_artifacts a
+      join privacy_requests r on r.id = a.privacy_request_id
+      where a.state in ('revoked', 'failed')
+        and r.status <> 'closed'
+        and not exists (
+          select 1 from privacy_export_artifacts live
+          where live.privacy_request_id = a.privacy_request_id
+            and live.state in ('pending', 'generating', 'ready')
+        )
+      limit 100
+    `);
+    let closed = 0;
+    for (const { request_id } of rows as { request_id: string }[]) {
+      const done = await this.db.transaction(async (tx) => {
+        // Re-checked under the request row lock, so a concurrent re-execution
+        // that just issued a new artifact is not closed underneath it.
+        const { rows: locked } = await tx.execute(sql`
+          select 1 from privacy_requests r
+          where r.id = ${request_id}::uuid and r.status <> 'closed'
+            and not exists (
+              select 1 from privacy_export_artifacts live
+              where live.privacy_request_id = r.id
+                and live.state in ('pending', 'generating', 'ready')
+            )
+          for update
+        `);
+        if (locked.length === 0) return false;
+        await closeLinkedRequestFailed(tx, request_id, this.options.retentionMonths);
+        await writeAudit(tx, {
+          actorType: 'system',
+          action: 'privacy_request.export_failed',
+          resourceType: 'privacy_request',
+          resourceId: request_id,
+          diff: { reason: 'artifact_not_delivered' },
+        });
+        return true;
+      });
+      if (done) closed += 1;
+    }
+    return closed;
   }
 }

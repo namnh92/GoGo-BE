@@ -1,4 +1,4 @@
-import { parseExportKeyring, type ExportKeyring } from '@gogo/modules';
+import { parseExportKeyring, pickExportKeyEnv, type ExportKeyring } from '@gogo/modules';
 import { R2StorageAdapter, resolveR2AccountId, type StoragePort } from '@gogo/providers';
 
 export type PrivacyExportWiring =
@@ -26,7 +26,8 @@ export function privacyExportFromEnv(env: NodeJS.ProcessEnv): PrivacyExportWirin
   const missing = Object.entries(required)
     .filter(([, value]) => !value)
     .map(([name]) => name);
-  const keyring = parseExportKeyring(env as Record<string, unknown>);
+  // Same picker as the API's loadEnv (PR #677 F-08): any V<n>, never a fixed list.
+  const keyring = parseExportKeyring(pickExportKeyEnv(env as Record<string, unknown>));
   if (!keyring) missing.push('EXPORT_WRAPPING_KEY_V1');
   if (missing.length > 0 || !keyring) return { ok: false, missing };
   return {

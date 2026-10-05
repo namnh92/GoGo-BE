@@ -92,6 +92,23 @@ export function parseExportKeyring(env: Record<string, unknown>): ExportKeyring 
   return { activeVersion, keys };
 }
 
+/**
+ * PR #677 F-08 — the one place that decides which variables are wrapping-key
+ * configuration: every `EXPORT_WRAPPING_KEY_V<n>` plus `EXPORT_WRAPPING_KEY_ACTIVE`,
+ * for any n. The API (`loadEnv`) and the worker (`process.env`) both pass their
+ * raw environment through this before `parseExportKeyring`, so a V3 added for a
+ * rotation reaches both processes or neither.
+ */
+export function pickExportKeyEnv(env: Record<string, unknown>): Record<string, string> {
+  const picked: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if ((KEY_NAME.test(name) || name === 'EXPORT_WRAPPING_KEY_ACTIVE') && value !== undefined) {
+      picked[name] = String(value);
+    }
+  }
+  return picked;
+}
+
 export type ExportIdentity = { exportId: string; subjectUserId: string };
 
 export type WrappedDataKey = {

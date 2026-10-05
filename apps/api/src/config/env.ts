@@ -8,6 +8,7 @@ import {
 import {
   EDGE_AUTH_TOKEN_MIN_LENGTH,
   parseExportKeyring,
+  pickExportKeyEnv,
   parseIdentitySigningKey,
 } from '@gogo/modules';
 
@@ -137,19 +138,6 @@ const envSchema = z
      * production.
      */
     PRIVACY_RETENTION_MONTHS: z.coerce.number().int().min(1).max(120).default(12),
-    /**
-     * GoGo-BE#256, ADR-0031 — versioned wrapping keys for secure privacy
-     * exports: 32 random bytes, base64 (`openssl rand -base64 32`), one per
-     * version, from SSM. Empty means the feature answers 503, never that it
-     * runs unencrypted. Rotation: add V2, set ACTIVE=2, keep V1 until every
-     * artifact it wrapped is gone (24h + cleanup). Validated below.
-     */
-    EXPORT_WRAPPING_KEY_V1: z.string().default(''),
-    EXPORT_WRAPPING_KEY_V2: z.string().default(''),
-    EXPORT_WRAPPING_KEY_ACTIVE: z.preprocess(
-      (v) => (v === '' ? undefined : v),
-      z.coerce.number().int().min(1).max(9999).optional(),
-    ),
     /**
      * #154 — the SSE transport, per environment. Default on: a client that
      * cannot open the stream falls back to polling, so the failure mode of
@@ -497,17 +485,6 @@ const envSchema = z
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
   })
   .superRefine((env, ctx) => {
-    // #256 — a malformed wrapping key is refused at boot, never at the first
-    // export a person asks for.
-    try {
-      parseExportKeyring(env as unknown as Record<string, unknown>);
-    } catch (err) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['EXPORT_WRAPPING_KEY_V1'],
-        message: err instanceof Error ? err.message : 'invalid export wrapping key',
-      });
-    }
     // GoGo-BE#548: a credential with no resolvable account id signs for the
     // host `.r2.cloudflarestorage.com`. Refusing at boot is the only place
     // that failure is cheap — later it is a presigned URL a client trusts.
@@ -716,7 +693,16 @@ const envSchema = z
     }
   });
 
-export type AppConfig = z.infer<typeof envSchema>;
+export type AppConfig = z.infer<typeof envSchema> & {
+  /**
+   * GoGo-BE#256, ADR-0031, PR #677 F-08 — every `EXPORT_WRAPPING_KEY_V<n>` (any
+   * n) and `EXPORT_WRAPPING_KEY_ACTIVE`, picked from the raw environment by the
+   * same helper the worker uses. 32 random bytes, base64, from SSM. Empty means
+   * secure export answers 503, never that it runs unencrypted. Rotation: add the
+   * next version, set ACTIVE, keep the old one until its artifacts are gone.
+   */
+  EXPORT_WRAPPING_KEYS: Readonly<Record<string, string>>;
+};
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = envSchema.safeParse(source);
@@ -724,7 +710,20 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppConfig {
     const details = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     throw new Error(`Invalid environment configuration: ${details}`);
   }
-  return parsed.data;
+  // #256 — a malformed wrapping key is refused at boot, never at the first
+  // export a person asks for. Picked generically, so V3+ is not silently dropped.
+  const exportKeys = pickExportKeyEnv(source);
+  try {
+    parseExportKeyring(exportKeys);
+  } catch (err) {
+    throw new Error(
+      `Invalid environment configuration: EXPORT_WRAPPING_KEY: ${
+        err instanceof Error ? err.message : 'invalid export wrapping key'
+      }`,
+      { cause: err },
+    );
+  }
+  return { ...parsed.data, EXPORT_WRAPPING_KEYS: exportKeys };
 }
 
 export { APP_CONFIG } from '@gogo/modules';

@@ -113,3 +113,29 @@ export const privacyExportArtifacts = pgTable(
       ),
   ],
 );
+
+/**
+ * PR #677 F-04 — one durable deletion record per upload attempt, written before
+ * the upload and removed only when that attempt is published. Every other
+ * attempt's object is deleted once `delete_after` (past the upload's deadline)
+ * has passed, so a late PUT cannot survive its record.
+ */
+export const privacyExportAttemptObjects = pgTable(
+  'privacy_export_attempt_objects',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    artifactId: uuid('artifact_id').notNull(),
+    objectKey: text('object_key').notNull(),
+    deleteAfter: timestamp('delete_after', { withTimezone: true }).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    deadAt: timestamp('dead_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('privacy_export_attempt_objects_key_unique').on(t.objectKey),
+    index('privacy_export_attempt_objects_due_idx')
+      .on(t.deleteAfter)
+      .where(sql`${t.deadAt} is null`),
+  ],
+);

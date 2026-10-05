@@ -395,6 +395,15 @@ export class PrivacyRequestsService {
     if (row.type !== 'export') {
       throw AppError.conflict('NOT_AN_EXPORT', 'Only an export request has a delivery');
     }
+    // PR #677 F-06 — once a request is backed by a secure export artifact, the
+    // server owns its delivery fields: no manual method may be recorded over
+    // (or instead of) the transfer the server observes.
+    if (await this.exports.forRequest(row.id)) {
+      throw AppError.conflict(
+        'DELIVERY_SERVER_OWNED',
+        'This request is delivered by secure export; the server records its delivery',
+      );
+    }
     // GoGo-BE#256, ADR-0031 §6 — a secure download is observed by the server
     // when the holder's transfer completes; an operator cannot assert one.
     if (input.deliveryMethod === 'secure_download') {

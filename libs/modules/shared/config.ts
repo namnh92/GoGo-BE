@@ -119,9 +119,8 @@ export type ShareLinksConfig = { SHARE_LINK_BASE_URL: string };
  */
 export type PrivacyExportConfig = PrivacyLedgerConfig & {
   NODE_ENV: 'development' | 'test' | 'production';
-  EXPORT_WRAPPING_KEY_V1: string;
-  EXPORT_WRAPPING_KEY_V2: string;
-  EXPORT_WRAPPING_KEY_ACTIVE?: number | undefined;
+  /** Raw `EXPORT_WRAPPING_KEY_*` map, picked by `pickExportKeyEnv` (any version). */
+  EXPORT_WRAPPING_KEYS: Readonly<Record<string, string>>;
   R2_ACCESS_KEY_ID: string;
   R2_SECRET_ACCESS_KEY: string;
   R2_BUCKET: string;

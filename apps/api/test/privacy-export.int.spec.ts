@@ -349,11 +349,18 @@ describe('generation (worker)', () => {
     expect(ready.state).toBe('ready');
     expect(ready.attempt).toBe(2);
     expect(ready.objectKey).not.toBe(abandonedKey);
-    const [queued] = await db
+    // F-04: the abandoned attempt keeps its durable deletion record.
+    const [record] = await db
       .select()
-      .from(schema.mediaCleanupQueue)
-      .where(eq(schema.mediaCleanupQueue.objectKey, abandonedKey));
-    expect(queued).toMatchObject({ bucket: 'private', reason: 'privacy_export_abandoned' });
+      .from(schema.privacyExportAttemptObjects)
+      .where(eq(schema.privacyExportAttemptObjects.objectKey, abandonedKey));
+    expect(record).toMatchObject({ artifactId: id });
+    // The published attempt's record is gone: the artifact owns that object now.
+    const published = await db
+      .select()
+      .from(schema.privacyExportAttemptObjects)
+      .where(eq(schema.privacyExportAttemptObjects.objectKey, ready.objectKey!));
+    expect(published).toHaveLength(0);
     void user;
   });
 
@@ -380,11 +387,11 @@ describe('generation (worker)', () => {
     expect(row.state).toBe('ready');
     expect(row.attempt).toBe(2);
     expect(row.objectKey).not.toBe(staleKey);
-    const queued = await db
+    const records = await db
       .select()
-      .from(schema.mediaCleanupQueue)
-      .where(eq(schema.mediaCleanupQueue.objectKey, staleKey));
-    expect(queued).toHaveLength(1);
+      .from(schema.privacyExportAttemptObjects)
+      .where(eq(schema.privacyExportAttemptObjects.objectKey, staleKey));
+    expect(records).toHaveLength(1);
     void user;
   });
 
@@ -870,7 +877,7 @@ describe('migration 0070', () => {
       .split('\n')
       .filter((l) => /^-- {3}(DROP|ALTER)/.test(l))
       .map((l) => l.replace(/^--\s+/, ''));
-    expect(down.length).toBe(7);
+    expect(down.length).toBe(8);
     const client = await pool.connect();
     try {
       await client.query('begin');

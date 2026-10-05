@@ -24,6 +24,7 @@
 --   DROP TRIGGER users_export_epoch_bump ON users;
 --   DROP FUNCTION privacy_export_revoke_on_epoch();
 --   DROP FUNCTION privacy_export_bump_epoch();
+--   DROP TABLE privacy_export_attempt_objects;
 --   DROP TABLE privacy_export_artifacts;
 --   DROP TYPE privacy_export_state;
 --   ALTER TABLE users DROP COLUMN export_epoch;
@@ -99,6 +100,26 @@ CREATE INDEX privacy_export_artifacts_expiry_idx ON privacy_export_artifacts (ex
 --> statement-breakpoint
 CREATE INDEX privacy_export_artifacts_cleanup_idx ON privacy_export_artifacts (cleanup_due_at)
   WHERE cleanup_due_at IS NOT NULL AND cleaned_at IS NULL AND cleanup_dead_at IS NULL;
+--> statement-breakpoint
+-- PR #677 F-04 — one durable deletion record per upload attempt, written
+-- before the upload starts and removed only when that attempt is published.
+-- Anything else (fenced, revoked, crashed, retried) is deleted from storage
+-- once `delete_after` has passed — after the attempt's upload can no longer
+-- complete — so a late PUT cannot outlive its record.
+CREATE TABLE privacy_export_attempt_objects (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  artifact_id uuid NOT NULL,
+  object_key text NOT NULL,
+  delete_after timestamptz NOT NULL,
+  attempts integer NOT NULL DEFAULT 0,
+  last_error text,
+  dead_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT privacy_export_attempt_objects_key_unique UNIQUE (object_key)
+);
+--> statement-breakpoint
+CREATE INDEX privacy_export_attempt_objects_due_idx ON privacy_export_attempt_objects (delete_after)
+  WHERE dead_at IS NULL;
 --> statement-breakpoint
 -- The epoch only ever moves forward, and only for the two events that must
 -- revoke an export. A direct write to export_epoch is refused: nothing in the

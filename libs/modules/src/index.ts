@@ -199,6 +199,7 @@ export {
   ExportTooLargeError,
   openExport,
   parseExportKeyring,
+  pickExportKeyEnv,
   sealExport,
   serializeBounded,
   type ExportKeyring,

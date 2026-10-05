@@ -5818,6 +5818,9 @@ paths:
         `secure_download` cannot be asserted here (`400
         SECURE_DELIVERY_NOT_ASSERTABLE`, GoGo-BE#256): the server records it
         when the holder's download completes.
+        A request backed by a secure export accepts no manual delivery method
+        at all (`409 DELIVERY_SERVER_OWNED`): its delivery fields are the
+        server's.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -5842,7 +5845,7 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: '`NOT_AN_EXPORT`'
+          description: '`NOT_AN_EXPORT` or `DELIVERY_SERVER_OWNED`'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }

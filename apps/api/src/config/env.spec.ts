@@ -199,3 +199,44 @@ describe('SHARE_LINK_EDGE_AUTH_TOKEN (SEC-004)', () => {
     });
   });
 });
+
+/*
+ * PR #677 F-08 — a rotation past V2 must reach the API exactly as it reaches the
+ * worker: both pick every EXPORT_WRAPPING_KEY_V<n> generically.
+ */
+describe('export wrapping keys (GoGo-BE#256)', () => {
+  const key = () => Buffer.alloc(32, Math.floor(Math.random() * 255)).toString('base64');
+
+  it('keeps V3 and an ACTIVE that names it', async () => {
+    const env = loadEnv({
+      ...base,
+      NODE_ENV: 'development',
+      EXPORT_WRAPPING_KEY_V1: key(),
+      EXPORT_WRAPPING_KEY_V3: key(),
+      EXPORT_WRAPPING_KEY_ACTIVE: '3',
+    });
+    const { parseExportKeyring } = await import('@gogo/modules');
+    const ring = parseExportKeyring(
+      (env as unknown as { EXPORT_WRAPPING_KEYS: Record<string, string> }).EXPORT_WRAPPING_KEYS,
+    )!;
+    expect(ring.activeVersion).toBe(3);
+    expect([...ring.keys.keys()].sort()).toEqual([1, 3]);
+  });
+
+  it('refuses a malformed key at boot', () => {
+    expect(() =>
+      loadEnv({ ...base, NODE_ENV: 'development', EXPORT_WRAPPING_KEY_V1: 'short' }),
+    ).toThrow(/EXPORT_WRAPPING_KEY/);
+  });
+
+  it('an empty .env.example slot is absent, not invalid', () => {
+    expect(() =>
+      loadEnv({
+        ...base,
+        NODE_ENV: 'development',
+        EXPORT_WRAPPING_KEY_V1: '',
+        EXPORT_WRAPPING_KEY_ACTIVE: '',
+      }),
+    ).not.toThrow();
+  });
+});

@@ -31,6 +31,8 @@ export const PRIVACY_EXPORT_DEFAULTS = {
   maxConcurrentDownloads: 4,
   /** Worker lease on one generation attempt. */
   leaseTtlMs: 120_000,
+  /** Hard deadline on one ciphertext upload. */
+  uploadTimeoutMs: 30_000,
 } as const;
 
 /** Private bucket prefix — the one the 2-day R2 lifecycle backstop targets. */
@@ -215,6 +217,62 @@ export async function cleanupDueArtifacts(
           updatedAt: sql`now()`,
         })
         .where(and(eq(t.id, row.id), isNull(t.cleanedAt)));
+      if (exhausted) report.dead += 1;
+      else report.retried += 1;
+    }
+  }
+  return report;
+}
+
+export type AttemptReapReport = { deleted: number; retried: number; dead: number };
+
+/**
+ * PR #677 F-04 — deletes the object of every unpublished upload attempt whose
+ * grace has passed. The row goes only after storage confirmed the delete, so
+ * an object that a late PUT re-created after an earlier cleanup is still
+ * covered: its record was never removed.
+ */
+export async function reapAttemptObjects(
+  db: Db,
+  storage: StoragePort,
+  options: { limit?: number; maxAttempts?: number } = {},
+): Promise<AttemptReapReport> {
+  const report: AttemptReapReport = { deleted: 0, retried: 0, dead: 0 };
+  const maxAttempts = options.maxAttempts ?? PRIVACY_EXPORT_DEFAULTS.maxCleanupAttempts;
+  const t = schema.privacyExportAttemptObjects;
+  const rows = await db
+    .select()
+    .from(t)
+    .where(and(sql`${t.deleteAfter} <= now()`, isNull(t.deadAt)))
+    .orderBy(t.deleteAfter)
+    .limit(options.limit ?? 50);
+  for (const row of rows) {
+    try {
+      await storage.deleteObject(row.objectKey);
+      await db.transaction(async (tx) => {
+        const removed = await tx.delete(t).where(eq(t.id, row.id)).returning({ id: t.id });
+        if (removed.length === 0) return;
+        await writeAudit(tx, {
+          actorType: 'system',
+          action: 'privacy_export.attempt_object_deleted',
+          resourceType: 'privacy_export',
+          resourceId: row.artifactId,
+          diff: { attemptRecord: row.id },
+        });
+      });
+      report.deleted += 1;
+    } catch (err) {
+      const attempts = row.attempts + 1;
+      const exhausted = attempts >= maxAttempts;
+      await db
+        .update(t)
+        .set({
+          attempts,
+          lastError: err instanceof Error ? err.name : 'Error',
+          deleteAfter: sql`now() + make_interval(secs => ${RETRY_BACKOFF_SECONDS(attempts)})`,
+          ...(exhausted ? { deadAt: sql`now()` } : {}),
+        })
+        .where(eq(t.id, row.id));
       if (exhausted) report.dead += 1;
       else report.retried += 1;
     }
