@@ -491,6 +491,13 @@
       "when": 1791072000000,
       "tag": "0071_admin-session-auth-method",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1791158400000,
+      "tag": "0070_privacy-export-artifacts",
+      "breakpoints": true
     }
   ]
 }

@@ -6,6 +6,7 @@ import {
   check,
   date,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -67,6 +68,14 @@ export const users = pgTable(
      * export and deletion; no summary, audit value, log or event carries it.
      */
     dateOfBirth: date('date_of_birth', { mode: 'string' }),
+    /**
+     * GoGo-BE#256, ADR-0031 — bumped by trigger (migration 0070) whenever the
+     * password hash changes or the account is deleted. A secure export is
+     * published and redeemed only while the epoch it was requested under still
+     * holds, so a credential change or erasure revokes every outstanding one.
+     * Never written by application code.
+     */
+    exportEpoch: integer('export_epoch').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),

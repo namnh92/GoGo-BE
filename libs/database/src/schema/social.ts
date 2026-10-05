@@ -136,6 +136,8 @@ export const notificationKind = pgEnum('notification_kind', [
   'moderation_update',
   /** BE-CMS-G4e (#226) — a CMS campaign, dispatched through the outbox. */
   'campaign',
+  /** GoGo-BE#256 — a secure privacy export is ready to download. In-app only. */
+  'privacy_export_ready',
 ]);
 
 export const notifications = pgTable(

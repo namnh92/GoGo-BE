@@ -10,3 +10,4 @@ export * from './ingestion';
 export * from './cost';
 export * from './links';
 export * from './profile';
+export * from './privacy';
