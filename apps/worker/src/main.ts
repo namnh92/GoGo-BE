@@ -52,7 +52,12 @@ import { startPeriodic } from './periodic';
 import { WorkerLease } from '@gogo/database';
 import { mediaCleanupFromEnv } from './media-cleanup';
 import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
-import { captureWorkerError, flushWorkerSentry, initWorkerSentry } from './sentry';
+import {
+  captureWorkerError,
+  fatalRejectionHandler,
+  flushWorkerSentry,
+  initWorkerSentry,
+} from './sentry';
 
 /**
  * Poll intervals, in milliseconds.
@@ -84,7 +89,7 @@ const pollIntervalMs = (name: string, fallback: number): number => {
  * one interval rather than an incident.
  */
 const LEASE_TTL_MS = 90_000;
-const OUTBOX_POLL_MS = pollIntervalMs('OUTBOX_POLL_MS', 5000);
+const outboxPollMs = () => pollIntervalMs('OUTBOX_POLL_MS', 5000);
 /**
  * COST-BE-016 (#368): how often the estimator re-prices this month's and last
  * month's usage. Idempotent and bounded, so a short interval only costs a
@@ -105,7 +110,7 @@ const COST_COLLECTORS_ENABLED = process.env.COST_COLLECTORS_ENABLED !== 'false';
 const COST_MONITORING_BUDGET_MICROS = process.env.COST_MONITORING_BUDGET_MICROS
   ? Number(process.env.COST_MONITORING_BUDGET_MICROS)
   : undefined;
-const INGEST_POLL_MS = pollIntervalMs('INGEST_POLL_MS', 5000);
+const ingestPollMs = () => pollIntervalMs('INGEST_POLL_MS', 5000);
 /**
  * #340 — how often the liveness refresh looks for due rows. Plan §2.5 sets DEV
  * to 15 minutes: the work is due-work on a 30-day cadence, so the interval
@@ -113,7 +118,7 @@ const INGEST_POLL_MS = pollIntervalMs('INGEST_POLL_MS', 5000);
  * is. Nothing is spent on an empty tick — the due query answers first, and the
  * budget reservation only happens when there are rows.
  */
-const PLACE_REFRESH_POLL_MS = pollIntervalMs('PLACE_REFRESH_POLL_MS', 15 * 60 * 1000);
+const placeRefreshPollMs = () => pollIntervalMs('PLACE_REFRESH_POLL_MS', 15 * 60 * 1000);
 const PRIVACY_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /**
  * ADR-0022 — how often the media cleanup queue is retried. The API attempts
@@ -121,7 +126,7 @@ const PRIVACY_INTERVAL_MS = 6 * 60 * 60 * 1000;
  * what storage or the edge refused; a minute keeps a refused delete from
  * lingering without polling a usually-empty table every few seconds.
  */
-const MEDIA_CLEANUP_POLL_MS = pollIntervalMs('MEDIA_CLEANUP_POLL_MS', 60_000);
+const mediaCleanupPollMs = () => pollIntervalMs('MEDIA_CLEANUP_POLL_MS', 60_000);
 /**
  * How often this process says it is alive. Its own job, on its own cadence:
  * tying it to a business tick would make "worker alive" mean "outbox tick
@@ -155,6 +160,13 @@ async function heartbeat(url: string | undefined, throttleMs = 60_000): Promise<
  * advisory lock keeps two replicas from running the same tick together.
  */
 async function bootstrap(): Promise<void> {
+  // BE#675 F-04 — read here, not at module load: a bad value then fails
+  // bootstrap, which is captured and flushed below, instead of throwing before
+  // Sentry is up.
+  const OUTBOX_POLL_MS = outboxPollMs();
+  const INGEST_POLL_MS = ingestPollMs();
+  const PLACE_REFRESH_POLL_MS = placeRefreshPollMs();
+  const MEDIA_CLEANUP_POLL_MS = mediaCleanupPollMs();
   const logger = createLogger({
     level: process.env.LOG_LEVEL ?? 'info',
     name: 'gogo-worker',
@@ -650,8 +662,18 @@ async function bootstrap(): Promise<void> {
   process.on('SIGTERM', () => void shutdown());
 }
 
-// BE#675 — before bootstrap, so a failure to boot is reported too.
+// BE#675 — before bootstrap, so a failure to boot is reported too. The
+// rejection handler after init, so the SDK's capture runs before the exit.
 initWorkerSentry(process.env);
+process.on(
+  'unhandledRejection',
+  fatalRejectionHandler({
+    // eslint-disable-next-line no-console
+    log: (reason) => console.error(reason),
+    flush: flushWorkerSentry,
+    exit: (code) => process.exit(code),
+  }),
+);
 
 bootstrap().catch(async (err) => {
   // eslint-disable-next-line no-console

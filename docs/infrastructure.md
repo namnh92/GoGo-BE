@@ -142,7 +142,10 @@ lỗi** (job phải chạy `ok` lại một lần thì lần lỗi sau mới đ�
 job hỏng chạy vài giây/lần không đốt hết quota 5k lỗi/tháng. Chuỗi lỗi
 nằm trong process: đúng khi mỗi môi trường chạy một worker như hiện nay; scale
 nhiều replica thì phải chuyển chuỗi lỗi lên dòng lease trước. Rejection không
-bắt trong worker vẫn làm process thoát (`strict`) để compose khởi động lại.
+bắt trong worker vẫn làm process thoát (handler riêng của worker, không dựa
+vào `strict` của SDK — SDK bỏ qua `AbortError`) để compose khởi động lại.
+Breadcrumb tới các `HEARTBEAT_URL_*` chỉ giữ origin: path của ping URL là
+khoá bí mật.
 
 ## 3b. Metrics & alert cho ingestion (PI-SRE-001)
 

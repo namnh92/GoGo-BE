@@ -62,12 +62,14 @@ describe('Sentry options (#588)', () => {
   });
 
   /**
-   * BE#675 F-01 — the SDK's default rejection handler only warns, which keeps a
-   * process alive that Node would have crashed. The worker asks for `strict`
-   * (log, capture, exit) so its restart policy still recovers it; the API keeps
-   * the default. Same list either way, one integration swapped in place.
+   * BE#675 F-01/F-05 — the SDK's default rejection handler only warns, which
+   * keeps a process alive that Node would have crashed. The worker ends the
+   * process itself (`apps/worker/src/sentry.ts`) because the SDK's own `strict`
+   * exit is skipped for its ignored names (`AbortError`); it asks the SDK for
+   * `none` — capture, no warning, no exit. The API keeps the default. Same list
+   * either way, one integration swapped in place.
    */
-  it('swaps in a strict unhandled-rejection integration only when asked', () => {
+  it('swaps in a capture-only unhandled-rejection integration only when asked', () => {
     const DSN = 'https://public@o0.ingest.sentry.io/0';
     const names = (opts: ReturnType<typeof sentryInitOptions>) =>
       (opts.integrations as { name: string }[]).map((integration) => integration.name);
@@ -79,10 +81,10 @@ describe('Sentry options (#588)', () => {
     const worker = sentryInitOptions({
       dsn: DSN,
       environment: 'test',
-      unhandledRejection: 'strict',
+      unhandledRejection: 'none',
     });
     expect(rejectionCalls).toHaveLength(before + 1);
-    expect(rejectionCalls.at(-1)?.options).toEqual({ mode: 'strict' });
+    expect(rejectionCalls.at(-1)?.options).toEqual({ mode: 'none' });
     expect(names(worker)).toEqual(names(api));
     const rejection = (worker.integrations as { name: string }[]).filter(
       (integration) => integration.name === 'OnUnhandledRejection',

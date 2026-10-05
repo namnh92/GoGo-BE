@@ -14,12 +14,13 @@ const ALLOWED: Record<string, RegExp[]> = {
   'libs/observability/src/sentry.ts': [
     /Sentry\.getDefaultIntegrations\(\{\}\)/,
     /Sentry\.httpIntegration\(\{ maxIncomingRequestBodySize: 'none' \}\)/,
-    /Sentry\.onUnhandledRejectionIntegration\(\{ mode: 'strict' \}\)/,
+    /Sentry\.onUnhandledRejectionIntegration\(\{ mode: 'none' \}\)/,
   ],
   'apps/api/src/main.ts': [/Sentry\.init\(sentryInitOptions\(/],
   // BE#675 — the worker's init, its job-failure capture (job name only) and flush.
   'apps/worker/src/sentry.ts': [
-    /Sentry\.init\(\s*sentryInitOptions\(\{ dsn, environment: env\.APP_ENV \?\? 'dev', unhandledRejection: 'strict' \}\),?\s*\)/,
+    // Heartbeat URLs are passed to be redacted (F-03), never attached.
+    /Sentry\.init\(\s*sentryInitOptions\(\{\s*dsn,\s*environment: env\.APP_ENV \?\? 'dev',\s*unhandledRejection: 'none',\s*secretUrls: \[env\.HEARTBEAT_URL_OUTBOX, env\.HEARTBEAT_URL_INGEST, env\.HEARTBEAT_URL_PRIVACY\],\s*\}\),?\s*\)/,
     /Sentry\.captureException\(err, \{ tags: \{ periodic_job: job \} \}\)/,
     /else Sentry\.captureException\(err\);/,
     /Sentry\.flush\(2_000\)/,

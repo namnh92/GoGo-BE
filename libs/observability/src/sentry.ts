@@ -26,7 +26,8 @@ type Integration = ReturnType<typeof Sentry.getDefaultIntegrations>[number];
  * Pattern limits (text an operator needs): the URL and query string, exception
  * values, breadcrumbs and the remaining event go through
  * `redactCoordinatesDeep` — see `libs/observability/src/telemetry-redaction.ts`
- * for exactly what it matches.
+ * for exactly what it matches. HTTP breadcrumbs to a caller's `secretUrls`
+ * (the worker's heartbeat pings, BE#675 F-03) keep only the origin.
  *
  * Also relied on, and pinned by `apps/api/src/sentry-usage.spec.ts`: no code
  * outside this file, the API's `main.ts` and global exception filter, and the
@@ -73,18 +74,53 @@ export function sanitizeRequest<T extends WithRequest>(event: T): T {
 export const HTTP_INTEGRATION_NAME = /^Http(?:$|\.)/;
 
 /**
- * BE#675 — what an unhandled promise rejection does once Sentry is up. The
- * SDK default, `warn`, only logs: a process Node would have crashed keeps
- * running. `strict` captures, logs and exits, which is what the worker needs
- * for its restart policy to recover it. The API keeps the default.
+ * BE#675 — what the SDK does with an unhandled promise rejection. The default,
+ * `warn`, captures and logs, and the process keeps running; the API keeps it.
+ * `none` captures only: the worker ends the process itself
+ * (`apps/worker/src/sentry.ts`), because the SDK's own `strict` exit is skipped
+ * for the names it ignores (`AbortError` in 10.71), and a worker Node would
+ * have crashed must still crash for its restart policy to recover it.
  */
-export type UnhandledRejectionMode = 'warn' | 'strict';
+export type UnhandledRejectionMode = 'warn' | 'none';
+
+const REDACTED = '[redacted]';
+
+/** `origin + pathname` of each parseable URL — what the SDK's breadcrumb `url` keeps. */
+function urlPrefixes(urls: readonly (string | undefined)[]): string[] {
+  return urls.flatMap((raw) => {
+    if (!raw) return [];
+    try {
+      const url = new URL(raw);
+      return [`${url.origin}${url.pathname}`];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * BE#675 F-03 — an HTTP breadcrumb to a URL whose path is itself a credential
+ * (a heartbeat ping) keeps only the origin. Matched by prefix on the URL the
+ * SDK records, which has the query and userinfo already stripped; query and
+ * fragment, recorded separately, are dropped.
+ */
+export function redactSecretUrlBreadcrumb(
+  breadcrumb: Breadcrumb,
+  prefixes: readonly string[],
+): Breadcrumb {
+  const url = breadcrumb.data?.url;
+  if (breadcrumb.category !== 'http' || typeof url !== 'string') return breadcrumb;
+  const match = prefixes.find((prefix) => url.startsWith(prefix));
+  if (!match) return breadcrumb;
+  const { 'http.query': _query, 'http.fragment': _fragment, ...data } = breadcrumb.data ?? {};
+  return { ...breadcrumb, data: { ...data, url: `${new URL(match).origin}/${REDACTED}` } };
+}
 
 /**
  * The SDK's default integrations with every HTTP integration removed, plus one
  * HTTP integration that never captures an incoming body. Tracing is off, so the
- * defaults are computed without span options. With `strict`, the default
- * rejection handler is replaced in place by a strict one.
+ * defaults are computed without span options. With `none`, the default
+ * rejection handler is replaced in place by a capture-only one.
  */
 export function sentryIntegrations(
   opts: { unhandledRejection?: UnhandledRejectionMode } = {},
@@ -92,8 +128,8 @@ export function sentryIntegrations(
   const defaults = Sentry.getDefaultIntegrations({})
     .filter((integration) => !HTTP_INTEGRATION_NAME.test(integration.name))
     .map((integration) =>
-      opts.unhandledRejection === 'strict' && integration.name === 'OnUnhandledRejection'
-        ? Sentry.onUnhandledRejectionIntegration({ mode: 'strict' })
+      opts.unhandledRejection === 'none' && integration.name === 'OnUnhandledRejection'
+        ? Sentry.onUnhandledRejectionIntegration({ mode: 'none' })
         : integration,
     );
   return [...defaults, Sentry.httpIntegration({ maxIncomingRequestBodySize: 'none' })];
@@ -103,7 +139,10 @@ export function sentryInitOptions(opts: {
   dsn: string;
   environment: string;
   unhandledRejection?: UnhandledRejectionMode;
+  /** URLs whose path is a credential; empty and unparseable entries are ignored (F-03). */
+  secretUrls?: readonly (string | undefined)[];
 }): NodeOptions {
+  const secretPrefixes = urlPrefixes(opts.secretUrls ?? []);
   return {
     dsn: opts.dsn,
     environment: opts.environment,
@@ -115,6 +154,7 @@ export function sentryInitOptions(opts: {
     beforeSend: (event: ErrorEvent) => redactCoordinatesDeep(sanitizeRequest(event)),
     beforeSendTransaction: (event: TransactionEvent) =>
       redactCoordinatesDeep(sanitizeRequest(event)),
-    beforeBreadcrumb: (breadcrumb: Breadcrumb) => redactCoordinatesDeep(breadcrumb),
+    beforeBreadcrumb: (breadcrumb: Breadcrumb) =>
+      redactCoordinatesDeep(redactSecretUrlBreadcrumb(breadcrumb, secretPrefixes)),
   };
 }
