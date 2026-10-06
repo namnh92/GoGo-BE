@@ -1,4 +1,5 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { Observable } from 'rxjs';
 import { AppError } from '../../shared/app-error';
 import type { Actor } from '../../identity/domain/actor';
@@ -35,10 +36,12 @@ export type SseMessage =
 @Injectable()
 export class RoomEventsService {
   private readonly streamsPerActor = new Map<string, number>();
+  private readonly logger = new Logger(RoomEventsService.name);
 
   constructor(
     private readonly policy: RoomPolicy,
     @Inject(ROOM_EVENT_BUS) private readonly bus: RoomEventBus,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
   /**
@@ -63,6 +66,27 @@ export class RoomEventsService {
 
     const open = this.streamsPerActor.get(actor.id) ?? 0;
     if (open >= MAX_STREAMS_PER_ACTOR) {
+      /*
+       * GoGo-BE#683. The guard's 30/min limit answers with the same
+       * `RATE_LIMITED` code, so without this the two are indistinguishable in
+       * the log, and nothing at all survives a redeploy. GoGo-MobileApp#291
+       * deferred a client-side pool until this refusal is actually seen; this
+       * counter is where it is seen. The log carries the actor's kind, never
+       * its id.
+       *
+       * One object, `msg` inside it: `NestPinoLogger` emits an object message
+       * as fields and keeps only the context from the parameters after it, so a
+       * second string here would be silently dropped.
+       */
+      this.metrics.increment('realtime_stream_refusals_total', { reason: 'actor_cap' });
+      this.logger.warn({
+        msg: 'room event stream refused: actor stream cap',
+        event: 'realtime.stream_refused',
+        reason: 'actor_cap',
+        actor_kind: actor.type,
+        open_streams: open,
+        room_id: roomId,
+      });
       throw AppError.tooManyRequests('Too many open event streams for this session');
     }
 
