@@ -138,8 +138,9 @@ export class R2StorageAdapter implements StoragePort {
       await res.body?.cancel().catch(() => undefined);
       throw new StorageObjectTooLargeError(key, max);
     }
-    const body = new Uint8Array(await res.arrayBuffer());
-    if (body.byteLength > max) throw new StorageObjectTooLargeError(key, max);
+    // GoGo-BE#256: counted as it arrives, so an absent or understated
+    // content-length cannot make the process buffer more than `max` bytes.
+    const body = await readBounded(res, key, max);
     return {
       body,
       contentType: res.headers.get('content-type'),
@@ -244,4 +245,33 @@ export class R2StorageAdapter implements StoragePort {
       signal: input.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   }
+}
+
+/**
+ * Reads a response body, refusing as soon as it passes `max` bytes and
+ * cancelling the rest of the transfer. Never holds more than `max` plus one
+ * chunk.
+ */
+async function readBounded(res: Response, key: string, max: number): Promise<Uint8Array> {
+  if (!res.body) return new Uint8Array(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      throw new StorageObjectTooLargeError(key, max);
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
 }

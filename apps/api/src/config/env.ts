@@ -5,7 +5,12 @@ import {
   TenjinAcquisitionLinkProvider,
   resolveR2AccountId,
 } from '@gogo/providers';
-import { EDGE_AUTH_TOKEN_MIN_LENGTH, parseIdentitySigningKey } from '@gogo/modules';
+import {
+  EDGE_AUTH_TOKEN_MIN_LENGTH,
+  parseExportKeyring,
+  pickExportKeyEnv,
+  parseIdentitySigningKey,
+} from '@gogo/modules';
 
 /**
  * FND-006: config validation — the process must fail fast on invalid config.
@@ -688,7 +693,16 @@ const envSchema = z
     }
   });
 
-export type AppConfig = z.infer<typeof envSchema>;
+export type AppConfig = z.infer<typeof envSchema> & {
+  /**
+   * GoGo-BE#256, ADR-0033, PR #677 F-08 — every `EXPORT_WRAPPING_KEY_V<n>` (any
+   * n) and `EXPORT_WRAPPING_KEY_ACTIVE`, picked from the raw environment by the
+   * same helper the worker uses. 32 random bytes, base64, from SSM. Empty means
+   * secure export answers 503, never that it runs unencrypted. Rotation: add the
+   * next version, set ACTIVE, keep the old one until its artifacts are gone.
+   */
+  EXPORT_WRAPPING_KEYS: Readonly<Record<string, string>>;
+};
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = envSchema.safeParse(source);
@@ -696,7 +710,20 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppConfig {
     const details = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     throw new Error(`Invalid environment configuration: ${details}`);
   }
-  return parsed.data;
+  // #256 — a malformed wrapping key is refused at boot, never at the first
+  // export a person asks for. Picked generically, so V3+ is not silently dropped.
+  const exportKeys = pickExportKeyEnv(source);
+  try {
+    parseExportKeyring(exportKeys);
+  } catch (err) {
+    throw new Error(
+      `Invalid environment configuration: EXPORT_WRAPPING_KEY: ${
+        err instanceof Error ? err.message : 'invalid export wrapping key'
+      }`,
+      { cause: err },
+    );
+  }
+  return { ...parsed.data, EXPORT_WRAPPING_KEYS: exportKeys };
 }
 
 export { APP_CONFIG } from '@gogo/modules';

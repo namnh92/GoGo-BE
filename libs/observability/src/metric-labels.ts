@@ -339,6 +339,10 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // Worker gauges (ADR-0022): queue depth and dead-lettered rows, no labels.
   media_cleanup_pending: [],
   media_cleanup_dead_lettered: [],
+  // GoGo-BE#256 — secure privacy export deletion, worker sweep gauges.
+  privacy_export_cleanup_pending: [],
+  privacy_export_cleanup_dead_lettered: [],
+  privacy_export_cleanup_overdue: [],
 };
 
 /**

@@ -5,6 +5,7 @@ import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
 import { SessionRevocationService } from '../../identity/application/session-revocation.service';
+import { PrivacyExportService } from '../../privacy/application/privacy-export.service';
 import { UserContentService } from '../../reviews/application/user-content.service';
 import { decodeKeysetCursor, encodeKeysetCursor, toIso } from '../../shared/cursor';
 
@@ -82,6 +83,7 @@ export class CmsUsersService {
     @Inject(DB) private readonly db: Db,
     private readonly revocations: SessionRevocationService,
     private readonly userContent: UserContentService,
+    private readonly exports: PrivacyExportService,
   ) {}
 
   /**
@@ -327,9 +329,12 @@ export class CmsUsersService {
       .limit(1);
     if (!user) throw AppError.notFound('USER_NOT_FOUND', 'No such account');
 
-    return this.userContent.exportForUser(input.id, {
-      actorType: 'admin',
-      actorId: input.actorId,
+    // GoGo-BE#256, ADR-0033 — a secure export for the subject to redeem from
+    // their own session, with its own linked ledger request. The operator
+    // receives metadata, never the payload.
+    return this.exports.createForCmsSubject({
+      subjectUserId: input.id,
+      adminId: input.actorId,
       reason: input.reason,
     });
   }

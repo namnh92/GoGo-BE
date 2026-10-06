@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.68
+  version: 1.0.0-alpha.69
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3363,9 +3363,178 @@ paths:
         (ADR-0026), and the push switch (`notificationSettings`, ADR-0025).
         Never a credential, a session, or an upload key.
         Audit-logged and recorded in the privacy ledger.
+
+
+        Kept for compatibility (GoGo-BE#256). New clients use the secure,
+        asynchronous flow under `/me/exports`.
       responses:
         '200': { description: JSON export; audit-logged }
         '429': { $ref: '#/components/responses/RateLimited' }
+
+  /me/exports:
+    post:
+      operationId: requestSecureExport
+      tags: [me]
+      summary: Request a secure, single-use export of this account's data (GoGo-BE#256)
+      description: >
+        ADR-0033. Accepted for generation (202); the worker builds the same
+        allowlisted document as `/me/export`, encrypts it (AES-256-GCM, per-artifact
+        key wrapped by a versioned server key) and stores it privately. When it
+        is ready an in-app notification of kind `privacy_export_ready` carries
+        the export id and expiry — never data, a key or a URL that authorizes
+        anything.
+
+
+        `Idempotency-Key` is **required**. A retry with the same key answers the
+        same export's current status (`x-idempotent-replay: true`) and does not
+        spend another generation. One active export per account (pending,
+        generating or ready) across every entry point — a second request is
+        `409 EXPORT_ALREADY_ACTIVE` with the active id in
+        `field_errors[0].message`. At most three generations per account per
+        rolling hour (`429` with `Retry-After`).
+
+
+        Only a registered account that can sign in has an export; guests and
+        staff get 403. There is no path for an account that cannot sign in —
+        account recovery comes first.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        '202':
+          description: Accepted; poll `GET /me/exports/{id}` or wait for the notification.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyExportStatus' }
+        '400':
+          description: '`IDEMPOTENCY_KEY_REQUIRED` or `INVALID_IDEMPOTENCY_KEY`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: '`USER_ONLY` — guests and staff have no export.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: >
+            `EXPORT_ALREADY_ACTIVE` (active id in `field_errors[0].message`),
+            `SUBJECT_CANNOT_SIGN_IN`, or `IDEMPOTENT_REQUEST_IN_FLIGHT`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: '`IDEMPOTENCY_KEY_REUSED` — same key, different request.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: '`EXPORT_UNAVAILABLE` — not configured in this environment (not retryable).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /me/exports/{id}:
+    get:
+      operationId: getSecureExport
+      tags: [me]
+      summary: Status of one of this account's secure exports
+      description: >
+        Never consumes (neither does `HEAD`). Another account's id is a 404 —
+        the id addresses an export, it does not authorize anything.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Current status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyExportStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: '`USER_ONLY`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /me/exports/{id}/download:
+    post:
+      operationId: downloadSecureExport
+      tags: [me]
+      summary: Redeem a ready export — consume-once
+      description: >
+        **Consume-once.** The first admitted request moves the export from
+        `ready` to `consumed` atomically and receives the JSON as an attachment
+        (`Content-Disposition: attachment`, `Cache-Control: no-store`,
+        `X-Content-Type-Options: nosniff`, no ranges). Every concurrent or later
+        attempt — including a retry with the same `Idempotency-Key` — is `410`
+        and carries no bytes. Single-use means one admitted transfer, not
+        guaranteed receipt: a transfer interrupted after it was admitted is not
+        reopened; request a new export. An admitted transfer has 60 seconds.
+
+
+        Only the account's own active session redeems it; the session is checked
+        against the server's records, so a sign-out elsewhere is honoured. A
+        cookie session must send the CSRF header. A password change or account
+        deletion revokes every outstanding export. The ciphertext is fully
+        authenticated before any byte is sent; a failed check is
+        `500 EXPORT_INTEGRITY_FAILED` and the export is not consumed.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The export document (same allowlist as `GET /me/export`).
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: '`attachment; filename="gogo-export-YYYY-MM-DD.json"`'
+            Cache-Control:
+              schema: { type: string }
+              description: '`no-store, private, max-age=0`'
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401':
+          description: '`UNAUTHORIZED`, `INVALID_TOKEN` or `SESSION_REVOKED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403':
+          description: '`USER_ONLY` or `CSRF_FAILED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`EXPORT_NOT_READY` — still pending or generating.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '410':
+          description: >
+            `EXPORT_GONE` — already consumed, expired, revoked or failed. Request
+            a new export.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500':
+          description: '`EXPORT_INTEGRITY_FAILED` — not consumed; request a new export.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: >
+            `STORAGE_UNAVAILABLE` / `EXPORT_BUSY` (retryable), `EXPORT_UNAVAILABLE`
+            / `EXPORT_KEY_UNAVAILABLE` (not retryable). Nothing is consumed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /me/notifications:
     get:
@@ -4700,7 +4869,7 @@ paths:
               required: [channel, kind, enabled]
               properties:
                 channel: { type: string, enum: [push, email] }
-                kind: { $ref: '#/components/schemas/NotificationKind' }
+                kind: { $ref: '#/components/schemas/NotificationPreferenceKind' }
                 enabled: { type: boolean }
       responses:
         '200':
@@ -5365,13 +5534,17 @@ paths:
       tags: [cms]
       summary: 'Ops: subject-access export, made through support'
       description: >
-        The same payload as `/me/export`. The audit entry is the point: a staff
-        member reading somebody's data is an event, and it must be attributable
-        even though the bytes are identical to the self-service export.
+        **Changed in alpha.69 (GoGo-BE#256, ADR-0033): no payload is returned.**
+        Issues a secure export for the account holder to redeem from their own
+        signed-in session (`POST /me/exports/{id}/download`), and records its
+        own linked privacy request (`source: cms`, `in_progress` until the
+        export is available). Staff never receive or forward the data. The
+        account must be able to sign in (`409 SUBJECT_CANNOT_SIGN_IN`
+        otherwise — account recovery first).
 
 
-        Rate limited per actor — the payload is one person's whole history, and
-        a loop over the user list is a data export nobody authorized.
+        Rate limited per actor; one active export per account across every
+        entry point (`409 EXPORT_ALREADY_ACTIVE`).
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -5380,13 +5553,28 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/AdminActionReason' }
       responses:
-        '201':
-          description: The account's own data
+        '202':
+          description: Accepted for secure delivery — metadata only
           content:
             application/json:
-              schema: { type: object }
+              schema:
+                type: object
+                required: [privacyRequestId, export]
+                properties:
+                  privacyRequestId: { type: string, format: uuid }
+                  export: { $ref: '#/components/schemas/PrivacyExportAdminStatus' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`SUBJECT_CANNOT_SIGN_IN` or `EXPORT_ALREADY_ACTIVE`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: '`EXPORT_UNAVAILABLE` — secure export is not configured here.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/privacy-requests:
     post:
@@ -5529,14 +5717,21 @@ paths:
 
 
         Executing a **delete** requires `super_admin` — the same bar as the
-        direct user delete. An export returns the payload to the caller and
-        nowhere else; the ledger then records only delivery metadata.
-        Correction requests are worked by hand and cannot be executed.
+        direct user delete. Correction requests are worked by hand and cannot be
+        executed.
+
+
+        **Export (changed in alpha.69, GoGo-BE#256, ADR-0033): no payload is
+        returned.** Executing an export issues a secure export for the account
+        holder to redeem from their own session; the request moves to
+        `in_progress` and closes `completed` when the export becomes available.
+        `deliveredAt` is set only when the server observes the holder's download
+        complete. Staff never receive or forward the data.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '201':
-          description: Executed and closed as `completed`
+          description: Delete executed and closed as `completed`
           content:
             application/json:
               schema:
@@ -5544,9 +5739,16 @@ paths:
                 required: [request]
                 properties:
                   request: { $ref: '#/components/schemas/PrivacyRequest' }
-                  data:
-                    type: object
-                    description: Present for an export — the same payload `/me/export` returns.
+        '202':
+          description: Export accepted for secure delivery — metadata only
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request, export]
+                properties:
+                  request: { $ref: '#/components/schemas/PrivacyRequest' }
+                  export: { $ref: '#/components/schemas/PrivacyExportAdminStatus' }
         '403':
           description: '`ROLE_DENIED` — a delete request needs super_admin.'
           content:
@@ -5555,12 +5757,23 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: >
-            `ALREADY_CLOSED`, `NOT_EXECUTABLE` (correction), or
-            `IDENTITY_NOT_MATCHED` — match the request to an account first.
+            `ALREADY_CLOSED`, `NOT_EXECUTABLE` (correction),
+            `IDENTITY_NOT_MATCHED` — match the request to an account first —,
+            or for an export `SUBJECT_CANNOT_SIGN_IN` / `EXPORT_ALREADY_ACTIVE` /
+            `ALREADY_DELIVERED` (a manual delivery is already recorded; a secure
+            export is not issued over it).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: >
+            `EXPORT_UNAVAILABLE` — an export request cannot be executed here:
+            secure export is not configured in this environment (no wrapping
+            key or no private bucket). Not retryable; the request is unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/privacy-requests/{id}/close:
     post:
@@ -5608,9 +5821,16 @@ paths:
       summary: 'Ops: record how an export was handed over'
       description: >
         Metadata only, ever — never the bytes, never a signed URL. The record
-        outlives any artifact and must not be a way back to the data.
-        `secure_download` is the target method (BE-CMS-G13); the runbook
-        forbids raw exports over ordinary email.
+        outlives any artifact and must not be a way back to the data. The
+        runbook forbids raw exports over ordinary email.
+
+
+        `secure_download` cannot be asserted here (`400
+        SECURE_DELIVERY_NOT_ASSERTABLE`, GoGo-BE#256): the server records it
+        when the holder's download completes.
+        A request backed by a secure export accepts no manual delivery method
+        at all (`409 DELIVERY_SERVER_OWNED`): its delivery fields are the
+        server's.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -5628,9 +5848,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PrivacyRequest' }
+        '400':
+          description: '`SECURE_DELIVERY_NOT_ASSERTABLE`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: '`NOT_AN_EXPORT`'
+          description: '`NOT_AN_EXPORT` or `DELIVERY_SERVER_OWNED`'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -13109,6 +13334,55 @@ components:
         mixes "acknowledged" with "no_account_found" forces every query to know
         which values mean still-moving and which mean ended-and-how.
 
+    PrivacyExportStatus:
+      type: object
+      description: >
+        GoGo-BE#256, ADR-0033. Facts only. `ready` exports expire 24 hours after
+        `readyAt` (immutable). Terminal states: `consumed`, `expired`,
+        `revoked` (password change or account deletion), `failed`.
+      required: [id, status, initiatedBy, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, generating, ready, consumed, expired, revoked, failed]
+        initiatedBy:
+          type: string
+          enum: [self, support]
+        createdAt: { type: string, format: date-time }
+        readyAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        consumedAt: { type: string, format: date-time }
+        failureCode:
+          type: string
+          x-extensible-enum:
+            [
+              too_large,
+              generation_failed,
+              generation_timeout,
+              integrity_format,
+              integrity_unwrap,
+              integrity_decrypt,
+              object_missing,
+              object_oversize,
+            ]
+        revokeReason:
+          type: string
+          x-extensible-enum: [password_changed, account_deleted, epoch_mismatch]
+    PrivacyExportAdminStatus:
+      description: The CMS view — adds delivery facts, never data, keys or object locations.
+      allOf:
+        - $ref: '#/components/schemas/PrivacyExportStatus'
+        - type: object
+          properties:
+            transferCompletedAt: { type: string, format: date-time }
+            transferOutcome:
+              type: string
+              x-extensible-enum: [completed, aborted]
+            cleanedAt:
+              type: string
+              format: date-time
+              description: When storage confirmed the ciphertext was deleted.
     PrivacyRequest:
       type: object
       required: [id, type, source, status, subject, receivedAt, ackDueAt, fulfillmentDueAt, sla]
@@ -13137,7 +13411,18 @@ components:
         completedAt: { type: string, format: date-time }
         closedAt: { type: string, format: date-time }
         deliveryMethod: { type: string, enum: [in_app, secure_download, other] }
-        deliveredAt: { type: string, format: date-time }
+        deliveredAt:
+          type: string
+          format: date-time
+          description: >
+            For `secure_download`, the server-observed completion of the
+            holder's download (GoGo-BE#256) — never generation or notification.
+        secureExport:
+          description: >
+            GoGo-BE#256 — the latest secure export issued for this request
+            (detail view only).
+          allOf:
+            - $ref: '#/components/schemas/PrivacyExportAdminStatus'
         retentionAt:
           type: string
           format: date-time
@@ -13216,6 +13501,29 @@ components:
           description: When the switch was last stored; null while it is the default.
     NotificationKind:
       type: string
+      description: >
+        Declared extensible (alpha.69): a client treats a kind it does not know
+        as an opaque notification it cannot render specially — never as a
+        malformed item — so a new kind is not a breaking change on the inbox or
+        the preference list. `privacy_export_ready` (GoGo-BE#256) is in-app
+        only: its payload is `{ exportId, expiresAt }` and is never pushed.
+      x-extensible-enum:
+        [
+          invite,
+          preference_reminder,
+          plan_ready,
+          plan_changed,
+          date_reminder,
+          moderation_update,
+          privacy_export_ready,
+        ]
+    NotificationPreferenceKind:
+      type: string
+      description: >
+        The kinds a legacy client may opt in or out of on
+        `PUT /me/notification-preferences` — closed, exactly what the route
+        accepts. `privacy_export_ready` is not among them: it is in-app only and
+        has no channel to switch.
       enum:
         [invite, preference_reminder, plan_ready, plan_changed, date_reminder, moderation_update]
     Review:

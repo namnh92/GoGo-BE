@@ -16,6 +16,7 @@ import {
 } from '../../shared/privacy-ledger';
 import { decodeKeysetCursor, encodeKeysetCursor, toIso } from '../../shared/cursor';
 import { UserContentService } from '../../reviews/application/user-content.service';
+import { PrivacyExportService } from '../../privacy/application/privacy-export.service';
 
 type Row = typeof schema.privacyRequests.$inferSelect;
 
@@ -89,6 +90,7 @@ export class PrivacyRequestsService {
     @Inject(DB) private readonly db: Db,
     @Inject(APP_CONFIG) private readonly config: PrivacyLedgerConfig,
     private readonly userContent: UserContentService,
+    private readonly exports: PrivacyExportService,
   ) {
     this.sla = slaConfigFrom(config.PRIVACY_SLA_JSON);
   }
@@ -220,7 +222,9 @@ export class PrivacyRequestsService {
   }
 
   async detail(id: string) {
-    return toDto(await this.load(id));
+    const row = await this.load(id);
+    const secureExport = row.type === 'export' ? await this.exports.forRequest(id) : undefined;
+    return { ...toDto(row), ...(secureExport ? { secureExport } : {}) };
   }
 
   async acknowledge(input: { id: string; actorId: string }) {
@@ -275,15 +279,24 @@ export class PrivacyRequestsService {
 
     const now = new Date();
     if (row.type === 'export') {
-      const data = await this.userContent.exportForUser(row.userId, {
+      // GoGo-BE#256, ADR-0033 — the payload never comes back to the operator.
+      // Execution issues a secure export artifact; the request stays
+      // `in_progress` until the artifact is available, and only the subject's
+      // own session can redeem it. Staff never forward raw data.
+      const secureExport = await this.exports.createForRequest({
+        requestId: row.id,
+        subjectUserId: row.userId,
+        adminId: input.actorId,
+      });
+      await writeAudit(this.db, {
         actorType: 'admin',
         actorId: input.actorId,
-        reason: `privacy_request:${row.id}`,
+        action: 'privacy_request.export_issued',
+        resourceType: 'privacy_request',
+        resourceId: row.id,
+        diff: { exportId: secureExport.id },
       });
-      await this.closeExecuted(row, input.actorId, now, 'export_completed');
-      // The payload goes to the caller and nowhere else. The ledger keeps
-      // delivery *metadata* once the operator records it — never the bytes.
-      return { request: await this.detail(row.id), data };
+      return { request: await this.detail(row.id), export: secureExport };
     }
 
     await this.userContent.deleteForUser(row.userId, {
@@ -299,7 +312,7 @@ export class PrivacyRequestsService {
     row: Row,
     actorId: string,
     now: Date,
-    metric: 'export_completed' | 'delete_completed',
+    metric: 'delete_completed',
   ): Promise<void> {
     const due = row.extendedDueAt ?? row.fulfillmentDueAt;
     await this.db
@@ -378,24 +391,56 @@ export class PrivacyRequestsService {
     deliveryMethod: 'in_app' | 'secure_download' | 'other';
     actorId: string;
   }) {
-    const row = await this.load(input.id);
-    if (row.type !== 'export') {
-      throw AppError.conflict('NOT_AN_EXPORT', 'Only an export request has a delivery');
+    // GoGo-BE#256, ADR-0033 §6 — a secure download is observed by the server
+    // when the holder's transfer completes; an operator cannot assert one.
+    if (input.deliveryMethod === 'secure_download') {
+      throw AppError.badRequest(
+        'SECURE_DELIVERY_NOT_ASSERTABLE',
+        'A secure download is recorded by the server when the holder completes it',
+        [{ field: 'deliveryMethod', code: 'not_assertable', message: 'secure_download' }],
+      );
     }
-    const [updated] = await this.db
-      .update(schema.privacyRequests)
-      .set({ deliveryMethod: input.deliveryMethod, deliveredAt: sql`now()`, updatedAt: sql`now()` })
-      .where(eq(schema.privacyRequests.id, input.id))
-      .returning();
-    await writeAudit(this.db, {
-      actorType: 'admin',
-      actorId: input.actorId,
-      action: 'privacy_request.delivered',
-      resourceType: 'privacy_request',
-      resourceId: input.id,
-      diff: { deliveryMethod: input.deliveryMethod },
+    const updated = await this.db.transaction(async (tx) => {
+      // PR #677 A-F-06 / S-F-12 — decided under the request row lock, the same
+      // lock an export execution takes when it links its artifact to this row,
+      // so the check and the write cannot straddle a concurrent execution. The
+      // ownership is the ledger's own column, set when the artifact was
+      // issued: it outlives the artifact and its tombstone.
+      const [row] = await tx
+        .select()
+        .from(schema.privacyRequests)
+        .where(eq(schema.privacyRequests.id, input.id))
+        .for('update');
+      if (!row) throw AppError.notFound('PRIVACY_REQUEST_NOT_FOUND', 'No such request');
+      if (row.type !== 'export') {
+        throw AppError.conflict('NOT_AN_EXPORT', 'Only an export request has a delivery');
+      }
+      if (row.secureDelivery) {
+        throw AppError.conflict(
+          'DELIVERY_SERVER_OWNED',
+          'This request is delivered by secure export; the server records its delivery',
+        );
+      }
+      const [written] = await tx
+        .update(schema.privacyRequests)
+        .set({
+          deliveryMethod: input.deliveryMethod,
+          deliveredAt: sql`now()`,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(schema.privacyRequests.id, input.id))
+        .returning();
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: input.actorId,
+        action: 'privacy_request.delivered',
+        resourceType: 'privacy_request',
+        resourceId: input.id,
+        diff: { deliveryMethod: input.deliveryMethod },
+      });
+      return written!;
     });
-    return toDto(updated!);
+    return toDto(updated);
   }
 
   /**

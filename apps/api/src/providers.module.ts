@@ -27,6 +27,7 @@ import {
   NoopCachePurge,
   PLACE_PHOTO_DISPLAY,
   PLACE_PROVIDER,
+  PRIVACY_EXPORT_STORAGE,
   PUBLIC_STORAGE_PROVIDER,
   PrometheusQueryAdapter,
   PUSH_PROVIDER,
@@ -42,6 +43,7 @@ import {
   warnFakedProviders,
   resolveMetricsQueryConfig,
   resolveR2AccountId,
+  type StoragePort,
 } from '@gogo/providers';
 import {
   LogMetrics,
@@ -55,7 +57,7 @@ import {
   createLogger,
   type MetricsPort,
 } from '@gogo/observability';
-import { COST_USAGE_LEDGER, DB, DbUsageLedger } from '@gogo/modules';
+import { COST_USAGE_LEDGER, DB, DbUsageLedger, privacyExportStorageFor } from '@gogo/modules';
 import type { Db } from '@gogo/database';
 import { METRICS_BASE, METRICS_REGISTRY } from './metrics.tokens';
 import { APP_CONFIG, type AppConfig } from './config/env';
@@ -278,6 +280,16 @@ import { APP_CONFIG, type AppConfig } from './config/env';
       inject: [APP_CONFIG],
     },
     {
+      // GoGo-BE#256, PR #677 S-F-13: the private bucket as the privacy module
+      // sees it. The same adapter as STORAGE_PROVIDER when R2 is real, the same
+      // fake under test, and null everywhere else — a fake that confirms a
+      // deletion it did not perform would strand the real object in R2.
+      provide: PRIVACY_EXPORT_STORAGE,
+      useFactory: (config: AppConfig, general: StoragePort) =>
+        privacyExportStorageFor(config, general),
+      inject: [APP_CONFIG, STORAGE_PROVIDER],
+    },
+    {
       // ADR-0022: the public bucket, under its own credential. The fake in
       // every environment without one, so the avatar pipeline is exercisable
       // end to end; `AVATAR_STORAGE_CONFIGURED` is what tells the contract
@@ -333,6 +345,7 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     TRAVEL_TIME_PROVIDER,
     PUSH_PROVIDER,
     STORAGE_PROVIDER,
+    PRIVACY_EXPORT_STORAGE,
     PUBLIC_STORAGE_PROVIDER,
     CACHE_PURGE,
     ACQUISITION_LINK_PROVIDER,

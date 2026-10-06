@@ -4,6 +4,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
 import { authenticator } from 'otplib';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { Writable } from 'node:stream';
 import { Pool } from 'pg';
@@ -129,6 +130,8 @@ beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
   process.env.LOG_LEVEL = 'warn';
+  // GoGo-BE#256 — export execution issues a secure artifact, which needs a key.
+  process.env.EXPORT_WRAPPING_KEY_V1 = randomBytes(32).toString('base64');
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
   // The container is stopped in afterAll; an idle client erroring as the
@@ -1604,17 +1607,21 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
     const ops = await createAdmin('g7-exporter@gogo.id.vn', 'ops_admin');
     const user = await createUser('g7-export@example.com');
 
+    // GoGo-BE#256: the operator receives metadata only; the bytes are a secure
+    // export the subject redeems. The read is still attributed to the staff
+    // member when the worker builds it (privacy-export.int.spec.ts).
     const res = await post(ops.token, `/v1/cms/users/${user.id}/export`);
-    expect(res.statusCode).toBe(201);
-    expect(res.json().profile.email).toBe('g7-export@example.com');
+    expect(res.statusCode).toBe(202);
+    expect(res.body).not.toContain('g7-export@example.com');
+    expect(res.json().export).toMatchObject({ status: 'pending', initiatedBy: 'support' });
 
     const [entry] = await db
       .select()
       .from(schema.auditLogs)
       .where(
         and(
-          eq(schema.auditLogs.resourceId, user.id),
-          eq(schema.auditLogs.action, 'user.data_exported'),
+          eq(schema.auditLogs.resourceId, res.json().export.id),
+          eq(schema.auditLogs.action, 'privacy_export.requested'),
         ),
       )
       .limit(1);
@@ -1959,11 +1966,14 @@ describe('privacy-request ledger (BE-CMS-G12 #255, ADR-0011)', () => {
     const detail = await get(boss.token, `/v1/cms/users/${user.id}`);
     expect(detail.json().openPrivacyRequestCount).toBe(2);
 
-    // Execute the export: returns the payload, closes ONLY that request.
+    // Execute the export: issues a secure artifact for THIS request only
+    // (GoGo-BE#256). It stays in_progress until the artifact is available, and
+    // the payload never comes back to the operator.
     const executed = await post(boss.token, `/v1/cms/privacy-requests/${exportReq.id}/execute`);
-    expect(executed.statusCode).toBe(201);
-    expect(executed.json().request).toMatchObject({ status: 'closed', outcome: 'completed' });
-    expect(executed.json().data.profile.email).toBe('g12-linked@example.com');
+    expect(executed.statusCode).toBe(202);
+    expect(executed.json().request).toMatchObject({ status: 'in_progress' });
+    expect(executed.json()).not.toHaveProperty('data');
+    expect(executed.body).not.toContain('g12-linked@example.com');
 
     const stillOpen = await get(boss.token, `/v1/cms/privacy-requests/${deleteReq.id}`);
     expect(stillOpen.json().status).toBe('open');

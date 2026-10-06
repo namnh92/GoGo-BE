@@ -5,12 +5,18 @@ import { AppError } from '../../shared/app-error';
 import { writeOutbox } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import { APP_CONFIG, type MediaConfig, type PrivacyLedgerConfig } from '../../shared/config';
-import { publicMediaUrl } from '../../shared/media-url';
 import { recordSelfServiceRequest, slaConfigFrom } from '../../shared/privacy-ledger';
-import { pgArray } from '../../search/infrastructure/search.repository';
 import type { Actor } from '../../identity/domain/actor';
 import { writeAudit } from '../../shared/audit';
 import { MediaCleanupService } from '../../profile/application/media-cleanup.service';
+import { PRIVACY_EXPORT_STORAGE, type StoragePort } from '@gogo/providers';
+import { cleanupDueArtifacts } from '../../privacy/application/export-artifacts';
+import {
+  collectUserExport,
+  readNotificationSettings,
+  type ExportActor,
+  type NotificationSettingsView,
+} from './user-export';
 import { pushAllowed } from '../../notifications/application/push-preference';
 import { activeDataset } from '../../administrative/application/unit-lookup';
 import {
@@ -75,11 +81,7 @@ async function mirrorPushChoice(tx: Tx, userId: string, enabled: boolean): Promi
     });
 }
 
-export type NotificationSettingsView = {
-  pushEnabled: boolean;
-  source: 'default' | 'explicit' | 'migrated' | 'legacy';
-  updatedAt: string | null;
-};
+export type { NotificationSettingsView };
 
 export function requireUser(actor: Actor): string {
   if (actor.type !== 'user') {
@@ -95,6 +97,13 @@ export class UserContentService {
     @Inject(DB) private readonly db: Db,
     @Inject(APP_CONFIG) private readonly config: PrivacyLedgerConfig & MediaConfig,
     private readonly cleanup: MediaCleanupService,
+    /**
+     * PR #677 S-F-13 — the fail-closed private bucket: `null` when this process
+     * has no real one and is not under test. Never the general fake: a fake
+     * delete returns, and `cleanupDueArtifacts` would then record the export
+     * as gone while its bytes stayed in R2.
+     */
+    @Inject(PRIVACY_EXPORT_STORAGE) private readonly privateStorage: StoragePort | null,
   ) {}
 
   // --- saved (FR-USER-001) --------------------------------------------------
@@ -331,112 +340,10 @@ export class UserContentService {
    * user exported their own data when a staff member did is the kind of
    * untruth an audit log exists to prevent.
    */
-  async exportForUser(
-    userId: string,
-    by: { actorType: 'user' | 'admin'; actorId: string; reason?: string },
-  ) {
-    const [user] = await this.db.select().from(schema.users).where(eq(schema.users.id, userId));
-    // ADR-0022: the profile's optional fields, resolved the way GET /me does.
-    const [homeArea] = user?.homeAreaKey
-      ? await this.db
-          .select({
-            key: schema.serviceAreas.key,
-            name: schema.serviceAreas.name,
-            city: schema.serviceAreas.city,
-          })
-          .from(schema.serviceAreas)
-          .where(eq(schema.serviceAreas.key, user.homeAreaKey))
-          .limit(1)
-      : [];
-    const [interests] = await this.db
-      .select({ selections: schema.userProfilePreferences.selections })
-      .from(schema.userProfilePreferences)
-      .where(eq(schema.userProfilePreferences.userId, userId))
-      .limit(1);
-    const memberships = await this.db
-      .select()
-      .from(schema.roomMembers)
-      .where(eq(schema.roomMembers.userId, userId));
-    const memberIds = memberships.map((m) => m.id);
-    const preferences =
-      memberIds.length > 0
-        ? await this.db
-            .select()
-            .from(schema.preferenceSelections)
-            .where(
-              sql`${schema.preferenceSelections.memberId} = any((${pgArray(memberIds)})::uuid[])`,
-            )
-        : [];
-    const votes =
-      memberIds.length > 0
-        ? await this.db
-            .select()
-            .from(schema.votes)
-            .where(sql`${schema.votes.memberId} = any((${pgArray(memberIds)})::uuid[])`)
-        : [];
-    const saved = await this.db
-      .select()
-      .from(schema.savedItems)
-      .where(eq(schema.savedItems.userId, userId));
-    const reviews = await this.db
-      .select()
-      .from(schema.reviews)
-      .where(eq(schema.reviews.userId, userId));
-    // ADR-0026 — the reactions this person gave, never anyone else's.
-    const reviewReactions = await this.db
-      .select()
-      .from(schema.reviewReactions)
-      .where(eq(schema.reviewReactions.userId, userId));
-
-    const notificationSettings = await this.notificationSettingsFor(userId);
-
-    await writeAudit(this.db, {
-      actorType: by.actorType,
-      actorId: by.actorId,
-      action: 'user.data_exported',
-      resourceType: 'user',
-      resourceId: userId,
-      ...(by.reason ? { diff: { reason: by.reason } } : {}),
+  async exportForUser(userId: string, by: ExportActor) {
+    return collectUserExport(this.db, userId, by, {
+      mediaPublicBaseUrl: this.config.MEDIA_PUBLIC_BASE_URL,
     });
-
-    return {
-      exportedAt: new Date().toISOString(),
-      // An explicit allowlist, never a spread of the row: the row also holds
-      // the password hash, and an export is the one document a person forwards.
-      profile: {
-        displayName: user?.displayName,
-        email: user?.email,
-        locale: user?.locale,
-        createdAt: user?.createdAt.toISOString(),
-        avatarUrl: publicMediaUrl(this.config.MEDIA_PUBLIC_BASE_URL, user?.avatarKey),
-        homeArea: homeArea ?? null,
-        homeAdministrativeArea: user?.homeAdministrativeArea ?? null,
-        interests: { mood: interests?.selections?.mood ?? [] },
-        usualBudget:
-          user?.usualBudgetPerPerson === null || user?.usualBudgetPerPerson === undefined
-            ? null
-            : { perPerson: user.usualBudgetPerPerson, currency: user.usualBudgetCurrency },
-        dateOfBirth: user?.dateOfBirth ?? null,
-      },
-      memberships: memberships.map((m) => ({
-        roomId: m.roomId,
-        role: m.role,
-        joinedAt: m.joinedAt.toISOString(),
-      })),
-      preferences: preferences.map((p) => ({ roomId: p.roomId, selections: p.selections })),
-      votes: votes.map((v) => ({ roomId: v.roomId, placeId: v.targetPlaceId, value: v.value })),
-      saved: saved.map((s) => ({ type: s.targetType, id: s.targetId })),
-      reviews: reviews.map((r) => ({ rating: r.rating, text: r.text, status: r.status })),
-      notificationSettings: {
-        pushEnabled: notificationSettings.pushEnabled,
-        source: notificationSettings.source,
-      },
-      reviewReactions: reviewReactions.map((r) => ({
-        reviewId: r.reviewId,
-        type: r.type,
-        createdAt: r.createdAt.toISOString(),
-      })),
-    };
   }
 
   /**
@@ -553,6 +460,25 @@ export class UserContentService {
     // After the commit, never inside it: a provider call under a row lock is
     // the rule this codebase does not break. The worker retries what fails.
     await this.cleanup.attemptNow(enqueued);
+    // GoGo-BE#256 — the status change above bumped the export epoch, and the
+    // trigger revoked every live export in the same transaction. Their bytes
+    // go now when this process has the bucket; otherwise the cleanup stays due
+    // and the worker sweep deletes them (S-F-13: never "confirmed" by a fake).
+    if (this.privateStorage) {
+      const revoked = await this.db
+        .select({ id: schema.privacyExportArtifacts.id })
+        .from(schema.privacyExportArtifacts)
+        .where(
+          and(
+            eq(schema.privacyExportArtifacts.subjectUserId, userId),
+            isNull(schema.privacyExportArtifacts.cleanedAt),
+            sql`${schema.privacyExportArtifacts.cleanupDueAt} is not null`,
+          ),
+        );
+      await cleanupDueArtifacts(this.db, this.privateStorage, {
+        ids: revoked.map((r) => r.id),
+      }).catch(() => undefined);
+    }
     return { deleted: true };
   }
 
@@ -582,29 +508,8 @@ export class UserContentService {
     return this.notificationSettingsFor(userId);
   }
 
-  /**
-   * No row means never chosen: on, unless an older client left a push opt-out
-   * behind — the rule migration 0064 backfilled with, reported as `legacy` so
-   * the client can tell a default from a choice it has not seen yet.
-   */
-  private async notificationSettingsFor(userId: string): Promise<NotificationSettingsView> {
-    const [row] = await this.db
-      .select()
-      .from(schema.notificationSettings)
-      .where(eq(schema.notificationSettings.userId, userId))
-      .limit(1);
-    if (row) {
-      return {
-        pushEnabled: row.pushEnabled,
-        source: row.source,
-        updatedAt: row.updatedAt.toISOString(),
-      };
-    }
-    const { rows } = await this.db.execute(
-      sql`select ${pushAllowed(sql`${userId}::uuid`)} as allowed`,
-    );
-    const allowed = (rows[0] as { allowed: boolean }).allowed;
-    return { pushEnabled: allowed, source: allowed ? 'default' : 'legacy', updatedAt: null };
+  private notificationSettingsFor(userId: string): Promise<NotificationSettingsView> {
+    return readNotificationSettings(this.db, userId);
   }
 
   // --- legacy per-kind preferences (FR-USER-004, older clients) -------------

@@ -17,6 +17,7 @@ import { contactProvenanceSchema } from '../../shared/place-contact-schema';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import {
   idempotencyScope,
+  IdempotencyReplayVersion,
   ManualIdempotency,
   NoIdempotencyReplay,
 } from '../../shared/idempotency.interceptor';
@@ -92,7 +93,7 @@ import { ExperimentsAdminService } from '../application/experiments-admin.servic
 import { RankingEvaluationService } from '../application/ranking-evaluation.service';
 import { SearchAnalyticsService } from '../application/search-analytics.service';
 import { AllowWhilePasswordChangePending, RequireRole, type AdminActor } from './admin.guard';
-import { Inject, Req, Res } from '@nestjs/common';
+import { HttpCode, Inject, Req, Res } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { AppError } from '../../shared/app-error';
@@ -519,7 +520,11 @@ export class CmsUsersController {
    * over the user list is a data export nobody authorized.
    */
   @RateLimit({ action: 'cms.user_export', limit: 10, windowSeconds: 300, keyBy: 'actor' })
+  // PR #677 A-F-09: this route once answered with the raw export, and the
+  // interceptor stored it for replay. Only a v1 metadata record is replayed.
+  @IdempotencyReplayVersion(1)
   @Post('users/:id/export')
+  @HttpCode(202)
   exportUser(
     @CurrentActor() actor: Actor,
     @Param('id', Uuid) id: string,
@@ -619,6 +624,17 @@ const retentionHoldSchema = z.object({
 });
 
 /**
+ * PR #677 S-F-18 — a stored pre-alpha.69 answer of `/execute` is safe to replay
+ * only when it is the deletion shape: `{ request }` and nothing else. Anything
+ * carrying `data` (the export payload) or any other key is purged.
+ */
+export function adoptLegacyExecuteReplay(stored: unknown): unknown | null {
+  if (typeof stored !== 'object' || stored === null || Array.isArray(stored)) return null;
+  const keys = Object.keys(stored as Record<string, unknown>);
+  return keys.length === 1 && keys[0] === 'request' ? stored : null;
+}
+
+/**
  * BE-CMS-G12 (#255) — the privacy-request compliance ledger. ADR-0011.
  *
  * `ops_admin` and above for the workflow; `super_admin` for the two actions
@@ -659,9 +675,21 @@ export class PrivacyRequestsController {
    * `ops_admin` executing a delete request gets 403 from there.
    */
   @RateLimit({ action: 'cms.privacy_execute', limit: 10, windowSeconds: 300, keyBy: 'actor' })
+  // PR #677 A-F-09 / S-F-18: before alpha.69 this route answered
+  // `{ request, data }` for an export — the raw payload, purged, never
+  // replayed — and `{ request }` for a deletion — metadata, still a correct
+  // answer to the retry of a deletion that already happened, adopted as v1.
+  @IdempotencyReplayVersion(1, { adoptLegacy: adoptLegacyExecuteReplay })
   @Post(':id/execute')
-  execute(@CurrentActor() actor: AdminActor, @Param('id', Uuid) id: string) {
-    return this.requests.execute({ id, actorId: actor.id, actorRole: actor.role });
+  async execute(
+    @CurrentActor() actor: AdminActor,
+    @Param('id', Uuid) id: string,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    const result = await this.requests.execute({ id, actorId: actor.id, actorRole: actor.role });
+    // GoGo-BE#256 — an export is accepted for secure delivery, not completed.
+    if ('export' in result) void reply.status(202);
+    return result;
   }
 
   @Post(':id/close')

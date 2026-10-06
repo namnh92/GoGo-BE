@@ -105,6 +105,42 @@ describe('R2 server-side verbs (ADR-0022)', () => {
     await expect(signed.getObject('k', { maxBytes: 5 })).rejects.toThrow(/exceeds 5 bytes/);
   });
 
+  /*
+   * GoGo-BE#256 — a missing or understated content-length must not let the
+   * reader buffer the whole object before the cap is checked. The stream below
+   * would produce 100 chunks; the reader has to stop shortly after the cap.
+   */
+  it('GET stops reading once the cap is passed when the length is absent', async () => {
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        if (pulled > 100) controller.close();
+        else controller.enqueue(new Uint8Array(4));
+      },
+    });
+    const fetcher = (async () => new Response(stream, { status: 200 })) as typeof fetch;
+    const signed = new R2StorageAdapter({ ...adapter['config'], fetch: fetcher });
+    await expect(signed.getObject('k', { maxBytes: 10 })).rejects.toThrow(/exceeds 10 bytes/);
+    expect(pulled).toBeLessThan(10);
+  });
+
+  it('GET refuses a body longer than an understated content-length allows', async () => {
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        if (pulled > 100) controller.close();
+        else controller.enqueue(new Uint8Array(4));
+      },
+    });
+    const fetcher = (async () =>
+      new Response(stream, { status: 200, headers: { 'content-length': '4' } })) as typeof fetch;
+    const signed = new R2StorageAdapter({ ...adapter['config'], fetch: fetcher });
+    await expect(signed.getObject('k', { maxBytes: 10 })).rejects.toThrow(/exceeds 10 bytes/);
+    expect(pulled).toBeLessThan(10);
+  });
+
   it('GET returns the bytes and the content type under the cap', async () => {
     const { fetcher } = stubFetch({
       status: 200,

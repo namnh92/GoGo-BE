@@ -28,6 +28,7 @@ import {
   writeAudit,
   NEON_POSTGRES_OPERATIONS,
   MediaCleanupService,
+  PrivacyExportProcessor,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -51,6 +52,7 @@ import {
 import { startPeriodic } from './periodic';
 import { WorkerLease } from '@gogo/database';
 import { mediaCleanupFromEnv } from './media-cleanup';
+import { privacyExportFromEnv } from './privacy-export';
 import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
 import {
   captureWorkerError,
@@ -128,6 +130,13 @@ const PRIVACY_INTERVAL_MS = 6 * 60 * 60 * 1000;
  */
 const mediaCleanupPollMs = () => pollIntervalMs('MEDIA_CLEANUP_POLL_MS', 60_000);
 /**
+ * GoGo-BE#256, ADR-0033 — secure export generation is polled (the request is
+ * a durable row, not a message); the sweep that expires and deletes artifacts
+ * runs every minute, so a healthy deletion lands within five.
+ */
+const privacyExportPollMs = () => pollIntervalMs('PRIVACY_EXPORT_POLL_MS', 15_000);
+const privacyExportSweepMs = () => pollIntervalMs('PRIVACY_EXPORT_SWEEP_MS', 60_000);
+/**
  * How often this process says it is alive. Its own job, on its own cadence:
  * tying it to a business tick would make "worker alive" mean "outbox tick
  * ran", and those stop being the same thing the day the outbox tick hangs.
@@ -167,6 +176,8 @@ async function bootstrap(): Promise<void> {
   const INGEST_POLL_MS = ingestPollMs();
   const PLACE_REFRESH_POLL_MS = placeRefreshPollMs();
   const MEDIA_CLEANUP_POLL_MS = mediaCleanupPollMs();
+  const PRIVACY_EXPORT_POLL_MS = privacyExportPollMs();
+  const PRIVACY_EXPORT_SWEEP_MS = privacyExportSweepMs();
   const logger = createLogger({
     level: process.env.LOG_LEVEL ?? 'info',
     name: 'gogo-worker',
@@ -280,6 +291,34 @@ async function bootstrap(): Promise<void> {
     logger.warn(
       { missing: mediaCleanupWiring.missing },
       'media cleanup NOT registered — queue rows wait for a worker with storage credentials',
+    );
+  }
+
+  // GoGo-BE#256: secure exports. The sweep needs the real private bucket and
+  // nothing else; generation also needs a wrapping key (PR #677 S-F-11). See
+  // privacy-export.ts for why a fake bucket is refused.
+  const privacyExportWiring = privacyExportFromEnv(process.env);
+  const privacyExports = privacyExportWiring.storage
+    ? new PrivacyExportProcessor(db, privacyExportWiring.storage, privacyExportWiring.keyring, {
+        workerId: WORKER_ID,
+        mediaPublicBaseUrl: process.env.MEDIA_PUBLIC_BASE_URL ?? '',
+        retentionMonths: Number(process.env.PRIVACY_RETENTION_MONTHS ?? 12),
+      })
+    : null;
+  if (!privacyExports) {
+    logger.warn(
+      { missing: privacyExportWiring.missing.storage },
+      'secure privacy export NOT registered — no private bucket; artifacts and cleanup wait for a configured worker',
+    );
+  } else if (privacyExportWiring.keyring) {
+    logger.info(
+      { activeKeyVersion: privacyExportWiring.keyring.activeVersion },
+      'secure privacy export registered (generation + sweep)',
+    );
+  } else {
+    logger.warn(
+      { missing: privacyExportWiring.missing.keyring },
+      'secure privacy export sweep registered WITHOUT generation — no wrapping key; pending artifacts wait for a keyed worker',
     );
   }
 
@@ -593,6 +632,46 @@ async function bootstrap(): Promise<void> {
                   logger.warn(
                     { deadLettered: counts.deadLettered },
                     'media cleanup rows dead-lettered — an object needs a person',
+                  );
+                }
+              },
+            },
+          ]
+        : []),
+      ...(privacyExports?.canGenerate
+        ? [
+            {
+              name: 'gogo:worker:privacy-export',
+              schedule: { everyMs: PRIVACY_EXPORT_POLL_MS },
+              run: async ({ signal }: { signal: AbortSignal }) => {
+                const report = await privacyExports.runDue(2, signal);
+                const total = Object.values(report).reduce((a, b) => a + b, 0);
+                if (total > 0) logger.info({ report }, 'privacy export generation tick');
+              },
+            },
+          ]
+        : []),
+      ...(privacyExports
+        ? [
+            {
+              name: 'gogo:worker:privacy-export-sweep',
+              schedule: { everyMs: PRIVACY_EXPORT_SWEEP_MS },
+              run: async () => {
+                const report = await privacyExports.sweep();
+                registry.gauge('privacy_export_cleanup_pending', report.cleanupPending);
+                registry.gauge('privacy_export_cleanup_dead_lettered', report.cleanupDeadLettered);
+                registry.gauge('privacy_export_cleanup_overdue', report.cleanupOverdue);
+                if (report.expired > 0 || report.timedOut > 0 || report.cleanup.attempted > 0) {
+                  logger.info({ report }, 'privacy export sweep');
+                }
+                if (report.cleanupDeadLettered > 0 || report.cleanupOverdue > 0) {
+                  // Identifiers are never logged here; the counts are the alert.
+                  logger.warn(
+                    {
+                      deadLettered: report.cleanupDeadLettered,
+                      overdue: report.cleanupOverdue,
+                    },
+                    'privacy export deletion overdue or dead-lettered — PRIVACY_EXPORT_CLEANUP_STUCK',
                   );
                 }
               },

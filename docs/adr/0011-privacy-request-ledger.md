@@ -127,9 +127,14 @@ Production values must be confirmed against the law in force — Luật
 - Retention is a job (`PrivacyJobs`, DB-010 pattern), idempotent, reporting
   `privacyRequestsPurged` and `privacyHoldReviewsOverdue`, never logging row
   contents.
-- `delivery_method = secure_download` exists in the enum from v1 but has no
-  artifact lifecycle behind it yet — GoGo-BE#256. Until then the runbook
-  forbids raw exports over ordinary email.
+- `delivery_method = secure_download` is backed by an artifact lifecycle since
+  GoGo-BE#256 (**ADR-0033**, amendment 2026-10-05): export execution no longer
+  returns the payload to the operator; it issues an encrypted, single-use,
+  auto-deleting artifact the subject redeems from their own session. The
+  request stays `in_progress` until the artifact is available, `delivered_at`
+  is server-observed, and `/delivered` cannot assert `secure_download`. The
+  ledger itself never holds an object key, wrapped key or URL. The runbook
+  still forbids raw exports over ordinary email.
 - Two new environment knobs: `PRIVACY_SLA_JSON`, `PRIVACY_RETENTION_MONTHS`.
 
 ## Rollback
