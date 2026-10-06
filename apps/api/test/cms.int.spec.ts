@@ -17,6 +17,7 @@ import {
   audiencePredicate,
   CloudflareAccessService,
   respectsPushPreference,
+  SessionRevocationService,
 } from '@gogo/modules';
 import { generateKeyPairSync, sign as signBytes } from 'node:crypto';
 
@@ -1176,6 +1177,73 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
         expect(res.json().code).toBe('ADMIN_EMAIL_TAKEN');
       } finally {
         client.release();
+      }
+    });
+
+    // Round 2 F-05 (Sol) / F-04 (Astra): two *different* superseded tokens of
+    // one family replayed together. With a shared admin lock each request held
+    // its own session row and both tried to revoke the family — a deadlock
+    // and a 500. Now every refresh of the account serialises on the admin row.
+    it('refuses two different stale tokens replayed together without a deadlock, and revokes the family', async () => {
+      const email = 'stale-pair@gogo.local';
+      await createAdmin(email, 'editor');
+      const before = await sessionIds(email);
+      const t0 = (await login(email, ADMIN_PASSWORD)).json().refreshToken as string;
+      const r1 = await refresh(t0);
+      expect(r1.statusCode).toBe(201);
+      const t1 = r1.json().refreshToken as string;
+      const r2 = await refresh(t1);
+      expect(r2.statusCode).toBe(201);
+
+      const results = await Promise.all([refresh(t0), refresh(t1)]);
+      expect(results.map((r) => r.statusCode)).toEqual([401, 401]);
+      expect(results.map((r) => r.json().code)).toEqual(['SESSION_REVOKED', 'SESSION_REVOKED']);
+
+      const family = await sessionsAfter(email, before);
+      expect(family).toHaveLength(3);
+      for (const row of family) expect(row.revokedAt).not.toBeNull();
+    });
+
+    /*
+     * Round 2 F-04 (Sol): the denylist is Redis, and it must be written after
+     * the transaction commits, never while it holds locks. The spy looks at the
+     * rows through a *second* connection at the moment of the call: committed
+     * rows are visible there, rows inside an open transaction are not.
+     */
+    it('writes the denylist only after the revoking transaction has committed', async () => {
+      const revocations = app.get(SessionRevocationService);
+      const original = revocations.revokeMany.bind(revocations);
+      const seen: { ids: string[]; committed: boolean }[] = [];
+      const spy = vi.spyOn(revocations, 'revokeMany').mockImplementation(async (ids) => {
+        if (ids.length > 0) {
+          const { rows } = await pool.query(
+            `select count(*)::int as n from admin_sessions where id = any($1::uuid[]) and revoked_at is not null`,
+            [ids],
+          );
+          seen.push({ ids, committed: (rows[0] as { n: number }).n === ids.length });
+        }
+        return original(ids);
+      });
+      try {
+        // Refresh reuse: the family revoke happens inside the refresh transaction.
+        const email = 'denylist-after-commit@gogo.local';
+        const target = await createAdmin(email, 'editor');
+        const t0 = (await login(email, ADMIN_PASSWORD)).json().refreshToken as string;
+        expect((await refresh(t0)).statusCode).toBe(201);
+        expect((await refresh(t0)).statusCode).toBe(401);
+
+        // Email change: the account's sessions are revoked inside its transaction.
+        const boss = await superAdmin();
+        const res = await patch(boss.token, target.id, {
+          email: 'denylist-moved@gogo.local',
+          reason: 'denylist ordering check',
+        });
+        expect(res.statusCode).toBe(200);
+
+        expect(seen.length).toBeGreaterThanOrEqual(2);
+        for (const call of seen) expect(call.committed).toBe(true);
+      } finally {
+        spy.mockRestore();
       }
     });
 

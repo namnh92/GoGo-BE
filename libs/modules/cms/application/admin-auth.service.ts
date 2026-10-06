@@ -365,22 +365,25 @@ export class AdminAuthService {
       .limit(1);
     if (!found) throw AppError.unauthorized('INVALID_REFRESH_TOKEN', 'Session is not valid');
 
-    // #681 (review F-08, round 1 F-02). Lock order is the admin row, then the
-    // session row — the order an email change uses — so the two never
-    // deadlock, and a change that revokes the account's sessions cannot
-    // interleave with a rotation. The session row is locked for update, so two
-    // requests presenting the same token serialise: the second sees it
-    // superseded and revokes the family.
+    // #681 (review F-08; round 1 F-02; round 2 F-05). The admin row is locked
+    // for update first, then the session row — the order an email change uses
+    // — so neither deadlocks the other, and a change that revokes the
+    // account's sessions cannot interleave with a rotation. The admin lock is
+    // exclusive on purpose: every refresh of one account serialises on it, so
+    // two different stale tokens of one family replayed together cannot each
+    // hold a session row while both try to revoke the whole family.
     //
     // Refusals that revoke return instead of throwing, so the revoke commits
-    // with the transaction; the error is thrown after it.
+    // with the transaction; the error is thrown after it. The denylist write
+    // (Redis) happens after the commit, never inside it: a transaction must
+    // not wait on a provider while it holds locks.
     const outcome = await this.db.transaction(async (tx) => {
       const [admin] = await tx
         .select()
         .from(schema.adminUsers)
         .where(eq(schema.adminUsers.id, found.adminId))
         .limit(1)
-        .for('share');
+        .for('update');
       const [session] = await tx
         .select()
         .from(schema.adminSessions)
@@ -394,8 +397,10 @@ export class AdminAuthService {
         return { error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid') };
       }
       if (session.supersededAt) {
-        await this.revokeFamily(session.familyId, 'refresh_token_reuse', tx);
-        return { error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid') };
+        return {
+          revoked: await this.revokeFamilyRows(tx, session.familyId, 'refresh_token_reuse'),
+          error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid'),
+        };
       }
       if (session.expiresAt.getTime() <= Date.now()) {
         return { error: AppError.unauthorized('SESSION_EXPIRED', 'Session is not valid') };
@@ -406,14 +411,18 @@ export class AdminAuthService {
       const authMethod: AdminAuthMethod = session.authMethod ?? 'password';
       if (!this.config.CMS_PASSWORD_LOGIN_ENABLED && authMethod !== 'access_sso') {
         this.logger.warn('cms.refresh refused: password-born session after the door closed');
-        await this.revokeFamily(session.familyId, 'password_login_disabled', tx);
-        return { error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid') };
+        return {
+          revoked: await this.revokeFamilyRows(tx, session.familyId, 'password_login_disabled'),
+          error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid'),
+        };
       }
       // The admin row is re-read rather than trusted from the token: a
       // suspended or demoted admin must not be able to refresh their way onward.
       if (!admin || admin.status !== 'active') {
-        await this.revokeFamily(session.familyId, 'admin_inactive', tx);
-        return { error: AppError.forbidden('ADMIN_ONLY', 'Staff account is not active') };
+        return {
+          revoked: await this.revokeFamilyRows(tx, session.familyId, 'admin_inactive'),
+          error: AppError.forbidden('ADMIN_ONLY', 'Staff account is not active'),
+        };
       }
 
       await tx
@@ -431,7 +440,10 @@ export class AdminAuthService {
       );
       return { next, admin };
     });
-    if ('error' in outcome) throw outcome.error;
+    if ('error' in outcome) {
+      if (outcome.revoked) await this.revocations.revokeMany(outcome.revoked);
+      throw outcome.error;
+    }
     const { next, admin } = outcome;
     return {
       ...next,
@@ -497,11 +509,25 @@ export class AdminAuthService {
     };
   }
 
-  private async revokeFamily(
+  private async revokeFamily(familyId: string, reason: string): Promise<void> {
+    const ids = await this.revokeFamilyRows(this.db, familyId, reason);
+    // Every access token minted from the family dies now, not at expiry (#129).
+    await this.revocations.revokeMany(ids);
+  }
+
+  /**
+   * The database half of a family revoke, for callers inside a transaction.
+   * Returns the ids so the caller can write the denylist **after** the commit:
+   * the denylist is Redis, and a transaction holding row locks must never wait
+   * on a provider (#682 review F-04). A denylist write that fails after the
+   * commit leaves the rows revoked — the refresh path is closed either way —
+   * and only the outstanding access tokens live on to their expiry.
+   */
+  private async revokeFamilyRows(
+    db: Pick<Db, 'update'>,
     familyId: string,
     reason: string,
-    db: Pick<Db, 'update'> = this.db,
-  ): Promise<void> {
+  ): Promise<string[]> {
     const rows = await db
       .update(schema.adminSessions)
       .set({ revokedAt: sql`now()`, revokeReason: reason })
@@ -509,8 +535,7 @@ export class AdminAuthService {
         and(eq(schema.adminSessions.familyId, familyId), isNull(schema.adminSessions.revokedAt)),
       )
       .returning({ id: schema.adminSessions.id });
-    // Every access token minted from the family dies now, not at expiry (#129).
-    await this.revocations.revokeMany(rows.map((r) => r.id));
+    return rows.map((r) => r.id);
   }
 
   /**
@@ -659,9 +684,22 @@ export class AdminAuthService {
   private async revokeAllSessions(
     adminId: string,
     reason: string,
-    opts: { tx?: DbLike; keepSessionId?: string } = {},
+    opts: { keepSessionId?: string } = {},
   ): Promise<void> {
-    const rows = await (opts.tx ?? this.db)
+    const ids = await this.revokeSessionRows(this.db, adminId, reason, opts);
+    // The denylist is what stops an access token already in someone's hands;
+    // revoking the row only closes the refresh path.
+    await this.revocations.revokeMany(ids);
+  }
+
+  /** As `revokeFamilyRows`: rows now, denylist by the caller after commit. */
+  private async revokeSessionRows(
+    db: Pick<Db, 'update'>,
+    adminId: string,
+    reason: string,
+    opts: { keepSessionId?: string } = {},
+  ): Promise<string[]> {
+    const rows = await db
       .update(schema.adminSessions)
       .set({ revokedAt: sql`now()`, revokeReason: reason })
       .where(
@@ -674,9 +712,7 @@ export class AdminAuthService {
         ),
       )
       .returning({ id: schema.adminSessions.id });
-    // The denylist is what stops an access token already in someone's hands;
-    // revoking the row only closes the refresh path.
-    await this.revocations.revokeMany(rows.map((r) => r.id));
+    return rows.map((r) => r.id);
   }
 
   /**
@@ -836,7 +872,7 @@ export class AdminAuthService {
     actorSessionId?: string | undefined;
   }) {
     const email = input.email;
-    return this.db.transaction(async (tx) => {
+    const { entry, revoked } = await this.db.transaction(async (tx) => {
       // Locked for the whole change when the address moves: exchange and
       // refresh take a share lock on this row, so neither can open or rotate a
       // session between the revoke below and the commit (#681, review F-08).
@@ -871,12 +907,12 @@ export class AdminAuthService {
         .where(eq(schema.adminUsers.id, input.id))
         .returning();
 
+      let revoked: string[] = [];
       if (emailChanges) {
         // The address is the single sign-on binding (ADR-0032): every session
         // opened under the old one goes, except the one making this change
         // when an admin moves their own address.
-        await this.revokeAllSessions(input.id, 'email_changed', {
-          tx,
+        revoked = await this.revokeSessionRows(tx, input.id, 'email_changed', {
           ...(input.id === input.actorId && input.actorSessionId
             ? { keepSessionId: input.actorSessionId }
             : {}),
@@ -891,7 +927,7 @@ export class AdminAuthService {
           resourceId: input.id,
           diff: { reason: input.reason, before: { email: before.email }, after: { email } },
         });
-        if (!input.role && !input.displayName) return toAdminEntry(after!);
+        if (!input.role && !input.displayName) return { entry: toAdminEntry(after!), revoked };
       }
 
       await writeAudit(tx, {
@@ -908,8 +944,10 @@ export class AdminAuthService {
           after: { role: after!.role, displayName: after!.displayName },
         },
       });
-      return toAdminEntry(after!);
+      return { entry: toAdminEntry(after!), revoked };
     });
+    await this.revocations.revokeMany(revoked);
+    return entry;
   }
 
   /**
@@ -932,7 +970,7 @@ export class AdminAuthService {
       // it: signing out is the operation this person actually wants.
       throw AppError.forbidden('SELF_SUSPEND', 'You cannot suspend your own account');
     }
-    return this.db.transaction(async (tx) => {
+    const { entry, revoked } = await this.db.transaction(async (tx) => {
       const before = await this.loadAdmin(tx, input.id);
       if (input.status === 'suspended' && before.role === 'super_admin') {
         // Suspending it is demotion by another name: the console would be left
@@ -949,9 +987,10 @@ export class AdminAuthService {
         .where(eq(schema.adminUsers.id, input.id))
         .returning();
 
-      if (input.status === 'suspended') {
-        await this.revokeAllSessions(input.id, 'admin_suspended', { tx: tx });
-      }
+      const revoked =
+        input.status === 'suspended'
+          ? await this.revokeSessionRows(tx, input.id, 'admin_suspended')
+          : [];
 
       await writeAudit(tx, {
         actorType: 'admin',
@@ -961,8 +1000,10 @@ export class AdminAuthService {
         resourceId: input.id,
         diff: { reason: input.reason, before: before.status, after: after!.status },
       });
-      return toAdminEntry(after!);
+      return { entry: toAdminEntry(after!), revoked };
     });
+    await this.revocations.revokeMany(revoked);
+    return entry;
   }
 
   /**
@@ -984,7 +1025,7 @@ export class AdminAuthService {
    * stop it; re-enrolling MFA stays a separate, deliberate act.
    */
   async resetAdminPassword(input: { id: string; reason: string; actorId: string }) {
-    return this.db.transaction(async (tx) => {
+    const { result, revoked } = await this.db.transaction(async (tx) => {
       await this.loadAdmin(tx, input.id);
       const temporary = this.tokens.generateOpaqueToken().slice(0, 24);
       const passwordHash = await this.passwords.hash(temporary);
@@ -997,7 +1038,7 @@ export class AdminAuthService {
           updatedAt: sql`now()`,
         })
         .where(eq(schema.adminUsers.id, input.id));
-      await this.revokeAllSessions(input.id, 'password_reset', { tx: tx });
+      const revoked = await this.revokeSessionRows(tx, input.id, 'password_reset');
 
       await writeAudit(tx, {
         actorType: 'admin',
@@ -1008,8 +1049,10 @@ export class AdminAuthService {
         // The reason, never the password.
         diff: { reason: input.reason },
       });
-      return { temporaryPassword: temporary, mustChangePassword: true };
+      return { result: { temporaryPassword: temporary, mustChangePassword: true }, revoked };
     });
+    await this.revocations.revokeMany(revoked);
+    return result;
   }
 
   /**
@@ -1047,7 +1090,7 @@ export class AdminAuthService {
     }
 
     const passwordHash = await this.passwords.hash(input.newPassword);
-    await this.db.transaction(async (tx) => {
+    const revoked = await this.db.transaction(async (tx) => {
       await tx
         .update(schema.adminUsers)
         .set({ passwordHash, mustChangePasswordAt: null, updatedAt: sql`now()` })
@@ -1055,8 +1098,7 @@ export class AdminAuthService {
       // Every other session dies: a password change is also how someone
       // responds to a suspected compromise, and leaving the other sessions
       // alive would make it useless for that.
-      await this.revokeAllSessions(input.adminId, 'password_changed', {
-        tx: tx,
+      const revoked = await this.revokeSessionRows(tx, input.adminId, 'password_changed', {
         keepSessionId: input.keepSessionId,
       });
       await writeAudit(tx, {
@@ -1066,7 +1108,9 @@ export class AdminAuthService {
         resourceType: 'admin_user',
         resourceId: input.adminId,
       });
+      return revoked;
     });
+    await this.revocations.revokeMany(revoked);
     return { changed: true };
   }
 
