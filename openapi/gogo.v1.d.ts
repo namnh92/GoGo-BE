@@ -7777,7 +7777,7 @@ export interface components {
             password: boolean;
             /** @description `cmsAccessExchange` is configured in this deployment. */
             accessSso: boolean;
-            /** @description ADR-0034 (added in alpha.70). True when the `super_admin` account signs in through `cmsAccessExchange` only: `cmsLogin` answers it `403 SUPER_ADMIN_SSO_ONLY` before any credential is checked whenever the general door is open and the request is not rate-limited (`PASSWORD_LOGIN_DISABLED` and `429` take precedence). `password` still describes every other role. Absent on APIs older than alpha.70 — read as false. */
+            /** @description ADR-0034 (added in alpha.70). True when the `super_admin` account signs in through `cmsAccessExchange` only: `cmsLogin` answers it `403 SUPER_ADMIN_SSO_ONLY` before any credential is checked whenever the general door is open and neither the per-IP rate limit nor an account lockout applies (those `429`s and `PASSWORD_LOGIN_DISABLED` take precedence). `password` still describes every other role. Absent on APIs older than alpha.70 — read as false. */
             superAdminSsoOnly?: boolean;
         };
         AdminSession: {
@@ -13770,7 +13770,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Production refuses accounts without MFA (`MFA_SETUP_REQUIRED`), or the password door is turned off for this environment (`PASSWORD_LOGIN_DISABLED`, not retryable — ADR-0032), or the account is the `super_admin` and this environment lets it sign in through `cmsAccessExchange` only (`SUPER_ADMIN_SSO_ONLY`, not retryable — ADR-0034, added in alpha.70). Both are answered before the password is compared, so a correct and a wrong password get the same answer. Precedence: `PASSWORD_LOGIN_DISABLED`, then `429` (rate limit or account lockout), then `SUPER_ADMIN_SSO_ONLY`, then the credential outcomes. `cmsAuthMethods` says in advance which doors are open. */
+            /** @description Production refuses accounts without MFA (`MFA_SETUP_REQUIRED`), or the password door is turned off for this environment (`PASSWORD_LOGIN_DISABLED`, not retryable — ADR-0032), or the account is the `super_admin` and this environment lets it sign in through `cmsAccessExchange` only (`SUPER_ADMIN_SSO_ONLY`, not retryable — ADR-0034, added in alpha.70). Both are answered before the password is compared, so a correct and a wrong password get the same answer. Precedence: `429` (per-IP rate limit), then `PASSWORD_LOGIN_DISABLED`, then `429` (account lockout), then `SUPER_ADMIN_SSO_ONLY`, then the credential outcomes. `cmsAuthMethods` says in advance which doors are open. */
             403: {
                 headers: {
                     [name: string]: unknown;

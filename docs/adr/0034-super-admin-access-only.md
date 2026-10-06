@@ -50,10 +50,10 @@ The redundant row is accepted, not refused. Each switch is flipped and rolled ba
   No attempt row and no audit row are written: nothing was verified, and an unauthenticated caller
   must not write rows under that admin's id. Every other address, staff or not, goes through the
   credential check unchanged.
-- **Precedence**, in the order the code runs: `403 PASSWORD_LOGIN_DISABLED` (general door closed) →
-  `429` (per-IP limit, or a per-account lockout from failures recorded before the flip; refusals
-  record none, so such a lockout ages out and does not recur) → `403 SUPER_ADMIN_SSO_ONLY` →
-  credential outcomes.
+- **Precedence**, in the order the request meets them: `429` from the per-IP `cms.login` limit (a
+  guard, before the service) → `403 PASSWORD_LOGIN_DISABLED` (general door closed) → `429` from a
+  per-account lockout built by failures recorded before the flip (refusals record none, so such a
+  lockout ages out and does not recur) → `403 SUPER_ADMIN_SSO_ONLY` → credential outcomes.
 - **A distinct code.** `PASSWORD_LOGIN_DISABLED` tells the console the door is closed and to re-read
   `methods`. Here the door is open for everyone else, and logs need to tell "door closed" apart from
   "wrong door for this account".
@@ -79,8 +79,9 @@ Whenever either switch closes the super admin's password door (`CMS_PASSWORD_LOG
 or `CMS_SUPER_ADMIN_SSO_ONLY=true`), the super admin's `admin_users.email` and
 `cms/seed-admin-email` must be addresses the Access policy admits. Change that address (the audited
 `PATCH /v1/cms/auth/admins/{id}`, #681) or re-seed it only while both switches leave its password
-door open. To recover from a wrong binding: set the switch to `false` and redeploy, sign in by
-password, correct the address, then turn the switch back on.
+door open. To recover from a wrong binding, set `CMS_SUPER_ADMIN_SSO_ONLY=false` **and**
+`CMS_PASSWORD_LOGIN_ENABLED=true`, redeploy, and check that the super admin's password login answers 201. Then correct the address and restore the intended values. Turning off only the first switch does
+not help while the general door is closed.
 
 ## Consequences
 

@@ -10,6 +10,7 @@ import { Writable } from 'node:stream';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import type { IdentityRepository, PasswordService } from '@gogo/modules';
 import { schema } from '@gogo/database';
 import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
 import {
@@ -980,6 +981,17 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
         .from(schema.auditLogs)
         .where(eq(schema.auditLogs.actorId, boss.id));
       const warnedBefore = warnLines.length;
+      // Sol F-01 — the claim is that the password is never compared, so prove
+      // the call never happens rather than inferring it from missing rows.
+      // The instances AdminAuthService holds: the CMS module provides its own,
+      // so `app.get(PasswordService)` would be a different object.
+      const deps = app.get(AdminAuthService) as unknown as {
+        passwords: PasswordService;
+        identity: IdentityRepository;
+      };
+      const verify = vi.spyOn(deps.passwords, 'verifyOrBurn');
+      const record = vi.spyOn(deps.identity, 'recordLoginAttempt');
+      let calls = { verify: -1, record: -1 };
 
       await superOnly(async () => {
         const right = await login(SUPER_ADMIN_EMAIL, superAdminPassword);
@@ -990,7 +1002,13 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
           expect(res.json().retryable).toBe(false);
           expect(res.headers['set-cookie']).toBeUndefined();
         }
+      }).finally(() => {
+        // Counted before restoring: mockRestore clears the call history.
+        calls = { verify: verify.mock.calls.length, record: record.mock.calls.length };
+        verify.mockRestore();
+        record.mockRestore();
       });
+      expect(calls).toEqual({ verify: 0, record: 0 });
 
       const warned = warnLines
         .slice(warnedBefore)
@@ -1011,13 +1029,16 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
     });
 
     it('leaves every other role, and unknown addresses, exactly as before', async () => {
-      const email = 'moderator-keeps-password@gogo.local';
-      await createAdmin(email, 'moderator');
+      const roles = ['editor', 'moderator', 'ops_admin'] as const;
+      for (const role of roles) await createAdmin(`${role}-keeps-password@gogo.local`, role);
+      const email = 'editor-keeps-password@gogo.local';
       const attemptsBefore = await attemptsFor(email);
 
       await superOnly(async () => {
-        const ok = await login(email, ADMIN_PASSWORD);
-        expect(ok.statusCode).toBe(201);
+        for (const role of roles) {
+          const ok = await login(`${role}-keeps-password@gogo.local`, ADMIN_PASSWORD);
+          expect(ok.statusCode, role).toBe(201);
+        }
         const wrong = await login(email, 'not-the-password-at-all');
         expect(wrong.statusCode).toBe(401);
         expect(wrong.json().code).toBe('INVALID_CREDENTIALS');
@@ -1026,12 +1047,33 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
         expect(unknown.json().code).toBe('INVALID_CREDENTIALS');
       });
 
-      // The moderator's two attempts were checked and recorded as always.
+      // The editor's two attempts were checked and recorded as always.
       expect(await attemptsFor(email)).toHaveLength(attemptsBefore.length + 2);
     });
 
-    it('answers the closed general door first, and a lockout before its own refusal', async () => {
+    it('orders refusals: IP limit, closed general door, account lockout, then its own', async () => {
       await superAdmin();
+      // Astra F-04 — the per-IP limit is a guard and runs before the service,
+      // so an exhausted IP answers 429 even where the general door is closed.
+      const fixedIp = ip();
+      await withDoors(
+        false,
+        async () => {
+          const statuses: number[] = [];
+          for (let i = 0; i < 6; i += 1) {
+            const res = await api().inject({
+              method: 'POST',
+              url: '/v1/cms/auth/login',
+              remoteAddress: fixedIp,
+              payload: { email: SUPER_ADMIN_EMAIL, password: superAdminPassword },
+            });
+            statuses.push(res.statusCode);
+          }
+          expect(statuses).toEqual([403, 403, 403, 403, 403, 429]);
+        },
+        true,
+      );
+
       // Both switches: the general door's answer wins, for every role.
       await withDoors(
         false,
@@ -1072,7 +1114,11 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
     it('stops the super admin password-born sessions refreshing, legacy ones too, and revokes the family', async () => {
       await superAdmin();
       const before = await sessionIds(SUPER_ADMIN_EMAIL);
-      const opened = await login(SUPER_ADMIN_EMAIL, superAdminPassword);
+      const first = await login(SUPER_ADMIN_EMAIL, superAdminPassword);
+      expect(first.statusCode).toBe(201);
+      // Sol F-04 — rotate once before the flip, so the family has two rows and
+      // revoking only the presented session would show.
+      const opened = await refresh(first.json().refreshToken as string);
       expect(opened.statusCode).toBe(201);
       const legacyOpened = await login(SUPER_ADMIN_EMAIL, superAdminPassword);
       expect(legacyOpened.statusCode).toBe(201);
@@ -1114,7 +1160,7 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
       ).toBe(true);
 
       const families = await sessionsAfter(SUPER_ADMIN_EMAIL, before);
-      expect(families).toHaveLength(2);
+      expect(families).toHaveLength(3);
       for (const row of families) {
         expect(row.revokedAt).not.toBeNull();
         expect(row.reason).toBe('super_admin_sso_only');
@@ -1148,10 +1194,14 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
       expect(bossRows.every((row) => row.method === 'access_sso')).toBe(true);
     });
 
-    it('is a no-op when off: the super admin signs in by password as before', async () => {
+    it('is a no-op when off: the super admin signs in and refreshes by password as before', async () => {
+      await superAdmin();
       await withDoors(true, async () => {
         const res = await login(SUPER_ADMIN_EMAIL, superAdminPassword);
         expect(res.statusCode).toBe(201);
+        // Sol F-03 — the refresh rule is guarded by the switch, not by the role.
+        const rotated = await refresh(res.json().refreshToken as string);
+        expect(rotated.statusCode).toBe(201);
       });
     });
   });
