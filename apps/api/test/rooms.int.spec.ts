@@ -9,6 +9,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { JOINABLE_ROOM_STATUSES } from '../../../libs/modules/rooms/domain/invite-join';
 import { RoomsRepository } from '../../../libs/modules/rooms/infrastructure/rooms.repository';
+import { MAX_STREAMS_PER_ACTOR } from '../../../libs/modules/realtime/application/room-events.service';
 
 /**
  * BE-BFF-003/004/005 + BE-BFF-015 acceptance: lifecycle, host/member/guest
@@ -1516,6 +1517,38 @@ describe('room realtime stream (BE-BFF-013, #154)', () => {
     expect((joined!.data as { event_type: string }).event_type).toBe('participant.joined');
     // The room-scoped member id, not the account id.
     expect((joined!.data as { actor_id: string }).actor_id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  /**
+   * GoGo-BE#685. The cap is contract (`429`), and it has to reach the wire as a
+   * status, not as an `event: error` frame on a 200. A global interceptor wraps
+   * this handler in an Observable, so anything thrown after the service's first
+   * database round trip lands after Nest has committed the SSE headers.
+   */
+  it('refuses a stream over the per-actor cap with a real 429, before any header', async () => {
+    const hostToken = (await registerUser('sse-cap-host@gogo.local')).token;
+    const room = await createGroupRoom(hostToken);
+    const open: AbortController[] = [];
+    try {
+      for (let i = 0; i < MAX_STREAMS_PER_ACTOR; i++) {
+        const controller = new AbortController();
+        open.push(controller);
+        const res = await fetch(`${baseUrl}/v1/rooms/${room.id}/events`, {
+          headers: { ...auth(hostToken), accept: 'text/event-stream' },
+          signal: controller.signal,
+        });
+        expect(res.status).toBe(200);
+      }
+
+      const refused = await fetch(`${baseUrl}/v1/rooms/${room.id}/events`, {
+        headers: { ...auth(hostToken), accept: 'text/event-stream' },
+      });
+      expect(refused.status).toBe(429);
+      expect(refused.headers.get('content-type')).toContain('application/json');
+      expect(((await refused.json()) as { code: string }).code).toBe('RATE_LIMITED');
+    } finally {
+      for (const controller of open) controller.abort();
+    }
   });
 
   it('a non-member cannot open the stream, hand-crafted request included', async () => {

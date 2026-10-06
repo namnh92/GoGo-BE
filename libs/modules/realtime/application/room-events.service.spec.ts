@@ -132,3 +132,74 @@ describe('stream ceiling (GoGo-BE#683)', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 });
+
+describe('stream slots (GoGo-BE#685)', () => {
+  const actor: Actor = { type: 'user', id: 'a', sessionId: 's-a' };
+
+  function service(
+    policy: { requireMember: () => Promise<unknown> } = { requireMember: async () => undefined },
+  ) {
+    return new RoomEventsService(policy as unknown as RoomPolicy, new InMemoryRoomEventBus());
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('refuses over the cap before any await, so the rejection beats the SSE headers', async () => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    let membershipChecks = 0;
+    const svc = service({
+      requireMember: async () => {
+        membershipChecks += 1;
+      },
+    });
+    for (let i = 0; i < MAX_STREAMS_PER_ACTOR; i++) await svc.stream(actor, 'room-1', null);
+    membershipChecks = 0;
+
+    await expect(svc.stream(actor, 'room-1', null)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    // The refusal did not wait on the database round trip.
+    expect(membershipChecks).toBe(0);
+  });
+
+  it('gives the slot back when the membership re-check fails', async () => {
+    let member = false;
+    const svc = service({
+      requireMember: async () => {
+        if (!member) throw new Error('NOT_A_MEMBER');
+      },
+    });
+    for (let i = 0; i < MAX_STREAMS_PER_ACTOR; i++) {
+      await expect(svc.stream(actor, 'room-1', null)).rejects.toThrow('NOT_A_MEMBER');
+    }
+    member = true;
+    // Five refusals must not have spent the five slots.
+    await expect(svc.stream(actor, 'room-1', null)).resolves.toBeDefined();
+  });
+
+  it('gives the slot back when the client leaves before the stream is subscribed', async () => {
+    const svc = service();
+    const leaving: AbortController[] = [];
+    for (let i = 0; i < MAX_STREAMS_PER_ACTOR; i++) {
+      const controller = new AbortController();
+      leaving.push(controller);
+      // Resolved but never subscribed: Nest skips subscribing when the socket
+      // closed while the handler was resolving.
+      await svc.stream(actor, 'room-1', null, controller.signal);
+    }
+    for (const controller of leaving) controller.abort();
+
+    await expect(svc.stream(actor, 'room-1', null)).resolves.toBeDefined();
+  });
+
+  it('releases a slot once, however many terminal paths fire', async () => {
+    const svc = service();
+    const controller = new AbortController();
+    const stream = await svc.stream(actor, 'room-1', null, controller.signal);
+    const sub = stream.subscribe();
+    sub.unsubscribe();
+    controller.abort();
+    // One slot freed, not two: the other four plus one more fill the cap exactly.
+    for (let i = 0; i < MAX_STREAMS_PER_ACTOR; i++) await svc.stream(actor, 'room-1', null);
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    await expect(svc.stream(actor, 'room-1', null)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+  });
+});

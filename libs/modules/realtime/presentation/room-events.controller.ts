@@ -1,4 +1,13 @@
-import { Controller, Headers, Inject, Param, Query, Sse, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Headers,
+  Inject,
+  Param,
+  Query,
+  Sse,
+  SseSignal,
+  UseGuards,
+} from '@nestjs/common';
 import type { Observable } from 'rxjs';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { AppError } from '../../shared/app-error';
@@ -35,6 +44,9 @@ export class RoomEventsController {
     @Param('id', UuidPipe) id: string,
     @Headers('last-event-id') headerId: string | undefined,
     @Query('lastEventId') queryId: string | undefined,
+    // Aborted on every terminal path of the request, including a client that
+    // leaves before the stream is subscribed (GoGo-BE#685).
+    @SseSignal() signal: AbortSignal,
   ): Promise<Observable<SseMessage>> {
     if (!this.enabled) {
       // Not a 404: the route exists, the transport is off for this
@@ -45,7 +57,7 @@ export class RoomEventsController {
         503,
       );
     }
-    return this.events.stream(actor, id, headerId ?? queryId ?? null);
+    return this.events.stream(actor, id, headerId ?? queryId ?? null, signal);
   }
 }
 
