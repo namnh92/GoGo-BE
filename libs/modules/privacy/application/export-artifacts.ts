@@ -7,7 +7,7 @@ import type { Tx } from '../../shared/outbox';
 import { bumpPrivacyMetrics, monthKey, retentionDate } from '../../shared/privacy-ledger';
 
 /**
- * GoGo-BE#256, ADR-0032 — operational defaults. Changing one is an ADR
+ * GoGo-BE#256, ADR-0033 — operational defaults. Changing one is an ADR
  * amendment, not a tuning knob: each is part of the security argument.
  */
 export const PRIVACY_EXPORT_DEFAULTS = {

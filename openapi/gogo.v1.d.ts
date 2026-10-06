@@ -1740,7 +1740,7 @@ export interface paths {
         put?: never;
         /**
          * Request a secure, single-use export of this account's data (GoGo-BE#256)
-         * @description ADR-0032. Accepted for generation (202); the worker builds the same allowlisted document as `/me/export`, encrypts it (AES-256-GCM, per-artifact key wrapped by a versioned server key) and stores it privately. When it is ready an in-app notification of kind `privacy_export_ready` carries the export id and expiry — never data, a key or a URL that authorizes anything.
+         * @description ADR-0033. Accepted for generation (202); the worker builds the same allowlisted document as `/me/export`, encrypts it (AES-256-GCM, per-artifact key wrapped by a versioned server key) and stores it privately. When it is ready an in-app notification of kind `privacy_export_ready` carries the export id and expiry — never data, a key or a URL that authorizes anything.
          *
          *     `Idempotency-Key` is **required**. A retry with the same key answers the same export's current status (`x-idempotent-replay: true`) and does not spend another generation. One active export per account (pending, generating or ready) across every entry point — a second request is `409 EXPORT_ALREADY_ACTIVE` with the active id in `field_errors[0].message`. At most three generations per account per rolling hour (`429` with `Retry-After`).
          *
@@ -2865,7 +2865,7 @@ export interface paths {
         put?: never;
         /**
          * Ops: subject-access export, made through support
-         * @description **Changed in alpha.67 (GoGo-BE#256, ADR-0032): no payload is returned.** Issues a secure export for the account holder to redeem from their own signed-in session (`POST /me/exports/{id}/download`), and records its own linked privacy request (`source: cms`, `in_progress` until the export is available). Staff never receive or forward the data. The account must be able to sign in (`409 SUBJECT_CANNOT_SIGN_IN` otherwise — account recovery first).
+         * @description **Changed in alpha.69 (GoGo-BE#256, ADR-0033): no payload is returned.** Issues a secure export for the account holder to redeem from their own signed-in session (`POST /me/exports/{id}/download`), and records its own linked privacy request (`source: cms`, `in_progress` until the export is available). Staff never receive or forward the data. The account must be able to sign in (`409 SUBJECT_CANNOT_SIGN_IN` otherwise — account recovery first).
          *
          *     Rate limited per actor; one active export per account across every entry point (`409 EXPORT_ALREADY_ACTIVE`).
          */
@@ -2953,7 +2953,7 @@ export interface paths {
          *
          *     Executing a **delete** requires `super_admin` — the same bar as the direct user delete. Correction requests are worked by hand and cannot be executed.
          *
-         *     **Export (changed in alpha.67, GoGo-BE#256, ADR-0032): no payload is returned.** Executing an export issues a secure export for the account holder to redeem from their own session; the request moves to `in_progress` and closes `completed` when the export becomes available. `deliveredAt` is set only when the server observes the holder's download complete. Staff never receive or forward the data.
+         *     **Export (changed in alpha.69, GoGo-BE#256, ADR-0033): no payload is returned.** Executing an export issues a secure export for the account holder to redeem from their own session; the request moves to `in_progress` and closes `completed` when the export becomes available. `deliveredAt` is set only when the server observes the holder's download complete. Staff never receive or forward the data.
          */
         post: operations["cmsExecutePrivacyRequest"];
         delete?: never;
@@ -6793,7 +6793,7 @@ export interface components {
          * @enum {string}
          */
         PrivacyRequestOutcome: "completed" | "no_account_found" | "identity_not_verified" | "rejected" | "failed";
-        /** @description GoGo-BE#256, ADR-0032. Facts only. `ready` exports expire 24 hours after `readyAt` (immutable). Terminal states: `consumed`, `expired`, `revoked` (password change or account deletion), `failed`. */
+        /** @description GoGo-BE#256, ADR-0033. Facts only. `ready` exports expire 24 hours after `readyAt` (immutable). Terminal states: `consumed`, `expired`, `revoked` (password change or account deletion), `failed`. */
         PrivacyExportStatus: {
             /** Format: uuid */
             id: string;
@@ -6925,7 +6925,7 @@ export interface components {
              */
             updatedAt: string | null;
         };
-        /** @description Declared extensible (alpha.67): a client treats a kind it does not know as an opaque notification it cannot render specially — never as a malformed item — so a new kind is not a breaking change on the inbox or the preference list. `privacy_export_ready` (GoGo-BE#256) is in-app only: its payload is `{ exportId, expiresAt }` and is never pushed. */
+        /** @description Declared extensible (alpha.69): a client treats a kind it does not know as an opaque notification it cannot render specially — never as a malformed item — so a new kind is not a breaking change on the inbox or the preference list. `privacy_export_ready` (GoGo-BE#256) is in-app only: its payload is `{ exportId, expiresAt }` and is never pushed. */
         NotificationKind: string;
         /**
          * @description The kinds a legacy client may opt in or out of on `PUT /me/notification-preferences` — closed, exactly what the route accepts. `privacy_export_ready` is not among them: it is in-app only and has no channel to switch.

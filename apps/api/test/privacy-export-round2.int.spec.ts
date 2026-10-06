@@ -231,7 +231,7 @@ afterAll(async () => {
 });
 
 describe('A-F-09: legacy CMS replay records', () => {
-  /** What the generic interceptor stored for these routes before alpha.67. */
+  /** What the generic interceptor stored for these routes before alpha.69. */
   async function seedLegacyRecord(input: {
     adminId: string;
     endpoint: string;
@@ -358,7 +358,7 @@ describe('A-F-09: legacy CMS replay records', () => {
     expect(record!.responseBody).toEqual({ v: 1, body: legacy });
   });
 
-  it('migration 0071 purges the stored raw payloads of both routes (upgrade from a populated database)', async () => {
+  it('migration 0072 purges the stored raw payloads of both routes (upgrade from a populated database)', async () => {
     const dbName = `gogo_upgrade_${randomUUID().slice(0, 8)}`;
     await pool.query(`create database ${dbName}`);
     const upgradePool = new Pool({
@@ -369,14 +369,14 @@ describe('A-F-09: legacy CMS replay records', () => {
     const upgradeDb = drizzle(upgradePool, { schema });
     const staged = mkdtempSync(path.join(tmpdir(), 'gogo-migrations-'));
     try {
-      // The database as it is the moment before 0071 runs: every earlier
+      // The database as it is the moment before 0072 runs: every earlier
       // migration applied, and the old interceptor's records in place.
       cpSync(MIGRATIONS, staged, { recursive: true });
       const journalPath = path.join(staged, 'meta', '_journal.json');
       const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as {
         entries: { tag: string }[];
       };
-      journal.entries = journal.entries.filter((e) => !e.tag.startsWith('0071_'));
+      journal.entries = journal.entries.filter((e) => !e.tag.startsWith('0072_'));
       writeFileSync(journalPath, JSON.stringify(journal));
       await migrate(upgradeDb, { migrationsFolder: staged });
 

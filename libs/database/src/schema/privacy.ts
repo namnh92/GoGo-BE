@@ -21,7 +21,7 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
 });
 
 /**
- * GoGo-BE#256, ADR-0032 — one secure export artifact's lifecycle.
+ * GoGo-BE#256, ADR-0033 — one secure export artifact's lifecycle.
  *
  * `pending → generating → ready → consumed`, with `expired`, `revoked` and
  * `failed` as the other terminal states. Cleanup is tracked beside the state,

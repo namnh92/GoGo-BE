@@ -171,7 +171,7 @@ export {
 export { IdempotencyInterceptor } from '../shared/idempotency.interceptor';
 export { writeOutbox, type DomainEventInput } from '../shared/outbox';
 export { PrivacyJobs, type PrivacyRunReport } from '../shared/privacy-jobs';
-// Secure export delivery (GoGo-BE#256, ADR-0032)
+// Secure export delivery (GoGo-BE#256, ADR-0033)
 export { PrivacyExportsModule } from '../privacy/presentation/privacy-exports.module';
 export {
   ExportClientGoneError,

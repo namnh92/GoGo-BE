@@ -128,7 +128,7 @@ Production values must be confirmed against the law in force — Luật
   `privacyRequestsPurged` and `privacyHoldReviewsOverdue`, never logging row
   contents.
 - `delivery_method = secure_download` is backed by an artifact lifecycle since
-  GoGo-BE#256 (**ADR-0032**, amendment 2026-10-05): export execution no longer
+  GoGo-BE#256 (**ADR-0033**, amendment 2026-10-05): export execution no longer
   returns the payload to the operator; it issues an encrypted, single-use,
   auto-deleting artifact the subject redeems from their own session. The
   request stays `in_progress` until the artifact is available, `delivered_at`

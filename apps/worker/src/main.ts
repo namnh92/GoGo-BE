@@ -130,7 +130,7 @@ const PRIVACY_INTERVAL_MS = 6 * 60 * 60 * 1000;
  */
 const mediaCleanupPollMs = () => pollIntervalMs('MEDIA_CLEANUP_POLL_MS', 60_000);
 /**
- * GoGo-BE#256, ADR-0032 — secure export generation is polled (the request is
+ * GoGo-BE#256, ADR-0033 — secure export generation is polled (the request is
  * a durable row, not a message); the sweep that expires and deletes artifacts
  * runs every minute, so a healthy deletion lands within five.
  */

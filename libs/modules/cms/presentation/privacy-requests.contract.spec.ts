@@ -7,7 +7,7 @@ import { parse as parseYaml } from 'yaml';
  * PR #677 S-F-15 — a refusal the API performs but the contract does not declare
  * is a refusal no generated client has a branch for. Executing an export
  * request answers `503 EXPORT_UNAVAILABLE` when secure export is not
- * configured; alpha.67 declared it on the direct user export and on the
+ * configured; alpha.69 declared it on the direct user export and on the
  * self-service routes but not on `execute`. Read from the published document,
  * as the generated client is.
  */

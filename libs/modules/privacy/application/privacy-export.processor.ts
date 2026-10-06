@@ -78,7 +78,7 @@ export type SweepReport = {
 };
 
 /**
- * GoGo-BE#256, ADR-0032 §4/§6 — the worker half of secure export delivery.
+ * GoGo-BE#256, ADR-0033 §4/§6 — the worker half of secure export delivery.
  *
  * `runDue` generates: claim one due artifact under a fenced lease (the
  * `attempt` counter is the fencing token), persist an attempt-specific object

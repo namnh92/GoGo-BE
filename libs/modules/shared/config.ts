@@ -111,7 +111,7 @@ export type PushIdentityConfig = {
 export type ShareLinksConfig = { SHARE_LINK_BASE_URL: string };
 
 /**
- * GoGo-BE#256, ADR-0032 — secure export delivery. The wrapping keys come from
+ * GoGo-BE#256, ADR-0033 — secure export delivery. The wrapping keys come from
  * the secret manager (SSM → env), never from source; empty means issuance and
  * redemption answer 503 `EXPORT_UNAVAILABLE`. Whether the private bucket is
  * real is `PRIVACY_EXPORT_STORAGE`'s decision (`privacyExportStorageFor`,

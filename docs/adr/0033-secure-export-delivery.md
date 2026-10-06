@@ -1,4 +1,4 @@
-# ADR-0032: Secure export delivery — encrypted artifact, single-use redemption, auto-delete
+# ADR-0033: Secure export delivery — encrypted artifact, single-use redemption, auto-delete
 
 - **Status:** accepted (shape decided by SA review, 2026-10-05)
 - **Date:** 2026-10-05
@@ -50,7 +50,7 @@ Account recovery comes first; staff never forward raw data.
 4. **Delivery path.** BFF-served attachment: `Cache-Control: no-store`, `nosniff`,
    `Content-Disposition: attachment`, no ranges, CSRF for cookie sessions. The route is
    excluded from idempotency response storage; request logs carry no bodies.
-5. **Lifecycle.** Table `privacy_export_artifacts` (migration 0071):
+5. **Lifecycle.** Table `privacy_export_artifacts` (migration 0072):
    `pending → generating → ready → consumed`, terminal `expired | revoked | failed`.
    The worker claims under a fenced lease (`attempt` is the fencing token), persists an
    attempt-specific object key _before_ upload, and publishes in one transaction that
@@ -82,7 +82,7 @@ Account recovery comes first; staff never forward raw data.
 ## Consequences
 
 - CMS clients must handle `202 { request, export }` / `202 { privacyRequestId, export }`
-  instead of a payload — a **breaking** CMS contract change (alpha.67).
+  instead of a payload — a **breaking** CMS contract change (alpha.69).
 - Mobile/Web get three new endpoints and a new notification kind.
 - Downloaded copies are outside server retention. DB backups may still contain wrapped
   keys from before they were cleared — key clearing is not a claim of crypto-erasure in
@@ -92,7 +92,7 @@ Account recovery comes first; staff never forward raw data.
 
 ## Migration & rollback
 
-Migration 0071 is additive in schema (two columns with constant defaults —
+Migration 0072 is additive in schema (two columns with constant defaults —
 `users.export_epoch`, `privacy_requests.secure_delivery` —, an enum, two tables,
 triggers, a notification kind) plus one one-way data step: it deletes the stored
 replay records of the two CMS export routes, which held raw payloads (A-F-09). Rollback
@@ -125,7 +125,7 @@ Shape unchanged (DECISION 1–6 stand); these sharpen how the shape is enforced.
 - **Replay records are versioned on the two CMS export routes** (A-F-09). The
   generic interceptor replays before the handler runs, so a record the raw-payload
   handler stored before this deploy would have been handed back for 24 h. Migration
-  0071 purges every stored record of `POST /v1/cms/users/:id/export` and
+  0072 purges every stored record of `POST /v1/cms/users/:id/export` and
   `POST /v1/cms/privacy-requests/:id/execute` as a one-way data step, and both
   routes now store `{ v: 1, body }` and replay only that shape
   (`@IdempotencyReplayVersion(1)`); a record of any other shape — one an old
@@ -175,7 +175,7 @@ Shape unchanged; each item closes a gap the second round's enforcement left.
   stand on one row whichever order wins the lock. Reject, not overwrite: the ledger
   records what an operator asserted, and silently replacing it would be destroying
   evidence (ADR-0011).
-- **The 0071 purge is precise** (S-F-17, S-F-18): completed records only — an
+- **The 0072 purge is precise** (S-F-17, S-F-18): completed records only — an
   in-flight claim stays, or its retry would re-claim the key and run beside the
   original — and on `/execute` only the export answer (`{ request, data }`); the
   deletion answer `{ request }` is metadata and keeps replaying. At runtime the

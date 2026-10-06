@@ -624,7 +624,7 @@ const retentionHoldSchema = z.object({
 });
 
 /**
- * PR #677 S-F-18 — a stored pre-alpha.67 answer of `/execute` is safe to replay
+ * PR #677 S-F-18 — a stored pre-alpha.69 answer of `/execute` is safe to replay
  * only when it is the deletion shape: `{ request }` and nothing else. Anything
  * carrying `data` (the export payload) or any other key is purged.
  */
@@ -675,7 +675,7 @@ export class PrivacyRequestsController {
    * `ops_admin` executing a delete request gets 403 from there.
    */
   @RateLimit({ action: 'cms.privacy_execute', limit: 10, windowSeconds: 300, keyBy: 'actor' })
-  // PR #677 A-F-09 / S-F-18: before alpha.67 this route answered
+  // PR #677 A-F-09 / S-F-18: before alpha.69 this route answered
   // `{ request, data }` for an export — the raw payload, purged, never
   // replayed — and `{ request }` for a deletion — metadata, still a correct
   // answer to the retry of a deletion that already happened, adopted as v1.

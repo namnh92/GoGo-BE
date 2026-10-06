@@ -10,7 +10,7 @@ export type PrivacyExportWiring = {
 };
 
 /**
- * GoGo-BE#256, ADR-0032 — what the worker needs for secure exports, read from
+ * GoGo-BE#256, ADR-0033 — what the worker needs for secure exports, read from
  * its own copy of the env. Two independent decisions (PR #677 S-F-11):
  *
  * - the bucket: needed by the sweep (expiry, timeouts, deletion, dead-letter

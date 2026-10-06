@@ -94,7 +94,7 @@ acceptance for this doc.
 - Retention: worker runs `PrivacyJobs` daily 03:00 ICT; manual dry-run: `PrivacyJobs.run(true)` prints report without writing.
 - Account deletion/export are self-serve (`DELETE /v1/me`, `GET /v1/me/export`, secure `POST /v1/me/exports`); support-initiated equivalents go through the same code path.
 
-### Secure privacy exports (GoGo-BE#256, ADR-0032)
+### Secure privacy exports (GoGo-BE#256, ADR-0033)
 
 - **Never send a raw privacy export by ordinary email, chat or attachment.** Staff
   never receive the payload: `execute` on an export request and
@@ -118,8 +118,8 @@ acceptance for this doc.
   `sweep registered WITHOUT generation`). An API instance without the private
   bucket answers 503 and leaves every cleanup to the worker — it never marks an
   export deleted on its own.
-- **Deploying alpha.67 over a database with stored CMS export replays:** migration
-  0071 purges the old raw-payload replay records of both CMS export routes; a
+- **Deploying alpha.69 over a database with stored CMS export replays:** migration
+  0072 purges the old raw-payload replay records of both CMS export routes; a
   record an old instance writes during the rollout is refused by the new routes
   (they replay only versioned metadata). No manual step.
 - **Alerts:** `privacy_export_cleanup_overdue > 0` (deletion slower than 5 min) or
