@@ -186,6 +186,12 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // `fallback` (vendor failed; link minted without attribution, FR-LINK-006).
   share_link_attribution_total: ['result'],
 
+  // --- realtime ------------------------------------------------------------
+  // #683 — a room event stream refused before it opened. `reason` is a closed
+  // set from the service: `actor_cap` (MAX_STREAMS_PER_ACTOR reached). Never
+  // the room or the actor: that is what the warn log beside it is for.
+  realtime_stream_refusals_total: ['reason'],
+
   // --- notifications -------------------------------------------------------
   campaign_dispatched_total: ['result'],
   // #193 — one provider call per event; `kind` is the notification kind enum.
