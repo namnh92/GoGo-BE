@@ -74,10 +74,25 @@ const envSchema = z
      *
      * Empty means single sign-on is off for this environment and
      * `POST /v1/cms/auth/access-exchange` answers 503 saying so. Password +
-     * TOTP is unaffected either way.
+     * TOTP is unaffected either way, where CMS_PASSWORD_LOGIN_ENABLED leaves
+     * that door open.
      */
     CF_ACCESS_TEAM_DOMAIN: z.string().default(''),
     CF_ACCESS_AUD: z.string().default(''),
+    /**
+     * #679 / ADR-0032 — the CMS password door, switchable on its own rather
+     * than derived from APP_ENV or from Access being configured. Two switches
+     * mean "turn Access on" and "turn the password off" are two deploys with an
+     * observation between them, and rollback is one value.
+     *
+     * Off: `POST /v1/cms/auth/login` answers 403 PASSWORD_LOGIN_DISABLED and a
+     * session opened by password stops refreshing. Refused below unless Access
+     * is configured, so no value of this leaves the console with no door.
+     */
+    CMS_PASSWORD_LOGIN_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
     /**
      * #255 — per-type SLA override for the privacy-request ledger, JSON:
      * `{"delete":{"ackHours":72,"fulfillHours":720},...}`. Empty uses the
@@ -643,6 +658,20 @@ const envSchema = z
         path: ['CF_ACCESS_AUD'],
         message:
           'CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD must be set together: a team domain without an audience tag would accept an assertion issued for any other application in the account',
+      });
+    }
+
+    // #679 / ADR-0032 — no configuration may leave the console with no door.
+    // Every environment, not only prod: a DEV with neither is locked out just
+    // as thoroughly. The deploy runs this check before anything is replaced
+    // (GoGo-Infra deploy-vps.sh, `config:check`), so the old revision keeps
+    // serving when it fails.
+    if (!env.CMS_PASSWORD_LOGIN_ENABLED && !env.CF_ACCESS_TEAM_DOMAIN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CMS_PASSWORD_LOGIN_ENABLED'],
+        message:
+          'CMS_PASSWORD_LOGIN_ENABLED=false requires CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD: with neither door the CMS console has no way in',
       });
     }
 

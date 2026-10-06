@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { CSRF_HEADER, createEdgeClientIpHook, runWithRequestContext } from '@gogo/modules';
 import { AppModule } from './app.module';
+import { NestPinoLogger } from './common/nest-pino-logger';
 import { loadEnv } from './config/env';
 
 /** '1' → hop count, 'false' → no trust, otherwise a CIDR/IP allowlist. */
@@ -42,6 +43,15 @@ export async function createApp(
     pretty: config.NODE_ENV === 'development',
     ...(options.logDestination ? { destination: options.logDestination } : {}),
   });
+  if (!config.CMS_PASSWORD_LOGIN_ENABLED) {
+    // #679 / ADR-0032 — say at boot which CMS door is closed, so a deploy log
+    // answers "why does password sign-in refuse" without reading SSM. Each
+    // refusal is also logged at warn by AdminAuthService.
+    logger.info(
+      { cmsPasswordLogin: false, cmsAccessSso: Boolean(config.CF_ACCESS_TEAM_DOMAIN) },
+      'CMS password sign-in is disabled; Cloudflare Access is the only way in',
+    );
+  }
 
   const adapter = new FastifyAdapter({
     loggerInstance: logger,
@@ -61,6 +71,17 @@ export async function createApp(
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
     bufferLogs: true,
   });
+  // The same pino instance Fastify writes request logs to. Service-level
+  // `Logger` calls (and the buffered boot lines) are structured, redacted and
+  // filtered by LOG_LEVEL like everything else; without this they fall to
+  // Nest's console logger and never reach the stream operators read (#680).
+  app.useLogger(new NestPinoLogger(logger));
+  // `bufferLogs` holds every Nest log line until a flush, and NestFactory does
+  // not auto-flush on `useLogger` (autoFlushLogs defaults to false). Without
+  // this call the buffer stays attached for the life of the process and every
+  // service-level `Logger` line — not only boot — silently goes nowhere, which
+  // is what the #680 review found.
+  app.flushLogs();
 
   const fastify = app.getHttpAdapter().getInstance();
   // SEC-004 (#445), and first on purpose: it deletes the edge headers from

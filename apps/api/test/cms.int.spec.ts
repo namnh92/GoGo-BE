@@ -3,20 +3,40 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
 import { authenticator } from 'otplib';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import path from 'node:path';
+import { Writable } from 'node:stream';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
-import { AdminAuthService, audiencePredicate, respectsPushPreference } from '@gogo/modules';
+import {
+  AdminAuthService,
+  APP_CONFIG,
+  audiencePredicate,
+  CloudflareAccessService,
+  respectsPushPreference,
+} from '@gogo/modules';
+import { generateKeyPairSync, sign as signBytes } from 'node:crypto';
 
 /**
  * CMS-001..010 acceptance: RBAC enforced server-side, place workflow +
  * search sync (SRS §15.5), moderation with reasons, four-eyes ranking
  * console, import dry-run, KPIs, append-only audit.
  */
+
+/**
+ * The structured log, as operators read it: LOG_LEVEL=warn, so what lands
+ * here is only what the API chose to say at warn or above (#680, review F-02).
+ */
+const warnLines: Record<string, unknown>[] = [];
+const logSink = new Writable({
+  write(chunk, _encoding, callback) {
+    warnLines.push(JSON.parse(chunk.toString()) as Record<string, unknown>);
+    callback();
+  },
+});
 
 let container: StartedPostgreSqlContainer;
 let pool: Pool;
@@ -107,6 +127,7 @@ beforeAll(async () => {
   process.env.REDIS_URL = 'redis://localhost:6380';
   process.env.NODE_ENV = 'test';
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
+  process.env.LOG_LEVEL = 'warn';
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
   // The container is stopped in afterAll; an idle client erroring as the
@@ -116,7 +137,7 @@ beforeAll(async () => {
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
 
   const { createApp } = await import('../src/main.js');
-  app = await createApp();
+  app = await createApp({ logDestination: logSink });
   await app.init();
   await api().ready();
 }, 180_000);
@@ -642,6 +663,323 @@ describe('CMS single sign-on exchange (#62, ADR-0010)', () => {
     expect(res.json().code).toBe('ACCESS_SSO_NOT_CONFIGURED');
     // Not retryable: retrying a missing configuration produces load, not a fix.
     expect(res.json().retryable).toBe(false);
+  });
+});
+
+/**
+ * #679 / ADR-0032 — DEV is Access-only: the password door closes, and the
+ * sessions it already opened stop refreshing. One app serves the whole file,
+ * so each test flips the live config object and puts it back; the boot-time
+ * rule that refuses a door-less configuration is `env.spec.ts`'s to prove.
+ */
+describe('CMS password door closed (#679, ADR-0032)', () => {
+  const TEAM = 'gogo-test.cloudflareaccess.com';
+  const AUD = 'b'.repeat(64);
+  const KID = 'it-key-1';
+  const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  type DoorConfig = {
+    CMS_PASSWORD_LOGIN_ENABLED: boolean;
+    CF_ACCESS_TEAM_DOMAIN: string;
+    CF_ACCESS_AUD: string;
+  };
+
+  /** An RS256 assertion signed by the key this test publishes as the team's. */
+  const assertionFor = (email: string) => {
+    const now = Math.floor(Date.now() / 1000);
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const unsigned = `${part({ alg: 'RS256', kid: KID, typ: 'JWT' })}.${part({
+      iss: `https://${TEAM}`,
+      aud: AUD,
+      sub: `sub-${email}`,
+      email,
+      iat: now,
+      exp: now + 60,
+    })}`;
+    return `${unsigned}.${signBytes('RSA-SHA256', Buffer.from(unsigned), pair.privateKey).toString('base64url')}`;
+  };
+
+  /** Runs `fn` with Access configured and the password door as given. */
+  async function withDoors<T>(passwordOpen: boolean, fn: () => Promise<T>): Promise<T> {
+    const config = app.get<DoorConfig>(APP_CONFIG);
+    const access = app.get(CloudflareAccessService) as unknown as { fetchImpl: typeof fetch };
+    const saved = { ...config };
+    const savedFetch = access.fetchImpl;
+    config.CMS_PASSWORD_LOGIN_ENABLED = passwordOpen;
+    config.CF_ACCESS_TEAM_DOMAIN = TEAM;
+    config.CF_ACCESS_AUD = AUD;
+    access.fetchImpl = (async () =>
+      Response.json({
+        keys: [{ ...pair.publicKey.export({ format: 'jwk' }), kid: KID, alg: 'RS256' }],
+      })) as typeof fetch;
+    try {
+      return await fn();
+    } finally {
+      Object.assign(config, saved);
+      access.fetchImpl = savedFetch;
+    }
+  }
+
+  const login = (email: string, password: string) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/login',
+      remoteAddress: ip(),
+      payload: { email, password },
+    });
+  const refresh = (refreshToken: string) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/refresh',
+      remoteAddress: ip(),
+      payload: { refreshToken },
+    });
+  const exchange = (email: string, headers: Record<string, string> = {}) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/access-exchange',
+      remoteAddress: ip(),
+      headers: { 'cf-access-jwt-assertion': assertionFor(email), ...headers },
+    });
+
+  /** Session ids of this account, so a test can tell its own family from the login `createAdmin` did. */
+  const sessionIds = async (email: string) =>
+    (
+      await db
+        .select({ id: schema.adminSessions.id })
+        .from(schema.adminSessions)
+        .innerJoin(schema.adminUsers, eq(schema.adminUsers.id, schema.adminSessions.adminId))
+        .where(eq(schema.adminUsers.email, email))
+    ).map((row) => row.id);
+
+  const sessionsAfter = async (email: string, before: string[]) =>
+    (
+      await db
+        .select({
+          id: schema.adminSessions.id,
+          revokedAt: schema.adminSessions.revokedAt,
+          reason: schema.adminSessions.revokeReason,
+          method: schema.adminSessions.authMethod,
+        })
+        .from(schema.adminSessions)
+        .innerJoin(schema.adminUsers, eq(schema.adminUsers.id, schema.adminSessions.adminId))
+        .where(eq(schema.adminUsers.email, email))
+    ).filter((row) => !before.includes(row.id));
+
+  /*
+   * Migration 0071 adds the CHECK NOT VALID so no scan runs under the
+   * exclusive lock (review F-01). NOT VALID still binds every write.
+   */
+  it('refuses an unknown door on write even though the check was added NOT VALID', async () => {
+    const [constraint] = (
+      await pool.query(
+        `select convalidated from pg_constraint where conname = 'admin_sessions_auth_method_check'`,
+      )
+    ).rows as { convalidated: boolean }[];
+    expect(constraint?.convalidated).toBe(false);
+
+    const email = 'bad-door@gogo.local';
+    await createAdmin(email, 'editor');
+    await expect(
+      pool.query(
+        `update admin_sessions set auth_method = 'magic_link'
+           where admin_id = (select id from admin_users where email = $1)`,
+        [email],
+      ),
+    ).rejects.toThrow(/admin_sessions_auth_method_check/);
+  });
+
+  it('reports which doors are open, without a session and without caching', async () => {
+    const before = await api().inject({ method: 'GET', url: '/v1/cms/auth/methods' });
+    expect(before.statusCode).toBe(200);
+    expect(before.json()).toEqual({ password: true, accessSso: false });
+    expect(before.headers['cache-control']).toBe('no-store');
+
+    await withDoors(false, async () => {
+      const after = await api().inject({ method: 'GET', url: '/v1/cms/auth/methods' });
+      expect(after.json()).toEqual({ password: false, accessSso: true });
+    });
+  });
+
+  it('refuses a correct and a wrong password identically, and records nothing', async () => {
+    const email = 'door-closed@gogo.local';
+    const { id } = await createAdmin(email, 'editor');
+    const attemptsBefore = await db.select().from(schema.loginAttempts);
+    const auditBefore = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.actorId, id));
+
+    await withDoors(false, async () => {
+      const right = await login(email, ADMIN_PASSWORD);
+      const wrong = await login(email, 'not-the-password-at-all');
+      for (const res of [right, wrong]) {
+        expect(res.statusCode).toBe(403);
+        expect(res.json().code).toBe('PASSWORD_LOGIN_DISABLED');
+        expect(res.json().retryable).toBe(false);
+        expect(res.headers['set-cookie']).toBeUndefined();
+      }
+    });
+
+    // Both refusals reached the structured stream at warn, from the service,
+    // naming no address.
+    const warned = warnLines.filter(
+      (l) => l.context === 'AdminAuthService' && String(l.msg).includes('cms.login refused'),
+    );
+    expect(warned.length).toBeGreaterThanOrEqual(2);
+    for (const line of warned) {
+      expect(line.level).toBe('warn');
+      expect(JSON.stringify(line)).not.toContain(email);
+    }
+
+    // No lockout row and no audit row: there was no credential check and no actor.
+    expect(await db.select().from(schema.loginAttempts)).toHaveLength(attemptsBefore.length);
+    expect(
+      await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.actorId, id)),
+    ).toHaveLength(auditBefore.length);
+  });
+
+  /*
+   * Refresh slides the expiry forward, so without this a session opened by
+   * password before the flip would outlive the decision for as long as it
+   * kept being used.
+   */
+  it('stops a password-born session from refreshing once the door closes, and revokes its family', async () => {
+    const email = 'pre-flip@gogo.local';
+    await createAdmin(email, 'editor');
+    const before = await sessionIds(email);
+    const opened = await login(email, ADMIN_PASSWORD);
+    const first = opened.json().refreshToken as string;
+    // Still open: rotation works and inherits the door.
+    const rotated = await refresh(first);
+    expect(rotated.statusCode).toBe(201);
+
+    const warnedBefore = warnLines.length;
+    await withDoors(false, async () => {
+      const refused = await refresh(rotated.json().refreshToken as string);
+      expect(refused.statusCode).toBe(401);
+      expect(refused.json().code).toBe('SESSION_REVOKED');
+    });
+    expect(
+      warnLines
+        .slice(warnedBefore)
+        .some(
+          (l) =>
+            l.level === 'warn' &&
+            l.context === 'AdminAuthService' &&
+            String(l.msg).includes('cms.refresh refused'),
+        ),
+    ).toBe(true);
+
+    const family = await sessionsAfter(email, before);
+    expect(family).toHaveLength(2);
+    for (const row of family) {
+      expect(row.method).toBe('password');
+      expect(row.revokedAt).not.toBeNull();
+    }
+    expect(family.some((row) => row.reason === 'password_login_disabled')).toBe(true);
+  });
+
+  /*
+   * A session from before the column existed (NULL) counts as password-born:
+   * it refreshes while the door is open, and once the door closes the first
+   * refresh revokes the whole family — every row, with the reason.
+   */
+  it('treats a session from before the column existed as password-born, both ways', async () => {
+    const email = 'legacy-session@gogo.local';
+    await createAdmin(email, 'editor');
+    const before = await sessionIds(email);
+    const opened = await login(email, ADMIN_PASSWORD);
+    const legacy = async () => {
+      const ids = (await sessionsAfter(email, before)).map((row) => row.id);
+      await db
+        .update(schema.adminSessions)
+        .set({ authMethod: null })
+        .where(inArray(schema.adminSessions.id, ids));
+    };
+    await legacy();
+
+    // Door open: a legacy session rotates as it always did.
+    const rotated = await refresh(opened.json().refreshToken as string);
+    expect(rotated.statusCode).toBe(201);
+    await legacy();
+
+    await withDoors(false, async () => {
+      const refused = await refresh(rotated.json().refreshToken as string);
+      expect(refused.statusCode).toBe(401);
+      expect(refused.json().code).toBe('SESSION_REVOKED');
+    });
+
+    const family = await sessionsAfter(email, before);
+    expect(family).toHaveLength(2);
+    for (const row of family) {
+      expect(row.method).toBeNull();
+      expect(row.revokedAt).not.toBeNull();
+      expect(row.reason).toBe('password_login_disabled');
+    }
+  });
+
+  it('keeps Access as a working door: exchange opens a session that refreshes and stays SSO', async () => {
+    const email = 'sso-only@gogo.local';
+    await createAdmin(email, 'editor');
+    const before = await sessionIds(email);
+
+    await withDoors(false, async () => {
+      const opened = await exchange(email, { 'sec-fetch-site': 'same-origin' });
+      expect(opened.statusCode).toBe(201);
+      const rotated = await refresh(opened.json().refreshToken as string);
+      expect(rotated.statusCode).toBe(201);
+      const again = await refresh(rotated.json().refreshToken as string);
+      expect(again.statusCode).toBe(201);
+    });
+
+    const methods = await sessionsAfter(email, before);
+    expect(methods).toHaveLength(3);
+    expect(methods.every((row) => row.method === 'access_sso')).toBe(true);
+  });
+
+  /*
+   * The refusal comes before any verification: a malformed assertion still
+   * gets CROSS_SITE_REQUEST, and the verifier is never reached. A repeated
+   * header arrives joined ("same-origin, cross-site") and is refused too.
+   */
+  it('refuses an exchange a browser labels cross-origin, before verifying anything', async () => {
+    const email = 'cross-site@gogo.local';
+    await createAdmin(email, 'editor');
+    const verify = vi.spyOn(app.get(CloudflareAccessService), 'verify');
+
+    try {
+      await withDoors(false, async () => {
+        for (const site of ['cross-site', 'same-site', 'none']) {
+          const res = await api().inject({
+            method: 'POST',
+            url: '/v1/cms/auth/access-exchange',
+            remoteAddress: ip(),
+            headers: { 'cf-access-jwt-assertion': 'not.a.jwt', 'sec-fetch-site': site },
+          });
+          expect(res.statusCode).toBe(403);
+          expect(res.json().code).toBe('CROSS_SITE_REQUEST');
+        }
+        const repeated = await api().inject({
+          method: 'POST',
+          url: '/v1/cms/auth/access-exchange',
+          remoteAddress: ip(),
+          headers: {
+            'cf-access-jwt-assertion': 'not.a.jwt',
+            'sec-fetch-site': ['same-origin', 'cross-site'],
+          },
+        });
+        expect(repeated.statusCode).toBe(403);
+        expect(repeated.json().code).toBe('CROSS_SITE_REQUEST');
+        expect(verify).not.toHaveBeenCalled();
+
+        // A script presenting its own assertion sends no Sec-Fetch-Site.
+        const headless = await exchange(email);
+        expect(headless.statusCode).toBe(201);
+        expect(verify).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      verify.mockRestore();
+    }
   });
 });
 

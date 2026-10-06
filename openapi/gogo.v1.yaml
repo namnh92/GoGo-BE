@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.66
+  version: 1.0.0-alpha.67
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4867,10 +4867,36 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '403':
-          description: Production refuses accounts without MFA (`MFA_SETUP_REQUIRED`)
+          description: >
+            Production refuses accounts without MFA (`MFA_SETUP_REQUIRED`), or
+            the password door is turned off for this environment
+            (`PASSWORD_LOGIN_DISABLED`, not retryable — ADR-0032). The second
+            is answered before any credential is checked, so a correct and a
+            wrong password get the same answer. `cmsAuthMethods` says in
+            advance which doors are open.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/auth/methods:
+    get:
+      operationId: cmsAuthMethods
+      tags: [cms]
+      summary: Which sign-in doors this deployment has open
+      description: >
+        ADR-0032. Facts for the console's sign-in screen, read at runtime so
+        that closing or re-opening the password door is one API setting with
+        no console deploy. `password` is false when `cmsLogin` answers
+        `PASSWORD_LOGIN_DISABLED`; `accessSso` is true when `cmsAccessExchange`
+        is configured — configured, not known to be reachable.
+      security: []
+      responses:
+        '200':
+          description: 'The open doors. Not cached (`Cache-Control: no-store`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAuthMethods' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
   /cms/auth/access-exchange:
@@ -4920,7 +4946,10 @@ paths:
           description: >
             The identity is genuine but has no active staff account
             (`ADMIN_ONLY`). Being on the Access allow-list does not make
-            somebody staff.
+            somebody staff. Or a browser labelled the request as not
+            same-origin (`Sec-Fetch-Site`), answered before any verification
+            (`CROSS_SITE_REQUEST`, ADR-0032); callers that send no
+            `Sec-Fetch-Site` are unaffected.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -4930,7 +4959,8 @@ paths:
             SSO is not configured for this environment
             (`ACCESS_SSO_NOT_CONFIGURED`, not retryable), or the identity
             provider's key set is unreachable (`ACCESS_KEYS_UNAVAILABLE`,
-            retryable). Password + TOTP remains available in both cases.
+            retryable). Password + TOTP remains available in both cases where
+            the password door is open (`cmsAuthMethods`).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -4960,7 +4990,11 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AdminSession' }
         '401':
-          description: INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED
+          description: >
+            INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED.
+            `SESSION_REVOKED` also answers a session opened by password once
+            the password door is closed; its whole family is revoked
+            (ADR-0032).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -14633,6 +14667,16 @@ components:
           description: >
             Why this was taken down. Required and stored in the audit record —
             it is the only explanation anyone reviewing the incident later has.
+    CmsAuthMethods:
+      type: object
+      required: [password, accessSso]
+      properties:
+        password:
+          type: boolean
+          description: '`cmsLogin` accepts credentials in this deployment.'
+        accessSso:
+          type: boolean
+          description: '`cmsAccessExchange` is configured in this deployment.'
     AdminSession:
       type: object
       properties:
