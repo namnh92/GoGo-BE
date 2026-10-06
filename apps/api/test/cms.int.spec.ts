@@ -5,6 +5,7 @@ import argon2 from 'argon2';
 import { authenticator } from 'otplib';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import path from 'node:path';
+import { Writable } from 'node:stream';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -24,6 +25,18 @@ import { generateKeyPairSync, sign as signBytes } from 'node:crypto';
  * search sync (SRS §15.5), moderation with reasons, four-eyes ranking
  * console, import dry-run, KPIs, append-only audit.
  */
+
+/**
+ * The structured log, as operators read it: LOG_LEVEL=warn, so what lands
+ * here is only what the API chose to say at warn or above (#680, review F-02).
+ */
+const warnLines: Record<string, unknown>[] = [];
+const logSink = new Writable({
+  write(chunk, _encoding, callback) {
+    warnLines.push(JSON.parse(chunk.toString()) as Record<string, unknown>);
+    callback();
+  },
+});
 
 let container: StartedPostgreSqlContainer;
 let pool: Pool;
@@ -114,6 +127,7 @@ beforeAll(async () => {
   process.env.REDIS_URL = 'redis://localhost:6380';
   process.env.NODE_ENV = 'test';
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
+  process.env.LOG_LEVEL = 'warn';
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
   // The container is stopped in afterAll; an idle client erroring as the
@@ -123,7 +137,7 @@ beforeAll(async () => {
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
 
   const { createApp } = await import('../src/main.js');
-  app = await createApp();
+  app = await createApp({ logDestination: logSink });
   await app.init();
   await api().ready();
 }, 180_000);
@@ -806,6 +820,17 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
       }
     });
 
+    // Both refusals reached the structured stream at warn, from the service,
+    // naming no address.
+    const warned = warnLines.filter(
+      (l) => l.context === 'AdminAuthService' && String(l.msg).includes('cms.login refused'),
+    );
+    expect(warned.length).toBeGreaterThanOrEqual(2);
+    for (const line of warned) {
+      expect(line.level).toBe('warn');
+      expect(JSON.stringify(line)).not.toContain(email);
+    }
+
     // No lockout row and no audit row: there was no credential check and no actor.
     expect(await db.select().from(schema.loginAttempts)).toHaveLength(attemptsBefore.length);
     expect(
@@ -828,11 +853,22 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
     const rotated = await refresh(first);
     expect(rotated.statusCode).toBe(201);
 
+    const warnedBefore = warnLines.length;
     await withDoors(false, async () => {
       const refused = await refresh(rotated.json().refreshToken as string);
       expect(refused.statusCode).toBe(401);
       expect(refused.json().code).toBe('SESSION_REVOKED');
     });
+    expect(
+      warnLines
+        .slice(warnedBefore)
+        .some(
+          (l) =>
+            l.level === 'warn' &&
+            l.context === 'AdminAuthService' &&
+            String(l.msg).includes('cms.refresh refused'),
+        ),
+    ).toBe(true);
 
     const family = await sessionsAfter(email, before);
     expect(family).toHaveLength(2);
