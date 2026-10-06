@@ -104,6 +104,9 @@ Two doors onto one session model, not a migration.
 > **Amended by ADR-0032 (2026-10-06).** The password door is now a per-environment switch,
 > `CMS_PASSWORD_LOGIN_ENABLED`. It is open by default and in production; it is closed on DEV. Where it
 > is closed, Access is the only door, and sessions opened by password stop refreshing.
+>
+> **Narrowed by ADR-0034 (2026-10-06).** `CMS_SUPER_ADMIN_SSO_ONLY` closes the password door for the
+> `super_admin` alone; other roles keep it. DEV runs that way, with the general door open again.
 
 ### Session lifetime
 
