@@ -61,9 +61,19 @@ export class RoomEventsService {
     actor: Actor,
     roomId: string,
     lastEventId: string | null,
+    signal?: AbortSignal,
   ): Promise<Observable<SseMessage>> {
-    await this.policy.requireMember(actor, roomId);
-
+    /*
+     * GoGo-BE#685. The slot is taken before the first `await`, not after it.
+     * A global interceptor wraps this handler in an Observable, and Nest
+     * commits the SSE headers one macrotask after the handler returns — so a
+     * refusal thrown after the membership query reached the client as a 200
+     * carrying an `event: error` frame, never as the contracted 429. Thrown
+     * here, it rejects in a microtask, ahead of the headers.
+     *
+     * Checking early and counting late would let two concurrent opens both
+     * pass the check, so the count is taken in the same synchronous step.
+     */
     const open = this.streamsPerActor.get(actor.id) ?? 0;
     if (open >= MAX_STREAMS_PER_ACTOR) {
       /*
@@ -89,11 +99,40 @@ export class RoomEventsService {
       });
       throw AppError.tooManyRequests('Too many open event streams for this session');
     }
+    this.streamsPerActor.set(actor.id, open + 1);
+
+    /*
+     * Every path out gives the slot back exactly once: a failed membership
+     * re-check, the Observable's own teardown, and the request's abort signal.
+     * The signal matters because Nest never subscribes an Observable whose
+     * client left while the handler was resolving — no subscription, no
+     * teardown, and the slot used to stay taken until the process restarted.
+     */
+    let slotHeld = true;
+    const releaseSlot = () => {
+      if (!slotHeld) return;
+      slotHeld = false;
+      signal?.removeEventListener('abort', releaseSlot);
+      const remaining = (this.streamsPerActor.get(actor.id) ?? 1) - 1;
+      if (remaining <= 0) this.streamsPerActor.delete(actor.id);
+      else this.streamsPerActor.set(actor.id, remaining);
+    };
+    if (signal?.aborted) {
+      releaseSlot();
+    } else {
+      signal?.addEventListener('abort', releaseSlot, { once: true });
+    }
+
+    try {
+      await this.policy.requireMember(actor, roomId);
+    } catch (error) {
+      releaseSlot();
+      throw error;
+    }
 
     // Legacy numeric and malformed cursors are accepted and answered with
     // `resync`, never rejected and never treated as a fresh stream.
     const resume = parseResumePoint(lastEventId);
-    this.streamsPerActor.set(actor.id, open + 1);
 
     return new Observable<SseMessage>((subscriber) => {
       let closed = false;
@@ -105,9 +144,7 @@ export class RoomEventsService {
         closed = true;
         if (keepAlive) clearInterval(keepAlive);
         subscription?.unsubscribe();
-        const remaining = (this.streamsPerActor.get(actor.id) ?? 1) - 1;
-        if (remaining <= 0) this.streamsPerActor.delete(actor.id);
-        else this.streamsPerActor.set(actor.id, remaining);
+        releaseSlot();
       };
 
       /*
