@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.67
+  version: 1.0.0-alpha.68
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -8395,12 +8395,21 @@ paths:
     patch:
       operationId: cmsUpdateAdmin
       tags: [cms]
-      summary: "Super admin: change a staff account's role or display name"
+      summary: "Super admin: change a staff account's role, display name or email"
       description: >
         BE-CMS-G9. An admin cannot change their own role — not because
         self-promotion is the risk, a `super_admin` is already the top of the
         model, but because a one-person path from any role to any other removes
         the only check the model has.
+
+
+        GoGo-BE#681 (ADR-0032). `email` is the single sign-on binding where the
+        password door is closed, so changing it is its own audited act
+        (`admin.email_changed`, before and after) that revokes every session
+        of the account — except the caller's own when a `super_admin` changes
+        its own address, which it may. Compared case-insensitively and stored
+        lower-case. Not combinable with `role` in one request
+        (`400 EMAIL_WITH_ROLE`).
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -8413,6 +8422,7 @@ paths:
               properties:
                 role: { $ref: '#/components/schemas/AdminAssignableRole' }
                 displayName: { type: string, minLength: 1, maxLength: 50 }
+                email: { type: string, format: email, maxLength: 254 }
                 reason:
                   type: string
                   minLength: 3
@@ -8448,6 +8458,10 @@ paths:
 
             Neither freezes the account's credentials. It rotates its password
             through `POST /cms/auth/change-password` like every other account.
+
+
+            `ADMIN_EMAIL_TAKEN` — another staff account already uses that
+            address (case-insensitive).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }

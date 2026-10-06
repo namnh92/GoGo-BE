@@ -57,6 +57,8 @@ export type AdminListPage = {
  * methods actually used is both honest and portable.
  */
 type DbLike = Pick<Db, 'select' | 'update' | 'execute'>;
+/** What opening a session needs: the pool, or the transaction holding the admin row lock. */
+type SessionWriter = Pick<Db, 'insert'>;
 
 type AdminRow = {
   id: string;
@@ -225,25 +227,38 @@ export class AdminAuthService {
       throw AppError.forbidden('MFA_SETUP_REQUIRED', 'Set up MFA before logging in');
     }
 
-    await this.db
-      .update(schema.adminUsers)
-      .set({ lastLoginAt: sql`now()` })
-      .where(eq(schema.adminUsers.id, admin.id));
-    await writeAudit(this.db, {
-      actorType: 'admin',
-      actorId: admin.id,
-      action: 'admin.login',
-      resourceType: 'admin_user',
-      resourceId: admin.id,
+    // #681 (review F-01, SA) — the identity checked above is checked again
+    // under the admin row's update lock before a session is issued, the lock
+    // an email change holds while it revokes. A login that read the old
+    // address and a change that moved it then serialise: either the session
+    // exists before the change revokes it, or the address no longer matches.
+    const session = await this.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(schema.adminUsers)
+        .where(eq(schema.adminUsers.id, admin.id))
+        .limit(1)
+        .for('update');
+      if (
+        !current ||
+        current.status !== 'active' ||
+        current.email.toLowerCase() !== input.email.toLowerCase()
+      ) {
+        throw AppError.unauthorized('INVALID_CREDENTIALS', 'Email or password is incorrect');
+      }
+      await tx
+        .update(schema.adminUsers)
+        .set({ lastLoginAt: sql`now()` })
+        .where(eq(schema.adminUsers.id, admin.id));
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: admin.id,
+        action: 'admin.login',
+        resourceType: 'admin_user',
+        resourceId: admin.id,
+      });
+      return this.openSession(admin.id, randomUUID(), undefined, 'password', input.meta, tx);
     });
-
-    const session = await this.openSession(
-      admin.id,
-      randomUUID(),
-      undefined,
-      'password',
-      input.meta,
-    );
     return {
       ...session,
       role: admin.role,
@@ -278,36 +293,54 @@ export class AdminAuthService {
    * know which door was used.
    */
   async loginWithAccessIdentity(identity: { email: string }, meta?: ClientMeta) {
-    const [admin] = await this.db
-      .select()
-      .from(schema.adminUsers)
-      .where(sql`lower(${schema.adminUsers.email}) = lower(${identity.email})`)
-      .limit(1);
+    // #681 (review F-08) — the identity is read and the session opened under
+    // the admin row's update lock, the same lock an email change holds while it
+    // revokes, so the two serialise. An update lock rather than a share lock:
+    // this transaction writes `last_login_at` to the same row, and two
+    // exchanges each holding a share lock would deadlock upgrading it. Either the exchange
+    // commits first and the change then revokes its session, or the change
+    // commits first and this re-read no longer matches the old address.
+    const { admin, session } = await this.db.transaction(async (tx) => {
+      const [admin] = await tx
+        .select()
+        .from(schema.adminUsers)
+        .where(sql`lower(${schema.adminUsers.email}) = lower(${identity.email})`)
+        .limit(1)
+        .for('update');
 
-    // Deliberately distinguishable from a bad assertion: the caller proved a
-    // real identity, and "you are not staff here" is the true and actionable
-    // answer. Enumeration is not a risk on this path — reaching it already
-    // required an assertion signed by Cloudflare for this application.
-    if (!admin || admin.status !== 'active') {
-      throw AppError.forbidden('ADMIN_ONLY', 'This identity has no active staff account');
-    }
+      // Deliberately distinguishable from a bad assertion: the caller proved a
+      // real identity, and "you are not staff here" is the true and actionable
+      // answer. Enumeration is not a risk on this path — reaching it already
+      // required an assertion signed by Cloudflare for this application.
+      if (!admin || admin.status !== 'active') {
+        throw AppError.forbidden('ADMIN_ONLY', 'This identity has no active staff account');
+      }
 
-    await this.db
-      .update(schema.adminUsers)
-      .set({ lastLoginAt: sql`now()` })
-      .where(eq(schema.adminUsers.id, admin.id));
-    // A distinct action from `admin.login`: which door someone came through is
-    // the first question asked when reviewing an incident, and it is
-    // unrecoverable if both write the same row.
-    await writeAudit(this.db, {
-      actorType: 'admin',
-      actorId: admin.id,
-      action: 'admin.login.sso',
-      resourceType: 'admin_user',
-      resourceId: admin.id,
+      await tx
+        .update(schema.adminUsers)
+        .set({ lastLoginAt: sql`now()` })
+        .where(eq(schema.adminUsers.id, admin.id));
+      // A distinct action from `admin.login`: which door someone came through is
+      // the first question asked when reviewing an incident, and it is
+      // unrecoverable if both write the same row.
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: admin.id,
+        action: 'admin.login.sso',
+        resourceType: 'admin_user',
+        resourceId: admin.id,
+      });
+
+      const session = await this.openSession(
+        admin.id,
+        randomUUID(),
+        undefined,
+        'access_sso',
+        meta,
+        tx,
+      );
+      return { admin, session };
     });
-
-    const session = await this.openSession(admin.id, randomUUID(), undefined, 'access_sso', meta);
     return {
       ...session,
       role: admin.role,
@@ -323,51 +356,95 @@ export class AdminAuthService {
    */
   async refresh(refreshToken: string, meta?: ClientMeta) {
     const hash = this.tokens.hashOpaqueToken(refreshToken);
-    const [session] = await this.db
-      .select()
+    // Unlocked, and only to learn whose row to lock. Every decision below is
+    // taken on rows read again under lock.
+    const [found] = await this.db
+      .select({ id: schema.adminSessions.id, adminId: schema.adminSessions.adminId })
       .from(schema.adminSessions)
       .where(eq(schema.adminSessions.refreshTokenHash, hash))
       .limit(1);
-    if (!session) throw AppError.unauthorized('INVALID_REFRESH_TOKEN', 'Session is not valid');
-    if (session.revokedAt) {
-      throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
-    }
-    if (session.supersededAt) {
-      await this.revokeFamily(session.familyId, 'refresh_token_reuse');
-      throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
-    }
-    if (session.expiresAt.getTime() <= Date.now()) {
-      throw AppError.unauthorized('SESSION_EXPIRED', 'Session is not valid');
-    }
-    // #679 / ADR-0032 — refresh slides the expiry forward, so without this a
-    // session opened by password before the door closed would live as long as
-    // it keeps being used. NULL predates the column and fails closed.
-    const authMethod: AdminAuthMethod = session.authMethod ?? 'password';
-    if (!this.config.CMS_PASSWORD_LOGIN_ENABLED && authMethod !== 'access_sso') {
-      this.logger.warn('cms.refresh refused: password-born session after the door closed');
-      await this.revokeFamily(session.familyId, 'password_login_disabled');
-      throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
-    }
+    if (!found) throw AppError.unauthorized('INVALID_REFRESH_TOKEN', 'Session is not valid');
 
-    const [admin] = await this.db
-      .select()
-      .from(schema.adminUsers)
-      .where(eq(schema.adminUsers.id, session.adminId))
-      .limit(1);
-    // The admin row is re-read rather than trusted from the token: a suspended
-    // or demoted admin must not be able to refresh their way onward.
-    if (!admin || admin.status !== 'active') {
-      await this.revokeFamily(session.familyId, 'admin_inactive');
-      throw AppError.forbidden('ADMIN_ONLY', 'Staff account is not active');
+    // #681 (review F-08; round 1 F-02; round 2 F-05). The admin row is locked
+    // for update first, then the session row — the order an email change uses
+    // — so neither deadlocks the other, and a change that revokes the
+    // account's sessions cannot interleave with a rotation. The admin lock is
+    // exclusive on purpose: every refresh of one account serialises on it, so
+    // two different stale tokens of one family replayed together cannot each
+    // hold a session row while both try to revoke the whole family.
+    //
+    // Refusals that revoke return instead of throwing, so the revoke commits
+    // with the transaction; the error is thrown after it. The denylist write
+    // (Redis) happens after the commit, never inside it: a transaction must
+    // not wait on a provider while it holds locks.
+    const outcome = await this.db.transaction(async (tx) => {
+      const [admin] = await tx
+        .select()
+        .from(schema.adminUsers)
+        .where(eq(schema.adminUsers.id, found.adminId))
+        .limit(1)
+        .for('update');
+      const [session] = await tx
+        .select()
+        .from(schema.adminSessions)
+        .where(eq(schema.adminSessions.id, found.id))
+        .limit(1)
+        .for('update');
+      if (!session) {
+        return { error: AppError.unauthorized('INVALID_REFRESH_TOKEN', 'Session is not valid') };
+      }
+      if (session.revokedAt) {
+        return { error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid') };
+      }
+      if (session.supersededAt) {
+        return {
+          revoked: await this.revokeFamilyRows(tx, session.familyId, 'refresh_token_reuse'),
+          error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid'),
+        };
+      }
+      if (session.expiresAt.getTime() <= Date.now()) {
+        return { error: AppError.unauthorized('SESSION_EXPIRED', 'Session is not valid') };
+      }
+      // #679 / ADR-0032 — refresh slides the expiry forward, so without this a
+      // session opened by password before the door closed would live as long
+      // as it keeps being used. NULL predates the column and fails closed.
+      const authMethod: AdminAuthMethod = session.authMethod ?? 'password';
+      if (!this.config.CMS_PASSWORD_LOGIN_ENABLED && authMethod !== 'access_sso') {
+        this.logger.warn('cms.refresh refused: password-born session after the door closed');
+        return {
+          revoked: await this.revokeFamilyRows(tx, session.familyId, 'password_login_disabled'),
+          error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid'),
+        };
+      }
+      // The admin row is re-read rather than trusted from the token: a
+      // suspended or demoted admin must not be able to refresh their way onward.
+      if (!admin || admin.status !== 'active') {
+        return {
+          revoked: await this.revokeFamilyRows(tx, session.familyId, 'admin_inactive'),
+          error: AppError.forbidden('ADMIN_ONLY', 'Staff account is not active'),
+        };
+      }
+
+      await tx
+        .update(schema.adminSessions)
+        .set({ supersededAt: sql`now()`, lastUsedAt: sql`now()` })
+        .where(eq(schema.adminSessions.id, session.id));
+      // A family never changes door: the rotation inherits how it was opened.
+      const next = await this.openSession(
+        admin.id,
+        session.familyId,
+        session.id,
+        authMethod,
+        meta,
+        tx,
+      );
+      return { next, admin };
+    });
+    if ('error' in outcome) {
+      if (outcome.revoked) await this.revocations.revokeMany(outcome.revoked);
+      throw outcome.error;
     }
-
-    await this.db
-      .update(schema.adminSessions)
-      .set({ supersededAt: sql`now()`, lastUsedAt: sql`now()` })
-      .where(eq(schema.adminSessions.id, session.id));
-
-    // A family never changes door: the rotation inherits how it was opened.
-    const next = await this.openSession(admin.id, session.familyId, session.id, authMethod, meta);
+    const { next, admin } = outcome;
     return {
       ...next,
       role: admin.role,
@@ -401,9 +478,10 @@ export class AdminAuthService {
     rotatedFromId: string | undefined,
     authMethod: AdminAuthMethod,
     meta?: ClientMeta,
+    db: SessionWriter = this.db,
   ) {
     const refreshToken = this.tokens.generateOpaqueToken();
-    const [row] = await this.db
+    const [row] = await db
       .insert(schema.adminSessions)
       .values({
         adminId,
@@ -432,15 +510,32 @@ export class AdminAuthService {
   }
 
   private async revokeFamily(familyId: string, reason: string): Promise<void> {
-    const rows = await this.db
+    const ids = await this.revokeFamilyRows(this.db, familyId, reason);
+    // Every access token minted from the family dies now, not at expiry (#129).
+    await this.revocations.revokeMany(ids);
+  }
+
+  /**
+   * The database half of a family revoke, for callers inside a transaction.
+   * Returns the ids so the caller can write the denylist **after** the commit:
+   * the denylist is Redis, and a transaction holding row locks must never wait
+   * on a provider (#682 review F-04). A denylist write that fails after the
+   * commit leaves the rows revoked — the refresh path is closed either way —
+   * and only the outstanding access tokens live on to their expiry.
+   */
+  private async revokeFamilyRows(
+    db: Pick<Db, 'update'>,
+    familyId: string,
+    reason: string,
+  ): Promise<string[]> {
+    const rows = await db
       .update(schema.adminSessions)
       .set({ revokedAt: sql`now()`, revokeReason: reason })
       .where(
         and(eq(schema.adminSessions.familyId, familyId), isNull(schema.adminSessions.revokedAt)),
       )
       .returning({ id: schema.adminSessions.id });
-    // Every access token minted from the family dies now, not at expiry (#129).
-    await this.revocations.revokeMany(rows.map((r) => r.id));
+    return rows.map((r) => r.id);
   }
 
   /**
@@ -589,9 +684,22 @@ export class AdminAuthService {
   private async revokeAllSessions(
     adminId: string,
     reason: string,
-    opts: { tx?: DbLike; keepSessionId?: string } = {},
+    opts: { keepSessionId?: string } = {},
   ): Promise<void> {
-    const rows = await (opts.tx ?? this.db)
+    const ids = await this.revokeSessionRows(this.db, adminId, reason, opts);
+    // The denylist is what stops an access token already in someone's hands;
+    // revoking the row only closes the refresh path.
+    await this.revocations.revokeMany(ids);
+  }
+
+  /** As `revokeFamilyRows`: rows now, denylist by the caller after commit. */
+  private async revokeSessionRows(
+    db: Pick<Db, 'update'>,
+    adminId: string,
+    reason: string,
+    opts: { keepSessionId?: string } = {},
+  ): Promise<string[]> {
+    const rows = await db
       .update(schema.adminSessions)
       .set({ revokedAt: sql`now()`, revokeReason: reason })
       .where(
@@ -604,9 +712,7 @@ export class AdminAuthService {
         ),
       )
       .returning({ id: schema.adminSessions.id });
-    // The denylist is what stops an access token already in someone's hands;
-    // revoking the row only closes the refresh path.
-    await this.revocations.revokeMany(rows.map((r) => r.id));
+    return rows.map((r) => r.id);
   }
 
   /**
@@ -705,12 +811,9 @@ export class AdminAuthService {
     }
   }
 
-  private async loadAdmin(tx: DbLike, id: string) {
-    const [admin] = await tx
-      .select()
-      .from(schema.adminUsers)
-      .where(eq(schema.adminUsers.id, id))
-      .limit(1);
+  private async loadAdmin(tx: DbLike, id: string, lock = false) {
+    const query = tx.select().from(schema.adminUsers).where(eq(schema.adminUsers.id, id)).limit(1);
+    const [admin] = lock ? await query.for('update') : await query;
     if (!admin) throw AppError.notFound('ADMIN_NOT_FOUND', 'No such staff account');
     return admin;
   }
@@ -727,26 +830,105 @@ export class AdminAuthService {
     id: string;
     role?: AdminRole | undefined;
     displayName?: string | undefined;
+    email?: string | undefined;
     reason: string;
     actorId: string;
+    /** The caller's own session, kept when an admin changes their own address. */
+    actorSessionId?: string | undefined;
   }) {
     if (input.role && input.id === input.actorId) {
       throw AppError.forbidden('SELF_ROLE_CHANGE', 'Another super_admin must change your role');
     }
+    // #681 — an identity change is reviewed on its own. Mixed with a role
+    // change in one request, the audit trail would have to explain two
+    // independent decisions with one reason.
+    if (input.role && input.email) {
+      throw AppError.badRequest(
+        'EMAIL_WITH_ROLE',
+        'Change the email and the role in separate requests',
+      );
+    }
     AdminAuthService.assertRoleAssignable(input.role);
-    return this.db.transaction(async (tx) => {
-      const before = await this.loadAdmin(tx, input.id);
+    const email = input.email?.trim().toLowerCase();
+    try {
+      return await this.updateAdminLocked({ ...input, email });
+    } catch (error) {
+      // Two changes that both passed the pre-check: the index decides, and the
+      // loser gets the same answer the pre-check would have given (round 1 F-03).
+      if (isUniqueViolation(error, 'admin_users_email_unique')) {
+        throw AppError.conflict('ADMIN_EMAIL_TAKEN', 'Another staff account uses that email');
+      }
+      throw error;
+    }
+  }
+
+  private async updateAdminLocked(input: {
+    id: string;
+    role?: AdminRole | undefined;
+    displayName?: string | undefined;
+    email?: string | undefined;
+    reason: string;
+    actorId: string;
+    actorSessionId?: string | undefined;
+  }) {
+    const email = input.email;
+    const { entry, revoked } = await this.db.transaction(async (tx) => {
+      // Locked for the whole change when the address moves: exchange and
+      // refresh take a share lock on this row, so neither can open or rotate a
+      // session between the revoke below and the commit (#681, review F-08).
+      const before = await this.loadAdmin(tx, input.id, Boolean(email));
       AdminAuthService.assertRoleSurvives(before, input.role);
+
+      const emailChanges = email !== undefined && email !== before.email.toLowerCase();
+      if (emailChanges) {
+        const [taken] = await tx
+          .select({ id: schema.adminUsers.id })
+          .from(schema.adminUsers)
+          .where(
+            and(
+              sql`lower(${schema.adminUsers.email}) = ${email}`,
+              sql`${schema.adminUsers.id} <> ${input.id}::uuid`,
+            ),
+          )
+          .limit(1);
+        if (taken) {
+          throw AppError.conflict('ADMIN_EMAIL_TAKEN', 'Another staff account uses that email');
+        }
+      }
 
       const [after] = await tx
         .update(schema.adminUsers)
         .set({
           ...(input.role ? { role: input.role } : {}),
           ...(input.displayName ? { displayName: input.displayName } : {}),
+          ...(emailChanges ? { email } : {}),
           updatedAt: sql`now()`,
         })
         .where(eq(schema.adminUsers.id, input.id))
         .returning();
+
+      let revoked: string[] = [];
+      if (emailChanges) {
+        // The address is the single sign-on binding (ADR-0032): every session
+        // opened under the old one goes, except the one making this change
+        // when an admin moves their own address.
+        revoked = await this.revokeSessionRows(tx, input.id, 'email_changed', {
+          ...(input.id === input.actorId && input.actorSessionId
+            ? { keepSessionId: input.actorSessionId }
+            : {}),
+        });
+        // Its own action, like `admin.login.sso`: an identity re-binding is the
+        // first thing an incident review looks for.
+        await writeAudit(tx, {
+          actorType: 'admin',
+          actorId: input.actorId,
+          action: 'admin.email_changed',
+          resourceType: 'admin_user',
+          resourceId: input.id,
+          diff: { reason: input.reason, before: { email: before.email }, after: { email } },
+        });
+        if (!input.role && !input.displayName) return { entry: toAdminEntry(after!), revoked };
+      }
 
       await writeAudit(tx, {
         actorType: 'admin',
@@ -762,8 +944,10 @@ export class AdminAuthService {
           after: { role: after!.role, displayName: after!.displayName },
         },
       });
-      return toAdminEntry(after!);
+      return { entry: toAdminEntry(after!), revoked };
     });
+    await this.revocations.revokeMany(revoked);
+    return entry;
   }
 
   /**
@@ -786,7 +970,7 @@ export class AdminAuthService {
       // it: signing out is the operation this person actually wants.
       throw AppError.forbidden('SELF_SUSPEND', 'You cannot suspend your own account');
     }
-    return this.db.transaction(async (tx) => {
+    const { entry, revoked } = await this.db.transaction(async (tx) => {
       const before = await this.loadAdmin(tx, input.id);
       if (input.status === 'suspended' && before.role === 'super_admin') {
         // Suspending it is demotion by another name: the console would be left
@@ -803,9 +987,10 @@ export class AdminAuthService {
         .where(eq(schema.adminUsers.id, input.id))
         .returning();
 
-      if (input.status === 'suspended') {
-        await this.revokeAllSessions(input.id, 'admin_suspended', { tx: tx });
-      }
+      const revoked =
+        input.status === 'suspended'
+          ? await this.revokeSessionRows(tx, input.id, 'admin_suspended')
+          : [];
 
       await writeAudit(tx, {
         actorType: 'admin',
@@ -815,8 +1000,10 @@ export class AdminAuthService {
         resourceId: input.id,
         diff: { reason: input.reason, before: before.status, after: after!.status },
       });
-      return toAdminEntry(after!);
+      return { entry: toAdminEntry(after!), revoked };
     });
+    await this.revocations.revokeMany(revoked);
+    return entry;
   }
 
   /**
@@ -838,7 +1025,7 @@ export class AdminAuthService {
    * stop it; re-enrolling MFA stays a separate, deliberate act.
    */
   async resetAdminPassword(input: { id: string; reason: string; actorId: string }) {
-    return this.db.transaction(async (tx) => {
+    const { result, revoked } = await this.db.transaction(async (tx) => {
       await this.loadAdmin(tx, input.id);
       const temporary = this.tokens.generateOpaqueToken().slice(0, 24);
       const passwordHash = await this.passwords.hash(temporary);
@@ -851,7 +1038,7 @@ export class AdminAuthService {
           updatedAt: sql`now()`,
         })
         .where(eq(schema.adminUsers.id, input.id));
-      await this.revokeAllSessions(input.id, 'password_reset', { tx: tx });
+      const revoked = await this.revokeSessionRows(tx, input.id, 'password_reset');
 
       await writeAudit(tx, {
         actorType: 'admin',
@@ -862,8 +1049,10 @@ export class AdminAuthService {
         // The reason, never the password.
         diff: { reason: input.reason },
       });
-      return { temporaryPassword: temporary, mustChangePassword: true };
+      return { result: { temporaryPassword: temporary, mustChangePassword: true }, revoked };
     });
+    await this.revocations.revokeMany(revoked);
+    return result;
   }
 
   /**
@@ -901,7 +1090,7 @@ export class AdminAuthService {
     }
 
     const passwordHash = await this.passwords.hash(input.newPassword);
-    await this.db.transaction(async (tx) => {
+    const revoked = await this.db.transaction(async (tx) => {
       await tx
         .update(schema.adminUsers)
         .set({ passwordHash, mustChangePasswordAt: null, updatedAt: sql`now()` })
@@ -909,8 +1098,7 @@ export class AdminAuthService {
       // Every other session dies: a password change is also how someone
       // responds to a suspected compromise, and leaving the other sessions
       // alive would make it useless for that.
-      await this.revokeAllSessions(input.adminId, 'password_changed', {
-        tx: tx,
+      const revoked = await this.revokeSessionRows(tx, input.adminId, 'password_changed', {
         keepSessionId: input.keepSessionId,
       });
       await writeAudit(tx, {
@@ -920,7 +1108,9 @@ export class AdminAuthService {
         resourceType: 'admin_user',
         resourceId: input.adminId,
       });
+      return revoked;
     });
+    await this.revocations.revokeMany(revoked);
     return { changed: true };
   }
 
@@ -977,4 +1167,13 @@ export class AdminAuthService {
       totalCount: (total.rows[0] as { n: number }).n,
     };
   }
+}
+
+/** Postgres unique violation on one named constraint, through any `cause` chain. */
+function isUniqueViolation(error: unknown, constraint: string): boolean {
+  for (let e: unknown = error; e; e = (e as { cause?: unknown }).cause) {
+    const c = e as { code?: unknown; constraint?: unknown };
+    if (c.code === '23505' && c.constraint === constraint) return true;
+  }
+  return false;
 }
