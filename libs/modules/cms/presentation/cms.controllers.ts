@@ -207,6 +207,8 @@ export class CmsAuthController {
     return {
       password: this.config.CMS_PASSWORD_LOGIN_ENABLED,
       accessSso: this.access.configured,
+      // #687 / ADR-0034 — `password` still describes every other role.
+      superAdminSsoOnly: this.config.CMS_SUPER_ADMIN_SSO_ONLY,
     };
   }
 

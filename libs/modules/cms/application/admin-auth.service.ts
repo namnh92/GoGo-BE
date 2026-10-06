@@ -199,6 +199,21 @@ export class AdminAuthService {
       .from(schema.adminUsers)
       .where(sql`lower(${schema.adminUsers.email}) = lower(${input.email})`)
       .limit(1);
+
+    // #687 / ADR-0034 — the super admin signs in only through Access. Refused
+    // before its password is compared, so the stored hash is never an oracle
+    // for the most privileged row and a correct and a wrong password get the
+    // same answer. No attempt row and no audit row: nothing was verified, and
+    // an unauthenticated caller must not write rows under that admin's id.
+    // That this one address answers differently is accepted (owner, #687).
+    if (this.config.CMS_SUPER_ADMIN_SSO_ONLY && admin?.role === 'super_admin') {
+      this.logger.warn('cms.login refused: super_admin uses Access only (SUPER_ADMIN_SSO_ONLY)');
+      throw AppError.forbidden(
+        'SUPER_ADMIN_SSO_ONLY',
+        'The super admin account signs in through Cloudflare Access only',
+      );
+    }
+
     const valid = await this.passwords.verifyOrBurn(admin?.passwordHash, input.password);
     await this.identity.recordLoginAttempt({ identifierHash, ipHash, succeeded: valid });
     if (!valid || !admin || admin.status !== 'active') {
@@ -422,6 +437,23 @@ export class AdminAuthService {
         return {
           revoked: await this.revokeFamilyRows(tx, session.familyId, 'admin_inactive'),
           error: AppError.forbidden('ADMIN_ONLY', 'Staff account is not active'),
+        };
+      }
+      // #687 / ADR-0034 — the same for the super admin alone: its password-born
+      // sessions stop at the next refresh once it is Access-only. The role is
+      // read from the locked row, not from the session; ADR-0018 keeps it from
+      // changing under a family.
+      if (
+        this.config.CMS_SUPER_ADMIN_SSO_ONLY &&
+        admin.role === 'super_admin' &&
+        authMethod !== 'access_sso'
+      ) {
+        this.logger.warn(
+          'cms.refresh refused: super_admin password-born session (SUPER_ADMIN_SSO_ONLY)',
+        );
+        return {
+          revoked: await this.revokeFamilyRows(tx, session.familyId, 'super_admin_sso_only'),
+          error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid'),
         };
       }
 

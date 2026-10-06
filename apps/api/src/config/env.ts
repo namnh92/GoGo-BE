@@ -99,6 +99,20 @@ const envSchema = z
       .default('true')
       .transform((v) => v === 'true'),
     /**
+     * #687 / ADR-0034 — the `super_admin` signs in only through Cloudflare
+     * Access; every other role keeps the password door CMS_PASSWORD_LOGIN_ENABLED
+     * describes. A second switch rather than a role list: nothing asks for a
+     * per-role policy beyond the one account with the whole model behind it.
+     *
+     * On: `POST /v1/cms/auth/login` answers 403 SUPER_ADMIN_SSO_ONLY for the
+     * super admin before its password is compared, and its password-born
+     * sessions stop refreshing. Refused below unless Access is configured.
+     */
+    CMS_SUPER_ADMIN_SSO_ONLY: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    /**
      * #255 — per-type SLA override for the privacy-request ledger, JSON:
      * `{"delete":{"ackHours":72,"fulfillHours":720},...}`. Empty uses the
      * PROVISIONAL engineering defaults in shared/privacy-ledger.ts — Legal
@@ -677,6 +691,17 @@ const envSchema = z
         path: ['CMS_PASSWORD_LOGIN_ENABLED'],
         message:
           'CMS_PASSWORD_LOGIN_ENABLED=false requires CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD: with neither door the CMS console has no way in',
+      });
+    }
+
+    // #687 / ADR-0034 — the same rule for the super admin alone: closing its
+    // password door without Access leaves the one super_admin with no way in.
+    if (env.CMS_SUPER_ADMIN_SSO_ONLY && !env.CF_ACCESS_TEAM_DOMAIN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CMS_SUPER_ADMIN_SSO_ONLY'],
+        message:
+          'CMS_SUPER_ADMIN_SSO_ONLY=true requires CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD: the super_admin would have no way in',
       });
     }
 

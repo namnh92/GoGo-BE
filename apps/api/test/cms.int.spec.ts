@@ -4,7 +4,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
 import { authenticator } from 'otplib';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { Writable } from 'node:stream';
 import { Pool } from 'pg';
@@ -13,6 +13,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
 import {
+  ADMIN_LOCKOUT_THRESHOLD,
   AdminAuthService,
   APP_CONFIG,
   audiencePredicate,
@@ -683,6 +684,7 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
   type DoorConfig = {
     CMS_PASSWORD_LOGIN_ENABLED: boolean;
+    CMS_SUPER_ADMIN_SSO_ONLY: boolean;
     CF_ACCESS_TEAM_DOMAIN: string;
     CF_ACCESS_AUD: string;
   };
@@ -702,13 +704,21 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
     return `${unsigned}.${signBytes('RSA-SHA256', Buffer.from(unsigned), pair.privateKey).toString('base64url')}`;
   };
 
-  /** Runs `fn` with Access configured and the password door as given. */
-  async function withDoors<T>(passwordOpen: boolean, fn: () => Promise<T>): Promise<T> {
+  /**
+   * Runs `fn` with Access configured and the password door as given; the third
+   * argument is #687's super-admin-only switch.
+   */
+  async function withDoors<T>(
+    passwordOpen: boolean,
+    fn: () => Promise<T>,
+    superAdminSsoOnly = false,
+  ): Promise<T> {
     const config = app.get<DoorConfig>(APP_CONFIG);
     const access = app.get(CloudflareAccessService) as unknown as { fetchImpl: typeof fetch };
     const saved = { ...config };
     const savedFetch = access.fetchImpl;
     config.CMS_PASSWORD_LOGIN_ENABLED = passwordOpen;
+    config.CMS_SUPER_ADMIN_SSO_ONLY = superAdminSsoOnly;
     config.CF_ACCESS_TEAM_DOMAIN = TEAM;
     config.CF_ACCESS_AUD = AUD;
     access.fetchImpl = (async () =>
@@ -795,12 +805,12 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
   it('reports which doors are open, without a session and without caching', async () => {
     const before = await api().inject({ method: 'GET', url: '/v1/cms/auth/methods' });
     expect(before.statusCode).toBe(200);
-    expect(before.json()).toEqual({ password: true, accessSso: false });
+    expect(before.json()).toEqual({ password: true, accessSso: false, superAdminSsoOnly: false });
     expect(before.headers['cache-control']).toBe('no-store');
 
     await withDoors(false, async () => {
       const after = await api().inject({ method: 'GET', url: '/v1/cms/auth/methods' });
-      expect(after.json()).toEqual({ password: false, accessSso: true });
+      expect(after.json()).toEqual({ password: false, accessSso: true, superAdminSsoOnly: false });
     });
   });
 
@@ -939,6 +949,211 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
     const methods = await sessionsAfter(email, before);
     expect(methods).toHaveLength(3);
     expect(methods.every((row) => row.method === 'access_sso')).toBe(true);
+  });
+
+  /*
+   * #687 / ADR-0034 — only the super admin is Access-only; every other role
+   * keeps the password door. DEV runs `{password: true, superAdminSsoOnly: true}`.
+   */
+  describe('super admin through Access only (#687, ADR-0034)', () => {
+    const superOnly = <T>(fn: () => Promise<T>) => withDoors(true, fn, true);
+    const identifierHash = (email: string) =>
+      createHash('sha256').update(`admin:${email.trim().toLowerCase()}`).digest('hex');
+    const attemptsFor = async (email: string) =>
+      db
+        .select()
+        .from(schema.loginAttempts)
+        .where(eq(schema.loginAttempts.identifierHash, identifierHash(email)));
+
+    it('reports the fact on methods, beside an open password door', async () => {
+      await superOnly(async () => {
+        const res = await api().inject({ method: 'GET', url: '/v1/cms/auth/methods' });
+        expect(res.json()).toEqual({ password: true, accessSso: true, superAdminSsoOnly: true });
+      });
+    });
+
+    it('refuses the super admin with a correct and a wrong password identically, and records nothing', async () => {
+      const boss = await superAdmin();
+      const attemptsBefore = await attemptsFor(SUPER_ADMIN_EMAIL);
+      const auditBefore = await db
+        .select()
+        .from(schema.auditLogs)
+        .where(eq(schema.auditLogs.actorId, boss.id));
+      const warnedBefore = warnLines.length;
+
+      await superOnly(async () => {
+        const right = await login(SUPER_ADMIN_EMAIL, superAdminPassword);
+        const wrong = await login(SUPER_ADMIN_EMAIL, 'not-the-password-at-all');
+        for (const res of [right, wrong]) {
+          expect(res.statusCode).toBe(403);
+          expect(res.json().code).toBe('SUPER_ADMIN_SSO_ONLY');
+          expect(res.json().retryable).toBe(false);
+          expect(res.headers['set-cookie']).toBeUndefined();
+        }
+      });
+
+      const warned = warnLines
+        .slice(warnedBefore)
+        .filter(
+          (l) => l.context === 'AdminAuthService' && String(l.msg).includes('SUPER_ADMIN_SSO_ONLY'),
+        );
+      expect(warned.length).toBeGreaterThanOrEqual(2);
+      for (const line of warned) {
+        expect(line.level).toBe('warn');
+        expect(JSON.stringify(line)).not.toContain(SUPER_ADMIN_EMAIL);
+      }
+      // The password was never compared: no attempt row, so no lockout is fed,
+      // and no audit row under the super admin's id.
+      expect(await attemptsFor(SUPER_ADMIN_EMAIL)).toHaveLength(attemptsBefore.length);
+      expect(
+        await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.actorId, boss.id)),
+      ).toHaveLength(auditBefore.length);
+    });
+
+    it('leaves every other role, and unknown addresses, exactly as before', async () => {
+      const email = 'moderator-keeps-password@gogo.local';
+      await createAdmin(email, 'moderator');
+      const attemptsBefore = await attemptsFor(email);
+
+      await superOnly(async () => {
+        const ok = await login(email, ADMIN_PASSWORD);
+        expect(ok.statusCode).toBe(201);
+        const wrong = await login(email, 'not-the-password-at-all');
+        expect(wrong.statusCode).toBe(401);
+        expect(wrong.json().code).toBe('INVALID_CREDENTIALS');
+        const unknown = await login('nobody-here@gogo.local', 'whatever-password-1');
+        expect(unknown.statusCode).toBe(401);
+        expect(unknown.json().code).toBe('INVALID_CREDENTIALS');
+      });
+
+      // The moderator's two attempts were checked and recorded as always.
+      expect(await attemptsFor(email)).toHaveLength(attemptsBefore.length + 2);
+    });
+
+    it('answers the closed general door first, and a lockout before its own refusal', async () => {
+      await superAdmin();
+      // Both switches: the general door's answer wins, for every role.
+      await withDoors(
+        false,
+        async () => {
+          const res = await login(SUPER_ADMIN_EMAIL, superAdminPassword);
+          expect(res.statusCode).toBe(403);
+          expect(res.json().code).toBe('PASSWORD_LOGIN_DISABLED');
+        },
+        true,
+      );
+
+      // An identifier locked by failures from before the flip answers 429.
+      const seeded = await db
+        .insert(schema.loginAttempts)
+        .values(
+          Array.from({ length: ADMIN_LOCKOUT_THRESHOLD }, () => ({
+            identifierHash: identifierHash(SUPER_ADMIN_EMAIL),
+            ipHash: 'seeded-for-precedence',
+            succeeded: false,
+          })),
+        )
+        .returning({ id: schema.loginAttempts.id });
+      try {
+        await superOnly(async () => {
+          const res = await login(SUPER_ADMIN_EMAIL, superAdminPassword);
+          expect(res.statusCode).toBe(429);
+        });
+      } finally {
+        await db.delete(schema.loginAttempts).where(
+          inArray(
+            schema.loginAttempts.id,
+            seeded.map((row) => row.id),
+          ),
+        );
+      }
+    });
+
+    it('stops the super admin password-born sessions refreshing, legacy ones too, and revokes the family', async () => {
+      await superAdmin();
+      const before = await sessionIds(SUPER_ADMIN_EMAIL);
+      const opened = await login(SUPER_ADMIN_EMAIL, superAdminPassword);
+      expect(opened.statusCode).toBe(201);
+      const legacyOpened = await login(SUPER_ADMIN_EMAIL, superAdminPassword);
+      expect(legacyOpened.statusCode).toBe(201);
+      // The second family predates the column.
+      const [legacyRow] = await db
+        .select({ id: schema.adminSessions.id })
+        .from(schema.adminSessions)
+        .where(
+          eq(
+            schema.adminSessions.refreshTokenHash,
+            createHash('sha256')
+              .update(legacyOpened.json().refreshToken as string)
+              .digest('hex'),
+          ),
+        );
+      expect(legacyRow).toBeDefined();
+      await db
+        .update(schema.adminSessions)
+        .set({ authMethod: null })
+        .where(eq(schema.adminSessions.id, legacyRow!.id));
+
+      const warnedBefore = warnLines.length;
+      await superOnly(async () => {
+        for (const res of [opened, legacyOpened]) {
+          const refused = await refresh(res.json().refreshToken as string);
+          expect(refused.statusCode).toBe(401);
+          expect(refused.json().code).toBe('SESSION_REVOKED');
+        }
+      });
+      expect(
+        warnLines
+          .slice(warnedBefore)
+          .some(
+            (l) =>
+              l.level === 'warn' &&
+              l.context === 'AdminAuthService' &&
+              String(l.msg).includes('cms.refresh refused: super_admin'),
+          ),
+      ).toBe(true);
+
+      const families = await sessionsAfter(SUPER_ADMIN_EMAIL, before);
+      expect(families).toHaveLength(2);
+      for (const row of families) {
+        expect(row.revokedAt).not.toBeNull();
+        expect(row.reason).toBe('super_admin_sso_only');
+      }
+    });
+
+    it('lets other roles password sessions and the super admin SSO session keep rotating', async () => {
+      const email = 'editor-keeps-refreshing@gogo.local';
+      await createAdmin(email, 'editor');
+      const editorBefore = await sessionIds(email);
+      const editorOpened = await login(email, ADMIN_PASSWORD);
+      await superAdmin();
+      const bossBefore = await sessionIds(SUPER_ADMIN_EMAIL);
+
+      await superOnly(async () => {
+        const editorRotated = await refresh(editorOpened.json().refreshToken as string);
+        expect(editorRotated.statusCode).toBe(201);
+
+        const sso = await exchange(SUPER_ADMIN_EMAIL, { 'sec-fetch-site': 'same-origin' });
+        expect(sso.statusCode).toBe(201);
+        const ssoRotated = await refresh(sso.json().refreshToken as string);
+        expect(ssoRotated.statusCode).toBe(201);
+      });
+
+      const editorRows = await sessionsAfter(email, editorBefore);
+      expect(editorRows.every((row) => row.method === 'password' && row.revokedAt === null)).toBe(
+        true,
+      );
+      const bossRows = await sessionsAfter(SUPER_ADMIN_EMAIL, bossBefore);
+      expect(bossRows).toHaveLength(2);
+      expect(bossRows.every((row) => row.method === 'access_sso')).toBe(true);
+    });
+
+    it('is a no-op when off: the super admin signs in by password as before', async () => {
+      await withDoors(true, async () => {
+        const res = await login(SUPER_ADMIN_EMAIL, superAdminPassword);
+        expect(res.statusCode).toBe(201);
+      });
+    });
   });
 
   /*

@@ -105,7 +105,7 @@ export { PlaceImportService } from '../places/application/place-import.service';
 
 // CMS (CMS-001..010)
 export { CmsModule } from '../cms/presentation/cms.module';
-export { AdminAuthService } from '../cms/application/admin-auth.service';
+export { AdminAuthService, ADMIN_LOCKOUT_THRESHOLD } from '../cms/application/admin-auth.service';
 export { CloudflareAccessService } from '../cms/application/cf-access.service';
 export { SessionRevocationService } from '../identity/application/session-revocation.service';
 
