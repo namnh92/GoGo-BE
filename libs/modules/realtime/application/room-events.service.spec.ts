@@ -108,8 +108,11 @@ describe('stream ceiling (GoGo-BE#683)', () => {
       reason: 'actor_cap',
     });
     expect(warn).toHaveBeenCalledTimes(1);
+    // One argument: the pino bridge drops a string passed after an object.
+    expect(warn.mock.calls[0]).toHaveLength(1);
     const [fields] = warn.mock.calls[0]!;
     expect(fields).toEqual({
+      msg: 'room event stream refused: actor stream cap',
       event: 'realtime.stream_refused',
       reason: 'actor_cap',
       actor_kind: 'guest',

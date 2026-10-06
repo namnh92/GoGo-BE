@@ -73,18 +73,20 @@ export class RoomEventsService {
        * deferred a client-side pool until this refusal is actually seen; this
        * counter is where it is seen. The log carries the actor's kind, never
        * its id.
+       *
+       * One object, `msg` inside it: `NestPinoLogger` emits an object message
+       * as fields and keeps only the context from the parameters after it, so a
+       * second string here would be silently dropped.
        */
       this.metrics.increment('realtime_stream_refusals_total', { reason: 'actor_cap' });
-      this.logger.warn(
-        {
-          event: 'realtime.stream_refused',
-          reason: 'actor_cap',
-          actor_kind: actor.type,
-          open_streams: open,
-          room_id: roomId,
-        },
-        'room event stream refused: actor stream cap',
-      );
+      this.logger.warn({
+        msg: 'room event stream refused: actor stream cap',
+        event: 'realtime.stream_refused',
+        reason: 'actor_cap',
+        actor_kind: actor.type,
+        open_streams: open,
+        room_id: roomId,
+      });
       throw AppError.tooManyRequests('Too many open event streams for this session');
     }
 
