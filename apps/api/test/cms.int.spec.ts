@@ -2115,6 +2115,14 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
       expect((await sessionRow(row!.id)).accessBound).toBe(true);
     });
 
+    it('BE-c2: the TOTP columns are gone from admin_users (migration 0075)', async () => {
+      const { rows } = await pool.query(
+        `select column_name from information_schema.columns
+           where table_name = 'admin_users' and column_name like 'mfa_%'`,
+      );
+      expect(rows).toEqual([]);
+    });
+
     it('has no TOTP routes and no mfaEnrolled field any more', async () => {
       const admin = await createAdmin('bec-totp@gogo.local', 'editor');
       for (const url of ['/v1/cms/auth/totp/setup', '/v1/cms/auth/totp/confirm']) {
@@ -3622,12 +3630,6 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
         createdAt: new Date(Date.UTC(2026, 0, 3)),
       },
     ]);
-    // The legacy TOTP column is unmapped since #687 D-4 but still in the table
-    // until BE-c2; whatever it holds must never reach a response.
-    await pool.query(
-      `update admin_users set mfa_totp_secret_enc = 'enc:should-never-be-returned' where email = $1`,
-      [`${prefix}-c@gogo.local`],
-    );
   });
 
   const list = (qs: string, token = superToken) =>
@@ -3650,18 +3652,16 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
     const raw = JSON.stringify(body);
     expect(raw).not.toContain('passwordHash');
     expect(raw).not.toContain('password_hash');
-    expect(raw).not.toContain('should-never-be-returned');
     expect(raw).not.toContain('ssoSubject');
     expect(raw).not.toContain('okta|c');
     /*
-     * #687 D-4 removed `mfaEnrolled` with TOTP. The legacy secret columns stay
-     * until BE-c2 and must never appear under any of their names.
+     * #687 D-4 removed `mfaEnrolled` with TOTP, and BE-c2 dropped the secret
+     * columns. None of their names may come back in a response.
      */
     expect(raw).not.toContain('mfaTotpSecret');
     expect(raw).not.toContain('mfa_totp_secret');
     expect(raw).not.toContain('mfaTotpPending');
     expect(raw).not.toContain('mfa_totp_pending');
-    // Account `c` is the fixture that carries `enc:should-never-be-returned`.
     expect(c).not.toHaveProperty('mfaEnrolled');
   });
 
