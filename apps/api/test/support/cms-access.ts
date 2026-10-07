@@ -21,7 +21,13 @@ process.env.CF_ACCESS_AUD ||= TEST_ACCESS_AUD;
 
 const CERTS_URL = `https://${TEST_ACCESS_TEAM}/cdn-cgi/access/certs`;
 const realFetch = globalThis.fetch;
-globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+/**
+ * Answers the test team's key set and passes everything else through. Also
+ * exported: a spec that replaces `globalThis.fetch` before building its app
+ * (the cost baseline's Google stub answers every unknown URL 404) hands this to
+ * `CloudflareAccessService` directly.
+ */
+export const testAccessFetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
   if (url === CERTS_URL) {
     return Response.json({
@@ -30,6 +36,7 @@ globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestIni
   }
   return realFetch(input, init);
 }) as typeof fetch;
+globalThis.fetch = testAccessFetch;
 
 /** An RS256 assertion for `email`, signed by the key the test team publishes. */
 export function cmsAssertion(email: string): string {

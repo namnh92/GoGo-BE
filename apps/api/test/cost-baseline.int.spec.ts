@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import {
+  CloudflareAccessService,
   COST_USAGE_LEDGER,
   PlaceImportJobService,
   utcDay,
@@ -27,7 +28,7 @@ import {
   installGoogleStub,
   loadCatalog,
 } from '../../../scripts/cost-baseline/stub-google';
-import { cmsAccessHeaders } from './support/cms-access';
+import { cmsAccessHeaders, testAccessFetch } from './support/cms-access';
 
 /**
  * PR3 / COST-BE-003 (#336) — the frozen baseline, re-frozen by #338.
@@ -187,6 +188,10 @@ beforeAll(async () => {
 
   const { createApp } = await import('../src/main.js');
   app = await createApp();
+  // The Google stub answers every URL it does not know with 404, the test
+  // Access key set included (#687 D-4): CMS logins verify against it.
+  (app.get(CloudflareAccessService) as unknown as { fetchImpl: typeof fetch }).fetchImpl =
+    testAccessFetch;
   await app.init();
   await api().ready();
   ledger = app.get(COST_USAGE_LEDGER);
