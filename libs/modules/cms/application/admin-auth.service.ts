@@ -14,6 +14,7 @@ import { writeAudit } from '../../shared/audit';
 import { SecretBox } from '../../shared/secret-box';
 import { decodeKeysetCursor, encodeKeysetCursor, toIso } from '../../shared/cursor';
 import { IdentityRepository } from '../../identity/infrastructure/identity.repository';
+import { runSuperAdminBootErase } from './super-admin-boot-gate';
 
 export type AdminRole = (typeof schema.adminUsers.$inferSelect)['role'];
 export type AdminStatus = (typeof schema.adminUsers.$inferSelect)['status'];
@@ -155,30 +156,36 @@ export class AdminAuthService implements OnApplicationBootstrap {
   private readonly logger = new Logger(AdminAuthService.name);
 
   /**
-   * #687 review F-05 — run the super admin erase gate once this API has
-   * started. The migrate container's sync ran while the previous API (switch
+   * #687 review F-05 — run the super admin erase gate before this API starts
+   * serving. The migrate container's sync ran while the previous API (switch
    * off) could still serve a reset or a password change; whatever that put back
    * goes now, the old process being gone. Only the erase, never the address.
-   * A failure is logged, not fatal: login and refresh refuse the super admin's
-   * password whatever the hash holds while the switch is on.
+   *
+   * Not best-effort: a rejection here fails `app.init()`, so the process never
+   * listens and the deploy's health wait fails. `super-admin-boot-gate.ts`
+   * decides which outcomes are fatal and how far a database error is retried;
+   * `pending` (no SSO confirmation yet) starts, because that is the documented
+   * state until the owner proves the Access door (D-3).
    */
   async onApplicationBootstrap(): Promise<void> {
+    if (!this.config.CMS_SUPER_ADMIN_SSO_ONLY) return;
     const email = this.config.CMS_SUPER_ADMIN_EMAIL;
-    if (!this.config.CMS_SUPER_ADMIN_SSO_ONLY || !email) return;
-    try {
-      const outcome = await eraseSuperAdminPasswordIfConfirmed(this.db, {
-        email,
-        revision: process.env.GOGO_REVISION ?? null,
-      });
-      if (outcome === 'erased')
-        this.logger.warn('super admin password erased at boot (SSO confirmed)');
-      if (outcome === 'pending')
-        this.logger.log('super admin password erase pending SSO confirmation');
-    } catch (err) {
-      this.logger.error(
-        `super admin erase gate failed at boot: ${err instanceof Error ? err.message : String(err)}`,
+    if (!email) {
+      // env.ts refuses this in a deployed environment; locally the switch
+      // without an address has nothing to gate, and says so.
+      this.logger.warn(
+        'CMS_SUPER_ADMIN_SSO_ONLY is on without CMS_SUPER_ADMIN_EMAIL; erase gate skipped',
       );
+      return;
     }
+    await runSuperAdminBootErase({
+      erase: () =>
+        eraseSuperAdminPasswordIfConfirmed(this.db, {
+          email,
+          revision: process.env.GOGO_REVISION ?? null,
+        }),
+      logger: this.logger,
+    });
   }
 
   /** The step a code belongs to, used to refuse a replay of one already spent. */

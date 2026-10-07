@@ -47,6 +47,11 @@ services:
       # Only Caddy (the single hop in front) may set X-Forwarded-For. The API
       # port is deliberately not published, so nothing else can reach it.
       TRUST_PROXY: '1'
+      # GoGo-BE#687 (review F-06) — the deploy commit. The API re-runs the super
+      # admin erase gate at boot and its `admin.password_erased` audit row names
+      # the revision that erased it; GoGo-Infra deploy-vps.sh sets it on every
+      # `up -d` that starts this service, the same way it does for migrate.
+      GOGO_REVISION: ${GOGO_REVISION:-}
     env_file:
       - ../${ENV_FILE:-.env.prod}
     healthcheck:
