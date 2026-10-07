@@ -912,6 +912,15 @@ export class AdminAuthService {
       AdminAuthService.assertRoleSurvives(before, input.role);
 
       const emailChanges = email !== undefined && email !== before.email.toLowerCase();
+      // #687 D-3 (F-09, O-2) — the super admin's address comes from SSM
+      // `cms/super-admin-email` and nowhere else; the deploy-time sync moves it.
+      // An API edit would be undone by the next deploy, or worse, half-done.
+      if (emailChanges && before.role === 'super_admin') {
+        throw AppError.conflict(
+          'SUPER_ADMIN_EMAIL_FROM_SSM',
+          "The super admin's address is set in SSM (cms/super-admin-email) and applied at deploy",
+        );
+      }
       if (emailChanges) {
         const [taken] = await tx
           .select({ id: schema.adminUsers.id })
@@ -1058,7 +1067,8 @@ export class AdminAuthService {
    */
   async resetAdminPassword(input: { id: string; reason: string; actorId: string }) {
     const { result, revoked } = await this.db.transaction(async (tx) => {
-      await this.loadAdmin(tx, input.id);
+      const target = await this.loadAdmin(tx, input.id);
+      this.assertNoSuperAdminPassword(target.role);
       const temporary = this.tokens.generateOpaqueToken().slice(0, 24);
       const passwordHash = await this.passwords.hash(temporary);
 
@@ -1115,6 +1125,7 @@ export class AdminAuthService {
     keepSessionId: string;
   }) {
     const admin = await this.loadAdmin(this.db, input.adminId);
+    this.assertNoSuperAdminPassword(admin.role);
     const valid = await this.passwords.verifyOrBurn(admin.passwordHash, input.currentPassword);
     if (!valid) throw AppError.unauthorized('INVALID_CREDENTIALS', 'Current password is incorrect');
     if (input.currentPassword === input.newPassword) {
@@ -1144,6 +1155,75 @@ export class AdminAuthService {
     });
     await this.revocations.revokeMany(revoked);
     return { changed: true };
+  }
+
+  /**
+   * #687 D-3 (F-10) — with the switch on, nothing may give the super admin a
+   * password back: not a reset (which would also set a change obligation that
+   * locks the console) and not a change. The account signs in through Access.
+   */
+  private assertNoSuperAdminPassword(role: AdminRole): void {
+    if (this.config.CMS_SUPER_ADMIN_SSO_ONLY && role === 'super_admin') {
+      throw AppError.forbidden(
+        'SUPER_ADMIN_SSO_ONLY',
+        'The super admin signs in through Cloudflare Access and has no password to set',
+      );
+    }
+  }
+
+  /**
+   * #687 D-3 (F-01, O-12) — the super admin proves, from a session opened by
+   * Access, that the Access door works for its current address. The audit row
+   * this writes is the only thing that makes the deploy-time sync erase the
+   * password hash. Idempotent: a second call writes nothing new.
+   */
+  async confirmSuperAdminSso(input: { adminId: string; sessionId: string }) {
+    return this.db.transaction(async (tx) => {
+      const admin = await this.loadAdmin(tx, input.adminId);
+      if (admin.role !== 'super_admin') {
+        throw AppError.forbidden('ROLE_DENIED', 'Only the super admin confirms its own sign-in');
+      }
+      const [session] = await tx
+        .select({ authMethod: schema.adminSessions.authMethod })
+        .from(schema.adminSessions)
+        .where(
+          and(
+            eq(schema.adminSessions.id, input.sessionId),
+            eq(schema.adminSessions.adminId, input.adminId),
+          ),
+        )
+        .limit(1);
+      if (session?.authMethod !== 'access_sso') {
+        throw AppError.forbidden(
+          'ACCESS_SESSION_REQUIRED',
+          'Confirm from a session opened through Cloudflare Access',
+        );
+      }
+      const email = admin.email.toLowerCase();
+      const [existing] = await tx
+        .select({ id: schema.auditLogs.id, createdAt: schema.auditLogs.createdAt })
+        .from(schema.auditLogs)
+        .where(
+          and(
+            eq(schema.auditLogs.action, 'admin.sso_confirmed'),
+            eq(schema.auditLogs.resourceType, 'admin_user'),
+            eq(schema.auditLogs.resourceId, input.adminId),
+            sql`lower(${schema.auditLogs.diff} ->> 'email') = ${email}`,
+          ),
+        )
+        .limit(1);
+      if (!existing) {
+        await writeAudit(tx, {
+          actorType: 'admin',
+          actorId: input.adminId,
+          action: 'admin.sso_confirmed',
+          resourceType: 'admin_user',
+          resourceId: input.adminId,
+          diff: { email, sessionId: input.sessionId },
+        });
+      }
+      return { confirmed: true as const, email, alreadyConfirmed: Boolean(existing) };
+    });
   }
 
   async listAdmins(query: AdminListQuery): Promise<AdminListPage> {

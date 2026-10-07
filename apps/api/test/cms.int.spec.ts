@@ -11,7 +11,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import type { IdentityRepository, PasswordService } from '@gogo/modules';
-import { schema } from '@gogo/database';
+import { schema, syncSuperAdmin } from '@gogo/database';
 import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
 import {
   ADMIN_LOCKOUT_THRESHOLD,
@@ -1207,6 +1207,147 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
   });
 
   /*
+   * #687 BE-b (shape rev 5 D-3) — the super admin's address comes from SSM, the
+   * sync revokes in the database and the guard reads it there, and nothing
+   * gives the super admin a password back while the switch is on.
+   */
+  describe('super admin follows SSM (#687 D-3)', () => {
+    const superOnly = <T>(fn: () => Promise<T>) => withDoors(true, fn, true);
+    const confirmSso = (token: string) =>
+      api().inject({
+        method: 'POST',
+        url: '/v1/cms/auth/super-admin/confirm-sso',
+        remoteAddress: ip(),
+        headers: auth(token),
+      });
+    const confirmations = async (id: string) =>
+      db
+        .select()
+        .from(schema.auditLogs)
+        .where(
+          and(
+            eq(schema.auditLogs.action, 'admin.sso_confirmed'),
+            eq(schema.auditLogs.resourceId, id),
+          ),
+        );
+
+    it('AC-9: the super admin address cannot be changed through the API (409)', async () => {
+      const boss = await superAdmin();
+      const res = await api().inject({
+        method: 'PATCH',
+        url: `/v1/cms/auth/admins/${boss.id}`,
+        remoteAddress: ip(),
+        headers: auth(boss.token),
+        payload: { email: 'someone-else@gogo.local', reason: 'try to move the super admin' },
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().code).toBe('SUPER_ADMIN_EMAIL_FROM_SSM');
+      const [row] = await db
+        .select()
+        .from(schema.adminUsers)
+        .where(eq(schema.adminUsers.id, boss.id));
+      expect(row!.email).toBe(SUPER_ADMIN_EMAIL);
+    });
+
+    it('a staff address still changes through the API', async () => {
+      const boss = await superAdmin();
+      const staff = await createAdmin(`move-me-${Date.now()}@gogo.local`, 'editor');
+      const res = await api().inject({
+        method: 'PATCH',
+        url: `/v1/cms/auth/admins/${staff.id}`,
+        remoteAddress: ip(),
+        headers: auth(boss.token),
+        payload: { email: `moved-${Date.now()}@gogo.local`, reason: 'staff moves mailbox' },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('confirm-sso refuses a password session (403 ACCESS_SESSION_REQUIRED) and writes nothing', async () => {
+      const boss = await superAdmin();
+      const before = (await confirmations(boss.id)).length;
+      const res = await confirmSso(boss.token);
+      expect(res.statusCode).toBe(403);
+      expect(res.json().code).toBe('ACCESS_SESSION_REQUIRED');
+      expect(await confirmations(boss.id)).toHaveLength(before);
+    });
+
+    it('confirm-sso refuses any other role', async () => {
+      const staff = await createAdmin(`confirm-${Date.now()}@gogo.local`, 'ops_admin');
+      const res = await confirmSso(staff.token);
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('confirm-sso from an Access session records the current address once', async () => {
+      const boss = await superAdmin();
+      await superOnly(async () => {
+        const ex = await exchange(SUPER_ADMIN_EMAIL);
+        expect(ex.statusCode).toBe(201);
+        const token = ex.json().accessToken as string;
+        const first = await confirmSso(token);
+        const second = await confirmSso(token);
+        expect(first.statusCode).toBe(201);
+        expect(first.json()).toMatchObject({ confirmed: true, email: SUPER_ADMIN_EMAIL });
+        expect(second.json().alreadyConfirmed).toBe(true);
+        const rows = await confirmations(boss.id);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.diff).toMatchObject({ email: SUPER_ADMIN_EMAIL });
+      });
+    });
+
+    it('with the switch on, reset and change password answer 403 for the super admin', async () => {
+      const boss = await superAdmin();
+      await superOnly(async () => {
+        const token = (await exchange(SUPER_ADMIN_EMAIL)).json().accessToken as string;
+        const reset = await api().inject({
+          method: 'POST',
+          url: `/v1/cms/auth/admins/${boss.id}/reset-password`,
+          remoteAddress: ip(),
+          headers: auth(token),
+          payload: { reason: 'give the super admin a password back' },
+        });
+        const change = await api().inject({
+          method: 'POST',
+          url: '/v1/cms/auth/change-password',
+          remoteAddress: ip(),
+          headers: auth(token),
+          payload: { currentPassword: superAdminPassword, newPassword: 'a-brand-new-password-1' },
+        });
+        expect([reset.statusCode, change.statusCode]).toEqual([403, 403]);
+        expect([reset.json().code, change.json().code]).toEqual([
+          'SUPER_ADMIN_SSO_ONLY',
+          'SUPER_ADMIN_SSO_ONLY',
+        ]);
+      });
+    });
+
+    it('AC-3: a token issued before the sync moved the address is refused on its next request', async () => {
+      await superAdmin();
+      const token = await adminLogin(SUPER_ADMIN_EMAIL, superAdminPassword);
+      const ok = await api().inject({
+        method: 'GET',
+        url: '/v1/cms/auth/admins',
+        headers: auth(token),
+      });
+      expect(ok.statusCode).toBe(200);
+
+      const moved = await syncSuperAdmin(db, { email: 'moved-boss@gogo.local', ssoOnly: false });
+      expect(moved.action).toBe('email_changed');
+      try {
+        // Before expiry, without any Redis write: the guard reads the database.
+        const after = await api().inject({
+          method: 'GET',
+          url: '/v1/cms/auth/admins',
+          headers: auth(token),
+        });
+        expect(after.statusCode).toBe(401);
+        expect(after.json().code).toBe('SESSION_REVOKED');
+      } finally {
+        await syncSuperAdmin(db, { email: SUPER_ADMIN_EMAIL, ssoOnly: false });
+      }
+    });
+  });
+
+  /*
    * #681 — where the password door is closed the address is the single
    * sign-on binding, so changing it is an audited act that revokes sessions.
    */
@@ -1266,30 +1407,24 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
       });
     });
 
-    it('lets the super admin move its own address and keeps the session doing it', async () => {
+    // #687 D-3 (F-09, O-2) replaced #681's self-service move for the super
+    // admin: its address comes from SSM and the deploy-time sync applies it.
+    it('refuses to move the super admin address, leaving its sessions alone', async () => {
       const boss = await superAdmin();
       const sessionsBefore = await live(boss.id);
       expect(sessionsBefore.length).toBeGreaterThan(0);
-      try {
-        const res = await patch(boss.token, boss.id, {
-          email: 'owner-sso@gogo.local',
-          reason: 'bootstrap address to the SSO mailbox',
-        });
-        expect(res.statusCode).toBe(200);
-        // Only the session that made the change survives.
-        expect(await live(boss.id)).toHaveLength(1);
-        const still = await api().inject({
-          method: 'GET',
-          url: '/v1/cms/auth/admins',
-          headers: auth(boss.token),
-        });
-        expect(still.statusCode).toBe(200);
-      } finally {
-        await db
-          .update(schema.adminUsers)
-          .set({ email: SUPER_ADMIN_EMAIL })
-          .where(eq(schema.adminUsers.id, boss.id));
-      }
+      const res = await patch(boss.token, boss.id, {
+        email: 'owner-sso@gogo.local',
+        reason: 'bootstrap address to the SSO mailbox',
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().code).toBe('SUPER_ADMIN_EMAIL_FROM_SSM');
+      expect(await live(boss.id)).toHaveLength(sessionsBefore.length);
+      const [row] = await db
+        .select()
+        .from(schema.adminUsers)
+        .where(eq(schema.adminUsers.id, boss.id));
+      expect(row!.email).toBe(SUPER_ADMIN_EMAIL);
     });
 
     it('refuses an address another account uses, in any case', async () => {

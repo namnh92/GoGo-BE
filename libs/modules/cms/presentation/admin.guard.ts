@@ -95,6 +95,23 @@ export class AdminGuard implements CanActivate {
       throw AppError.forbidden('ADMIN_ONLY', 'Staff account is not active');
     }
 
+    // #687 D-3 (F-16) — revocation truth is the database. The Redis denylist the
+    // AuthGuard consults is a cache that swallows its own write failures, and a
+    // change made outside the API (the deploy-time super admin sync) never
+    // writes it at all. One primary-key read: the session named in the token
+    // must exist, belong to this admin and not be revoked.
+    const [session] = await this.db
+      .select({
+        adminId: schema.adminSessions.adminId,
+        revokedAt: schema.adminSessions.revokedAt,
+      })
+      .from(schema.adminSessions)
+      .where(eq(schema.adminSessions.id, actor.sessionId))
+      .limit(1);
+    if (!session || session.revokedAt || session.adminId !== actor.id) {
+      throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
+    }
+
     // #248 — a temporary password is a credential two people know. Until it is
     // replaced the account may do exactly one thing. Enforced here rather than
     // by the console skipping a screen: `.claude/rules/core.md` #5 — hiding a

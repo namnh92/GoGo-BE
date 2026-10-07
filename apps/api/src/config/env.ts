@@ -1,4 +1,11 @@
 import { z } from 'zod';
+
+/**
+ * #687 — one address rule shared with GoGo-Infra's Access module: a mailbox,
+ * then non-empty domain labels and a TLD (`a@b..com` and `a@.com` refused).
+ */
+export const SUPER_ADMIN_EMAIL_SHAPE =
+  /^[a-z0-9._%+-]+@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
 import {
   ONESIGNAL_APP_ID_PATTERN,
   ProviderConfigurationError,
@@ -112,6 +119,21 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
+    /**
+     * #687 D-2 — the one super admin's address, rendered from SSM
+     * `cms/super-admin-email` and nowhere else (O-1, O-2). The migrate
+     * container syncs the `super_admin` row to it at every deploy
+     * (`cms:sync-super-admin`, D-3). Compared lower-cased. Empty is allowed on a
+     * workstation and refused in any deployed environment (below), so a deploy
+     * whose SSM value is missing fails `config:check` before anything changes.
+     */
+    CMS_SUPER_ADMIN_EMAIL: z
+      .string()
+      .default('')
+      .transform((v) => v.trim().toLowerCase())
+      .refine((v) => v === '' || SUPER_ADMIN_EMAIL_SHAPE.test(v), {
+        message: 'CMS_SUPER_ADMIN_EMAIL must be an email address',
+      }),
     /**
      * #255 — per-type SLA override for the privacy-request ledger, JSON:
      * `{"delete":{"ackHours":72,"fulfillHours":720},...}`. Empty uses the
@@ -691,6 +713,18 @@ const envSchema = z
         path: ['CMS_PASSWORD_LOGIN_ENABLED'],
         message:
           'CMS_PASSWORD_LOGIN_ENABLED=false requires CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD: with neither door the CMS console has no way in',
+      });
+    }
+
+    // #687 D-2 — every deployed environment names its super admin. NODE_ENV,
+    // not APP_ENV: DEV runs the production build and needs the address as much
+    // as production does; a workstation does not.
+    if (env.NODE_ENV === 'production' && !env.CMS_SUPER_ADMIN_EMAIL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CMS_SUPER_ADMIN_EMAIL'],
+        message:
+          'CMS_SUPER_ADMIN_EMAIL is required in a deployed environment: it is the only source of the super admin address (SSM cms/super-admin-email)',
       });
     }
 

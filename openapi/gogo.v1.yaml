@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.70
+  version: 1.0.0-alpha.71
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -8692,6 +8692,12 @@ paths:
 
             `ADMIN_EMAIL_TAKEN` — another staff account already uses that
             address (case-insensitive).
+
+
+            `SUPER_ADMIN_EMAIL_FROM_SSM` (GoGo-BE#687, alpha.71) — the super
+            admin's address cannot be changed here: it comes from SSM
+            `cms/super-admin-email` and the deploy applies it. Staff addresses
+            change as before.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -8787,7 +8793,50 @@ paths:
                 properties:
                   temporaryPassword: { type: string }
                   mustChangePassword: { type: boolean, enum: [true] }
+        '403':
+          description: >
+            `SUPER_ADMIN_SSO_ONLY` (GoGo-BE#687, alpha.71) — the target is the
+            super admin and `superAdminSsoOnly` is on: it signs in through
+            Cloudflare Access and has no password to reset.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /cms/auth/super-admin/confirm-sso:
+    post:
+      operationId: cmsConfirmSuperAdminSso
+      tags: [cms]
+      summary: 'Super admin: confirm that Access sign-in works for your current address'
+      description: >
+        GoGo-BE#687 (alpha.71). Called by the super admin from a session opened
+        through Cloudflare Access (`cmsAccessExchange`). Records that the Access
+        door works for the account's current address; only after this does the
+        deploy-time sync erase the account's password hash when
+        `superAdminSsoOnly` is on. Idempotent: a repeat call records nothing new
+        and answers the same.
+      responses:
+        '201':
+          description: Confirmed (now or earlier)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [confirmed, email, alreadyConfirmed]
+                properties:
+                  confirmed: { type: boolean, enum: [true] }
+                  email: { type: string, format: email }
+                  alreadyConfirmed: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: >
+            `ACCESS_SESSION_REQUIRED` — the calling session was opened by
+            password, not through Access. `ROLE_DENIED` / `ADMIN_ONLY` — the
+            caller is not the super admin.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
   /cms/auth/change-password:
@@ -8845,6 +8894,13 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '401':
           description: '`INVALID_CREDENTIALS` — current password is incorrect.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403':
+          description: >
+            `SUPER_ADMIN_SSO_ONLY` (GoGo-BE#687, alpha.71) — the caller is the
+            super admin and `superAdminSsoOnly` is on: it has no password.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }

@@ -199,6 +199,40 @@ describe('SHARE_LINK_EDGE_AUTH_TOKEN (SEC-004)', () => {
     });
   });
 
+  describe('CMS_SUPER_ADMIN_EMAIL (#687 D-2)', () => {
+    it('is the one super admin address, compared lower-cased', () => {
+      expect(
+        loadEnv({ ...base, NODE_ENV: 'development', CMS_SUPER_ADMIN_EMAIL: ' Boss@Example.COM ' })
+          .CMS_SUPER_ADMIN_EMAIL,
+      ).toBe('boss@example.com');
+    });
+
+    it('may be absent on a workstation', () => {
+      expect(loadEnv({ ...base, NODE_ENV: 'development' }).CMS_SUPER_ADMIN_EMAIL).toBe('');
+    });
+
+    it('is required in every deployed environment (NODE_ENV=production)', () => {
+      expect(() =>
+        loadEnv({
+          ...base,
+          NODE_ENV: 'production',
+          AUTH_JWT_SECRET: 'x'.repeat(48),
+          AUTH_REFRESH_SECRET: 'y'.repeat(48),
+          COOKIE_SECRET: 'z'.repeat(48),
+          COOKIE_SECURE: 'true',
+        }),
+      ).toThrow(/CMS_SUPER_ADMIN_EMAIL is required/);
+    });
+
+    for (const bad of ['boss', 'boss@', '@example.com', 'boss@example..com', 'a b@example.com']) {
+      it(`refuses a malformed address: ${JSON.stringify(bad)}`, () => {
+        expect(() =>
+          loadEnv({ ...base, NODE_ENV: 'development', CMS_SUPER_ADMIN_EMAIL: bad }),
+        ).toThrow(/CMS_SUPER_ADMIN_EMAIL/);
+      });
+    }
+  });
+
   describe('super admin through Access only (#687, ADR-0034)', () => {
     const access = { CF_ACCESS_TEAM_DOMAIN: 'gogo.cloudflareaccess.com', CF_ACCESS_AUD: 'aud-tag' };
 

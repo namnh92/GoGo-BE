@@ -83,7 +83,8 @@ services:
     env_file:
       - ../${ENV_FILE:-.env.prod}
 
-  # Reference data and, outside production, a bootstrap CMS admin. Behind the
+  # Reference data (no CMS account: the super admin follows CMS_SUPER_ADMIN_EMAIL
+  # via the migrate container, GoGo-BE#687). Behind the
   # same `tools` profile as migrate: `up` must never run it, because seeding a
   # shared environment on every deploy overwrites whatever someone was testing.
   #

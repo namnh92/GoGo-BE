@@ -128,8 +128,9 @@ const adminListQuery = z.object({
  */
 const reasonSchema = z.string().trim().min(3).max(500);
 /**
- * ADR-0018 — an environment has exactly one `super_admin`, bootstrapped from
- * SSM by `db:seed-admin`, so no request may hand that role out. #447 narrows
+ * ADR-0018 — an environment has exactly one `super_admin`, whose row follows
+ * SSM `cms/super-admin-email` at deploy (`cms:sync-super-admin`, #687 D-3), so
+ * no request may hand that role out. #447 narrows
  * the request enum to the three roles that can be assigned (OpenAPI
  * `AdminAssignableRole`), now that GoGo-CMS#142 stopped offering the fourth.
  *
@@ -403,6 +404,19 @@ export class CmsAuthController {
     @Body(new ZodValidationPipe(adminReasonSchema)) body: { reason: string },
   ) {
     return this.auth.resetAdminPassword({ id, ...body, actorId: actor.id });
+  }
+
+  /**
+   * #687 D-3 (F-01) — the super admin confirms, from a session Access opened,
+   * that the Access door works for its current address. Required before the
+   * deploy-time sync will erase its password hash. 403 from a password session
+   * or for any other role.
+   */
+  @RequireRole('super_admin')
+  @RateLimit({ action: 'cms.super_admin_confirm_sso', limit: 5, windowSeconds: 60, keyBy: 'actor' })
+  @Post('super-admin/confirm-sso')
+  confirmSuperAdminSso(@CurrentActor() actor: Actor) {
+    return this.auth.confirmSuperAdminSso({ adminId: actor.id, sessionId: actor.sessionId });
   }
 
   /**
