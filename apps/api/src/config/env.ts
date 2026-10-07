@@ -85,9 +85,11 @@ const envSchema = z
      * are published; `CF_ACCESS_AUD` is the application's audience tag.
      *
      * Empty means single sign-on is off for this environment and
-     * `POST /v1/cms/auth/access-exchange` answers 503 saying so. Password +
-     * TOTP is unaffected either way, where CMS_PASSWORD_LOGIN_ENABLED leaves
-     * that door open.
+     * `POST /v1/cms/auth/access-exchange` answers 503 saying so. The password
+     * door (#687 D-4) requires an assertion from this application in every
+     * production build, so a production build without it admits nobody by
+     * password; only a non-production workstation with Access unset keeps a
+     * bare password for local development.
      */
     CF_ACCESS_TEAM_DOMAIN: z.string().default(''),
     CF_ACCESS_AUD: z.string().default(''),
@@ -184,9 +186,9 @@ const envSchema = z
       .default('true')
       .transform((v) => v === 'true'),
     /**
-     * SEC-004 (#62) — encrypts admin TOTP secrets at rest. Required in
-     * production: without it a database dump hands over every second factor,
-     * which is the one credential a leaked dump is not supposed to include.
+     * SEC-004 (#62) — encrypted admin TOTP secrets at rest. Unread since #687
+     * D-4 replaced TOTP with the Access assertion; accepted (optional) until the
+     * TOTP columns and the SSM parameter retire together (BE-c2, R8).
      */
     CMS_MFA_ENCRYPTION_KEY: z.string().default(''),
     /**
@@ -585,13 +587,6 @@ const envSchema = z
           path: ['TRUST_PROXY'],
           message:
             'TRUST_PROXY must be set explicitly in production: "false" when the API is directly exposed, or the hop count / CIDR list of the proxies in front of it',
-        });
-      }
-      if (env.CMS_MFA_ENCRYPTION_KEY.length < 32) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['CMS_MFA_ENCRYPTION_KEY'],
-          message: 'CMS_MFA_ENCRYPTION_KEY must be at least 32 chars in production',
         });
       }
       if (env.COOKIE_SECRET.length < 32) {

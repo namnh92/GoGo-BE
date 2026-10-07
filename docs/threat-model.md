@@ -319,6 +319,10 @@ this.
 
 ### Admin second factor (#62)
 
+> **Superseded by GoGo-BE#687 D-4 (alpha.72, ADR-0034 amendment).** TOTP is
+> removed; the second factor is Cloudflare Access admitting the account's
+> mailbox, required on the password login request. The text below is history.
+
 The console had MFA in the sense that a code was checked. Four things it was
 not doing:
 

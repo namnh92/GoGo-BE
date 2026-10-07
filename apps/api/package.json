@@ -32,7 +32,6 @@
     "argon2": "^0.45.1",
     "drizzle-orm": "^0.44.7",
     "ioredis": "^6.0.0",
-    "otplib": "^12.0.1",
     "pg": "^8.23.0",
     "sharp": "0.35.4",
     "testcontainers": "^12.1.0",

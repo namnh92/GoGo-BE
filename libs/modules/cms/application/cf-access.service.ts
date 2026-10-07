@@ -181,7 +181,7 @@ export class CloudflareAccessService {
     } catch {
       // Cloudflare being unreachable is an outage, not a bad credential. Saying
       // 401 here would send an operator hunting for a login problem that does
-      // not exist — and the password + TOTP door still works meanwhile.
+      // not exist.
       throw AppError.serviceUnavailable(
         'ACCESS_KEYS_UNAVAILABLE',
         'Cannot reach the identity provider right now',

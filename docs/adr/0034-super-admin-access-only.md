@@ -152,7 +152,13 @@ dropped) — and the Infra work in GoGo-Infra#194/#196/#199. The shape file
   (`DrizzleQueryError <- DatabaseError 08006`), never by message, and the fatal boot error keeps no
   `cause`: Drizzle repeats the bound parameters — the address — in its message and stack (F-07).
 - **D-4 · Cloudflare carries the second factor.** CMS TOTP is removed; the password door requires a
-  verified Access assertion for the same mailbox (BE-c).
+  verified Access assertion for the same mailbox (BE-c, alpha.72), checked before any credential
+  (`401 ACCESS_ASSERTION_REQUIRED`). Every production build requires it; a non-production build with
+  `CF_ACCESS_*` unset (a workstation) keeps a bare password for local development. Migration 0074
+  adds `admin_sessions.access_bound`: password login with the assertion and `access-exchange` set it,
+  rotation inherits it, and refresh revokes an unbound password family (`access_unbound`) wherever
+  the assertion is required — every family from before BE-c signs in once more. The TOTP columns
+  stay unread until BE-c2; `CMS_MFA_ENCRYPTION_KEY` stays optional until R8.
 - **D-7 · Doors.** super_admin: Access exchange only. editor/moderator/ops_admin: Access exchange,
   or password plus the matching Access assertion. A direct call to `api-<env>` without an assertion
   is refused.

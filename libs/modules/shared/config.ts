@@ -57,8 +57,6 @@ export type IdentityConfig = {
   AUTH_REFRESH_TOKEN_TTL_SECONDS: number;
   AUTH_GUEST_SESSION_TTL_SECONDS: number;
   AUTH_ADMIN_REFRESH_TTL_SECONDS: number;
-  /** Encrypts admin TOTP secrets at rest (#62). */
-  CMS_MFA_ENCRYPTION_KEY: string;
   COOKIE_SECURE: boolean;
   /**
    * #679 / ADR-0032 — whether the CMS password door is open. Off means

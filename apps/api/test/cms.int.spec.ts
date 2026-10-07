@@ -2,7 +2,6 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
-import { authenticator } from 'otplib';
 import { and, desc, DrizzleQueryError, eq, inArray, sql } from 'drizzle-orm';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -626,8 +625,8 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
     expect(body).not.toContain('passwordHash');
     expect(body).not.toContain('$argon2');
     expect(body).not.toContain('mfaTotpSecret');
-    // The status the console renders, with no way back to the secret.
-    expect(list.json().items[0]).toHaveProperty('mfaEnrolled');
+    // #687 D-4 — TOTP is gone, and so is the status that described it.
+    expect(list.json().items[0]).not.toHaveProperty('mfaEnrolled');
     expect(list.json().items[0]).toHaveProperty('mustChangePassword');
   });
 
@@ -735,12 +734,17 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
     }
   }
 
-  const login = (email: string, password: string) =>
+  /**
+   * #687 D-4 — with Access configured the password door needs the assertion
+   * for the same mailbox, so the helper carries it unless told otherwise.
+   */
+  const login = (email: string, password: string, assertion: string | null = assertionFor(email)) =>
     api().inject({
       method: 'POST',
       url: '/v1/cms/auth/login',
       remoteAddress: ip(),
       payload: { email, password },
+      ...(assertion ? { headers: { 'cf-access-jwt-assertion': assertion } } : {}),
     });
   const refresh = (refreshToken: string) =>
     api().inject({
@@ -1172,11 +1176,13 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
       const email = 'editor-keeps-refreshing@gogo.local';
       await createAdmin(email, 'editor');
       const editorBefore = await sessionIds(email);
-      const editorOpened = await login(email, ADMIN_PASSWORD);
       await superAdmin();
       const bossBefore = await sessionIds(SUPER_ADMIN_EMAIL);
 
       await superOnly(async () => {
+        // Opened with the Access assertion (#687 D-4), so it is a bound family.
+        const editorOpened = await login(email, ADMIN_PASSWORD);
+        expect(editorOpened.statusCode).toBe(201);
         const editorRotated = await refresh(editorOpened.json().refreshToken as string);
         expect(editorRotated.statusCode).toBe(201);
 
@@ -2012,6 +2018,136 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
    * gets CROSS_SITE_REQUEST, and the verifier is never reached. A repeated
    * header arrives joined ("same-origin, cross-site") and is refused too.
    */
+  /**
+   * #687 D-4 (AC-5, AC-10) — the Access assertion replaces TOTP on the
+   * password door, and a password family opened without it stops refreshing.
+   */
+  describe('Access assertion replaces TOTP (#687 D-4)', () => {
+    const sessionRow = async (id: string) =>
+      (
+        await db.select().from(schema.adminSessions).where(eq(schema.adminSessions.id, id)).limit(1)
+      )[0]!;
+    const attempts = async (email: string) =>
+      (
+        await db
+          .select()
+          .from(schema.loginAttempts)
+          .where(
+            eq(
+              schema.loginAttempts.identifierHash,
+              createHash('sha256').update(`admin:${email}`).digest('hex'),
+            ),
+          )
+      ).length;
+
+    it('refuses a login with no assertion before comparing the password, writing nothing', async () => {
+      const email = 'bec-none@gogo.local';
+      await createAdmin(email, 'editor');
+      const before = await sessionIds(email);
+      const attemptsBefore = await attempts(email);
+      await withDoors(true, async () => {
+        for (const password of [ADMIN_PASSWORD, 'wrong-password-123']) {
+          const res = await login(email, password, null);
+          expect(res.statusCode).toBe(401);
+          expect(res.json().code).toBe('ACCESS_ASSERTION_REQUIRED');
+        }
+      });
+      expect(await sessionsAfter(email, before)).toEqual([]);
+      expect(await attempts(email)).toBe(attemptsBefore);
+    });
+
+    it('refuses an assertion for another mailbox, and one that does not verify', async () => {
+      const email = 'bec-foreign@gogo.local';
+      await createAdmin(email, 'editor');
+      await withDoors(true, async () => {
+        const foreign = await login(email, ADMIN_PASSWORD, assertionFor('someone-else@gogo.local'));
+        expect(foreign.statusCode).toBe(401);
+        expect(foreign.json().code).toBe('ACCESS_ASSERTION_REQUIRED');
+        const forged = await login(email, ADMIN_PASSWORD, 'not.a.jwt');
+        expect(forged.statusCode).toBe(401);
+        expect(forged.json().code).toBe('ACCESS_ASSERTION_REQUIRED');
+      });
+    });
+
+    it('opens a bound password session with its own assertion (any case), and rotation stays bound', async () => {
+      const email = 'bec-own@gogo.local';
+      await createAdmin(email, 'editor');
+      const before = await sessionIds(email);
+      await withDoors(true, async () => {
+        const res = await login(email, ADMIN_PASSWORD, assertionFor('BEC-Own@GoGo.local'));
+        expect(res.statusCode).toBe(201);
+        const [opened] = await sessionsAfter(email, before);
+        expect(opened).toMatchObject({ method: 'password' });
+        expect((await sessionRow(opened!.id)).accessBound).toBe(true);
+        const rotated = await refresh(res.json().refreshToken);
+        expect(rotated.statusCode).toBe(201);
+        const rows = await sessionsAfter(email, before);
+        expect(rows).toHaveLength(2);
+        for (const row of rows) expect((await sessionRow(row.id)).accessBound).toBe(true);
+      });
+    });
+
+    it('binds an exchange family by construction', async () => {
+      const email = 'bec-sso@gogo.local';
+      await createAdmin(email, 'editor');
+      const before = await sessionIds(email);
+      await withDoors(true, async () => {
+        expect((await exchange(email)).statusCode).toBe(201);
+      });
+      const [row] = await sessionsAfter(email, before);
+      expect((await sessionRow(row!.id)).accessBound).toBe(true);
+    });
+
+    it('AC-10: a password family opened without the assertion is revoked at refresh (access_unbound)', async () => {
+      const email = 'bec-legacy@gogo.local';
+      await createAdmin(email, 'editor');
+      const before = await sessionIds(email);
+      // Opened where no assertion is required — what every pre-BE-c family is.
+      const legacy = await api().inject({
+        method: 'POST',
+        url: '/v1/cms/auth/login',
+        remoteAddress: ip(),
+        payload: { email, password: ADMIN_PASSWORD },
+      });
+      expect(legacy.statusCode).toBe(201);
+      const [legacyRow] = await sessionsAfter(email, before);
+      expect((await sessionRow(legacyRow!.id)).accessBound).toBe(false);
+      await withDoors(true, async () => {
+        const res = await refresh(legacy.json().refreshToken);
+        expect(res.statusCode).toBe(401);
+        expect(res.json().code).toBe('SESSION_REVOKED');
+        expect(await sessionRow(legacyRow!.id)).toMatchObject({ revokeReason: 'access_unbound' });
+        // Signing in again, with the assertion, works and refreshes.
+        const again = await login(email, ADMIN_PASSWORD);
+        expect(again.statusCode).toBe(201);
+        expect((await refresh(again.json().refreshToken)).statusCode).toBe(201);
+      });
+    });
+
+    it('has no TOTP routes and no mfaEnrolled field any more', async () => {
+      const admin = await createAdmin('bec-totp@gogo.local', 'editor');
+      for (const url of ['/v1/cms/auth/totp/setup', '/v1/cms/auth/totp/confirm']) {
+        const res = await api().inject({
+          method: 'POST',
+          url,
+          remoteAddress: ip(),
+          headers: auth(admin.token),
+          payload: { password: ADMIN_PASSWORD, code: '123456' },
+        });
+        expect(res.statusCode).toBe(404);
+      }
+      const boss = await superAdmin();
+      const list = await api().inject({
+        method: 'GET',
+        url: '/v1/cms/auth/admins?limit=100',
+        remoteAddress: ip(),
+        headers: auth(boss.token),
+      });
+      expect(list.statusCode).toBe(200);
+      for (const item of list.json().items) expect(item).not.toHaveProperty('mfaEnrolled');
+    });
+  });
+
   it('refuses an exchange a browser labels cross-origin, before verifying anything', async () => {
     const email = 'cross-site@gogo.local';
     await createAdmin(email, 'editor');
@@ -3522,20 +3658,15 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
     expect(raw).not.toContain('ssoSubject');
     expect(raw).not.toContain('okta|c');
     /*
-     * #248 replaced a blanket `not.toContain('mfa')` with the distinction that
-     * assertion was standing in for. `mfaEnrolled` is a fact the console needs
-     * — it is how an operator sees which accounts have no second factor — and
-     * carries nothing about the secret. What must never appear is the secret
-     * itself, under any of the column names that hold it.
+     * #687 D-4 removed `mfaEnrolled` with TOTP. The legacy secret columns stay
+     * until BE-c2 and must never appear under any of their names.
      */
     expect(raw).not.toContain('mfaTotpSecret');
     expect(raw).not.toContain('mfa_totp_secret');
     expect(raw).not.toContain('mfaTotpPending');
     expect(raw).not.toContain('mfa_totp_pending');
     // Account `c` is the fixture that carries `enc:should-never-be-returned`.
-    // The same row now proves both halves: the status is reported, the secret
-    // it is derived from is not.
-    expect(c.mfaEnrolled).toBe(true);
+    expect(c).not.toHaveProperty('mfaEnrolled');
   });
 
   it('reports a locked account as locked, so the console can show it', async () => {
@@ -7627,217 +7758,6 @@ describe('audit read (BE-IMP-010, #158, FR-CMS-008)', () => {
       });
       expect(res.statusCode).toBe(404);
     }
-  });
-});
-
-/**
- * CMS-001 (#62) — the second factor was not behaving like one. Each test here
- * is one of the four ways it fell short.
- */
-describe('admin MFA hardening', () => {
-  async function enrolled(email: string) {
-    const admin = await createAdmin(email, 'editor');
-    const setup = await api().inject({
-      method: 'POST',
-      url: '/v1/cms/auth/totp/setup',
-      remoteAddress: ip(),
-      headers: auth(admin.token),
-      payload: { password: 'admin-password-123' },
-    });
-    expect(setup.statusCode).toBe(201);
-    const secret = setup.json().secret as string;
-
-    const confirm = await api().inject({
-      method: 'POST',
-      url: '/v1/cms/auth/totp/confirm',
-      remoteAddress: ip(),
-      headers: auth(admin.token),
-      payload: { code: authenticator.generate(secret) },
-    });
-    expect(confirm.statusCode).toBe(201);
-    return { ...admin, email, secret };
-  }
-
-  const login = (email: string, totp?: string) =>
-    api().inject({
-      method: 'POST',
-      url: '/v1/cms/auth/login',
-      remoteAddress: ip(),
-      payload: { email, password: 'admin-password-123', ...(totp ? { totp } : {}) },
-    });
-
-  it('stores the TOTP secret encrypted, not under a column that merely says so', async () => {
-    const admin = await enrolled('mfa-encrypted@gogo.local');
-    const [row] = await db
-      .select()
-      .from(schema.adminUsers)
-      .where(eq(schema.adminUsers.id, admin.id));
-
-    expect(row!.mfaTotpSecretEnc).toBeTruthy();
-    // The whole point: a database dump already has the password hashes, so the
-    // second factor is what should still stop an attacker.
-    expect(row!.mfaTotpSecretEnc).not.toBe(admin.secret);
-    expect(row!.mfaTotpSecretEnc).not.toContain(admin.secret);
-    expect(row!.mfaTotpSecretEnc!.startsWith('v1.')).toBe(true);
-  });
-
-  it('does not switch MFA on until a code proves the authenticator has it', async () => {
-    const admin = await createAdmin('mfa-pending@gogo.local', 'editor');
-    const setup = await api().inject({
-      method: 'POST',
-      url: '/v1/cms/auth/totp/setup',
-      remoteAddress: ip(),
-      headers: auth(admin.token),
-      payload: { password: 'admin-password-123' },
-    });
-    expect(setup.json().confirmed).toBe(false);
-
-    const [row] = await db
-      .select()
-      .from(schema.adminUsers)
-      .where(eq(schema.adminUsers.id, admin.id));
-    // Pending, not active: in production an unconfirmed secret would lock the
-    // admin out of the console it was meant to protect.
-    expect(row!.mfaTotpPendingEnc).toBeTruthy();
-    expect(row!.mfaTotpSecretEnc).toBeNull();
-    expect(row!.mfaEnrolledAt).toBeNull();
-  });
-
-  it('refuses a wrong confirmation code and stays unenrolled', async () => {
-    const admin = await createAdmin('mfa-badconfirm@gogo.local', 'editor');
-    await api().inject({
-      method: 'POST',
-      url: '/v1/cms/auth/totp/setup',
-      remoteAddress: ip(),
-      headers: auth(admin.token),
-      payload: { password: 'admin-password-123' },
-    });
-    const res = await api().inject({
-      method: 'POST',
-      url: '/v1/cms/auth/totp/confirm',
-      remoteAddress: ip(),
-      headers: auth(admin.token),
-      payload: { code: '000000' },
-    });
-    expect(res.statusCode).toBe(401);
-
-    const [row] = await db
-      .select()
-      .from(schema.adminUsers)
-      .where(eq(schema.adminUsers.id, admin.id));
-    expect(row!.mfaTotpSecretEnc).toBeNull();
-  });
-
-  it('refuses to confirm when nothing is pending', async () => {
-    const admin = await createAdmin('mfa-nopending@gogo.local', 'editor');
-    const res = await api().inject({
-      method: 'POST',
-      url: '/v1/cms/auth/totp/confirm',
-      remoteAddress: ip(),
-      headers: auth(admin.token),
-      payload: { code: '123456' },
-    });
-    expect(res.statusCode).toBe(409);
-    expect(res.json().code).toBe('MFA_NOT_PENDING');
-  });
-
-  it('accepts a code once and refuses the same code again', async () => {
-    const admin = await enrolled('mfa-replay@gogo.local');
-    // The confirming code was spent, so move to the next step rather than
-    // sleeping 30 seconds. The app runs in this process, so shifting Date
-    // shifts both the generated code and the server's step arithmetic.
-    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 60_000 });
-    try {
-      const code = authenticator.generate(admin.secret);
-
-      const first = await login(admin.email, code);
-      expect(first.statusCode).toBe(201);
-
-      // A TOTP code stays mathematically valid for its whole 30-second step, so
-      // without replay protection an observed code is reusable inside it.
-      const second = await login(admin.email, code);
-      expect(second.statusCode).toBe(401);
-      expect(second.json().code).toBe('MFA_REQUIRED');
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('refuses a login with no code once MFA is on', async () => {
-    const admin = await enrolled('mfa-required@gogo.local');
-    const res = await login(admin.email);
-    expect(res.statusCode).toBe(401);
-    expect(res.json().code).toBe('MFA_REQUIRED');
-  });
-
-  it('locks the account after repeated failures, whatever the IP', async () => {
-    const email = 'mfa-lockout@gogo.local';
-    await createAdmin(email, 'editor');
-
-    // Each attempt from a different address: a per-IP limit alone leaves the
-    // highest-privilege door open to an attacker who rotates addresses.
-    for (let i = 0; i < 5; i += 1) {
-      const res = await api().inject({
-        method: 'POST',
-        url: '/v1/cms/auth/login',
-        remoteAddress: ip(),
-        payload: { email, password: 'wrong-password-entirely' },
-      });
-      expect(res.statusCode).toBe(401);
-    }
-
-    const locked = await login(email);
-    expect(locked.statusCode).toBe(429);
-    // Never confirms the account exists, and never says the password was right.
-    expect(locked.json().code).toBe('RATE_LIMITED');
-  });
-
-  it('counts a wrong TOTP code toward the lockout, not just a wrong password', async () => {
-    const admin = await enrolled('mfa-totp-lockout@gogo.local');
-    for (let i = 0; i < 5; i += 1) {
-      const res = await login(admin.email, '000000');
-      expect(res.statusCode).toBe(401);
-    }
-    const locked = await login(admin.email, authenticator.generate(admin.secret));
-    // Otherwise the second factor is brute-forceable at the per-IP rate while
-    // the password stays untouched.
-    expect(locked.statusCode).toBe(429);
-  });
-
-  it('ends other sessions when a second factor is enrolled', async () => {
-    const admin = await createAdmin('mfa-session@gogo.local', 'editor');
-    const before = await api().inject({
-      method: 'GET',
-      url: '/v1/cms/places?limit=1',
-      remoteAddress: ip(),
-      headers: auth(admin.token),
-    });
-    expect(before.statusCode).toBe(200);
-
-    const setup = await api().inject({
-      method: 'POST',
-      url: '/v1/cms/auth/totp/setup',
-      remoteAddress: ip(),
-      headers: auth(admin.token),
-      payload: { password: 'admin-password-123' },
-    });
-    await api().inject({
-      method: 'POST',
-      url: '/v1/cms/auth/totp/confirm',
-      remoteAddress: ip(),
-      headers: auth(admin.token),
-      payload: { code: authenticator.generate(setup.json().secret) },
-    });
-
-    const after = await api().inject({
-      method: 'GET',
-      url: '/v1/cms/places?limit=1',
-      remoteAddress: ip(),
-      headers: auth(admin.token),
-    });
-    // Enrolling a second factor is a credential change; a session opened
-    // before it was opened with less.
-    expect(after.statusCode).toBe(401);
   });
 });
 

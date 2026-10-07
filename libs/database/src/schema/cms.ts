@@ -121,6 +121,13 @@ export const adminSessions = pgTable(
      * session from before the column existed and counts as `password`.
      */
     authMethod: text('auth_method').$type<AdminAuthMethod>(),
+    /**
+     * #687 D-4 — the family was opened with a verified Cloudflare Access
+     * assertion for this account's mailbox (password login with the assertion,
+     * or `access-exchange`). Rotation inherits it; refresh refuses an unbound
+     * password family wherever the assertion is required.
+     */
+    accessBound: boolean('access_bound').notNull().default(false),
   },
   (t) => [
     uniqueIndex('admin_sessions_refresh_unique').on(t.refreshTokenHash),
