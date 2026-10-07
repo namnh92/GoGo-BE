@@ -9,6 +9,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
 import { AdministrativeBoundaryImportService } from '@gogo/modules';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /** Set before any import reads the environment; the config is parsed once. */
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
@@ -148,6 +149,7 @@ async function createAdmin(role: Role) {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   tokens[role] = res.json().accessToken as string;

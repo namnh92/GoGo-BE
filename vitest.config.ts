@@ -41,7 +41,10 @@ export default defineConfig({
           // `57P01`. With no listener that is an unhandled error, and vitest
           // fails the run even when every test passed. This attaches the handler
           // pg asks for, once, and it re-throws anything that is not teardown.
-          setupFiles: ['./apps/api/test/support/pg-shutdown.ts'],
+          setupFiles: [
+            './apps/api/test/support/pg-shutdown.ts',
+            './apps/api/test/support/cms-access.ts',
+          ],
           // GoGo-BE#632: every integration spec stops its own Postgres container
           // in `afterAll`, and a pool that loses its server mid-teardown emits
           // `57P01`. With no listener that is an unhandled error, and vitest

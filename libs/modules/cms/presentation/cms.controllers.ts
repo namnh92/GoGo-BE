@@ -189,7 +189,14 @@ export class CmsAuthController {
     // JWKS outage stays a 503: that is not the caller's fault.
     let accessEmail: string | undefined;
     const assertion = req.headers[CF_ACCESS_ASSERTION_HEADER];
-    if (this.access.configured && typeof assertion === 'string' && assertion) {
+    // A closed password door answers 403 before anything is verified (review
+    // of PR #691, Astra F-02): a JWKS outage must not turn it into a 503.
+    if (
+      this.config.CMS_PASSWORD_LOGIN_ENABLED &&
+      this.access.configured &&
+      typeof assertion === 'string' &&
+      assertion
+    ) {
       try {
         accessEmail = (await this.access.verify(assertion)).email;
       } catch (error) {

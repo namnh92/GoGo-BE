@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import argon2 from 'argon2';
 import { schema } from '@gogo/database';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * SE-002..005 + SE-010 + BE-BFF-006 acceptance on the seeded corpus —
@@ -382,6 +383,7 @@ async function createOpsAdmin(email: string): Promise<string> {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: '10.55.0.1',
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   return res.json().accessToken as string;

@@ -7,6 +7,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * PI-SRE-001 (#120) — the alert test.
@@ -129,6 +130,7 @@ describe('the metrics the alerts in infrastructure.md §3b fire on', () => {
       method: 'POST',
       url: '/v1/cms/auth/login',
       remoteAddress: ip(),
+      headers: cmsAccessHeaders('metrics-admin@gogo.local'),
       payload: { email: 'metrics-admin@gogo.local', password: 'admin-password-123' },
     });
     const token = login.json().accessToken as string;

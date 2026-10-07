@@ -2578,7 +2578,7 @@ export interface paths {
         put?: never;
         /**
          * Staff login — argon2id + the Cloudflare Access assertion for the same mailbox
-         * @description Breaking in alpha.72 (#687 D-4): TOTP is gone. The second factor is Cloudflare Access admitting the account's mailbox, carried on the same request as the `Cf-Access-Jwt-Assertion` header (browsers through `cms-<env>` send it; scripts use `cloudflared access token`). A request without a verified assertion whose `email` equals the account's address, case-insensitively, is refused with `401 ACCESS_ASSERTION_REQUIRED` before any credential is compared. Every production build requires it; only a non-production build with Access unconfigured (a workstation) accepts a bare password.
+         * @description Breaking in alpha.72 (#687 D-4): TOTP is gone. The second factor is Cloudflare Access admitting the account's mailbox, carried on the same request as the `Cf-Access-Jwt-Assertion` header (browsers through `cms-<env>` send it; scripts use `cloudflared access token`). A request without a verified assertion whose `email` equals the account's address, case-insensitively, is refused with `401 ACCESS_ASSERTION_REQUIRED` before any credential is compared. There is no exception: an environment without Access configured has no password door (deployed environments refuse to boot that way).
          */
         post: operations["cmsLogin"];
         delete?: never;
@@ -2682,7 +2682,7 @@ export interface paths {
          *
          *     `super_admin` only, matching the write — who holds which role is the shape of the authorization model itself, so it is not a rank-read for lower roles.
          *
-         *     Never returns the password hash, the TOTP secret (enrolled or pending), or any session material. `email` is returned because it is how a staff account is identified; nothing beyond it is.
+         *     Never returns the password hash, any legacy TOTP column, or any session material. `email` is returned because it is how a staff account is identified; nothing beyond it is.
          */
         get: operations["cmsListAdmins"];
         put?: never;
@@ -13761,6 +13761,15 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+            /** @description The identity provider's key set is unreachable while verifying the assertion (`ACCESS_KEYS_UNAVAILABLE`, retryable). Never answered when the password door is closed: `PASSWORD_LOGIN_DISABLED` comes first. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsAuthMethods: {
@@ -13824,7 +13833,7 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
-            /** @description SSO is not configured for this environment (`ACCESS_SSO_NOT_CONFIGURED`, not retryable), or the identity provider's key set is unreachable (`ACCESS_KEYS_UNAVAILABLE`, retryable). Password + TOTP remains available in both cases where the password door is open (`cmsAuthMethods`). */
+            /** @description SSO is not configured for this environment (`ACCESS_SSO_NOT_CONFIGURED`, not retryable), or the identity provider's key set is unreachable (`ACCESS_KEYS_UNAVAILABLE`, retryable). The password door needs the same assertion (alpha.72), so it is no fallback for either. */
             503: {
                 headers: {
                     [name: string]: unknown;

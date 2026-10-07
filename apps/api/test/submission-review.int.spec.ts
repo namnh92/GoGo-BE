@@ -11,6 +11,7 @@ import { schema } from '@gogo/database';
 import { PLACE_PROVIDER } from '@gogo/providers';
 import { PlaceImportJobService } from '@gogo/modules';
 import type { FakePlaceProvider } from '@gogo/providers';
+import { cmsAccessHeaders } from './support/cms-access';
 
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 
@@ -49,6 +50,7 @@ async function createAdmin(role: 'moderator' | 'editor') {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   tokens[role] = res.json().accessToken as string;

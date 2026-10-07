@@ -21,6 +21,7 @@ import {
   type PrivacyExportProcessorOptions,
 } from '@gogo/modules';
 import { PRIVACY_EXPORT_STORAGE, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * PR #677 — regression tests for the second review round (Astra A-F-02/04/06/
@@ -128,6 +129,7 @@ async function createAdmin(prefix: string) {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: ADMIN_PASSWORD },
   });
   expect(res.statusCode).toBe(201);

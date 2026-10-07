@@ -19,6 +19,7 @@ import {
 } from '@gogo/modules';
 import { PLACE_PROVIDER } from '@gogo/providers';
 import type { FakePlaceProvider } from '@gogo/providers';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * ADM-017 (#497) — the two import doors, mapped.
@@ -65,6 +66,7 @@ async function createAdmin(email: string, role: 'editor' | 'moderator' | 'ops_ad
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   return { id: row!.id, token: res.json().accessToken as string };

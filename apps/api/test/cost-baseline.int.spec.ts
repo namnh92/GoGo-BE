@@ -27,6 +27,7 @@ import {
   installGoogleStub,
   loadCatalog,
 } from '../../../scripts/cost-baseline/stub-google';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * PR3 / COST-BE-003 (#336) — the frozen baseline, re-frozen by #338.
@@ -138,6 +139,7 @@ async function createAdmin(email: string, role: 'moderator' | 'editor' | 'ops_ad
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   return login.json().accessToken as string;

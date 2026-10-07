@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { eraseSuperAdminPasswordIfConfirmed, schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
-import { APP_CONFIG, type CloudflareAccessConfig, type IdentityConfig } from '../../shared/config';
+import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { DB } from '../../shared/tokens';
 import { PasswordService } from '../../identity/application/password.service';
 import { TokenService } from '../../identity/application/token.service';
@@ -111,24 +111,10 @@ export class AdminAuthService implements OnApplicationBootstrap {
     private readonly tokens: TokenService,
     private readonly revocations: SessionRevocationService,
     @Inject(APP_CONFIG)
-    private readonly config: IdentityConfig & CloudflareAccessConfig,
+    private readonly config: IdentityConfig,
     private readonly identity: IdentityRepository,
   ) {}
 
-  /**
-   * #687 D-4 — whether the password door requires a Cloudflare Access assertion
-   * for the same mailbox. Every deployed environment (the production build) and
-   * any environment with Access configured: the second factor is Cloudflare's
-   * admission of that mailbox, carried on the same request. A workstation with
-   * no Access configured is not reachable from the internet and keeps a plain
-   * password for local development.
-   */
-  get assertionRequired(): boolean {
-    return (
-      this.config.NODE_ENV === 'production' ||
-      Boolean(this.config.CF_ACCESS_TEAM_DOMAIN && this.config.CF_ACCESS_AUD)
-    );
-  }
   private readonly logger = new Logger(AdminAuthService.name);
 
   /**
@@ -193,7 +179,7 @@ export class AdminAuthService implements OnApplicationBootstrap {
     const accessBound = Boolean(
       input.accessEmail && input.accessEmail.toLowerCase() === input.email.trim().toLowerCase(),
     );
-    if (this.assertionRequired && !accessBound) {
+    if (!accessBound) {
       this.logger.warn(
         'cms.login refused: no matching Access assertion (ACCESS_ASSERTION_REQUIRED)',
       );
@@ -469,12 +455,12 @@ export class AdminAuthService implements OnApplicationBootstrap {
       }
 
       // #687 D-4 (AC-10) — a password family opened without an Access
-      // assertion (before this rule shipped, or on a workstation) does not
-      // refresh where the assertion is required: it would otherwise outlive
-      // the second factor it never had. The flag is read from the session row,
+      // assertion (every family from before this rule shipped) does not
+      // refresh, anywhere: it would otherwise outlive the second factor it
+      // never had. The flag is read from the session row,
       // never the token. After the super admin rule, so that row keeps its
       // more specific reason.
-      if (this.assertionRequired && authMethod !== 'access_sso' && !session.accessBound) {
+      if (authMethod !== 'access_sso' && !session.accessBound) {
         this.logger.warn('cms.refresh refused: password family without Access assertion');
         return {
           revoked: await this.revokeFamilyRows(tx, session.familyId, 'access_unbound'),

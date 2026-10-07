@@ -18,6 +18,7 @@ import {
   type PrivacyExportProcessorOptions,
 } from '@gogo/modules';
 import { STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * GoGo-BE#256, ADR-0033 — secure export delivery, end to end against a real
@@ -140,6 +141,7 @@ async function createAdmin(email: string, role: 'ops_admin' | 'editor') {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: ADMIN_PASSWORD },
   });
   expect(res.statusCode).toBe(201);

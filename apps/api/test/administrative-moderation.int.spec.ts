@@ -18,6 +18,7 @@ import {
   evaluatePlaceApproval,
   publicationOutcomeFor,
 } from '@gogo/modules';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * ADM-009 (#462) — mapping moderation and the place approval policy.
@@ -82,6 +83,7 @@ async function createAdmin(role: Role) {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   tokens[role] = res.json().accessToken as string;

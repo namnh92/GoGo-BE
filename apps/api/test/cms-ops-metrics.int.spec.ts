@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * BE-CMS-P2 (#315) — the permission gate, the input surface, and what happens
@@ -41,6 +42,7 @@ async function createAdmin(role: 'editor' | 'moderator' | 'ops_admin' | 'super_a
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   tokens[role] = res.json().accessToken as string;

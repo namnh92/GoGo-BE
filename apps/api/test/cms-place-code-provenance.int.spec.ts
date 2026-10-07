@@ -13,6 +13,7 @@ import { schema } from '@gogo/database';
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 import { AdministrativeBoundaryImportService, AdministrativeImportService } from '@gogo/modules';
 import { CONTACT_EVIDENCE } from './support/cms-place-create';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * GoGo-BE#440 F-07 — province/commune provenance is outcome-aware (Astra,
@@ -69,6 +70,7 @@ async function createAdmin(role: 'editor' | 'moderator'): Promise<Admin> {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   expect(res.statusCode, res.body).toBe(201);

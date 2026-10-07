@@ -15,6 +15,7 @@ import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@go
 import {
   ADMIN_LOCKOUT_THRESHOLD,
   AdminAuthService,
+  AppError,
   APP_CONFIG,
   audiencePredicate,
   CloudflareAccessService,
@@ -22,7 +23,7 @@ import {
   respectsPushPreference,
   SessionRevocationService,
 } from '@gogo/modules';
-import { generateKeyPairSync, sign as signBytes } from 'node:crypto';
+import { cmsAccessHeaders, cmsAssertion } from './support/cms-access';
 
 /**
  * CMS-001..010 acceptance: RBAC enforced server-side, place workflow +
@@ -61,6 +62,7 @@ async function adminLogin(email: string, password: string) {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password },
   });
   expect(res.statusCode).toBe(201);
@@ -521,6 +523,7 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
       method: 'POST',
       url: '/v1/cms/auth/login',
       remoteAddress: ip(),
+      headers: cmsAccessHeaders(SUPER_ADMIN_EMAIL),
       payload: { email: SUPER_ADMIN_EMAIL, password: ADMIN_PASSWORD },
     });
     expect(old.statusCode).toBe(401);
@@ -565,6 +568,7 @@ describe('CMS account lifecycle (BE-CMS-G9 #248)', () => {
       method: 'POST',
       url: '/v1/cms/auth/login',
       remoteAddress: ip(),
+      headers: cmsAccessHeaders('g9-reset@gogo.id.vn'),
       payload: { email: 'g9-reset@gogo.id.vn', password: temporary },
     });
     expect(login.statusCode).toBe(201);
@@ -664,7 +668,16 @@ describe('CMS single sign-on exchange (#62, ADR-0010)', () => {
    * application, which is exactly the state being described.
    */
   it('answers 503 where SSO is not configured, not 404 and not a login failure', async () => {
-    const res = await exchange({ 'cf-access-jwt-assertion': 'a.b.c' });
+    // Every integration spec has a test Access application (#687 D-4); this
+    // one case takes it away.
+    const config = app.get<{ CF_ACCESS_TEAM_DOMAIN: string; CF_ACCESS_AUD: string }>(APP_CONFIG);
+    const saved = { team: config.CF_ACCESS_TEAM_DOMAIN, aud: config.CF_ACCESS_AUD };
+    config.CF_ACCESS_TEAM_DOMAIN = '';
+    config.CF_ACCESS_AUD = '';
+    const res = await exchange({ 'cf-access-jwt-assertion': 'a.b.c' }).finally(() => {
+      config.CF_ACCESS_TEAM_DOMAIN = saved.team;
+      config.CF_ACCESS_AUD = saved.aud;
+    });
     expect(res.statusCode).toBe(503);
     expect(res.json().code).toBe('ACCESS_SSO_NOT_CONFIGURED');
     // Not retryable: retrying a missing configuration produces load, not a fix.
@@ -679,31 +692,16 @@ describe('CMS single sign-on exchange (#62, ADR-0010)', () => {
  * rule that refuses a door-less configuration is `env.spec.ts`'s to prove.
  */
 describe('CMS password door closed (#679, ADR-0032)', () => {
-  const TEAM = 'gogo-test.cloudflareaccess.com';
-  const AUD = 'b'.repeat(64);
-  const KID = 'it-key-1';
-  const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
   type DoorConfig = {
     CMS_PASSWORD_LOGIN_ENABLED: boolean;
     CMS_SUPER_ADMIN_SSO_ONLY: boolean;
-    CF_ACCESS_TEAM_DOMAIN: string;
-    CF_ACCESS_AUD: string;
   };
 
-  /** An RS256 assertion signed by the key this test publishes as the team's. */
-  const assertionFor = (email: string) => {
-    const now = Math.floor(Date.now() / 1000);
-    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
-    const unsigned = `${part({ alg: 'RS256', kid: KID, typ: 'JWT' })}.${part({
-      iss: `https://${TEAM}`,
-      aud: AUD,
-      sub: `sub-${email}`,
-      email,
-      iat: now,
-      exp: now + 60,
-    })}`;
-    return `${unsigned}.${signBytes('RSA-SHA256', Buffer.from(unsigned), pair.privateKey).toString('base64url')}`;
-  };
+  /**
+   * An assertion from the test Access application every integration spec has
+   * (support/cms-access.ts, #687 D-4): the same one ordinary logins carry.
+   */
+  const assertionFor = cmsAssertion;
 
   /**
    * Runs `fn` with Access configured and the password door as given; the third
@@ -715,22 +713,16 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
     superAdminSsoOnly = false,
   ): Promise<T> {
     const config = app.get<DoorConfig>(APP_CONFIG);
-    const access = app.get(CloudflareAccessService) as unknown as { fetchImpl: typeof fetch };
-    const saved = { ...config };
-    const savedFetch = access.fetchImpl;
+    const saved = {
+      CMS_PASSWORD_LOGIN_ENABLED: config.CMS_PASSWORD_LOGIN_ENABLED,
+      CMS_SUPER_ADMIN_SSO_ONLY: config.CMS_SUPER_ADMIN_SSO_ONLY,
+    };
     config.CMS_PASSWORD_LOGIN_ENABLED = passwordOpen;
     config.CMS_SUPER_ADMIN_SSO_ONLY = superAdminSsoOnly;
-    config.CF_ACCESS_TEAM_DOMAIN = TEAM;
-    config.CF_ACCESS_AUD = AUD;
-    access.fetchImpl = (async () =>
-      Response.json({
-        keys: [{ ...pair.publicKey.export({ format: 'jwk' }), kid: KID, alg: 'RS256' }],
-      })) as typeof fetch;
     try {
       return await fn();
     } finally {
       Object.assign(config, saved);
-      access.fetchImpl = savedFetch;
     }
   }
 
@@ -811,7 +803,7 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
   it('reports which doors are open, without a session and without caching', async () => {
     const before = await api().inject({ method: 'GET', url: '/v1/cms/auth/methods' });
     expect(before.statusCode).toBe(200);
-    expect(before.json()).toEqual({ password: true, accessSso: false, superAdminSsoOnly: false });
+    expect(before.json()).toEqual({ password: true, accessSso: true, superAdminSsoOnly: false });
     expect(before.headers['cache-control']).toBe('no-store');
 
     await withDoors(false, async () => {
@@ -1070,6 +1062,7 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
               method: 'POST',
               url: '/v1/cms/auth/login',
               remoteAddress: fixedIp,
+              headers: cmsAccessHeaders(SUPER_ADMIN_EMAIL),
               payload: { email: SUPER_ADMIN_EMAIL, password: superAdminPassword },
             });
             statuses.push(res.statusCode);
@@ -2102,16 +2095,22 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
       const email = 'bec-legacy@gogo.local';
       await createAdmin(email, 'editor');
       const before = await sessionIds(email);
-      // Opened where no assertion is required — what every pre-BE-c family is.
+      // A family from before BE-c: migration 0074 left every existing row
+      // unbound (column default false). No API path opens one any more, so the
+      // row is put back into that state directly.
       const legacy = await api().inject({
         method: 'POST',
         url: '/v1/cms/auth/login',
         remoteAddress: ip(),
+        headers: cmsAccessHeaders(email),
         payload: { email, password: ADMIN_PASSWORD },
       });
       expect(legacy.statusCode).toBe(201);
       const [legacyRow] = await sessionsAfter(email, before);
-      expect((await sessionRow(legacyRow!.id)).accessBound).toBe(false);
+      await db
+        .update(schema.adminSessions)
+        .set({ accessBound: false })
+        .where(eq(schema.adminSessions.id, legacyRow!.id));
       await withDoors(true, async () => {
         const res = await refresh(legacy.json().refreshToken);
         expect(res.statusCode).toBe(401);
@@ -2122,6 +2121,46 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
         expect(again.statusCode).toBe(201);
         expect((await refresh(again.json().refreshToken)).statusCode).toBe(201);
       });
+    });
+
+    it('PR #691 F-01: there is no bare-password exception, even with Access unconfigured', async () => {
+      const email = 'bec-noaccess@gogo.local';
+      await createAdmin(email, 'editor');
+      const config = app.get<{ CF_ACCESS_TEAM_DOMAIN: string; CF_ACCESS_AUD: string }>(APP_CONFIG);
+      const saved = { team: config.CF_ACCESS_TEAM_DOMAIN, aud: config.CF_ACCESS_AUD };
+      config.CF_ACCESS_TEAM_DOMAIN = '';
+      config.CF_ACCESS_AUD = '';
+      try {
+        const res = await login(email, ADMIN_PASSWORD, null);
+        expect(res.statusCode).toBe(401);
+        expect(res.json().code).toBe('ACCESS_ASSERTION_REQUIRED');
+      } finally {
+        config.CF_ACCESS_TEAM_DOMAIN = saved.team;
+        config.CF_ACCESS_AUD = saved.aud;
+      }
+    });
+
+    it('PR #691 Astra F-02: a closed password door answers 403 before any assertion is verified', async () => {
+      const email = 'bec-closed@gogo.local';
+      await createAdmin(email, 'editor');
+      const verify = vi
+        .spyOn(app.get(CloudflareAccessService), 'verify')
+        .mockRejectedValue(
+          AppError.serviceUnavailable(
+            'ACCESS_KEYS_UNAVAILABLE',
+            'Cannot reach the identity provider',
+          ),
+        );
+      try {
+        await withDoors(false, async () => {
+          const res = await login(email, ADMIN_PASSWORD);
+          expect(res.statusCode).toBe(403);
+          expect(res.json().code).toBe('PASSWORD_LOGIN_DISABLED');
+        });
+        expect(verify).not.toHaveBeenCalled();
+      } finally {
+        verify.mockRestore();
+      }
     });
 
     it('has no TOTP routes and no mfaEnrolled field any more', async () => {
@@ -7010,6 +7049,7 @@ describe('SEC-003 admin session model', () => {
       method: 'POST',
       url: '/v1/cms/auth/login',
       remoteAddress: ip(),
+      headers: cmsAccessHeaders(email),
       payload: { email, password: 'admin-password-123' },
     });
   }
@@ -7112,6 +7152,7 @@ describe('SEC-003 admin session model', () => {
       method: 'POST',
       url: '/v1/cms/auth/login',
       remoteAddress: ip(),
+      headers: cmsAccessHeaders('sess-two@gogo.local'),
       payload: { email: 'sess-two@gogo.local', password: 'admin-password-123' },
     });
 

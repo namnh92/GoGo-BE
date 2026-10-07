@@ -224,6 +224,24 @@ describe('SHARE_LINK_EDGE_AUTH_TOKEN (SEC-004)', () => {
       ).toThrow(/CMS_SUPER_ADMIN_EMAIL is required/);
     });
 
+    it('#687 D-4 (PR #691 Astra F-03): a deployed environment without Access has no CMS door and is refused', () => {
+      const deployed = {
+        ...base,
+        NODE_ENV: 'production',
+        APP_ENV: 'dev',
+        AUTH_JWT_SECRET: 'x'.repeat(48),
+        AUTH_REFRESH_SECRET: 'y'.repeat(48),
+        COOKIE_SECRET: 'z'.repeat(48),
+        COOKIE_SECURE: 'true',
+        CMS_SUPER_ADMIN_EMAIL: 'boss@example.com',
+      };
+      expect(() => loadEnv(deployed)).toThrow(/every CMS sign-in \(password included\) needs/);
+      // A workstation still boots without it.
+      expect(() =>
+        loadEnv({ ...base, NODE_ENV: 'development', CMS_SUPER_ADMIN_EMAIL: 'boss@example.com' }),
+      ).not.toThrow();
+    });
+
     for (const bad of ['boss', 'boss@', '@example.com', 'boss@example..com', 'a b@example.com']) {
       it(`refuses a malformed address: ${JSON.stringify(bad)}`, () => {
         expect(() =>

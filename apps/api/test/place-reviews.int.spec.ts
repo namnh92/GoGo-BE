@@ -8,6 +8,7 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
+import { cmsAccessHeaders } from './support/cms-access';
 
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 
@@ -128,6 +129,7 @@ beforeAll(async () => {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   moderator = login.json().accessToken as string;

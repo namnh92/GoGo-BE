@@ -10,6 +10,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PLACE_PROVIDER } from '@gogo/providers';
 import { idempotencyHeader, withSourceReferences } from './support/cms-place-create';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * BE-CMS-PE-001 (#425) — the contract the CMS place editor writes against.
@@ -44,6 +45,7 @@ async function createAdmin(email: string, role: 'editor' | 'moderator' | 'ops_ad
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   expect(res.statusCode).toBe(201);

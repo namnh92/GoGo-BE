@@ -86,10 +86,9 @@ const envSchema = z
      *
      * Empty means single sign-on is off for this environment and
      * `POST /v1/cms/auth/access-exchange` answers 503 saying so. The password
-     * door (#687 D-4) requires an assertion from this application in every
-     * production build, so a production build without it admits nobody by
-     * password; only a non-production workstation with Access unset keeps a
-     * bare password for local development.
+     * door (#687 D-4) requires an assertion from this application on every
+     * login, so empty means no CMS door at all; a deployed (production-build)
+     * environment refuses to boot that way.
      */
     CF_ACCESS_TEAM_DOMAIN: z.string().default(''),
     CF_ACCESS_AUD: z.string().default(''),
@@ -720,6 +719,22 @@ const envSchema = z
         path: ['CMS_SUPER_ADMIN_EMAIL'],
         message:
           'CMS_SUPER_ADMIN_EMAIL is required in a deployed environment: it is the only source of the super admin address (SSM cms/super-admin-email)',
+      });
+    }
+
+    // #687 D-4 (review of PR #691, Astra F-03) — the password door now needs a
+    // verified Access assertion on every login, so without CF_ACCESS_* a
+    // deployed environment has no usable door at all, whatever the password
+    // switches say. Refused here so `config:check` stops the deploy before the
+    // working revision is replaced. NODE_ENV, not APP_ENV: DEV runs the
+    // production build. A workstation boots without it; its console simply has
+    // no door, which local CMS work does not need (the console mocks the API).
+    if (env.NODE_ENV === 'production' && !env.CF_ACCESS_TEAM_DOMAIN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CF_ACCESS_TEAM_DOMAIN'],
+        message:
+          'CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in a deployed environment: every CMS sign-in (password included) needs a verified Cloudflare Access assertion (#687 D-4)',
       });
     }
 
