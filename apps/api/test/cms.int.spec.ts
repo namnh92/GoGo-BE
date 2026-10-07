@@ -4,7 +4,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
 import { authenticator } from 'otplib';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Writable } from 'node:stream';
 import { Pool } from 'pg';
@@ -1292,6 +1292,111 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
         expect(rows).toHaveLength(1);
         expect(rows[0]!.diff).toMatchObject({ email: SUPER_ADMIN_EMAIL });
       });
+    });
+
+    it('F-01: a session revoked after the guard let it in cannot confirm', async () => {
+      const boss = await superAdmin();
+      const [revoked] = await db
+        .insert(schema.adminSessions)
+        .values({
+          adminId: boss.id,
+          refreshTokenHash: `revoked-${Date.now()}`,
+          familyId: randomUUID(),
+          expiresAt: new Date(Date.now() + 3_600_000),
+          authMethod: 'access_sso',
+          revokedAt: new Date(),
+          revokeReason: 'email_changed',
+        })
+        .returning();
+      const before = (await confirmations(boss.id)).length;
+      await expect(
+        app
+          .get(AdminAuthService)
+          .confirmSuperAdminSso({ adminId: boss.id, sessionId: revoked!.id }),
+      ).rejects.toMatchObject({ code: 'SESSION_REVOKED' });
+      expect(await confirmations(boss.id)).toHaveLength(before);
+    });
+
+    it('F-02: confirm-sso is reachable with a password change owed, and the next sync clears both', async () => {
+      const boss = await superAdmin();
+      await db
+        .update(schema.adminUsers)
+        .set({ mustChangePasswordAt: new Date() })
+        .where(eq(schema.adminUsers.id, boss.id));
+      try {
+        await superOnly(async () => {
+          const token = (await exchange(SUPER_ADMIN_EMAIL)).json().accessToken as string;
+          const res = await confirmSso(token);
+          expect(res.statusCode).toBe(201);
+        });
+        const synced = await syncSuperAdmin(db, { email: SUPER_ADMIN_EMAIL, ssoOnly: true });
+        expect(synced.passwordErased).toBe(true);
+        const [row] = await db
+          .select()
+          .from(schema.adminUsers)
+          .where(eq(schema.adminUsers.id, boss.id));
+        expect(row).toMatchObject({ passwordHash: null, mustChangePasswordAt: null });
+      } finally {
+        // Later tests sign the super admin in by password.
+        await db
+          .update(schema.adminUsers)
+          .set({
+            passwordHash: await argon2.hash(superAdminPassword, { type: argon2.argon2id }),
+            mustChangePasswordAt: null,
+          })
+          .where(eq(schema.adminUsers.id, boss.id));
+      }
+    });
+
+    it('F-05: the new API erases a hash the previous API put back after the sync', async () => {
+      const boss = await superAdmin();
+      const config = app.get<{ CMS_SUPER_ADMIN_EMAIL?: string | undefined }>(APP_CONFIG);
+      const savedEmail = config.CMS_SUPER_ADMIN_EMAIL;
+      try {
+        await superOnly(async () => {
+          // A confirmation for the current address (idempotent if one exists).
+          const token = (await exchange(SUPER_ADMIN_EMAIL)).json().accessToken as string;
+          expect((await confirmSso(token)).statusCode).toBe(201);
+          // The old process (switch off) served a reset after the sync ran.
+          await db
+            .update(schema.adminUsers)
+            .set({ passwordHash: 'argon2id$restored-by-old-api', mustChangePasswordAt: new Date() })
+            .where(eq(schema.adminUsers.id, boss.id));
+          config.CMS_SUPER_ADMIN_EMAIL = SUPER_ADMIN_EMAIL;
+          await app.get(AdminAuthService).onApplicationBootstrap();
+        });
+        const [row] = await db
+          .select()
+          .from(schema.adminUsers)
+          .where(eq(schema.adminUsers.id, boss.id));
+        expect(row).toMatchObject({ passwordHash: null, mustChangePasswordAt: null });
+      } finally {
+        config.CMS_SUPER_ADMIN_EMAIL = savedEmail;
+        await db
+          .update(schema.adminUsers)
+          .set({
+            passwordHash: await argon2.hash(superAdminPassword, { type: argon2.argon2id }),
+            mustChangePasswordAt: null,
+          })
+          .where(eq(schema.adminUsers.id, boss.id));
+      }
+    });
+
+    it('F-05: at boot with the switch off, nothing is erased', async () => {
+      const boss = await superAdmin();
+      const config = app.get<{ CMS_SUPER_ADMIN_EMAIL?: string | undefined }>(APP_CONFIG);
+      const savedEmail = config.CMS_SUPER_ADMIN_EMAIL;
+      config.CMS_SUPER_ADMIN_EMAIL = SUPER_ADMIN_EMAIL;
+      try {
+        await app.get(AdminAuthService).onApplicationBootstrap();
+      } finally {
+        config.CMS_SUPER_ADMIN_EMAIL = savedEmail;
+      }
+      const [row] = await db
+        .select()
+        .from(schema.adminUsers)
+        .where(eq(schema.adminUsers.id, boss.id));
+      expect(row!.passwordHash).not.toBeNull();
     });
 
     it('with the switch on, reset and change password answer 403 for the super admin', async () => {

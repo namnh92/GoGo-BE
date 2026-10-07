@@ -34,8 +34,9 @@ function dbReturning(
     select: () => ({
       from: () => ({
         where: () => ({
+          // Session first (every admin request), then the admin row (CMS routes).
           limit: async () =>
-            call++ === 0 ? [{ id: 'admin-1', role, status }] : session ? [session] : [],
+            call++ === 0 ? (session ? [session] : []) : [{ id: 'admin-1', role, status }],
         }),
       }),
     }),
@@ -159,5 +160,43 @@ describe('AdminGuard session check (#687 D-3, F-16)', () => {
         contextFor('GET', '/v1/cms/places') as never,
       ),
     ).rejects.toMatchObject({ code: 'SESSION_REVOKED' });
+  });
+});
+
+describe('AdminGuard on a route without role metadata (review of PR #690, Sol F-01)', () => {
+  class Unroled {}
+  const unroledContext = {
+    switchToHttp: () => ({
+      getRequest: () => ({
+        actor: {
+          type: 'admin' as const,
+          id: 'admin-1',
+          sessionId: 's',
+          role: 'editor' as AdminRole,
+        },
+        method: 'POST',
+        routeOptions: { url: '/v1/cms/auth/totp/confirm' },
+      }),
+    }),
+    getHandler: () => () => undefined,
+    getClass: () => Unroled,
+  };
+  const guardWith = (session: { adminId: string; revokedAt: Date | null } | null) =>
+    new AdminGuard(
+      new Reflector(),
+      dbReturning('editor', 'active', session) as never,
+      new RecordingMetrics() as unknown as MetricsPort,
+    );
+
+  it('still refuses a session revoked in the database', async () => {
+    await expect(
+      guardWith({ adminId: 'admin-1', revokedAt: new Date() }).canActivate(unroledContext as never),
+    ).rejects.toMatchObject({ code: 'SESSION_REVOKED' });
+  });
+
+  it('lets a live session through', async () => {
+    await expect(
+      guardWith({ adminId: 'admin-1', revokedAt: null }).canActivate(unroledContext as never),
+    ).resolves.toBe(true);
   });
 });

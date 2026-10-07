@@ -1,8 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { authenticator } from 'otplib';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
-import { schema, type Db } from '@gogo/database';
+import { eraseSuperAdminPasswordIfConfirmed, schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { DB } from '../../shared/tokens';
@@ -116,7 +116,7 @@ const adminIdentifier = (email: string) => sha256(`admin:${email.trim().toLowerC
  * from the token.
  */
 @Injectable()
-export class AdminAuthService {
+export class AdminAuthService implements OnApplicationBootstrap {
   /**
    * Accepted in place of a real TOTP code outside production, so a fresh
    * environment can be used before anyone has an authenticator enrolled. It
@@ -153,6 +153,33 @@ export class AdminAuthService {
 
   private readonly secrets: SecretBox;
   private readonly logger = new Logger(AdminAuthService.name);
+
+  /**
+   * #687 review F-05 — run the super admin erase gate once this API has
+   * started. The migrate container's sync ran while the previous API (switch
+   * off) could still serve a reset or a password change; whatever that put back
+   * goes now, the old process being gone. Only the erase, never the address.
+   * A failure is logged, not fatal: login and refresh refuse the super admin's
+   * password whatever the hash holds while the switch is on.
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    const email = this.config.CMS_SUPER_ADMIN_EMAIL;
+    if (!this.config.CMS_SUPER_ADMIN_SSO_ONLY || !email) return;
+    try {
+      const outcome = await eraseSuperAdminPasswordIfConfirmed(this.db, {
+        email,
+        revision: process.env.GOGO_REVISION ?? null,
+      });
+      if (outcome === 'erased')
+        this.logger.warn('super admin password erased at boot (SSO confirmed)');
+      if (outcome === 'pending')
+        this.logger.log('super admin password erase pending SSO confirmation');
+    } catch (err) {
+      this.logger.error(
+        `super admin erase gate failed at boot: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   /** The step a code belongs to, used to refuse a replay of one already spent. */
   private static stepOf(delta: number): number {
@@ -1179,7 +1206,11 @@ export class AdminAuthService {
    */
   async confirmSuperAdminSso(input: { adminId: string; sessionId: string }) {
     return this.db.transaction(async (tx) => {
-      const admin = await this.loadAdmin(tx, input.adminId);
+      // Locked: the deploy-time sync takes the same row lock before it moves
+      // the address and revokes sessions, so the address read here and the
+      // session checked below are the ones that will still hold at commit
+      // (review F-01). The lock also serialises two confirmations.
+      const admin = await this.loadAdmin(tx, input.adminId, true);
       if (admin.role !== 'super_admin') {
         throw AppError.forbidden('ROLE_DENIED', 'Only the super admin confirms its own sign-in');
       }
@@ -1190,10 +1221,17 @@ export class AdminAuthService {
           and(
             eq(schema.adminSessions.id, input.sessionId),
             eq(schema.adminSessions.adminId, input.adminId),
+            isNull(schema.adminSessions.revokedAt),
           ),
         )
         .limit(1);
-      if (session?.authMethod !== 'access_sso') {
+      if (!session) {
+        // Revoked after the guard let the request in — by an address change,
+        // most likely. A session opened for the old address proves nothing
+        // about the new one.
+        throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
+      }
+      if (session.authMethod !== 'access_sso') {
         throw AppError.forbidden(
           'ACCESS_SESSION_REQUIRED',
           'Confirm from a session opened through Cloudflare Access',

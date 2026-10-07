@@ -80,6 +80,9 @@ services:
     profiles: ['tools']
     environment:
       PROCESS: migrate
+      # GoGo-BE#687 — the deploy commit, written into the super admin sync's
+      # audit rows (GoGo-Infra deploy-vps.sh sets it on `run --rm migrate`).
+      GOGO_REVISION: ${GOGO_REVISION:-}
     env_file:
       - ../${ENV_FILE:-.env.prod}
 

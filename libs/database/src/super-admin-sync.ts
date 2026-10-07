@@ -73,13 +73,21 @@ export async function syncSuperAdmin(
       .for('update')
       .limit(1);
 
-    const [holder] = await tx
-      .select({ id: schema.adminUsers.id, role: schema.adminUsers.role })
+    // Asked for explicitly (review F-04): a non-super row holding the address,
+    // case-insensitively. Migration 0073 makes lower(email) unique, so there is
+    // at most one row to find.
+    const [staffHolder] = await tx
+      .select({ id: schema.adminUsers.id })
       .from(schema.adminUsers)
-      .where(sql`lower(${schema.adminUsers.email}) = ${email}`)
+      .where(
+        and(
+          sql`lower(${schema.adminUsers.email}) = ${email}`,
+          sql`${schema.adminUsers.role} <> 'super_admin'`,
+        ),
+      )
       .limit(1);
 
-    if (holder && holder.role !== 'super_admin') throw new SuperAdminSyncConflict();
+    if (staffHolder) throw new SuperAdminSyncConflict();
 
     let action: SyncSuperAdminResult['action'];
     let adminId: string;
@@ -145,48 +153,87 @@ export async function syncSuperAdmin(
     let passwordErased = false;
     let erasePending = false;
     if (input.ssoOnly) {
-      const [confirmed] = await tx
-        .select({ id: schema.auditLogs.id })
-        .from(schema.auditLogs)
-        .where(
-          and(
-            eq(schema.auditLogs.action, 'admin.sso_confirmed'),
-            eq(schema.auditLogs.resourceType, 'admin_user'),
-            eq(schema.auditLogs.resourceId, adminId),
-            sql`lower(${schema.auditLogs.diff} ->> 'email') = ${email}`,
-          ),
-        )
-        .limit(1);
-      if (confirmed) {
-        const erased = await tx
-          .update(schema.adminUsers)
-          .set({ passwordHash: null, mustChangePasswordAt: null, updatedAt: sql`now()` })
-          .where(
-            and(
-              eq(schema.adminUsers.id, adminId),
-              or(
-                isNotNull(schema.adminUsers.passwordHash),
-                isNotNull(schema.adminUsers.mustChangePasswordAt),
-              ),
-            ),
-          )
-          .returning({ id: schema.adminUsers.id });
-        passwordErased = erased.length > 0;
-        if (passwordErased) {
-          await tx.insert(schema.auditLogs).values({
-            actorType: 'system',
-            actorId: null,
-            action: 'admin.password_erased',
-            resourceType: 'admin_user',
-            resourceId: adminId,
-            diff: { reason: 'super admin signs in through Access only', email, revision },
-          });
-        }
-      } else {
-        erasePending = true;
-      }
+      const outcome = await eraseIfConfirmed(tx, adminId, email, revision);
+      passwordErased = outcome === 'erased';
+      erasePending = outcome === 'pending';
     }
 
     return { action, adminId, revokedSessions, passwordErased, erasePending };
+  });
+}
+
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
+
+/**
+ * The erase gate itself: clear the password hash and any change obligation of
+ * this super admin row when an `admin.sso_confirmed` audit row exists for it at
+ * its current address. Idempotent. Caller holds the row lock.
+ */
+async function eraseIfConfirmed(
+  tx: Tx,
+  adminId: string,
+  email: string,
+  revision: string | null,
+): Promise<'erased' | 'nothing_to_erase' | 'pending'> {
+  const [confirmed] = await tx
+    .select({ id: schema.auditLogs.id })
+    .from(schema.auditLogs)
+    .where(
+      and(
+        eq(schema.auditLogs.action, 'admin.sso_confirmed'),
+        eq(schema.auditLogs.resourceType, 'admin_user'),
+        eq(schema.auditLogs.resourceId, adminId),
+        sql`lower(${schema.auditLogs.diff} ->> 'email') = ${email}`,
+      ),
+    )
+    .limit(1);
+  if (!confirmed) return 'pending';
+  const erased = await tx
+    .update(schema.adminUsers)
+    .set({ passwordHash: null, mustChangePasswordAt: null, updatedAt: sql`now()` })
+    .where(
+      and(
+        eq(schema.adminUsers.id, adminId),
+        or(
+          isNotNull(schema.adminUsers.passwordHash),
+          isNotNull(schema.adminUsers.mustChangePasswordAt),
+        ),
+      ),
+    )
+    .returning({ id: schema.adminUsers.id });
+  if (erased.length === 0) return 'nothing_to_erase';
+  await tx.insert(schema.auditLogs).values({
+    actorType: 'system',
+    actorId: null,
+    action: 'admin.password_erased',
+    resourceType: 'admin_user',
+    resourceId: adminId,
+    diff: { reason: 'super admin signs in through Access only', email, revision },
+  });
+  return 'erased';
+}
+
+/**
+ * Review F-05 — the sync runs in the migrate container while the previous API
+ * (switch off) can still serve a reset or a password change, which would put a
+ * hash back after the sync erased it. The new API therefore runs the same gate
+ * once it has started, when the old one is gone: only the erase, never the
+ * address move. A no-op unless the switch is on and the confirmation exists.
+ */
+export async function eraseSuperAdminPasswordIfConfirmed(
+  db: Db,
+  input: { email: string; revision?: string | null },
+): Promise<'erased' | 'nothing_to_erase' | 'pending' | 'no_super_admin' | 'address_mismatch'> {
+  const email = input.email.trim().toLowerCase();
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ id: schema.adminUsers.id, email: schema.adminUsers.email })
+      .from(schema.adminUsers)
+      .where(eq(schema.adminUsers.role, 'super_admin'))
+      .for('update')
+      .limit(1);
+    if (!row) return 'no_super_admin';
+    if (row.email.toLowerCase() !== email) return 'address_mismatch';
+    return eraseIfConfirmed(tx, row.id, email, input.revision ?? null);
   });
 }

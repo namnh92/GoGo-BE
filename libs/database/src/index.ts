@@ -4,5 +4,9 @@ export * as schema from './schema';
 export type { IngestMessage, MatchCandidate, SubmissionReviewDraft } from './schema/ingestion';
 export { WorkerLease } from './worker-lease';
 export type { HeldLease, LeaseQuery, WorkerLeaseOptions } from './worker-lease';
-export { syncSuperAdmin, SuperAdminSyncConflict } from './super-admin-sync';
+export {
+  eraseSuperAdminPasswordIfConfirmed,
+  syncSuperAdmin,
+  SuperAdminSyncConflict,
+} from './super-admin-sync';
 export type { SyncSuperAdminInput, SyncSuperAdminResult } from './super-admin-sync';

@@ -413,6 +413,10 @@ export class CmsAuthController {
    * or for any other role.
    */
   @RequireRole('super_admin')
+  // Reachable while a password change is owed (review F-02): with the switch
+  // on, change-password refuses the super admin, and only a confirmation lets
+  // the sync clear the obligation — without this the two would deadlock.
+  @AllowWhilePasswordChangePending()
   @RateLimit({ action: 'cms.super_admin_confirm_sso', limit: 5, windowSeconds: 60, keyBy: 'actor' })
   @Post('super-admin/confirm-sso')
   confirmSuperAdminSso(@CurrentActor() actor: Actor) {

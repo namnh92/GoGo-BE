@@ -174,6 +174,21 @@ describe('cms:sync-super-admin (#687 D-3)', () => {
     expect(await superAdmin()).toBeUndefined();
   });
 
+  it('F-04: the database refuses a case-folded duplicate address', async () => {
+    await db
+      .insert(schema.adminUsers)
+      .values({ email: 'staff@example.com', role: 'editor', displayName: 'S' });
+    let constraint: string | undefined;
+    try {
+      await db
+        .insert(schema.adminUsers)
+        .values({ email: 'Staff@Example.com', role: 'moderator', displayName: 'T' });
+    } catch (err) {
+      constraint = (err as { cause?: { constraint?: string } }).cause?.constraint;
+    }
+    expect(constraint).toBe('admin_users_email_lower_unique');
+  });
+
   describe('erase gate (F-01, AC-2)', () => {
     it('(a) switch off: the hash is untouched even with a confirmation', async () => {
       const row = await seedSuperAdmin('boss@example.com');
