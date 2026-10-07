@@ -92,8 +92,8 @@ not help while the general door is closed.
   not a 401, and no Argon2 delay. The owner accepted this.
 - An Access outage makes the browser console unreachable for every role, because `cms-<env>` sits
   behind Access. Other roles keep their API and script door. The super admin has none while the
-  switch is on. Re-opening it is one SSM value plus a deploy, and restores API and script access
-  only.
+  switch is on, and once the deploy-time sync has erased its hash (amendment, D-3) there is no
+  password to re-open: recovery waits for Access (O-1).
 - `superAdminSsoOnly: true` means the API refuses that account's password. It does not mean that
   Access is healthy.
 
@@ -106,8 +106,10 @@ Rollout: API with this change → console that renders the fact → Infra manife
 session authorises a super-admin request on those revisions → only then
 `cms/super-admin-sso-only=true` in SSM.
 
-Rollback: set `CMS_SUPER_ADMIN_SSO_ONLY=false` and redeploy the API. This is one action, with no
-console deploy and no console session. Revoked families stay revoked.
+Rollback: ~~set `CMS_SUPER_ADMIN_SSO_ONLY=false` and redeploy~~ — superseded (amendment, O-1). Before
+the hash is erased, turning the switch off re-opens the password door on DEV only (staging and
+production refuse `false`, D-8). After it is erased there is nothing to re-open: every way out is
+Access SSO plus SSM → `terraform-apply-<env>` → deploy (GoGo-Infra `docs/secrets.md`).
 
 While SSM holds `true`, three floors apply. Crossing any of them is a rollback of this decision:
 
