@@ -83,11 +83,13 @@ not help while the general door is closed.
 
 ## Consequences
 
-- On DEV the super admin's password is no longer a door from the internet. `editor`, `moderator`
+- On DEV the super admin's password is no longer a door from the internet. ~~`editor`, `moderator`
   and `ops_admin` remain single-factor from the internet (`DEV_TOTP_CODE` is accepted outside
   production, and TOTP is optional). The mitigations are Argon2id, the per-account lockout, the
   per-IP limit and forced change of temporary passwords. Real TOTP outside production is tracked
-  separately (GoGo-BE#688), and the owner decides on it.
+  separately (GoGo-BE#688), and the owner decides on it.~~ Superseded by the amendment (D-4): no
+  password login is single-factor anywhere — every one requires a verified Access assertion for the
+  same mailbox, and `DEV_TOTP_CODE` went with TOTP.
 - Anyone who types the super admin's address learns that it is the super admin's: it gets a 403,
   not a 401, and no Argon2 delay. The owner accepted this.
 - An Access outage makes the browser console unreachable for every role, because `cms-<env>` sits
@@ -153,11 +155,14 @@ dropped) — and the Infra work in GoGo-Infra#194/#196/#199. The shape file
   `cause`: Drizzle repeats the bound parameters — the address — in its message and stack (F-07).
 - **D-4 · Cloudflare carries the second factor.** CMS TOTP is removed; the password door requires a
   verified Access assertion for the same mailbox (BE-c, alpha.72), checked before any credential
-  (`401 ACCESS_ASSERTION_REQUIRED`). Every production build requires it; a non-production build with
-  `CF_ACCESS_*` unset (a workstation) keeps a bare password for local development. Migration 0074
-  adds `admin_sessions.access_bound`: password login with the assertion and `access-exchange` set it,
-  rotation inherits it, and refresh revokes an unbound password family (`access_unbound`) wherever
-  the assertion is required — every family from before BE-c signs in once more. The TOTP columns
+  (`401 ACCESS_ASSERTION_REQUIRED`). **Every password login requires it, in every environment and
+  every build — there is no workstation exception and no bare-password door.** A deployed
+  environment (`NODE_ENV=production`) refuses to boot without `CF_ACCESS_*`; a workstation without
+  them boots with no password door at all (local CMS work mocks the API). Migration 0074 adds
+  `admin_sessions.access_bound`: password login with the assertion and `access-exchange` set it, and
+  rotation inherits it. **Refresh refuses every unbound password family, everywhere**
+  (`401 SESSION_REVOKED`, reason `access_unbound`), never conditionally on where an assertion would be
+  required — every family from before BE-c signs in once more, with the assertion. The TOTP columns
   stay unread until BE-c2; `CMS_MFA_ENCRYPTION_KEY` stays optional until R8.
 - **D-7 · Doors.** super_admin: Access exchange only. editor/moderator/ops_admin: Access exchange,
   or password plus the matching Access assertion. A direct call to `api-<env>` without an assertion

@@ -57,10 +57,15 @@ Option 3.
   does not cover it. A request carrying `Sec-Fetch-Site` with any value other than `same-origin` is
   answered `403 CROSS_SITE_REQUEST` before any verification. Callers that send no such header pass:
   these are scripts presenting an assertion they hold themselves.
-- **Unchanged:** password reset, change, TOTP and account creation (none of them issues a session),
-  `db:seed-admin`, and the stored hashes. The stored password is the credential for the rollback door.
-- **Production is unchanged.** The flag stays `true` there, and password plus mandatory TOTP remains
-  ADR-0010's break-glass door. Making production Access-only needs its own owner decision.
+- ~~**Unchanged:** password reset, change, TOTP and account creation (none of them issues a session),
+  `db:seed-admin`, and the stored hashes. The stored password is the credential for the rollback door.~~
+  Superseded by ADR-0034's amendment (2026-10-07, #687 D-3/D-4): TOTP and `db:seed-admin` are gone,
+  the super admin's hash is erased once Access is confirmed, and every password login needs a
+  verified Access assertion — the stored password is no rollback door.
+- ~~**Production is unchanged.** The flag stays `true` there, and password plus mandatory TOTP remains
+  ADR-0010's break-glass door. Making production Access-only needs its own owner decision.~~
+  Superseded by ADR-0034 D-8: staging and production require `CMS_SUPER_ADMIN_SSO_ONLY=true` and
+  `CF_ACCESS_*`; there is no password break-glass for the super admin (O-1).
 - **Machine callers use a person's assertion** (`cloudflared access token -app=…`). Service tokens
   are still refused, because the exchange requires `email` (ADR-0010).
 

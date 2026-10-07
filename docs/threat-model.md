@@ -67,12 +67,12 @@ Status legend: ✅ mitigated+tested · 🟡 mitigated, test pending · 🔴 open
 
 ### CMS (`/v1/cms/*`)
 
-| Threat      | Vector                      | Mitigation                                                             | Status                  |
-| ----------- | --------------------------- | ---------------------------------------------------------------------- | ----------------------- |
-| Spoofing    | staff credential theft      | TOTP MFA; prod refuses non-MFA login; SSO khi có IdP                   | 🟡 (SSO 🔴 blocked #62) |
-| Elevation   | consumer token / stale role | act=admin required; role re-read per request; suspended = instant deny | ✅ `cms.int.spec`       |
-| Tampering   | ranking manipulation        | bounds validation; four-eyes approval; versioned + rollback; audit     | ✅                      |
-| Repudiation | who changed place/config    | append-only audit with diff + actor                                    | ✅                      |
+| Threat      | Vector                      | Mitigation                                                                                                                                                | Status            |
+| ----------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| Spoofing    | staff credential theft      | every password login needs a verified Access assertion for the same mailbox (#687 D-4, no exception); Access MFA on staging/prod; super admin Access-only | ✅ `cms.int.spec` |
+| Elevation   | consumer token / stale role | act=admin required; role re-read per request; suspended = instant deny                                                                                    | ✅ `cms.int.spec` |
+| Tampering   | ranking manipulation        | bounds validation; four-eyes approval; versioned + rollback; audit                                                                                        | ✅                |
+| Repudiation | who changed place/config    | append-only audit with diff + actor                                                                                                                       | ✅                |
 
 ### Platform
 

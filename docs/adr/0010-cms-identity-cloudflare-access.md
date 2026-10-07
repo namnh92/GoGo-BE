@@ -97,9 +97,10 @@ becomes staff with a role nobody chose. An unknown identity gets 403
 
 ### What is kept
 
-**Password + TOTP stays.** It is the way in when Access or its upstream
+~~**Password + TOTP stays.** It is the way in when Access or its upstream
 provider is unavailable, and it remains the second factor for `super_admin`.
-Two doors onto one session model, not a migration.
+Two doors onto one session model, not a migration.~~ Struck 2026-10-07; see the
+last note below.
 
 > **Amended by ADR-0032 (2026-10-06).** The password door is now a per-environment switch,
 > `CMS_PASSWORD_LOGIN_ENABLED`. It is open by default and in production; it is closed on DEV. Where it
@@ -107,6 +108,12 @@ Two doors onto one session model, not a migration.
 >
 > **Narrowed by ADR-0034 (2026-10-06).** `CMS_SUPER_ADMIN_SSO_ONLY` closes the password door for the
 > `super_admin` alone; other roles keep it. DEV runs that way, with the general door open again.
+>
+> **Amended by ADR-0034's amendment (2026-10-07, #687 D-4).** TOTP is removed and the password door
+> is no longer a way in when Access is unavailable: every password login requires a verified Access
+> assertion for the same mailbox, in every environment, with no workstation or bare-password
+> exception, and refresh refuses every password family opened without one. The super admin has no
+> password at all (D-3, D-7).
 
 ### Session lifetime
 
@@ -131,7 +138,8 @@ is created with `session_duration = "8h"`. One shift, two layers, same number.
   unknown `kid`. Without that floor, an endpoint that accepts unauthenticated
   input by design is a free amplifier: one request to Cloudflare per forged
   token. Cost of the floor: during a key rotation, up to a minute of rejected
-  SSO sign-ins, while password + TOTP keeps working.
+  SSO sign-ins, ~~while password + TOTP keeps working~~ — and, since #687 D-4,
+  of rejected password sign-ins too, because those verify the same assertion.
 - An empty or unreachable key set never overwrites the cache — a momentary bad
   response must not become a sign-in outage that outlives it.
 - `admin.login.sso` is a distinct audit action from `admin.login`. Which door
@@ -159,7 +167,11 @@ environment — which is the honest state, not a hidden one.
 Since ADR-0032, clearing `CF_ACCESS_*` is refused while `CMS_PASSWORD_LOGIN_ENABLED=false`. Re-open
 the password door first.
 
-Clear `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` outside production. The
+~~Clear `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` outside production. The
 endpoint starts answering 503, password + TOTP is unaffected, and existing
 sessions — issued through either door — keep working until they expire. No
-migration, no schema change, nothing to undo in the database.
+migration, no schema change, nothing to undo in the database.~~ Superseded by
+ADR-0034's amendment (#687 D-4): clearing `CF_ACCESS_*` leaves the console
+with no door — the password login refuses without a verified assertion too —
+and a deployed environment (`NODE_ENV=production`) refuses to boot without
+them. Rolling Access back now means rolling back below BE-c.

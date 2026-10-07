@@ -13717,7 +13717,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Set by Cloudflare Access. Required wherever the assertion is required (above). */
+                /** @description Set by Cloudflare Access. Required on every password login, without exception (above). */
                 "Cf-Access-Jwt-Assertion"?: string;
             };
             path?: never;
@@ -13868,7 +13868,7 @@ export interface operations {
                     "application/json": components["schemas"]["AdminSession"];
                 };
             };
-            /** @description INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED. `SESSION_REVOKED` also answers a session opened by password once the password door is closed; its whole family is revoked (ADR-0032). From alpha.72 it also answers a password family opened without a verified Access assertion (before #687 D-4, or on a workstation) wherever the assertion is required: the family is revoked and the user signs in once more through Access. */
+            /** @description INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED. `SESSION_REVOKED` also answers a session opened by password once the password door is closed; its whole family is revoked (ADR-0032). From alpha.72 it also answers every password family opened without a verified Access assertion (one from before #687 D-4), in every environment and without exception: the family is revoked and the user signs in once more, with the assertion. */
             401: {
                 headers: {
                     [name: string]: unknown;
