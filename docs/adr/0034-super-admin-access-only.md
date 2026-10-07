@@ -1,6 +1,7 @@
 # ADR-0034: The super admin signs in only through Access; other staff keep passwords
 
-- **Status:** accepted
+- **Status:** accepted · **amended 2026-10-07** (GoGo-BE#687 shape rev 5, owner decisions O-1…O-12;
+  see _Amendment_ at the end — where the two disagree, the amendment wins)
 - **Date:** 2026-10-06
 - **Deciders:** product owner, backend (SA shape reviewed by SA review, one round)
 - **Issue:** GoGo-BE#687
@@ -66,14 +67,11 @@ The redundant row is accepted, not refused. Each switch is flipped and rolled ba
 - **`GET /v1/cms/auth/methods` gains `superAdminSsoOnly`**, optional in the contract (alpha.70).
   The field is always sent, and older APIs omit it, which reads as false. `password` still describes
   every other role.
-- **Unchanged:** `CMS_PASSWORD_LOGIN_ENABLED` and its refresh rule; account creation (it still takes
-  a password, which the created roles use); reset, change and TOTP endpoints; `db:seed-admin`;
-  `DEV_TOTP_CODE`. The super admin's stored password is the credential of the rollback door.
-- **Production is unchanged.** The default is `false`. There, password plus mandatory TOTP remains
-  the super admin's break-glass door (ADR-0010). Turning this on in production removes it, and
-  needs its own owner decision.
+- ~~**Unchanged:** reset, change and TOTP endpoints; `db:seed-admin`; the super admin's stored
+  password is the credential of the rollback door.~~ Superseded by the amendment (D-3, D-4).
+- ~~**Production is unchanged.**~~ Superseded: staging and production require the switch on (D-8).
 
-### Bootstrap address rule (extends ADR-0032 and ADR-0018)
+### Bootstrap address rule (extends ADR-0032 and ADR-0018) — superseded by D-2/D-3 below
 
 Whenever either switch closes the super admin's password door (`CMS_PASSWORD_LOGIN_ENABLED=false`
 or `CMS_SUPER_ADMIN_SSO_ONLY=true`), the super admin's `admin_users.email` and
@@ -121,3 +119,34 @@ While SSM holds `true`, three floors apply. Crossing any of them is a rollback o
 - **CMS below ADR-0032's first build that reads `methods`.** That build has no SSO button, so the
   super admin is left with a form that refuses. Re-open and verify the password door before going
   below it.
+
+## Amendment (2026-10-07, GoGo-BE#687 shape rev 5)
+
+The owner widened the decision (O-1…O-12). Built in stages — BE-a (this switch), BE-b (the row
+follows SSM), BE-c (the Access assertion replaces TOTP on the password door), BE-c2 (TOTP columns
+dropped) — and the Infra work in GoGo-Infra#194/#196/#199. The shape file
+`dev/handoffs/sa-shape-GoGo-BE-687.fable.md` (workspace) is the detailed record.
+
+- **D-2 · One super admin, address from SSM.** `CMS_SUPER_ADMIN_EMAIL`, rendered from
+  `cms/super-admin-email`, is the only source of the super admin's address. The staff allow list is
+  `cms/access-staff-emails`, read by Terraform only. `cms/seed-admin-*` and `db:seed-admin` are
+  retired.
+- **D-3 · The row follows SSM at deploy.** `cms:sync-super-admin` runs in the migrate container after
+  migrations: insert when absent, update the address and revoke its sessions when SSM moved, refuse
+  when the SSM address belongs to a staff row. The password hash is erased only when the switch is
+  on **and** an `admin.sso_confirmed` audit row exists for the current address (written by
+  `POST /v1/cms/auth/super-admin/confirm-sso` from an Access session). Revocation truth is the
+  database: `AdminGuard` reads `admin_sessions.revoked_at` for the token's session. The API refuses
+  to change the super admin's address (`409 SUPER_ADMIN_EMAIL_FROM_SSM`) and, with the switch on,
+  refuses reset, change and temporary password for it (`403 SUPER_ADMIN_SSO_ONLY`).
+- **D-4 · Cloudflare carries the second factor.** CMS TOTP is removed; the password door requires a
+  verified Access assertion for the same mailbox (BE-c).
+- **D-7 · Doors.** super_admin: Access exchange only. editor/moderator/ops_admin: Access exchange,
+  or password plus the matching Access assertion. A direct call to `api-<env>` without an assertion
+  is refused.
+- **D-8 · Staging and production.** `APP_ENV` staging, `prod` or `production` requires
+  `CMS_SUPER_ADMIN_SSO_ONLY=true` and `CF_ACCESS_*` (config check fails otherwise; built in BE-a).
+  Access requires MFA there (`require_mfa`, GoGo-Infra#199); one-time PIN does not satisfy it.
+- **Recovery (O-1, owner 2026-10-07).** There is no password break-glass for the super admin. Every
+  way out is Access SSO plus SSM → `terraform-apply-<env>` → deploy; the address-change overlap and
+  recovery table live in GoGo-Infra `docs/secrets.md`.
