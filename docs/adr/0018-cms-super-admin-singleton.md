@@ -162,6 +162,10 @@ Where `CMS_PASSWORD_LOGIN_ENABLED=false`, the super admin signs in only through 
 on `admin_users.email`, so the bootstrap address in SSM must be an address the Access policy admits.
 Correcting the address of an existing row is an audited API act, never a SQL edit.
 
+ADR-0034 extends this to `CMS_SUPER_ADMIN_SSO_ONLY=true`, which closes the password door for the
+super admin alone: the same address rule applies, the address is changed only while the super
+admin's password door is open, and the bootstrap password stays the credential of the rollback door.
+
 ## Migration & rollback
 
 `migrations/0050_cms-single-super-admin.sql` demotes and suspends any surplus

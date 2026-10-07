@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 1.0.0-alpha.69
+  version: 1.0.0-alpha.70
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -5039,10 +5039,15 @@ paths:
           description: >
             Production refuses accounts without MFA (`MFA_SETUP_REQUIRED`), or
             the password door is turned off for this environment
-            (`PASSWORD_LOGIN_DISABLED`, not retryable — ADR-0032). The second
-            is answered before any credential is checked, so a correct and a
-            wrong password get the same answer. `cmsAuthMethods` says in
-            advance which doors are open.
+            (`PASSWORD_LOGIN_DISABLED`, not retryable — ADR-0032), or the
+            account is the `super_admin` and this environment lets it sign in
+            through `cmsAccessExchange` only (`SUPER_ADMIN_SSO_ONLY`, not
+            retryable — ADR-0034, added in alpha.70). Both are answered before
+            the password is compared, so a correct and a wrong password get the
+            same answer. Precedence: `429` (per-IP rate limit), then
+            `PASSWORD_LOGIN_DISABLED`, then `429` (account lockout), then
+            `SUPER_ADMIN_SSO_ONLY`, then the credential outcomes. `cmsAuthMethods` says in advance which
+            doors are open.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -14999,6 +15004,17 @@ components:
         accessSso:
           type: boolean
           description: '`cmsAccessExchange` is configured in this deployment.'
+        superAdminSsoOnly:
+          type: boolean
+          description: >
+            ADR-0034 (added in alpha.70). True when the `super_admin` account
+            signs in through `cmsAccessExchange` only: `cmsLogin` answers it
+            `403 SUPER_ADMIN_SSO_ONLY` before any credential is checked
+            whenever the general door is open and neither the per-IP rate limit
+            nor an account lockout applies (those `429`s and
+            `PASSWORD_LOGIN_DISABLED` take precedence).
+            `password` still describes every other role. Absent on APIs older
+            than alpha.70 — read as false.
     AdminSession:
       type: object
       properties:

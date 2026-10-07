@@ -52,6 +52,17 @@ export async function createApp(
       'CMS password sign-in is disabled; Cloudflare Access is the only way in',
     );
   }
+  if (config.CMS_SUPER_ADMIN_SSO_ONLY) {
+    // #687 / ADR-0034 — the narrower door: only the super admin is Access-only.
+    logger.info(
+      {
+        cmsSuperAdminSsoOnly: true,
+        cmsPasswordLogin: config.CMS_PASSWORD_LOGIN_ENABLED,
+        cmsAccessSso: Boolean(config.CF_ACCESS_TEAM_DOMAIN),
+      },
+      'CMS super_admin password sign-in is disabled; it signs in through Cloudflare Access only',
+    );
+  }
 
   const adapter = new FastifyAdapter({
     loggerInstance: logger,

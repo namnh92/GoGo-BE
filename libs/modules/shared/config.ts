@@ -66,6 +66,13 @@ export type IdentityConfig = {
    * Cloudflare Access (`access-exchange`) is then the only way in.
    */
   CMS_PASSWORD_LOGIN_ENABLED: boolean;
+  /**
+   * #687 / ADR-0034 — the `super_admin` signs in only through Access; other
+   * roles follow CMS_PASSWORD_LOGIN_ENABLED. On means `login` refuses that
+   * account before comparing its password and its password-born sessions stop
+   * refreshing.
+   */
+  CMS_SUPER_ADMIN_SSO_ONLY: boolean;
 };
 
 /**

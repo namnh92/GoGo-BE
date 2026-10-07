@@ -99,6 +99,20 @@ const envSchema = z
       .default('true')
       .transform((v) => v === 'true'),
     /**
+     * #687 / ADR-0034 — the `super_admin` signs in only through Cloudflare
+     * Access; every other role keeps the password door CMS_PASSWORD_LOGIN_ENABLED
+     * describes. A second switch rather than a role list: nothing asks for a
+     * per-role policy beyond the one account with the whole model behind it.
+     *
+     * On: `POST /v1/cms/auth/login` answers 403 SUPER_ADMIN_SSO_ONLY for the
+     * super admin before its password is compared, and its password-born
+     * sessions stop refreshing. Refused below unless Access is configured.
+     */
+    CMS_SUPER_ADMIN_SSO_ONLY: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    /**
      * #255 — per-type SLA override for the privacy-request ledger, JSON:
      * `{"delete":{"ackHours":72,"fulfillHours":720},...}`. Empty uses the
      * PROVISIONAL engineering defaults in shared/privacy-ledger.ts — Legal
@@ -680,15 +694,41 @@ const envSchema = z
       });
     }
 
-    // Security rule: the CMS requires SSO in production. Keyed on APP_ENV, not
-    // NODE_ENV — every deployed environment runs the production build, so
-    // NODE_ENV would demand this of DEV too (the mistake fixed in #215/#216).
-    if ((env.APP_ENV === 'prod' || env.APP_ENV === 'production') && !env.CF_ACCESS_TEAM_DOMAIN) {
+    // #687 / ADR-0034 — the same rule for the super admin alone: closing its
+    // password door without Access leaves the one super_admin with no way in.
+    if (env.CMS_SUPER_ADMIN_SSO_ONLY && !env.CF_ACCESS_TEAM_DOMAIN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CMS_SUPER_ADMIN_SSO_ONLY'],
+        message:
+          'CMS_SUPER_ADMIN_SSO_ONLY=true requires CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD: the super_admin would have no way in',
+      });
+    }
+
+    // Security rule: the CMS requires SSO in staging and production. Keyed on
+    // APP_ENV, not NODE_ENV — every deployed environment runs the production
+    // build, so NODE_ENV would demand this of DEV too (the mistake fixed in
+    // #215/#216). Both production aliases count (#687 F-19).
+    const strictEnv =
+      env.APP_ENV === 'prod' || env.APP_ENV === 'production' || env.APP_ENV === 'staging';
+    if (strictEnv && !env.CF_ACCESS_TEAM_DOMAIN) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['CF_ACCESS_TEAM_DOMAIN'],
         message:
-          'CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in production: the CMS requires SSO there',
+          'CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in staging and production: the CMS requires SSO there',
+      });
+    }
+
+    // #687 D-8 (owner O-8): staging and production never run a super admin with
+    // a password door. MFA itself is enforced at Access (GoGo-Infra#199,
+    // require_mfa); this keeps the API from offering the door MFA would guard.
+    if (strictEnv && !env.CMS_SUPER_ADMIN_SSO_ONLY) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CMS_SUPER_ADMIN_SSO_ONLY'],
+        message:
+          'CMS_SUPER_ADMIN_SSO_ONLY must be true when APP_ENV is staging or production: the super admin signs in through Access only there',
       });
     }
   });

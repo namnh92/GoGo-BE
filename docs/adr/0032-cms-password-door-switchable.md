@@ -5,6 +5,10 @@
 - **Deciders:** product owner, backend (SA shape reviewed by SA review, two rounds)
 - **Issue:** GoGo-BE#679 (split from GoGo-Infra#154)
 - **Related:** ADR-0010 (CMS identity from Cloudflare Access), ADR-0018 (one super admin, DB authenticates)
+- **Narrowed by:** ADR-0034 (2026-10-06). The global close locked out DEV staff whose addresses are
+  not on the Access allow list, so DEV was rolled back to `CMS_PASSWORD_LOGIN_ENABLED=true` and runs
+  `CMS_SUPER_ADMIN_SSO_ONLY=true` instead: only the super admin is Access-only. This switch keeps its
+  meaning, and the bootstrap address rule below now applies to either switch.
 
 ## Context
 

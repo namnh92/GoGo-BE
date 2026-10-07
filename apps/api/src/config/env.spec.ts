@@ -198,6 +198,90 @@ describe('SHARE_LINK_EDGE_AUTH_TOKEN (SEC-004)', () => {
       ).toThrow(/CMS_PASSWORD_LOGIN_ENABLED/);
     });
   });
+
+  describe('super admin through Access only (#687, ADR-0034)', () => {
+    const access = { CF_ACCESS_TEAM_DOMAIN: 'gogo.cloudflareaccess.com', CF_ACCESS_AUD: 'aud-tag' };
+
+    // AC-7 / D-8 (O-8): staging and production — under either production alias
+    // (F-19) — refuse a configuration in which the super admin keeps a password
+    // door, and require Access itself in staging as well as production.
+    for (const appEnv of ['prod', 'production', 'staging']) {
+      it(`refuses CMS_SUPER_ADMIN_SSO_ONLY=false when APP_ENV=${appEnv}`, () => {
+        expect(() =>
+          loadEnv({ ...base, NODE_ENV: 'development', APP_ENV: appEnv, ...access }),
+        ).toThrow(/CMS_SUPER_ADMIN_SSO_ONLY must be true when APP_ENV is staging or production/);
+      });
+
+      it(`accepts CMS_SUPER_ADMIN_SSO_ONLY=true with Access when APP_ENV=${appEnv}`, () => {
+        const env = loadEnv({
+          ...base,
+          NODE_ENV: 'development',
+          APP_ENV: appEnv,
+          CMS_SUPER_ADMIN_SSO_ONLY: 'true',
+          ...access,
+        });
+        expect(env.CMS_SUPER_ADMIN_SSO_ONLY).toBe(true);
+      });
+    }
+
+    it('requires Access in staging too', () => {
+      expect(() =>
+        loadEnv({
+          ...base,
+          NODE_ENV: 'development',
+          APP_ENV: 'staging',
+          CMS_SUPER_ADMIN_SSO_ONLY: 'true',
+        }),
+      ).toThrow(/CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in staging and production/);
+    });
+
+    it('leaves dev free to keep the super admin password door', () => {
+      expect(
+        loadEnv({ ...base, NODE_ENV: 'development', APP_ENV: 'dev' }).CMS_SUPER_ADMIN_SSO_ONLY,
+      ).toBe(false);
+    });
+
+    it('is off by default, so no existing environment changes', () => {
+      expect(loadEnv({ ...base, NODE_ENV: 'development' }).CMS_SUPER_ADMIN_SSO_ONLY).toBe(false);
+    });
+
+    it('refuses to turn on without Access: the super admin would have no door', () => {
+      expect(() =>
+        loadEnv({ ...base, NODE_ENV: 'development', CMS_SUPER_ADMIN_SSO_ONLY: 'true' }),
+      ).toThrow(/CMS_SUPER_ADMIN_SSO_ONLY=true requires CF_ACCESS_TEAM_DOMAIN/);
+    });
+
+    it('turns on with Access, leaving the general password door as it was', () => {
+      const env = loadEnv({
+        ...base,
+        NODE_ENV: 'development',
+        APP_ENV: 'dev',
+        CMS_SUPER_ADMIN_SSO_ONLY: 'true',
+        ...access,
+      });
+      expect(env.CMS_SUPER_ADMIN_SSO_ONLY).toBe(true);
+      expect(env.CMS_PASSWORD_LOGIN_ENABLED).toBe(true);
+    });
+
+    it('accepts both switches together: redundant, not contradictory', () => {
+      const env = loadEnv({
+        ...base,
+        NODE_ENV: 'development',
+        APP_ENV: 'dev',
+        CMS_PASSWORD_LOGIN_ENABLED: 'false',
+        CMS_SUPER_ADMIN_SSO_ONLY: 'true',
+        ...access,
+      });
+      expect(env.CMS_PASSWORD_LOGIN_ENABLED).toBe(false);
+      expect(env.CMS_SUPER_ADMIN_SSO_ONLY).toBe(true);
+    });
+
+    it('accepts only true or false, so a typo cannot read as either', () => {
+      expect(() =>
+        loadEnv({ ...base, NODE_ENV: 'development', CMS_SUPER_ADMIN_SSO_ONLY: 'yes', ...access }),
+      ).toThrow(/CMS_SUPER_ADMIN_SSO_ONLY/);
+    });
+  });
 });
 
 /*
