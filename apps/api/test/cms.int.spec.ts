@@ -3628,10 +3628,15 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
         ssoSubject: 'okta|c',
         displayName: 'Lê C',
         role: 'editor',
-        mfaTotpSecretEnc: 'enc:should-never-be-returned',
         createdAt: new Date(Date.UTC(2026, 0, 3)),
       },
     ]);
+    // The legacy TOTP column is unmapped since #687 D-4 but still in the table
+    // until BE-c2; whatever it holds must never reach a response.
+    await pool.query(
+      `update admin_users set mfa_totp_secret_enc = 'enc:should-never-be-returned' where email = $1`,
+      [`${prefix}-c@gogo.local`],
+    );
   });
 
   const list = (qs: string, token = superToken) =>
