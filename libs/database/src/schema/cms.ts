@@ -119,7 +119,8 @@ export const adminSessions = pgTable(
     /**
      * Legacy (#687 alpha.72, D-4): whether the family was opened with a
      * verified Cloudflare Access assertion. Since rev 6 (alpha.73) it has no
-     * authorization effect — refresh does not read it. `access-exchange` still
+     * authorization effect — refresh copies it onto the rotated row but never
+     * decides anything on it. `access-exchange` still
      * sets it; password logins leave it false. Kept until a cleanup migration.
      */
     accessBound: boolean('access_bound').notNull().default(false),

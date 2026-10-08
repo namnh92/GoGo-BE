@@ -63,8 +63,9 @@ Option 3.
 - ~~**Unchanged:** password reset, change, TOTP and account creation (none of them issues a session),
   `db:seed-admin`, and the stored hashes. The stored password is the credential for the rollback door.~~
   Superseded by ADR-0034's amendment (2026-10-07, #687 D-3/D-4): TOTP and `db:seed-admin` are gone,
-  the super admin's hash is erased once Access is confirmed, and every password login needs a
-  verified Access assertion — the stored password is no rollback door.
+  and the super admin's hash is erased once Access is confirmed (with `CMS_SUPER_ADMIN_SSO_ONLY=true`)
+  — its stored password is no rollback door. ~~Every password login needs a verified Access
+  assertion~~ (alpha.72 only; since rev 6, 2026-10-08, staff passwords need none).
 - ~~**Production is unchanged.** The flag stays `true` there, and password plus mandatory TOTP remains
   ADR-0010's break-glass door. Making production Access-only needs its own owner decision.~~
   Superseded by ADR-0034 D-8: staging and production require `CMS_SUPER_ADMIN_SSO_ONLY=true` and
@@ -82,13 +83,14 @@ GoGo-BE issue for the email change), never a SQL edit.
 
 ## Consequences
 
-- The DEV console is reachable only by people on the `cms-dev` Access allow list who also hold an
-  active `admin_users` row.
-- If Access or its identity provider has an outage, the browser console is unreachable whatever the
-  flag says, because `cms-<env>` itself sits behind Access. ~~Re-opening the password door restores API
-  and script access only.~~ Superseded by ADR-0034's amendment (#687 D-4): the password door needs the
-  same verified Access assertion, so re-opening it restores nothing during an Access outage; every
-  CMS door waits for Access.
+- ~~The DEV console is reachable only by people on the `cms-dev` Access allow list who also hold an
+  active `admin_users` row.~~ _(Rev 6, #687, 2026-10-08: the console is public; Access gates only
+  `/sso` and the exchange, and staff need only an active `admin_users` row and their password.)_
+- ~~If Access or its identity provider has an outage, the browser console is unreachable whatever the
+  flag says, because `cms-<env>` itself sits behind Access. Re-opening the password door restores API
+  and script access only.~~ ~~(D-4: the password door needs the same assertion, so every door waits
+  for Access.)~~ _(Rev 6: an Access outage stops single sign-on only. Staff keep the password door
+  while `CMS_PASSWORD_LOGIN_ENABLED=true`; the super admin, SSO-only where its switch is on, waits.)_
 - `accessSso: true` means Access is configured. It does not mean Access is healthy.
 - An agent cannot sign in on its own while the owner's Access session has expired. Script actions
   are audited under the person whose assertion was used.

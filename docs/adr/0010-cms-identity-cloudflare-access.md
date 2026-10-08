@@ -140,8 +140,9 @@ is created with `session_duration = "8h"`. One shift, two layers, same number.
   unknown `kid`. Without that floor, an endpoint that accepts unauthenticated
   input by design is a free amplifier: one request to Cloudflare per forged
   token. Cost of the floor: during a key rotation, up to a minute of rejected
-  SSO sign-ins, ~~while password + TOTP keeps working~~ — and, since #687 D-4,
-  of rejected password sign-ins too, because those verify the same assertion.
+  SSO sign-ins, ~~while password + TOTP keeps working~~ ~~— and, since #687 D-4,
+  of rejected password sign-ins too, because those verify the same assertion~~. Since rev 6
+  (#687, 2026-10-08) password sign-ins verify no assertion, so a rotation affects SSO only.
 - An empty or unreachable key set never overwrites the cache — a momentary bad
   response must not become a sign-in outage that outlives it.
 - `admin.login.sso` is a distinct audit action from `admin.login`. Which door
