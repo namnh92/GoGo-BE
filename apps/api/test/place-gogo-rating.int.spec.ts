@@ -9,6 +9,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
 import { SearchRepository } from '@gogo/modules';
+import { cmsAccessHeaders } from './support/cms-access';
 
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 
@@ -109,6 +110,7 @@ async function admin(email: string, role: 'moderator' | 'editor') {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   const token = login.json().accessToken as string;

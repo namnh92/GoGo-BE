@@ -19,6 +19,7 @@ import {
   AdministrativeResolverService,
 } from '@gogo/modules';
 import { idempotencyHeader, withSourceReferences } from './support/cms-place-create';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * PI-BE-030 (#525) — a place approved from a Mobile contribution is mapped
@@ -73,6 +74,7 @@ async function createAdmin(role: 'moderator' | 'editor') {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   tokens[role] = res.json().accessToken as string;

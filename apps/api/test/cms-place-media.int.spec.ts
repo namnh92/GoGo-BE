@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * BE-CMS-M1 (#191) — place media is writable at last.
@@ -42,6 +43,7 @@ async function createAdmin(email: string, role: 'editor' | 'moderator' | 'ops_ad
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   expect(res.statusCode).toBe(201);

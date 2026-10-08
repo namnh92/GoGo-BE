@@ -110,10 +110,7 @@ const logoutSchema = z.object({ allDevices: z.boolean().default(false) }).defaul
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1).max(128),
-  totp: z.string().length(6).optional(),
 });
-const totpSetupSchema = z.object({ password: z.string().min(1).max(128) });
-const totpConfirmSchema = z.object({ code: z.string().regex(/^\d{6}$/) });
 const adminListQuery = z.object({
   q: z.string().trim().min(1).max(120).optional(),
   role: z.enum(['editor', 'moderator', 'ops_admin', 'super_admin']).optional(),
@@ -185,7 +182,28 @@ export class CmsAuthController {
     @Req() req: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
-    const result = await this.auth.login({ ...body, meta: clientMeta(req) });
+    // #687 D-4 — the second factor is Cloudflare Access admitting this mailbox
+    // on the same request. The assertion is verified here, before the service
+    // touches a credential; an assertion that does not verify counts as none,
+    // so the refusal (ACCESS_ASSERTION_REQUIRED) is the same either way. A
+    // JWKS outage stays a 503: that is not the caller's fault.
+    let accessEmail: string | undefined;
+    const assertion = req.headers[CF_ACCESS_ASSERTION_HEADER];
+    // A closed password door answers 403 before anything is verified (review
+    // of PR #691, Astra F-02): a JWKS outage must not turn it into a 503.
+    if (
+      this.config.CMS_PASSWORD_LOGIN_ENABLED &&
+      this.access.configured &&
+      typeof assertion === 'string' &&
+      assertion
+    ) {
+      try {
+        accessEmail = (await this.access.verify(assertion)).email;
+      } catch (error) {
+        if (!(error instanceof AppError) || error.httpStatus !== 401) throw error;
+      }
+    }
+    const result = await this.auth.login({ ...body, accessEmail, meta: clientMeta(req) });
     // Browser clients authenticate by cookie; the body tokens exist for
     // non-browser callers. A CMS that stores the body token is doing it wrong.
     setAuthCookies(reply, result, this.cookieOpts());
@@ -293,29 +311,6 @@ export class CmsAuthController {
       refreshTtlSeconds: this.config.AUTH_ADMIN_REFRESH_TTL_SECONDS,
       refreshPath: '/v1/cms/auth/refresh',
     };
-  }
-
-  @RequireRole('editor', 'moderator', 'ops_admin')
-  @Post('totp/setup')
-  setupTotp(
-    @CurrentActor() actor: Actor,
-    @Body(new ZodValidationPipe(totpSetupSchema)) body: { password: string },
-  ) {
-    return this.auth.setupTotp(actor.id, body.password);
-  }
-
-  /**
-   * #62 — enrollment only takes effect once a code from the new secret
-   * verifies. Enrolling and activating in one step locked an admin out of the
-   * console whenever the authenticator never received the secret.
-   */
-  @RateLimit({ action: 'cms.totp_confirm', limit: 5, windowSeconds: 60, keyBy: 'actor' })
-  @Post('totp/confirm')
-  confirmTotp(
-    @CurrentActor() actor: Actor,
-    @Body(new ZodValidationPipe(totpConfirmSchema)) body: { code: string },
-  ) {
-    return this.auth.confirmTotp(actor.id, body.code);
   }
 
   /**

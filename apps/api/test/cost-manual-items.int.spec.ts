@@ -16,6 +16,7 @@ import {
   manualCostSource,
   writeAudit,
 } from '@gogo/modules';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * COST-BE-023 (#382) — manual / fixed costs against a real Postgres and the
@@ -55,6 +56,7 @@ async function createAdmin(role: 'editor' | 'moderator' | 'ops_admin' | 'super_a
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   tokens[role] = res.json().accessToken as string;

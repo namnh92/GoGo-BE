@@ -18,6 +18,7 @@ import {
   type PrivacyExportProcessorOptions,
 } from '@gogo/modules';
 import { STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * PR #677 — regression tests for the SA review findings F-01..F-07 (F-08 is a
@@ -113,6 +114,7 @@ async function createAdmin(email: string, role: 'ops_admin' | 'editor') {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: ADMIN_PASSWORD },
   });
   expect(res.statusCode).toBe(201);

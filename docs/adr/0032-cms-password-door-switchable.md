@@ -48,7 +48,10 @@ Option 3.
   (`password | access_sso`; NULL predates the column and counts as `password`) is set when the
   session opens and inherited on rotation. With the flag off, refreshing a non-SSO family revokes the
   whole family (`password_login_disabled`) and answers `401 SESSION_REVOKED`. After the flip, such a
-  session outlives the decision by at most one access-token lifetime.
+  session outlives the decision by at most one access-token lifetime. _(ADR-0034 amendment, #687
+  D-4: with the flag on as well, a password family refreshes only if it was opened with a verified
+  Access assertion — every unbound password family is revoked (`access_unbound`), whatever the flags
+  or the role.)_
 - **The console asks which doors exist at runtime.** `GET /v1/cms/auth/methods` returns
   `{ password, accessSso }`. These are facts, not copy, and are not cached. A CMS build flag was
   rejected: it can drift from the API, and rolling back would then need a CMS deploy from someone who
@@ -57,10 +60,15 @@ Option 3.
   does not cover it. A request carrying `Sec-Fetch-Site` with any value other than `same-origin` is
   answered `403 CROSS_SITE_REQUEST` before any verification. Callers that send no such header pass:
   these are scripts presenting an assertion they hold themselves.
-- **Unchanged:** password reset, change, TOTP and account creation (none of them issues a session),
-  `db:seed-admin`, and the stored hashes. The stored password is the credential for the rollback door.
-- **Production is unchanged.** The flag stays `true` there, and password plus mandatory TOTP remains
-  ADR-0010's break-glass door. Making production Access-only needs its own owner decision.
+- ~~**Unchanged:** password reset, change, TOTP and account creation (none of them issues a session),
+  `db:seed-admin`, and the stored hashes. The stored password is the credential for the rollback door.~~
+  Superseded by ADR-0034's amendment (2026-10-07, #687 D-3/D-4): TOTP and `db:seed-admin` are gone,
+  the super admin's hash is erased once Access is confirmed, and every password login needs a
+  verified Access assertion — the stored password is no rollback door.
+- ~~**Production is unchanged.** The flag stays `true` there, and password plus mandatory TOTP remains
+  ADR-0010's break-glass door. Making production Access-only needs its own owner decision.~~
+  Superseded by ADR-0034 D-8: staging and production require `CMS_SUPER_ADMIN_SSO_ONLY=true` and
+  `CF_ACCESS_*`; there is no password break-glass for the super admin (O-1).
 - **Machine callers use a person's assertion** (`cloudflared access token -app=…`). Service tokens
   are still refused, because the exchange requires `email` (ADR-0010).
 
@@ -77,8 +85,10 @@ GoGo-BE issue for the email change), never a SQL edit.
 - The DEV console is reachable only by people on the `cms-dev` Access allow list who also hold an
   active `admin_users` row.
 - If Access or its identity provider has an outage, the browser console is unreachable whatever the
-  flag says, because `cms-<env>` itself sits behind Access. Re-opening the password door restores API
-  and script access only.
+  flag says, because `cms-<env>` itself sits behind Access. ~~Re-opening the password door restores API
+  and script access only.~~ Superseded by ADR-0034's amendment (#687 D-4): the password door needs the
+  same verified Access assertion, so re-opening it restores nothing during an Access outage; every
+  CMS door waits for Access.
 - `accessSso: true` means Access is configured. It does not mean Access is healthy.
 - An agent cannot sign in on its own while the owner's Access session has expired. Script actions
   are audited under the person whose assertion was used.

@@ -2576,7 +2576,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Staff login — argon2id + TOTP (MFA mandatory in production) */
+        /**
+         * Staff login — argon2id + the Cloudflare Access assertion for the same mailbox
+         * @description Breaking in alpha.72 (#687 D-4): TOTP is gone. The second factor is Cloudflare Access admitting the account's mailbox, carried on the same request as the `Cf-Access-Jwt-Assertion` header (browsers through `cms-<env>` send it; scripts use `cloudflared access token`). A request without a verified assertion whose `email` equals the account's address, case-insensitively, is refused with `401 ACCESS_ASSERTION_REQUIRED` before any credential is compared. There is no exception: an environment without Access configured has no password door (deployed environments refuse to boot that way).
+         */
         post: operations["cmsLogin"];
         delete?: never;
         options?: never;
@@ -2666,48 +2669,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/cms/auth/totp/setup": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Enroll TOTP, step 1 of 2 (requires a fresh password proof)
-         * @description Returns the secret and otpauth URI, and does **not** switch MFA on. `cmsConfirmTotp` does that, once a code generated from the secret verifies. Enrolling and activating together locked an admin out of the console whenever the authenticator never actually received the secret, because production requires MFA to log in.
-         *
-         *     The secret is shown exactly once, here. The stored copy is encrypted at rest and never readable again.
-         */
-        post: operations["cmsSetupTotp"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/cms/auth/totp/confirm": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Enroll TOTP, step 2 of 2 (proves the authenticator has the secret)
-         * @description A code from the pending secret activates MFA for this account. The confirming code is spent, so it cannot also be used to log in, and every other session for the admin is revoked — enrolling a second factor is a credential change, and sessions opened before it were opened with less.
-         */
-        post: operations["cmsConfirmTotp"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/cms/auth/admins": {
         parameters: {
             query?: never;
@@ -2721,7 +2682,7 @@ export interface paths {
          *
          *     `super_admin` only, matching the write — who holds which role is the shape of the authorization model itself, so it is not a rank-read for lower roles.
          *
-         *     Never returns the password hash, the TOTP secret (enrolled or pending), or any session material. `email` is returned because it is how a staff account is identified; nothing beyond it is.
+         *     Never returns the password hash, any legacy TOTP column, or any session material. `email` is returned because it is how a staff account is identified; nothing beyond it is.
          */
         get: operations["cmsListAdmins"];
         put?: never;
@@ -5921,8 +5882,6 @@ export interface components {
              * @description Absent on an account that has never signed in.
              */
             lastLoginAt?: string;
-            /** @description #248. Whether a second factor is enrolled — the status, never anything about the secret. It is what lets the console show which accounts are unprotected. */
-            mfaEnrolled: boolean;
             /** @description A temporary password is outstanding on this account. */
             mustChangePassword: boolean;
         };
@@ -13757,7 +13716,10 @@ export interface operations {
     cmsLogin: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Set by Cloudflare Access. Required on every password login, without exception (above). */
+                "Cf-Access-Jwt-Assertion"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -13767,7 +13729,6 @@ export interface operations {
                     /** Format: email */
                     email: string;
                     password: string;
-                    totp?: string;
                 };
             };
         };
@@ -13781,7 +13742,7 @@ export interface operations {
                     "application/json": components["schemas"]["AdminSession"];
                 };
             };
-            /** @description Bad credentials or missing/invalid TOTP (`MFA_REQUIRED`) */
+            /** @description Bad credentials (`INVALID_CREDENTIALS`), or no verified Access assertion for this mailbox (`ACCESS_ASSERTION_REQUIRED`, not retryable, answered before the password is compared). */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -13790,7 +13751,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Production refuses accounts without MFA (`MFA_SETUP_REQUIRED`), or the password door is turned off for this environment (`PASSWORD_LOGIN_DISABLED`, not retryable — ADR-0032), or the account is the `super_admin` and this environment lets it sign in through `cmsAccessExchange` only (`SUPER_ADMIN_SSO_ONLY`, not retryable — ADR-0034, added in alpha.70). Both are answered before the password is compared, so a correct and a wrong password get the same answer. Precedence: `429` (per-IP rate limit), then `PASSWORD_LOGIN_DISABLED`, then `429` (account lockout), then `SUPER_ADMIN_SSO_ONLY`, then the credential outcomes. `cmsAuthMethods` says in advance which doors are open. */
+            /** @description The password door is turned off for this environment (`PASSWORD_LOGIN_DISABLED`, not retryable — ADR-0032), or the account is the `super_admin` and this environment lets it sign in through `cmsAccessExchange` only (`SUPER_ADMIN_SSO_ONLY`, not retryable — ADR-0034, added in alpha.70). Both are answered before the password is compared, so a correct and a wrong password get the same answer. Precedence: `429` (per-IP rate limit), then `PASSWORD_LOGIN_DISABLED`, then `ACCESS_ASSERTION_REQUIRED`, then `429` (account lockout), then `SUPER_ADMIN_SSO_ONLY`, then the credential outcomes. `cmsAuthMethods` says in advance which doors are open. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13800,6 +13761,15 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+            /** @description The identity provider's key set is unreachable while verifying the assertion (`ACCESS_KEYS_UNAVAILABLE`, retryable). Never answered when the password door is closed: `PASSWORD_LOGIN_DISABLED` comes first. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     cmsAuthMethods: {
@@ -13863,7 +13833,7 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
-            /** @description SSO is not configured for this environment (`ACCESS_SSO_NOT_CONFIGURED`, not retryable), or the identity provider's key set is unreachable (`ACCESS_KEYS_UNAVAILABLE`, retryable). Password + TOTP remains available in both cases where the password door is open (`cmsAuthMethods`). */
+            /** @description SSO is not configured for this environment (`ACCESS_SSO_NOT_CONFIGURED`, not retryable), or the identity provider's key set is unreachable (`ACCESS_KEYS_UNAVAILABLE`, retryable). The password door needs the same assertion (alpha.72), so it is no fallback for either. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -13898,7 +13868,7 @@ export interface operations {
                     "application/json": components["schemas"]["AdminSession"];
                 };
             };
-            /** @description INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED. `SESSION_REVOKED` also answers a session opened by password once the password door is closed; its whole family is revoked (ADR-0032). */
+            /** @description INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED. `SESSION_REVOKED` also answers a session opened by password once the password door is closed; its whole family is revoked (ADR-0032). From alpha.72 it also answers every password family opened without a verified Access assertion (one from before #687 D-4), in every environment and without exception: the family is revoked and the user signs in once more, with the assertion. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -13942,74 +13912,6 @@ export interface operations {
                 };
             };
             403: components["responses"]["Forbidden"];
-        };
-    };
-    cmsSetupTotp: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    password: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Secret + otpauth URI for the authenticator app */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @description Shown once. Not retrievable afterwards. */
-                        secret?: string;
-                        otpauthUri?: string;
-                        /** @description Always false here — enrollment is not active until confirmed. */
-                        confirmed?: boolean;
-                    };
-                };
-            };
-        };
-    };
-    cmsConfirmTotp: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    code: string;
-                };
-            };
-        };
-        responses: {
-            /** @description MFA is now required for this account */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        confirmed: boolean;
-                    };
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            /** @description No enrollment is pending */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
         };
     };
     cmsListAdmins: {

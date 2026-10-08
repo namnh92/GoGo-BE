@@ -14,6 +14,7 @@ import {
   AdministrativeResolverService,
   AdministrativeValidationService,
 } from '@gogo/modules';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * ADM-010 (#463) — the telemetry, asserted against a real scrape.
@@ -151,6 +152,7 @@ async function createAdmin(role: Role) {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   tokens[role] = res.json().accessToken as string;

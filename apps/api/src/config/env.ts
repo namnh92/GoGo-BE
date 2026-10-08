@@ -85,9 +85,10 @@ const envSchema = z
      * are published; `CF_ACCESS_AUD` is the application's audience tag.
      *
      * Empty means single sign-on is off for this environment and
-     * `POST /v1/cms/auth/access-exchange` answers 503 saying so. Password +
-     * TOTP is unaffected either way, where CMS_PASSWORD_LOGIN_ENABLED leaves
-     * that door open.
+     * `POST /v1/cms/auth/access-exchange` answers 503 saying so. The password
+     * door (#687 D-4) requires an assertion from this application on every
+     * login, so empty means no CMS door at all; a deployed (production-build)
+     * environment refuses to boot that way.
      */
     CF_ACCESS_TEAM_DOMAIN: z.string().default(''),
     CF_ACCESS_AUD: z.string().default(''),
@@ -184,9 +185,9 @@ const envSchema = z
       .default('true')
       .transform((v) => v === 'true'),
     /**
-     * SEC-004 (#62) — encrypts admin TOTP secrets at rest. Required in
-     * production: without it a database dump hands over every second factor,
-     * which is the one credential a leaked dump is not supposed to include.
+     * SEC-004 (#62) — encrypted admin TOTP secrets at rest. Unread since #687
+     * D-4 replaced TOTP with the Access assertion; accepted (optional) until the
+     * TOTP columns and the SSM parameter retire together (BE-c2, R8).
      */
     CMS_MFA_ENCRYPTION_KEY: z.string().default(''),
     /**
@@ -587,13 +588,6 @@ const envSchema = z
             'TRUST_PROXY must be set explicitly in production: "false" when the API is directly exposed, or the hop count / CIDR list of the proxies in front of it',
         });
       }
-      if (env.CMS_MFA_ENCRYPTION_KEY.length < 32) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['CMS_MFA_ENCRYPTION_KEY'],
-          message: 'CMS_MFA_ENCRYPTION_KEY must be at least 32 chars in production',
-        });
-      }
       if (env.COOKIE_SECRET.length < 32) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -725,6 +719,22 @@ const envSchema = z
         path: ['CMS_SUPER_ADMIN_EMAIL'],
         message:
           'CMS_SUPER_ADMIN_EMAIL is required in a deployed environment: it is the only source of the super admin address (SSM cms/super-admin-email)',
+      });
+    }
+
+    // #687 D-4 (review of PR #691, Astra F-03) — the password door now needs a
+    // verified Access assertion on every login, so without CF_ACCESS_* a
+    // deployed environment has no usable door at all, whatever the password
+    // switches say. Refused here so `config:check` stops the deploy before the
+    // working revision is replaced. NODE_ENV, not APP_ENV: DEV runs the
+    // production build. A workstation boots without it; its console simply has
+    // no door, which local CMS work does not need (the console mocks the API).
+    if (env.NODE_ENV === 'production' && !env.CF_ACCESS_TEAM_DOMAIN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CF_ACCESS_TEAM_DOMAIN'],
+        message:
+          'CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in a deployed environment: every CMS sign-in (password included) needs a verified Cloudflare Access assertion (#687 D-4)',
       });
     }
 

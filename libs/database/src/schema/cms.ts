@@ -1,6 +1,5 @@
 import { sql } from 'drizzle-orm';
 import {
-  bigint,
   boolean,
   check,
   index,
@@ -35,17 +34,13 @@ export const adminUsers = pgTable(
     // Password auth only outside production; production requires SSO/MFA.
     passwordHash: text('password_hash'),
     ssoSubject: text('sso_subject'),
-    /** Encrypted at rest: a database dump must not hand over the second factor. */
-    mfaTotpSecretEnc: text('mfa_totp_secret_enc'),
-    /** Enrolled but unproven; promoted only after a code from it verifies. */
-    mfaTotpPendingEnc: text('mfa_totp_pending_enc'),
-    /**
-     * Highest TOTP step already consumed. Without it a code stays usable for
-     * the whole of its 30-second window and an intercepted one can be
-     * replayed inside it.
+    /*
+     * #687 D-4 — the TOTP columns (mfa_totp_secret_enc, mfa_totp_pending_enc,
+     * mfa_totp_last_step, mfa_enrolled_at) are still in the table and no
+     * longer mapped here, so no query reads them. Drizzle's select() names
+     * every mapped column; leaving them mapped would make BE-c2's DROP break
+     * this release while it still serves during that deploy.
      */
-    mfaTotpLastStep: bigint('mfa_totp_last_step', { mode: 'number' }),
-    mfaEnrolledAt: timestamp('mfa_enrolled_at', { withTimezone: true }),
     /**
      * #248 — set when a `super_admin` issues a temporary password. A temporary
      * credential that is never replaced is worse than the lockout it fixed:
@@ -121,6 +116,13 @@ export const adminSessions = pgTable(
      * session from before the column existed and counts as `password`.
      */
     authMethod: text('auth_method').$type<AdminAuthMethod>(),
+    /**
+     * #687 D-4 — the family was opened with a verified Cloudflare Access
+     * assertion for this account's mailbox (password login with the assertion,
+     * or `access-exchange`). Rotation inherits it; refresh refuses an unbound
+     * password family wherever the assertion is required.
+     */
+    accessBound: boolean('access_bound').notNull().default(false),
   },
   (t) => [
     uniqueIndex('admin_sessions_refresh_unique').on(t.refreshTokenHash),

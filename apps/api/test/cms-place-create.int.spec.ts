@@ -11,6 +11,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PLACE_PROVIDER } from '@gogo/providers';
 import { CONTACT_EVIDENCE } from './support/cms-place-create';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * GoGo-BE#440 — creating a place from the CMS, against the SA shape
@@ -53,6 +54,7 @@ async function createAdmin(role: Role, email = `c440-${role}-${uniq()}@gogo.loca
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   expect(res.statusCode, res.body).toBe(201);

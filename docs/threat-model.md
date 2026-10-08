@@ -67,12 +67,12 @@ Status legend: ✅ mitigated+tested · 🟡 mitigated, test pending · 🔴 open
 
 ### CMS (`/v1/cms/*`)
 
-| Threat      | Vector                      | Mitigation                                                             | Status                  |
-| ----------- | --------------------------- | ---------------------------------------------------------------------- | ----------------------- |
-| Spoofing    | staff credential theft      | TOTP MFA; prod refuses non-MFA login; SSO khi có IdP                   | 🟡 (SSO 🔴 blocked #62) |
-| Elevation   | consumer token / stale role | act=admin required; role re-read per request; suspended = instant deny | ✅ `cms.int.spec`       |
-| Tampering   | ranking manipulation        | bounds validation; four-eyes approval; versioned + rollback; audit     | ✅                      |
-| Repudiation | who changed place/config    | append-only audit with diff + actor                                    | ✅                      |
+| Threat      | Vector                      | Mitigation                                                                                                                                                | Status            |
+| ----------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| Spoofing    | staff credential theft      | every password login needs a verified Access assertion for the same mailbox (#687 D-4, no exception); Access MFA on staging/prod; super admin Access-only | ✅ `cms.int.spec` |
+| Elevation   | consumer token / stale role | act=admin required; role re-read per request; suspended = instant deny                                                                                    | ✅ `cms.int.spec` |
+| Tampering   | ranking manipulation        | bounds validation; four-eyes approval; versioned + rollback; audit                                                                                        | ✅                |
+| Repudiation | who changed place/config    | append-only audit with diff + actor                                                                                                                       | ✅                |
 
 ### Platform
 
@@ -319,6 +319,10 @@ this.
 
 ### Admin second factor (#62)
 
+> **Superseded by GoGo-BE#687 D-4 (alpha.72, ADR-0034 amendment).** TOTP is
+> removed; the second factor is Cloudflare Access admitting the account's
+> mailbox, required on the password login request. The text below is history.
+
 The console had MFA in the sense that a code was checked. Four things it was
 not doing:
 
@@ -350,6 +354,12 @@ TOTP code counts as a failed attempt too: counting only the password would
 leave the second factor brute-forceable at the per-IP rate.
 
 ### The first CMS account, and why there is only one (DB-012, ADR-0018)
+
+> **Superseded in part by GoGo-BE#687 (ADR-0034 amendment).** The singleton rule below stands; the
+> bootstrap-credential and password-rotation account of the super admin is history. The row follows
+> SSM `cms/super-admin-email` at every deploy, its password is erased once SSO is confirmed with the
+> switch on, and every password login for any role needs a verified Cloudflare Access assertion —
+> there is no Access-free path into the console.
 
 An environment holds **at most one** `super_admin` before it is bootstrapped and
 **exactly one** after — the index enforces the upper bound for every writer, and

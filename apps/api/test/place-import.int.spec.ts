@@ -17,6 +17,7 @@ import {
   SHEETS_PROVIDER,
 } from '@gogo/providers';
 import type { FakePlaceProvider, FakeSheets } from '@gogo/providers';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * PI-BE-011..017 acceptance over real HTTP + PostGIS: upload, validation,
@@ -47,6 +48,7 @@ async function createAdmin(email: string, role: 'editor' | 'moderator' | 'ops_ad
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   return { id: row!.id, token: res.json().accessToken as string };

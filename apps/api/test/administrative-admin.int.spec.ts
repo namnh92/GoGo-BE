@@ -19,6 +19,7 @@ import {
   AdministrativeValidationService,
   type AdministrativeDatasetPort,
 } from '@gogo/modules';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * ADM-005 (#458) — the staff lifecycle against the real pinned dataset.
@@ -89,6 +90,7 @@ async function createAdmin(role: Role) {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   tokens[role] = res.json().accessToken as string;

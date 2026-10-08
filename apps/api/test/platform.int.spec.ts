@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { MetricsRegistry, RuntimeStateStore } from '@gogo/observability';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * Platform contract pieces: Idempotency-Key semantics (api-contract rule)
@@ -422,6 +423,7 @@ describe('per-actor rate-limit baseline (BE-IMP-005)', () => {
       method: 'POST',
       url: '/v1/cms/auth/login',
       remoteAddress: '10.90.9.9',
+      headers: cmsAccessHeaders(email),
       payload: { email, password: 'admin-password-123' },
     });
     return res.json().accessToken as string;

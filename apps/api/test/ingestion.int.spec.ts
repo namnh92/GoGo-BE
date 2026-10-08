@@ -10,6 +10,7 @@ import { schema } from '@gogo/database';
 import { PLACE_PROVIDER } from '@gogo/providers';
 import type { FakePlaceProvider } from '@gogo/providers';
 import { signResolutionAttestation } from '@gogo/modules';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * PI-BE-003..010, PI-BE-018..020 acceptance over real HTTP + PostGIS:
@@ -40,6 +41,7 @@ async function createAdmin(email: string, role: 'moderator' | 'editor' | 'ops_ad
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   return { token: login.json().accessToken as string };
@@ -224,6 +226,7 @@ describe('submission dedupe + moderation (PI-BE-019, FR-INGEST-012)', () => {
       method: 'POST',
       url: '/v1/cms/auth/login',
       remoteAddress: ip(),
+      headers: cmsAccessHeaders('mod-ingest@gogo.local'),
       payload: { email: 'mod-ingest@gogo.local', password: 'admin-password-123' },
     });
     const modToken = login.json().accessToken as string;

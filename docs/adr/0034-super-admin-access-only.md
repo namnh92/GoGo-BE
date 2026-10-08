@@ -62,7 +62,8 @@ The redundant row is accepted, not refused. Each switch is flipped and rolled ba
   `access_sso` (ADR-0032; NULL counts as `password`) revokes the whole family
   (`super_admin_sso_only`) and answers `401 SESSION_REVOKED`. The role is read from the admin row
   locked by refresh. ADR-0018 keeps it from changing under a family. Other roles' password sessions
-  rotate as before. After the flip, a super admin password session lives at most one access-token
+  rotate as before — and, since the amendment (D-4), only if their family is `access_bound`: every
+  unbound password family is revoked at refresh, whatever the switches say. After the flip, a super admin password session lives at most one access-token
   lifetime. No per-request check is added to `AdminGuard`, the same bound ADR-0032 accepted.
 - **`GET /v1/cms/auth/methods` gains `superAdminSsoOnly`**, optional in the contract (alpha.70).
   The field is always sent, and older APIs omit it, which reads as false. `password` still describes
@@ -83,15 +84,18 @@ not help while the general door is closed.
 
 ## Consequences
 
-- On DEV the super admin's password is no longer a door from the internet. `editor`, `moderator`
+- On DEV the super admin's password is no longer a door from the internet. ~~`editor`, `moderator`
   and `ops_admin` remain single-factor from the internet (`DEV_TOTP_CODE` is accepted outside
   production, and TOTP is optional). The mitigations are Argon2id, the per-account lockout, the
   per-IP limit and forced change of temporary passwords. Real TOTP outside production is tracked
-  separately (GoGo-BE#688), and the owner decides on it.
+  separately (GoGo-BE#688), and the owner decides on it.~~ Superseded by the amendment (D-4): no
+  password login is single-factor anywhere — every one requires a verified Access assertion for the
+  same mailbox, and `DEV_TOTP_CODE` went with TOTP.
 - Anyone who types the super admin's address learns that it is the super admin's: it gets a 403,
   not a 401, and no Argon2 delay. The owner accepted this.
 - An Access outage makes the browser console unreachable for every role, because `cms-<env>` sits
-  behind Access. Other roles keep their API and script door. The super admin has none while the
+  behind Access. ~~Other roles keep their API and script door.~~ Since the amendment (D-4) no role
+  does: the password door needs the same verified assertion. The super admin has none while the
   switch is on, and once the deploy-time sync has erased its hash (amendment, D-3) there is no
   password to re-open: recovery waits for Access (O-1).
 - `superAdminSsoOnly: true` means the API refuses that account's password. It does not mean that
@@ -152,7 +156,16 @@ dropped) — and the Infra work in GoGo-Infra#194/#196/#199. The shape file
   (`DrizzleQueryError <- DatabaseError 08006`), never by message, and the fatal boot error keeps no
   `cause`: Drizzle repeats the bound parameters — the address — in its message and stack (F-07).
 - **D-4 · Cloudflare carries the second factor.** CMS TOTP is removed; the password door requires a
-  verified Access assertion for the same mailbox (BE-c).
+  verified Access assertion for the same mailbox (BE-c, alpha.72), checked before any credential
+  (`401 ACCESS_ASSERTION_REQUIRED`). **Every password login requires it, in every environment and
+  every build — there is no workstation exception and no bare-password door.** A deployed
+  environment (`NODE_ENV=production`) refuses to boot without `CF_ACCESS_*`; a workstation without
+  them boots with no password door at all (local CMS work mocks the API). Migration 0074 adds
+  `admin_sessions.access_bound`: password login with the assertion and `access-exchange` set it, and
+  rotation inherits it. **Refresh refuses every unbound password family, everywhere**
+  (`401 SESSION_REVOKED`, reason `access_unbound`), never conditionally on where an assertion would be
+  required — every family from before BE-c signs in once more, with the assertion. The TOTP columns
+  stay unread until BE-c2; `CMS_MFA_ENCRYPTION_KEY` stays optional until R8.
 - **D-7 · Doors.** super_admin: Access exchange only. editor/moderator/ops_admin: Access exchange,
   or password plus the matching Access assertion. A direct call to `api-<env>` without an assertion
   is refused.

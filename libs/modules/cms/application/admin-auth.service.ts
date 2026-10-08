@@ -1,5 +1,4 @@
 import { Inject, Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
-import { authenticator } from 'otplib';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { eraseSuperAdminPasswordIfConfirmed, schema, type Db } from '@gogo/database';
@@ -11,7 +10,6 @@ import { TokenService } from '../../identity/application/token.service';
 import { SessionRevocationService } from '../../identity/application/session-revocation.service';
 import type { ClientMeta } from '../../identity/application/auth.service';
 import { writeAudit } from '../../shared/audit';
-import { SecretBox } from '../../shared/secret-box';
 import { decodeKeysetCursor, encodeKeysetCursor, toIso } from '../../shared/cursor';
 import { IdentityRepository } from '../../identity/infrastructure/identity.repository';
 import { runSuperAdminBootErase } from './super-admin-boot-gate';
@@ -35,12 +33,6 @@ export type AdminListEntry = {
   status: AdminStatus;
   createdAt: string;
   lastLoginAt?: string | undefined;
-  /**
-   * #248 — whether a second factor is enrolled. The status, never the secret:
-   * the console needs to show which accounts are unprotected, and nothing
-   * about the TOTP seed helps it do that.
-   */
-  mfaEnrolled: boolean;
   /** #248 — a temporary password is outstanding and owes a replacement. */
   mustChangePassword: boolean;
 };
@@ -69,7 +61,6 @@ type AdminRow = {
   status: AdminStatus;
   created_at: Date | string;
   last_login_at: Date | string | null;
-  mfa_enrolled: boolean;
   must_change_password: boolean;
 };
 
@@ -83,7 +74,6 @@ function toAdminEntry(row: typeof schema.adminUsers.$inferSelect): AdminListEntr
     status: row.status,
     createdAt: row.createdAt.toISOString(),
     ...(row.lastLoginAt ? { lastLoginAt: row.lastLoginAt.toISOString() } : {}),
-    mfaEnrolled: row.mfaTotpSecretEnc !== null,
     mustChangePassword: row.mustChangePasswordAt !== null,
   };
 }
@@ -95,9 +85,6 @@ function toAdminEntry(row: typeof schema.adminUsers.$inferSelect): AdminListEntr
  */
 export const ADMIN_LOCKOUT_THRESHOLD = 5;
 export const ADMIN_LOCKOUT_WINDOW_SECONDS = 15 * 60;
-
-/** TOTP step length, from the otplib defaults this service authenticates with. */
-const TOTP_STEP_SECONDS = 30;
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -111,48 +98,23 @@ const adminIdentifier = (email: string) => sha256(`admin:${email.trim().toLowerC
 
 /**
  * CMS-001 — admin authentication. Security rules: CMS sessions are shorter
- * than the consumer app; production requires MFA (TOTP now, SSO when an IdP
- * is provisioned — tracked on GoGo-BE#62). Admin access tokens carry
+ * than the consumer app; the second factor is Cloudflare Access admitting the
+ * same mailbox on the login request (#687 D-4). Admin access tokens carry
  * act=admin; role is re-checked from the DB on every request, never trusted
  * from the token.
  */
 @Injectable()
 export class AdminAuthService implements OnApplicationBootstrap {
-  /**
-   * Accepted in place of a real TOTP code outside production, so a fresh
-   * environment can be used before anyone has an authenticator enrolled. It
-   * matches the code the CMS mock expects.
-   *
-   * Reachable only when APP_ENV is not prod. It is a deliberate hole in a
-   * security control, so it is a named constant next to the check that uses it
-   * rather than a literal buried in a condition — if this ever appears in a
-   * production login path, it should be obvious in review rather than
-   * discoverable by guessing six digits.
-   *
-   * Unreachable where CMS_PASSWORD_LOGIN_ENABLED is false (ADR-0032): login
-   * refuses before any factor is checked.
-   */
-  static readonly DEV_TOTP_CODE = '123456';
-
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
     private readonly revocations: SessionRevocationService,
     @Inject(APP_CONFIG)
-    private readonly config: IdentityConfig & { CMS_MFA_ENCRYPTION_KEY: string },
+    private readonly config: IdentityConfig,
     private readonly identity: IdentityRepository,
-  ) {
-    // Production validates its own key at boot (env.ts). Elsewhere the key is
-    // derived from the JWT secret so dev and test boot without one — the
-    // derivation is deliberate and documented, not an empty-key fallback that
-    // would silently encrypt with nothing.
-    this.secrets = new SecretBox(
-      this.config.CMS_MFA_ENCRYPTION_KEY || `derived-mfa-key:${this.config.AUTH_JWT_SECRET}`,
-    );
-  }
+  ) {}
 
-  private readonly secrets: SecretBox;
   private readonly logger = new Logger(AdminAuthService.name);
 
   /**
@@ -188,15 +150,11 @@ export class AdminAuthService implements OnApplicationBootstrap {
     });
   }
 
-  /** The step a code belongs to, used to refuse a replay of one already spent. */
-  private static stepOf(delta: number): number {
-    return Math.floor(Date.now() / 1000 / TOTP_STEP_SECONDS) + delta;
-  }
-
   async login(input: {
     email: string;
     password: string;
-    totp?: string | undefined;
+    /** The mailbox a verified Cloudflare Access assertion on this request names, if any. */
+    accessEmail?: string | undefined;
     meta?: ClientMeta | undefined;
   }) {
     // #679 / ADR-0032 — a closed door says so before any credential work. A
@@ -210,6 +168,24 @@ export class AdminAuthService implements OnApplicationBootstrap {
       throw AppError.forbidden(
         'PASSWORD_LOGIN_DISABLED',
         'Password sign-in is turned off for this environment; sign in through Cloudflare Access',
+      );
+    }
+
+    // #687 D-4 (F-08, O-7) — the second factor is Cloudflare's admission of
+    // this mailbox. Missing, unverifiable or naming another mailbox: refused
+    // before any credential work, so it is no oracle and writes no rows. This
+    // is what stops `api-<env>/v1/cms/auth/login` answering the open internet
+    // with one factor.
+    const accessBound = Boolean(
+      input.accessEmail && input.accessEmail.toLowerCase() === input.email.trim().toLowerCase(),
+    );
+    if (!accessBound) {
+      this.logger.warn(
+        'cms.login refused: no matching Access assertion (ACCESS_ASSERTION_REQUIRED)',
+      );
+      throw AppError.unauthorized(
+        'ACCESS_ASSERTION_REQUIRED',
+        'Sign in through Cloudflare Access with this mailbox before using the password',
       );
     }
 
@@ -254,28 +230,6 @@ export class AdminAuthService implements OnApplicationBootstrap {
       throw AppError.unauthorized('INVALID_CREDENTIALS', 'Email or password is incorrect');
     }
 
-    const isProduction = this.config.APP_ENV === 'prod' || this.config.APP_ENV === 'production';
-
-    if (admin.mfaTotpSecretEnc) {
-      const step = await this.consumeTotp(admin, input.totp);
-      // A wrong code is a failed attempt too: counting only the password would
-      // leave the second factor brute-forceable at the per-IP rate.
-      if (step === null && !(!isProduction && input.totp === AdminAuthService.DEV_TOTP_CODE)) {
-        await this.identity.recordLoginAttempt({ identifierHash, ipHash, succeeded: false });
-        throw AppError.unauthorized('MFA_REQUIRED', 'Valid TOTP code required');
-      }
-    } else if (isProduction) {
-      // Production hard-requires MFA (security rule) — no silent bypass.
-      //
-      // APP_ENV, not NODE_ENV. NODE_ENV is `production` in every deployed
-      // environment because they all run the production build, so this used to
-      // lock DEV too — and there it is a deadlock rather than a policy:
-      // enrolling calls /cms/auth/totp/setup, which needs a session, which
-      // login refuses to issue until MFA is enrolled. The first admin on a
-      // fresh environment could never sign in.
-      throw AppError.forbidden('MFA_SETUP_REQUIRED', 'Set up MFA before logging in');
-    }
-
     // #681 (review F-01, SA) — the identity checked above is checked again
     // under the admin row's update lock before a session is issued, the lock
     // an email change holds while it revokes. A login that read the old
@@ -306,7 +260,15 @@ export class AdminAuthService implements OnApplicationBootstrap {
         resourceType: 'admin_user',
         resourceId: admin.id,
       });
-      return this.openSession(admin.id, randomUUID(), undefined, 'password', input.meta, tx);
+      return this.openSession(
+        admin.id,
+        randomUUID(),
+        undefined,
+        'password',
+        input.meta,
+        tx,
+        accessBound,
+      );
     });
     return {
       ...session,
@@ -387,6 +349,7 @@ export class AdminAuthService implements OnApplicationBootstrap {
         'access_sso',
         meta,
         tx,
+        true,
       );
       return { admin, session };
     });
@@ -491,6 +454,20 @@ export class AdminAuthService implements OnApplicationBootstrap {
         };
       }
 
+      // #687 D-4 (AC-10) — a password family opened without an Access
+      // assertion (every family from before this rule shipped) does not
+      // refresh, anywhere: it would otherwise outlive the second factor it
+      // never had. The flag is read from the session row,
+      // never the token. After the super admin rule, so that row keeps its
+      // more specific reason.
+      if (authMethod !== 'access_sso' && !session.accessBound) {
+        this.logger.warn('cms.refresh refused: password family without Access assertion');
+        return {
+          revoked: await this.revokeFamilyRows(tx, session.familyId, 'access_unbound'),
+          error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid'),
+        };
+      }
+
       await tx
         .update(schema.adminSessions)
         .set({ supersededAt: sql`now()`, lastUsedAt: sql`now()` })
@@ -503,6 +480,7 @@ export class AdminAuthService implements OnApplicationBootstrap {
         authMethod,
         meta,
         tx,
+        session.accessBound,
       );
       return { next, admin };
     });
@@ -545,6 +523,7 @@ export class AdminAuthService implements OnApplicationBootstrap {
     authMethod: AdminAuthMethod,
     meta?: ClientMeta,
     db: SessionWriter = this.db,
+    accessBound = false,
   ) {
     const refreshToken = this.tokens.generateOpaqueToken();
     const [row] = await db
@@ -555,6 +534,7 @@ export class AdminAuthService implements OnApplicationBootstrap {
         familyId,
         rotatedFromId: rotatedFromId ?? null,
         authMethod,
+        accessBound,
         expiresAt: new Date(Date.now() + this.config.AUTH_ADMIN_REFRESH_TTL_SECONDS * 1000),
         ipHash: meta?.ip ? createHash('sha256').update(meta.ip).digest('hex') : null,
         userAgent: meta?.userAgent ?? null,
@@ -602,140 +582,6 @@ export class AdminAuthService implements OnApplicationBootstrap {
       )
       .returning({ id: schema.adminSessions.id });
     return rows.map((r) => r.id);
-  }
-
-  /**
-   * Verifies a TOTP code against the stored secret and spends its step.
-   *
-   * Returns the consumed step, or null when the code is absent, wrong, or
-   * belongs to a step already used. Replay matters because a code stays
-   * mathematically valid for its whole 30-second window: without this, one
-   * observed code is reusable inside it.
-   */
-  private async consumeTotp(
-    admin: typeof schema.adminUsers.$inferSelect,
-    code: string | undefined,
-  ): Promise<number | null> {
-    if (!code || !admin.mfaTotpSecretEnc) return null;
-    let secret: string;
-    try {
-      secret = this.secrets.decrypt(admin.mfaTotpSecretEnc);
-    } catch {
-      // An unreadable secret is a refusal, never a bypass.
-      return null;
-    }
-    const delta = authenticator.checkDelta(code, secret);
-    if (delta === null || delta === undefined) return null;
-
-    const step = AdminAuthService.stepOf(delta);
-    if (admin.mfaTotpLastStep !== null && step <= admin.mfaTotpLastStep) return null;
-
-    // Conditional on the step not having moved, so two requests racing with
-    // the same code cannot both win.
-    const updated = await this.db
-      .update(schema.adminUsers)
-      .set({ mfaTotpLastStep: step })
-      .where(
-        and(
-          eq(schema.adminUsers.id, admin.id),
-          admin.mfaTotpLastStep === null
-            ? isNull(schema.adminUsers.mfaTotpLastStep)
-            : eq(schema.adminUsers.mfaTotpLastStep, admin.mfaTotpLastStep),
-        ),
-      )
-      .returning({ id: schema.adminUsers.id });
-    return updated.length > 0 ? step : null;
-  }
-
-  /**
-   * TOTP enrollment, step one: requires a fresh password proof and returns the
-   * otpauth URI. MFA is **not** switched on here.
-   *
-   * Enrolling and activating in one step meant an admin whose authenticator
-   * never got the secret was locked out of the console at the next login,
-   * because production requires MFA. `confirmTotp` is the proof that the code
-   * actually works.
-   */
-  async setupTotp(adminId: string, password: string) {
-    const [admin] = await this.db
-      .select()
-      .from(schema.adminUsers)
-      .where(eq(schema.adminUsers.id, adminId))
-      .limit(1);
-    if (!admin) throw AppError.unauthorized();
-    const valid = await this.passwords.verifyOrBurn(admin.passwordHash, password);
-    if (!valid) throw AppError.unauthorized('INVALID_CREDENTIALS', 'Password check failed');
-
-    const secret = authenticator.generateSecret();
-    await this.db
-      .update(schema.adminUsers)
-      .set({ mfaTotpPendingEnc: this.secrets.encrypt(secret), updatedAt: sql`now()` })
-      .where(eq(schema.adminUsers.id, adminId));
-    await writeAudit(this.db, {
-      actorType: 'admin',
-      actorId: adminId,
-      action: 'admin.mfa_enrollment_started',
-      resourceType: 'admin_user',
-      resourceId: adminId,
-    });
-    return {
-      // Returned once, at enrollment, so the authenticator can be provisioned.
-      // It is never readable again — the stored copy is encrypted.
-      secret,
-      otpauthUri: authenticator.keyuri(admin.email, 'GoGo CMS', secret),
-      confirmed: false,
-    };
-  }
-
-  /**
-   * TOTP enrollment, step two: a code generated from the pending secret proves
-   * the authenticator holds it, and only then does MFA become required for
-   * this account.
-   */
-  async confirmTotp(adminId: string, code: string) {
-    const [admin] = await this.db
-      .select()
-      .from(schema.adminUsers)
-      .where(eq(schema.adminUsers.id, adminId))
-      .limit(1);
-    if (!admin) throw AppError.unauthorized();
-    if (!admin.mfaTotpPendingEnc) {
-      throw AppError.conflict('MFA_NOT_PENDING', 'Start MFA enrollment first');
-    }
-
-    let secret: string;
-    try {
-      secret = this.secrets.decrypt(admin.mfaTotpPendingEnc);
-    } catch {
-      throw AppError.conflict('MFA_NOT_PENDING', 'Start MFA enrollment first');
-    }
-    const delta = authenticator.checkDelta(code, secret);
-    if (delta === null || delta === undefined) {
-      throw AppError.unauthorized('MFA_CODE_INVALID', 'That code is not valid');
-    }
-
-    await this.db
-      .update(schema.adminUsers)
-      .set({
-        mfaTotpSecretEnc: admin.mfaTotpPendingEnc,
-        mfaTotpPendingEnc: null,
-        // The confirming code is spent, so it cannot also be used to log in.
-        mfaTotpLastStep: AdminAuthService.stepOf(delta),
-        mfaEnrolledAt: sql`now()`,
-        updatedAt: sql`now()`,
-      })
-      .where(eq(schema.adminUsers.id, adminId));
-    await writeAudit(this.db, {
-      actorType: 'admin',
-      actorId: adminId,
-      action: 'admin.mfa_enrolled',
-      resourceType: 'admin_user',
-      resourceId: adminId,
-    });
-    // Every other session of this admin ends: enrolling a second factor is a
-    // credential change, and sessions opened before it were opened with less.
-    await this.revokeAllSessions(adminId, 'mfa_enrolled');
-    return { confirmed: true };
   }
 
   /**
@@ -825,7 +671,7 @@ export class AdminAuthService implements OnApplicationBootstrap {
    * shipped and the list could not.
    *
    * Columns are selected one by one rather than `select()`: the row carries the
-   * password hash and both TOTP secrets, and a response built by spreading it
+   * password hash and the legacy TOTP columns, and a response built by spreading it
    * would leak all three the first time someone added a field.
    */
   /**
@@ -1095,9 +941,8 @@ export class AdminAuthService implements OnApplicationBootstrap {
    * - The account owes a change (`mustChangePasswordAt`), enforced by
    *   `AdminGuard`, not by the console hiding a screen.
    *
-   * MFA is deliberately left alone. Resetting it here would turn one
-   * `super_admin` into a complete account takeover with no second factor to
-   * stop it; re-enrolling MFA stays a separate, deliberate act.
+   * The second factor is not touched: it is Cloudflare Access admitting the
+   * account's mailbox (#687 D-4), which no reset here can grant.
    */
   async resetAdminPassword(input: { id: string; reason: string; actorId: string }) {
     const { result, revoked } = await this.db.transaction(async (tx) => {
@@ -1293,7 +1138,6 @@ export class AdminAuthService implements OnApplicationBootstrap {
       this.db.execute(sql`
         select a.id, a.email, a.display_name, a.role, a.status,
                a.created_at, a.last_login_at,
-               (a.mfa_totp_secret_enc is not null) as mfa_enrolled,
                (a.must_change_password_at is not null) as must_change_password
         from admin_users a
         where ${pageWhere.length ? sql.join(pageWhere, sql` and `) : sql`true`}
@@ -1316,7 +1160,6 @@ export class AdminAuthService implements OnApplicationBootstrap {
         status: r.status,
         createdAt: toIso(r.created_at),
         lastLoginAt: r.last_login_at ? toIso(r.last_login_at) : undefined,
-        mfaEnrolled: r.mfa_enrolled,
         mustChangePassword: r.must_change_password,
       })),
       nextCursor:

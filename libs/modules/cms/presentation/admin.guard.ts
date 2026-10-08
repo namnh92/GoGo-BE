@@ -76,7 +76,7 @@ export class AdminGuard implements CanActivate {
       context.getClass(),
     ]);
     // #687 D-3 (F-16) — revocation truth is the database, for every admin
-    // request: a CMS route without role metadata (TOTP, logout) is reached by
+    // request: a CMS route without role metadata (logout, confirm-sso) is reached by
     // the same tokens the sync revokes (review of PR #690, Sol F-01). The Redis
     // denylist the AuthGuard consults is a cache that swallows its own write
     // failures, and a change made outside the API (the deploy-time super admin

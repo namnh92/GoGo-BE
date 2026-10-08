@@ -17,6 +17,7 @@ import {
   withEditReferences,
   withSourceReferences,
 } from './support/cms-place-create';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * ADM-016 (#496) — the place create and edit forms, carrying canonical codes.
@@ -112,6 +113,7 @@ async function creatorToken(): Promise<string> {
       method: 'POST',
       url: '/v1/cms/auth/login',
       remoteAddress: ip(),
+      headers: cmsAccessHeaders(email),
       payload: { email, password: 'admin-password-123' },
     });
     creator = { token: res.json().accessToken as string, uses: 0 };
@@ -132,6 +134,7 @@ async function createAdmin(role: Role) {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   tokens[role] = res.json().accessToken as string;

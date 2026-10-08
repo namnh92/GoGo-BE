@@ -12,6 +12,7 @@ import { schema } from '@gogo/database';
 /** Set before any import reads the environment; the config is parsed once. */
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 import { AdministrativeBoundaryImportService, AdministrativeImportService } from '@gogo/modules';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * ADM-018 (#502) — the canonical Province → Commune hierarchy for places.
@@ -183,6 +184,7 @@ beforeAll(async () => {
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders('adm018-editor@gogo.local'),
     payload: { email: 'adm018-editor@gogo.local', password: 'admin-password-123' },
   });
   token = login.json().accessToken as string;

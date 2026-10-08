@@ -12,6 +12,7 @@ import { schema } from '@gogo/database';
 import { PlaceDedupService, PlaceImportJobService } from '@gogo/modules';
 import { PLACE_PROVIDER } from '@gogo/providers';
 import type { FakePlaceProvider } from '@gogo/providers';
+import { cmsAccessHeaders } from './support/cms-access';
 
 /**
  * #334 (PR1) — one Google Place ID, one GoGo place, one provenance table.
@@ -66,6 +67,7 @@ async function createAdmin(email: string, role: 'editor' | 'moderator' | 'ops_ad
     method: 'POST',
     url: '/v1/cms/auth/login',
     remoteAddress: ip(),
+    headers: cmsAccessHeaders(email),
     payload: { email, password: 'admin-password-123' },
   });
   return { id: row!.id, token: res.json().accessToken as string };
