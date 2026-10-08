@@ -148,6 +148,9 @@ dropped) — and the Infra work in GoGo-Infra#194/#196/#199. The shape file
   bootstrap hook, so the process never listens and the deploy's health wait fails. `pending` (no
   confirmation yet) starts. Its `admin.password_erased` row carries `GOGO_REVISION`, which the
   deploy exports on every `up -d` that starts the API as well as on `run --rm migrate` (F-06).
+  A failure of the sync or of the boot gate is logged by error class and SQLSTATE or errno only
+  (`DrizzleQueryError <- DatabaseError 08006`), never by message, and the fatal boot error keeps no
+  `cause`: Drizzle repeats the bound parameters — the address — in its message and stack (F-07).
 - **D-4 · Cloudflare carries the second factor.** CMS TOTP is removed; the password door requires a
   verified Access assertion for the same mailbox (BE-c).
 - **D-7 · Doors.** super_admin: Access exchange only. editor/moderator/ops_admin: Access exchange,

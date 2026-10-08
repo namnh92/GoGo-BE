@@ -1,5 +1,6 @@
 import { and, eq, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { summarizeError } from './error-summary';
 import * as schema from './schema';
 
 /**
@@ -45,7 +46,21 @@ export type SyncSuperAdminResult = {
   erasePending: boolean;
 };
 
-export class SuperAdminSyncConflict extends Error {
+/**
+ * An error the sync raises on purpose. Its message is written for the operator
+ * and names no address, so the CLI prints it as is. Every other error that
+ * reaches the CLI is reduced to its class and code by {@link formatSyncFailure}
+ * (review F-07): a `DrizzleQueryError` carries the bound parameters — the
+ * address among them — in its message and stack.
+ */
+export class SuperAdminSyncError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SuperAdminSyncError';
+  }
+}
+
+export class SuperAdminSyncConflict extends SuperAdminSyncError {
   constructor() {
     super(
       'cms:sync-super-admin: the address in CMS_SUPER_ADMIN_EMAIL belongs to a staff account; ' +
@@ -55,6 +70,16 @@ export class SuperAdminSyncConflict extends Error {
   }
 }
 
+/**
+ * The one line `cms:sync-super-admin` prints when it fails. The sync's own
+ * errors pass through; anything else — Drizzle, pg, a socket — is named by
+ * class and code only, never by message (F-07).
+ */
+export function formatSyncFailure(err: unknown): string {
+  if (err instanceof SuperAdminSyncError) return err.message;
+  return `cms:sync-super-admin failed: ${summarizeError(err)}`;
+}
+
 type Db = NodePgDatabase<typeof schema>;
 
 export async function syncSuperAdmin(
@@ -62,7 +87,7 @@ export async function syncSuperAdmin(
   input: SyncSuperAdminInput,
 ): Promise<SyncSuperAdminResult> {
   const email = input.email.trim().toLowerCase();
-  if (!email) throw new Error('cms:sync-super-admin: CMS_SUPER_ADMIN_EMAIL is empty');
+  if (!email) throw new SuperAdminSyncError('cms:sync-super-admin: CMS_SUPER_ADMIN_EMAIL is empty');
   const revision = input.revision ?? null;
 
   return db.transaction(async (tx) => {

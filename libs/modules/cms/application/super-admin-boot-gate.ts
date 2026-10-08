@@ -1,4 +1,4 @@
-import type { eraseSuperAdminPasswordIfConfirmed } from '@gogo/database';
+import { summarizeError, type eraseSuperAdminPasswordIfConfirmed } from '@gogo/database';
 
 /**
  * GoGo-BE#687 D-3, review F-05 — the erase gate the API runs at boot.
@@ -26,6 +26,13 @@ import type { eraseSuperAdminPasswordIfConfirmed } from '@gogo/database';
  * deploy's health wait fails on a revision whose promise it cannot keep. The
  * retry is bounded so a database that is really gone produces one loud exit,
  * not a process that hangs inside its lifecycle hook.
+ *
+ * What a failure says (review F-07): the erase queries bind the super admin's
+ * address, and a `DrizzleQueryError` repeats its bound parameters in its
+ * message and stack. The retry line and the fatal error therefore carry only
+ * the error's class and code (`summarizeError`, `@gogo/database`) — never the
+ * message — and the fatal error keeps no `cause`, so `bootstrap()`'s
+ * `console.error(err)` prints nothing it was not given here.
  */
 
 export type SuperAdminEraseOutcome = Awaited<ReturnType<typeof eraseSuperAdminPasswordIfConfirmed>>;
@@ -48,13 +55,16 @@ export const SUPER_ADMIN_BOOT_ERASE_BACKOFF_MS: readonly number[] = [500, 1000, 
 
 export type SuperAdminBootGateCode = 'NO_SUPER_ADMIN' | 'ADDRESS_MISMATCH' | 'ERASE_FAILED';
 
+/**
+ * Carries no `cause` by construction (F-07): the database error it stands for
+ * may hold the super admin's address in its message, stack or `detail`.
+ */
 export class SuperAdminBootGateError extends Error {
   constructor(
     readonly code: SuperAdminBootGateCode,
     message: string,
-    options?: { cause?: unknown },
   ) {
-    super(message, options);
+    super(message);
     this.name = 'SuperAdminBootGateError';
   }
 }
@@ -74,8 +84,6 @@ export type SuperAdminBootEraseDeps = {
   attempts?: number;
   backoffMs?: readonly number[];
 };
-
-const describeError = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -98,14 +106,16 @@ export async function runSuperAdminBootErase(
     try {
       outcome = await deps.erase();
     } catch (err) {
+      // Class and code only, never the message (F-07).
+      const what = summarizeError(err);
       if (attempt === attempts) {
-        const message = `super admin erase gate failed ${attempts} times at boot; refusing to start: ${describeError(err)}`;
+        const message = `super admin erase gate failed ${attempts} times at boot; refusing to start (last error: ${what})`;
         deps.logger.error(message);
-        throw new SuperAdminBootGateError('ERASE_FAILED', message, { cause: err });
+        throw new SuperAdminBootGateError('ERASE_FAILED', message);
       }
       const wait = backoff[Math.min(attempt - 1, backoff.length - 1)] ?? 0;
       deps.logger.warn(
-        `super admin erase gate attempt ${attempt}/${attempts} failed (${describeError(err)}); retrying in ${wait}ms`,
+        `super admin erase gate attempt ${attempt}/${attempts} failed (${what}); retrying in ${wait}ms`,
       );
       await sleep(wait);
       continue;

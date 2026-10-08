@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
 import { authenticator } from 'otplib';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, DrizzleQueryError, eq, inArray, sql } from 'drizzle-orm';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Writable } from 'node:stream';
@@ -1463,10 +1463,20 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
             .set({ passwordHash: 'argon2id$restored-by-old-api', mustChangePasswordAt: new Date() })
             .where(eq(schema.adminUsers.id, boss.id));
           config.CMS_SUPER_ADMIN_EMAIL = SUPER_ADMIN_EMAIL;
-          // The first transaction the gate opens dies under it; the next one is real.
+          // The first transaction the gate opens dies under it; the next one is
+          // real. The failure is what Drizzle really throws: its message and
+          // stack repeat the bound parameters, the address among them (F-07).
           flaky = vi
             .spyOn(live, 'transaction')
-            .mockImplementationOnce(() => Promise.reject(new Error('ECONNRESET (simulated)')));
+            .mockImplementationOnce(() =>
+              Promise.reject(
+                new DrizzleQueryError(
+                  'select "id" from "admin_users" where lower("email") = $1',
+                  [SUPER_ADMIN_EMAIL],
+                  Object.assign(new Error('terminating connection (simulated)'), { code: '57P01' }),
+                ),
+              ),
+            );
           const started = Date.now();
           await bootGate();
           // One retry after the first backoff, not an immediate second try.
@@ -1477,13 +1487,20 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
           passwordHash: null,
           mustChangePasswordAt: null,
         });
+        const gateLines = warnLines.filter(
+          (l) => l.context === 'AdminAuthService' && String(l.msg).includes('erase gate'),
+        );
+        expect(gateLines.length).toBeGreaterThan(0);
+        // F-07: the real logger line carries the class and the code, not the address.
+        for (const line of gateLines) {
+          expect(JSON.stringify(line)).not.toContain(SUPER_ADMIN_EMAIL);
+          expect(JSON.stringify(line)).not.toContain('Failed query');
+        }
         expect(
-          warnLines.some(
-            (l) =>
-              l.context === 'AdminAuthService' &&
-              String(l.msg).includes(
-                'attempt 1/6 failed (ECONNRESET (simulated)); retrying in 500ms',
-              ),
+          gateLines.some((l) =>
+            String(l.msg).includes(
+              'attempt 1/6 failed (DrizzleQueryError <- Error 57P01); retrying in 500ms',
+            ),
           ),
         ).toBe(true);
       } finally {

@@ -1,3 +1,5 @@
+import { DrizzleQueryError } from 'drizzle-orm';
+import { inspect } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import {
   runSuperAdminBootErase,
@@ -71,7 +73,8 @@ describe('super admin boot erase gate (#687 F-05)', () => {
   });
 
   it('a transient failure is retried with the documented backoff until the erase commits', async () => {
-    const h = harness([new Error('ECONNRESET'), new Error('ECONNRESET'), 'erased']);
+    const reset = () => Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    const h = harness([reset(), reset(), 'erased']);
     await expect(h.run()).resolves.toBe('erased');
     expect(h.erase).toHaveBeenCalledTimes(3);
     expect(h.sleep.mock.calls.map(([ms]) => ms)).toEqual([
@@ -79,18 +82,18 @@ describe('super admin boot erase gate (#687 F-05)', () => {
       SUPER_ADMIN_BOOT_ERASE_BACKOFF_MS[1],
     ]);
     expect(h.logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('attempt 1/6 failed (ECONNRESET)'),
+      expect.stringContaining('attempt 1/6 failed (Error ECONNRESET); retrying in 500ms'),
     );
     expect(h.logger.error).not.toHaveBeenCalled();
   });
 
-  it('a failure that outlasts every attempt refuses the start, with the cause, and never sleeps past the last attempt', async () => {
-    const h = harness([new Error('connection refused')]);
+  it('a failure that outlasts every attempt refuses the start, naming the last error by class and code, and never sleeps past the last attempt', async () => {
+    const h = harness([Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' })]);
     const rejection = h.run();
     await expect(rejection).rejects.toBeInstanceOf(SuperAdminBootGateError);
     await expect(rejection).rejects.toMatchObject({
       code: 'ERASE_FAILED',
-      cause: expect.objectContaining({ message: 'connection refused' }),
+      message: expect.stringContaining('(last error: Error ECONNREFUSED)'),
     });
     expect(h.erase).toHaveBeenCalledTimes(SUPER_ADMIN_BOOT_ERASE_ATTEMPTS);
     expect(h.sleep).toHaveBeenCalledTimes(SUPER_ADMIN_BOOT_ERASE_ATTEMPTS - 1);
@@ -120,5 +123,109 @@ describe('super admin boot erase gate (#687 F-05)', () => {
     const h = harness(['erased'], 0);
     await expect(h.run()).rejects.toBeInstanceOf(RangeError);
     expect(h.erase).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Review F-07 — the erase queries bind the super admin's address, and a
+ * `DrizzleQueryError` repeats its bound parameters in its message and stack;
+ * pg's `DatabaseError` echoes the row in `detail`. Neither the retry line nor
+ * the fatal error may carry any of it (security.md: logs never contain PII).
+ */
+describe('super admin boot erase gate — no address in logs or errors (#687 F-07)', () => {
+  const ADDRESS = 'boss@example.com';
+
+  /** The shape pg-protocol throws: `name` is the message kind, `code` the SQLSTATE. */
+  class DatabaseError extends Error {
+    code = '08006';
+    detail = `Key (lower(email))=(${ADDRESS}) already exists.`;
+    constructor() {
+      super('terminating connection due to administrator command');
+      this.name = 'error';
+    }
+  }
+
+  const leakyFailure = () =>
+    new DrizzleQueryError(
+      'select "id" from "audit_logs" where lower("diff" ->> \'email\') = $1',
+      [ADDRESS],
+      new DatabaseError(),
+    );
+
+  /** Every way a caller or a crash handler could render an error. */
+  const renderings = (err: Error) => [
+    err.message,
+    String(err),
+    err.stack ?? '',
+    JSON.stringify(err),
+    JSON.stringify(
+      Object.getOwnPropertyNames(err).map((k) => (err as unknown as Record<string, unknown>)[k]),
+    ),
+    inspect(err, { depth: 10 }),
+  ];
+
+  const everyLogLine = (logger: ReturnType<typeof harness>['logger']) =>
+    [...logger.log.mock.calls, ...logger.warn.mock.calls, ...logger.error.mock.calls].map((args) =>
+      JSON.stringify(args),
+    );
+
+  it('the premise: the raw error renders the address everywhere', () => {
+    const err = leakyFailure();
+    expect(err.message).toContain(ADDRESS);
+    expect(err.stack).toContain(ADDRESS);
+    expect(inspect(err, { depth: 10 })).toContain(ADDRESS);
+  });
+
+  it('a retried failure is logged by class and code only', async () => {
+    const h = harness([leakyFailure(), leakyFailure(), 'erased']);
+    await expect(h.run()).resolves.toBe('erased');
+    for (const line of everyLogLine(h.logger)) {
+      expect(line).not.toContain(ADDRESS);
+      expect(line).not.toContain('example.com');
+      expect(line).not.toContain('Failed query');
+    }
+    expect(h.logger.warn).toHaveBeenCalledTimes(3); // two retries + "erased at boot"
+    expect(h.logger.warn).toHaveBeenCalledWith(
+      'super admin erase gate attempt 1/6 failed (DrizzleQueryError <- DatabaseError 08006); retrying in 500ms',
+    );
+  });
+
+  it('an exhausted retry refuses the start with an error that carries neither the address nor the cause', async () => {
+    const h = harness([leakyFailure()], 2);
+    let thrown: unknown;
+    try {
+      await h.run();
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(SuperAdminBootGateError);
+    const err = thrown as SuperAdminBootGateError;
+    expect(err.code).toBe('ERASE_FAILED');
+    for (const text of renderings(err)) {
+      expect(text).not.toContain(ADDRESS);
+      expect(text).not.toContain('example.com');
+      expect(text).not.toContain('Failed query');
+    }
+    for (const line of everyLogLine(h.logger)) {
+      expect(line).not.toContain(ADDRESS);
+      expect(line).not.toContain('Failed query');
+    }
+    expect('cause' in err).toBe(false);
+    expect((err as { cause?: unknown }).cause).toBeUndefined();
+    expect(err.message).toBe(
+      'super admin erase gate failed 2 times at boot; refusing to start (last error: DrizzleQueryError <- DatabaseError 08006)',
+    );
+    expect(h.erase).toHaveBeenCalledTimes(2);
+  });
+
+  it('a thrown value that is not an Error is named by type, whatever it holds', async () => {
+    const h = harness([`refused ${ADDRESS}` as unknown as Error], 1);
+    // The harness only throws Error instances; emulate a bare rejection.
+    h.erase.mockImplementationOnce(() => Promise.reject(`refused ${ADDRESS}`));
+    await expect(h.run()).rejects.toMatchObject({
+      code: 'ERASE_FAILED',
+      message: expect.stringContaining('(last error: string)'),
+    });
+    for (const line of everyLogLine(h.logger)) expect(line).not.toContain(ADDRESS);
   });
 });

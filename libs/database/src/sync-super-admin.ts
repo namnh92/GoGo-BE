@@ -1,7 +1,7 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema';
-import { syncSuperAdmin } from './super-admin-sync';
+import { formatSyncFailure, SuperAdminSyncError, syncSuperAdmin } from './super-admin-sync';
 
 /**
  * `pnpm cms:sync-super-admin` — GoGo-BE#687 D-3. The migrate container runs this
@@ -11,9 +11,9 @@ import { syncSuperAdmin } from './super-admin-sync';
 async function main(): Promise<void> {
   const email = (process.env.CMS_SUPER_ADMIN_EMAIL ?? '').trim().toLowerCase();
   const url = process.env.DATABASE_URL;
-  if (!url) throw new Error('DATABASE_URL is required');
+  if (!url) throw new SuperAdminSyncError('cms:sync-super-admin: DATABASE_URL is required');
   if (!email) {
-    throw new Error(
+    throw new SuperAdminSyncError(
       'cms:sync-super-admin: CMS_SUPER_ADMIN_EMAIL is not set (SSM cms/super-admin-email) — nothing was changed',
     );
   }
@@ -43,7 +43,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
+  // Review F-07: never the raw error — a DrizzleQueryError's message and stack
+  // carry the bound parameters, the address among them. Class and code only.
   // eslint-disable-next-line no-console
-  console.error(err instanceof Error ? err.message : err);
+  console.error(formatSyncFailure(err));
   process.exit(1);
 });
