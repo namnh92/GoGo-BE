@@ -51,7 +51,7 @@ Option 3.
   session outlives the decision by at most one access-token lifetime. _(ADR-0034 amendment, #687
   D-4: with the flag on as well, a password family refreshes only if it was opened with a verified
   Access assertion — every unbound password family is revoked (`access_unbound`), whatever the flags
-  or the role.)_
+  or the role. Superseded by rev 6 (2026-10-08): no such revocation; password families refresh.)_
 - **The console asks which doors exist at runtime.** `GET /v1/cms/auth/methods` returns
   `{ password, accessSso }`. These are facts, not copy, and are not cached. A CMS build flag was
   rejected: it can drift from the API, and rolling back would then need a CMS deploy from someone who

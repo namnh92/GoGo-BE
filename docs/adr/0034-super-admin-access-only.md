@@ -62,8 +62,8 @@ The redundant row is accepted, not refused. Each switch is flipped and rolled ba
   `access_sso` (ADR-0032; NULL counts as `password`) revokes the whole family
   (`super_admin_sso_only`) and answers `401 SESSION_REVOKED`. The role is read from the admin row
   locked by refresh. ADR-0018 keeps it from changing under a family. Other roles' password sessions
-  rotate as before — and, since the amendment (D-4), only if their family is `access_bound`: every
-  unbound password family is revoked at refresh, whatever the switches say. After the flip, a super admin password session lives at most one access-token
+  rotate as before. (Alpha.72's D-4 also revoked unbound password families at refresh; rev 6
+  removed that — password families refresh whatever `access_bound` says.) After the flip, a super admin password session lives at most one access-token
   lifetime. No per-request check is added to `AdminGuard`, the same bound ADR-0032 accepted.
 - **`GET /v1/cms/auth/methods` gains `superAdminSsoOnly`**, optional in the contract (alpha.70).
   The field is always sent, and older APIs omit it, which reads as false. `password` still describes
@@ -94,8 +94,8 @@ not help while the general door is closed.
 - Anyone who types the super admin's address learns that it is the super admin's: it gets a 403,
   not a 401, and no Argon2 delay. The owner accepted this.
 - An Access outage makes the browser console unreachable for every role, because `cms-<env>` sits
-  behind Access. ~~Other roles keep their API and script door.~~ Since the amendment (D-4) no role
-  does: the password door needs the same verified assertion. The super admin has none while the
+  behind Access. _(Rev 6: the console is public and Access gates only `/sso`, so an Access outage
+  now stops single sign-on only; staff keep their password door.)_ The super admin has none while the
   switch is on, and once the deploy-time sync has erased its hash (amendment, D-3) there is no
   password to re-open: recovery waits for Access (O-1).
 - `superAdminSsoOnly: true` means the API refuses that account's password. It does not mean that
@@ -172,7 +172,7 @@ dropped) — and the Infra work in GoGo-Infra#194/#196/#199. The shape file
   (`401 SESSION_REVOKED`, reason `access_unbound`), never conditionally on where an assertion would be
   required — every family from before BE-c signs in once more, with the assertion. The TOTP columns
   stay unread until BE-c2; `CMS_MFA_ENCRYPTION_KEY` stays optional until R8.
-- **D-7 · Doors.** super_admin: Access exchange only. editor/moderator/ops_admin: Access exchange,
+- ~~**D-7 · Doors.**~~ _(rev 6: super_admin — Access exchange only; other roles — password without an assertion, or the exchange if admitted)_ super_admin: Access exchange only. editor/moderator/ops_admin: Access exchange,
   or password plus the matching Access assertion. A direct call to `api-<env>` without an assertion
   is refused.
 - **D-8 · Staging and production.** `APP_ENV` staging, `prod` or `production` requires

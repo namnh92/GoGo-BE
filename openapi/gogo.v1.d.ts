@@ -13830,7 +13830,7 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
-            /** @description SSO is not configured for this environment (`ACCESS_SSO_NOT_CONFIGURED`, not retryable), or the identity provider's key set is unreachable (`ACCESS_KEYS_UNAVAILABLE`, retryable). The password door needs the same assertion (alpha.72), so it is no fallback for either. */
+            /** @description SSO is not configured for this environment (`ACCESS_SSO_NOT_CONFIGURED`, not retryable), or the identity provider's key set is unreachable (`ACCESS_KEYS_UNAVAILABLE`, retryable). Since alpha.73 the password door (`cmsLogin`) needs no Access assertion, so staff can still sign in with a password; the super admin cannot (SSO only). */
             503: {
                 headers: {
                     [name: string]: unknown;

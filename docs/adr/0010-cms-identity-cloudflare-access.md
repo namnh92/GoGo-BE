@@ -109,7 +109,9 @@ last note below.
 > **Narrowed by ADR-0034 (2026-10-06).** `CMS_SUPER_ADMIN_SSO_ONLY` closes the password door for the
 > `super_admin` alone; other roles keep it. DEV runs that way, with the general door open again.
 >
-> **Amended by ADR-0034's amendment (2026-10-07, #687 D-4).** TOTP is removed and the password door
+> **Rev 6 (owner 2026-10-08, GoGo-BE#687, every environment) supersedes the D-4 statements here:** the CMS is public; Cloudflare Access gates only `/sso` and `access-exchange`; staff sign in with email + password and **no** Access assertion, and their password families refresh normally. The super admin stays SSO-only (D-3, erase gate).
+>
+> ~~**Amended by ADR-0034's amendment (2026-10-07, #687 D-4).**~~ (history) TOTP is removed and the password door
 > is no longer a way in when Access is unavailable: every password login requires a verified Access
 > assertion for the same mailbox, in every environment, with no workstation or bare-password
 > exception, and refresh refuses every password family opened without one. The super admin has no
@@ -167,7 +169,8 @@ environment — which is the honest state, not a hidden one.
 ~~Since ADR-0032, clearing `CF_ACCESS_*` is refused while `CMS_PASSWORD_LOGIN_ENABLED=false`. Re-open
 the password door first.~~ Superseded by ADR-0034's amendment (#687 D-4): re-opening the password
 door is no way round Access — every password login needs the matching verified assertion — so there
-is no Access-free rollback at all (see below).
+is no Access-free rollback at all (see below). _(Rev 6, 2026-10-08: no longer true for staff — the
+password door needs no assertion again; it is still no way in for the super admin.)_
 
 ~~Clear `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` outside production. The
 endpoint starts answering 503, password + TOTP is unaffected, and existing
@@ -176,4 +179,6 @@ migration, no schema change, nothing to undo in the database.~~ Superseded by
 ADR-0034's amendment (#687 D-4): clearing `CF_ACCESS_*` leaves the console
 with no door — the password login refuses without a verified assertion too —
 and a deployed environment (`NODE_ENV=production`) refuses to boot without
-them. Rolling Access back now means rolling back below BE-c.
+them. Rolling Access back now means rolling back below BE-c. _(Rev 6: clearing `CF_ACCESS_*` now
+leaves staff their password door; only the super admin loses its way in, which is why a deployed
+environment still refuses to boot without it.)_

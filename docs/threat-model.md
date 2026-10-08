@@ -67,12 +67,12 @@ Status legend: ✅ mitigated+tested · 🟡 mitigated, test pending · 🔴 open
 
 ### CMS (`/v1/cms/*`)
 
-| Threat      | Vector                      | Mitigation                                                                                                                                                | Status            |
-| ----------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| Spoofing    | staff credential theft      | every password login needs a verified Access assertion for the same mailbox (#687 D-4, no exception); Access MFA on staging/prod; super admin Access-only | ✅ `cms.int.spec` |
-| Elevation   | consumer token / stale role | act=admin required; role re-read per request; suspended = instant deny                                                                                    | ✅ `cms.int.spec` |
-| Tampering   | ranking manipulation        | bounds validation; four-eyes approval; versioned + rollback; audit                                                                                        | ✅                |
-| Repudiation | who changed place/config    | append-only audit with diff + actor                                                                                                                       | ✅                |
+| Threat      | Vector                      | Mitigation                                                                                                                                                                                                    | Status            |
+| ----------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| Spoofing    | staff credential theft      | per-account lockout, per-IP rate limit, Argon2id; super admin Access-only (MFA at Access on staging/prod). Staff password sign-in is single-factor on the internet by owner decision (#687 rev 6, 2026-10-08) | accepted risk     |
+| Elevation   | consumer token / stale role | act=admin required; role re-read per request; suspended = instant deny                                                                                                                                        | ✅ `cms.int.spec` |
+| Tampering   | ranking manipulation        | bounds validation; four-eyes approval; versioned + rollback; audit                                                                                                                                            | ✅                |
+| Repudiation | who changed place/config    | append-only audit with diff + actor                                                                                                                                                                           | ✅                |
 
 ### Platform
 
@@ -319,7 +319,9 @@ this.
 
 ### Admin second factor (#62)
 
-> **Superseded by GoGo-BE#687 D-4 (alpha.72, ADR-0034 amendment).** TOTP is
+> **Rev 6 (owner 2026-10-08, GoGo-BE#687, every environment) supersedes the D-4 statements here:** the CMS is public; Cloudflare Access gates only `/sso` and `access-exchange`; staff sign in with email + password and **no** Access assertion, and their password families refresh normally. The super admin stays SSO-only (D-3, erase gate).
+>
+> (history) **Superseded by GoGo-BE#687 D-4 (alpha.72, ADR-0034 amendment).** TOTP is
 > removed; the second factor is Cloudflare Access admitting the account's
 > mailbox, required on the password login request. The text below is history.
 
@@ -358,8 +360,8 @@ leave the second factor brute-forceable at the per-IP rate.
 > **Superseded in part by GoGo-BE#687 (ADR-0034 amendment).** The singleton rule below stands; the
 > bootstrap-credential and password-rotation account of the super admin is history. The row follows
 > SSM `cms/super-admin-email` at every deploy, its password is erased once SSO is confirmed with the
-> switch on, and every password login for any role needs a verified Cloudflare Access assertion —
-> there is no Access-free path into the console.
+> switch on, and it has no Access-free path into the console. (Staff password logins needed an Access
+> assertion in alpha.72 only; since rev 6, 2026-10-08, they do not.)
 
 An environment holds **at most one** `super_admin` before it is bootstrapped and
 **exactly one** after — the index enforces the upper bound for every writer, and

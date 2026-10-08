@@ -85,10 +85,11 @@ const envSchema = z
      * are published; `CF_ACCESS_AUD` is the application's audience tag.
      *
      * Empty means single sign-on is off for this environment and
-     * `POST /v1/cms/auth/access-exchange` answers 503 saying so. The password
-     * door (#687 D-4) requires an assertion from this application on every
-     * login, so empty means no CMS door at all; a deployed (production-build)
-     * environment refuses to boot that way.
+     * `POST /v1/cms/auth/access-exchange` answers 503 saying so. Access is the
+     * super admin's only door (#687, ADR-0034); staff use the password door,
+     * which needs no assertion (#687 rev 6). A deployed (production-build)
+     * environment refuses to boot without it, because the super admin would
+     * have no way in.
      */
     CF_ACCESS_TEAM_DOMAIN: z.string().default(''),
     CF_ACCESS_AUD: z.string().default(''),
@@ -747,7 +748,8 @@ const envSchema = z
       });
     }
 
-    // Security rule: the CMS requires SSO in staging and production. Keyed on
+    // Security rule (rev 6, .claude/rules/security.md): the super admin signs in
+    // only through Access in staging and production. Keyed on
     // APP_ENV, not NODE_ENV — every deployed environment runs the production
     // build, so NODE_ENV would demand this of DEV too (the mistake fixed in
     // #215/#216). Both production aliases count (#687 F-19).
@@ -758,7 +760,7 @@ const envSchema = z
         code: z.ZodIssueCode.custom,
         path: ['CF_ACCESS_TEAM_DOMAIN'],
         message:
-          'CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in staging and production: the CMS requires SSO there',
+          'CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in staging and production: the super admin signs in only through Cloudflare Access there',
       });
     }
 

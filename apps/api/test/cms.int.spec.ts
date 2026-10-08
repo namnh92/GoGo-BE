@@ -667,7 +667,7 @@ describe('CMS single sign-on exchange (#62, ADR-0010)', () => {
    * application, which is exactly the state being described.
    */
   it('answers 503 where SSO is not configured, not 404 and not a login failure', async () => {
-    // Every integration spec has a test Access application (#687 D-4); this
+    // Every integration spec has a test Access application (support/cms-access.ts); this
     // one case takes it away.
     const config = app.get<{ CF_ACCESS_TEAM_DOMAIN: string; CF_ACCESS_AUD: string }>(APP_CONFIG);
     const saved = { team: config.CF_ACCESS_TEAM_DOMAIN, aud: config.CF_ACCESS_AUD };
@@ -698,7 +698,7 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
 
   /**
    * An assertion from the test Access application every integration spec has
-   * (support/cms-access.ts, #687 D-4): the same one ordinary logins carry.
+   * (support/cms-access.ts), used by `access-exchange`.
    */
   const assertionFor = cmsAssertion;
 
@@ -726,8 +726,8 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
   }
 
   /**
-   * #687 D-4 — with Access configured the password door needs the assertion
-   * for the same mailbox, so the helper carries it unless told otherwise.
+   * Sends a test Access assertion by default. Since #687 rev 6 the password
+   * door ignores it; `null` sends none (what a browser on the public page does).
    */
   const login = (email: string, password: string, assertion: string | null = assertionFor(email)) =>
     api().inject({
@@ -1172,7 +1172,7 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
       const bossBefore = await sessionIds(SUPER_ADMIN_EMAIL);
 
       await superOnly(async () => {
-        // Opened with the Access assertion (#687 D-4), so it is a bound family.
+        // A staff password family (rev 6: refreshes with or without Access).
         const editorOpened = await login(email, ADMIN_PASSWORD);
         expect(editorOpened.statusCode).toBe(201);
         const editorRotated = await refresh(editorOpened.json().refreshToken as string);
@@ -2011,8 +2011,9 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
    * header arrives joined ("same-origin, cross-site") and is refused too.
    */
   /**
-   * #687 D-4 (AC-5, AC-10) — the Access assertion replaces TOTP on the
-   * password door, and a password family opened without it stops refreshing.
+   * #687 shape rev 6 (owner 2026-10-08) — the password door needs no Access
+   * assertion and password families refresh; the super admin stays SSO-only.
+   * (Replaces the alpha.72 D-4 tests.)
    */
   describe('CMS password door without Access (#687 shape rev 6)', () => {
     const sessionRow = async (id: string) =>

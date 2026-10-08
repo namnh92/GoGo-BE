@@ -11,8 +11,9 @@
 > stands. Everything here about SSM _bootstrap credentials_, `seed-admin`, a bootstrap password and a
 > password "rollback door" is history: the super admin row now follows SSM `cms/super-admin-email`
 > at every deploy (D-3), it has no password once SSO is confirmed and the switch is on, and every
-> password login for any role needs a verified Cloudflare Access assertion (D-4). There is no
-> Access-free way into the console; recovery is SSO plus SSM → apply → deploy (O-1).
+> password login for any role needed a verified Cloudflare Access assertion (D-4, alpha.72 — staff no
+> longer do since rev 6, 2026-10-08). The super admin has no Access-free way in; its recovery is SSO
+> plus SSM → apply → deploy (O-1).
 
 ## Context
 
