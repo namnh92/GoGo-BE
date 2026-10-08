@@ -141,6 +141,16 @@ dropped) — and the Infra work in GoGo-Infra#194/#196/#199. The shape file
   database: `AdminGuard` reads `admin_sessions.revoked_at` for the token's session. The API refuses
   to change the super admin's address (`409 SUPER_ADMIN_EMAIL_FROM_SSM`) and, with the switch on,
   refuses reset, change and temporary password for it (`403 SUPER_ADMIN_SSO_ONLY`).
+  The API re-runs the erase gate at boot (review F-05), because the previous process could still
+  serve a reset between the sync and its own shutdown. That run is a start condition, not
+  best-effort: a database error is retried six times (15.5 s of backoff in all); no `super_admin`
+  row, a row at another address than `CMS_SUPER_ADMIN_EMAIL`, or an exhausted retry rejects the
+  bootstrap hook, so the process never listens and the deploy's health wait fails. `pending` (no
+  confirmation yet) starts. Its `admin.password_erased` row carries `GOGO_REVISION`, which the
+  deploy exports on every `up -d` that starts the API as well as on `run --rm migrate` (F-06).
+  A failure of the sync or of the boot gate is logged by error class and SQLSTATE or errno only
+  (`DrizzleQueryError <- DatabaseError 08006`), never by message, and the fatal boot error keeps no
+  `cause`: Drizzle repeats the bound parameters — the address — in its message and stack (F-07).
 - **D-4 · Cloudflare carries the second factor.** CMS TOTP is removed; the password door requires a
   verified Access assertion for the same mailbox (BE-c).
 - **D-7 · Doors.** super_admin: Access exchange only. editor/moderator/ops_admin: Access exchange,

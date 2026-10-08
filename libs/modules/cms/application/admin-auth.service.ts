@@ -1,8 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { authenticator } from 'otplib';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
-import { schema, type Db } from '@gogo/database';
+import { eraseSuperAdminPasswordIfConfirmed, schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { APP_CONFIG, type IdentityConfig } from '../../shared/config';
 import { DB } from '../../shared/tokens';
@@ -14,6 +14,7 @@ import { writeAudit } from '../../shared/audit';
 import { SecretBox } from '../../shared/secret-box';
 import { decodeKeysetCursor, encodeKeysetCursor, toIso } from '../../shared/cursor';
 import { IdentityRepository } from '../../identity/infrastructure/identity.repository';
+import { runSuperAdminBootErase } from './super-admin-boot-gate';
 
 export type AdminRole = (typeof schema.adminUsers.$inferSelect)['role'];
 export type AdminStatus = (typeof schema.adminUsers.$inferSelect)['status'];
@@ -116,7 +117,7 @@ const adminIdentifier = (email: string) => sha256(`admin:${email.trim().toLowerC
  * from the token.
  */
 @Injectable()
-export class AdminAuthService {
+export class AdminAuthService implements OnApplicationBootstrap {
   /**
    * Accepted in place of a real TOTP code outside production, so a fresh
    * environment can be used before anyone has an authenticator enrolled. It
@@ -153,6 +154,39 @@ export class AdminAuthService {
 
   private readonly secrets: SecretBox;
   private readonly logger = new Logger(AdminAuthService.name);
+
+  /**
+   * #687 review F-05 — run the super admin erase gate before this API starts
+   * serving. The migrate container's sync ran while the previous API (switch
+   * off) could still serve a reset or a password change; whatever that put back
+   * goes now, the old process being gone. Only the erase, never the address.
+   *
+   * Not best-effort: a rejection here fails `app.init()`, so the process never
+   * listens and the deploy's health wait fails. `super-admin-boot-gate.ts`
+   * decides which outcomes are fatal and how far a database error is retried;
+   * `pending` (no SSO confirmation yet) starts, because that is the documented
+   * state until the owner proves the Access door (D-3).
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    if (!this.config.CMS_SUPER_ADMIN_SSO_ONLY) return;
+    const email = this.config.CMS_SUPER_ADMIN_EMAIL;
+    if (!email) {
+      // env.ts refuses this in a deployed environment; locally the switch
+      // without an address has nothing to gate, and says so.
+      this.logger.warn(
+        'CMS_SUPER_ADMIN_SSO_ONLY is on without CMS_SUPER_ADMIN_EMAIL; erase gate skipped',
+      );
+      return;
+    }
+    await runSuperAdminBootErase({
+      erase: () =>
+        eraseSuperAdminPasswordIfConfirmed(this.db, {
+          email,
+          revision: process.env.GOGO_REVISION ?? null,
+        }),
+      logger: this.logger,
+    });
+  }
 
   /** The step a code belongs to, used to refuse a replay of one already spent. */
   private static stepOf(delta: number): number {
@@ -912,6 +946,15 @@ export class AdminAuthService {
       AdminAuthService.assertRoleSurvives(before, input.role);
 
       const emailChanges = email !== undefined && email !== before.email.toLowerCase();
+      // #687 D-3 (F-09, O-2) — the super admin's address comes from SSM
+      // `cms/super-admin-email` and nowhere else; the deploy-time sync moves it.
+      // An API edit would be undone by the next deploy, or worse, half-done.
+      if (emailChanges && before.role === 'super_admin') {
+        throw AppError.conflict(
+          'SUPER_ADMIN_EMAIL_FROM_SSM',
+          "The super admin's address is set in SSM (cms/super-admin-email) and applied at deploy",
+        );
+      }
       if (emailChanges) {
         const [taken] = await tx
           .select({ id: schema.adminUsers.id })
@@ -1058,7 +1101,8 @@ export class AdminAuthService {
    */
   async resetAdminPassword(input: { id: string; reason: string; actorId: string }) {
     const { result, revoked } = await this.db.transaction(async (tx) => {
-      await this.loadAdmin(tx, input.id);
+      const target = await this.loadAdmin(tx, input.id);
+      this.assertNoSuperAdminPassword(target.role);
       const temporary = this.tokens.generateOpaqueToken().slice(0, 24);
       const passwordHash = await this.passwords.hash(temporary);
 
@@ -1115,6 +1159,7 @@ export class AdminAuthService {
     keepSessionId: string;
   }) {
     const admin = await this.loadAdmin(this.db, input.adminId);
+    this.assertNoSuperAdminPassword(admin.role);
     const valid = await this.passwords.verifyOrBurn(admin.passwordHash, input.currentPassword);
     if (!valid) throw AppError.unauthorized('INVALID_CREDENTIALS', 'Current password is incorrect');
     if (input.currentPassword === input.newPassword) {
@@ -1144,6 +1189,86 @@ export class AdminAuthService {
     });
     await this.revocations.revokeMany(revoked);
     return { changed: true };
+  }
+
+  /**
+   * #687 D-3 (F-10) — with the switch on, nothing may give the super admin a
+   * password back: not a reset (which would also set a change obligation that
+   * locks the console) and not a change. The account signs in through Access.
+   */
+  private assertNoSuperAdminPassword(role: AdminRole): void {
+    if (this.config.CMS_SUPER_ADMIN_SSO_ONLY && role === 'super_admin') {
+      throw AppError.forbidden(
+        'SUPER_ADMIN_SSO_ONLY',
+        'The super admin signs in through Cloudflare Access and has no password to set',
+      );
+    }
+  }
+
+  /**
+   * #687 D-3 (F-01, O-12) — the super admin proves, from a session opened by
+   * Access, that the Access door works for its current address. The audit row
+   * this writes is the only thing that makes the deploy-time sync erase the
+   * password hash. Idempotent: a second call writes nothing new.
+   */
+  async confirmSuperAdminSso(input: { adminId: string; sessionId: string }) {
+    return this.db.transaction(async (tx) => {
+      // Locked: the deploy-time sync takes the same row lock before it moves
+      // the address and revokes sessions, so the address read here and the
+      // session checked below are the ones that will still hold at commit
+      // (review F-01). The lock also serialises two confirmations.
+      const admin = await this.loadAdmin(tx, input.adminId, true);
+      if (admin.role !== 'super_admin') {
+        throw AppError.forbidden('ROLE_DENIED', 'Only the super admin confirms its own sign-in');
+      }
+      const [session] = await tx
+        .select({ authMethod: schema.adminSessions.authMethod })
+        .from(schema.adminSessions)
+        .where(
+          and(
+            eq(schema.adminSessions.id, input.sessionId),
+            eq(schema.adminSessions.adminId, input.adminId),
+            isNull(schema.adminSessions.revokedAt),
+          ),
+        )
+        .limit(1);
+      if (!session) {
+        // Revoked after the guard let the request in — by an address change,
+        // most likely. A session opened for the old address proves nothing
+        // about the new one.
+        throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
+      }
+      if (session.authMethod !== 'access_sso') {
+        throw AppError.forbidden(
+          'ACCESS_SESSION_REQUIRED',
+          'Confirm from a session opened through Cloudflare Access',
+        );
+      }
+      const email = admin.email.toLowerCase();
+      const [existing] = await tx
+        .select({ id: schema.auditLogs.id, createdAt: schema.auditLogs.createdAt })
+        .from(schema.auditLogs)
+        .where(
+          and(
+            eq(schema.auditLogs.action, 'admin.sso_confirmed'),
+            eq(schema.auditLogs.resourceType, 'admin_user'),
+            eq(schema.auditLogs.resourceId, input.adminId),
+            sql`lower(${schema.auditLogs.diff} ->> 'email') = ${email}`,
+          ),
+        )
+        .limit(1);
+      if (!existing) {
+        await writeAudit(tx, {
+          actorType: 'admin',
+          actorId: input.adminId,
+          action: 'admin.sso_confirmed',
+          resourceType: 'admin_user',
+          resourceId: input.adminId,
+          diff: { email, sessionId: input.sessionId },
+        });
+      }
+      return { confirmed: true as const, email, alreadyConfirmed: Boolean(existing) };
+    });
   }
 
   async listAdmins(query: AdminListQuery): Promise<AdminListPage> {

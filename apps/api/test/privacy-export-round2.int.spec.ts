@@ -376,7 +376,10 @@ describe('A-F-09: legacy CMS replay records', () => {
       const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as {
         entries: { tag: string }[];
       };
-      journal.entries = journal.entries.filter((e) => !e.tag.startsWith('0072_'));
+      // Everything from 0072 on is held back, not just 0072: the migrator
+      // applies only files newer than the last one recorded, so a later
+      // migration staged here would make it skip 0072 for good.
+      journal.entries = journal.entries.filter((e) => e.tag < '0072_');
       writeFileSync(journalPath, JSON.stringify(journal));
       await migrate(upgradeDb, { migrationsFolder: staged });
 

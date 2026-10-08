@@ -62,6 +62,8 @@ export const adminUsers = pgTable(
   },
   (t) => [
     uniqueIndex('admin_users_email_unique').on(t.email),
+    // #687 F-04 — addresses are compared case-insensitively; so is uniqueness.
+    uniqueIndex('admin_users_email_lower_unique').on(sql`lower(${t.email})`),
     /**
      * ADR-0018 — **at most one** `super_admin`, enforced here and not only in
      * the service. The API refuses to create or grant the role, but the API has

@@ -47,6 +47,11 @@ services:
       # Only Caddy (the single hop in front) may set X-Forwarded-For. The API
       # port is deliberately not published, so nothing else can reach it.
       TRUST_PROXY: '1'
+      # GoGo-BE#687 (review F-06) — the deploy commit. The API re-runs the super
+      # admin erase gate at boot and its `admin.password_erased` audit row names
+      # the revision that erased it; GoGo-Infra deploy-vps.sh sets it on every
+      # `up -d` that starts this service, the same way it does for migrate.
+      GOGO_REVISION: ${GOGO_REVISION:-}
     env_file:
       - ../${ENV_FILE:-.env.prod}
     healthcheck:
@@ -80,10 +85,14 @@ services:
     profiles: ['tools']
     environment:
       PROCESS: migrate
+      # GoGo-BE#687 — the deploy commit, written into the super admin sync's
+      # audit rows (GoGo-Infra deploy-vps.sh sets it on `run --rm migrate`).
+      GOGO_REVISION: ${GOGO_REVISION:-}
     env_file:
       - ../${ENV_FILE:-.env.prod}
 
-  # Reference data and, outside production, a bootstrap CMS admin. Behind the
+  # Reference data (no CMS account: the super admin follows CMS_SUPER_ADMIN_EMAIL
+  # via the migrate container, GoGo-BE#687). Behind the
   # same `tools` profile as migrate: `up` must never run it, because seeding a
   # shared environment on every deploy overwrites whatever someone was testing.
   #

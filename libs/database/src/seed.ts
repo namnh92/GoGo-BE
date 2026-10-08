@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema';
-import { isProductionAppEnv } from './seed-admin-config';
+import { isProductionAppEnv } from './app-env';
 
 /**
  * FND-008 (data part): seeded demo data matching the mockup flows — taxonomy,
@@ -426,10 +426,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // No CMS admin is created here. Bootstrapping one is `seed-admin.ts`, run
-  // deliberately with credentials from SSM — see GoGo-Infra
-  // docs/cms-bootstrap-ssm.md. Keeping it out of this file is what lets the
-  // shared runtime env file stay free of a super admin password.
+  // No CMS admin is created here. The one super admin follows
+  // CMS_SUPER_ADMIN_EMAIL at every deploy (`cms:sync-super-admin`, run by the
+  // migrate container; GoGo-BE#687) and signs in through Cloudflare Access.
 
   await pool.end();
   // eslint-disable-next-line no-console

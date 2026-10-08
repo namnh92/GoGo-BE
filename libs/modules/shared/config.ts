@@ -73,6 +73,8 @@ export type IdentityConfig = {
    * refreshing.
    */
   CMS_SUPER_ADMIN_SSO_ONLY: boolean;
+  /** #687 D-2 — the one super admin's address (SSM cms/super-admin-email). */
+  CMS_SUPER_ADMIN_EMAIL?: string;
 };
 
 /**

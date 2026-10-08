@@ -97,9 +97,8 @@ $P run --rm migrate
 $P up -d
 # seed dữ liệu demo (tùy chọn) — không tạo tài khoản CMS nào
 $P run --rm -e NODE_ENV=development --entrypoint sh api -c "node -r @swc-node/register libs/database/src/seed.ts"
-# tài khoản CMS đầu tiên là lệnh riêng; credentials lấy từ SSM, không có mặc định trong repo
-$P run --rm -e NODE_ENV=development -e SEED_ADMIN_EMAIL -e SEED_ADMIN_PASSWORD \
-   --entrypoint sh api -c "node -r @swc-node/register libs/database/src/seed-admin.ts"
+# super admin CMS: `run --rm migrate` ở trên đã chạy `cms:sync-super-admin` — hàng super_admin
+# theo CMS_SUPER_ADMIN_EMAIL (SSM cms/super-admin-email), đăng nhập qua Cloudflare Access (GoGo-BE#687)
 
 curl -sk https://localhost/v1/health/ready     # {"status":"ready","checks":{"db":"ok","redis":"ok"}}
 curl -sk "https://localhost/v1/places/search?q=ca%20phe&limit=3"

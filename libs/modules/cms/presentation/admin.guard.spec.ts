@@ -17,13 +17,26 @@ class RecordingMetrics implements MetricsPort {
   }
 }
 
-/** Minimal stand-in for the one query the guard makes. */
-function dbReturning(role: AdminRole, status = 'active') {
+/**
+ * Minimal stand-in for the two reads the guard makes: the admin row, then the
+ * session named in the token (#687 D-3). `session: null` is a missing row.
+ */
+function dbReturning(
+  role: AdminRole,
+  status = 'active',
+  session: { adminId: string; revokedAt: Date | null } | null = {
+    adminId: 'admin-1',
+    revokedAt: null,
+  },
+) {
+  let call = 0;
   return {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: async () => [{ id: 'admin-1', role, status }],
+          // Session first (every admin request), then the admin row (CMS routes).
+          limit: async () =>
+            call++ === 0 ? (session ? [session] : []) : [{ id: 'admin-1', role, status }],
         }),
       }),
     }),
@@ -104,6 +117,86 @@ describe('super_admin bypass metric (SEC-002, #146)', () => {
     const { guard } = guardFor('super_admin', ['editor']);
     await expect(
       guard.canActivate(contextFor('DELETE', '/v1/cms/places/:id') as never),
+    ).resolves.toBe(true);
+  });
+});
+
+describe('AdminGuard session check (#687 D-3, F-16)', () => {
+  function guardWithSession(session: { adminId: string; revokedAt: Date | null } | null) {
+    const reflector = new Reflector();
+    RequireRole('editor')(Holder);
+    return new AdminGuard(
+      reflector,
+      dbReturning('editor', 'active', session) as never,
+      new RecordingMetrics() as unknown as MetricsPort,
+    );
+  }
+
+  it('lets a live session of this admin through', async () => {
+    await expect(
+      guardWithSession({ adminId: 'admin-1', revokedAt: null }).canActivate(
+        contextFor('GET', '/v1/cms/places') as never,
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it('refuses a session revoked in the database, whatever the token cache says', async () => {
+    await expect(
+      guardWithSession({ adminId: 'admin-1', revokedAt: new Date() }).canActivate(
+        contextFor('GET', '/v1/cms/places') as never,
+      ),
+    ).rejects.toMatchObject({ code: 'SESSION_REVOKED' });
+  });
+
+  it('refuses a session id that does not exist', async () => {
+    await expect(
+      guardWithSession(null).canActivate(contextFor('GET', '/v1/cms/places') as never),
+    ).rejects.toMatchObject({ code: 'SESSION_REVOKED' });
+  });
+
+  it('refuses a session that belongs to another admin', async () => {
+    await expect(
+      guardWithSession({ adminId: 'admin-2', revokedAt: null }).canActivate(
+        contextFor('GET', '/v1/cms/places') as never,
+      ),
+    ).rejects.toMatchObject({ code: 'SESSION_REVOKED' });
+  });
+});
+
+describe('AdminGuard on a route without role metadata (review of PR #690, Sol F-01)', () => {
+  class Unroled {}
+  const unroledContext = {
+    switchToHttp: () => ({
+      getRequest: () => ({
+        actor: {
+          type: 'admin' as const,
+          id: 'admin-1',
+          sessionId: 's',
+          role: 'editor' as AdminRole,
+        },
+        method: 'POST',
+        routeOptions: { url: '/v1/cms/auth/totp/confirm' },
+      }),
+    }),
+    getHandler: () => () => undefined,
+    getClass: () => Unroled,
+  };
+  const guardWith = (session: { adminId: string; revokedAt: Date | null } | null) =>
+    new AdminGuard(
+      new Reflector(),
+      dbReturning('editor', 'active', session) as never,
+      new RecordingMetrics() as unknown as MetricsPort,
+    );
+
+  it('still refuses a session revoked in the database', async () => {
+    await expect(
+      guardWith({ adminId: 'admin-1', revokedAt: new Date() }).canActivate(unroledContext as never),
+    ).rejects.toMatchObject({ code: 'SESSION_REVOKED' });
+  });
+
+  it('lets a live session through', async () => {
+    await expect(
+      guardWith({ adminId: 'admin-1', revokedAt: null }).canActivate(unroledContext as never),
     ).resolves.toBe(true);
   });
 });

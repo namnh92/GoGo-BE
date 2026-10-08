@@ -46,6 +46,10 @@ ENV SWC_NODE_PROJECT=/app/tsconfig.base.json
 
 # PROCESS=api (default) | worker | migrate | seed
 #
+# migrate = migrations, then cms:sync-super-admin (GoGo-BE#687 D-3): the super
+# admin row follows CMS_SUPER_ADMIN_EMAIL before the new API starts, and a
+# failure stops the deploy with the old revision still serving.
+#
 # seed is here rather than left to a command override so the entry points this
 # image offers stay this repository's to name. A deploy pipeline that spells out
 # libs/database/src/seed.ts breaks silently when the file moves.
@@ -54,7 +58,8 @@ CMD ["sh", "-c", "\
   if [ \"$PROCESS\" = 'worker' ]; then \
     exec node -r @swc-node/register apps/worker/src/main.ts; \
   elif [ \"$PROCESS\" = 'migrate' ]; then \
-    exec node -r @swc-node/register libs/database/src/migrate.ts; \
+    node -r @swc-node/register libs/database/src/migrate.ts && \
+    exec node -r @swc-node/register libs/database/src/sync-super-admin.ts; \
   elif [ \"$PROCESS\" = 'seed' ]; then \
     exec node -r @swc-node/register libs/database/src/seed.ts; \
   else \

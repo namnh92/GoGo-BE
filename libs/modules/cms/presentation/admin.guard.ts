@@ -75,6 +75,28 @@ export class AdminGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
+    // #687 D-3 (F-16) — revocation truth is the database, for every admin
+    // request: a CMS route without role metadata (TOTP, logout) is reached by
+    // the same tokens the sync revokes (review of PR #690, Sol F-01). The Redis
+    // denylist the AuthGuard consults is a cache that swallows its own write
+    // failures, and a change made outside the API (the deploy-time super admin
+    // sync) never writes it at all. One primary-key read: the session named in
+    // the token must exist, belong to this admin and not be revoked.
+    const early = context.switchToHttp().getRequest<{ actor?: AdminActor }>();
+    if (early.actor?.type === 'admin') {
+      const [session] = await this.db
+        .select({
+          adminId: schema.adminSessions.adminId,
+          revokedAt: schema.adminSessions.revokedAt,
+        })
+        .from(schema.adminSessions)
+        .where(eq(schema.adminSessions.id, early.actor.sessionId))
+        .limit(1);
+      if (!session || session.revokedAt || session.adminId !== early.actor.id) {
+        throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
+      }
+    }
+
     if (!roles) return true; // not a CMS route
 
     const req = context.switchToHttp().getRequest<{
