@@ -82,8 +82,10 @@ GoGo-BE issue for the email change), never a SQL edit.
 - The DEV console is reachable only by people on the `cms-dev` Access allow list who also hold an
   active `admin_users` row.
 - If Access or its identity provider has an outage, the browser console is unreachable whatever the
-  flag says, because `cms-<env>` itself sits behind Access. Re-opening the password door restores API
-  and script access only.
+  flag says, because `cms-<env>` itself sits behind Access. ~~Re-opening the password door restores API
+  and script access only.~~ Superseded by ADR-0034's amendment (#687 D-4): the password door needs the
+  same verified Access assertion, so re-opening it restores nothing during an Access outage; every
+  CMS door waits for Access.
 - `accessSso: true` means Access is configured. It does not mean Access is healthy.
 - An agent cannot sign in on its own while the owner's Access session has expired. Script actions
   are audited under the person whose assertion was used.

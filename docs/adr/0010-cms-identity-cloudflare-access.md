@@ -164,8 +164,10 @@ environment — which is the honest state, not a hidden one.
 
 ## Rollback
 
-Since ADR-0032, clearing `CF_ACCESS_*` is refused while `CMS_PASSWORD_LOGIN_ENABLED=false`. Re-open
-the password door first.
+~~Since ADR-0032, clearing `CF_ACCESS_*` is refused while `CMS_PASSWORD_LOGIN_ENABLED=false`. Re-open
+the password door first.~~ Superseded by ADR-0034's amendment (#687 D-4): re-opening the password
+door is no way round Access — every password login needs the matching verified assertion — so there
+is no Access-free rollback at all (see below).
 
 ~~Clear `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` outside production. The
 endpoint starts answering 503, password + TOTP is unaffected, and existing
