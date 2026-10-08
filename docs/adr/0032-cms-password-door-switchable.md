@@ -13,7 +13,8 @@
 ## Context
 
 `/v1/cms/*` on the API host answers the internet directly. ADR-0010 explains why it cannot sit
-behind Access: mobile and web share the host. Only `cms-<env>` is behind Access. Outside
+behind Access: mobile and web share the host. Only `cms-<env>` is behind Access _(until rev 6,
+GoGo-BE#687, 2026-10-08: since then only its `/sso` and exchange paths are)_. Outside
 production, MFA is optional and `DEV_TOTP_CODE` is accepted, so `POST /v1/cms/auth/login` on DEV is
 a single-factor door into the console from anywhere. GoGo-Infra#154 found the super admin using it
 with a guessable password. The password was rotated, but the door stayed open.

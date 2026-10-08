@@ -95,9 +95,9 @@ not help while the general door is closed.
   `CMS_SUPER_ADMIN_SSO_ONLY=true`, has no password door.)_
 - Anyone who types the super admin's address learns that it is the super admin's: it gets a 403,
   not a 401, and no Argon2 delay. The owner accepted this.
-- An Access outage makes the browser console unreachable for every role, because `cms-<env>` sits
-  behind Access. _(Rev 6: the console is public and Access gates only `/sso`, so an Access outage
-  now stops single sign-on only; staff keep their password door.)_ The super admin has none while the
+- ~~An Access outage makes the browser console unreachable for every role, because `cms-<env>` sits
+  behind Access.~~ Rev 6: the console is public and Access gates only `/sso` and the exchange, so an
+  Access outage stops single sign-on only; staff keep their password door. The super admin has none while the
   switch is on, and once the deploy-time sync has erased its hash (amendment, D-3) there is no
   password to re-open: recovery waits for Access (O-1).
 - `superAdminSsoOnly: true` means the API refuses that account's password. It does not mean that

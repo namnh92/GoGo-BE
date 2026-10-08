@@ -85,11 +85,11 @@ const envSchema = z
      * are published; `CF_ACCESS_AUD` is the application's audience tag.
      *
      * Empty means single sign-on is off for this environment and
-     * `POST /v1/cms/auth/access-exchange` answers 503 saying so. Access is the
+     * `POST /v1/cms/auth/access-exchange` answers 503 saying so. Where
+     * `CMS_SUPER_ADMIN_SSO_ONLY=true` (always in staging/prod) Access is the
      * super admin's only door (#687, ADR-0034); staff use the password door,
      * which needs no assertion (#687 rev 6). A deployed (production-build)
-     * environment refuses to boot without it, because the super admin would
-     * have no way in.
+     * environment refuses to boot without it.
      */
     CF_ACCESS_TEAM_DOMAIN: z.string().default(''),
     CF_ACCESS_AUD: z.string().default(''),

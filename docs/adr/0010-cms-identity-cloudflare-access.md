@@ -31,7 +31,8 @@ Four options were considered.
 The last three all mean introducing an identity provider for a system with four
 roles and a handful of staff. Access is already deployed, already in Terraform,
 already fronting `cms-*.gogo.id.vn`, and federates Google, GitHub or a one-time
-PIN itself.
+PIN itself. _(Rev 6, GoGo-BE#687, 2026-10-08: Access now fronts only `/sso` and
+`/v1/cms/auth/access-exchange` on `cms-<env>`; the rest of the console is public.)_
 
 ## Decision
 
@@ -41,8 +42,11 @@ _what that person may do_.
 
 Shape:
 
+Rev 6: the Access gate below applies only to the single sign-on path (`/sso`,
+`/v1/cms/auth/access-exchange`); the password door on the same host is public.
+
 ```
-browser → cms-<env>.gogo.id.vn        Access gate: upstream IdP + MFA
+browser → cms-<env>.gogo.id.vn/sso    Access gate: upstream IdP + MFA (SSO path only)
         → CMS Worker                  serves the SPA, proxies /v1/*
         → api-<env>.gogo.id.vn        BE verifies Cf-Access-Jwt-Assertion
         → POST /v1/cms/auth/access-exchange → ordinary admin session
