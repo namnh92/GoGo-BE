@@ -224,7 +224,7 @@ describe('SHARE_LINK_EDGE_AUTH_TOKEN (SEC-004)', () => {
       ).toThrow(/CMS_SUPER_ADMIN_EMAIL is required/);
     });
 
-    it('#687 D-4 (PR #691 Astra F-03): a deployed environment without Access has no CMS door and is refused', () => {
+    it('#687: a deployed environment without Access leaves the super admin no door and is refused', () => {
       const deployed = {
         ...base,
         NODE_ENV: 'production',
@@ -235,7 +235,9 @@ describe('SHARE_LINK_EDGE_AUTH_TOKEN (SEC-004)', () => {
         COOKIE_SECURE: 'true',
         CMS_SUPER_ADMIN_EMAIL: 'boss@example.com',
       };
-      expect(() => loadEnv(deployed)).toThrow(/every CMS sign-in \(password included\) needs/);
+      expect(() => loadEnv(deployed)).toThrow(
+        /super admin signs in only through Cloudflare Access/,
+      );
       // A workstation still boots without it.
       expect(() =>
         loadEnv({ ...base, NODE_ENV: 'development', CMS_SUPER_ADMIN_EMAIL: 'boss@example.com' }),

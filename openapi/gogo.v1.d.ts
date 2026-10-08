@@ -2577,8 +2577,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Staff login — argon2id + the Cloudflare Access assertion for the same mailbox
-         * @description Breaking in alpha.72 (#687 D-4): TOTP is gone. The second factor is Cloudflare Access admitting the account's mailbox, carried on the same request as the `Cf-Access-Jwt-Assertion` header (browsers through `cms-<env>` send it; scripts use `cloudflared access token`). A request without a verified assertion whose `email` equals the account's address, case-insensitively, is refused with `401 ACCESS_ASSERTION_REQUIRED` before any credential is compared. There is no exception: an environment without Access configured has no password door (deployed environments refuse to boot that way).
+         * Staff login — email + password (argon2id)
+         * @description TOTP was removed in alpha.72. Since alpha.73 (#687 shape rev 6, owner 2026-10-08, every environment) the password door needs no Cloudflare Access assertion: the console is public and Access gates only the SSO path (`cmsAccessExchange`). Protection is the per-account lockout, the per-IP limit and Argon2id. The `super_admin` never signs in here where its switch is on (`SUPER_ADMIN_SSO_ONLY`).
          */
         post: operations["cmsLogin"];
         delete?: never;
@@ -13716,10 +13716,7 @@ export interface operations {
     cmsLogin: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Set by Cloudflare Access. Required on every password login, without exception (above). */
-                "Cf-Access-Jwt-Assertion"?: string;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -13742,7 +13739,7 @@ export interface operations {
                     "application/json": components["schemas"]["AdminSession"];
                 };
             };
-            /** @description Bad credentials (`INVALID_CREDENTIALS`), or no verified Access assertion for this mailbox (`ACCESS_ASSERTION_REQUIRED`, not retryable, answered before the password is compared). */
+            /** @description Bad credentials (`INVALID_CREDENTIALS`). (`ACCESS_ASSERTION_REQUIRED` existed in alpha.72 only.) */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -13751,7 +13748,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description The password door is turned off for this environment (`PASSWORD_LOGIN_DISABLED`, not retryable — ADR-0032), or the account is the `super_admin` and this environment lets it sign in through `cmsAccessExchange` only (`SUPER_ADMIN_SSO_ONLY`, not retryable — ADR-0034, added in alpha.70). Both are answered before the password is compared, so a correct and a wrong password get the same answer. Precedence: `429` (per-IP rate limit), then `PASSWORD_LOGIN_DISABLED`, then `ACCESS_ASSERTION_REQUIRED`, then `429` (account lockout), then `SUPER_ADMIN_SSO_ONLY`, then the credential outcomes. `cmsAuthMethods` says in advance which doors are open. */
+            /** @description The password door is turned off for this environment (`PASSWORD_LOGIN_DISABLED`, not retryable — ADR-0032), or the account is the `super_admin` and this environment lets it sign in through `cmsAccessExchange` only (`SUPER_ADMIN_SSO_ONLY`, not retryable — ADR-0034, added in alpha.70). Both are answered before the password is compared, so a correct and a wrong password get the same answer. Precedence: `429` (per-IP rate limit), then `PASSWORD_LOGIN_DISABLED`, then `429` (account lockout), then `SUPER_ADMIN_SSO_ONLY`, then the credential outcomes. `cmsAuthMethods` says in advance which doors are open. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13761,7 +13758,7 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
-            /** @description The identity provider's key set is unreachable while verifying the assertion (`ACCESS_KEYS_UNAVAILABLE`, retryable). Never answered when the password door is closed: `PASSWORD_LOGIN_DISABLED` comes first. */
+            /** @description alpha.72 only (`ACCESS_KEYS_UNAVAILABLE` while verifying an Access assertion). Not answered since alpha.73: the password door verifies no assertion. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -13868,7 +13865,7 @@ export interface operations {
                     "application/json": components["schemas"]["AdminSession"];
                 };
             };
-            /** @description INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED. `SESSION_REVOKED` also answers a session opened by password once the password door is closed; its whole family is revoked (ADR-0032). From alpha.72 it also answers every password family opened without a verified Access assertion (one from before #687 D-4), in every environment and without exception: the family is revoked and the user signs in once more, with the assertion. */
+            /** @description INVALID_REFRESH_TOKEN / SESSION_REVOKED / SESSION_EXPIRED. `SESSION_REVOKED` also answers a session opened by password once the password door is closed; its whole family is revoked (ADR-0032), and a super admin password family once its switch is on (ADR-0034). (alpha.72's revocation of password families opened without an Access assertion is gone since alpha.73.) */
             401: {
                 headers: {
                     [name: string]: unknown;

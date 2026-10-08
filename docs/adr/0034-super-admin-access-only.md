@@ -155,7 +155,13 @@ dropped) — and the Infra work in GoGo-Infra#194/#196/#199. The shape file
   A failure of the sync or of the boot gate is logged by error class and SQLSTATE or errno only
   (`DrizzleQueryError <- DatabaseError 08006`), never by message, and the fatal boot error keeps no
   `cause`: Drizzle repeats the bound parameters — the address — in its message and stack (F-07).
-- **D-4 · Cloudflare carries the second factor.** CMS TOTP is removed; the password door requires a
+- **Rev 6 (owner 2026-10-08, every environment) — supersedes D-4 and part of D-7.** The CMS is public;
+  Cloudflare Access gates only the SSO path (`/sso` and `access-exchange`). `editor`/`moderator`/`ops_admin` sign in
+  with email + password and no Access assertion; refresh no longer revokes unbound password families
+  (`admin_sessions.access_bound` stays, written, unread). The `super_admin` remains SSO-only (D-3, R5). Owner accepts
+  single-factor staff sign-in on the internet, protected by the per-account lockout, the per-IP limit and Argon2id
+  (`.claude/rules/security.md`, `execution-policy.md` §8 2026-10-08). The D-4 text below is history.
+- ~~**D-4 · Cloudflare carries the second factor.**~~ _(superseded by rev 6, above)_ CMS TOTP is removed; the password door requires a
   verified Access assertion for the same mailbox (BE-c, alpha.72), checked before any credential
   (`401 ACCESS_ASSERTION_REQUIRED`). **Every password login requires it, in every environment and
   every build — there is no workstation exception and no bare-password door.** A deployed

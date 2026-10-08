@@ -15,7 +15,6 @@ import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@go
 import {
   ADMIN_LOCKOUT_THRESHOLD,
   AdminAuthService,
-  AppError,
   APP_CONFIG,
   audiencePredicate,
   CloudflareAccessService,
@@ -2015,7 +2014,7 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
    * #687 D-4 (AC-5, AC-10) — the Access assertion replaces TOTP on the
    * password door, and a password family opened without it stops refreshing.
    */
-  describe('Access assertion replaces TOTP (#687 D-4)', () => {
+  describe('CMS password door without Access (#687 shape rev 6)', () => {
     const sessionRow = async (id: string) =>
       (
         await db.select().from(schema.adminSessions).where(eq(schema.adminSessions.id, id)).limit(1)
@@ -2033,51 +2032,75 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
           )
       ).length;
 
-    it('refuses a login with no assertion before comparing the password, writing nothing', async () => {
-      const email = 'bec-none@gogo.local';
+    it('rev 6: a staff password login needs no Access assertion, and its family refreshes', async () => {
+      const email = 'bed-bare@gogo.local';
       await createAdmin(email, 'editor');
       const before = await sessionIds(email);
       const attemptsBefore = await attempts(email);
       await withDoors(true, async () => {
-        for (const password of [ADMIN_PASSWORD, 'wrong-password-123']) {
-          const res = await login(email, password, null);
-          expect(res.statusCode).toBe(401);
-          expect(res.json().code).toBe('ACCESS_ASSERTION_REQUIRED');
-        }
-      });
-      expect(await sessionsAfter(email, before)).toEqual([]);
-      expect(await attempts(email)).toBe(attemptsBefore);
-    });
-
-    it('refuses an assertion for another mailbox, and one that does not verify', async () => {
-      const email = 'bec-foreign@gogo.local';
-      await createAdmin(email, 'editor');
-      await withDoors(true, async () => {
-        const foreign = await login(email, ADMIN_PASSWORD, assertionFor('someone-else@gogo.local'));
-        expect(foreign.statusCode).toBe(401);
-        expect(foreign.json().code).toBe('ACCESS_ASSERTION_REQUIRED');
-        const forged = await login(email, ADMIN_PASSWORD, 'not.a.jwt');
-        expect(forged.statusCode).toBe(401);
-        expect(forged.json().code).toBe('ACCESS_ASSERTION_REQUIRED');
-      });
-    });
-
-    it('opens a bound password session with its own assertion (any case), and rotation stays bound', async () => {
-      const email = 'bec-own@gogo.local';
-      await createAdmin(email, 'editor');
-      const before = await sessionIds(email);
-      await withDoors(true, async () => {
-        const res = await login(email, ADMIN_PASSWORD, assertionFor('BEC-Own@GoGo.local'));
+        const res = await login(email, ADMIN_PASSWORD, null);
         expect(res.statusCode).toBe(201);
         const [opened] = await sessionsAfter(email, before);
         expect(opened).toMatchObject({ method: 'password' });
-        expect((await sessionRow(opened!.id)).accessBound).toBe(true);
         const rotated = await refresh(res.json().refreshToken);
         expect(rotated.statusCode).toBe(201);
-        const rows = await sessionsAfter(email, before);
-        expect(rows).toHaveLength(2);
-        for (const row of rows) expect((await sessionRow(row.id)).accessBound).toBe(true);
+        expect((await refresh(rotated.json().refreshToken)).statusCode).toBe(201);
       });
+      // The attempt was recorded as a real credential check (lockout still applies).
+      expect(await attempts(email)).toBe(attemptsBefore + 1);
+    });
+
+    it('rev 6: an assertion header on the password door is ignored, foreign or forged', async () => {
+      const email = 'bed-header@gogo.local';
+      await createAdmin(email, 'editor');
+      await withDoors(true, async () => {
+        for (const assertion of [assertionFor('someone-else@gogo.local'), 'not.a.jwt']) {
+          expect((await login(email, ADMIN_PASSWORD, assertion)).statusCode).toBe(201);
+        }
+        const wrong = await login(email, 'wrong-password-123', null);
+        expect(wrong.statusCode).toBe(401);
+        expect(wrong.json().code).toBe('INVALID_CREDENTIALS');
+      });
+    });
+
+    it('rev 6: works with Access unconfigured too (password door is independent of Access)', async () => {
+      const email = 'bed-noaccess@gogo.local';
+      await createAdmin(email, 'editor');
+      const config = app.get<{ CF_ACCESS_TEAM_DOMAIN: string; CF_ACCESS_AUD: string }>(APP_CONFIG);
+      const saved = { team: config.CF_ACCESS_TEAM_DOMAIN, aud: config.CF_ACCESS_AUD };
+      config.CF_ACCESS_TEAM_DOMAIN = '';
+      config.CF_ACCESS_AUD = '';
+      try {
+        expect((await login(email, ADMIN_PASSWORD, null)).statusCode).toBe(201);
+      } finally {
+        config.CF_ACCESS_TEAM_DOMAIN = saved.team;
+        config.CF_ACCESS_AUD = saved.aud;
+      }
+    });
+
+    it('rev 6: a password family from before (access_bound = false) keeps refreshing', async () => {
+      const email = 'bed-legacy@gogo.local';
+      await createAdmin(email, 'editor');
+      const before = await sessionIds(email);
+      const opened = await login(email, ADMIN_PASSWORD, null);
+      const [row] = await sessionsAfter(email, before);
+      expect((await sessionRow(row!.id)).accessBound).toBe(false);
+      await withDoors(true, async () => {
+        expect((await refresh(opened.json().refreshToken)).statusCode).toBe(201);
+      });
+    });
+
+    it('rev 6: the super admin is still refused on the password door when SSO-only', async () => {
+      await superAdmin();
+      await withDoors(
+        true,
+        async () => {
+          const res = await login(SUPER_ADMIN_EMAIL, ADMIN_PASSWORD, null);
+          expect(res.statusCode).toBe(403);
+          expect(res.json().code).toBe('SUPER_ADMIN_SSO_ONLY');
+        },
+        true,
+      );
     });
 
     it('binds an exchange family by construction', async () => {
@@ -2089,78 +2112,6 @@ describe('CMS password door closed (#679, ADR-0032)', () => {
       });
       const [row] = await sessionsAfter(email, before);
       expect((await sessionRow(row!.id)).accessBound).toBe(true);
-    });
-
-    it('AC-10: a password family opened without the assertion is revoked at refresh (access_unbound)', async () => {
-      const email = 'bec-legacy@gogo.local';
-      await createAdmin(email, 'editor');
-      const before = await sessionIds(email);
-      // A family from before BE-c: migration 0074 left every existing row
-      // unbound (column default false). No API path opens one any more, so the
-      // row is put back into that state directly.
-      const legacy = await api().inject({
-        method: 'POST',
-        url: '/v1/cms/auth/login',
-        remoteAddress: ip(),
-        headers: cmsAccessHeaders(email),
-        payload: { email, password: ADMIN_PASSWORD },
-      });
-      expect(legacy.statusCode).toBe(201);
-      const [legacyRow] = await sessionsAfter(email, before);
-      await db
-        .update(schema.adminSessions)
-        .set({ accessBound: false })
-        .where(eq(schema.adminSessions.id, legacyRow!.id));
-      await withDoors(true, async () => {
-        const res = await refresh(legacy.json().refreshToken);
-        expect(res.statusCode).toBe(401);
-        expect(res.json().code).toBe('SESSION_REVOKED');
-        expect(await sessionRow(legacyRow!.id)).toMatchObject({ revokeReason: 'access_unbound' });
-        // Signing in again, with the assertion, works and refreshes.
-        const again = await login(email, ADMIN_PASSWORD);
-        expect(again.statusCode).toBe(201);
-        expect((await refresh(again.json().refreshToken)).statusCode).toBe(201);
-      });
-    });
-
-    it('PR #691 F-01: there is no bare-password exception, even with Access unconfigured', async () => {
-      const email = 'bec-noaccess@gogo.local';
-      await createAdmin(email, 'editor');
-      const config = app.get<{ CF_ACCESS_TEAM_DOMAIN: string; CF_ACCESS_AUD: string }>(APP_CONFIG);
-      const saved = { team: config.CF_ACCESS_TEAM_DOMAIN, aud: config.CF_ACCESS_AUD };
-      config.CF_ACCESS_TEAM_DOMAIN = '';
-      config.CF_ACCESS_AUD = '';
-      try {
-        const res = await login(email, ADMIN_PASSWORD, null);
-        expect(res.statusCode).toBe(401);
-        expect(res.json().code).toBe('ACCESS_ASSERTION_REQUIRED');
-      } finally {
-        config.CF_ACCESS_TEAM_DOMAIN = saved.team;
-        config.CF_ACCESS_AUD = saved.aud;
-      }
-    });
-
-    it('PR #691 Astra F-02: a closed password door answers 403 before any assertion is verified', async () => {
-      const email = 'bec-closed@gogo.local';
-      await createAdmin(email, 'editor');
-      const verify = vi
-        .spyOn(app.get(CloudflareAccessService), 'verify')
-        .mockRejectedValue(
-          AppError.serviceUnavailable(
-            'ACCESS_KEYS_UNAVAILABLE',
-            'Cannot reach the identity provider',
-          ),
-        );
-      try {
-        await withDoors(false, async () => {
-          const res = await login(email, ADMIN_PASSWORD);
-          expect(res.statusCode).toBe(403);
-          expect(res.json().code).toBe('PASSWORD_LOGIN_DISABLED');
-        });
-        expect(verify).not.toHaveBeenCalled();
-      } finally {
-        verify.mockRestore();
-      }
     });
 
     it('has no TOTP routes and no mfaEnrolled field any more', async () => {

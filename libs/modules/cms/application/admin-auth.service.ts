@@ -150,13 +150,7 @@ export class AdminAuthService implements OnApplicationBootstrap {
     });
   }
 
-  async login(input: {
-    email: string;
-    password: string;
-    /** The mailbox a verified Cloudflare Access assertion on this request names, if any. */
-    accessEmail?: string | undefined;
-    meta?: ClientMeta | undefined;
-  }) {
+  async login(input: { email: string; password: string; meta?: ClientMeta | undefined }) {
     // #679 / ADR-0032 — a closed door says so before any credential work. A
     // correct and a wrong password get the identical answer, no lockout row
     // and no audit row are written: there is no oracle and no actor here.
@@ -171,23 +165,11 @@ export class AdminAuthService implements OnApplicationBootstrap {
       );
     }
 
-    // #687 D-4 (F-08, O-7) — the second factor is Cloudflare's admission of
-    // this mailbox. Missing, unverifiable or naming another mailbox: refused
-    // before any credential work, so it is no oracle and writes no rows. This
-    // is what stops `api-<env>/v1/cms/auth/login` answering the open internet
-    // with one factor.
-    const accessBound = Boolean(
-      input.accessEmail && input.accessEmail.toLowerCase() === input.email.trim().toLowerCase(),
-    );
-    if (!accessBound) {
-      this.logger.warn(
-        'cms.login refused: no matching Access assertion (ACCESS_ASSERTION_REQUIRED)',
-      );
-      throw AppError.unauthorized(
-        'ACCESS_ASSERTION_REQUIRED',
-        'Sign in through Cloudflare Access with this mailbox before using the password',
-      );
-    }
+    // #687 shape rev 6 (owner 2026-10-08, every environment): the password
+    // door needs no Cloudflare Access assertion. The console is public; Access
+    // gates only the SSO path. Staff sign in with email + password, protected
+    // by the per-account lockout below, the per-IP limit and Argon2id. The
+    // super admin is refused below (SUPER_ADMIN_SSO_ONLY) where its switch is on.
 
     // Per-account lockout, which the console did not have. A per-IP limit
     // alone means an attacker rotating addresses gets unlimited attempts at a
@@ -260,15 +242,7 @@ export class AdminAuthService implements OnApplicationBootstrap {
         resourceType: 'admin_user',
         resourceId: admin.id,
       });
-      return this.openSession(
-        admin.id,
-        randomUUID(),
-        undefined,
-        'password',
-        input.meta,
-        tx,
-        accessBound,
-      );
+      return this.openSession(admin.id, randomUUID(), undefined, 'password', input.meta, tx);
     });
     return {
       ...session,
@@ -450,20 +424,6 @@ export class AdminAuthService implements OnApplicationBootstrap {
         );
         return {
           revoked: await this.revokeFamilyRows(tx, session.familyId, 'super_admin_sso_only'),
-          error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid'),
-        };
-      }
-
-      // #687 D-4 (AC-10) — a password family opened without an Access
-      // assertion (every family from before this rule shipped) does not
-      // refresh, anywhere: it would otherwise outlive the second factor it
-      // never had. The flag is read from the session row,
-      // never the token. After the super admin rule, so that row keeps its
-      // more specific reason.
-      if (authMethod !== 'access_sso' && !session.accessBound) {
-        this.logger.warn('cms.refresh refused: password family without Access assertion');
-        return {
-          revoked: await this.revokeFamilyRows(tx, session.familyId, 'access_unbound'),
           error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid'),
         };
       }

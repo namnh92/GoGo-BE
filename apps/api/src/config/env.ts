@@ -722,19 +722,17 @@ const envSchema = z
       });
     }
 
-    // #687 D-4 (review of PR #691, Astra F-03) — the password door now needs a
-    // verified Access assertion on every login, so without CF_ACCESS_* a
-    // deployed environment has no usable door at all, whatever the password
-    // switches say. Refused here so `config:check` stops the deploy before the
-    // working revision is replaced. NODE_ENV, not APP_ENV: DEV runs the
-    // production build. A workstation boots without it; its console simply has
-    // no door, which local CMS work does not need (the console mocks the API).
+    // #687 (rev 6) — Cloudflare Access is the super admin's only door (D-3,
+    // ADR-0034), so a deployed environment without CF_ACCESS_* would leave the
+    // one account that administers the console with no way in. Refused here so
+    // `config:check` stops the deploy before the working revision is replaced.
+    // NODE_ENV, not APP_ENV: DEV runs the production build.
     if (env.NODE_ENV === 'production' && !env.CF_ACCESS_TEAM_DOMAIN) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['CF_ACCESS_TEAM_DOMAIN'],
         message:
-          'CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in a deployed environment: every CMS sign-in (password included) needs a verified Cloudflare Access assertion (#687 D-4)',
+          'CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in a deployed environment: the super admin signs in only through Cloudflare Access (#687)',
       });
     }
 
