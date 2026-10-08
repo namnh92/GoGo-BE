@@ -355,6 +355,12 @@ leave the second factor brute-forceable at the per-IP rate.
 
 ### The first CMS account, and why there is only one (DB-012, ADR-0018)
 
+> **Superseded in part by GoGo-BE#687 (ADR-0034 amendment).** The singleton rule below stands; the
+> bootstrap-credential and password-rotation account of the super admin is history. The row follows
+> SSM `cms/super-admin-email` at every deploy, its password is erased once SSO is confirmed with the
+> switch on, and every password login for any role needs a verified Cloudflare Access assertion —
+> there is no Access-free path into the console.
+
 An environment holds **at most one** `super_admin` before it is bootstrapped and
 **exactly one** after — the index enforces the upper bound for every writer, and
 the lower bound is held by bootstrap creating the account and by no path being

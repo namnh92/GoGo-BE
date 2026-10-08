@@ -7,6 +7,13 @@
 - **Related:** GoGo-Infra ADR-0008 (where the bootstrap credentials live),
   ADR-0010 (CMS identity and Cloudflare Access)
 
+> **Superseded in part by ADR-0034's amendment (GoGo-BE#687, 2026-10-07).** The singleton rule
+> stands. Everything here about SSM _bootstrap credentials_, `seed-admin`, a bootstrap password and a
+> password "rollback door" is history: the super admin row now follows SSM `cms/super-admin-email`
+> at every deploy (D-3), it has no password once SSO is confirmed and the switch is on, and every
+> password login for any role needs a verified Cloudflare Access assertion (D-4). There is no
+> Access-free way into the console; recovery is SSO plus SSM → apply → deploy (O-1).
+
 ## Context
 
 The demo seed created the first CMS `super_admin` from credentials written into
@@ -163,8 +170,10 @@ on `admin_users.email`, so the bootstrap address in SSM must be an address the A
 Correcting the address of an existing row is an audited API act, never a SQL edit.
 
 ADR-0034 extends this to `CMS_SUPER_ADMIN_SSO_ONLY=true`, which closes the password door for the
-super admin alone: the same address rule applies, the address is changed only while the super
-admin's password door is open, and the bootstrap password stays the credential of the rollback door.
+super admin alone: the same address rule applies, ~~the address is changed only while the super
+admin's password door is open, and the bootstrap password stays the credential of the rollback door~~
+(superseded: the address follows SSM at deploy and there is no password rollback door — ADR-0034
+amendment D-3, D-4).
 
 ## Migration & rollback
 
