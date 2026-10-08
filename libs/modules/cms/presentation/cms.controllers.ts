@@ -182,28 +182,9 @@ export class CmsAuthController {
     @Req() req: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
-    // #687 D-4 — the second factor is Cloudflare Access admitting this mailbox
-    // on the same request. The assertion is verified here, before the service
-    // touches a credential; an assertion that does not verify counts as none,
-    // so the refusal (ACCESS_ASSERTION_REQUIRED) is the same either way. A
-    // JWKS outage stays a 503: that is not the caller's fault.
-    let accessEmail: string | undefined;
-    const assertion = req.headers[CF_ACCESS_ASSERTION_HEADER];
-    // A closed password door answers 403 before anything is verified (review
-    // of PR #691, Astra F-02): a JWKS outage must not turn it into a 503.
-    if (
-      this.config.CMS_PASSWORD_LOGIN_ENABLED &&
-      this.access.configured &&
-      typeof assertion === 'string' &&
-      assertion
-    ) {
-      try {
-        accessEmail = (await this.access.verify(assertion)).email;
-      } catch (error) {
-        if (!(error instanceof AppError) || error.httpStatus !== 401) throw error;
-      }
-    }
-    const result = await this.auth.login({ ...body, accessEmail, meta: clientMeta(req) });
+    // #687 shape rev 6 — no Access assertion on the password door; Access is
+    // the SSO path only (`access-exchange`).
+    const result = await this.auth.login({ ...body, meta: clientMeta(req) });
     // Browser clients authenticate by cookie; the body tokens exist for
     // non-browser callers. A CMS that stores the body token is doing it wrong.
     setAuthCookies(reply, result, this.cookieOpts());

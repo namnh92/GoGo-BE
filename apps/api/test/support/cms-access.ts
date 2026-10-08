@@ -1,8 +1,9 @@
 import { generateKeyPairSync, sign } from 'node:crypto';
 
 /**
- * GoGo-BE#687 D-4 — every CMS password login needs a verified Cloudflare Access
- * assertion for the same mailbox, with no exception. Integration specs get a
+ * GoGo-BE#687 — a test Cloudflare Access application for `access-exchange`
+ * (and, from alpha.72, harmlessly sent on password logins, which since rev 6
+ * no longer read it). Integration specs get a
  * test Access application here, once per worker: the env names it (so the app
  * every spec builds is configured), `globalThis.fetch` answers its key set, and
  * `cmsAssertion(email)` signs an assertion the API verifies like a real one.

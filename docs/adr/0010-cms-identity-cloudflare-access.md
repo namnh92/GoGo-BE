@@ -31,7 +31,8 @@ Four options were considered.
 The last three all mean introducing an identity provider for a system with four
 roles and a handful of staff. Access is already deployed, already in Terraform,
 already fronting `cms-*.gogo.id.vn`, and federates Google, GitHub or a one-time
-PIN itself.
+PIN itself. _(Rev 6, GoGo-BE#687, 2026-10-08: Access now fronts only `/sso` and
+`/v1/cms/auth/access-exchange` on `cms-<env>`; the rest of the console is public.)_
 
 ## Decision
 
@@ -41,8 +42,11 @@ _what that person may do_.
 
 Shape:
 
+Rev 6: the Access gate below applies only to the single sign-on path (`/sso`,
+`/v1/cms/auth/access-exchange`); the password door on the same host is public.
+
 ```
-browser → cms-<env>.gogo.id.vn        Access gate: upstream IdP + MFA
+browser → cms-<env>.gogo.id.vn/sso    Access gate: upstream IdP + MFA (SSO path only)
         → CMS Worker                  serves the SPA, proxies /v1/*
         → api-<env>.gogo.id.vn        BE verifies Cf-Access-Jwt-Assertion
         → POST /v1/cms/auth/access-exchange → ordinary admin session
@@ -109,7 +113,9 @@ last note below.
 > **Narrowed by ADR-0034 (2026-10-06).** `CMS_SUPER_ADMIN_SSO_ONLY` closes the password door for the
 > `super_admin` alone; other roles keep it. DEV runs that way, with the general door open again.
 >
-> **Amended by ADR-0034's amendment (2026-10-07, #687 D-4).** TOTP is removed and the password door
+> **Rev 6 (owner 2026-10-08, GoGo-BE#687, every environment) supersedes the D-4 statements here:** the CMS is public; Cloudflare Access gates only `/sso` and `access-exchange`; staff sign in with email + password and **no** Access assertion, and their password families refresh normally. The super admin stays SSO-only (D-3, erase gate).
+>
+> ~~**Amended by ADR-0034's amendment (2026-10-07, #687 D-4).**~~ (history) TOTP is removed and the password door
 > is no longer a way in when Access is unavailable: every password login requires a verified Access
 > assertion for the same mailbox, in every environment, with no workstation or bare-password
 > exception, and refresh refuses every password family opened without one. The super admin has no
@@ -138,8 +144,9 @@ is created with `session_duration = "8h"`. One shift, two layers, same number.
   unknown `kid`. Without that floor, an endpoint that accepts unauthenticated
   input by design is a free amplifier: one request to Cloudflare per forged
   token. Cost of the floor: during a key rotation, up to a minute of rejected
-  SSO sign-ins, ~~while password + TOTP keeps working~~ — and, since #687 D-4,
-  of rejected password sign-ins too, because those verify the same assertion.
+  SSO sign-ins, ~~while password + TOTP keeps working~~ ~~— and, since #687 D-4,
+  of rejected password sign-ins too, because those verify the same assertion~~. Since rev 6
+  (#687, 2026-10-08) password sign-ins verify no assertion, so a rotation affects SSO only.
 - An empty or unreachable key set never overwrites the cache — a momentary bad
   response must not become a sign-in outage that outlives it.
 - `admin.login.sso` is a distinct audit action from `admin.login`. Which door
@@ -167,7 +174,8 @@ environment — which is the honest state, not a hidden one.
 ~~Since ADR-0032, clearing `CF_ACCESS_*` is refused while `CMS_PASSWORD_LOGIN_ENABLED=false`. Re-open
 the password door first.~~ Superseded by ADR-0034's amendment (#687 D-4): re-opening the password
 door is no way round Access — every password login needs the matching verified assertion — so there
-is no Access-free rollback at all (see below).
+is no Access-free rollback at all (see below). _(Rev 6, 2026-10-08: no longer true for staff — the
+password door needs no assertion again; it is still no way in for the super admin.)_
 
 ~~Clear `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` outside production. The
 endpoint starts answering 503, password + TOTP is unaffected, and existing
@@ -176,4 +184,6 @@ migration, no schema change, nothing to undo in the database.~~ Superseded by
 ADR-0034's amendment (#687 D-4): clearing `CF_ACCESS_*` leaves the console
 with no door — the password login refuses without a verified assertion too —
 and a deployed environment (`NODE_ENV=production`) refuses to boot without
-them. Rolling Access back now means rolling back below BE-c.
+them. Rolling Access back now means rolling back below BE-c. _(Rev 6: clearing `CF_ACCESS_*` now
+leaves staff their password door; only the super admin loses its way in, which is why a deployed
+environment still refuses to boot without it.)_

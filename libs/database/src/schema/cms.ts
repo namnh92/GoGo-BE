@@ -117,10 +117,11 @@ export const adminSessions = pgTable(
      */
     authMethod: text('auth_method').$type<AdminAuthMethod>(),
     /**
-     * #687 D-4 — the family was opened with a verified Cloudflare Access
-     * assertion for this account's mailbox (password login with the assertion,
-     * or `access-exchange`). Rotation inherits it; refresh refuses an unbound
-     * password family wherever the assertion is required.
+     * Legacy (#687 alpha.72, D-4): whether the family was opened with a
+     * verified Cloudflare Access assertion. Since rev 6 (alpha.73) it has no
+     * authorization effect — refresh copies it onto the rotated row but never
+     * decides anything on it. `access-exchange` still
+     * sets it; password logins leave it false. Kept until a cleanup migration.
      */
     accessBound: boolean('access_bound').notNull().default(false),
   },

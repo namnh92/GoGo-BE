@@ -62,8 +62,8 @@ The redundant row is accepted, not refused. Each switch is flipped and rolled ba
   `access_sso` (ADR-0032; NULL counts as `password`) revokes the whole family
   (`super_admin_sso_only`) and answers `401 SESSION_REVOKED`. The role is read from the admin row
   locked by refresh. ADR-0018 keeps it from changing under a family. Other roles' password sessions
-  rotate as before — and, since the amendment (D-4), only if their family is `access_bound`: every
-  unbound password family is revoked at refresh, whatever the switches say. After the flip, a super admin password session lives at most one access-token
+  rotate as before. (Alpha.72's D-4 also revoked unbound password families at refresh; rev 6
+  removed that — password families refresh whatever `access_bound` says.) After the flip, a super admin password session lives at most one access-token
   lifetime. No per-request check is added to `AdminGuard`, the same bound ADR-0032 accepted.
 - **`GET /v1/cms/auth/methods` gains `superAdminSsoOnly`**, optional in the contract (alpha.70).
   The field is always sent, and older APIs omit it, which reads as false. `password` still describes
@@ -88,14 +88,16 @@ not help while the general door is closed.
   and `ops_admin` remain single-factor from the internet (`DEV_TOTP_CODE` is accepted outside
   production, and TOTP is optional). The mitigations are Argon2id, the per-account lockout, the
   per-IP limit and forced change of temporary passwords. Real TOTP outside production is tracked
-  separately (GoGo-BE#688), and the owner decides on it.~~ Superseded by the amendment (D-4): no
-  password login is single-factor anywhere — every one requires a verified Access assertion for the
-  same mailbox, and `DEV_TOTP_CODE` went with TOTP.
+  separately (GoGo-BE#688), and the owner decides on it.~~ ~~Superseded by the amendment (D-4): no
+  password login is single-factor anywhere.~~ _(Rev 6, owner 2026-10-08, every environment: staff
+  password sign-in is single-factor on the internet again, protected by Argon2id, the per-account
+  lockout and the per-IP limit; `DEV_TOTP_CODE` went with TOTP. The super admin, with
+  `CMS_SUPER_ADMIN_SSO_ONLY=true`, has no password door.)_
 - Anyone who types the super admin's address learns that it is the super admin's: it gets a 403,
   not a 401, and no Argon2 delay. The owner accepted this.
-- An Access outage makes the browser console unreachable for every role, because `cms-<env>` sits
-  behind Access. ~~Other roles keep their API and script door.~~ Since the amendment (D-4) no role
-  does: the password door needs the same verified assertion. The super admin has none while the
+- ~~An Access outage makes the browser console unreachable for every role, because `cms-<env>` sits
+  behind Access.~~ Rev 6: the console is public and Access gates only `/sso` and the exchange, so an
+  Access outage stops single sign-on only; staff keep their password door. The super admin has none while the
   switch is on, and once the deploy-time sync has erased its hash (amendment, D-3) there is no
   password to re-open: recovery waits for Access (O-1).
 - `superAdminSsoOnly: true` means the API refuses that account's password. It does not mean that
@@ -129,7 +131,7 @@ While SSM holds `true`, three floors apply. Crossing any of them is a rollback o
 ## Amendment (2026-10-07, GoGo-BE#687 shape rev 5)
 
 The owner widened the decision (O-1…O-12). Built in stages — BE-a (this switch), BE-b (the row
-follows SSM), BE-c (the Access assertion replaces TOTP on the password door), BE-c2 (TOTP columns
+follows SSM), BE-c (TOTP removed; its Access-assertion rule superseded by rev 6), BE-c2 (TOTP columns
 dropped) — and the Infra work in GoGo-Infra#194/#196/#199. The shape file
 `dev/handoffs/sa-shape-GoGo-BE-687.fable.md` (workspace) is the detailed record.
 
@@ -155,7 +157,13 @@ dropped) — and the Infra work in GoGo-Infra#194/#196/#199. The shape file
   A failure of the sync or of the boot gate is logged by error class and SQLSTATE or errno only
   (`DrizzleQueryError <- DatabaseError 08006`), never by message, and the fatal boot error keeps no
   `cause`: Drizzle repeats the bound parameters — the address — in its message and stack (F-07).
-- **D-4 · Cloudflare carries the second factor.** CMS TOTP is removed; the password door requires a
+- **Rev 6 (owner 2026-10-08, every environment) — supersedes D-4 and part of D-7.** The CMS is public;
+  Cloudflare Access gates only the SSO path (`/sso` and `access-exchange`). `editor`/`moderator`/`ops_admin` sign in
+  with email + password and no Access assertion; refresh no longer revokes unbound password families
+  (`admin_sessions.access_bound` stays, written, unread). The `super_admin` remains SSO-only (D-3, R5). Owner accepts
+  single-factor staff sign-in on the internet, protected by the per-account lockout, the per-IP limit and Argon2id
+  (`.claude/rules/security.md`, `execution-policy.md` §8 2026-10-08). The D-4 text below is history.
+- **D-4 (history, superseded by rev 6 above).** CMS TOTP is removed — this part stands. ~~The password door requires a
   verified Access assertion for the same mailbox (BE-c, alpha.72), checked before any credential
   (`401 ACCESS_ASSERTION_REQUIRED`). **Every password login requires it, in every environment and
   every build — there is no workstation exception and no bare-password door.** A deployed
@@ -165,10 +173,12 @@ dropped) — and the Infra work in GoGo-Infra#194/#196/#199. The shape file
   rotation inherits it. **Refresh refuses every unbound password family, everywhere**
   (`401 SESSION_REVOKED`, reason `access_unbound`), never conditionally on where an assertion would be
   required — every family from before BE-c signs in once more, with the assertion. The TOTP columns
-  stay unread until BE-c2; `CMS_MFA_ENCRYPTION_KEY` stays optional until R8.
-- **D-7 · Doors.** super_admin: Access exchange only. editor/moderator/ops_admin: Access exchange,
+  stay unread until BE-c2; `CMS_MFA_ENCRYPTION_KEY` stays optional until R8.~~ _(alpha.72 only. Since rev 6 no assertion is read on the password door, and refresh revokes no unbound family. The TOTP columns are dropped by BE-c2; `CMS_MFA_ENCRYPTION_KEY` retires at R8.)_
+- ~~**D-7 · Doors.** super_admin: Access exchange only. editor/moderator/ops_admin: Access exchange,
   or password plus the matching Access assertion. A direct call to `api-<env>` without an assertion
-  is refused.
+  is refused.~~ **D-7 (rev 6) · Doors.** super_admin: Access exchange only where
+  `CMS_SUPER_ADMIN_SSO_ONLY=true` (always in staging/prod). editor/moderator/ops_admin: email +
+  password with no assertion, or the Access exchange if their mailbox is admitted.
 - **D-8 · Staging and production.** `APP_ENV` staging, `prod` or `production` requires
   `CMS_SUPER_ADMIN_SSO_ONLY=true` and `CF_ACCESS_*` (config check fails otherwise; built in BE-a).
   Access requires MFA there (`require_mfa`, GoGo-Infra#199); one-time PIN does not satisfy it.
