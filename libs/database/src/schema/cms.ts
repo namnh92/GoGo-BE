@@ -36,10 +36,8 @@ export const adminUsers = pgTable(
     ssoSubject: text('sso_subject'),
     /*
      * #687 D-4 — the TOTP columns (mfa_totp_secret_enc, mfa_totp_pending_enc,
-     * mfa_totp_last_step, mfa_enrolled_at) are still in the table and no
-     * longer mapped here, so no query reads them. Drizzle's select() names
-     * every mapped column; leaving them mapped would make BE-c2's DROP break
-     * this release while it still serves during that deploy.
+     * mfa_totp_last_step, mfa_enrolled_at) were unmapped in BE-c and dropped
+     * by migration 0075 (BE-c2).
      */
     /**
      * #248 — set when a `super_admin` issues a temporary password. A temporary

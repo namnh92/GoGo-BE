@@ -186,12 +186,6 @@ const envSchema = z
       .default('true')
       .transform((v) => v === 'true'),
     /**
-     * SEC-004 (#62) — encrypted admin TOTP secrets at rest. Unread since #687
-     * D-4 replaced TOTP with the Access assertion; accepted (optional) until the
-     * TOTP columns and the SSM parameter retire together (BE-c2, R8).
-     */
-    CMS_MFA_ENCRYPTION_KEY: z.string().default(''),
-    /**
      * SG-009 (#48) — the mandatory AI kill switch. Off by default: a real
      * provider needs a prompt/data privacy review and a DPA first, and until
      * then the deterministic keyword parser does the work.

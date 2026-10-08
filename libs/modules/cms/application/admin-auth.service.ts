@@ -631,8 +631,9 @@ export class AdminAuthService implements OnApplicationBootstrap {
    * shipped and the list could not.
    *
    * Columns are selected one by one rather than `select()`: the row carries the
-   * password hash and the legacy TOTP columns, and a response built by spreading it
-   * would leak all three the first time someone added a field.
+   * password hash, and a response built by spreading it would leak it the first
+   * time someone added a field. (The TOTP secret columns it also carried were
+   * dropped by migration 0075, #687 BE-c2.)
    */
   /**
    * ADR-0018 — at most one `super_admin` before an environment is bootstrapped,

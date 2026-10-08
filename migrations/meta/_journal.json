@@ -512,6 +512,13 @@
       "when": 1791331200000,
       "tag": "0074_admin-session-access-bound",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1791417600000,
+      "tag": "0075_admin-users-drop-totp",
+      "breakpoints": true
     }
   ]
 }
