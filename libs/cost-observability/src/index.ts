@@ -226,6 +226,14 @@ export {
   type GitHubSampleContext,
 } from '../providers/github/github.collector';
 export {
+  SENTRY_EVENTS_COLLECTOR_ID,
+  SENTRY_SOURCE,
+  eventsSamples,
+  sentryEventsCollector,
+  type SentryCollectorOptions,
+  type SentrySampleContext,
+} from '../providers/sentry/sentry.collector';
+export {
   TestCostService,
   checkBudget,
   diffSnapshots,
