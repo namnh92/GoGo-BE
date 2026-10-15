@@ -26,7 +26,7 @@ vi.mock('@sentry/node', async (importOriginal) => {
 
 import * as Sentry from '@sentry/node';
 import type { ErrorEvent } from '@sentry/node';
-import { HTTP_INTEGRATION_NAME, sanitizeRequest, sentryInitOptions } from './sentry';
+import { HTTP_INTEGRATION_NAME, sanitizeRequest, sentryInitOptions, sentryRelease } from './sentry';
 
 /** #588 — the structural half of the boundary, checked without a network. */
 describe('Sentry options (#588)', () => {
@@ -125,5 +125,36 @@ describe('Sentry options (#588)', () => {
       },
     });
     expect(sanitizeRequest({ extra: {} } as ErrorEvent)).toEqual({ extra: {} });
+  });
+});
+
+/** BE#697 (ADR-0012a D-1) — events are filed under the deployed commit. */
+describe('Sentry release (#697)', () => {
+  const DSN = 'https://public@o0.ingest.sentry.io/0';
+  const SHA = 'f55b749f55b749f55b749f55b749f55b749f55b7';
+
+  it('names the deployed commit, and nothing without one', () => {
+    expect(sentryRelease(SHA)).toBe(`gogo-be@${SHA}`);
+    expect(sentryRelease(` ${SHA}\n`)).toBe(`gogo-be@${SHA}`);
+    expect(sentryRelease('')).toBeUndefined();
+    expect(sentryRelease('  ')).toBeUndefined();
+    expect(sentryRelease(undefined)).toBeUndefined();
+  });
+
+  it('sets release only when given one', () => {
+    expect(
+      sentryInitOptions({ dsn: DSN, environment: 'dev', release: `gogo-be@${SHA}` }).release,
+    ).toBe(`gogo-be@${SHA}`);
+    expect(sentryInitOptions({ dsn: DSN, environment: 'dev' })).not.toHaveProperty('release');
+    expect(
+      sentryInitOptions({ dsn: DSN, environment: 'dev', release: undefined }),
+    ).not.toHaveProperty('release');
+  });
+
+  it('keeps the release through beforeSend redaction', () => {
+    const options = sentryInitOptions({ dsn: DSN, environment: 'dev', release: `gogo-be@${SHA}` });
+    const event = { release: `gogo-be@${SHA}`, message: 'boom' } as ErrorEvent;
+    const sent = options.beforeSend?.(event, {}) as ErrorEvent;
+    expect(sent.release).toBe(`gogo-be@${SHA}`);
   });
 });

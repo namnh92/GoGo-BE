@@ -135,9 +135,22 @@ export function sentryIntegrations(
   return [...defaults, Sentry.httpIntegration({ maxIncomingRequestBodySize: 'none' })];
 }
 
+/**
+ * BE#697 (ADR-0012a D-1) — the release events are filed under: the deployed
+ * commit, as `gogo-be@<GOGO_REVISION>`. Sentry creates the release from the
+ * first event that carries it; suspect commits come from the GitHub App. No
+ * revision (a workstation run) means no release, never a made-up one.
+ */
+export function sentryRelease(revision: string | undefined): string | undefined {
+  const rev = revision?.trim();
+  return rev ? `gogo-be@${rev}` : undefined;
+}
+
 export function sentryInitOptions(opts: {
   dsn: string;
   environment: string;
+  /** From {@link sentryRelease}; omitted when undefined. */
+  release?: string | undefined;
   unhandledRejection?: UnhandledRejectionMode;
   /** URLs whose path is a credential; empty and unparseable entries are ignored (F-03). */
   secretUrls?: readonly (string | undefined)[];
@@ -146,6 +159,7 @@ export function sentryInitOptions(opts: {
   return {
     dsn: opts.dsn,
     environment: opts.environment,
+    ...(opts.release ? { release: opts.release } : {}),
     sendDefaultPii: false,
     defaultIntegrations: false,
     integrations: sentryIntegrations(

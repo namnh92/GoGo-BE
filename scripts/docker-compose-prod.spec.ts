@@ -9,6 +9,8 @@ import { parse } from 'yaml';
  * re-runs the erase gate at boot. GoGo-Infra deploy-vps.sh exports
  * GOGO_REVISION on `run --rm migrate` and on every `up -d` that starts api;
  * this file is the half the deploy cannot see, so it is pinned here.
+ * BE#697 — the worker gets it too, for its Sentry release; deploy-vps.sh and
+ * rollback.sh set it on the same `up -d` that starts the worker.
  */
 
 type Compose = { services: Record<string, { environment?: Record<string, string> }> };
@@ -18,11 +20,10 @@ const compose = parse(
 ) as Compose;
 
 describe('docker/docker-compose.prod.yml — GOGO_REVISION (#687 F-06)', () => {
-  it.each(['api', 'migrate'])('the %s service receives GOGO_REVISION from the deploy', (svc) => {
-    expect(compose.services[svc]?.environment?.GOGO_REVISION).toBe('${GOGO_REVISION:-}');
-  });
-
-  it('the worker, which writes no super admin audit row, is left alone', () => {
-    expect(compose.services.worker?.environment?.GOGO_REVISION).toBeUndefined();
-  });
+  it.each(['api', 'migrate', 'worker'])(
+    'the %s service receives GOGO_REVISION from the deploy',
+    (svc) => {
+      expect(compose.services[svc]?.environment?.GOGO_REVISION).toBe('${GOGO_REVISION:-}');
+    },
+  );
 });

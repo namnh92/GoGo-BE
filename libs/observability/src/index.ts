@@ -27,6 +27,7 @@ export {
   SENTRY_REQUEST_HEADERS,
   sanitizeRequest,
   sentryInitOptions,
+  sentryRelease,
   sentryIntegrations,
   type UnhandledRejectionMode,
 } from './sentry';
