@@ -11,6 +11,7 @@ import {
   type SpendBreakdown,
 } from '../domain/budget';
 import { monthForecast, scopeProjection, type MonthForecast } from '../domain/forecast';
+import { serviceCostSourceKind } from '../domain/cost-source';
 import { manualSchedule, type ManualCostItemFacts } from '../domain/manual-cost';
 import type { CostRegistry, ServiceDefinition } from '../domain/registry';
 import { utcDay } from '../pricing/provider-pricing';
@@ -61,10 +62,15 @@ export type MonthOverview = {
  */
 export function scopeExpectsUsage(registry: CostRegistry, scope: CostBudgetScope): boolean {
   const usageCapable = (s: ServiceDefinition) =>
-    s.operations.some((o) => o.instrumented) ||
-    registry.serviceHasCapability(s.id, 'USAGE_COLLECTOR') ||
-    registry.serviceHasCapability(s.id, 'ACTUAL_COST_COLLECTOR') ||
-    registry.serviceHasCapability(s.id, 'ESTIMATED_COST');
+    // A service that declares itself manual (a plan fee under an AUTO
+    // provider: Play Console, the GitHub and Sentry plans) inherits the
+    // provider's collectors on paper only — nothing ever meters it (#695).
+    serviceCostSourceKind(s, registry.provider(s.providerId) ?? { capabilities: [] }) !==
+      'MANUAL' &&
+    (s.operations.some((o) => o.instrumented) ||
+      registry.serviceHasCapability(s.id, 'USAGE_COLLECTOR') ||
+      registry.serviceHasCapability(s.id, 'ACTUAL_COST_COLLECTOR') ||
+      registry.serviceHasCapability(s.id, 'ESTIMATED_COST'));
   switch (scope.kind) {
     case 'TOTAL':
       return registry.services().some(usageCapable);
