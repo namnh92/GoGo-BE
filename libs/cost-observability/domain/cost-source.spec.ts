@@ -7,7 +7,16 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
   const service = (id: string) => COST_REGISTRY.service(id)!;
 
   it('AUTO when anything under the provider is collected or written by code', () => {
-    for (const id of ['google', 'cloudflare', 'upstash', 'neon', 'aws', 'github', 'sentry', 'gogo']) {
+    for (const id of [
+      'google',
+      'cloudflare',
+      'upstash',
+      'neon',
+      'aws',
+      'github',
+      'sentry',
+      'gogo',
+    ]) {
       expect(providerCostSourceKind(provider(id)), id).toBe('AUTO');
     }
   });
