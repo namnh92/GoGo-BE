@@ -20,7 +20,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Type-aware eslint over the whole repo sits just above Node's default
+      # heap on this runner (local: OOM at 2048 MB, ok at 2560; #699).
       - run: pnpm lint
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
       - run: pnpm format:check
       - run: pnpm typecheck
       # Contract drift gate (QP-002): the committed generated client must
