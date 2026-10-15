@@ -98,9 +98,8 @@ export class SentryStatsError extends Error {
   constructor(
     readonly code: SentryStatsErrorCode,
     message: string,
-    cause?: unknown,
   ) {
-    super(message, { cause });
+    super(message);
     this.name = 'SentryStatsError';
   }
 }
@@ -149,7 +148,8 @@ export function foldDayStats(day: string, body: unknown): SentryDayStats {
   if (start !== Date.parse(`${day}T00:00:00Z`) || end !== Date.parse(`${nextDay(day)}T00:00:00Z`)) {
     throw new SentryStatsError('BAD_RESPONSE', 'sentry stats: range is not the requested day');
   }
-  if (b.groups === undefined || b.groups === null) return { day, totals: [] };
+  // Only an explicit empty list is a measured zero; a body without `groups`
+  // would otherwise overwrite a real day with 0 on the replace-upsert.
   if (!Array.isArray(b.groups)) {
     throw new SentryStatsError('BAD_RESPONSE', 'sentry stats: groups is not a list');
   }
@@ -248,8 +248,9 @@ export class SentryStatsClient implements SentryStatsPort {
       });
     } catch (err) {
       if (signal?.aborted) throw err;
-      // The cause is a network error; it names the host, never the header.
-      throw new SentryStatsError('BAD_RESPONSE', `sentry ${what} unreachable`, err);
+      // The raw error is dropped, not attached: a fetch implementation may
+      // echo the URL or the request headers in its diagnostics (A5).
+      throw new SentryStatsError('BAD_RESPONSE', `sentry ${what} unreachable`);
     }
     if (res.status === 401) throw new SentryStatsError('AUTH_FAILED', `sentry ${what} 401`);
     if (res.status === 403) throw new SentryStatsError('FORBIDDEN', `sentry ${what} 403`);
@@ -267,7 +268,7 @@ export class SentryStatsClient implements SentryStatsPort {
 }
 
 /**
- * Infra#212: `sentry/stats-token` → `SENTRY_STATS_TOKEN`, `sentry/org` →
+ * Infra#212 (PR #224): `sentry/stats-token` → `SENTRY_STATS_TOKEN`, `sentry/org` →
  * `SENTRY_ORG` (default `gogo-vn`). No token → `null`, and the caller
  * registers nothing: the provider stays visible with freshness UNKNOWN.
  * Sentry is one org for every environment, so only the environment that

@@ -78,6 +78,15 @@ describe('foldDayStats', () => {
     });
   });
 
+  it('a body without groups, or with groups null, is BAD_RESPONSE — never a zero', () => {
+    const { groups: _omitted, ...noGroups } = STATS_DAY;
+    for (const body of [noGroups, { ...STATS_DAY, groups: null }]) {
+      expect(() => foldDayStats(DAY, body)).toThrow(
+        expect.objectContaining({ code: 'BAD_RESPONSE' }),
+      );
+    }
+  });
+
   it('a 200 with no groups for the day is a measured zero', () => {
     expect(foldDayStats(DAY, { ...STATS_DAY, groups: [] })).toEqual({ day: DAY, totals: [] });
   });
@@ -179,6 +188,7 @@ describe('SentryStatsClient', () => {
     expect(text).not.toContain(TOKEN);
     expect(text).not.toContain('stats_v2/?');
     expect(text).not.toContain('echo');
+    expect(err.cause).toBeUndefined();
   });
 
   it('a body that is not JSON is BAD_RESPONSE', async () => {
@@ -186,21 +196,40 @@ describe('SentryStatsClient', () => {
     expect((await caught(client(fetchImpl).errorsForDay({ day: DAY }))).code).toBe('BAD_RESPONSE');
   });
 
-  it('an unreachable host is BAD_RESPONSE; an abort is rethrown as is', async () => {
-    const down = (async () => {
-      throw new TypeError('fetch failed');
+  it('an unreachable host is BAD_RESPONSE and the raw error — which may echo URL and headers — is dropped', async () => {
+    const leaky = (async (url: string | URL | Request, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string>).Authorization;
+      throw new TypeError(`fetch failed ${String(url)} ${auth}`, {
+        cause: new Error(`connect ECONNREFUSED ${auth}`),
+      });
     }) as typeof fetch;
-    const err = await caught(client(down).projects());
+    const err = await caught(client(leaky).projects());
+    expect(err).toBeInstanceOf(SentryStatsError);
     expect(err.code).toBe('BAD_RESPONSE');
-    expect(String(err.cause)).not.toContain(TOKEN);
+    expect(err.cause).toBeUndefined();
+    const text = `${String(err)} ${err.message} ${err.stack ?? ''} ${JSON.stringify(err)}`;
+    expect(text).not.toContain(TOKEN);
+    expect(text).not.toContain('Bearer');
+    expect(text).not.toContain('/api/0/');
+  });
 
+  it('forwards the caller’s signal to fetch, and an external abort is rethrown as is', async () => {
     const ac = new AbortController();
-    const aborted = (async () => {
-      ac.abort();
-      throw new DOMException('aborted', 'AbortError');
+    let seen: AbortSignal | undefined;
+    const pending = (async (_url: string | URL | Request, init?: RequestInit) => {
+      seen = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError')),
+        );
+      });
     }) as typeof fetch;
-    const e2 = await caught(client(aborted).errorsForDay({ day: DAY, signal: ac.signal }));
-    expect(e2).not.toBeInstanceOf(SentryStatsError);
+    const running = caught(client(pending).errorsForDay({ day: DAY, signal: ac.signal }));
+    ac.abort();
+    const err = await running;
+    expect(seen).toBe(ac.signal);
+    expect(err).not.toBeInstanceOf(SentryStatsError);
+    expect((err as unknown as DOMException).name).toBe('AbortError');
   });
 
   it('refuses a bad day, org or token before any call', async () => {

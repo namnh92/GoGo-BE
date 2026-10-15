@@ -617,10 +617,6 @@ line items instead of minute counters. It is strictly better here:
   cap across a restart, reconciliation variance, estimator/ACTUAL precedence,
   the monitoring-cost row).
 
-## Ids
-
-the monitoring-cost row).
-
 ## Sentry error-events collector (#696, ADR-0011 D-14)
 
 | Collector       | Capability        | Service         | Source                                    | Writes                                       |
@@ -644,11 +640,14 @@ the monitoring-cost row).
   failing query writes nothing for either day; a 200 with no groups is a measured 0.
 - No cost row: money is the estimator over rule `errors.events` (#695); the plan
   and Seer are manual items on `sentry.subscription`.
-- Kill switch: revoke the token in Sentry → `AUTH_FAILED` on the freshness row,
-  STALE on the CMS; or drop the SSM row and deploy → not registered (log
-  `missing: 'SENTRY_STATS_TOKEN / SENTRY_ORG'`). Errors never carry the URL, a
-  header or the body.
-- Tests: `sentry-stats.adapter.spec.ts`, `sentry.collector.spec.ts`.
+- Kill switch: revoke the token in Sentry → the next run fails `AUTH_FAILED` on
+  the freshness row (`consecutive_failures` ≥ 1, no usage written); the status
+  follows §23 like every collector — FRESH while the last success is inside 24 h,
+  then UNAVAILABLE (owner decision 2026-10-15, #696 A5). Or drop the SSM row and
+  deploy → not registered (log `missing: 'SENTRY_STATS_TOKEN / SENTRY_ORG'`).
+  Errors carry no URL, header, body or underlying cause.
+- Tests: `sentry-stats.adapter.spec.ts`, `sentry.collector.spec.ts`,
+  `apps/worker/src/cost-sentry.spec.ts` (registration gate).
 
 ## Ids
 

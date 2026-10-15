@@ -106,7 +106,7 @@ prints free-tier headroom and is **not** a ledger (it stores nothing).
 | `onesignal.push`     | Free (≤10k subscribers)                                                                         | **available** once wired: REST `GET /apps/{id}` (players, messageable), outbox counts in-house  | none               | `onesignal/app-id`, `onesignal/rest-api-key` (declared)                 | FREE            | provider not yet called from BE (NTF-BE-*), so nothing to count yet      |
 | `tenjin.attribution` | Free tier (conversions/month)                                                                   | unknown — depends on Tenjin reporting API                                                       | none               | `tenjin/api-access-token` (commented out in manifest)                   | unknown         | LNK-BE-003 first                                                         |
 | `grafana.metrics`    | Cloud Free: 10k active series, 14-day retention                                                 | **verified probe**: `count({__name__=~".+"})` via read token — not ledgered; **collector #389** | none (free)        | `observability/grafana-{prom-url,prom-user,read-token}` (declared, set) | FREE            | dev + prod share the stack                                               |
-| `sentry.errors`      | Business: 50k errors/month included; PAYG $0.0011125 >50k–100k … $0.0003 >20M (page 2026-10-14) | **shipped** BE#696: collector `sentry_events`, `stats_v2` (`category=error`), one query per day | none               | `sentry/stats-token` + `sentry/org` (Infra#212, dev only)               | FREE            | rule `sentry-errors.events-2026-10-14-v1`; bands assumed marginal (Q-B5) |
+| `sentry.errors`      | Business: 50k errors/month included; PAYG $0.0011125 >50k–100k … $0.0003 >20M (page 2026-10-14) | **shipped** BE#696: collector `sentry_events`, `stats_v2` (`category=error`), one query per day | none               | `sentry/stats-token` + `sentry/org` (Infra#212 / PR #224, dev only)     | FREE            | rule `sentry-errors.events-2026-10-14-v1`; bands assumed marginal (Q-B5) |
 
 ### Manual / fixed
 
@@ -129,7 +129,7 @@ prints free-tier headroom and is **not** a ledger (it stores nothing).
 - **Credentials to create (INF-060 #114), all read-only:** Cloudflare Analytics
   token + account id; Upstash Developer API email/key + database id; Neon API key
   - project id (#8); AWS Cost Explorer key pair scoped to `ce:GetCostAndUsage`; GitHub billing
-    token. Sentry stats token: Infra#212 (BE#696).
+    token. (Sentry stats token: provisioned, Infra#212 / PR #224.)
 - **Only one paid collector is planned** (AWS Cost Explorer, ~$0.30/month). Every
   other source is free at current plans; the cost-of-cost budget ($1 DEV / $5
   PROD) has ample headroom.
