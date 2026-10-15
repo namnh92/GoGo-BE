@@ -11,7 +11,7 @@ import { COST_REGISTRY } from '../domain/registry';
 
 // Bumped with each review date the seed carries: the seed-integrity test
 // refuses a `reviewedAt` in the future of this constant.
-const TODAY = '2026-09-05';
+const TODAY = '2026-10-15';
 
 const base: PricingRule = {
   id: 'test-rule',
@@ -443,6 +443,57 @@ describe('cloudflare rules (#383) and PER_GB_MONTH proration', () => {
       known: true,
       listMicros: 300_000,
       freeAdjustedMicros: 150_000,
+    });
+  });
+});
+
+describe('sentry errors rule (#695)', () => {
+  const rule = ruleInForce(PRICING_RULES, { billingSkuId: 'errors.events' }, TODAY)!;
+
+  it('prices errors on the Business PAYG bands after the 50k/month included quota', () => {
+    expect(rule).toMatchObject({
+      providerId: 'sentry',
+      serviceId: 'sentry.errors',
+      operationId: null,
+      usageMetricId: 'sentry.errors/events',
+      pricingModel: 'TIERED',
+      unitPriceMicros: null,
+      freeAllowance: { quantity: 50_000, unit: 'event', period: 'MONTH', scope: 'SKU' },
+      effectiveFrom: '2026-10-14',
+      reviewedAt: '2026-10-14',
+    });
+    // `upTo` is a cumulative bound on billable units (after the allowance),
+    // not a band width: >50k–100k, >100k–500k, >500k–10M, >10M–20M, >20M.
+    expect(rule.tiers).toEqual([
+      { upTo: 50_000, unitPriceMicros: 1_113 },
+      { upTo: 450_000, unitPriceMicros: 625 },
+      { upTo: 9_950_000, unitPriceMicros: 375 },
+      { upTo: 19_950_000, unitPriceMicros: 325 },
+      { upTo: null, unitPriceMicros: 300 },
+    ]);
+  });
+
+  it('is zero inside the included quota', () => {
+    expect(estimateMicros(rule, 40_000)).toMatchObject({ known: true, freeAdjustedMicros: 0 });
+  });
+
+  it('A4: 60k events in a month → 10k billable at the first band', () => {
+    expect(estimateMicros(rule, 60_000)).toMatchObject({
+      known: true,
+      freeAdjustedMicros: 10_000 * 1_113,
+    });
+  });
+
+  it('crosses band edges at the page’s volumes (10M total → 9.95M billable)', () => {
+    const billable = 50_000 * 1_113 + 400_000 * 625 + 9_500_000 * 375;
+    expect(estimateMicros(rule, 10_000_000)).toMatchObject({
+      known: true,
+      freeAdjustedMicros: billable,
+    });
+    // One event past 10M is priced at the >10M–20M band.
+    expect(estimateMicros(rule, 10_000_001)).toMatchObject({
+      known: true,
+      freeAdjustedMicros: billable + 325,
     });
   });
 });

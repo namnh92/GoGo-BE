@@ -987,6 +987,18 @@ const GITHUB_SKUS: readonly BillingSkuDefinition[] = [
 const GITHUB_ACTIONS = 'github.actions';
 
 /**
+ * #695 (ADR-0011 D-14) — Sentry errors are counted per org by the Stats API
+ * (collector `sentry_events`, BE#696) and priced by `errors.events`. One SKU:
+ * only errors are on; tracing/replay/logs get a meter when they are switched
+ * on (ADR-0012b), not before.
+ */
+const SENTRY_SKUS: readonly BillingSkuDefinition[] = [
+  { id: 'errors.events', providerId: 'sentry', displayName: 'Errors — Events' },
+];
+
+const SENTRY_ERRORS = 'sentry.errors';
+
+/**
  * COST-BE-027 (#386) — AWS, the first provider read as an **actual bill**
  * rather than measured and priced. Cost Explorer reports money per day per
  * AWS service; there is no usage meter and no pricing rule, which is why
@@ -1056,6 +1068,42 @@ const GITHUB: ProviderDefinition = {
       id: 'github.subscription',
       providerId: 'github',
       displayName: 'Subscription (plan, Copilot)',
+      category: 'platform_fee',
+      runtime: 'none',
+      capabilities: ['MANUAL_COST'],
+      operations: [],
+    },
+  ],
+};
+
+/**
+ * #695 — the GitHub pattern. Errors are metered (`USAGE_COLLECTOR`, once
+ * BE#696 registers `sentry_events`) and estimated from the PAYG rule; the
+ * Business plan and the Seer add-on are fees somebody types in, under a
+ * service of their own. The provider declares no MANUAL_COST, so
+ * `sentry.errors` refuses a manual item and an estimate and a typed-in fee
+ * never count the same money. Amounts live in the Cost Center, not here.
+ */
+const SENTRY: ProviderDefinition = {
+  id: 'sentry',
+  displayName: 'Sentry',
+  status: 'active',
+  capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
+  services: [
+    {
+      id: SENTRY_ERRORS,
+      providerId: 'sentry',
+      displayName: 'Errors',
+      category: 'errors',
+      runtime: 'none',
+      capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
+      operations: [],
+      meters: [billedServiceMeter(SENTRY_ERRORS, 'events', 'event', 'errors.events')],
+    },
+    {
+      id: 'sentry.subscription',
+      providerId: 'sentry',
+      displayName: 'Subscription (plan, Seer)',
       category: 'platform_fee',
       runtime: 'none',
       capabilities: ['MANUAL_COST'],
@@ -1141,7 +1189,14 @@ function manual(
 }
 
 export const COST_REGISTRY_DATA: RegistryData = {
-  billingSkus: [...GOOGLE_SKUS, ...CLOUDFLARE_SKUS, ...UPSTASH_SKUS, ...NEON_SKUS, ...GITHUB_SKUS],
+  billingSkus: [
+    ...GOOGLE_SKUS,
+    ...CLOUDFLARE_SKUS,
+    ...UPSTASH_SKUS,
+    ...NEON_SKUS,
+    ...GITHUB_SKUS,
+    ...SENTRY_SKUS,
+  ],
   providers: [
     GOOGLE,
     CLOUDFLARE,
@@ -1248,9 +1303,7 @@ export const COST_REGISTRY_DATA: RegistryData = {
         meters: [['active_series', 'series']],
       },
     ]),
-    planned('sentry', 'Sentry', [
-      { name: 'errors', displayName: 'Errors', category: 'errors', meters: [['events', 'event']] },
-    ]),
+    SENTRY,
     manual('apple', 'Apple', [{ name: 'developer_program', displayName: 'Developer Program' }]),
     manual('hosting', 'Hosting', [{ name: 'vps', displayName: 'VPS subscription' }]),
     manual('registrar', 'Domain registrar', [

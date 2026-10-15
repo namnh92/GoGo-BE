@@ -12,6 +12,7 @@ import {
   providerOf,
   staticCostGaps,
 } from './provider-pricing';
+import { PRICING_RULES } from './pricing-rules';
 
 const repoRoot = path.resolve(__dirname, '../../..');
 const TODAY = '2026-09-03';
@@ -118,10 +119,15 @@ describe('pricing registry', () => {
   it('bumps the pricing version whenever a row is added or changed', () => {
     // A dashboard number is traceable to a price list only if the label moves
     // with the list. Adding a row and forgetting the version relabels history.
-    const newest = PROVIDER_PRICING.map((r) => r.effectiveFrom)
+    // Pinned by hand on purpose: a rule added for any provider (Sentry, #695)
+    // moves the label, and this literal makes the author see that it did.
+    // Bump it with the rule; never derive it from the rules it guards.
+    expect(PRICING_VERSION).toBe('2026-10-14');
+    const newest = PRICING_RULES.map((r) => r.effectiveFrom)
       .sort()
       .at(-1);
-    expect(PRICING_VERSION).toBe(newest);
+    expect(newest).toBe('2026-10-14');
+    for (const r of PROVIDER_PRICING) expect(r.effectiveFrom <= PRICING_VERSION).toBe(true);
   });
 });
 

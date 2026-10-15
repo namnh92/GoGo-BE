@@ -11,6 +11,7 @@ import {
   type SpendBreakdown,
 } from '../domain/budget';
 import { monthForecast, scopeProjection, type MonthForecast } from '../domain/forecast';
+import { serviceCostSourceKind } from '../domain/cost-source';
 import { manualSchedule, type ManualCostItemFacts } from '../domain/manual-cost';
 import type { CostRegistry, ServiceDefinition } from '../domain/registry';
 import { utcDay } from '../pricing/provider-pricing';
@@ -52,6 +53,35 @@ export type MonthOverview = {
     byKind: SpendBreakdown['byKind'];
   }[];
 };
+
+/**
+ * Whether anything in the scope can produce a USAGE row — a service with
+ * an instrumented operation, or under a provider that collects usage or
+ * reads its invoice back. A manual-only provider cannot, and its absent
+ * usage half is a known zero rather than an unknown (`NOT_APPLICABLE`).
+ */
+export function scopeExpectsUsage(registry: CostRegistry, scope: CostBudgetScope): boolean {
+  const usageCapable = (s: ServiceDefinition) =>
+    // A service that declares itself manual (a plan fee under an AUTO
+    // provider: Play Console, the GitHub and Sentry plans) inherits the
+    // provider's collectors on paper only — nothing ever meters it (#695).
+    serviceCostSourceKind(s, registry.provider(s.providerId) ?? { capabilities: [] }) !==
+      'MANUAL' &&
+    (s.operations.some((o) => o.instrumented) ||
+      registry.serviceHasCapability(s.id, 'USAGE_COLLECTOR') ||
+      registry.serviceHasCapability(s.id, 'ACTUAL_COST_COLLECTOR') ||
+      registry.serviceHasCapability(s.id, 'ESTIMATED_COST'));
+  switch (scope.kind) {
+    case 'TOTAL':
+      return registry.services().some(usageCapable);
+    case 'PROVIDER':
+      return (registry.provider(scope.id)?.services ?? []).some(usageCapable);
+    case 'SERVICE': {
+      const s = registry.service(scope.id);
+      return s !== null && usageCapable(s);
+    }
+  }
+}
 
 export class BudgetService {
   constructor(
@@ -200,32 +230,8 @@ export class BudgetService {
         items.filter((i) => inScope(i, scope)),
         month,
       ),
-      usageExpected: this.usageExpected(scope),
+      usageExpected: scopeExpectsUsage(this.registry, scope),
     });
-  }
-
-  /**
-   * Whether anything in the scope can produce a USAGE row — a service with
-   * an instrumented operation, or under a provider that collects usage or
-   * reads its invoice back. A manual-only provider cannot, and its absent
-   * usage half is a known zero rather than an unknown (`NOT_APPLICABLE`).
-   */
-  private usageExpected(scope: CostBudgetScope): boolean {
-    const usageCapable = (s: ServiceDefinition) =>
-      s.operations.some((o) => o.instrumented) ||
-      this.registry.serviceHasCapability(s.id, 'USAGE_COLLECTOR') ||
-      this.registry.serviceHasCapability(s.id, 'ACTUAL_COST_COLLECTOR') ||
-      this.registry.serviceHasCapability(s.id, 'ESTIMATED_COST');
-    switch (scope.kind) {
-      case 'TOTAL':
-        return this.registry.services().some(usageCapable);
-      case 'PROVIDER':
-        return (this.registry.provider(scope.id)?.services ?? []).some(usageCapable);
-      case 'SERVICE': {
-        const s = this.registry.service(scope.id);
-        return s !== null && usageCapable(s);
-      }
-    }
   }
 
   private manualItems(): Promise<ManualCostItemFacts[]> {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PRICING_RULES, type PricingRule } from '../pricing/pricing-rules';
+import { PRICING_RULES, newestEffectiveFrom, type PricingRule } from '../pricing/pricing-rules';
 import {
   allowanceWalkStart,
   defaultRecomputeRange,
@@ -33,7 +33,7 @@ describe('planEstimates — pricing usage meters (epic §11, §13, §15)', () =>
       billableQuantity: 250,
       amountMicros: 0,
       currency: 'USD',
-      pricingVersion: '2026-09-01',
+      pricingVersion: newestEffectiveFrom(),
       metadata: { listMicros: 5_000_000, allowancePriorQuantity: 0 },
     });
     expect(plan.unpriced).toEqual([]);

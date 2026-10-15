@@ -477,6 +477,60 @@ const UPSTASH_RULES: readonly PricingRule[] = [
   },
 ];
 
+const SENTRY_FETCHED = 'Sentry pricing page, fetched 2026-10-14 (docs.sentry.io/pricing)';
+const SENTRY_VERSION = 'sentry-2026-10-14-v1';
+
+const SENTRY_RULES: readonly PricingRule[] = [
+  /**
+   * Sentry errors (#695, ADR-0011 D-14). GoGo is on Business, which includes
+   * 50k errors a month; past that, pay-as-you-go by volume band. The page
+   * rounds its figures and prices the first band at $0.0011125 — 1,112.5
+   * micros, recorded as 1,113 (rounded up, as the estimator rounds).
+   *
+   * `upTo` is the estimator's cumulative bound on **billable** units (after
+   * the allowance), so the page's >100k / >500k / >10M / >20M edges become
+   * 50k / 450k / 9.95M / 19.95M. The shape's 9.5M / 10M were band widths;
+   * corrected with the owner's sign-off (2026-10-15).
+   *
+   * Assumptions, both owner-accepted 2026-10-15:
+   * - Bands are **marginal**: Sentry has not confirmed it (Q-B5). If Sentry
+   *   prices the whole volume at one band, change this rule, not the collector.
+   * - `planEstimates` prices one day at a time and starts each day at the
+   *   first band once the allowance is spent, so above ~100k errors a month
+   *   the estimate runs high — a ceiling, never below what is charged.
+   *
+   * Reserved volume is not modelled (GoGo buys none). The annual plan and
+   * Seer are manual items under `sentry.subscription`, never this rule, so
+   * the fee is not counted twice (epic §12).
+   */
+  {
+    id: 'sentry-errors.events-2026-10-14-v1',
+    providerId: 'sentry',
+    serviceId: 'sentry.errors',
+    operationId: null,
+    usageMetricId: 'sentry.errors/events',
+    billingSkuId: 'errors.events',
+    region: null,
+    platform: null,
+    effectiveFrom: '2026-10-14',
+    effectiveTo: null,
+    currency: 'USD',
+    pricingModel: 'TIERED',
+    unitPriceMicros: null,
+    tiers: [
+      { upTo: 50_000, unitPriceMicros: 1_113 },
+      { upTo: 450_000, unitPriceMicros: 625 },
+      { upTo: 9_950_000, unitPriceMicros: 375 },
+      { upTo: 19_950_000, unitPriceMicros: 325 },
+      { upTo: null, unitPriceMicros: 300 },
+    ],
+    freeAllowance: { quantity: 50_000, unit: 'event', period: 'MONTH', scope: 'SKU' },
+    version: SENTRY_VERSION,
+    sourceReference: `${SENTRY_FETCHED}: paid plans include "50k errors" a month; Business PAYG per error ">50k-100k $0.0011125", ">100k-500k $0.0006250", ">500k-10M $0.0003750", ">10M-20M $0.0003250", ">20M $0.0003000"; "all per-category prices listed below have been rounded". Bands assumed marginal (unconfirmed, Q-B5). upTo is cumulative after the allowance; the shape's 9.5M/10M widths corrected 2026-10-15.`,
+    reviewedAt: '2026-10-14',
+  },
+];
+
 /**
  * The registry. Read through `PRICING_RULES`; add a rule by appending, never
  * by editing a row that a past day was priced with.
@@ -703,6 +757,7 @@ export const PRICING_RULES: readonly PricingRule[] = [
   }),
   ...CLOUDFLARE_RULES,
   ...UPSTASH_RULES,
+  ...SENTRY_RULES,
 ];
 
 /**

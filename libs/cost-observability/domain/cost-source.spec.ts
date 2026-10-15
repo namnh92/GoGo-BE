@@ -7,7 +7,16 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
   const service = (id: string) => COST_REGISTRY.service(id)!;
 
   it('AUTO when anything under the provider is collected or written by code', () => {
-    for (const id of ['google', 'cloudflare', 'upstash', 'neon', 'aws', 'github', 'gogo']) {
+    for (const id of [
+      'google',
+      'cloudflare',
+      'upstash',
+      'neon',
+      'aws',
+      'github',
+      'sentry',
+      'gogo',
+    ]) {
       expect(providerCostSourceKind(provider(id)), id).toBe('AUTO');
     }
   });
@@ -16,7 +25,7 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
     for (const id of ['apple', 'hosting', 'registrar', 'operations']) {
       expect(providerCostSourceKind(provider(id)), id).toBe('MANUAL');
     }
-    for (const id of ['onesignal', 'tenjin', 'grafana', 'sentry']) {
+    for (const id of ['onesignal', 'tenjin', 'grafana']) {
       expect(providerCostSourceKind(provider(id)), id).toBe('NONE');
     }
   });
@@ -30,6 +39,10 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
     const github = provider('github');
     expect(serviceCostSourceKind(service('github.subscription'), github)).toBe('MANUAL');
     expect(serviceCostSourceKind(service('github.actions'), github)).toBe('AUTO');
+    // #695: the Sentry plan + Seer the same way under an AUTO Sentry.
+    const sentry = provider('sentry');
+    expect(serviceCostSourceKind(service('sentry.subscription'), sentry)).toBe('MANUAL');
+    expect(serviceCostSourceKind(service('sentry.errors'), sentry)).toBe('AUTO');
     expect(serviceCostSourceKind({ capabilities: [] }, { capabilities: [] })).toBe('NONE');
     // Estimating, quota, budget and test deltas are not a way for money in.
     expect(

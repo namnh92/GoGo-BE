@@ -10,7 +10,7 @@ import {
 } from './registry';
 import { RUNTIME_OPERATIONS } from './runtime-operations';
 
-const TODAY = '2026-09-03';
+const TODAY = '2026-10-15';
 
 /** Epic §5 stable ids — the registry must name every one, immutable. */
 const EPIC_PROVIDER_IDS = [
@@ -129,6 +129,8 @@ describe('cost registry — epic §5 inventory', () => {
       'gogo.cost_observability',
       'google.play_console',
       'github.subscription',
+      'sentry.errors',
+      'sentry.subscription',
       'operations.development',
     ]) {
       expect(surface(id), id).toBe('none');
@@ -152,6 +154,7 @@ describe('cost registry — epic §5 inventory', () => {
     expect(manual).toEqual([
       'google.play_console',
       'github.subscription',
+      'sentry.subscription',
       'apple.developer_program',
       'hosting.vps',
       'registrar.domain',
@@ -437,6 +440,7 @@ describe('adding a provider (epic §40)', () => {
       'upstash',
       'neon',
       'github',
+      'sentry',
       'openai',
     ]);
     // The existing Google attribution is untouched by the addition.
@@ -481,6 +485,32 @@ describe('aws and github (#386)', () => {
   });
 });
 
+describe('sentry (#695, ADR-0011 D-14)', () => {
+  it('is active: errors metered and estimated, the plan typed in — GitHub pattern', () => {
+    const sentry = COST_REGISTRY.provider('sentry')!;
+    expect(sentry.status).toBe('active');
+    // No MANUAL_COST at provider level: `sentry.errors` must refuse a manual
+    // item, or a typed-in plan and the estimate would count the same money.
+    expect(sentry.capabilities).toEqual(['USAGE_COLLECTOR', 'ESTIMATED_COST']);
+    const meters = COST_REGISTRY.meters()
+      .filter((m) => m.serviceId.startsWith('sentry.'))
+      .map((m) => [m.id, m.billingSkuId, m.unit, m.billable]);
+    expect(meters).toEqual([['sentry.errors/events', 'errors.events', 'event', true]]);
+    expect(COST_REGISTRY.service('sentry.errors')).toMatchObject({
+      category: 'errors',
+      capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
+    });
+    expect(COST_REGISTRY.service('sentry.subscription')).toMatchObject({
+      category: 'platform_fee',
+      capabilities: ['MANUAL_COST'],
+    });
+    expect(COST_REGISTRY.serviceHasCapability('sentry.subscription', 'MANUAL_COST')).toBe(true);
+    expect(COST_REGISTRY.serviceHasCapability('sentry.errors', 'MANUAL_COST')).toBe(false);
+    expect(COST_REGISTRY.billingSku('errors.events')).toMatchObject({ providerId: 'sentry' });
+    expect(ruleInForce(PRICING_RULES, { billingSkuId: 'errors.events' }, TODAY)).not.toBeNull();
+  });
+});
+
 describe('neon (#385)', () => {
   it('is active with USAGE_COLLECTOR + ESTIMATED_COST; three billed meters, two collected-only', () => {
     const neon = COST_REGISTRY.provider('neon')!;
@@ -511,6 +541,7 @@ describe('cloudflare (#383)', () => {
       'upstash',
       'neon',
       'github',
+      'sentry',
     ]);
     const billed = COST_REGISTRY.meters()
       .filter((m) => m.serviceId.startsWith('cloudflare.') && m.billable)
