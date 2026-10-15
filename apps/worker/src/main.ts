@@ -25,6 +25,7 @@ import {
   neonPostgresCollector,
   awsCostExplorerCollector,
   githubActionsCollector,
+  sentryEventsCollector,
   writeAudit,
   NEON_POSTGRES_OPERATIONS,
   MediaCleanupService,
@@ -45,6 +46,7 @@ import {
   neonApiFromEnv,
   awsCostExplorerFromEnv,
   githubBillingFromEnv,
+  sentryStatsFromEnv,
   OneSignalPushAdapter,
   UnconfiguredPushProvider,
   pushProviderStatus,
@@ -500,6 +502,19 @@ async function bootstrap(): Promise<void> {
     logger.info(
       { provider: 'github', missing: 'GITHUB_BILLING_TOKEN / GITHUB_BILLING_ACCOUNT' },
       'github cost collector not registered — credentials absent',
+    );
+  }
+  // BE#696 (ADR-0011 D-14): Sentry error events from the org's stats_v2.
+  // One org serves every environment, so only the environment whose worker
+  // holds SENTRY_STATS_TOKEN counts it (Infra writes it for dev only).
+  const sentryStats = sentryStatsFromEnv(process.env);
+  if (sentryStats) {
+    collectors.register(sentryEventsCollector(db, sentryStats));
+    logger.info({ collectors: ['sentry_events'] }, 'sentry cost collector registered');
+  } else {
+    logger.info(
+      { provider: 'sentry', missing: 'SENTRY_STATS_TOKEN / SENTRY_ORG' },
+      'sentry cost collector not registered — credentials absent',
     );
   }
   // COST-BE-023 (#382): manual / fixed costs are materialised into

@@ -619,6 +619,39 @@ line items instead of minute counters. It is strictly better here:
 
 ## Ids
 
+the monitoring-cost row).
+
+## Sentry error-events collector (#696, ADR-0011 D-14)
+
+| Collector       | Capability        | Service         | Source                                    | Writes                                       |
+| --------------- | ----------------- | --------------- | ----------------------------------------- | -------------------------------------------- |
+| `sentry_events` | `USAGE_COLLECTOR` | `sentry.errors` | org `stats_v2`, `category=error`, per day | `events` meter (billed `errors.events`) only |
+
+- Registered only when the worker has `SENTRY_STATS_TOKEN` (internal integration
+  `gogo-cost-collector`, Organization: Read; SSM `sentry/stats-token`, `sentry/org`,
+  default org `gogo-vn`). One Sentry org serves every environment, so the token is
+  written for one environment only (dev); a second environment holding it would
+  count the same events twice.
+- `stats_v2` grouped by project returns **one total per query**, no time series
+  (checked live 2026-10-15). So each run makes three GETs: the project list, then
+  yesterday and today, each as `start=<day>T00:00:00Z&end=<day>T23:59:59Z` (`end`
+  is inclusive — `<day+1>T00:00:00Z` would pull the next bucket in). The response
+  must echo `[day, day+1)` or the run fails `BAD_RESPONSE`.
+- Row: quantity = Σ `accepted` over projects; yesterday HIGH, today MEDIUM;
+  `metadata.byProject` lists every project slug (0 when Sentry returned no group —
+  it omits empty ones; an unknown id stays `project:<id>`), `metadata.dropped` the
+  other outcomes (`filtered`, `rate_limited`, … — spike protection shows here). A
+  failing query writes nothing for either day; a 200 with no groups is a measured 0.
+- No cost row: money is the estimator over rule `errors.events` (#695); the plan
+  and Seer are manual items on `sentry.subscription`.
+- Kill switch: revoke the token in Sentry → `AUTH_FAILED` on the freshness row,
+  STALE on the CMS; or drop the SSM row and deploy → not registered (log
+  `missing: 'SENTRY_STATS_TOKEN / SENTRY_ORG'`). Errors never carry the URL, a
+  header or the body.
+- Tests: `sentry-stats.adapter.spec.ts`, `sentry.collector.spec.ts`.
+
+## Ids
+
 - **Provider** `google`, `cloudflare`, … — epic §5 list, immutable once persisted.
 - **Service** `<provider>.<service>` — `google.places`, `google.maps_sdk_ios`.
 - **Operation** — the adapter's own `method` label, verbatim: `google.details.core`.

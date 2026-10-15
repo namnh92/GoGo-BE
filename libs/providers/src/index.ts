@@ -162,6 +162,24 @@ export {
   type GitHubUsageItem,
   type GitHubUsageQuery,
 } from './github-billing.adapter';
+export {
+  SENTRY_API_BASE,
+  SENTRY_DEFAULT_ORG,
+  SENTRY_OUTCOMES,
+  SentryStatsClient,
+  SentryStatsError,
+  foldDayStats,
+  foldProjects,
+  sentryStatsFromEnv,
+  type SentryDayQuery,
+  type SentryDayStats,
+  type SentryOutcome,
+  type SentryOutcomeTotal,
+  type SentryProject,
+  type SentryStatsConfig,
+  type SentryStatsErrorCode,
+  type SentryStatsPort,
+} from './sentry-stats.adapter';
 export { KeywordFeedbackParser, foldVietnamese } from './keyword-feedback.adapter';
 export {
   PrometheusQueryAdapter,
