@@ -69,6 +69,9 @@ services:
       PROCESS: worker
       NODE_ENV: production
       WORKER_METRICS_PORT: '9101'
+      # BE#697 — Sentry release `gogo-be@<commit>`, as for api (deploy-vps.sh
+      # exports it for every `up -d`).
+      GOGO_REVISION: ${GOGO_REVISION:-}
     env_file:
       - ../${ENV_FILE:-.env.prod}
     # #318 — the worker's scrape target. `expose`, never `ports`: a collector

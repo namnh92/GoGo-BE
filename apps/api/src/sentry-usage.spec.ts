@@ -16,11 +16,13 @@ const ALLOWED: Record<string, RegExp[]> = {
     /Sentry\.httpIntegration\(\{ maxIncomingRequestBodySize: 'none' \}\)/,
     /Sentry\.onUnhandledRejectionIntegration\(\{ mode: 'none' \}\)/,
   ],
-  'apps/api/src/main.ts': [/Sentry\.init\(sentryInitOptions\(/],
+  'apps/api/src/main.ts': [
+    /Sentry\.init\(\s*sentryInitOptions\(\{\s*dsn: config\.SENTRY_DSN,\s*environment: config\.APP_ENV,\s*release: sentryRelease\(process\.env\.GOGO_REVISION\),\s*\}\),?\s*\)/,
+  ],
   // BE#675 — the worker's init, its job-failure capture (job name only) and flush.
   'apps/worker/src/sentry.ts': [
     // Heartbeat URLs are passed to be redacted (F-03), never attached.
-    /Sentry\.init\(\s*sentryInitOptions\(\{\s*dsn,\s*environment: env\.APP_ENV \?\? 'dev',\s*unhandledRejection: 'none',\s*secretUrls: \[env\.HEARTBEAT_URL_OUTBOX, env\.HEARTBEAT_URL_INGEST, env\.HEARTBEAT_URL_PRIVACY\],\s*\}\),?\s*\)/,
+    /Sentry\.init\(\s*sentryInitOptions\(\{\s*dsn,\s*environment: env\.APP_ENV \?\? 'dev',\s*release: sentryRelease\(env\.GOGO_REVISION\),\s*unhandledRejection: 'none',\s*secretUrls: \[env\.HEARTBEAT_URL_OUTBOX, env\.HEARTBEAT_URL_INGEST, env\.HEARTBEAT_URL_PRIVACY\],\s*\}\),?\s*\)/,
     /Sentry\.captureException\(err, \{ tags: \{ periodic_job: job \} \}\)/,
     /else Sentry\.captureException\(err\);/,
     /Sentry\.flush\(2_000\)/,

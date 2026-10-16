@@ -53,6 +53,35 @@ describe('Sentry environment (#674)', () => {
     expect(init.mock.calls[0]?.[0]).toMatchObject({ environment: expected });
   });
 
+  // #697 — the release names the deployed commit, and is absent without one.
+  const SHA = 'f55b749f55b749f55b749f55b749f55b749f55b7';
+  it.each([
+    [SHA, `gogo-be@${SHA}`],
+    ['', undefined],
+    [undefined, undefined],
+  ])('GOGO_REVISION=%s → release %s', async (revision, expected) => {
+    init.mockClear();
+    env = {
+      NODE_ENV: 'production',
+      APP_ENV: 'dev',
+      SENTRY_DSN: 'https://public@o0.ingest.sentry.io/0',
+    };
+    const saved = process.env.GOGO_REVISION;
+    if (revision === undefined) delete process.env.GOGO_REVISION;
+    else process.env.GOGO_REVISION = revision;
+    try {
+      await expect(createApp()).rejects.toBe(STOP);
+    } finally {
+      if (saved === undefined) delete process.env.GOGO_REVISION;
+      else process.env.GOGO_REVISION = saved;
+    }
+
+    expect(init).toHaveBeenCalledTimes(1);
+    const options = init.mock.calls[0]?.[0] as Record<string, unknown>;
+    if (expected) expect(options.release).toBe(expected);
+    else expect(options).not.toHaveProperty('release');
+  });
+
   it('does not initialise Sentry without a DSN', async () => {
     init.mockClear();
     env = { NODE_ENV: 'production', APP_ENV: 'dev', SENTRY_DSN: '' };

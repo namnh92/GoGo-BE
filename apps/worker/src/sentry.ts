@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/node';
-import { sentryInitOptions } from '@gogo/observability';
+import { sentryInitOptions, sentryRelease } from '@gogo/observability';
 
 /**
  * BE#675 — the worker's only Sentry calls, kept to this file so the #588
@@ -19,6 +19,7 @@ export function initWorkerSentry(env: NodeJS.ProcessEnv): boolean {
     sentryInitOptions({
       dsn,
       environment: env.APP_ENV ?? 'dev',
+      release: sentryRelease(env.GOGO_REVISION),
       unhandledRejection: 'none',
       secretUrls: [env.HEARTBEAT_URL_OUTBOX, env.HEARTBEAT_URL_INGEST, env.HEARTBEAT_URL_PRIVACY],
     }),

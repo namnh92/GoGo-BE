@@ -43,6 +43,8 @@ describe('initWorkerSentry', () => {
       expect(sentryInitOptions).toHaveBeenCalledExactlyOnceWith({
         dsn: DSN,
         environment: appEnv,
+        // #697: no GOGO_REVISION here, so no release.
+        release: undefined,
         // F-05: the worker ends the process itself; the SDK only captures.
         unhandledRejection: 'none',
         // F-03: no heartbeat URL configured here.
@@ -53,6 +55,11 @@ describe('initWorkerSentry', () => {
       );
     },
   );
+
+  it('files events under the deployed commit when GOGO_REVISION is set (#697)', () => {
+    initWorkerSentry({ SENTRY_DSN: DSN, APP_ENV: 'dev', GOGO_REVISION: 'f55b749' });
+    expect(vi.mocked(sentryInitOptions).mock.calls[0]?.[0].release).toBe('gogo-be@f55b749');
+  });
 
   it('hands every heartbeat URL to the shared redaction (F-03)', () => {
     initWorkerSentry({

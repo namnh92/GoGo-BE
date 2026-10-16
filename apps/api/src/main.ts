@@ -4,7 +4,12 @@ import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
-import { createLogger, sentryInitOptions, type LogDestination } from '@gogo/observability';
+import {
+  createLogger,
+  sentryInitOptions,
+  sentryRelease,
+  type LogDestination,
+} from '@gogo/observability';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
@@ -35,7 +40,14 @@ export async function createApp(
     // #588: coordinates are redacted from every event and breadcrumb.
     // #674: tagged with the deployment (APP_ENV), not the build — every deployed
     // environment runs NODE_ENV=production, DEV included.
-    Sentry.init(sentryInitOptions({ dsn: config.SENTRY_DSN, environment: config.APP_ENV }));
+    // #697: filed under the deployed commit (GOGO_REVISION, set by the deploy).
+    Sentry.init(
+      sentryInitOptions({
+        dsn: config.SENTRY_DSN,
+        environment: config.APP_ENV,
+        release: sentryRelease(process.env.GOGO_REVISION),
+      }),
+    );
   }
   const logger = createLogger({
     level: config.LOG_LEVEL,
