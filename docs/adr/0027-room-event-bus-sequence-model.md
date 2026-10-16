@@ -435,3 +435,49 @@ two independently connected bus instances, HTTP SSE end-to-end.
   app (`room-events-reconnect.int.spec.ts`) and the real-mutation path with the
   full app on the in-memory bus (`rooms.int.spec.ts`). Both buses share one
   subscription state machine (`room-subscription.ts`).
+
+## Contract break and the gate it skipped (2026-10-16, GoGo-BE#694)
+
+The `oneOf` this ADR introduced on `GET /v1/rooms/{id}/events` **is** a breaking
+change to the published contract, and that was never recorded. What happened:
+
+- oasdiff refused PR #666's head `0aaeca8` with one finding — _"in API GET
+  /rooms/{id}/events the response body was restructured into a oneOf, so a field
+  that was previously guaranteed may no longer be present"_ (CI run 37112927270).
+- `contract-compat` is `pull_request`-only, so the push of the squash merge
+  `5bb3242` skipped it (run 37113509409). The change reached `develop` without
+  the breaking-change gate ever passing on any head. Found in integration lot
+  L1-A, cell `CI-BE638` (GoGo-BE#694).
+- Re-running the gate on `develop` proves nothing: once the merge landed, the
+  base already contains the `oneOf`.
+
+**Decision (SA ruling on #694, owner 2026-10-16).** Keep the `oneOf`. The
+`resync` frame has no domain-event envelope, so the old schema described the
+stream incorrectly; the alternatives — pushing `resync` into prose, or inventing
+a discriminator field inside `data` — would either restore a false envelope
+guarantee or document a field that is not on the wire.
+
+Consequences of that decision:
+
+- **The contract is `2.0.0-alpha.1`.** `git.md` SemVer: a withdrawn guarantee is
+  MAJOR. Staying on `1.0.0-alpha.*` would need a separate owner-recorded
+  prerelease exception, which was not taken.
+- **`openapi/CHANGELOG.md`** carries the consumer-facing note: both frame
+  shapes, the guarantee that is gone, and what a client must do.
+- **The gate judges a report instead of being the report.** oasdiff now writes
+  its findings to a file and `scripts/check-contract-compat.ts` decides, against
+  `.github/oasdiff-exceptions.json`. The entry for this change matches only when
+  both sides hash to the exact bytes the decision was made on
+  (`e1e390d`/`5bb3242` — `5bb3242`'s spec is byte-identical to the reviewed head
+  `0aaeca8`) and only for that diagnostic. It cannot admit the same class of
+  change on a later contract, and a second finding riding along with it fails the
+  build. CI replays that historical transition on every PR, so editing the entry
+  turns the gate red rather than quietly widening it.
+- **Known fragility, accepted:** the action's image is `tufin/oasdiff:stable`, so
+  if upstream rewords the diagnostic the replay step goes red and the entry has to
+  be re-recorded deliberately. Red on wording drift is the failure mode we want;
+  silent admission is not.
+- **Consumers.** GoGo-MobileApp reads the SSE `event:` name before parsing
+  `data` (`2447dc7`), so it tolerates `resync`, but it still vendors
+  `1.0.0-alpha.57`; re-vendoring is its own task. GoGo-CMS and GoGo-WebApp do not
+  read this stream.
