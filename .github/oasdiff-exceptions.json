@@ -1,0 +1,18 @@
+{
+  "$schema-note": "GoGo-BE#694. Each entry admits ONE oasdiff ERR, and only on the exact pair of contract files it was decided for. Both sha256 values must match the bytes being compared, and the finding text must contain `diagnostic`. Nothing else is admitted — a new breaking change, the same change on different bytes, or an unparseable report all still fail. Read by scripts/check-contract-compat.ts.",
+  "exceptions": [
+    {
+      "id": "BE-694-room-events-resync-oneof",
+      "issue": "https://github.com/namnh92/GoGo-BE/issues/694",
+      "decidedAt": "2026-10-16",
+      "decidedBy": "product owner (CODEOWNER for openapi/gogo.v1.yaml), on the SA ruling in GoGo-BE#694 comment 6209929752",
+      "baseCommit": "e1e390d711973b541a5eb7ffde8175795b0997b6",
+      "baseSha256": "2cac78cc74ffb26e183a4ca3ce84143c83fbf9e411e7ca69ff084d32de403359",
+      "revisionCommit": "5bb32429c2e6d6fc60d4903cd0db228cba4eaf60",
+      "revisionSha256": "a807224b19b05452bf4c1f2a8f6df12365dcdf6be38c7c30da25d747717016c5",
+      "diagnostic": "in API GET /rooms/{id}/events the response body was restructured into a oneOf, so a field that was previously guaranteed may no longer be present",
+      "reason": "ADR-0027: the SSE stream carries a `resync` control frame that has no RoomEvent envelope, so the published schema was wrong rather than the change being wrong. Keeping the oneOf is the owner's decision; the contract moves to 2.0.0-alpha.1 because a published guarantee is withdrawn. openapi/CHANGELOG.md carries the consumer-facing note.",
+      "note": "revisionCommit is the squash merge of PR #666 on develop; its openapi/gogo.v1.yaml is byte-identical to the reviewed PR head 0aaeca876f4bd72de789b4023e90f2e58eee63a2 (same sha256), which is the head CI run 37112927270 judged. The merge commit is used because refs/pull/* is not fetched in CI."
+    }
+  ]
+}
