@@ -58,7 +58,7 @@ const run = (over: Partial<Parameters<typeof evaluate>[0]> = {}) =>
 describe('parseReport', () => {
   it('reads the severity and keeps the message with its finding', () => {
     const parsed = parseReport(historicalReport);
-    expect(parsed.summary).toEqual({ errors: 1, warnings: 0 });
+    expect(parsed.summary).toEqual({ error: 1, warning: 0, info: 0 });
     expect(parsed.findings).toHaveLength(1);
     expect(parsed.findings[0]!.severity).toBe('error');
     expect(parsed.findings[0]!.text).toContain(DIAGNOSTIC);
@@ -73,7 +73,7 @@ describe('parseReport', () => {
         '1 breaking changes: 0 error, 1 warning',
       ].join('\n'),
     );
-    expect(parsed.summary).toEqual({ errors: 0, warnings: 1 });
+    expect(parsed.summary).toEqual({ error: 0, warning: 1, info: 0 });
     expect(parsed.findings.map((f) => f.severity)).toEqual(['warning']);
   });
 });
@@ -170,6 +170,71 @@ describe('evaluate', () => {
   it('fails closed when the oasdiff step did not reach a verdict', () => {
     expect(run({ oasdiffOutcome: '' })).toMatchObject({ ok: false, code: 2 });
     expect(run({ oasdiffOutcome: 'cancelled' })).toMatchObject({ ok: false, code: 2 });
+  });
+
+  it('does not let an info finding lend its diagnostic to an unrelated error (#703 F-01)', () => {
+    const report = [
+      '2 changes: 1 error, 0 warning, 1 info',
+      'error\t[api-removed-without-deprecation] at openapi/gogo.v1.yaml',
+      '\tin API GET /rooms/{id}/plan the endpoint was removed without deprecation',
+      'info\t[response-body-wrapped-in-one-of] at openapi/gogo.v1.yaml',
+      `\t${DIAGNOSTIC}`,
+    ].join('\n');
+    const verdict = run({ report });
+    expect(verdict).toMatchObject({ ok: false, code: 1 });
+    expect(verdict.ok === false && verdict.lines.join('\n')).toContain(
+      'api-removed-without-deprecation',
+    );
+  });
+
+  it('counts an info finding against the summary', () => {
+    const parsed = parseReport(
+      [
+        '1 changes: 0 error, 0 warning, 1 info',
+        'info\t[x] at openapi/gogo.v1.yaml',
+        '\tjust saying',
+      ].join('\n'),
+    );
+    expect(parsed.summary).toEqual({ error: 0, warning: 0, info: 1 });
+    expect(parsed.findings.map((f) => f.severity)).toEqual(['info']);
+  });
+
+  it('spends an exception once — a second identical error is refused (#703 F-02)', () => {
+    const report = [
+      '2 changes: 2 error, 0 warning, 0 info',
+      'error\t[response-body-wrapped-in-one-of] at openapi/gogo.v1.yaml',
+      `\t${DIAGNOSTIC}`,
+      'error\t[response-body-wrapped-in-one-of] at openapi/gogo.v1.yaml',
+      `\t${DIAGNOSTIC}`,
+    ].join('\n');
+    expect(run({ report })).toMatchObject({ ok: false, code: 1 });
+  });
+
+  it('replay: refuses a clean report when an id was expected (#703 F-02)', () => {
+    const verdict = run({
+      report: 'No breaking changes to report, but the specs are different.',
+      oasdiffOutcome: 'success',
+      expect: 'BE-694-room-events-resync-oneof',
+    });
+    expect(verdict).toMatchObject({ ok: false, code: 1 });
+    expect(verdict.ok === false && verdict.lines.join('\n')).toContain(
+      'no longer describes anything',
+    );
+  });
+
+  it('replay: passes when the expected id is admitted exactly once', () => {
+    expect(
+      run({
+        report: historicalReportAsOasdiffPrintsIt,
+        expect: 'BE-694-room-events-resync-oneof',
+      }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it('replay: refuses when a different exception admitted the finding', () => {
+    expect(
+      run({ report: historicalReportAsOasdiffPrintsIt, expect: 'BE-999-some-other-decision' }),
+    ).toMatchObject({ ok: false, code: 1 });
   });
 
   it('refuses a warning-only report with no exception — nothing to admit, nothing to fail', () => {

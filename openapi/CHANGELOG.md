@@ -17,8 +17,12 @@ generated from `1.0.0-alpha.*` may treat the envelope's fields as guaranteed —
 they are absent on a `resync` frame.
 
 - **What a consumer must do:** read the SSE `event:` name before parsing
-  `data`. `event: resync` carries `RoomEventResync`, never a domain event. After
-  a resync the client refetches room state and resumes from `checkpoint`.
+  `data`. `event: resync` carries `RoomEventResync`, never a domain event. On a
+  resync the client refetches authoritative room state and, **only after that
+  refetch succeeds**, resumes from `checkpoint.cursor` — the opaque cursor, not
+  the `checkpoint` object, and never a cursor built from `generation` and `seq`,
+  which are informational (`RoomEventCheckpoint`). An unknown `reason` is
+  treated exactly like a known one: refetch.
 - **Why it is a MAJOR and not a schema fix:** the `resync` control frame already
   existed on the wire (ADR-0027 made it reliable and gave it the checkpoint); the
   published schema was wrong about it. Withdrawing the envelope guarantee is a

@@ -14,11 +14,11 @@
  * judges it against `.github/oasdiff-exceptions.json`.
  *
  * The exception is deliberately almost useless: it matches only when the bytes
- * on both sides hash to the pair recorded with the decision, and only for the
- * recorded diagnostic. It cannot admit the same kind of change on a later
- * contract, and it cannot admit a second finding that happens to ride along.
- * Anything this script does not understand fails the build — an unreadable
- * report is a tool failure, not a pass.
+ * on both sides hash to the pair recorded with the decision, only for the
+ * recorded diagnostic, and only once per entry. It cannot admit the same kind
+ * of change on a later contract, and it cannot admit a second finding that
+ * happens to ride along. Anything this script does not understand fails the
+ * build — an unreadable report is a tool failure, not a pass.
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -33,14 +33,16 @@ export interface OasdiffException {
   reason: string;
 }
 
+export type Severity = 'error' | 'warning' | 'info';
+
 export interface Finding {
-  severity: 'error' | 'warning';
-  /** The finding line plus its continuation lines, as oasdiff printed them. */
+  severity: Severity;
+  /** This finding's own lines, as oasdiff printed them — never the next one's. */
   text: string;
 }
 
 export interface ParsedReport {
-  summary: { errors: number; warnings: number } | null;
+  summary: Record<Severity, number> | null;
   findings: Finding[];
 }
 
@@ -53,35 +55,48 @@ export interface ParsedReport {
  */
 const NO_BREAKING = /^\s*no breaking changes\b/i;
 
+/** `1 changes: 1 error, 0 warning, 0 info` (CI run 38940032360). */
+const SUMMARY = /(\d+)\s+errors?,\s*(\d+)\s+warnings?(?:,\s*(\d+)\s+infos?)?/i;
+
+/** A finding opens with its severity as the first word of the line. */
+const FINDING = /^(error|warning|info)\b/i;
+
 /**
- * oasdiff's text report. The first field of a finding line is the severity, and
- * the message may continue on following lines; the tail carries a summary like
- * `1 breaking changes: 1 error, 0 warning`. We read severities and the summary,
- * never the check id — a renamed check must not silently widen an exception.
+ * oasdiff's text report. Every severity opens a finding, so a lower-severity
+ * line can never be read as the continuation of the finding above it — an
+ * `info` carrying an admitted diagnostic must not lend it to an unrelated
+ * `error` (GoGo-BE#703 F-01). The check id is deliberately not parsed: a
+ * renamed check must not silently widen an exception.
  */
 export function parseReport(report: string): ParsedReport {
-  const lines = report.split('\n');
   const findings: Finding[] = [];
   let summary: ParsedReport['summary'] = null;
 
-  for (const line of lines) {
-    const counts = /(\d+)\s+error[s]?,\s*(\d+)\s+warning[s]?/i.exec(line);
+  for (const line of report.split('\n')) {
+    const trimmed = line.trim();
+
+    const opens = FINDING.exec(trimmed);
+    if (opens) {
+      findings.push({ severity: opens[1]!.toLowerCase() as Severity, text: line });
+      continue;
+    }
+
+    // The summary can only be a line that opens no finding; `0 info` in it must
+    // not be mistaken for an `info` finding, hence the order here.
+    const counts = SUMMARY.exec(trimmed);
     if (counts) {
-      summary = { errors: Number(counts[1]), warnings: Number(counts[2]) };
+      summary = {
+        error: Number(counts[1]),
+        warning: Number(counts[2]),
+        info: counts[3] === undefined ? 0 : Number(counts[3]),
+      };
       continue;
     }
-    const severity = /^(error|warning)\b/i.exec(line.trim());
-    if (severity) {
-      findings.push({
-        severity: severity[1]!.toLowerCase() as Finding['severity'],
-        text: line,
-      });
-      continue;
-    }
+
     // A continuation line belongs to the finding above it; a line before any
     // finding (the header) belongs to nothing.
     const current = findings[findings.length - 1];
-    if (current && line.trim() !== '') current.text += `\n${line}`;
+    if (current && trimmed !== '') current.text += `\n${line}`;
   }
 
   return { summary, findings };
@@ -113,8 +128,15 @@ export function evaluate(input: {
   exceptions: OasdiffException[];
   /** `steps.<id>.outcome` of the oasdiff step: it ran with `--fail-on ERR`. */
   oasdiffOutcome: string;
+  /**
+   * Replay mode: the id this comparison must admit, exactly once. Without it a
+   * replay of the recorded transition would also pass when upstream stops
+   * reporting the finding, leaving a dead entry that looks guarded
+   * (GoGo-BE#703 F-02).
+   */
+  expect?: string | undefined;
 }): Verdict {
-  const { report, baseSha256, revisionSha256, exceptions, oasdiffOutcome } = input;
+  const { report, baseSha256, revisionSha256, exceptions, oasdiffOutcome, expect } = input;
 
   if (oasdiffOutcome !== 'success' && oasdiffOutcome !== 'failure') {
     return {
@@ -129,7 +151,7 @@ export function evaluate(input: {
 
   const empty = report.trim() === '' || NO_BREAKING.test(report.trimStart());
   const parsed = empty
-    ? { summary: { errors: 0, warnings: 0 }, findings: [] }
+    ? { summary: { error: 0, warning: 0, info: 0 }, findings: [] }
     : parseReport(report);
 
   if (parsed.summary === null) {
@@ -143,17 +165,27 @@ export function evaluate(input: {
     };
   }
 
-  const errors = parsed.findings.filter((f) => f.severity === 'error');
-  if (errors.length !== parsed.summary.errors) {
+  const counted: Record<Severity, number> = { error: 0, warning: 0, info: 0 };
+  for (const finding of parsed.findings) counted[finding.severity] += 1;
+
+  const disagree = (['error', 'warning', 'info'] as const).filter(
+    (severity) => counted[severity] !== parsed.summary![severity],
+  );
+  if (disagree.length > 0) {
     return {
       ok: false,
       code: 2,
       lines: [
-        `✖ the oasdiff report disagrees with itself: summary says ${parsed.summary.errors} error(s),`,
-        `  ${errors.length} error finding(s) parsed. Refusing to guess which is right.`,
+        '✖ the oasdiff report disagrees with itself. Refusing to guess which half is right:',
+        ...disagree.map(
+          (severity) =>
+            `  · summary says ${parsed.summary![severity]} ${severity}, ${counted[severity]} parsed`,
+        ),
       ],
     };
   }
+
+  const errors = parsed.findings.filter((f) => f.severity === 'error');
 
   if (errors.length === 0) {
     if (oasdiffOutcome === 'failure') {
@@ -166,21 +198,36 @@ export function evaluate(input: {
         ],
       };
     }
+    if (expect !== undefined) {
+      return {
+        ok: false,
+        code: 1,
+        lines: [
+          `✖ this comparison must admit ${expect}, and oasdiff reported no breaking change at all.`,
+          '  The entry in .github/oasdiff-exceptions.json no longer describes anything:',
+          '  either the specs it names moved, or oasdiff stopped reporting the finding.',
+          '  Re-record the decision deliberately; do not leave a dead entry in place.',
+        ],
+      };
+    }
     return { ok: true, lines: ['✔ no breaking change in /v1.'] };
   }
 
-  const admitted: string[] = [];
+  // One entry admits one finding. Without consuming the match, two identical
+  // ERRs would both ride on a single recorded decision (GoGo-BE#703 F-02).
+  const pool = [...exceptions];
+  const admitted: OasdiffException[] = [];
   const refused: string[] = [];
 
   for (const finding of errors) {
-    const match = exceptions.find(
+    const index = pool.findIndex(
       (e) =>
         e.baseSha256 === baseSha256 &&
         e.revisionSha256 === revisionSha256 &&
         normaliseSpace(finding.text).includes(normaliseSpace(e.diagnostic)),
     );
-    if (match) admitted.push(`  · ${match.id} (${match.issue}, decided ${match.decidedAt})`);
-    else refused.push(`  · ${normaliseSpace(finding.text)}`);
+    if (index === -1) refused.push(`  · ${normaliseSpace(finding.text)}`);
+    else admitted.push(...pool.splice(index, 1));
   }
 
   if (refused.length > 0) {
@@ -202,25 +249,45 @@ export function evaluate(input: {
     };
   }
 
+  if (expect !== undefined) {
+    const used = admitted.filter((e) => e.id === expect).length;
+    if (used !== 1) {
+      return {
+        ok: false,
+        code: 1,
+        lines: [
+          `✖ this comparison must admit ${expect} exactly once; it was used ${used} time(s).`,
+          ...admitted.map((e) => `  · admitted ${e.id}`),
+        ],
+      };
+    }
+  }
+
   return {
     ok: true,
     lines: [
       `✔ ${admitted.length} breaking change(s), all admitted by a recorded owner decision:`,
-      ...admitted,
+      ...admitted.map((e) => `  · ${e.id} (${e.issue}, decided ${e.decidedAt})`),
     ],
   };
 }
 
 function main(): void {
-  const [basePath, revisionPath, reportPath, outcome, exceptionsPath] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  const flag = (name: string): string | undefined => {
+    const hit = argv.find((a) => a.startsWith(`--${name}=`));
+    return hit?.slice(name.length + 3);
+  };
+  const [basePath, revisionPath, reportPath, outcome] = argv.filter((a) => !a.startsWith('--'));
+
   if (!basePath || !revisionPath || !reportPath || !outcome) {
     console.error(
-      'usage: check-contract-compat.ts <base-spec> <revision-spec> <oasdiff-report> <oasdiff-outcome> [exceptions.json]',
+      'usage: check-contract-compat.ts <base-spec> <revision-spec> <oasdiff-report> <oasdiff-outcome> [--exceptions=path] [--expect=exception-id]',
     );
     process.exit(2);
   }
 
-  const exceptionsFile = exceptionsPath ?? '.github/oasdiff-exceptions.json';
+  const exceptionsFile = flag('exceptions') ?? '.github/oasdiff-exceptions.json';
   if (!existsSync(reportPath)) {
     console.error(
       `✖ the oasdiff step wrote no report at ${reportPath} — treating that as a failure.`,
@@ -239,6 +306,7 @@ function main(): void {
     revisionSha256: sha256(readFileSync(revisionPath)),
     exceptions: JSON.parse(readFileSync(exceptionsFile, 'utf8')).exceptions as OasdiffException[],
     oasdiffOutcome: outcome,
+    expect: flag('expect'),
   });
 
   const out = verdict.lines.join('\n');

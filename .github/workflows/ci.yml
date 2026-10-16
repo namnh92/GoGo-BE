@@ -120,6 +120,7 @@ jobs:
           scripts/check-contract-compat.ts
           .oasdiff-hist-base.yaml .oasdiff-hist-head.yaml .oasdiff-history-report.txt
           ${{ steps.oasdiff-history.outcome }}
+          --expect=BE-694-room-events-resync-oneof
 
   integration:
     runs-on: ubuntu-latest
