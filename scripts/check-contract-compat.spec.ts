@@ -24,6 +24,19 @@ const historicalReport = [
   '1 breaking changes: 1 error, 0 warning',
 ].join('\n');
 
+/**
+ * The real report, byte for byte, from CI run 38940032360 replaying the
+ * recorded transition: the summary carries an `info` count, the check id is
+ * `response-body-wrapped-in-one-of`, and the message is wrapped over two
+ * indented lines.
+ */
+const historicalReportAsOasdiffPrintsIt = [
+  '1 changes: 1 error, 0 warning, 0 info',
+  'error\t[response-body-wrapped-in-one-of] at .oasdiff-hist-head.yaml',
+  '\tin API GET /rooms/{id}/events',
+  '\t\tthe response body was restructured into a oneOf, so a field that was previously guaranteed may no longer be present',
+].join('\n');
+
 const other = (text: string) =>
   [
     `error\t[request-parameter-removed] at openapi/gogo.v1.yaml`,
@@ -66,6 +79,18 @@ describe('parseReport', () => {
 });
 
 describe('evaluate', () => {
+  it('admits it in the wrapped text oasdiff actually prints', () => {
+    const verdict = run({ report: historicalReportAsOasdiffPrintsIt });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.lines.join('\n')).toContain('BE-694-room-events-resync-oneof');
+  });
+
+  it('still refuses that wrapped finding on other bytes', () => {
+    expect(
+      run({ report: historicalReportAsOasdiffPrintsIt, revisionSha256: '0'.repeat(64) }),
+    ).toMatchObject({ ok: false, code: 1 });
+  });
+
   it('admits the recorded change on the exact contract bytes it was decided for', () => {
     const verdict = run();
     expect(verdict.ok).toBe(true);

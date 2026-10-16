@@ -87,6 +87,19 @@ export function parseReport(report: string): ParsedReport {
   return { summary, findings };
 }
 
+/**
+ * oasdiff's text report wraps one message over several indented lines (CI run
+ * 38940032360: `in API GET /rooms/{id}/events` then a deeper-indented `the
+ * response body was restructured into a oneOf, …`), while its GitHub
+ * annotation prints the same sentence joined. Matching is therefore done on
+ * whitespace-collapsed text: the wording still has to be the recorded one,
+ * character for character, but where oasdiff chose to break the line does not
+ * decide whether a recorded decision applies.
+ */
+export function normaliseSpace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 export function sha256(contents: string | Buffer): string {
   return createHash('sha256').update(contents).digest('hex');
 }
@@ -164,10 +177,10 @@ export function evaluate(input: {
       (e) =>
         e.baseSha256 === baseSha256 &&
         e.revisionSha256 === revisionSha256 &&
-        finding.text.includes(e.diagnostic),
+        normaliseSpace(finding.text).includes(normaliseSpace(e.diagnostic)),
     );
     if (match) admitted.push(`  · ${match.id} (${match.issue}, decided ${match.decidedAt})`);
-    else refused.push(`  · ${finding.text.trim().split('\n')[0]}`);
+    else refused.push(`  · ${normaliseSpace(finding.text)}`);
   }
 
   if (refused.length > 0) {
