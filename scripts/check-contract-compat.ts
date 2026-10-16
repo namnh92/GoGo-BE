@@ -44,8 +44,14 @@ export interface ParsedReport {
   findings: Finding[];
 }
 
-/** No breaking changes at all: the action writes this when the diff is empty. */
-const NO_BREAKING = /^\s*No breaking changes\s*$/i;
+/**
+ * No breaking changes at all. oasdiff has more than one wording here — an
+ * identical pair says "No breaking changes", a pair that differs without
+ * breaking anything says "No breaking changes to report, but the specs are
+ * different." (observed in CI run 38938515737) — so the family is matched by
+ * its opening, not by an exact string. There is no summary line in this case.
+ */
+const NO_BREAKING = /^\s*no breaking changes\b/i;
 
 /**
  * oasdiff's text report. The first field of a finding line is the severity, and
@@ -108,7 +114,7 @@ export function evaluate(input: {
     };
   }
 
-  const empty = report.trim() === '' || NO_BREAKING.test(report.trim());
+  const empty = report.trim() === '' || NO_BREAKING.test(report.trimStart());
   const parsed = empty
     ? { summary: { errors: 0, warnings: 0 }, findings: [] }
     : parseReport(report);

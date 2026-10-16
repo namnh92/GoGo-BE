@@ -105,10 +105,18 @@ describe('evaluate', () => {
     );
   });
 
-  it('passes a clean diff', () => {
+  it('passes a clean diff, in either wording oasdiff uses', () => {
     expect(run({ report: 'No breaking changes', oasdiffOutcome: 'success' })).toMatchObject({
       ok: true,
     });
+    // Observed in CI run 38938515737 on a version-only change: oasdiff says
+    // more than "No breaking changes", and prints no summary line.
+    expect(
+      run({
+        report: 'No breaking changes to report, but the specs are different.\n',
+        oasdiffOutcome: 'success',
+      }),
+    ).toMatchObject({ ok: true });
     expect(run({ report: '', oasdiffOutcome: 'success' })).toMatchObject({ ok: true });
   });
 
