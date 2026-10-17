@@ -78,12 +78,57 @@ jobs:
       - name: Contract version gate
         run: pnpm api:version .oasdiff-base.yaml openapi/gogo.v1.yaml
 
-      - name: Breaking-change gate
+      # GoGo-BE#694: the gate judges the report, so an owner-decided breaking
+      # change can be green on a head instead of being merged past a red job.
+      # oasdiff only measures here; the policy lives in the script below.
+      - name: Breaking-change gate (measure only)
+        id: oasdiff
+        # Kept so a tool failure reaches the policy step as `outcome: failure`
+        # instead of ending the job without a verdict.
+        continue-on-error: true
         uses: oasdiff/oasdiff-action/breaking@v0.0.21
         with:
           base: .oasdiff-base.yaml
           revision: openapi/gogo.v1.yaml
-          fail-on: ERR
+          # No `fail-on`: this step measures, the policy step judges. A breaking
+          # change must not fail it, so a failure here can only be the tool or
+          # the runner — which the policy step then refuses (#703 Astra F-01).
+          output-to-file: .oasdiff-report.txt
+      - name: Breaking-change policy
+        run: >-
+          SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register
+          scripts/check-contract-compat.ts
+          .oasdiff-base.yaml openapi/gogo.v1.yaml .oasdiff-report.txt
+          ${{ steps.oasdiff.outcome }}
+
+      # Consistency check for .github/oasdiff-exceptions.json, not a tamper
+      # check: this step goes red when the recorded finding stops matching the
+      # transition it was written for, or when the expected id stops being
+      # admitted — so a dead or mis-hashed entry cannot sit there looking
+      # guarded. It does not catch an entry being widened (a diagnostic
+      # shortened to a matching substring, another exception added) or an edit
+      # to the checker itself; that boundary is the owner review recorded
+      # against a reviewed head, with these paths in CODEOWNERS. ADR-0027 says
+      # the same.
+      - name: Recorded exception still matches its own transition (#694)
+        run: |
+          git show e1e390d711973b541a5eb7ffde8175795b0997b6:openapi/gogo.v1.yaml > .oasdiff-hist-base.yaml
+          git show 5bb32429c2e6d6fc60d4903cd0db228cba4eaf60:openapi/gogo.v1.yaml > .oasdiff-hist-head.yaml
+      - name: Breaking-change gate on the recorded transition (#694, measure only)
+        id: oasdiff-history
+        continue-on-error: true
+        uses: oasdiff/oasdiff-action/breaking@v0.0.21
+        with:
+          base: .oasdiff-hist-base.yaml
+          revision: .oasdiff-hist-head.yaml
+          output-to-file: .oasdiff-history-report.txt
+      - name: Breaking-change policy on the recorded transition (#694)
+        run: >-
+          SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register
+          scripts/check-contract-compat.ts
+          .oasdiff-hist-base.yaml .oasdiff-hist-head.yaml .oasdiff-history-report.txt
+          ${{ steps.oasdiff-history.outcome }}
+          --expect=BE-694-room-events-resync-oneof
 
   integration:
     runs-on: ubuntu-latest
