@@ -272,26 +272,156 @@ export function evaluate(input: {
   };
 }
 
-function main(): void {
-  const argv = process.argv.slice(2);
-  const flag = (name: string): string | undefined => {
-    const hit = argv.find((a) => a.startsWith(`--${name}=`));
-    return hit?.slice(name.length + 3);
-  };
-  const [basePath, revisionPath, reportPath, outcome] = argv.filter((a) => !a.startsWith('--'));
+export interface CliArgs {
+  basePath: string;
+  revisionPath: string;
+  reportPath: string;
+  oasdiffOutcome: string;
+  exceptionsPath: string;
+  expect?: string | undefined;
+}
 
-  if (!basePath || !revisionPath || !reportPath || !outcome) {
-    console.error(
-      'usage: check-contract-compat.ts <base-spec> <revision-spec> <oasdiff-report> <oasdiff-outcome> [--exceptions=path] [--expect=exception-id]',
-    );
-    process.exit(2);
+const USAGE =
+  'usage: check-contract-compat.ts <base-spec> <revision-spec> <oasdiff-report> <oasdiff-outcome> [--exceptions=<path>] [--expect=<exception-id>]';
+
+const OPTIONS = ['--exceptions', '--expect'] as const;
+type Option = (typeof OPTIONS)[number];
+
+/**
+ * Strict on purpose. The first version dropped every option it did not
+ * recognise and ignored extra positionals, so `--expect <id>` written as two
+ * arguments, a misspelled flag or the legacy fifth-positional exceptions file
+ * all left `expect` undefined — and a clean historical replay passed, looking
+ * guarded (GoGo-BE#703 F-02). A parser that guesses is the gate's failure in
+ * miniature. Options take `--name=value` only: a separate value argument could
+ * never be told apart from a file path once a shell variable comes up empty.
+ */
+export function parseArgs(argv: string[]): CliArgs {
+  const positionals: string[] = [];
+  const options = new Map<Option, string>();
+
+  for (const [index, arg] of argv.entries()) {
+    if (arg === '') throw new Error(`argument ${index + 1} is empty`);
+    if (arg === '--') {
+      throw new Error(
+        'a bare `--` is not accepted: options are written --name=value, nothing follows them',
+      );
+    }
+    if (!arg.startsWith('-')) {
+      positionals.push(arg);
+      continue;
+    }
+    const eq = arg.indexOf('=');
+    const name = eq === -1 ? arg : arg.slice(0, eq);
+    const known = OPTIONS.find((option) => option === name);
+    if (known === undefined) {
+      throw new Error(
+        `unknown option ${name}: the only options are ${OPTIONS.map((o) => `${o}=`).join(' and ')}`,
+      );
+    }
+    if (eq === -1) {
+      throw new Error(
+        `${known} takes its value as ${known}=<${known === '--expect' ? 'exception-id' : 'path'}>; a separate argument would be read as a file path`,
+      );
+    }
+    const value = arg.slice(eq + 1);
+    if (value === '') throw new Error(`${known}= has no value`);
+    if (options.has(known)) throw new Error(`${known} given twice`);
+    options.set(known, value);
   }
 
-  const exceptionsFile = flag('exceptions') ?? '.github/oasdiff-exceptions.json';
+  const slots = '<base-spec> <revision-spec> <oasdiff-report> <oasdiff-outcome>';
+  if (positionals.length < 4) {
+    throw new Error(`expected 4 positional arguments (${slots}), got ${positionals.length}`);
+  }
+  if (positionals.length > 4) {
+    throw new Error(
+      `unexpected extra argument(s): ${positionals.slice(4).join(' ')} — the exceptions file is --exceptions=<path>, not a fifth positional`,
+    );
+  }
+
+  const [basePath, revisionPath, reportPath, oasdiffOutcome] = positionals as [
+    string,
+    string,
+    string,
+    string,
+  ];
+  const expect = options.get('--expect');
+  return {
+    basePath,
+    revisionPath,
+    reportPath,
+    oasdiffOutcome,
+    exceptionsPath: options.get('--exceptions') ?? '.github/oasdiff-exceptions.json',
+    ...(expect === undefined ? {} : { expect }),
+  };
+}
+
+const REQUIRED: ReadonlyArray<keyof OasdiffException> = [
+  'id',
+  'baseSha256',
+  'revisionSha256',
+  'diagnostic',
+];
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+/**
+ * The exceptions file, checked for the shape `evaluate` depends on. An id must
+ * be unique: `--expect=<id>` presumes it names one decision, and "used N
+ * time(s)" would lie about a file where it names two. A duplicate is not a
+ * bypass — admission is keyed on the hashes and the diagnostic — but it is a
+ * file this gate cannot read unambiguously, and it refuses those.
+ */
+export function parseExceptions(json: string): OasdiffException[] {
+  const parsed: unknown = JSON.parse(json);
+  const list = isRecord(parsed) ? parsed.exceptions : undefined;
+  if (!Array.isArray(list)) throw new Error('expected a JSON object with an `exceptions` array');
+
+  const seen = new Set<string>();
+  return list.map((entry: unknown, index): OasdiffException => {
+    if (!isRecord(entry)) throw new Error(`exceptions[${index}] is not an object`);
+    for (const key of REQUIRED) {
+      const value = entry[key];
+      if (typeof value !== 'string' || value.trim() === '') {
+        throw new Error(`exceptions[${index}].${key} must be a non-empty string`);
+      }
+    }
+    const id = entry.id as string;
+    if (seen.has(id)) {
+      throw new Error(
+        `exception id ${id} appears more than once — --expect names one decision, so an id must name exactly one entry`,
+      );
+    }
+    seen.add(id);
+    return entry as unknown as OasdiffException;
+  });
+}
+
+function main(): void {
+  let args: CliArgs;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(`✖ ${(error as Error).message}`);
+    console.error(USAGE);
+    process.exit(2);
+  }
+  const { basePath, revisionPath, reportPath, oasdiffOutcome, exceptionsPath, expect } = args;
+
   if (!existsSync(reportPath)) {
     console.error(
       `✖ the oasdiff step wrote no report at ${reportPath} — treating that as a failure.`,
     );
+    process.exit(2);
+  }
+
+  let exceptions: OasdiffException[];
+  try {
+    exceptions = parseExceptions(readFileSync(exceptionsPath, 'utf8'));
+  } catch (error) {
+    console.error(`✖ could not read ${exceptionsPath}: ${(error as Error).message}`);
     process.exit(2);
   }
 
@@ -304,9 +434,9 @@ function main(): void {
     report,
     baseSha256: sha256(readFileSync(basePath)),
     revisionSha256: sha256(readFileSync(revisionPath)),
-    exceptions: JSON.parse(readFileSync(exceptionsFile, 'utf8')).exceptions as OasdiffException[],
-    oasdiffOutcome: outcome,
-    expect: flag('expect'),
+    exceptions,
+    oasdiffOutcome,
+    expect,
   });
 
   const out = verdict.lines.join('\n');

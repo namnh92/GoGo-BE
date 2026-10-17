@@ -1,5 +1,13 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { evaluate, parseReport, type OasdiffException } from './check-contract-compat';
+import {
+  evaluate,
+  parseArgs,
+  parseExceptions,
+  parseReport,
+  type OasdiffException,
+} from './check-contract-compat';
 
 const BASE = '2cac78cc74ffb26e183a4ca3ce84143c83fbf9e411e7ca69ff084d32de403359';
 const REVISION = 'a807224b19b05452bf4c1f2a8f6df12365dcdf6be38c7c30da25d747717016c5';
@@ -248,5 +256,71 @@ describe('evaluate', () => {
       oasdiffOutcome: 'success',
     });
     expect(verdict).toMatchObject({ ok: true });
+  });
+});
+
+describe('parseArgs (#703 F-02)', () => {
+  const FOUR = ['base.yaml', 'rev.yaml', 'report.txt', 'failure'];
+
+  it('accepts the forms ci.yml uses, options in any position', () => {
+    expect(parseArgs(FOUR)).toEqual({
+      basePath: 'base.yaml',
+      revisionPath: 'rev.yaml',
+      reportPath: 'report.txt',
+      oasdiffOutcome: 'failure',
+      exceptionsPath: '.github/oasdiff-exceptions.json',
+    });
+    expect(parseArgs([...FOUR, '--expect=X'])).toMatchObject({ expect: 'X' });
+    expect(parseArgs(['--exceptions=e.json', ...FOUR, '--expect=X'])).toMatchObject({
+      exceptionsPath: 'e.json',
+      expect: 'X',
+    });
+  });
+
+  it.each([
+    ['three positionals', FOUR.slice(0, 3), 'expected 4 positional arguments'],
+    ['a fifth positional', [...FOUR, 'exceptions.json'], 'not a fifth positional'],
+    ['an empty argument', [...FOUR.slice(0, 3), ''], 'argument 4 is empty'],
+    ['--expect split from its value', [...FOUR, '--expect', 'X'], '--expect takes its value as'],
+    ['--expect= with no value', [...FOUR, '--expect='], 'has no value'],
+    ['--expect twice', [...FOUR, '--expect=X', '--expect=Y'], '--expect given twice'],
+    ['an unknown option', [...FOUR, '--expct=X'], 'unknown option --expct'],
+    ['a single-dash option', [...FOUR, '-e'], 'unknown option -e'],
+    ['a bare --', [...FOUR, '--'], 'bare `--`'],
+  ])('refuses %s and says what was wrong', (_label, argv, reason) => {
+    expect(() => parseArgs(argv)).toThrow(reason);
+  });
+});
+
+describe('parseExceptions', () => {
+  it('reads the committed file', () => {
+    const json = readFileSync(
+      path.resolve(__dirname, '../.github/oasdiff-exceptions.json'),
+      'utf8',
+    );
+    expect(parseExceptions(json).map((e) => e.id)).toContain('BE-694-room-events-resync-oneof');
+  });
+
+  it('refuses a duplicated id — --expect names one decision', () => {
+    expect(() => parseExceptions(JSON.stringify({ exceptions: [exception, exception] }))).toThrow(
+      'BE-694-room-events-resync-oneof appears more than once',
+    );
+  });
+
+  it.each([
+    ['no exceptions array', '{}', '`exceptions` array'],
+    ['an entry that is not an object', JSON.stringify({ exceptions: ['x'] }), 'is not an object'],
+    [
+      'an entry without a diagnostic',
+      JSON.stringify({ exceptions: [{ ...exception, diagnostic: undefined }] }),
+      'exceptions[0].diagnostic must be a non-empty string',
+    ],
+    [
+      'an entry with a blank id',
+      JSON.stringify({ exceptions: [{ ...exception, id: ' ' }] }),
+      'exceptions[0].id must be a non-empty string',
+    ],
+  ])('refuses a file with %s and says which field', (_label, json, reason) => {
+    expect(() => parseExceptions(json)).toThrow(reason);
   });
 });
