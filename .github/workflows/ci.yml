@@ -101,10 +101,15 @@ jobs:
           .oasdiff-base.yaml openapi/gogo.v1.yaml .oasdiff-report.txt
           ${{ steps.oasdiff.outcome }}
 
-      # The exception in .github/oasdiff-exceptions.json is only worth anything
-      # if it still matches the transition it was written for. Replaying that
-      # transition keeps the entry honest: edit the hashes or the diagnostic and
-      # this step goes red, on every PR, not on the one that needed it.
+      # Consistency check for .github/oasdiff-exceptions.json, not a tamper
+      # check: this step goes red when the recorded finding stops matching the
+      # transition it was written for, or when the expected id stops being
+      # admitted — so a dead or mis-hashed entry cannot sit there looking
+      # guarded. It does not catch an entry being widened (a diagnostic
+      # shortened to a matching substring, another exception added) or an edit
+      # to the checker itself; that boundary is the owner review recorded
+      # against a reviewed head, with these paths in CODEOWNERS. ADR-0027 says
+      # the same.
       - name: Recorded exception still matches its own transition (#694)
         run: |
           git show e1e390d711973b541a5eb7ffde8175795b0997b6:openapi/gogo.v1.yaml > .oasdiff-hist-base.yaml
