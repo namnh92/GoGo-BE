@@ -126,7 +126,16 @@ export function evaluate(input: {
   baseSha256: string;
   revisionSha256: string;
   exceptions: OasdiffException[];
-  /** `steps.<id>.outcome` of the oasdiff step: it ran with `--fail-on ERR`. */
+  /**
+   * `steps.<id>.outcome` of the oasdiff step, which runs **without** `--fail-on`
+   * so that measuring and judging stay separate: finding a breaking change is
+   * not a failure of the tool, so the only reason that step can fail is the
+   * tool or the runner. `success` is therefore required — anything else is a
+   * tool failure, even if a report was written (GoGo-BE#703 Astra F-01: with
+   * `--fail-on ERR` behind `continue-on-error`, an action that wrote a matching
+   * report and then died of an unrelated error was indistinguishable from the
+   * expected breaking-change exit, and the waiver admitted it).
+   */
   oasdiffOutcome: string;
   /**
    * Replay mode: the id this comparison must admit, exactly once. Without it a
@@ -138,13 +147,15 @@ export function evaluate(input: {
 }): Verdict {
   const { report, baseSha256, revisionSha256, exceptions, oasdiffOutcome, expect } = input;
 
-  if (oasdiffOutcome !== 'success' && oasdiffOutcome !== 'failure') {
+  if (oasdiffOutcome !== 'success') {
     return {
       ok: false,
       code: 2,
       lines: [
-        `✖ the oasdiff step did not run to a verdict (outcome: ${oasdiffOutcome || '(empty)'}).`,
-        '  A tool or infrastructure failure is not a passing contract gate.',
+        `✖ the oasdiff step did not complete (outcome: ${oasdiffOutcome || '(empty)'}).`,
+        '  It runs without `--fail-on`, so a breaking change does not fail it: the only',
+        '  reasons left are the tool or the runner, and neither is a passing contract',
+        '  gate — not even when a report was written before the failure.',
       ],
     };
   }
@@ -188,16 +199,6 @@ export function evaluate(input: {
   const errors = parsed.findings.filter((f) => f.severity === 'error');
 
   if (errors.length === 0) {
-    if (oasdiffOutcome === 'failure') {
-      return {
-        ok: false,
-        code: 2,
-        lines: [
-          '✖ oasdiff failed but its report carries no error finding.',
-          '  Treating that as a pass would hide the reason it failed.',
-        ],
-      };
-    }
     if (expect !== undefined) {
       return {
         ok: false,

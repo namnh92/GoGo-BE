@@ -81,14 +81,18 @@ jobs:
       # GoGo-BE#694: the gate judges the report, so an owner-decided breaking
       # change can be green on a head instead of being merged past a red job.
       # oasdiff only measures here; the policy lives in the script below.
-      - name: Breaking-change gate
+      - name: Breaking-change gate (measure only)
         id: oasdiff
+        # Kept so a tool failure reaches the policy step as `outcome: failure`
+        # instead of ending the job without a verdict.
         continue-on-error: true
         uses: oasdiff/oasdiff-action/breaking@v0.0.21
         with:
           base: .oasdiff-base.yaml
           revision: openapi/gogo.v1.yaml
-          fail-on: ERR
+          # No `fail-on`: this step measures, the policy step judges. A breaking
+          # change must not fail it, so a failure here can only be the tool or
+          # the runner — which the policy step then refuses (#703 Astra F-01).
           output-to-file: .oasdiff-report.txt
       - name: Breaking-change policy
         run: >-
@@ -105,14 +109,13 @@ jobs:
         run: |
           git show e1e390d711973b541a5eb7ffde8175795b0997b6:openapi/gogo.v1.yaml > .oasdiff-hist-base.yaml
           git show 5bb32429c2e6d6fc60d4903cd0db228cba4eaf60:openapi/gogo.v1.yaml > .oasdiff-hist-head.yaml
-      - name: Breaking-change gate on the recorded transition (#694)
+      - name: Breaking-change gate on the recorded transition (#694, measure only)
         id: oasdiff-history
         continue-on-error: true
         uses: oasdiff/oasdiff-action/breaking@v0.0.21
         with:
           base: .oasdiff-hist-base.yaml
           revision: .oasdiff-hist-head.yaml
-          fail-on: ERR
           output-to-file: .oasdiff-history-report.txt
       - name: Breaking-change policy on the recorded transition (#694)
         run: >-

@@ -464,15 +464,28 @@ Consequences of that decision:
   prerelease exception, which was not taken.
 - **`openapi/CHANGELOG.md`** carries the consumer-facing note: both frame
   shapes, the guarantee that is gone, and what a client must do.
-- **The gate judges a report instead of being the report.** oasdiff now writes
-  its findings to a file and `scripts/check-contract-compat.ts` decides, against
+- **The gate judges a report instead of being the report.** oasdiff now measures
+  only — it runs without `--fail-on`, so a breaking change does not fail that
+  step and a failed step can only mean the tool or the runner — and
+  `scripts/check-contract-compat.ts` decides, against
   `.github/oasdiff-exceptions.json`. The entry for this change matches only when
   both sides hash to the exact bytes the decision was made on
   (`e1e390d`/`5bb3242` — `5bb3242`'s spec is byte-identical to the reviewed head
-  `0aaeca8`) and only for that diagnostic. It cannot admit the same class of
-  change on a later contract, and a second finding riding along with it fails the
-  build. CI replays that historical transition on every PR, so editing the entry
-  turns the gate red rather than quietly widening it.
+  `0aaeca8`), only for that diagnostic, and only once. It cannot admit the same
+  class of change on a later contract, and a second finding riding along with it
+  fails the build.
+- **What the replay step is, and what it is not.** CI replays that historical
+  transition on every PR with `--expect`, which keeps the entry _consistent_: the
+  recorded finding must still be reported and still be admitted by that id, so an
+  entry whose hashes no longer describe anything, or one whose finding upstream
+  stopped reporting, turns the gate red instead of sitting there looking
+  guarded. It is **not** a tamper check on the policy. An entry could still be
+  widened — a diagnostic shortened to a matching substring, a second exception
+  added alongside this one — and the replay would stay green, as it would if the
+  checker or the workflow itself were edited. The trust anchor for that is the
+  review process, not the pipeline: these paths are listed in `CODEOWNERS`, and
+  the owner's sign-off is recorded against a reviewed head (#694, PR #703). A
+  policy edit is only as safe as that sign-off.
 - **Known fragility, accepted:** the action's image is `tufin/oasdiff:stable`, so
   if upstream rewords the diagnostic the replay step goes red and the entry has to
   be re-recorded deliberately. Red on wording drift is the failure mode we want;

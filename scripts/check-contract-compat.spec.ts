@@ -59,7 +59,7 @@ const run = (over: Partial<Parameters<typeof evaluate>[0]> = {}) =>
     baseSha256: BASE,
     revisionSha256: REVISION,
     exceptions: [exception],
-    oasdiffOutcome: 'failure',
+    oasdiffOutcome: 'success',
     ...over,
   });
 
@@ -170,14 +170,18 @@ describe('evaluate', () => {
     expect(verdict).toMatchObject({ ok: false, code: 2 });
   });
 
-  it('fails closed when oasdiff failed but reported no error', () => {
-    const verdict = run({ report: 'No breaking changes', oasdiffOutcome: 'failure' });
+  it('refuses a tool failure even when the report admits the finding (#703 Astra F-01)', () => {
+    // The step runs without `--fail-on`, so `failure` can only be the tool or
+    // the runner — a report written before it died must not be judged.
+    const verdict = run({ report: historicalReportAsOasdiffPrintsIt, oasdiffOutcome: 'failure' });
     expect(verdict).toMatchObject({ ok: false, code: 2 });
+    expect(verdict.ok === false && verdict.lines.join('\n')).toContain('did not complete');
   });
 
   it('fails closed when the oasdiff step did not reach a verdict', () => {
     expect(run({ oasdiffOutcome: '' })).toMatchObject({ ok: false, code: 2 });
     expect(run({ oasdiffOutcome: 'cancelled' })).toMatchObject({ ok: false, code: 2 });
+    expect(run({ oasdiffOutcome: 'skipped' })).toMatchObject({ ok: false, code: 2 });
   });
 
   it('does not let an info finding lend its diagnostic to an unrelated error (#703 F-01)', () => {
@@ -260,14 +264,14 @@ describe('evaluate', () => {
 });
 
 describe('parseArgs (#703 F-02)', () => {
-  const FOUR = ['base.yaml', 'rev.yaml', 'report.txt', 'failure'];
+  const FOUR = ['base.yaml', 'rev.yaml', 'report.txt', 'success'];
 
   it('accepts the forms ci.yml uses, options in any position', () => {
     expect(parseArgs(FOUR)).toEqual({
       basePath: 'base.yaml',
       revisionPath: 'rev.yaml',
       reportPath: 'report.txt',
-      oasdiffOutcome: 'failure',
+      oasdiffOutcome: 'success',
       exceptionsPath: '.github/oasdiff-exceptions.json',
     });
     expect(parseArgs([...FOUR, '--expect=X'])).toMatchObject({ expect: 'X' });
