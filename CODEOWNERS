@@ -24,7 +24,12 @@
 /scripts/check-openapi-version.ts   @namnh92
 /.github/workflows/                 @namnh92
 
-# Schema, authentication and permissions (`git.md`: CODEOWNER approval required).
-/libs/database/migrations/          @namnh92
-/libs/modules/auth/                 @namnh92
+# The rest of what `git.md` names: schema, authentication, permissions, ranking.
+# Paths verified against the tree — migrations live at the repository root, and
+# authentication is `identity`, not `auth`.
+/migrations/                        @namnh92
+/libs/database/                     @namnh92
+/libs/modules/identity/             @namnh92
 /libs/modules/cms/                  @namnh92
+/libs/modules/suggestions/domain/scoring.ts  @namnh92
+/libs/modules/search/domain/        @namnh92
