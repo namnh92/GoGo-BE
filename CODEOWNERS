@@ -1,0 +1,30 @@
+# GoGo-BE code owners.
+#
+# Declarative: `develop` protection has `require_code_owner_reviews: false` and
+# 0 required approvals (owner decision 2026-09-15, `git.md` — a single
+# collaborator cannot approve their own pull request, so enforcing it would
+# deadlock every merge). GitHub therefore suggests these reviewers rather than
+# demanding them; the rule that the owner signs these paths is in `git.md`, and
+# this file is what makes "which paths" readable in the repository instead of
+# only in a rules file.
+#
+# Raised by Sol as GoGo-BE#703 F-03 — a pull request that only edits the
+# breaking-change policy was invisible to any ownership check.
+
+# Everything, unless a later rule wins.
+*                                   @namnh92
+
+# The published contract. Consumers vendor this and generate clients from it.
+/openapi/                           @namnh92
+
+# The breaking-change policy itself: the recorded exceptions, the script that
+# judges oasdiff's report, and the workflow that wires them together.
+/.github/oasdiff-exceptions.json    @namnh92
+/scripts/check-contract-compat.ts   @namnh92
+/scripts/check-openapi-version.ts   @namnh92
+/.github/workflows/                 @namnh92
+
+# Schema, authentication and permissions (`git.md`: CODEOWNER approval required).
+/libs/database/migrations/          @namnh92
+/libs/modules/auth/                 @namnh92
+/libs/modules/cms/                  @namnh92
