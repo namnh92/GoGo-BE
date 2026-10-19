@@ -1302,8 +1302,11 @@ export const COST_REGISTRY_DATA: RegistryData = {
      * Adjust's terms, and what counts as an attribution is unknown, so it is
      * stated here and not modelled as an allowance. Planned with no cost
      * source: no Adjust API token exists (none is declared — GoGo-Infra#237)
-     * and no collector reads one. A cost appears when someone enters a manual
-     * item for it; nothing is estimated.
+     * and no collector reads one, and `adjust.attribution` takes no manual
+     * amount (no `MANUAL_COST`). Its cost stays unknown until a source is
+     * added on purpose — a collector after BE#389, or a separate
+     * `adjust.subscription` manual service if the plan stops being free.
+     * Nothing is estimated.
      */
     planned('adjust', 'Adjust', [
       {
