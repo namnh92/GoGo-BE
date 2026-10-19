@@ -55,6 +55,16 @@ export interface ParsedReport {
  */
 const NO_BREAKING = /^\s*no breaking changes\b/i;
 
+/**
+ * GoGo-BE#707 — what oasdiff prints for an identical pair since the action's
+ * unpinned oasdiff changed its wording (CI run 39272390903; run 38938515737
+ * printed "No breaking changes" for the same case). The whole report must be
+ * this one sentence, and it is believed only when the two specs really are
+ * the same bytes: a "no changes" over a pair that differs is a tool we no
+ * longer understand, not a clean contract.
+ */
+const NO_CHANGES = /^no changes detected\.?$/i;
+
 /** `1 changes: 1 error, 0 warning, 0 info` (CI run 38940032360). */
 const SUMMARY = /(\d+)\s+errors?,\s*(\d+)\s+warnings?(?:,\s*(\d+)\s+infos?)?/i;
 
@@ -160,7 +170,19 @@ export function evaluate(input: {
     };
   }
 
-  const empty = report.trim() === '' || NO_BREAKING.test(report.trimStart());
+  if (NO_CHANGES.test(report.trim()) && baseSha256 !== revisionSha256) {
+    return {
+      ok: false,
+      code: 2,
+      lines: [
+        '✖ oasdiff reports no changes, but the two specs differ (sha256 base ≠ revision).',
+        '  Refusing to read that as a clean contract.',
+      ],
+    };
+  }
+
+  const empty =
+    report.trim() === '' || NO_BREAKING.test(report.trimStart()) || NO_CHANGES.test(report.trim());
   const parsed = empty
     ? { summary: { error: 0, warning: 0, info: 0 }, findings: [] }
     : parseReport(report);
