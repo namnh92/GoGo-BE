@@ -153,6 +153,67 @@ describe('evaluate', () => {
     expect(run({ report: '', oasdiffOutcome: 'success' })).toMatchObject({ ok: true });
   });
 
+  it('#707: passes "No changes detected" for an identical pair', () => {
+    for (const report of ['No changes detected', 'No changes detected\n', 'no changes detected.']) {
+      expect(
+        run({ report, baseSha256: BASE, revisionSha256: BASE, oasdiffOutcome: 'success' }),
+        report,
+      ).toMatchObject({ ok: true });
+    }
+  });
+
+  it('#707: refuses "No changes detected" when the specs differ', () => {
+    const verdict = run({ report: 'No changes detected\n', oasdiffOutcome: 'success' });
+    expect(verdict).toMatchObject({ ok: false, code: 2 });
+    expect(verdict.ok === false && verdict.lines.join('\n')).toContain('the two specs differ');
+  });
+
+  it('#708 F-01: refuses "No changes detected" with a zero-count summary, whatever the hashes', () => {
+    for (const revisionSha256 of [BASE, REVISION]) {
+      const verdict = run({
+        report: 'No changes detected\n0 changes: 0 error, 0 warning, 0 info',
+        baseSha256: BASE,
+        revisionSha256,
+        oasdiffOutcome: 'success',
+      });
+      expect(verdict, revisionSha256).toMatchObject({ ok: false, code: 2 });
+    }
+  });
+
+  it('#708 r2 F-01: refuses the sentinel with a summary on the same line, whatever the hashes', () => {
+    // Sol F-01 / Astra F-02 (confirm round): the first fix only looked at
+    // whole lines, so a sentinel sharing its line with a zero-count summary
+    // reached the summary parser and passed — even over a pair that differs.
+    for (const report of [
+      'No changes detected; 0 changes: 0 error, 0 warning, 0 info',
+      'No changes detected; 0 error, 0 warning',
+      'oasdiff: No changes detected',
+    ]) {
+      for (const revisionSha256 of [BASE, REVISION]) {
+        const verdict = run({
+          report,
+          baseSha256: BASE,
+          revisionSha256,
+          oasdiffOutcome: 'success',
+        });
+        expect(verdict, `${report} / ${revisionSha256}`).toMatchObject({ ok: false, code: 2 });
+        expect(verdict.ok === false && verdict.lines.join('\n'), report).toContain(
+          'alongside other output',
+        );
+      }
+    }
+  });
+
+  it('#707: refuses "No changes detected" with anything else in the report', () => {
+    const verdict = run({
+      report: 'No changes detected\nerror\t[api-removed] in API GET /x',
+      baseSha256: BASE,
+      revisionSha256: BASE,
+      oasdiffOutcome: 'success',
+    });
+    expect(verdict).toMatchObject({ ok: false, code: 2 });
+  });
+
   it('fails closed on a report it cannot read — no summary line', () => {
     const verdict = run({ report: 'error\t[something] at openapi/gogo.v1.yaml\n\tsome text' });
     expect(verdict).toMatchObject({ ok: false, code: 2 });
