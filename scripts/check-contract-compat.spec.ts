@@ -168,6 +168,18 @@ describe('evaluate', () => {
     expect(verdict.ok === false && verdict.lines.join('\n')).toContain('the two specs differ');
   });
 
+  it('#708 F-01: refuses "No changes detected" with a zero-count summary, whatever the hashes', () => {
+    for (const revisionSha256 of [BASE, REVISION]) {
+      const verdict = run({
+        report: 'No changes detected\n0 changes: 0 error, 0 warning, 0 info',
+        baseSha256: BASE,
+        revisionSha256,
+        oasdiffOutcome: 'success',
+      });
+      expect(verdict, revisionSha256).toMatchObject({ ok: false, code: 2 });
+    }
+  });
+
   it('#707: refuses "No changes detected" with anything else in the report', () => {
     const verdict = run({
       report: 'No changes detected\nerror\t[api-removed] in API GET /x',

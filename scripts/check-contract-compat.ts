@@ -170,6 +170,19 @@ export function evaluate(input: {
     };
   }
 
+  // The sentinel anywhere but alone is a report we do not understand: a
+  // trailing zero-count summary must not turn it into a pass (#708 F-01).
+  const mentionsNoChanges = report.split('\n').some((line) => NO_CHANGES.test(line.trim()));
+  if (mentionsNoChanges && !NO_CHANGES.test(report.trim())) {
+    return {
+      ok: false,
+      code: 2,
+      lines: [
+        '✖ oasdiff says "No changes detected" alongside other output.',
+        '  Refusing to guess which of the two is true.',
+      ],
+    };
+  }
   if (NO_CHANGES.test(report.trim()) && baseSha256 !== revisionSha256) {
     return {
       ok: false,
