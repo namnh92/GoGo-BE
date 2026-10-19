@@ -1295,6 +1295,24 @@ export const COST_REGISTRY_DATA: RegistryData = {
         meters: [['conversions', 'conversion']],
       },
     ]),
+    /**
+     * MMP-BE-001 (#704) — Adjust, the app's second MMP beside Tenjin (owner
+     * 2026-10-19, GoGo-MobileApp#363). Plan Base: free, the welcome email
+     * says 1,500 monthly attributions in the first year — not verified against
+     * Adjust's terms, and what counts as an attribution is unknown, so it is
+     * stated here and not modelled as an allowance. Planned with no cost
+     * source: no Adjust API token exists (none is declared — GoGo-Infra#237)
+     * and no collector reads one. A cost appears when someone enters a manual
+     * item for it; nothing is estimated.
+     */
+    planned('adjust', 'Adjust', [
+      {
+        name: 'attribution',
+        displayName: 'Attribution',
+        category: 'attribution',
+        meters: [['attributions', 'conversion']],
+      },
+    ]),
     planned('grafana', 'Grafana Cloud', [
       {
         name: 'metrics',
