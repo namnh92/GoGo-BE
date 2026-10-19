@@ -180,6 +180,30 @@ describe('evaluate', () => {
     }
   });
 
+  it('#708 r2 F-01: refuses the sentinel with a summary on the same line, whatever the hashes', () => {
+    // Sol F-01 / Astra F-02 (confirm round): the first fix only looked at
+    // whole lines, so a sentinel sharing its line with a zero-count summary
+    // reached the summary parser and passed — even over a pair that differs.
+    for (const report of [
+      'No changes detected; 0 changes: 0 error, 0 warning, 0 info',
+      'No changes detected; 0 error, 0 warning',
+      'oasdiff: No changes detected',
+    ]) {
+      for (const revisionSha256 of [BASE, REVISION]) {
+        const verdict = run({
+          report,
+          baseSha256: BASE,
+          revisionSha256,
+          oasdiffOutcome: 'success',
+        });
+        expect(verdict, `${report} / ${revisionSha256}`).toMatchObject({ ok: false, code: 2 });
+        expect(verdict.ok === false && verdict.lines.join('\n'), report).toContain(
+          'alongside other output',
+        );
+      }
+    }
+  });
+
   it('#707: refuses "No changes detected" with anything else in the report', () => {
     const verdict = run({
       report: 'No changes detected\nerror\t[api-removed] in API GET /x',

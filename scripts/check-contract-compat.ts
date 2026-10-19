@@ -65,6 +65,14 @@ const NO_BREAKING = /^\s*no breaking changes\b/i;
  */
 const NO_CHANGES = /^no changes detected\.?$/i;
 
+/**
+ * The same sentence anywhere in the report — on a line of its own, or sharing
+ * one with whatever follows it (`No changes detected; 0 changes: 0 error,
+ * 0 warning, 0 info` — GoGo-BE#708 Sol F-01 / Astra F-02). A report that
+ * mentions it without being exactly it is refused before any parsing.
+ */
+const NO_CHANGES_PHRASE = /no changes detected/i;
+
 /** `1 changes: 1 error, 0 warning, 0 info` (CI run 38940032360). */
 const SUMMARY = /(\d+)\s+errors?,\s*(\d+)\s+warnings?(?:,\s*(\d+)\s+infos?)?/i;
 
@@ -171,9 +179,9 @@ export function evaluate(input: {
   }
 
   // The sentinel anywhere but alone is a report we do not understand: a
-  // trailing zero-count summary must not turn it into a pass (#708 F-01).
-  const mentionsNoChanges = report.split('\n').some((line) => NO_CHANGES.test(line.trim()));
-  if (mentionsNoChanges && !NO_CHANGES.test(report.trim())) {
+  // zero-count summary after it — on the next line or on the same one — must
+  // not turn it into a pass (#708 F-01, both rounds).
+  if (NO_CHANGES_PHRASE.test(report) && !NO_CHANGES.test(report.trim())) {
     return {
       ok: false,
       code: 2,
