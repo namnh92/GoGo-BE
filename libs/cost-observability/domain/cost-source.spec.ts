@@ -25,9 +25,20 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
     for (const id of ['apple', 'hosting', 'registrar', 'operations']) {
       expect(providerCostSourceKind(provider(id)), id).toBe('MANUAL');
     }
-    for (const id of ['onesignal', 'tenjin', 'grafana']) {
+    for (const id of ['onesignal', 'tenjin', 'adjust', 'grafana']) {
       expect(providerCostSourceKind(provider(id)), id).toBe('NONE');
     }
+  });
+
+  it('#704: Adjust is planned beside Tenjin — attribution only, no cost source, nothing estimated', () => {
+    const adjust = provider('adjust');
+    expect(adjust.status).toBe('planned');
+    expect(adjust.services?.map((s) => s.id)).toEqual(['adjust.attribution']);
+    expect(service('adjust.attribution').category).toBe('attribution');
+    expect(service('adjust.attribution').meters?.map((m) => [m.metric, m.unit])).toEqual([
+      ['attributions', 'conversion'],
+    ]);
+    expect(provider('tenjin').status).toBe('planned');
   });
 
   it('a service declares for itself before it inherits: Play Console is MANUAL under an AUTO Google', () => {
