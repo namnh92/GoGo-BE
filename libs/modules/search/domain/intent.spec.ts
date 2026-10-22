@@ -84,6 +84,10 @@ describe('intent facts — the owner example', () => {
     expect(time('Mai đi cafe nhé')).toBe('tomorrow');
     expect(time('đi cafe mai nhé')).toBe('tomorrow');
     expect(time('Hoàng Mai mai đi lẩu')).toBe('tomorrow');
+    expect(time('Hôm nay ở Hoàng Mai đi đâu chơi')).toBe('today');
+    expect(time('Bạch Mai đi ăn gì cuối tuần')).toBe('weekend');
+    expect(time('Mai đi ăn lẩu')).toBe('tomorrow');
+    expect(time('mai đi ăn lẩu')).toBe('tomorrow');
   });
 });
 

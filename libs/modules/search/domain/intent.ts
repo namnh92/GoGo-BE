@@ -245,7 +245,7 @@ function parsePartySize(text: string): number | null {
 
 const TIME_RULES: Array<[RegExp, TimeHint]> = [
   [/(?:tối nay|đêm nay|tối hôm nay)/u, 'tonight'],
-  [/(?:ngày mai|tối mai|trưa mai|sáng mai|chiều mai|mai đi)/u, 'tomorrow'],
+  [/(?:ngày mai|tối mai|trưa mai|sáng mai|chiều mai)/u, 'tomorrow'],
   [/(?:cuối tuần|thứ 7|thứ bảy|chủ nhật|(?:^|\s)cn(?=\s|$))/u, 'weekend'],
   [/(?:hôm nay|trưa nay|chiều nay|sáng nay|bữa nay)/u, 'today'],
   [/(?:bây giờ|giờ luôn|ngay bây giờ|ngay lúc này|liền luôn|đi liền)/u, 'now'],
@@ -262,8 +262,10 @@ function parseTimeHint(text: string, input: string): TimeHint | null {
 /**
  * A bare "mai" is tomorrow only as typed in lowercase, or capitalised at the
  * start of a sentence and not followed by another name. "Hoàng Mai", "Bạch
- * Mai", "Mai Dịch" are places — the same trap as "Hai Bà Trưng". A place name
- * typed in lowercase still reads as tomorrow: names are left to the resolver.
+ * Mai", "Mai Dịch" are places — the same trap as "Hai Bà Trưng", and "Hoàng
+ * Mai đi đâu" is still a place. Known gaps: a place name typed in lowercase
+ * still reads as tomorrow (names are left to the resolver), and an all-caps
+ * "MAI" never does.
  */
 function hasBareMai(input: string): boolean {
   for (const m of input.matchAll(/(?<=^|[^\p{L}])mai(?=$|[^\p{L}])/giu)) {
