@@ -2353,6 +2353,87 @@
         "inScope": true,
         "needsClarification": false
       }
+    },
+    {
+      "id": "vi-152",
+      "text": "Tối thứ 7 đi cafe gần Hoàng Mai",
+      "tags": ["cafe", "location", "time"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "weekend",
+        "areaText": "Hoàng Mai",
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-153",
+      "text": "Hôm nay ăn gì ngon ở Bạch Mai",
+      "tags": ["restaurant", "location", "time"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "today",
+        "areaText": "Bạch Mai",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-154",
+      "text": "Nhóm bạn đi lẩu khu Mai Dịch",
+      "tags": ["restaurant", "group", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Mai Dịch",
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-155",
+      "text": "Ngân sách 1tr 2 người, đi ăn nhà hàng lãng mạn",
+      "tags": ["restaurant", "couple", "budget"],
+      "expect": {
+        "partySize": 2,
+        "budget": {
+          "amount": 1000000,
+          "mode": null
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-156",
+      "text": "Tầm 3 củ 5 đứa đi nhậu cuối tuần",
+      "tags": ["bar", "group", "budget", "time"],
+      "expect": {
+        "partySize": 5,
+        "budget": {
+          "amount": 3000000,
+          "mode": null
+        },
+        "timeHint": "weekend",
+        "areaText": null,
+        "category": "bar",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
     }
   ]
 }

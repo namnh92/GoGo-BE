@@ -126,6 +126,16 @@ describe('OpenRouterDecisionProvider', () => {
         }),
     ).toThrow(/timeout/);
   });
+
+  it('refuses a timeout that is not a number (#710 r3)', () => {
+    for (const timeoutMs of [Number.NaN, Number('5s'), Number.POSITIVE_INFINITY]) {
+      expect(
+        () =>
+          new OpenRouterDecisionProvider({ apiKey: 'k', model: 'typesafe/jev-1.14', timeoutMs }),
+        String(timeoutMs),
+      ).toThrow(/timeout/);
+    }
+  });
 });
 
 describe('parseDecisionResponse', () => {
@@ -155,6 +165,18 @@ describe('parseDecisionResponse', () => {
       },
     ],
     ['no model', { ...ok, model: undefined }],
+    // #710 r3: `in` reads the prototype chain, so these passed as options.
+    ...['constructor', 'toString', '__proto__'].map((choice): [string, unknown] => [
+      `inherited name as choice: ${choice}`,
+      { ...ok, answers: { ...ok.answers, category: { type: 'choice', choice } } },
+    ]),
+    [
+      'inherited name as answer key',
+      {
+        ...ok,
+        answers: { in_scope: ok.answers.in_scope, category: ok.answers.category, toString: {} },
+      },
+    ],
   ];
   for (const [name, body] of bad) {
     it(`rejects: ${name}`, () => {

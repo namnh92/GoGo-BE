@@ -58,6 +58,33 @@ describe('intent facts — the owner example', () => {
     expect(amount('150-200k/ng')).toBe(200_000);
     expect(amount('đi 4 người')).toBeUndefined();
   });
+
+  it('a party count after a million is not its tenths digit (#710 r3)', () => {
+    expect(parseIntentFacts('ngân sách 1tr 2 người')).toMatchObject({
+      partySize: 2,
+      budget: { amount: 1_000_000 },
+    });
+    expect(parseIntentFacts('tầm 3 củ 5 đứa đi nhậu')).toMatchObject({
+      partySize: 5,
+      budget: { amount: 3_000_000 },
+    });
+    expect(parseIntentFacts('1tr2/người').budget).toMatchObject({
+      amount: 1_200_000,
+      mode: 'per_person',
+    });
+  });
+
+  it('"Mai" in a place name is not tomorrow (#710 r3)', () => {
+    const time = (t: string) => parseIntentFacts(t).timeHint;
+    expect(time('Tối thứ 7 đi cafe gần Hoàng Mai')).toBe('weekend');
+    expect(time('hôm nay ăn gì gần Hoàng Mai')).toBe('today');
+    expect(time('đi ăn ở Bạch Mai')).toBeNull();
+    expect(time('ăn lẩu khu Mai Dịch')).toBeNull();
+    expect(time('Mai Dịch có quán lẩu nào ngon')).toBeNull();
+    expect(time('Mai đi cafe nhé')).toBe('tomorrow');
+    expect(time('đi cafe mai nhé')).toBe('tomorrow');
+    expect(time('Hoàng Mai mai đi lẩu')).toBe('tomorrow');
+  });
 });
 
 describe('intent facts — Vietnamese case set', () => {

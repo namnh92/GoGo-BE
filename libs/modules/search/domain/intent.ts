@@ -154,7 +154,7 @@ export function parseIntentFacts(input: string): IntentFacts {
   return {
     partySize: parsePartySize(rest),
     budget: budget ? budget.value : null,
-    timeHint: parseTimeHint(text),
+    timeHint: parseTimeHint(text, input.normalize('NFC')),
     areaText: parseAreaText(input.normalize('NFC')),
   };
 }
@@ -163,10 +163,11 @@ type Located<T> = { value: T; start: number; end: number };
 
 function parseBudget(text: string): Located<NonNullable<IntentFacts['budget']>> | null {
   const patterns: Array<[RegExp, (m: RegExpExecArray) => number]> = [
-    // "1tr2", "1 củ 5" — a million and a tenth-part digit.
+    // "1tr2", "1 củ 5" — a million and a tenth-part digit. A spaced digit
+    // that counts people ("1tr 2 người") is the party, not the tenths.
     [
-      new RegExp(`(\\d+)\\s*(tr|củ)\\s*(\\d)${END}`, 'u'),
-      (m) => Number(m[1]) * 1_000_000 + Number(m[3]) * 100_000,
+      new RegExp(`(\\d+)\\s*(tr|củ)(?:(\\d)|\\s+(\\d)(?!\\s*${PARTY_NOUN}${END}))${END}`, 'u'),
+      (m) => Number(m[1]) * 1_000_000 + Number(m[3] ?? m[4]) * 100_000,
     ],
     // "200-300k", "200 đến 300 nghìn" — the upper bound is the budget.
     [
@@ -244,18 +245,34 @@ function parsePartySize(text: string): number | null {
 
 const TIME_RULES: Array<[RegExp, TimeHint]> = [
   [/(?:tối nay|đêm nay|tối hôm nay)/u, 'tonight'],
-  [
-    /(?:ngày mai|tối mai|trưa mai|sáng mai|chiều mai|mai đi|(?:^|\s)mai(?=\s|$|[,.!?]))/u,
-    'tomorrow',
-  ],
+  [/(?:ngày mai|tối mai|trưa mai|sáng mai|chiều mai|mai đi)/u, 'tomorrow'],
   [/(?:cuối tuần|thứ 7|thứ bảy|chủ nhật|(?:^|\s)cn(?=\s|$))/u, 'weekend'],
   [/(?:hôm nay|trưa nay|chiều nay|sáng nay|bữa nay)/u, 'today'],
   [/(?:bây giờ|giờ luôn|ngay bây giờ|ngay lúc này|liền luôn|đi liền)/u, 'now'],
 ];
 
-function parseTimeHint(text: string): TimeHint | null {
-  for (const [pattern, hint] of TIME_RULES) if (pattern.test(text)) return hint;
+function parseTimeHint(text: string, input: string): TimeHint | null {
+  for (const [pattern, hint] of TIME_RULES) {
+    if (pattern.test(text)) return hint;
+    if (hint === 'tomorrow' && hasBareMai(input)) return hint;
+  }
   return null;
+}
+
+/**
+ * A bare "mai" is tomorrow only as typed in lowercase, or capitalised at the
+ * start of a sentence and not followed by another name. "Hoàng Mai", "Bạch
+ * Mai", "Mai Dịch" are places — the same trap as "Hai Bà Trưng". A place name
+ * typed in lowercase still reads as tomorrow: names are left to the resolver.
+ */
+function hasBareMai(input: string): boolean {
+  for (const m of input.matchAll(/(?<=^|[^\p{L}])mai(?=$|[^\p{L}])/giu)) {
+    if (m[0] === 'mai') return true;
+    const before = input.slice(0, m.index);
+    const after = input.slice(m.index + m[0].length);
+    if (/(?:^|[.!?])\s*$/u.test(before) && !/^\s+\p{Lu}/u.test(after)) return true;
+  }
+  return false;
 }
 
 /**

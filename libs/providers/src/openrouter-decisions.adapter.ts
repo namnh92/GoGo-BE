@@ -104,7 +104,13 @@ export class OpenRouterDecisionProvider implements DecisionProviderPort {
     if (options.model.startsWith('~') || !options.model.includes('/')) {
       throw new Error('decision model must be a pinned versioned id, never an alias');
     }
-    if (options.timeoutMs <= 0 || options.timeoutMs > MAX_DECISION_TIMEOUT_MS) {
+    // `NaN` fails both comparisons, so finiteness is checked first: a NaN
+    // timer fires at ~1 ms and every call would abort after it was sent.
+    if (
+      !Number.isFinite(options.timeoutMs) ||
+      options.timeoutMs <= 0 ||
+      options.timeoutMs > MAX_DECISION_TIMEOUT_MS
+    ) {
       throw new Error(`decision timeout must be 1…${MAX_DECISION_TIMEOUT_MS} ms`);
     }
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -165,6 +171,7 @@ export class OpenRouterDecisionProvider implements DecisionProviderPort {
  * answered, nothing else, each answer of the asked type, a choice among the
  * options, every probability in [0, 1]. A response that fails is rejected
  * whole — a partly-right answer is not something a caller can act on.
+ * Membership is own keys only: `in` would accept `constructor` as an option.
  */
 export function parseDecisionResponse(request: DecisionRequest, raw: unknown): DecisionResponse {
   if (!isRecord(raw)) throw new DecisionContractError('not an object');
@@ -172,7 +179,7 @@ export function parseDecisionResponse(request: DecisionRequest, raw: unknown): D
   const answers = raw.answers;
   if (!isRecord(answers)) throw new DecisionContractError('no answers');
   const keys = Object.keys(request.questions);
-  if (keys.length !== Object.keys(answers).length || keys.some((k) => !(k in answers))) {
+  if (keys.length !== Object.keys(answers).length || keys.some((k) => !Object.hasOwn(answers, k))) {
     throw new DecisionContractError('answers do not match the questions');
   }
 
@@ -184,7 +191,7 @@ export function parseDecisionResponse(request: DecisionRequest, raw: unknown): D
     if (q.type === 'noul') {
       parsed[key] = { type: 'noul', noul: unit(key, a.noul) };
     } else if (q.type === 'choice') {
-      if (typeof a.choice !== 'string' || !(a.choice in q.criteria)) {
+      if (typeof a.choice !== 'string' || !Object.hasOwn(q.criteria, a.choice)) {
         throw new DecisionContractError(`${key}: choice is not an option`);
       }
       parsed[key] = {
