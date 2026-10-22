@@ -68,7 +68,12 @@ describe('openRouterServiceFor', () => {
     expect(openRouterServiceFor('playground')).toBe('openrouter.other_keys');
   });
 
-  it('files the two keys GoGo holds today (2026-10-22) where they belong', () => {
+  it('files the keys on the live account after the split (2026-10-22)', () => {
+    expect(openRouterServiceFor('gogo_ai_harness_dev')).toBe('openrouter.dev_tooling');
+    expect(openRouterServiceFor('gogo-claude-dev')).toBe('openrouter.claude_byok');
+  });
+
+  it('files the two keys GoGo held before the split where they belong', () => {
     // One JEV key shared by the harness and the backend: unsplit, not either.
     expect(openRouterServiceFor('gogo_jev_dev')).toBe('openrouter.jev_shared');
     expect(openRouterServiceFor('gogo_claude_dev')).toBe('openrouter.claude_byok');

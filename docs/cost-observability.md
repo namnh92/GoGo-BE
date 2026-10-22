@@ -664,22 +664,20 @@ line items instead of minute counters. It is strictly better here:
   serves every environment, so the key is written for dev only.
 - Service = the key's `name` (`-` or `_` between words) — never `label`, which on
   OpenRouter is a masked preview of the secret (`sk-or-v1-f2c...61a`, seen on the live
-  account 2026-10-22) and is neither read nor stored. Keys on the account on
-  2026-10-22:
+  account 2026-10-22) and is neither read nor stored. Keys on the account after the
+  split (2026-10-22, read live through the management key):
 
-  | Name              | Used by                                               | Service                  |
-  | ----------------- | ----------------------------------------------------- | ------------------------ |
-  | `gogo_jev_dev`    | JEV for **both** the AI Harness and the BE intent POC | `openrouter.jev_shared`  |
-  | `gogo_claude_dev` | Claude through BYOK (GoGo's own Anthropic key)        | `openrouter.claude_byok` |
+  | Name                  | Used by                                        | Service                  |
+  | --------------------- | ---------------------------------------------- | ------------------------ |
+  | `gogo_ai_harness_dev` | JEV for the AI Harness                         | `openrouter.dev_tooling` |
+  | `gogo-claude-dev`     | Claude through BYOK (GoGo's own Anthropic key) | `openrouter.claude_byok` |
 
-  Also recognised, for when the shared key is split: `gogo_be_<env>` →
-  `openrouter.decisions`, `gogo_ai_harness_<env>` → `openrouter.dev_tooling`.
-  Anything else → `openrouter.other_keys`. Holders are never summed into one
-  service. `jev_shared` is unsplit by construction: harness (dev tooling) and
-  backend (product) spend cannot be told apart while they share a key — and they
-  share its credit limit, so the harness's $2 cap (Infra ADR-0013 D-7) caps the BE
-  POC too. The harness's local ledger stays separate and is the pre-call guard;
-  this is the after-the-fact bill.
+  The BE POC's own key, when created, is `gogo_be_<env>` → `openrouter.decisions`.
+  `gogo_jev_<env>` → `openrouter.jev_shared` stays recognised for a key shared by the
+  harness and the backend (the state before the split): its spend cannot be told
+  apart, so it is filed as neither. Anything else → `openrouter.other_keys`. Holders
+  are never summed into one service. The harness's local ledger stays separate and
+  is the pre-call guard; this is the after-the-fact bill.
 
 - BYOK: OpenRouter's `usage` on a BYOK request is only OpenRouter's fee; the model
   provider bills the tokens on GoGo's own key, reported as `byok_usage_inference`.
