@@ -7,9 +7,12 @@ import type {
 import { COST_REGISTRY } from '../../domain/registry';
 import { CollectorSchedulerService } from '../../application/collector-scheduler.service';
 import {
+  ANTHROPIC_BYOK_COLLECTOR_ID,
   OPENROUTER_ACTIVITY_COLLECTOR_ID,
   OPENROUTER_SOURCE,
   activitySamples,
+  anthropicByokCollector,
+  anthropicByokSamples,
   openRouterActivityCollector,
   openRouterServiceFor,
   todaySamples,
@@ -55,12 +58,22 @@ const item = (
 });
 
 describe('openRouterServiceFor', () => {
-  it('routes by the label convention, anything else to other_keys', () => {
+  it('routes by the label convention, - or _, anything else to other_keys', () => {
     expect(openRouterServiceFor('gogo-be-dev')).toBe('openrouter.decisions');
+    expect(openRouterServiceFor('gogo_be_dev')).toBe('openrouter.decisions');
     expect(openRouterServiceFor('gogo-be')).toBe('openrouter.decisions');
     expect(openRouterServiceFor('GoGo-AI-Harness-dev')).toBe('openrouter.dev_tooling');
+    expect(openRouterServiceFor('gogo_ai_harness_dev')).toBe('openrouter.dev_tooling');
     expect(openRouterServiceFor('gogo-bex')).toBe('openrouter.other_keys');
     expect(openRouterServiceFor('playground')).toBe('openrouter.other_keys');
+  });
+
+  it('files the two keys GoGo holds today (2026-10-22) where they belong', () => {
+    // One JEV key shared by the harness and the backend: unsplit, not either.
+    expect(openRouterServiceFor('gogo_jev_dev')).toBe('openrouter.jev_shared');
+    expect(openRouterServiceFor('gogo_claude_dev')).toBe('openrouter.claude_byok');
+    expect(openRouterServiceFor('gogo_jevx_dev')).toBe('openrouter.other_keys');
+    expect(openRouterServiceFor('gogo_claudette')).toBe('openrouter.other_keys');
   });
 });
 
@@ -150,6 +163,13 @@ describe('activitySamples', () => {
     expect(out.usage).toEqual([]);
   });
 
+  it('a BYOK figure absent from every item is unknown (null), not a measured zero', () => {
+    const out = activitySamples(CTX, [
+      { key: BE, items: [item('2026-10-21', 'm', 0.01, { byokUsageUsd: null })] },
+    ]);
+    expect(out.cost[0]?.metadata?.byokUsageMicros).toBeNull();
+  });
+
   it('never carries a full key hash or anything beyond label + prefix', () => {
     const out = activitySamples(CTX, [{ key: BE, items: [item('2026-10-21', 'm', 0.01)] }]);
     expect(JSON.stringify(out)).not.toContain(BE.hash);
@@ -176,6 +196,98 @@ describe('todaySamples', () => {
 
   it('no keys → no rows (not a zero)', () => {
     expect(todaySamples(CTX, [])).toEqual([]);
+  });
+});
+
+const CLAUDE = key('gogo_claude_dev', 'eeeeeeee5555');
+
+describe('anthropicByokSamples', () => {
+  it('writes the Claude BYOK spend as Anthropic money, MEDIUM, per completed day', () => {
+    const rows = anthropicByokSamples(CTX, [
+      {
+        key: CLAUDE,
+        items: [
+          item('2026-10-21', 'anthropic/claude-sonnet-5.5', 0.0002, { byokUsageUsd: 0.004 }),
+          item('2026-10-21', 'anthropic/claude-haiku-5.5', 0.00005, { byokUsageUsd: 0.001 }),
+          item('2026-10-22', 'anthropic/claude-sonnet-5.5', 0.1, { byokUsageUsd: 2 }),
+        ],
+      },
+    ]);
+    expect(rows).toEqual([
+      {
+        day: '2026-10-21',
+        environment: 'dev',
+        providerId: 'anthropic',
+        serviceId: 'anthropic.claude_byok',
+        operationId: null,
+        usageMetricId: null,
+        billingSkuId: null,
+        billableQuantity: null,
+        billableUnit: null,
+        amountMicros: 5000,
+        currency: 'USD',
+        basis: 'ACTUAL',
+        confidence: 'MEDIUM',
+        source: OPENROUTER_SOURCE,
+        costKind: 'USAGE',
+        sourceAsOf: NOW,
+        metadata: {
+          from: 'openrouter.activity.byok_usage_inference',
+          byModel: { 'anthropic/claude-sonnet-5.5': 4000, 'anthropic/claude-haiku-5.5': 1000 },
+          keys: [{ label: 'gogo_claude_dev', hash: 'eeeeeeee' }],
+        },
+      },
+    ]);
+  });
+
+  it('the OpenRouter fee and the Anthropic charge never land on the same row', () => {
+    const keyed = [
+      {
+        key: CLAUDE,
+        items: [item('2026-10-21', 'anthropic/claude-sonnet-5.5', 0.0002, { byokUsageUsd: 0.004 })],
+      },
+    ];
+    const gateway = activitySamples(CTX, keyed).cost.filter((c) => c.day === '2026-10-21');
+    expect(gateway.map((c) => [c.providerId, c.serviceId, c.amountMicros])).toEqual([
+      ['openrouter', 'openrouter.claude_byok', 200],
+    ]);
+    expect(anthropicByokSamples(CTX, keyed).map((c) => [c.providerId, c.amountMicros])).toEqual([
+      ['anthropic', 4000],
+    ]);
+  });
+
+  it('skips non-Anthropic BYOK and items without the field; a day with none gets no row', () => {
+    const rows = anthropicByokSamples(CTX, [
+      {
+        key: CLAUDE,
+        items: [
+          item('2026-10-20', 'openai/gpt-x', 0.0001, { byokUsageUsd: 0.5 }),
+          item('2026-10-21', 'anthropic/claude-sonnet-5.5', 0.0001, { byokUsageUsd: null }),
+          item('2026-10-19', 'claude-alias', 0, { byokUsageUsd: 0, providerName: 'Anthropic' }),
+        ],
+      },
+    ]);
+    expect(rows.map((r) => [r.day, r.amountMicros])).toEqual([['2026-10-19', 0]]);
+  });
+
+  it('is its own collector on provider anthropic, registered by the registry, free', () => {
+    const fake: OpenRouterUsagePort = { keys: async () => [], activity: async () => [] };
+    const def = anthropicByokCollector({} as never, fake);
+    expect(def).toMatchObject({
+      id: ANTHROPIC_BYOK_COLLECTOR_ID,
+      providerId: 'anthropic',
+      serviceId: 'anthropic.claude_byok',
+      capability: 'ACTUAL_COST_COLLECTOR',
+      essential: false,
+      monitoringCost: { model: 'FREE', estimatedMonthlyMicros: 0 },
+    });
+    const s = new CollectorSchedulerService({} as never, COST_REGISTRY, { environment: 'dev' });
+    s.register(openRouterActivityCollector({} as never, fake));
+    s.register(def);
+    expect(s.registered().map((c) => c.id)).toEqual([
+      OPENROUTER_ACTIVITY_COLLECTOR_ID,
+      ANTHROPIC_BYOK_COLLECTOR_ID,
+    ]);
   });
 });
 

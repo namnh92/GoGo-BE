@@ -458,6 +458,7 @@ describe('aws and github (#386)', () => {
       'aws',
       'github',
       'openrouter',
+      'anthropic',
     ]);
     const meters = COST_REGISTRY.meters()
       .filter((m) => m.serviceId.startsWith('aws.'))

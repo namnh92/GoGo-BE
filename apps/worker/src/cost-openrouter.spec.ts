@@ -49,6 +49,7 @@ describe('registerOpenRouterActivityCollector', () => {
     ).toBe(true);
     expect(h.registered.map((d) => [d.id, d.providerId, d.capability])).toEqual([
       ['openrouter_activity', 'openrouter', 'ACTUAL_COST_COLLECTOR'],
+      ['anthropic_byok_openrouter', 'anthropic', 'ACTUAL_COST_COLLECTOR'],
     ]);
     expect(h.lines.map((l) => l.msg)).toEqual(['openrouter cost collector registered']);
     expect(JSON.stringify(h.lines)).not.toContain(secret);

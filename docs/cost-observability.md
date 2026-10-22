@@ -649,11 +649,12 @@ line items instead of minute counters. It is strictly better here:
 - Tests: `sentry-stats.adapter.spec.ts`, `sentry.collector.spec.ts`,
   `apps/worker/src/cost-sentry.spec.ts` (registration gate).
 
-## OpenRouter spend collector (#709)
+## OpenRouter + Claude BYOK spend collectors (#709)
 
-| Collector             | Capability              | Services                                                                  | Source                                      | Writes                                                                        |
-| --------------------- | ----------------------- | ------------------------------------------------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------- |
-| `openrouter_activity` | `ACTUAL_COST_COLLECTOR` | `openrouter.decisions`, `openrouter.dev_tooling`, `openrouter.other_keys` | management API `/keys`, `/activity` per key | `ACTUAL` USD cost rows + `requests` / `input_tokens` / `output_tokens` meters |
+| Collector                   | Capability              | Services                                                                                                                     | Source                                      | Writes                                                                        |
+| --------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------- |
+| `openrouter_activity`       | `ACTUAL_COST_COLLECTOR` | `openrouter.decisions`, `openrouter.dev_tooling`, `openrouter.jev_shared`, `openrouter.claude_byok`, `openrouter.other_keys` | management API `/keys`, `/activity` per key | `ACTUAL` USD cost rows + `requests` / `input_tokens` / `output_tokens` meters |
+| `anthropic_byok_openrouter` | `ACTUAL_COST_COLLECTOR` | `anthropic.claude_byok`                                                                                                      | the same two endpoints                      | `ACTUAL` MEDIUM USD cost rows, no meters                                      |
 
 - Registered only when the worker has `OPENROUTER_MANAGEMENT_KEY` (SSM
   `openrouter/management-key`, GoGo-Infra#241). A **management** key, not the
@@ -661,12 +662,31 @@ line items instead of minute counters. It is strictly better here:
   The client makes two kinds of GET and nothing else — a management key can also
   create and delete keys, which this code never calls. One OpenRouter account
   serves every environment, so the key is written for dev only.
-- Service = the key's label at creation: `gogo-be-<env>` → `openrouter.decisions`
-  (runtime decision models), `gogo-ai-harness-<env>` → `openrouter.dev_tooling`
-  (the GoGo-Infra harness, category `operations`), anything else →
-  `openrouter.other_keys`. Holders are never summed into one service; the harness's
-  own local ledger (ADR-0013 D-7) stays separate and is the pre-call guard, this
-  is the after-the-fact bill.
+- Service = the key's label (`-` or `_` between words). Keys on the account on
+  2026-10-22:
+
+  | Label             | Used by                                               | Service                  |
+  | ----------------- | ----------------------------------------------------- | ------------------------ |
+  | `gogo_jev_dev`    | JEV for **both** the AI Harness and the BE intent POC | `openrouter.jev_shared`  |
+  | `gogo_claude_dev` | Claude through BYOK (GoGo's own Anthropic key)        | `openrouter.claude_byok` |
+
+  Also recognised, for when the shared key is split: `gogo_be_<env>` →
+  `openrouter.decisions`, `gogo_ai_harness_<env>` → `openrouter.dev_tooling`.
+  Anything else → `openrouter.other_keys`. Holders are never summed into one
+  service. `jev_shared` is unsplit by construction: harness (dev tooling) and
+  backend (product) spend cannot be told apart while they share a key — and they
+  share its credit limit, so the harness's $2 cap (Infra ADR-0013 D-7) caps the BE
+  POC too. The harness's local ledger stays separate and is the pre-call guard;
+  this is the after-the-fact bill.
+
+- BYOK: OpenRouter's `usage` on a BYOK request is only OpenRouter's fee; the model
+  provider bills the tokens on GoGo's own key, reported as `byok_usage_inference`.
+  The fee is `openrouter.claude_byok` (with the request/token meters); the Claude
+  charge is written by `anthropic_byok_openrouter` for provider `anthropic`
+  (`anthropic.claude_byok`), MEDIUM — Anthropic bills it, OpenRouter reports it.
+  Only items whose model is `anthropic/*` or provider Anthropic count; an item
+  without the field is unknown, not zero, and its day gets no Anthropic row. The
+  two rows never overlap, and the meters exist only on the OpenRouter side.
 - Rows per run (6 h; 1 + N GETs, N = keys):
   - completed days (OpenRouter's 30-day window): one `ACTUAL` HIGH row per
     (day, service), `amountMicros` = Σ `usage` USD × 10⁶, `metadata.byModel`,

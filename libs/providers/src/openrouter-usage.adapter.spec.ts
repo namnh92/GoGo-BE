@@ -130,7 +130,7 @@ describe('foldActivity', () => {
         modelPermaslug: null,
         providerName: null,
         usageUsd: 0.01,
-        byokUsageUsd: 0,
+        byokUsageUsd: null,
         requests: 1,
         promptTokens: 0,
         completionTokens: 0,

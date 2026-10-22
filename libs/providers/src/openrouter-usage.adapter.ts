@@ -40,8 +40,12 @@ export type OpenRouterActivityItem = {
   providerName: string | null;
   /** USD, OpenRouter credits spent. */
   usageUsd: number;
-  /** USD spent on the account's own provider keys (BYOK) — not an OpenRouter charge. */
-  byokUsageUsd: number;
+  /**
+   * USD spent on the account's own provider keys (BYOK) — billed by that
+   * provider, not OpenRouter. `null` when the item does not carry the field:
+   * absent is unknown, never a measured zero.
+   */
+  byokUsageUsd: number | null;
   requests: number;
   promptTokens: number;
   completionTokens: number;
@@ -128,7 +132,7 @@ export function foldActivity(body: unknown): OpenRouterActivityItem[] {
       modelPermaslug: str(raw.model_permaslug),
       providerName: str(raw.provider_name),
       usageUsd: usage,
-      byokUsageUsd: num(raw.byok_usage_inference) ?? 0,
+      byokUsageUsd: num(raw.byok_usage_inference),
       requests: Math.round(num(raw.requests) ?? 0),
       promptTokens: Math.round(num(raw.prompt_tokens) ?? 0),
       completionTokens: Math.round(num(raw.completion_tokens) ?? 0),

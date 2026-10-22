@@ -20,14 +20,16 @@ import {
  * for every key and its spend so far today, `/activity` per key for the last
  * 30 completed UTC days. 1 + N GETs per run (N = keys, a handful), all free.
  *
- * Keys are routed to a service by their label, the convention GoGo-Infra#241
- * sets when a key is created:
+ * Keys are routed to a service by their label (`-` or `_` between words),
+ * the convention GoGo-Infra#241 sets when a key is created:
  *
- * | label                 | service                   |
- * | --------------------- | ------------------------- |
- * | `gogo-be-*`           | `openrouter.decisions`    |
- * | `gogo-ai-harness-*`   | `openrouter.dev_tooling`  |
- * | anything else         | `openrouter.other_keys`   |
+ * | label                          | service                   |
+ * | ------------------------------ | ------------------------- |
+ * | `gogo_be_*`                    | `openrouter.decisions`    |
+ * | `gogo_ai_harness_*`            | `openrouter.dev_tooling`  |
+ * | `gogo_jev_*` (both of the above share it today) | `openrouter.jev_shared` |
+ * | `gogo_claude_*` (BYOK)         | `openrouter.claude_byok`  |
+ * | anything else                  | `openrouter.other_keys`   |
  *
  * Rows written per run (`replace`, not add — every figure is a day's total):
  *
@@ -47,7 +49,9 @@ import {
  * `metadata.byModel` keeps the per-model split, `metadata.keys` the label and
  * an 8-character hash prefix of each contributing key — never a secret.
  * BYOK spend (`byok_usage_inference`) is billed by the other provider, not
- * OpenRouter, so it stays in metadata and out of `amountMicros`.
+ * OpenRouter, so it stays in metadata and out of `amountMicros`; the Claude
+ * part of it is written for provider `anthropic` by the second collector in
+ * this file, `anthropic_byok_openrouter`.
  */
 export const OPENROUTER_SOURCE = 'openrouter_api';
 export const OPENROUTER_ACTIVITY_COLLECTOR_ID = 'openrouter_activity';
@@ -56,6 +60,8 @@ const PROVIDER = 'openrouter';
 export const OPENROUTER_SERVICE = {
   decisions: 'openrouter.decisions',
   devTooling: 'openrouter.dev_tooling',
+  jevShared: 'openrouter.jev_shared',
+  claudeByok: 'openrouter.claude_byok',
   otherKeys: 'openrouter.other_keys',
 } as const;
 type OpenRouterServiceId = (typeof OPENROUTER_SERVICE)[keyof typeof OPENROUTER_SERVICE];
@@ -79,8 +85,10 @@ const DEFAULTS = {
 /** A key's label → the service its spend belongs to. */
 export function openRouterServiceFor(label: string): OpenRouterServiceId {
   const l = label.trim().toLowerCase();
-  if (/^gogo-be(-|$)/.test(l)) return OPENROUTER_SERVICE.decisions;
-  if (/^gogo-ai-harness(-|$)/.test(l)) return OPENROUTER_SERVICE.devTooling;
+  if (/^gogo[-_]be([-_]|$)/.test(l)) return OPENROUTER_SERVICE.decisions;
+  if (/^gogo[-_]ai[-_]harness([-_]|$)/.test(l)) return OPENROUTER_SERVICE.devTooling;
+  if (/^gogo[-_]jev([-_]|$)/.test(l)) return OPENROUTER_SERVICE.jevShared;
+  if (/^gogo[-_]claude([-_]|$)/.test(l)) return OPENROUTER_SERVICE.claudeByok;
   return OPENROUTER_SERVICE.otherKeys;
 }
 
@@ -103,7 +111,8 @@ type Bucket = {
   day: string;
   serviceId: OpenRouterServiceId;
   usd: number;
-  byokUsd: number;
+  /** `null` while no item of the bucket carried the BYOK field. */
+  byokUsd: number | null;
   requests: number;
   promptTokens: number;
   completionTokens: number;
@@ -187,7 +196,7 @@ export function activitySamples(
           day: it.day,
           serviceId,
           usd: 0,
-          byokUsd: 0,
+          byokUsd: null,
           requests: 0,
           promptTokens: 0,
           completionTokens: 0,
@@ -198,7 +207,7 @@ export function activitySamples(
         buckets.set(id, b);
       }
       b.usd += it.usageUsd;
-      b.byokUsd += it.byokUsageUsd;
+      if (it.byokUsageUsd !== null) b.byokUsd = (b.byokUsd ?? 0) + it.byokUsageUsd;
       b.requests += it.requests;
       b.promptTokens += it.promptTokens;
       b.completionTokens += it.completionTokens;
@@ -218,7 +227,7 @@ export function activitySamples(
       cost(ctx, b.day, b.serviceId, b.usd, 'HIGH', {
         from: 'activity',
         byModel: b.byModel,
-        byokUsageMicros: micros(b.byokUsd),
+        byokUsageMicros: b.byokUsd === null ? null : micros(b.byokUsd),
         reasoningTokens: b.reasoningTokens,
         keys: [...b.keys.values()].sort((x, y) => x.label.localeCompare(y.label)),
       }),
@@ -324,6 +333,101 @@ export function openRouterActivityCollector(
       written += await upsertCostSamples(db, [...done.cost, ...todaySamples(sampleCtx, keys)]);
       written += await upsertUsageSamples(db, done.usage);
       return { sourceAsOf: at, samples: written };
+    },
+  };
+}
+
+/**
+ * GoGo-BE#709 — the Claude tokens a BYOK key spent on GoGo's own Anthropic
+ * key: `anthropic_byok_openrouter` for provider `anthropic`. Same two GETs as
+ * `openrouter_activity` (its own run, so its freshness is Anthropic's, not
+ * OpenRouter's); the figure is `byok_usage_inference` on items whose model is
+ * `anthropic/*` or whose provider is Anthropic, on any key.
+ *
+ * ACTUAL, MEDIUM: Anthropic bills it, OpenRouter reports it — a third party's
+ * figure, not Anthropic's invoice. One row per completed day that has at
+ * least one such item carrying the field; an item without it is unknown, not
+ * zero, and a day with none gets no row. No today row (`/keys` carries no
+ * BYOK split) and no meters (requests and tokens stay on
+ * `openrouter.claude_byok`).
+ */
+export const ANTHROPIC_BYOK_COLLECTOR_ID = 'anthropic_byok_openrouter';
+export const ANTHROPIC_BYOK_SERVICE = 'anthropic.claude_byok';
+
+const isAnthropic = (it: OpenRouterActivityItem): boolean =>
+  it.model.toLowerCase().startsWith('anthropic/') || /anthropic/i.test(it.providerName ?? '');
+
+/** Pure: every key's `/activity` → one Anthropic cost row per completed day. */
+export function anthropicByokSamples(
+  ctx: OpenRouterSampleContext,
+  keyed: readonly OpenRouterKeyActivity[],
+): CostSample[] {
+  type Day = {
+    usd: number;
+    byModel: Record<string, number>;
+    keys: Map<string, { label: string; hash: string }>;
+  };
+  const days = new Map<string, Day>();
+  for (const { key, items } of keyed) {
+    for (const it of items) {
+      if (it.day >= ctx.today || it.byokUsageUsd === null || !isAnthropic(it)) continue;
+      const d: Day = days.get(it.day) ?? { usd: 0, byModel: {}, keys: new Map() };
+      d.usd += it.byokUsageUsd;
+      d.byModel[it.model] = (d.byModel[it.model] ?? 0) + micros(it.byokUsageUsd);
+      d.keys.set(key.hash, keyRef(key));
+      days.set(it.day, d);
+    }
+  }
+  return [...days.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([day, d]) => ({
+      ...cost(ctx, day, ANTHROPIC_BYOK_SERVICE, d.usd, 'MEDIUM', {
+        from: 'openrouter.activity.byok_usage_inference',
+        byModel: d.byModel,
+        keys: [...d.keys.values()].sort((x, y) => x.label.localeCompare(y.label)),
+      }),
+      providerId: 'anthropic',
+    }));
+}
+
+export function anthropicByokCollector(
+  db: Db,
+  client: OpenRouterUsagePort,
+  options: OpenRouterCollectorOptions = {},
+): CollectorDefinition {
+  const now = options.now ?? (() => new Date());
+  return {
+    id: ANTHROPIC_BYOK_COLLECTOR_ID,
+    providerId: 'anthropic',
+    serviceId: ANTHROPIC_BYOK_SERVICE,
+    capability: 'ACTUAL_COST_COLLECTOR',
+    frequencyMs: options.frequencyMs ?? DEFAULTS.frequencyMs,
+    staleAfterMs: options.staleAfterMs ?? DEFAULTS.staleAfterMs,
+    timeoutMs: options.timeoutMs ?? DEFAULTS.timeoutMs,
+    retry: { maxAttemptsPerTick: 1 },
+    maxCallsPerDay: options.maxCallsPerDay ?? DEFAULTS.maxCallsPerDay,
+    enabledEnvironments: 'all',
+    essential: false,
+    monitoringCost: {
+      model: 'FREE',
+      estimatedMonthlyMicros: 0,
+      currency: 'USD',
+      expectedRequestsPerMonth: 4 * 4 * 30,
+      pricingSource:
+        'The same OpenRouter management endpoints as openrouter_activity (/keys, /activity), no documented per-request charge (@openrouter/sdk 1.5.3; not yet checked against a bill). 1 + N GETs per run.',
+      lastPricingReview: '2026-10-22',
+    },
+    run: async (ctx: CollectorRunContext) => {
+      const at = now();
+      const keys = await client.keys(ctx.signal);
+      const keyed: OpenRouterKeyActivity[] = [];
+      for (const key of keys)
+        keyed.push({ key, items: await client.activity(key.hash, ctx.signal) });
+      const samples = anthropicByokSamples(
+        { today: ctx.day, environment: ctx.environment, now: at },
+        keyed,
+      );
+      return { sourceAsOf: at, samples: await upsertCostSamples(db, samples) };
     },
   };
 }
