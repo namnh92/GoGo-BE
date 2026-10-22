@@ -52,21 +52,42 @@ latency are **not verified** — see GoGo-Infra ADR-0013 "Verification".
   `fallbackReason`; nothing throws to the caller.
 - **No route, no contract change.** The service is not wired to any controller; `/v1` and the
   OpenAPI document are unchanged. `pnpm eval:intent` is the only caller.
-- **Cost registry.** `openrouter` is a `planned` provider (`openrouter.decisions`, category
-  `ai_decisions`, meters `decisions`/`input_tokens`), no pricing rule, no estimate.
-- **Isolation.** No code shared with the AI Harness; a separate key (a future `backend` row,
-  `openrouter/jev-api-key` → `OPENROUTER_API_KEY`, not declared until the service is wired) with
-  its own OpenRouter credit limit. Nothing in this repository can start a development agent.
+- **Cost registry.** `openrouter` is an **active** actual-bill provider read by collector
+  `openrouter_activity` (management API), filed by key name; this POC's spend lands on
+  `openrouter.decisions`. No pricing rule, no estimate — OpenRouter's figure is the cost.
+- **Isolation.** No code shared with the AI Harness; a separate key, OpenRouter name
+  `gogo_be_<env>`, backend row `openrouter/api-key` → `OPENROUTER_API_KEY` (GoGo-Infra#241),
+  with its own OpenRouter credit limit. Nothing in this repository can start a development agent.
 
 ## Consequences
 
-- Thresholds (`INTENT_THRESHOLDS`) are the official 0.5 starting points, not probed on Vietnamese
-  GoGo queries. Model accuracy is unknown until an authorized live `pnpm eval:intent` run; the
-  151-case set and the fallback baseline are ready for it.
+- **First live run (owner, 2026-10-22, authorized).** `pnpm eval:intent`, 157 cases, key
+  `gogo_be_dev`. The response named build `typesafe/jev-1.14-20261014`, which settles that
+  `jev-1.14` is served on `/api/alpha/decisions`.
+
+  | Field               | No model (fallback) | Jev 1.14  |
+  | ------------------- | ------------------- | --------- |
+  | category            | 0.465               | **0.885** |
+  | occasion            | 0.580               | **0.885** |
+  | in scope            | 0.892               | **0.994** |
+  | needs clarification | 0.713               | **0.917** |
+
+  157 requests, 157 answered, 0 fallbacks, 0 unknown-cost calls; latency p50 579 ms / p95 688 ms
+  (well inside the 15 s budget); reported cost $0.00686 in total — about $0.044 per 1,000
+  classifications at this prompt size.
+
+  What this does **not** show: the cases and their expected labels were written by the same
+  session that wrote the questions, so they share its blind spots; 157 cases is a small sample
+  (one miss ≈ 0.6 pt); one run, no repeat for variance; no real user queries. It is evidence that
+  the design works and is cheap, not a production accuracy figure.
+
+- Thresholds (`INTENT_THRESHOLDS`) are still the official 0.5 starting points. The next step is
+  to read the per-case misses of this run and set each threshold from observed probabilities,
+  then a second set of cases written independently of this one.
 - Lowercase or locative-less area names (`ở đâu ngon Hà Nội`) are not extracted; the case set
   records these as `knownParserGaps`. Area validation stays with the administrative module.
-- Wiring needs its own decision: which endpoint, the DTO (facts only), the backend key row, Zod
-  config, and replacing the planned registry entry with an instrumented one.
+- Wiring needs its own decision: which endpoint, the DTO (facts only), Zod config, and
+  instrumentation of the call path (the key row and the cost collector exist).
 
 ## Migration & rollback
 
