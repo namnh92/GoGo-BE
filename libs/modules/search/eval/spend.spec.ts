@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { IntentCallRecord } from '../application/intent-classification.service';
-import { committedSpendUsd, unknownCostCalls } from './spend';
+import { committedSpendUsd, parseSpendSettings, unknownCostCalls } from './spend';
 
 const call = (
   outcome: IntentCallRecord['outcome'],
@@ -43,5 +43,34 @@ describe('eval spend accounting (PR #710 review r1)', () => {
       call('disabled'),
     ];
     expect(unknownCostCalls(calls)).toBe(2);
+  });
+});
+
+describe('eval spend settings (PR #710 review r2)', () => {
+  it('defaults when unset', () => {
+    expect(parseSpendSettings({})).toEqual({ maxUsd: 0.05, unknownCallUsd: 0.001 });
+  });
+
+  it('rejects settings that would disable the ceiling', () => {
+    for (const env of [
+      { INTENT_EVAL_MAX_USD: '0,05' },
+      { INTENT_EVAL_MAX_USD: '' },
+      { INTENT_EVAL_MAX_USD: '-1' },
+      { INTENT_EVAL_MAX_USD: 'Infinity' },
+      { INTENT_EVAL_UNKNOWN_CALL_USD: '' },
+      { INTENT_EVAL_UNKNOWN_CALL_USD: '0' },
+      { INTENT_EVAL_UNKNOWN_CALL_USD: 'abc' },
+    ]) {
+      expect(() => parseSpendSettings(env), JSON.stringify(env)).toThrow();
+    }
+  });
+
+  it('accepts a zero ceiling (no paid call allowed) and explicit values', () => {
+    expect(
+      parseSpendSettings({ INTENT_EVAL_MAX_USD: '0', INTENT_EVAL_UNKNOWN_CALL_USD: '0.002' }),
+    ).toEqual({
+      maxUsd: 0,
+      unknownCallUsd: 0.002,
+    });
   });
 });

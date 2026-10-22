@@ -26,3 +26,33 @@ export function committedSpendUsd(calls: IntentCallRecord[], unknownCallUsd: num
 export function unknownCostCalls(calls: IntentCallRecord[]): number {
   return calls.filter((c) => c.costUsd === null && possiblyBilled(c)).length;
 }
+
+export type SpendSettings = { maxUsd: number; unknownCallUsd: number };
+
+/**
+ * Read the spend ceiling of a live run, refusing anything unusable (PR #710
+ * review r2). `0,05` is NaN and an empty string is 0: either would let a paid
+ * run go through the whole dataset, so both are errors, never defaults.
+ */
+export function parseSpendSettings(env: Record<string, string | undefined>): SpendSettings {
+  const read = (name: string, fallback: string, ok: (n: number) => boolean, rule: string) => {
+    const raw = env[name] ?? fallback;
+    const n = /^\d+(\.\d+)?$/.test(raw.trim()) ? Number(raw) : Number.NaN;
+    if (!Number.isFinite(n) || !ok(n)) throw new Error(`${name}="${raw}" is not ${rule}`);
+    return n;
+  };
+  return {
+    maxUsd: read(
+      'INTENT_EVAL_MAX_USD',
+      '0.05',
+      (n) => n >= 0,
+      'a non-negative USD amount like 0.05',
+    ),
+    unknownCallUsd: read(
+      'INTENT_EVAL_UNKNOWN_CALL_USD',
+      '0.001',
+      (n) => n > 0,
+      'a positive USD amount like 0.001',
+    ),
+  };
+}

@@ -7,7 +7,7 @@ import {
   type IntentCallRecord,
 } from '../application/intent-classification.service';
 import { SEED_TAXONOMY } from './seed-taxonomy';
-import { committedSpendUsd, unknownCostCalls } from './spend';
+import { committedSpendUsd, parseSpendSettings, unknownCostCalls } from './spend';
 
 /**
  * GoGo-BE#709 — evaluation of Vietnamese intent classification.
@@ -49,8 +49,8 @@ async function main(): Promise<void> {
       'INTENT_EVAL_MODE=live needs INTENT_EVAL_LIVE_AUTHORIZED=yes — paid inference is never implied',
     );
   }
-  const maxUsd = Number(process.env.INTENT_EVAL_MAX_USD ?? '0.05');
-  const unknownCallUsd = Number(process.env.INTENT_EVAL_UNKNOWN_CALL_USD ?? '0.001');
+  // Validated before any provider exists: an unusable ceiling must stop the run, not disable the guard.
+  const { maxUsd, unknownCallUsd } = parseSpendSettings(process.env);
   const calls: IntentCallRecord[] = [];
   const provider = live
     ? new OpenRouterDecisionProvider({
