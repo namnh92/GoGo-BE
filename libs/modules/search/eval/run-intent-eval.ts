@@ -7,6 +7,7 @@ import {
   type IntentCallRecord,
 } from '../application/intent-classification.service';
 import { SEED_TAXONOMY } from './seed-taxonomy';
+import { committedSpendUsd, unknownCostCalls } from './spend';
 
 /**
  * GoGo-BE#709 — evaluation of Vietnamese intent classification.
@@ -62,16 +63,7 @@ async function main(): Promise<void> {
     calls.push(c),
   );
 
-  const committed = () =>
-    calls.reduce(
-      (sum, c) =>
-        sum +
-        (c.costUsd ??
-          (c.outcome === 'answered' || c.outcome === 'timeout' || c.outcome === 'provider_error'
-            ? unknownCallUsd
-            : 0)),
-      0,
-    );
+  const committed = () => committedSpendUsd(calls, unknownCallUsd);
   const hits = { category: 0, occasion: 0, inScope: 0, needsClarification: 0 };
   let evaluated = 0;
   for (const c of cases) {
@@ -111,9 +103,7 @@ async function main(): Promise<void> {
     outcomes,
     latencyMs: { p50: pct(0.5), p95: pct(0.95) },
     reportedCostUsd: calls.reduce((s, c) => s + (c.costUsd ?? 0), 0),
-    unknownCostCalls: calls.filter(
-      (c) => c.costUsd === null && c.outcome !== 'disabled' && c.outcome !== 'empty_request',
-    ).length,
+    unknownCostCalls: unknownCostCalls(calls),
   };
   console.log(JSON.stringify(report, null, 2));
   if (!live)
