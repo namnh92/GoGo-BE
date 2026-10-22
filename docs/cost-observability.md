@@ -695,9 +695,9 @@ line items instead of minute counters. It is strictly better here:
     amount); plus the three meters;
   - today: one `ACTUAL` MEDIUM row per service from `/keys usage_daily`; the
     completed-day row replaces it (same key) once OpenRouter folds the day;
-  - yesterday with no item: a MEDIUM zero per key-holding service, so a stale
-    partial row cannot survive; re-read on the next run. Older days without an
-    item get no row (absence is not zero).
+  - a day with no item, yesterday included, gets no row (absence is not zero):
+    yesterday's partial `usage_daily` row stays until the completed-day row
+    replaces it, rather than being overwritten with $0 (PR #710 review r4).
 - A failing `/keys` or any `/activity` call fails the run and writes nothing;
   errors carry codes (`AUTH_FAILED`, `FORBIDDEN` = not a management key,
   `RATE_LIMITED`, `HTTP_n`, `BAD_RESPONSE`), never the URL, header, body or cause.

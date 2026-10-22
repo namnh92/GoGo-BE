@@ -147,17 +147,18 @@ describe('activitySamples', () => {
     ]);
   });
 
-  it('yesterday with no item is a MEDIUM zero per key-holding service; older absent days get no row', () => {
+  it('a day with no item gets no row, yesterday included — absence is not zero (#710 r4)', () => {
+    // Yesterday's row may hold the partial `/keys usage_daily` figure written
+    // before midnight; a $0 here would replace real spend until OpenRouter
+    // folds the day. Leaving it lets the HIGH row replace it instead.
     const out = activitySamples(CTX, [
       { key: BE, items: [item('2026-10-19', 'm', 0.01)] },
       { key: HARNESS, items: [] },
     ]);
     expect(out.cost.map((c) => [c.day, c.serviceId, c.amountMicros, c.confidence])).toEqual([
       ['2026-10-19', 'openrouter.decisions', 10000, 'HIGH'],
-      ['2026-10-21', 'openrouter.decisions', 0, 'MEDIUM'],
-      ['2026-10-21', 'openrouter.dev_tooling', 0, 'MEDIUM'],
     ]);
-    expect(out.cost.some((c) => c.day === '2026-10-20')).toBe(false);
+    expect(out.cost.some((c) => c.amountMicros === 0)).toBe(false);
   });
 
   it('ignores items dated today or later — that day belongs to the /keys row', () => {
@@ -358,8 +359,8 @@ describe('collector definition', () => {
       signal: new AbortController().signal,
     });
     expect(asked).toEqual(['keys', BE.hash, HARNESS.hash]);
-    // cost: decisions 10-21 (HIGH) + dev_tooling 10-21 (MEDIUM zero) + two today rows; usage: 3 meters.
-    expect(result).toEqual({ sourceAsOf: NOW, samples: 7 });
+    // cost: decisions 10-21 (HIGH) + two today rows; usage: 3 meters. No zero for dev_tooling 10-21.
+    expect(result).toEqual({ sourceAsOf: NOW, samples: 6 });
     expect(executed).toHaveLength(2);
   });
 

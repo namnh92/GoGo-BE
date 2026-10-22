@@ -6,11 +6,7 @@ import type {
 } from '@gogo/providers';
 import type { CollectorDefinition, CollectorRunContext } from '../../domain/collector';
 import type { Confidence, CostSample, UsageSample } from '../../ports/collectors.port';
-import {
-  previousDay,
-  upsertCostSamples,
-  upsertUsageSamples,
-} from '../../application/sample-writer';
+import { upsertCostSamples, upsertUsageSamples } from '../../application/sample-writer';
 
 /**
  * GoGo-BE#709 — what OpenRouter charged GoGo, per key holder:
@@ -40,11 +36,12 @@ import {
  * | `provider_usage_meter_daily` | `requests`, `input_tokens`, `output_tokens` per (completed day, service)     |
  *
  * Today's MEDIUM row and the next day's HIGH row share one key, so the
- * completed figure replaces the partial one. Yesterday is always written for
- * every service that holds a key — a zero when `/activity` lists nothing for
- * it — so a partial row from yesterday cannot outlive the day; it stays
- * MEDIUM in that case, because OpenRouter may not have folded the day yet.
- * Older days with no item get **no row** (epic §44.6): absence is not zero.
+ * completed figure replaces the partial one. A day `/activity` does not list
+ * gets **no row** (epic §44.6): absence is not zero. That includes yesterday,
+ * whose row may still hold the partial `usage_daily` figure written before
+ * midnight — it stays, labelled MEDIUM `keys.usage_daily`, until OpenRouter
+ * folds the day and the HIGH row replaces it (PR #710 review r4: a $0 here
+ * replaced real spend for up to a run interval).
  *
  * `metadata.byModel` keeps the per-model split, `metadata.keys` the name and
  * an 8-character hash prefix of each contributing key — never a secret.
@@ -175,8 +172,8 @@ function usage(
 }
 
 /**
- * Pure: every key's `/activity` → completed-day cost and meter rows, plus a
- * yesterday row for each service that holds a key and spent nothing listed.
+ * Pure: every key's `/activity` → completed-day cost and meter rows. A day
+ * with no item writes nothing.
  * Items dated today or later are ignored (the window is completed days; a
  * stray one would fight today's MEDIUM row).
  */
@@ -239,22 +236,6 @@ export function activitySamples(
     );
   }
 
-  const yesterday = previousDay(ctx.today);
-  const held = new Map<OpenRouterServiceId, OpenRouterKeyUsage[]>();
-  for (const { key } of keyed) {
-    const s = openRouterServiceFor(key.name);
-    held.set(s, [...(held.get(s) ?? []), key]);
-  }
-  for (const [serviceId, keys] of [...held.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    if (buckets.has(`${yesterday}\u0000${serviceId}`)) continue;
-    costs.push(
-      cost(ctx, yesterday, serviceId, 0, 'MEDIUM', {
-        from: 'activity',
-        note: 'no activity item for the day yet; re-read on the next run',
-        keys: keys.map(keyRef).sort((x, y) => x.name.localeCompare(y.name)),
-      }),
-    );
-  }
   return { cost: costs, usage: usages };
 }
 
