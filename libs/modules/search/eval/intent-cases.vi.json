@@ -1,0 +1,2358 @@
+{
+  "version": 1,
+  "description": "GoGo-BE#709 — Vietnamese intent cases. Deterministic fields (partySize, budget, timeHint, areaText) are asserted by intent.spec.ts on every run; model fields (category, occasion, inScope, needsClarification) are measured only by an authorized live `pnpm eval:intent`. Taxonomy keys are the seed taxonomy (libs/database/src/seed.ts). partySize counts only an explicit number or an explicit pair phrase; knownParserGaps lists fields the parser is known to get wrong — the spec asserts they are still wrong, so fixing one forces updating this file.",
+  "cases": [
+    {
+      "id": "vi-001",
+      "text": "Tối nay 4 người đi ăn lẩu khoảng 300k/người, gần Cầu Giấy, ưu tiên quán yên tĩnh.",
+      "tags": ["restaurant", "group", "budget", "location"],
+      "expect": {
+        "partySize": 4,
+        "budget": {
+          "amount": 300000,
+          "mode": "per_person"
+        },
+        "timeHint": "tonight",
+        "areaText": "Cầu Giấy",
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-002",
+      "text": "Tìm quán cà phê yên tĩnh để làm việc ở Quận 1",
+      "tags": ["cafe", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Quận 1",
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-003",
+      "text": "Cuối tuần 2 vợ chồng muốn đi ăn tối lãng mạn, tầm 1 triệu",
+      "tags": ["romantic", "budget"],
+      "expect": {
+        "partySize": 2,
+        "budget": {
+          "amount": 1000000,
+          "mode": null
+        },
+        "timeHint": "weekend",
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-004",
+      "text": "Quán bún chả ngon gần Hoàn Kiếm, 2 người, dưới 100k mỗi người",
+      "tags": ["restaurant", "budget", "location"],
+      "expect": {
+        "partySize": 2,
+        "budget": {
+          "amount": 100000,
+          "mode": "per_person"
+        },
+        "timeHint": null,
+        "areaText": "Hoàn Kiếm",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-005",
+      "text": "Hôm nay đi đâu chơi?",
+      "tags": ["ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "today",
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-006",
+      "text": "Có chỗ nào chill chill không",
+      "tags": ["ambiguous", "slang"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-007",
+      "text": "Đi đâu đó với crush tối mai, đừng ồn quá",
+      "tags": ["romantic", "ambiguous"],
+      "expect": {
+        "partySize": 2,
+        "budget": null,
+        "timeHint": "tomorrow",
+        "areaText": null,
+        "category": null,
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-008",
+      "text": "Rủ 6 đứa bạn đi nhậu cuối tuần, tổng tầm 2 triệu",
+      "tags": ["group", "budget", "slang"],
+      "expect": {
+        "partySize": 6,
+        "budget": {
+          "amount": 2000000,
+          "mode": "total"
+        },
+        "timeHint": "weekend",
+        "areaText": null,
+        "category": "bar",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-009",
+      "text": "Quán bar rooftop view đẹp ở Quận 3",
+      "tags": ["bar", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Quận 3",
+        "category": "bar",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-010",
+      "text": "Cho mình xin chỗ ăn sáng phở ngon ở Ba Đình",
+      "tags": ["restaurant", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Ba Đình",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-011",
+      "text": "Kỷ niệm 1 năm yêu nhau, muốn chỗ thật lãng mạn ven sông",
+      "tags": ["romantic"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-012",
+      "text": "Đi xem phim tối nay với người yêu",
+      "tags": ["romantic"],
+      "expect": {
+        "partySize": 2,
+        "budget": null,
+        "timeHint": "tonight",
+        "areaText": null,
+        "category": "cinema",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-013",
+      "text": "Cả nhà 5 người đi công viên chủ nhật này",
+      "tags": ["group"],
+      "expect": {
+        "partySize": 5,
+        "budget": null,
+        "timeHint": "weekend",
+        "areaText": null,
+        "category": "park",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-014",
+      "text": "Chỗ nào vừa yên tĩnh vừa sôi động để đi nhóm 8 người?",
+      "tags": ["conflict", "group"],
+      "expect": {
+        "partySize": 8,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-015",
+      "text": "Muốn ngồi ngoài trời nhưng trong nhà có điều hòa",
+      "tags": ["conflict"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-016",
+      "text": "Thời tiết Hà Nội hôm nay thế nào?",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "today",
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-017",
+      "text": "Đặt vé máy bay đi Đà Nẵng giúp mình",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-018",
+      "text": "Viết giúp mình bài thơ tình",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-019",
+      "text": "Giá vàng hôm nay bao nhiêu",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "today",
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-020",
+      "text": "Mua điện thoại ở đâu rẻ",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "shopping",
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-021",
+      "text": "Tầm 200-300k một người, đi ăn nướng 4 đứa",
+      "tags": ["restaurant", "group", "budget", "slang"],
+      "expect": {
+        "partySize": 4,
+        "budget": {
+          "amount": 300000,
+          "mode": "per_person"
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-022",
+      "text": "Đi cafe sách một mình chiều nay",
+      "tags": ["cafe"],
+      "expect": {
+        "partySize": 1,
+        "budget": null,
+        "timeHint": "today",
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-023",
+      "text": "Chiều nay đi bảo tàng với 2 đứa nhỏ",
+      "tags": ["group"],
+      "expect": {
+        "partySize": 3,
+        "budget": null,
+        "timeHint": "today",
+        "areaText": null,
+        "category": "museum",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      },
+      "knownParserGaps": ["partySize"]
+    },
+    {
+      "id": "vi-024",
+      "text": "Có quán trà sữa nào gần Đống Đa không",
+      "tags": ["cafe", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Đống Đa",
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-025",
+      "text": "Hẹn hò lần đầu nên đi đâu cho đỡ ngại",
+      "tags": ["romantic"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-026",
+      "text": "Sinh nhật bạn thân, 10 người, cần chỗ có phòng riêng",
+      "tags": ["group"],
+      "expect": {
+        "partySize": 10,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-027",
+      "text": "Đi nhậu bình dân 50k/ng gần Thanh Xuân",
+      "tags": ["bar", "budget", "location", "slang"],
+      "expect": {
+        "partySize": null,
+        "budget": {
+          "amount": 50000,
+          "mode": "per_person"
+        },
+        "timeHint": null,
+        "areaText": "Thanh Xuân",
+        "category": "bar",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-028",
+      "text": "1 củ cho 2 người ăn tối sang chảnh",
+      "tags": ["romantic", "budget", "slang"],
+      "expect": {
+        "partySize": 2,
+        "budget": {
+          "amount": 1000000,
+          "mode": "total"
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-029",
+      "text": "Kiếm chỗ ăn hải sản ở Quận 7, ngân sách 500k mỗi người",
+      "tags": ["restaurant", "budget", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": {
+          "amount": 500000,
+          "mode": "per_person"
+        },
+        "timeHint": null,
+        "areaText": "Quận 7",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-030",
+      "text": "Ăn chay ở đâu ngon Hà Nội",
+      "tags": ["restaurant", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Hà Nội",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      },
+      "knownParserGaps": ["areaText"]
+    },
+    {
+      "id": "vi-031",
+      "text": "Đi đâu cũng được",
+      "tags": ["ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-032",
+      "text": "Tối nay rảnh, gợi ý gì đi",
+      "tags": ["ambiguous", "slang"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "tonight",
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-033",
+      "text": "Đi dạo hồ Tây buổi tối",
+      "tags": ["location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "park",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-034",
+      "text": "Có homestay nào đẹp ở Đà Lạt cho 2 vợ chồng",
+      "tags": ["romantic", "location"],
+      "expect": {
+        "partySize": 2,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Đà Lạt",
+        "category": "lodging",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-035",
+      "text": "Quán ăn gia đình có chỗ cho trẻ con chơi, 3 người lớn 2 trẻ em",
+      "tags": ["group"],
+      "expect": {
+        "partySize": 5,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      },
+      "knownParserGaps": ["partySize"]
+    },
+    {
+      "id": "vi-036",
+      "text": "Đi mua sắm ở Vincom cuối tuần",
+      "tags": ["location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "weekend",
+        "areaText": "Vincom",
+        "category": "shopping",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-037",
+      "text": "Tìm quán karaoke cho 12 người tối nay",
+      "tags": ["group"],
+      "expect": {
+        "partySize": 12,
+        "budget": null,
+        "timeHint": "tonight",
+        "areaText": null,
+        "category": null,
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-038",
+      "text": "Mình với ny muốn đi đâu đó lãng mạn mà rẻ rẻ thôi",
+      "tags": ["romantic", "slang", "ambiguous"],
+      "expect": {
+        "partySize": 2,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-039",
+      "text": "Quán ốc bình dân 2 lít một người",
+      "tags": ["restaurant", "budget", "slang"],
+      "expect": {
+        "partySize": null,
+        "budget": {
+          "amount": 200000,
+          "mode": "per_person"
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-040",
+      "text": "Quán cà phê có view sông Sài Gòn",
+      "tags": ["cafe"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-041",
+      "text": "Đi ăn buffet lẩu nướng 6 người, tổng cộng 1tr5",
+      "tags": ["restaurant", "group", "budget"],
+      "expect": {
+        "partySize": 6,
+        "budget": {
+          "amount": 1500000,
+          "mode": "total"
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-042",
+      "text": "Muốn chỗ thật ồn ào náo nhiệt để quẩy",
+      "tags": ["slang"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "bar",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-043",
+      "text": "Cần chỗ họp nhóm học bài yên tĩnh có wifi",
+      "tags": ["cafe", "group"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-044",
+      "text": "Đưa mẹ đi ăn trưa nay ở Hai Bà Trưng",
+      "tags": ["restaurant", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "today",
+        "areaText": "Hai Bà Trưng",
+        "category": "restaurant",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-045",
+      "text": "Gần đây có gì vui không",
+      "tags": ["ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-046",
+      "text": "Tối thứ 7 đi bar với hội bạn 5 người",
+      "tags": ["bar", "group"],
+      "expect": {
+        "partySize": 5,
+        "budget": null,
+        "timeHint": "weekend",
+        "areaText": null,
+        "category": "bar",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-047",
+      "text": "Ăn gì bây giờ",
+      "tags": ["ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "now",
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-048",
+      "text": "Quán phở mở cửa khuya gần Hoàn Kiếm",
+      "tags": ["restaurant", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Hoàn Kiếm",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-049",
+      "text": "Đi xem triển lãm nghệ thuật ở Hà Nội cuối tuần",
+      "tags": ["location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "weekend",
+        "areaText": "Hà Nội",
+        "category": "museum",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-050",
+      "text": "Lẩu dê 7 người, mỗi người khoảng 250k",
+      "tags": ["restaurant", "group", "budget"],
+      "expect": {
+        "partySize": 7,
+        "budget": {
+          "amount": 250000,
+          "mode": "per_person"
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-051",
+      "text": "Kiếm quán cà phê mèo",
+      "tags": ["cafe"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-052",
+      "text": "Chỗ nào ngắm hoàng hôn đẹp ở Sài Gòn",
+      "tags": ["location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Sài Gòn",
+        "category": "park",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-053",
+      "text": "Đi picnic ngoài trời cuối tuần với gia đình",
+      "tags": ["group"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "weekend",
+        "areaText": null,
+        "category": "park",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-054",
+      "text": "Muốn đi ăn món Nhật tầm 400 nghìn một người, tối mai",
+      "tags": ["restaurant", "budget"],
+      "expect": {
+        "partySize": null,
+        "budget": {
+          "amount": 400000,
+          "mode": "per_person"
+        },
+        "timeHint": "tomorrow",
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-055",
+      "text": "Hai đứa mình đi ăn kem",
+      "tags": ["romantic"],
+      "expect": {
+        "partySize": 2,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-056",
+      "text": "Quán nhậu nào ngon mà rẻ ở Quận 10",
+      "tags": ["bar", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Quận 10",
+        "category": "bar",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-057",
+      "text": "Có rạp chiếu phim nào gần Long Biên không",
+      "tags": ["location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Long Biên",
+        "category": "cinema",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-058",
+      "text": "Muốn tìm chỗ chụp ảnh sống ảo",
+      "tags": ["ambiguous", "slang"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-059",
+      "text": "Ăn tối ở đâu sang trọng cho buổi cầu hôn",
+      "tags": ["romantic"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-060",
+      "text": "Đi nhậu mà không uống rượu",
+      "tags": ["conflict", "slang"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-061",
+      "text": "Muốn quán vắng người nhưng phải đông vui",
+      "tags": ["conflict"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-062",
+      "text": "Nhóm 4 người, 2 người ăn chay 2 người ăn mặn",
+      "tags": ["restaurant", "group"],
+      "expect": {
+        "partySize": 4,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-063",
+      "text": "Bánh mì ngon nhất Sài Gòn ở đâu",
+      "tags": ["restaurant", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Sài Gòn",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      },
+      "knownParserGaps": ["areaText"]
+    },
+    {
+      "id": "vi-064",
+      "text": "Chiều nay cafe làm việc, có ổ cắm điện",
+      "tags": ["cafe"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "today",
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-065",
+      "text": "Mấy giờ thì quán Highlands đóng cửa?",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-066",
+      "text": "Bạn là ai?",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-067",
+      "text": "Đặt lịch khám răng",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-068",
+      "text": "Tính giúp 15% của 300k",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": {
+          "amount": 300000,
+          "mode": null
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-069",
+      "text": "Đi đâu đó tối nay cho 3 người, tổng 600k",
+      "tags": ["group", "budget", "ambiguous"],
+      "expect": {
+        "partySize": 3,
+        "budget": {
+          "amount": 600000,
+          "mode": "total"
+        },
+        "timeHint": "tonight",
+        "areaText": null,
+        "category": null,
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-070",
+      "text": "Quán lẩu Thái ngon ở Cầu Giấy",
+      "tags": ["restaurant", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Cầu Giấy",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-071",
+      "text": "Cà phê muối ở đâu ngon",
+      "tags": ["cafe"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-072",
+      "text": "Mình 2 người, budget 500k tổng, đi ăn rồi đi cafe",
+      "tags": ["budget", "restaurant"],
+      "expect": {
+        "partySize": 2,
+        "budget": {
+          "amount": 500000,
+          "mode": "total"
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-073",
+      "text": "Đi chơi đâu đó vừa ăn vừa chơi game",
+      "tags": ["ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-074",
+      "text": "Rooftop bar view đẹp hẹn hò tối nay",
+      "tags": ["bar", "romantic"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "tonight",
+        "areaText": null,
+        "category": "bar",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-075",
+      "text": "Kiếm khách sạn gần biển cho cả nhà",
+      "tags": ["group"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "lodging",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-076",
+      "text": "Quán bún bò Huế gần Quận 5",
+      "tags": ["restaurant", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Quận 5",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-077",
+      "text": "Tầm 100k thì đi đâu được",
+      "tags": ["budget", "ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": {
+          "amount": 100000,
+          "mode": null
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-078",
+      "text": "Đi ăn tối kỷ niệm ngày cưới, ngân sách khoảng 2 triệu cho 2 người",
+      "tags": ["romantic", "budget"],
+      "expect": {
+        "partySize": 2,
+        "budget": {
+          "amount": 2000000,
+          "mode": "total"
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-079",
+      "text": "Đi uống bia tươi với anh em công ty",
+      "tags": ["bar", "group", "slang"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "bar",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-080",
+      "text": "Cho em xin chỗ ăn vặt sinh viên rẻ rẻ",
+      "tags": ["restaurant", "slang"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-081",
+      "text": "Quán cafe acoustic tối nay",
+      "tags": ["cafe"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "tonight",
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-082",
+      "text": "Muốn đi bảo tàng nhưng ghét chỗ đông người",
+      "tags": ["location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "museum",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-083",
+      "text": "Có chỗ nào thú cưng được vào không",
+      "tags": ["ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-084",
+      "text": "Nhà hàng chay sang trọng cho 6 người ở Quận 1",
+      "tags": ["restaurant", "group", "location"],
+      "expect": {
+        "partySize": 6,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Quận 1",
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-085",
+      "text": "Cần chỗ tổ chức tiệc sinh nhật cho bé 5 tuổi",
+      "tags": ["group"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-086",
+      "text": "Lẩu nấm tầm 150-200k/ng",
+      "tags": ["restaurant", "budget"],
+      "expect": {
+        "partySize": null,
+        "budget": {
+          "amount": 200000,
+          "mode": "per_person"
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-087",
+      "text": "Đi đâu cho đỡ chán",
+      "tags": ["ambiguous", "slang"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-088",
+      "text": "Chỗ yên tĩnh để tâm sự với bạn gái",
+      "tags": ["romantic"],
+      "expect": {
+        "partySize": 2,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-089",
+      "text": "Kèo nhậu tối nay 4 thằng, mỗi đứa 200k",
+      "tags": ["bar", "group", "budget", "slang"],
+      "expect": {
+        "partySize": 4,
+        "budget": {
+          "amount": 200000,
+          "mode": "per_person"
+        },
+        "timeHint": "tonight",
+        "areaText": null,
+        "category": "bar",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-090",
+      "text": "Bún đậu mắm tôm ở đâu ngon Hà Nội",
+      "tags": ["restaurant", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Hà Nội",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      },
+      "knownParserGaps": ["areaText"]
+    },
+    {
+      "id": "vi-091",
+      "text": "Gợi ý chỗ hẹn hò trong nhà vì trời mưa",
+      "tags": ["romantic"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-092",
+      "text": "Đi spa thư giãn cuối tuần",
+      "tags": ["ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "weekend",
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-093",
+      "text": "Mình muốn đi ăn nhưng không biết ăn gì",
+      "tags": ["ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-094",
+      "text": "Cafe sân vườn rộng cho nhóm 15 người",
+      "tags": ["cafe", "group"],
+      "expect": {
+        "partySize": 15,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-095",
+      "text": "Đi ăn tối với sếp, cần chỗ lịch sự",
+      "tags": ["restaurant"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-096",
+      "text": "Ăn đêm ở đâu Sài Gòn",
+      "tags": ["restaurant", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Sài Gòn",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      },
+      "knownParserGaps": ["areaText"]
+    },
+    {
+      "id": "vi-097",
+      "text": "Đi xem phim rồi ăn tối, 2 người, khoảng 800k",
+      "tags": ["romantic", "budget"],
+      "expect": {
+        "partySize": 2,
+        "budget": {
+          "amount": 800000,
+          "mode": null
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "cinema",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-098",
+      "text": "Hướng dẫn nấu phở bò",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-099",
+      "text": "Tỷ giá đô hôm nay",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "today",
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-100",
+      "text": "Gọi taxi giúp mình",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-101",
+      "text": "Quán này có ngon không?",
+      "tags": ["out_of_scope", "ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-102",
+      "text": "Cà phê view hồ ở Tây Hồ",
+      "tags": ["cafe", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Tây Hồ",
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-103",
+      "text": "Đi chơi công viên nước với lũ trẻ",
+      "tags": ["group"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "park",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-104",
+      "text": "Ăn sushi tối mai, hai người, khoảng 1 triệu rưỡi",
+      "tags": ["restaurant", "budget"],
+      "expect": {
+        "partySize": 2,
+        "budget": {
+          "amount": 1500000,
+          "mode": null
+        },
+        "timeHint": "tomorrow",
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-105",
+      "text": "Muốn chỗ thật sang mà giá sinh viên",
+      "tags": ["conflict", "slang"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-106",
+      "text": "Đi ăn với hội 9 người, ai cũng thích ồn ào",
+      "tags": ["group"],
+      "expect": {
+        "partySize": 9,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-107",
+      "text": "Tìm quán bia craft ở Quận 2",
+      "tags": ["bar", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Quận 2",
+        "category": "bar",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-108",
+      "text": "Chiều nay đi thủy cung với con",
+      "tags": ["group"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "today",
+        "areaText": null,
+        "category": "museum",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-109",
+      "text": "Có quán nào mở 24/24 không",
+      "tags": ["ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-110",
+      "text": "Quán chè ngon gần Hoàn Kiếm",
+      "tags": ["cafe", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Hoàn Kiếm",
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-111",
+      "text": "Tối nay đi nhậu, 3 anh em, 1 củ 2 tổng",
+      "tags": ["bar", "group", "budget", "slang"],
+      "expect": {
+        "partySize": 3,
+        "budget": {
+          "amount": 1200000,
+          "mode": "total"
+        },
+        "timeHint": "tonight",
+        "areaText": null,
+        "category": "bar",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-112",
+      "text": "Cho xin quán ăn có view ngắm pháo hoa",
+      "tags": ["restaurant"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-113",
+      "text": "Đi đâu đó lãng mạn mà ồn ào náo nhiệt",
+      "tags": ["conflict", "romantic"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-114",
+      "text": "Muốn ngồi cafe ngoài trời mà máy lạnh mát",
+      "tags": ["conflict", "cafe"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-115",
+      "text": "Gà rán ở đâu ngon",
+      "tags": ["restaurant"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-116",
+      "text": "Đi bowling với team 8 người",
+      "tags": ["group"],
+      "expect": {
+        "partySize": 8,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-117",
+      "text": "Quán cơm tấm ngon Quận 3, tầm 60k",
+      "tags": ["restaurant", "budget", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": {
+          "amount": 60000,
+          "mode": null
+        },
+        "timeHint": null,
+        "areaText": "Quận 3",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-118",
+      "text": "Mình ở Bình Thạnh, kiếm chỗ ăn tối",
+      "tags": ["restaurant", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Bình Thạnh",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-119",
+      "text": "Đi ăn kỷ niệm cho bố mẹ, 4 người",
+      "tags": ["restaurant", "group"],
+      "expect": {
+        "partySize": 4,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-120",
+      "text": "Hẹn crush đi cafe, chỗ nào xinh xinh",
+      "tags": ["romantic", "slang", "cafe"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-121",
+      "text": "Bây giờ đói quá, gần đây có gì ăn",
+      "tags": ["restaurant"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "now",
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-122",
+      "text": "Đi bar mà không thích nhạc to",
+      "tags": ["bar"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "bar",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-123",
+      "text": "Tiệc độc thân 7 người, tối thứ bảy",
+      "tags": ["group"],
+      "expect": {
+        "partySize": 7,
+        "budget": null,
+        "timeHint": "weekend",
+        "areaText": null,
+        "category": "bar",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-124",
+      "text": "Chỗ ăn trưa văn phòng nhanh gọn ở Quận 1, 50 nghìn",
+      "tags": ["restaurant", "budget", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": {
+          "amount": 50000,
+          "mode": null
+        },
+        "timeHint": null,
+        "areaText": "Quận 1",
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-125",
+      "text": "Đi xem kịch tối nay",
+      "tags": ["location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "tonight",
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-126",
+      "text": "Ăn dimsum sáng chủ nhật cả nhà",
+      "tags": ["restaurant", "group"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "weekend",
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-127",
+      "text": "Quán cafe 2 tầng có ban công",
+      "tags": ["cafe"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-128",
+      "text": "Đi chơi đâu cho bé 3 tuổi",
+      "tags": ["group"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "park",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-129",
+      "text": "Lẩu cá kèo 5 người tầm 1 triệu tổng",
+      "tags": ["restaurant", "group", "budget"],
+      "expect": {
+        "partySize": 5,
+        "budget": {
+          "amount": 1000000,
+          "mode": "total"
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-130",
+      "text": "Rượu vang và đồ Âu cho buổi hẹn",
+      "tags": ["romantic"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "couple",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-131",
+      "text": "Có chỗ nào chơi board game không",
+      "tags": ["cafe"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-132",
+      "text": "Mình muốn đi đâu đó một mình cho yên",
+      "tags": ["ambiguous"],
+      "expect": {
+        "partySize": 1,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-133",
+      "text": "Nướng Hàn Quốc 300k/1 người, nhóm 6",
+      "tags": ["restaurant", "group", "budget"],
+      "expect": {
+        "partySize": 6,
+        "budget": {
+          "amount": 300000,
+          "mode": "per_person"
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-134",
+      "text": "Đi dạo phố đi bộ Nguyễn Huệ tối nay",
+      "tags": ["location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": "tonight",
+        "areaText": null,
+        "category": "park",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-135",
+      "text": "Chỗ nào uống trà chiều sang chảnh",
+      "tags": ["cafe"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-136",
+      "text": "Đi ăn đồ Ấn ở Quận 1 cuối tuần, 3 người",
+      "tags": ["restaurant", "location"],
+      "expect": {
+        "partySize": 3,
+        "budget": null,
+        "timeHint": "weekend",
+        "areaText": "Quận 1",
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-137",
+      "text": "Gợi ý quán ăn ngon",
+      "tags": ["restaurant"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-138",
+      "text": "Đi chơi mà không muốn tốn tiền",
+      "tags": ["ambiguous", "budget"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "park",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-139",
+      "text": "Quán ăn có chỗ đậu ô tô cho 10 người",
+      "tags": ["restaurant", "group"],
+      "expect": {
+        "partySize": 10,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-140",
+      "text": "Muốn đi club quẩy tới sáng",
+      "tags": ["bar", "slang"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "bar",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-141",
+      "text": "Cafe yên tĩnh đọc sách gần Phú Nhuận",
+      "tags": ["cafe", "location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": "Phú Nhuận",
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-142",
+      "text": "Đi ăn với ông bà, cần quán dễ đi lại",
+      "tags": ["restaurant"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": "family",
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-143",
+      "text": "Đi chơi đêm giáng sinh ở đâu",
+      "tags": ["ambiguous"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-144",
+      "text": "Tiền điện tháng này sao cao vậy",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-145",
+      "text": "Dịch câu này sang tiếng Anh giúp mình",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-146",
+      "text": "Đi ăn cưới mặc gì",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-147",
+      "text": "Mình buồn quá",
+      "tags": ["out_of_scope"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": null,
+        "occasion": null,
+        "inScope": false,
+        "needsClarification": true
+      }
+    },
+    {
+      "id": "vi-148",
+      "text": "Đi ăn hủ tiếu gõ đêm, 2 đứa, 40k/ng",
+      "tags": ["restaurant", "budget", "slang"],
+      "expect": {
+        "partySize": 2,
+        "budget": {
+          "amount": 40000,
+          "mode": "per_person"
+        },
+        "timeHint": null,
+        "areaText": null,
+        "category": "restaurant",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-149",
+      "text": "Tìm quán cafe sáng sớm mở từ 6h",
+      "tags": ["cafe"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "cafe",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-150",
+      "text": "Đi xe đạp quanh hồ Gươm",
+      "tags": ["location"],
+      "expect": {
+        "partySize": null,
+        "budget": null,
+        "timeHint": null,
+        "areaText": null,
+        "category": "park",
+        "occasion": null,
+        "inScope": true,
+        "needsClarification": false
+      }
+    },
+    {
+      "id": "vi-151",
+      "text": "Cuối tuần này cả nhóm 6 người đi cắm trại",
+      "tags": ["group"],
+      "expect": {
+        "partySize": 6,
+        "budget": null,
+        "timeHint": "weekend",
+        "areaText": null,
+        "category": "park",
+        "occasion": "group",
+        "inScope": true,
+        "needsClarification": false
+      }
+    }
+  ]
+}

@@ -68,6 +68,8 @@ export type ServiceCategory =
   | 'ci'
   | 'push'
   | 'attribution'
+  /** GoGo-BE#709 — decision models (choice/score/noul answers, no generated text). */
+  | 'ai_decisions'
   | 'observability'
   | 'errors'
   | 'internal'
@@ -104,7 +106,9 @@ export type MeterUnit =
   | 'series'
   | 'event'
   | 'run'
-  | 'usd_micros';
+  | 'usd_micros'
+  /** Model input tokens — what a decision model bills on (output is free for Jev). */
+  | 'token';
 
 export type ProviderDefinition = {
   id: string;
@@ -1314,6 +1318,32 @@ export const COST_REGISTRY_DATA: RegistryData = {
         displayName: 'Attribution',
         category: 'attribution',
         meters: [['attributions', 'conversion']],
+      },
+    ]),
+    /**
+     * GoGo-BE#709 — OpenRouter, for decision models (TypeSafe Jev,
+     * `typesafe/jev-1.14`) behind `DecisionProviderPort`. Planned: the only
+     * caller is the DEV POC `IntentClassificationService`, which no route
+     * reaches and which runs with the provider disabled; no backend key is
+     * declared yet. Pricing ($0.042 per 1M input tokens, output free) is from
+     * the OpenRouter model page on 2026-10-22 and is not modelled — no pricing
+     * rule, no estimate — until the service is wired and its usage measured.
+     * The response carries `usage.cost` in USD per call; when wired, that is
+     * the cost source, and a call whose cost is not reported stays unknown.
+     *
+     * The AI Harness (GoGo-Infra#241) also uses OpenRouter, with its own key
+     * and its own ledger. That spend is development tooling, not GoGo runtime
+     * cost, and is never recorded here.
+     */
+    planned('openrouter', 'OpenRouter', [
+      {
+        name: 'decisions',
+        displayName: 'Decisions',
+        category: 'ai_decisions',
+        meters: [
+          ['decisions', 'request'],
+          ['input_tokens', 'token'],
+        ],
       },
     ]),
     planned('grafana', 'Grafana Cloud', [

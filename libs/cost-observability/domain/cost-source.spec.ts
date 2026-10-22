@@ -25,7 +25,7 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
     for (const id of ['apple', 'hosting', 'registrar', 'operations']) {
       expect(providerCostSourceKind(provider(id)), id).toBe('MANUAL');
     }
-    for (const id of ['onesignal', 'tenjin', 'adjust', 'grafana']) {
+    for (const id of ['onesignal', 'tenjin', 'adjust', 'openrouter', 'grafana']) {
       expect(providerCostSourceKind(provider(id)), id).toBe('NONE');
     }
   });
@@ -39,6 +39,18 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
       ['attributions', 'conversion'],
     ]);
     expect(provider('tenjin').status).toBe('planned');
+  });
+
+  it('#709: OpenRouter is planned for decision models — no cost source, nothing estimated', () => {
+    const openrouter = provider('openrouter');
+    expect(openrouter.status).toBe('planned');
+    expect(openrouter.services?.map((s) => s.id)).toEqual(['openrouter.decisions']);
+    expect(service('openrouter.decisions').category).toBe('ai_decisions');
+    expect(service('openrouter.decisions').runtime).toBe('none');
+    expect(service('openrouter.decisions').meters?.map((m) => [m.metric, m.unit])).toEqual([
+      ['decisions', 'request'],
+      ['input_tokens', 'token'],
+    ]);
   });
 
   it('a service declares for itself before it inherits: Play Console is MANUAL under an AUTO Google', () => {
