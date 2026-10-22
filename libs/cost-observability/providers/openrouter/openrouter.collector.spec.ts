@@ -27,9 +27,9 @@ import {
 const NOW = new Date('2026-10-22T06:00:00Z');
 const CTX = { today: '2026-10-22', environment: 'dev', now: NOW };
 
-const key = (label: string, hash: string, daily = 0): OpenRouterKeyUsage => ({
+const key = (name: string, hash: string, daily = 0): OpenRouterKeyUsage => ({
   hash,
-  label,
+  name,
   disabled: false,
   usageDailyUsd: daily,
   usageMonthlyUsd: daily,
@@ -58,7 +58,7 @@ const item = (
 });
 
 describe('openRouterServiceFor', () => {
-  it('routes by the label convention, - or _, anything else to other_keys', () => {
+  it('routes by the name convention, - or _, anything else to other_keys', () => {
     expect(openRouterServiceFor('gogo-be-dev')).toBe('openrouter.decisions');
     expect(openRouterServiceFor('gogo_be_dev')).toBe('openrouter.decisions');
     expect(openRouterServiceFor('gogo-be')).toBe('openrouter.decisions');
@@ -115,7 +115,7 @@ describe('activitySamples', () => {
           byModel: { 'typesafe/jev-1.14': 42, 'other/model': 1000 },
           byokUsageMicros: 500000,
           reasoningTokens: 0,
-          keys: [{ label: 'gogo-be-dev', hash: 'aaaaaaaa' }],
+          keys: [{ name: 'gogo-be-dev', hash: 'aaaaaaaa' }],
         },
       },
     ]);
@@ -170,7 +170,7 @@ describe('activitySamples', () => {
     expect(out.cost[0]?.metadata?.byokUsageMicros).toBeNull();
   });
 
-  it('never carries a full key hash or anything beyond label + prefix', () => {
+  it('never carries a full key hash or anything beyond name + prefix', () => {
     const out = activitySamples(CTX, [{ key: BE, items: [item('2026-10-21', 'm', 0.01)] }]);
     expect(JSON.stringify(out)).not.toContain(BE.hash);
   });
@@ -234,7 +234,7 @@ describe('anthropicByokSamples', () => {
         metadata: {
           from: 'openrouter.activity.byok_usage_inference',
           byModel: { 'anthropic/claude-sonnet-5.5': 4000, 'anthropic/claude-haiku-5.5': 1000 },
-          keys: [{ label: 'gogo_claude_dev', hash: 'eeeeeeee' }],
+          keys: [{ name: 'gogo_claude_dev', hash: 'eeeeeeee' }],
         },
       },
     ]);

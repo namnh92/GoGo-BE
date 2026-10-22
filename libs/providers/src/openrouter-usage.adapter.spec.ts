@@ -17,12 +17,14 @@ import {
 const KEY = ['sk', 'or', 'v1', 'management', 'test'].join('-');
 const HASH = 'f01d52606dc8f0a8303a7b5cc3fa07109c2e346cec7c0a16b40de462992ce943';
 
+// Shape seen on the live account (2026-10-22): `label` is a masked preview of
+// the key itself, the name the owner typed is `name`.
 const KEYS = {
   data: [
     {
       hash: HASH,
-      name: 'gogo-be-dev',
-      label: 'gogo-be-dev',
+      name: 'gogo_jev_dev',
+      label: 'sk-or-v1-f2c...61a',
       disabled: false,
       usage: 1.5,
       usage_daily: 0.02,
@@ -31,8 +33,8 @@ const KEYS = {
     },
     {
       hash: 'abc12345def',
-      name: 'n',
-      label: 'gogo-ai-harness-dev',
+      name: 'gogo_claude_dev',
+      label: 'sk-or-v1-f20...a88',
       disabled: true,
       usage_daily: 0,
       usage_monthly: 0.3,
@@ -82,18 +84,18 @@ async function caught(p: Promise<unknown>): Promise<OpenRouterUsageError> {
 }
 
 describe('foldKeys', () => {
-  it('keeps hash, label, disabled and daily/monthly USD, sorted by label', () => {
+  it('keeps hash, name, disabled and daily/monthly USD, sorted by name', () => {
     expect(foldKeys(KEYS)).toEqual([
       {
         hash: 'abc12345def',
-        label: 'gogo-ai-harness-dev',
+        name: 'gogo_claude_dev',
         disabled: true,
         usageDailyUsd: 0,
         usageMonthlyUsd: 0.3,
       },
       {
         hash: HASH,
-        label: 'gogo-be-dev',
+        name: 'gogo_jev_dev',
         disabled: false,
         usageDailyUsd: 0.02,
         usageMonthlyUsd: 1.2,
@@ -101,13 +103,25 @@ describe('foldKeys', () => {
     ]);
   });
 
-  it('drops entries without a hash, a label or a usable usage figure — never reads them as zero', () => {
+  it('never reads or keeps the masked key preview in `label`', () => {
+    const out = foldKeys(KEYS);
+    expect(JSON.stringify(out)).not.toContain('sk-or-v1');
+    expect(out.every((k) => !('label' in k))).toBe(true);
+  });
+
+  it('a key without a name is kept as (unnamed) — its spend still counts', () => {
+    const body = {
+      data: [{ hash: 'abc12345', label: 'sk-or-v1-aaa...bbb', usage_daily: 0.5, usage_monthly: 1 }],
+    };
+    expect(foldKeys(body).map((k) => [k.name, k.usageDailyUsd])).toEqual([['(unnamed)', 0.5]]);
+  });
+
+  it('drops entries without a hash or a usable usage figure — never reads them as zero', () => {
     const body = {
       data: [
-        { label: 'x', usage_daily: 0, usage_monthly: 0 },
-        { hash: 'abc12345', usage_daily: 0, usage_monthly: 0 },
-        { hash: 'abc12345', label: 'x', usage_daily: 'n/a', usage_monthly: 0 },
-        { hash: 'abc12345', label: 'x', usage_daily: -1, usage_monthly: 0 },
+        { name: 'x', usage_daily: 0, usage_monthly: 0 },
+        { hash: 'abc12345', name: 'x', usage_daily: 'n/a', usage_monthly: 0 },
+        { hash: 'abc12345', name: 'x', usage_daily: -1, usage_monthly: 0 },
         null,
       ],
     };

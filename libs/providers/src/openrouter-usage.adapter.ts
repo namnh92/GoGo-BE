@@ -6,8 +6,10 @@
  * from OpenRouter's OpenAPI, published 2026-10-22; openrouter.ai itself was
  * not reachable from the authoring session):
  *
- * - `GET /api/v1/keys` — every API key on the account: `hash`, `label`,
- *   `name`, `usage_daily` (USD, current UTC day), `usage_monthly`, `disabled`.
+ * - `GET /api/v1/keys` — every API key on the account: `hash`, `name` (what
+ *   the owner typed at creation), `label` (a **masked preview of the key
+ *   itself**, `sk-or-v1-f2c...61a` — checked on the live account 2026-10-22;
+ *   never read here), `usage_daily` (USD, current UTC day), `usage_monthly`, `disabled`.
  *   **Management key required.**
  * - `GET /api/v1/activity?api_key_hash=<hash>` — `data: [...]` for the last 30
  *   *completed* UTC days, one item per (date, model, endpoint): `date`
@@ -25,8 +27,12 @@
 export type OpenRouterKeyUsage = {
   /** OpenRouter's key hash — an identifier, not the secret. */
   hash: string;
-  /** What the key was named at creation; drives service routing (`gogo-be-*`, `gogo-ai-harness-*`). */
-  label: string;
+  /**
+   * What the key was named at creation (`name`); drives service routing.
+   * `(unnamed)` when the key has none. OpenRouter's `label` is a masked
+   * preview of the secret, so it is never used, stored or logged.
+   */
+  name: string;
   disabled: boolean;
   /** USD spent on the current UTC day so far. */
   usageDailyUsd: number;
@@ -95,19 +101,19 @@ export function foldKeys(body: unknown): OpenRouterKeyUsage[] {
   for (const raw of data as Record<string, unknown>[]) {
     if (!raw || typeof raw !== 'object') continue;
     const hash = str(raw.hash);
-    const label = str(raw.label) ?? str(raw.name);
+    const name = str(raw.name) ?? '(unnamed)';
     const daily = num(raw.usage_daily);
     const monthly = num(raw.usage_monthly);
-    if (hash === null || label === null || daily === null || monthly === null) continue;
+    if (hash === null || daily === null || monthly === null) continue;
     out.push({
       hash,
-      label,
+      name,
       disabled: raw.disabled === true,
       usageDailyUsd: daily,
       usageMonthlyUsd: monthly,
     });
   }
-  return out.sort((a, b) => a.label.localeCompare(b.label));
+  return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**

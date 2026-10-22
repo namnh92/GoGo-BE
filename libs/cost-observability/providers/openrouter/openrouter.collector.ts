@@ -20,10 +20,10 @@ import {
  * for every key and its spend so far today, `/activity` per key for the last
  * 30 completed UTC days. 1 + N GETs per run (N = keys, a handful), all free.
  *
- * Keys are routed to a service by their label (`-` or `_` between words),
+ * Keys are routed to a service by their `name` (`-` or `_` between words),
  * the convention GoGo-Infra#241 sets when a key is created:
  *
- * | label                          | service                   |
+ * | name                           | service                   |
  * | ------------------------------ | ------------------------- |
  * | `gogo_be_*`                    | `openrouter.decisions`    |
  * | `gogo_ai_harness_*`            | `openrouter.dev_tooling`  |
@@ -46,7 +46,7 @@ import {
  * MEDIUM in that case, because OpenRouter may not have folded the day yet.
  * Older days with no item get **no row** (epic §44.6): absence is not zero.
  *
- * `metadata.byModel` keeps the per-model split, `metadata.keys` the label and
+ * `metadata.byModel` keeps the per-model split, `metadata.keys` the name and
  * an 8-character hash prefix of each contributing key — never a secret.
  * BYOK spend (`byok_usage_inference`) is billed by the other provider, not
  * OpenRouter, so it stays in metadata and out of `amountMicros`; the Claude
@@ -82,9 +82,9 @@ const DEFAULTS = {
   maxCallsPerDay: 8,
 };
 
-/** A key's label → the service its spend belongs to. */
-export function openRouterServiceFor(label: string): OpenRouterServiceId {
-  const l = label.trim().toLowerCase();
+/** A key's name → the service its spend belongs to. */
+export function openRouterServiceFor(name: string): OpenRouterServiceId {
+  const l = name.trim().toLowerCase();
   if (/^gogo[-_]be([-_]|$)/.test(l)) return OPENROUTER_SERVICE.decisions;
   if (/^gogo[-_]ai[-_]harness([-_]|$)/.test(l)) return OPENROUTER_SERVICE.devTooling;
   if (/^gogo[-_]jev([-_]|$)/.test(l)) return OPENROUTER_SERVICE.jevShared;
@@ -105,7 +105,7 @@ export type OpenRouterKeyActivity = {
 };
 
 const micros = (usd: number): number => Math.max(0, Math.round(usd * 1_000_000));
-const keyRef = (k: OpenRouterKeyUsage) => ({ label: k.label, hash: k.hash.slice(0, 8) });
+const keyRef = (k: OpenRouterKeyUsage) => ({ name: k.name, hash: k.hash.slice(0, 8) });
 
 type Bucket = {
   day: string;
@@ -118,7 +118,7 @@ type Bucket = {
   completionTokens: number;
   reasoningTokens: number;
   byModel: Record<string, number>;
-  keys: Map<string, { label: string; hash: string }>;
+  keys: Map<string, { name: string; hash: string }>;
 };
 
 function cost(
@@ -186,7 +186,7 @@ export function activitySamples(
 ): { cost: CostSample[]; usage: UsageSample[] } {
   const buckets = new Map<string, Bucket>();
   for (const { key, items } of keyed) {
-    const serviceId = openRouterServiceFor(key.label);
+    const serviceId = openRouterServiceFor(key.name);
     for (const it of items) {
       if (it.day >= ctx.today) continue;
       const id = `${it.day}\u0000${serviceId}`;
@@ -229,7 +229,7 @@ export function activitySamples(
         byModel: b.byModel,
         byokUsageMicros: b.byokUsd === null ? null : micros(b.byokUsd),
         reasoningTokens: b.reasoningTokens,
-        keys: [...b.keys.values()].sort((x, y) => x.label.localeCompare(y.label)),
+        keys: [...b.keys.values()].sort((x, y) => x.name.localeCompare(y.name)),
       }),
     );
     usages.push(
@@ -242,7 +242,7 @@ export function activitySamples(
   const yesterday = previousDay(ctx.today);
   const held = new Map<OpenRouterServiceId, OpenRouterKeyUsage[]>();
   for (const { key } of keyed) {
-    const s = openRouterServiceFor(key.label);
+    const s = openRouterServiceFor(key.name);
     held.set(s, [...(held.get(s) ?? []), key]);
   }
   for (const [serviceId, keys] of [...held.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
@@ -251,7 +251,7 @@ export function activitySamples(
       cost(ctx, yesterday, serviceId, 0, 'MEDIUM', {
         from: 'activity',
         note: 'no activity item for the day yet; re-read on the next run',
-        keys: keys.map(keyRef).sort((x, y) => x.label.localeCompare(y.label)),
+        keys: keys.map(keyRef).sort((x, y) => x.name.localeCompare(y.name)),
       }),
     );
   }
@@ -265,10 +265,10 @@ export function todaySamples(
 ): CostSample[] {
   const per = new Map<
     OpenRouterServiceId,
-    { usd: number; keys: { label: string; hash: string }[] }
+    { usd: number; keys: { name: string; hash: string }[] }
   >();
   for (const k of keys) {
-    const s = openRouterServiceFor(k.label);
+    const s = openRouterServiceFor(k.name);
     const e = per.get(s) ?? { usd: 0, keys: [] };
     e.usd += k.usageDailyUsd;
     e.keys.push(keyRef(k));
@@ -279,7 +279,7 @@ export function todaySamples(
     .map(([serviceId, e]) =>
       cost(ctx, ctx.today, serviceId, e.usd, 'MEDIUM', {
         from: 'keys.usage_daily',
-        keys: e.keys.sort((x, y) => x.label.localeCompare(y.label)),
+        keys: e.keys.sort((x, y) => x.name.localeCompare(y.name)),
       }),
     );
 }
@@ -365,7 +365,7 @@ export function anthropicByokSamples(
   type Day = {
     usd: number;
     byModel: Record<string, number>;
-    keys: Map<string, { label: string; hash: string }>;
+    keys: Map<string, { name: string; hash: string }>;
   };
   const days = new Map<string, Day>();
   for (const { key, items } of keyed) {
@@ -384,7 +384,7 @@ export function anthropicByokSamples(
       ...cost(ctx, day, ANTHROPIC_BYOK_SERVICE, d.usd, 'MEDIUM', {
         from: 'openrouter.activity.byok_usage_inference',
         byModel: d.byModel,
-        keys: [...d.keys.values()].sort((x, y) => x.label.localeCompare(y.label)),
+        keys: [...d.keys.values()].sort((x, y) => x.name.localeCompare(y.name)),
       }),
       providerId: 'anthropic',
     }));

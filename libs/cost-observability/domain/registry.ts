@@ -1126,7 +1126,7 @@ const SENTRY: ProviderDefinition = {
  * figure is the cost (epic §12), exactly as for AWS.
  *
  * One OpenRouter account carries every GoGo key, so spend is split by **who
- * holds the key**, from its label (`openrouter.collector.ts`; `-` or `_`):
+ * holds the key**, from its name (`openrouter.collector.ts`; `-` or `_`):
  *
  * - `openrouter.decisions` — GoGo's runtime decision models alone (keys
  *   `gogo-be-*`; TypeSafe Jev for intent, ADR-0035). `runtime: 'none'` until

@@ -662,10 +662,12 @@ line items instead of minute counters. It is strictly better here:
   The client makes two kinds of GET and nothing else — a management key can also
   create and delete keys, which this code never calls. One OpenRouter account
   serves every environment, so the key is written for dev only.
-- Service = the key's label (`-` or `_` between words). Keys on the account on
+- Service = the key's `name` (`-` or `_` between words) — never `label`, which on
+  OpenRouter is a masked preview of the secret (`sk-or-v1-f2c...61a`, seen on the live
+  account 2026-10-22) and is neither read nor stored. Keys on the account on
   2026-10-22:
 
-  | Label             | Used by                                               | Service                  |
+  | Name              | Used by                                               | Service                  |
   | ----------------- | ----------------------------------------------------- | ------------------------ |
   | `gogo_jev_dev`    | JEV for **both** the AI Harness and the BE intent POC | `openrouter.jev_shared`  |
   | `gogo_claude_dev` | Claude through BYOK (GoGo's own Anthropic key)        | `openrouter.claude_byok` |
@@ -690,7 +692,7 @@ line items instead of minute counters. It is strictly better here:
 - Rows per run (6 h; 1 + N GETs, N = keys):
   - completed days (OpenRouter's 30-day window): one `ACTUAL` HIGH row per
     (day, service), `amountMicros` = Σ `usage` USD × 10⁶, `metadata.byModel`,
-    `metadata.keys` (label + 8-char hash prefix), `metadata.byokUsageMicros` (spend
+    `metadata.keys` (name + 8-char hash prefix), `metadata.byokUsageMicros` (spend
     on the account's own provider keys — billed by that provider, so not in the
     amount); plus the three meters;
   - today: one `ACTUAL` MEDIUM row per service from `/keys usage_daily`; the
