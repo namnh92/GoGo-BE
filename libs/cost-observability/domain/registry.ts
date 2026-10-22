@@ -68,6 +68,10 @@ export type ServiceCategory =
   | 'ci'
   | 'push'
   | 'attribution'
+  /** GoGo-BE#709 — decision models (choice/score/noul answers, no generated text). */
+  | 'ai_decisions'
+  /** GoGo-BE#709 — models that generate text (Claude via the `gogo_claude_*` BYOK key). */
+  | 'ai_generation'
   | 'observability'
   | 'errors'
   | 'internal'
@@ -104,7 +108,9 @@ export type MeterUnit =
   | 'series'
   | 'event'
   | 'run'
-  | 'usd_micros';
+  | 'usd_micros'
+  /** Model input tokens — what a decision model bills on (output is free for Jev). */
+  | 'token';
 
 export type ProviderDefinition = {
   id: string;
@@ -1112,6 +1118,107 @@ const SENTRY: ProviderDefinition = {
   ],
 };
 
+/**
+ * GoGo-BE#709 — OpenRouter, read as an **actual bill**: collector
+ * `openrouter_activity` reads OpenRouter's own per-day, per-model USD spend
+ * (`/api/v1/activity`, management key) and the current day's running total
+ * per key (`/api/v1/keys`). No pricing rule and no estimate — the provider's
+ * figure is the cost (epic §12), exactly as for AWS.
+ *
+ * One OpenRouter account carries every GoGo key, so spend is split by **who
+ * holds the key**, from its name (`openrouter.collector.ts`; `-` or `_`):
+ *
+ * - `openrouter.decisions` — GoGo's runtime decision models alone (keys
+ *   `gogo-be-*`; TypeSafe Jev for intent, ADR-0035). `runtime: 'none'` until
+ *   a route calls it.
+ * - `openrouter.dev_tooling` — the AI Harness alone (keys
+ *   `gogo-ai-harness-*`, ADR-0013). Category `operations`: tooling paid to
+ *   build GoGo, not cost of serving users (#563).
+ * - `openrouter.jev_shared` — the key the harness **and** the backend share
+ *   today (`gogo_jev_*`). Its figure cannot be split between the two, so it
+ *   is not filed as either; it empties once each holder has its own key.
+ * - `openrouter.claude_byok` — the BYOK key that routes Claude (`gogo_claude_*`).
+ *   OpenRouter bills only its BYOK fee here; the Claude tokens themselves are
+ *   billed by Anthropic and land on `anthropic.claude_byok`. The meters
+ *   (requests, tokens) live here only, never on the Anthropic service.
+ * - `openrouter.other_keys` — any other key on the account. Kept visible
+ *   rather than folded into the above: an unlabelled key spending money is a
+ *   finding, not a rounding error.
+ *
+ * Meters are counts the same report carries; nothing prices them.
+ */
+const OPENROUTER_SERVICES = [
+  {
+    id: 'openrouter.decisions',
+    displayName: 'Decision models (runtime)',
+    category: 'ai_decisions',
+  },
+  {
+    id: 'openrouter.dev_tooling',
+    displayName: 'AI Harness and dev tooling',
+    category: 'operations',
+  },
+  {
+    id: 'openrouter.jev_shared',
+    displayName: 'JEV key shared by harness and backend (unsplit)',
+    category: 'ai_decisions',
+  },
+  {
+    id: 'openrouter.claude_byok',
+    displayName: 'Claude via BYOK (OpenRouter fee)',
+    category: 'ai_generation',
+  },
+  { id: 'openrouter.other_keys', displayName: 'Other keys', category: 'ai_decisions' },
+] as const;
+
+const OPENROUTER: ProviderDefinition = {
+  id: 'openrouter',
+  displayName: 'OpenRouter',
+  status: 'active',
+  capabilities: ['USAGE_COLLECTOR', 'ACTUAL_COST_COLLECTOR'],
+  services: OPENROUTER_SERVICES.map((s) => ({
+    id: s.id,
+    providerId: 'openrouter',
+    displayName: s.displayName,
+    category: s.category,
+    runtime: 'none' as const,
+    capabilities: ['USAGE_COLLECTOR', 'ACTUAL_COST_COLLECTOR'] as const,
+    operations: [],
+    meters: [
+      serviceMeter(s.id, 'requests', 'request'),
+      serviceMeter(s.id, 'input_tokens', 'token'),
+      serviceMeter(s.id, 'output_tokens', 'token'),
+    ],
+  })),
+};
+
+/**
+ * GoGo-BE#709 — Anthropic, as far as GoGo can see it today: the Claude tokens
+ * a BYOK key on OpenRouter (`gogo_claude_*`) spent on GoGo's own Anthropic
+ * key. Anthropic bills them; OpenRouter only reports them
+ * (`byok_usage_inference` on `/activity`), so collector
+ * `anthropic_byok_openrouter` writes them as ACTUAL with MEDIUM confidence —
+ * a third party's report, not Anthropic's invoice. No meters: requests and
+ * tokens stay on `openrouter.claude_byok`, so nothing is counted twice.
+ */
+const ANTHROPIC: ProviderDefinition = {
+  id: 'anthropic',
+  displayName: 'Anthropic',
+  status: 'active',
+  capabilities: ['ACTUAL_COST_COLLECTOR'],
+  services: [
+    {
+      id: 'anthropic.claude_byok',
+      providerId: 'anthropic',
+      displayName: 'Claude via OpenRouter BYOK',
+      category: 'ai_generation',
+      runtime: 'none',
+      capabilities: ['ACTUAL_COST_COLLECTOR'],
+      operations: [],
+    },
+  ],
+};
+
 function serviceMeter(serviceId: string, metric: string, unit: MeterUnit): UsageMeterDefinition {
   return {
     id: `${serviceId}/${metric}`,
@@ -1316,6 +1423,8 @@ export const COST_REGISTRY_DATA: RegistryData = {
         meters: [['attributions', 'conversion']],
       },
     ]),
+    OPENROUTER,
+    ANTHROPIC,
     planned('grafana', 'Grafana Cloud', [
       {
         name: 'metrics',

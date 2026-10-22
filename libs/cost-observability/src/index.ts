@@ -234,6 +234,22 @@ export {
   type SentrySampleContext,
 } from '../providers/sentry/sentry.collector';
 export {
+  ANTHROPIC_BYOK_COLLECTOR_ID,
+  ANTHROPIC_BYOK_SERVICE,
+  OPENROUTER_ACTIVITY_COLLECTOR_ID,
+  OPENROUTER_SERVICE,
+  OPENROUTER_SOURCE,
+  activitySamples,
+  anthropicByokCollector,
+  anthropicByokSamples,
+  openRouterActivityCollector,
+  openRouterServiceFor,
+  todaySamples,
+  type OpenRouterCollectorOptions,
+  type OpenRouterKeyActivity,
+  type OpenRouterSampleContext,
+} from '../providers/openrouter/openrouter.collector';
+export {
   TestCostService,
   checkBudget,
   diffSnapshots,

@@ -188,3 +188,31 @@ export {
   type MetricsQueryEnv,
   type PrometheusQueryConfig,
 } from './prometheus-query.adapter';
+export {
+  DECISION_PROVIDER,
+  DecisionContractError,
+  FakeDecisionProvider,
+  MAX_DECISION_TIMEOUT_MS,
+  OPENROUTER_DECISIONS_URL,
+  OpenRouterDecisionProvider,
+  parseDecisionResponse,
+  type DecisionAnswer,
+  type DecisionCriterion,
+  type DecisionProviderPort,
+  type DecisionQuestion,
+  type DecisionRequest,
+  type DecisionResponse,
+  type OpenRouterDecisionOptions,
+} from './openrouter-decisions.adapter';
+export {
+  OPENROUTER_API_BASE,
+  OpenRouterUsageClient,
+  OpenRouterUsageError,
+  foldActivity,
+  foldKeys,
+  openRouterUsageFromEnv,
+  type OpenRouterActivityItem,
+  type OpenRouterKeyUsage,
+  type OpenRouterUsageErrorCode,
+  type OpenRouterUsagePort,
+} from './openrouter-usage.adapter';

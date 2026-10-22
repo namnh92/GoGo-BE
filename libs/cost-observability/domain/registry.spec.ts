@@ -440,6 +440,7 @@ describe('adding a provider (epic §40)', () => {
       'upstash',
       'neon',
       'github',
+      'openrouter',
       'sentry',
       'openai',
     ]);
@@ -456,6 +457,8 @@ describe('aws and github (#386)', () => {
     expect(COST_REGISTRY.providersWith('ACTUAL_COST_COLLECTOR').map((p) => p.id)).toEqual([
       'aws',
       'github',
+      'openrouter',
+      'anthropic',
     ]);
     const meters = COST_REGISTRY.meters()
       .filter((m) => m.serviceId.startsWith('aws.'))
@@ -541,6 +544,7 @@ describe('cloudflare (#383)', () => {
       'upstash',
       'neon',
       'github',
+      'openrouter',
       'sentry',
     ]);
     const billed = COST_REGISTRY.meters()

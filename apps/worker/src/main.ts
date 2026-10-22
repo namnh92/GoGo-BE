@@ -52,6 +52,7 @@ import {
 import { startPeriodic } from './periodic';
 import { WorkerLease } from '@gogo/database';
 import { mediaCleanupFromEnv } from './media-cleanup';
+import { registerOpenRouterActivityCollector } from './cost-openrouter';
 import { registerSentryEventsCollector } from './cost-sentry';
 import { privacyExportFromEnv } from './privacy-export';
 import { createWorkerMetrics, startMetricsEndpoint } from './metrics';
@@ -505,6 +506,8 @@ async function bootstrap(): Promise<void> {
   }
   // BE#696 (ADR-0011 D-14): Sentry error events from the org's stats_v2.
   registerSentryEventsCollector(process.env, db, collectors, logger);
+  // BE#709: OpenRouter spend per key holder (decisions / AI harness / other).
+  registerOpenRouterActivityCollector(process.env, db, collectors, logger);
   // COST-BE-023 (#382): manual / fixed costs are materialised into
   // `provider_cost_daily` on every CMS write, and once per UTC day here so
   // today's share of a subscription appears without anyone touching the

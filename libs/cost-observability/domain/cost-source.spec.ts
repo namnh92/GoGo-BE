@@ -41,6 +41,37 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
     expect(provider('tenjin').status).toBe('planned');
   });
 
+  it('#709: OpenRouter is an actual bill, split by who holds the key — nothing estimated', () => {
+    const openrouter = provider('openrouter');
+    expect(openrouter.status).toBe('active');
+    expect(providerCostSourceKind(openrouter)).toBe('AUTO');
+    expect(openrouter.services?.map((s) => [s.id, s.category])).toEqual([
+      ['openrouter.decisions', 'ai_decisions'],
+      ['openrouter.dev_tooling', 'operations'],
+      ['openrouter.jev_shared', 'ai_decisions'],
+      ['openrouter.claude_byok', 'ai_generation'],
+      ['openrouter.other_keys', 'ai_decisions'],
+    ]);
+    for (const s of openrouter.services ?? []) {
+      expect(serviceCostSourceKind(s, openrouter), s.id).toBe('AUTO');
+      expect(s.meters?.map((m) => [m.metric, m.unit, m.billable])).toEqual([
+        ['requests', 'request', false],
+        ['input_tokens', 'token', false],
+        ['output_tokens', 'token', false],
+      ]);
+    }
+  });
+
+  it('#709: Claude via BYOK is Anthropic money reported by OpenRouter — a cost row, no meters', () => {
+    const anthropic = provider('anthropic');
+    expect(anthropic.status).toBe('active');
+    expect(anthropic.capabilities).toEqual(['ACTUAL_COST_COLLECTOR']);
+    expect(providerCostSourceKind(anthropic)).toBe('AUTO');
+    expect(anthropic.services?.map((s) => [s.id, s.category, s.meters ?? []])).toEqual([
+      ['anthropic.claude_byok', 'ai_generation', []],
+    ]);
+  });
+
   it('a service declares for itself before it inherits: Play Console is MANUAL under an AUTO Google', () => {
     const google = provider('google');
     expect(serviceCostSourceKind(service('google.play_console'), google)).toBe('MANUAL');
