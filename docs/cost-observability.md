@@ -649,6 +649,47 @@ line items instead of minute counters. It is strictly better here:
 - Tests: `sentry-stats.adapter.spec.ts`, `sentry.collector.spec.ts`,
   `apps/worker/src/cost-sentry.spec.ts` (registration gate).
 
+## OpenRouter spend collector (#709)
+
+| Collector             | Capability              | Services                                                                  | Source                                      | Writes                                                                        |
+| --------------------- | ----------------------- | ------------------------------------------------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------- |
+| `openrouter_activity` | `ACTUAL_COST_COLLECTOR` | `openrouter.decisions`, `openrouter.dev_tooling`, `openrouter.other_keys` | management API `/keys`, `/activity` per key | `ACTUAL` USD cost rows + `requests` / `input_tokens` / `output_tokens` meters |
+
+- Registered only when the worker has `OPENROUTER_MANAGEMENT_KEY` (SSM
+  `openrouter/management-key`, GoGo-Infra#241). A **management** key, not the
+  inference key `OPENROUTER_API_KEY`: only it can list keys and read activity.
+  The client makes two kinds of GET and nothing else — a management key can also
+  create and delete keys, which this code never calls. One OpenRouter account
+  serves every environment, so the key is written for dev only.
+- Service = the key's label at creation: `gogo-be-<env>` → `openrouter.decisions`
+  (runtime decision models), `gogo-ai-harness-<env>` → `openrouter.dev_tooling`
+  (the GoGo-Infra harness, category `operations`), anything else →
+  `openrouter.other_keys`. Holders are never summed into one service; the harness's
+  own local ledger (ADR-0013 D-7) stays separate and is the pre-call guard, this
+  is the after-the-fact bill.
+- Rows per run (6 h; 1 + N GETs, N = keys):
+  - completed days (OpenRouter's 30-day window): one `ACTUAL` HIGH row per
+    (day, service), `amountMicros` = Σ `usage` USD × 10⁶, `metadata.byModel`,
+    `metadata.keys` (label + 8-char hash prefix), `metadata.byokUsageMicros` (spend
+    on the account's own provider keys — billed by that provider, so not in the
+    amount); plus the three meters;
+  - today: one `ACTUAL` MEDIUM row per service from `/keys usage_daily`; the
+    completed-day row replaces it (same key) once OpenRouter folds the day;
+  - yesterday with no item: a MEDIUM zero per key-holding service, so a stale
+    partial row cannot survive; re-read on the next run. Older days without an
+    item get no row (absence is not zero).
+- A failing `/keys` or any `/activity` call fails the run and writes nothing;
+  errors carry codes (`AUTH_FAILED`, `FORBIDDEN` = not a management key,
+  `RATE_LIMITED`, `HTTP_n`, `BAD_RESPONSE`), never the URL, header, body or cause.
+- Monitoring cost: FREE — no documented per-request charge on the management
+  endpoints (contract from `@openrouter/sdk` 1.5.3; openrouter.ai was not
+  reachable when this was written, so the first live run must confirm the field
+  names; a mismatch shows as dropped items or `BAD_RESPONSE`, never as $0).
+- Kill switch: delete the management key in OpenRouter → `AUTH_FAILED`; or drop
+  the SSM row and deploy → not registered (log `missing: 'OPENROUTER_MANAGEMENT_KEY'`).
+- Tests: `openrouter-usage.adapter.spec.ts`, `openrouter.collector.spec.ts`,
+  `apps/worker/src/cost-openrouter.spec.ts` (registration gate).
+
 ## Ids
 
 - **Provider** `google`, `cloudflare`, … — epic §5 list, immutable once persisted.

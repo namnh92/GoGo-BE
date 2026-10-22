@@ -1116,6 +1116,63 @@ const SENTRY: ProviderDefinition = {
   ],
 };
 
+/**
+ * GoGo-BE#709 — OpenRouter, read as an **actual bill**: collector
+ * `openrouter_activity` reads OpenRouter's own per-day, per-model USD spend
+ * (`/api/v1/activity`, management key) and the current day's running total
+ * per key (`/api/v1/keys`). No pricing rule and no estimate — the provider's
+ * figure is the cost (epic §12), exactly as for AWS.
+ *
+ * One OpenRouter account carries every GoGo key, so spend is split by **who
+ * holds the key**, from its label (`openrouter.collector.ts`):
+ *
+ * - `openrouter.decisions` — GoGo's runtime decision models (keys
+ *   `gogo-be-*`; TypeSafe Jev for intent, ADR-0035). `runtime: 'none'` until
+ *   a route calls it.
+ * - `openrouter.dev_tooling` — the AI Harness and other development use
+ *   (keys `gogo-ai-harness-*`, ADR-0013). Category `operations`: tooling
+ *   paid to build GoGo, not cost of serving users (#563).
+ * - `openrouter.other_keys` — any other key on the account. Kept visible
+ *   rather than folded into either of the above: an unlabelled key spending
+ *   money is a finding, not a rounding error.
+ *
+ * Meters are counts the same report carries; nothing prices them.
+ */
+const OPENROUTER_SERVICES = [
+  {
+    id: 'openrouter.decisions',
+    displayName: 'Decision models (runtime)',
+    category: 'ai_decisions',
+  },
+  {
+    id: 'openrouter.dev_tooling',
+    displayName: 'AI Harness and dev tooling',
+    category: 'operations',
+  },
+  { id: 'openrouter.other_keys', displayName: 'Other keys', category: 'ai_decisions' },
+] as const;
+
+const OPENROUTER: ProviderDefinition = {
+  id: 'openrouter',
+  displayName: 'OpenRouter',
+  status: 'active',
+  capabilities: ['USAGE_COLLECTOR', 'ACTUAL_COST_COLLECTOR'],
+  services: OPENROUTER_SERVICES.map((s) => ({
+    id: s.id,
+    providerId: 'openrouter',
+    displayName: s.displayName,
+    category: s.category,
+    runtime: 'none' as const,
+    capabilities: ['USAGE_COLLECTOR', 'ACTUAL_COST_COLLECTOR'] as const,
+    operations: [],
+    meters: [
+      serviceMeter(s.id, 'requests', 'request'),
+      serviceMeter(s.id, 'input_tokens', 'token'),
+      serviceMeter(s.id, 'output_tokens', 'token'),
+    ],
+  })),
+};
+
 function serviceMeter(serviceId: string, metric: string, unit: MeterUnit): UsageMeterDefinition {
   return {
     id: `${serviceId}/${metric}`,
@@ -1320,32 +1377,7 @@ export const COST_REGISTRY_DATA: RegistryData = {
         meters: [['attributions', 'conversion']],
       },
     ]),
-    /**
-     * GoGo-BE#709 — OpenRouter, for decision models (TypeSafe Jev,
-     * `typesafe/jev-1.14`) behind `DecisionProviderPort`. Planned: the only
-     * caller is the DEV POC `IntentClassificationService`, which no route
-     * reaches and which runs with the provider disabled; no backend key is
-     * declared yet. Pricing ($0.042 per 1M input tokens, output free) is from
-     * the OpenRouter model page on 2026-10-22 and is not modelled — no pricing
-     * rule, no estimate — until the service is wired and its usage measured.
-     * The response carries `usage.cost` in USD per call; when wired, that is
-     * the cost source, and a call whose cost is not reported stays unknown.
-     *
-     * The AI Harness (GoGo-Infra#241) also uses OpenRouter, with its own key
-     * and its own ledger. That spend is development tooling, not GoGo runtime
-     * cost, and is never recorded here.
-     */
-    planned('openrouter', 'OpenRouter', [
-      {
-        name: 'decisions',
-        displayName: 'Decisions',
-        category: 'ai_decisions',
-        meters: [
-          ['decisions', 'request'],
-          ['input_tokens', 'token'],
-        ],
-      },
-    ]),
+    OPENROUTER,
     planned('grafana', 'Grafana Cloud', [
       {
         name: 'metrics',

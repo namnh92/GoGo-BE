@@ -234,6 +234,18 @@ export {
   type SentrySampleContext,
 } from '../providers/sentry/sentry.collector';
 export {
+  OPENROUTER_ACTIVITY_COLLECTOR_ID,
+  OPENROUTER_SERVICE,
+  OPENROUTER_SOURCE,
+  activitySamples,
+  openRouterActivityCollector,
+  openRouterServiceFor,
+  todaySamples,
+  type OpenRouterCollectorOptions,
+  type OpenRouterKeyActivity,
+  type OpenRouterSampleContext,
+} from '../providers/openrouter/openrouter.collector';
+export {
   TestCostService,
   checkBudget,
   diffSnapshots,

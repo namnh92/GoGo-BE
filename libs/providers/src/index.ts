@@ -204,3 +204,15 @@ export {
   type DecisionResponse,
   type OpenRouterDecisionOptions,
 } from './openrouter-decisions.adapter';
+export {
+  OPENROUTER_API_BASE,
+  OpenRouterUsageClient,
+  OpenRouterUsageError,
+  foldActivity,
+  foldKeys,
+  openRouterUsageFromEnv,
+  type OpenRouterActivityItem,
+  type OpenRouterKeyUsage,
+  type OpenRouterUsageErrorCode,
+  type OpenRouterUsagePort,
+} from './openrouter-usage.adapter';

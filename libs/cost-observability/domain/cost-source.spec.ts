@@ -25,7 +25,7 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
     for (const id of ['apple', 'hosting', 'registrar', 'operations']) {
       expect(providerCostSourceKind(provider(id)), id).toBe('MANUAL');
     }
-    for (const id of ['onesignal', 'tenjin', 'adjust', 'openrouter', 'grafana']) {
+    for (const id of ['onesignal', 'tenjin', 'adjust', 'grafana']) {
       expect(providerCostSourceKind(provider(id)), id).toBe('NONE');
     }
   });
@@ -41,16 +41,23 @@ describe('cost source kind — declared, from capabilities (ADR-0014)', () => {
     expect(provider('tenjin').status).toBe('planned');
   });
 
-  it('#709: OpenRouter is planned for decision models — no cost source, nothing estimated', () => {
+  it('#709: OpenRouter is an actual bill, split by who holds the key — nothing estimated', () => {
     const openrouter = provider('openrouter');
-    expect(openrouter.status).toBe('planned');
-    expect(openrouter.services?.map((s) => s.id)).toEqual(['openrouter.decisions']);
-    expect(service('openrouter.decisions').category).toBe('ai_decisions');
-    expect(service('openrouter.decisions').runtime).toBe('none');
-    expect(service('openrouter.decisions').meters?.map((m) => [m.metric, m.unit])).toEqual([
-      ['decisions', 'request'],
-      ['input_tokens', 'token'],
+    expect(openrouter.status).toBe('active');
+    expect(providerCostSourceKind(openrouter)).toBe('AUTO');
+    expect(openrouter.services?.map((s) => [s.id, s.category])).toEqual([
+      ['openrouter.decisions', 'ai_decisions'],
+      ['openrouter.dev_tooling', 'operations'],
+      ['openrouter.other_keys', 'ai_decisions'],
     ]);
+    for (const s of openrouter.services ?? []) {
+      expect(serviceCostSourceKind(s, openrouter), s.id).toBe('AUTO');
+      expect(s.meters?.map((m) => [m.metric, m.unit, m.billable])).toEqual([
+        ['requests', 'request', false],
+        ['input_tokens', 'token', false],
+        ['output_tokens', 'token', false],
+      ]);
+    }
   });
 
   it('a service declares for itself before it inherits: Play Console is MANUAL under an AUTO Google', () => {
