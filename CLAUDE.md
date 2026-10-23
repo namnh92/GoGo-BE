@@ -70,4 +70,4 @@ repository on an up-to-date `develop`:
 - Never print the token, write it to git config or a file, or put it in a remote URL.
 - Never merge. Merging stays with the owner.
 
-Details: GoGo-Infra `docs/secrets.md` → *Agent GitHub App*.
+Details: GoGo-Infra `docs/secrets.md` → _Agent GitHub App_.
