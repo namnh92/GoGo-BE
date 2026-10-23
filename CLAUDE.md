@@ -41,3 +41,33 @@ Backend BFF for GoGo (couple/group date planning). Modular monolith: `apps/api` 
 Git Flow: `master` (prod, tags `vX.Y.Z`) / `develop` (integration) / `feature|bugfix|hotfix/GOGO-<ticket>-<name>` / `release/x.y.z`. Conventional Commits. PRs only.
 
 Workspace-level docs and full skill set live in the parent GoGo workspace (`GOGO_SRS.md`, `GOGO_ENGINEERING_SKILLS_AND_PLANS.md`, `GOGO_MOCKUP_VERIFICATION_AND_TECHNICAL_APPLICATION-2.md`).
+
+## GitHub identity: act as the agent App, never as the owner
+
+Every write an agent session makes to GitHub — push, pull request, PR or issue comment, review
+request — goes through the agent GitHub App (GoGo-Infra#250), so it is authored by `<app>[bot]`
+and the owner can approve it. The wrapper lives in GoGo-Infra, checked out next to this
+repository on an up-to-date `develop`:
+
+```bash
+../GoGo-Infra/scripts/secrets/as-agent.sh -- git push -u origin <branch>
+../GoGo-Infra/scripts/secrets/as-agent.sh -- gh pr create --base develop --title "…" --body-file <file>
+../GoGo-Infra/scripts/secrets/as-agent.sh -- gh issue comment <n> --body-file <file>
+```
+
+- Read-only calls (`gh pr view`, `gh pr checks`, `gh issue list`, `gh api` GETs) may use the
+  session's own login.
+- Minting the token needs AWS credentials for the `ci` rows (on the owner's workstation:
+  `AWS_PROFILE=gogobootstrap`). If it fails, stop and tell the owner. Do not fall back to the
+  owner's `gh` login or git keychain: a pull request authored by the owner cannot be approved by
+  the owner.
+- A session with no AWS access (e.g. a cloud session) may push its branch with the access it
+  has, but does not open the pull request itself: it reports the branch and the prepared PR body
+  so a session that can run `as-agent.sh` opens it.
+- The App has no `workflows` permission, by design: GitHub rejects a push from it that creates
+  or changes anything under `.github/workflows/`. Push such a branch with the session's own git
+  access, then open the pull request with `as-agent.sh` as usual.
+- Never print the token, write it to git config or a file, or put it in a remote URL.
+- Never merge. Merging stays with the owner.
+
+Details: GoGo-Infra `docs/secrets.md` → *Agent GitHub App*.
