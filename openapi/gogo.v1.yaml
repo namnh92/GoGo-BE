@@ -1513,9 +1513,7 @@ paths:
 
         One reply at a time per conversation: sending while a reply is still
         streaming is `409 ASSISTANT_TURN_IN_PROGRESS` — stop it first.
-        The per-account daily message limit (GoGo-Infra#257 row
-        `budget/assistant-user-daily-max-messages`) and a
-        per-minute burst limit both answer `429` with `Retry-After`.
+        The per-account daily message limit and a per-minute burst limit both answer `429` with `Retry-After`.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - name: Idempotency-Key
@@ -1647,6 +1645,117 @@ paths:
           content:
             text/event-stream:
               schema: { $ref: '#/components/schemas/AssistantStreamEvent' }
+              examples:
+                answerWithCard:
+                  summary: 'A reply with a place card, a source and follow-ups (SSE frames: `event:` = `type`)'
+                  value:
+                    - {
+                        type: step,
+                        seq: 1,
+                        messageId: 3c1d2e4f-5555-4000-8000-000000000001,
+                        step: searching_places,
+                      }
+                    - {
+                        type: delta,
+                        seq: 2,
+                        messageId: 3c1d2e4f-5555-4000-8000-000000000001,
+                        text: 'I found 3 cafés that match. ',
+                      }
+                    - type: card
+                      seq: 3
+                      messageId: 3c1d2e4f-5555-4000-8000-000000000001
+                      card:
+                        kind: place
+                        placeId: 1b2c3d4e-0000-4000-8000-000000000001
+                        available: true
+                        facts:
+                          {
+                            name: Nhà Lá Café,
+                            priceMin: 45000,
+                            priceMax: 90000,
+                            currency: VND,
+                            checkedAt: '2026-10-20T03:00:00Z',
+                          }
+                    - type: sources
+                      seq: 4
+                      messageId: 3c1d2e4f-5555-4000-8000-000000000001
+                      sources:
+                        - {
+                            index: 1,
+                            kind: place_data,
+                            title: GoGo place data,
+                            checkedAt: '2026-10-20T03:00:00Z',
+                          }
+                    - type: follow_ups
+                      seq: 5
+                      messageId: 3c1d2e4f-5555-4000-8000-000000000001
+                      groups:
+                        - {
+                            field: date,
+                            label: 'Which day?',
+                            options: [{ label: This Saturday, text: This Saturday }],
+                          }
+                    - {
+                        type: done,
+                        seq: 6,
+                        messageId: 3c1d2e4f-5555-4000-8000-000000000001,
+                        status: complete,
+                      }
+                timeoutFallback:
+                  summary: No text within 15 s — deterministic fallback
+                  value:
+                    - {
+                        type: step,
+                        seq: 1,
+                        messageId: 3c1d2e4f-5555-4000-8000-000000000001,
+                        step: reading_guide,
+                      }
+                    - type: notice
+                      seq: 2
+                      messageId: 3c1d2e4f-5555-4000-8000-000000000001
+                      notice:
+                        { kind: fallback, reason: timeout, copyKey: assistant.notice.fallback }
+                    - {
+                        type: done,
+                        seq: 3,
+                        messageId: 3c1d2e4f-5555-4000-8000-000000000001,
+                        status: fallback,
+                      }
+                stopped:
+                  summary: User pressed Stop — the text so far is kept
+                  value:
+                    - {
+                        type: delta,
+                        seq: 1,
+                        messageId: 3c1d2e4f-5555-4000-8000-000000000001,
+                        text: 'To vote, open the plan and ',
+                      }
+                    - {
+                        type: done,
+                        seq: 2,
+                        messageId: 3c1d2e4f-5555-4000-8000-000000000001,
+                        status: stopped,
+                      }
+                killSwitchMidReply:
+                  summary: Kill switch turned off during a reply
+                  value:
+                    - {
+                        type: delta,
+                        seq: 1,
+                        messageId: 3c1d2e4f-5555-4000-8000-000000000001,
+                        text: 'Sure — ',
+                      }
+                    - type: error
+                      seq: 2
+                      messageId: 3c1d2e4f-5555-4000-8000-000000000001
+                      error:
+                        {
+                          code: ASSISTANT_DISABLED,
+                          message: Assistant is disabled,
+                          field_errors: [],
+                          request_id: 9f0c…,
+                          retryable: false,
+                        }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/AssistantUserOnly' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -17978,15 +18087,15 @@ components:
           type: string
           description: >
             `enabled` — sending works. `disabled` — kill switch off
-            (`assistant.enabled`), or the environment's monthly AI budget is
-            spent or not configured. `limit_reached` — this account's daily
+            (`assistant.enabled`), or the environment cannot take new replies
+            (for example its spending limit is reached). `limit_reached` — this account's daily
             messages are spent until `resetsAt`. Unknown values mean "cannot
             send now".
           x-extensible-enum: [enabled, disabled, limit_reached]
         dailyMessageLimit:
           type: integer
           minimum: 0
-          description: Messages this account may send per day (`budget/assistant-user-daily-max-messages`).
+          description: Messages this account may send per day.
         remainingToday: { type: integer, minimum: 0 }
         resetsAt:
           type: string
@@ -18024,6 +18133,15 @@ components:
         title: { type: string, minLength: 1, maxLength: 80 }
         context: { $ref: '#/components/schemas/AssistantContext' }
     AssistantConversation:
+      example:
+        id: 7d3f0c2e-5b1a-4c8e-9f21-2a6b1c0d9e11
+        title: Cafés for Saturday
+        context: { kind: place, id: 1b2c3d4e-0000-4000-8000-000000000001, label: Nhà Lá Café }
+        createdAt: '2026-10-26T02:10:00Z'
+        lastMessageAt: '2026-10-26T02:14:31Z'
+        expiresAt: '2027-01-24T02:14:31Z'
+        messageCount: 4
+        preview: I found 3 cafés that match.
       type: object
       required: [id, title, createdAt, lastMessageAt, expiresAt, messageCount]
       properties:
@@ -18186,6 +18304,14 @@ components:
           $ref: '#/components/schemas/AssistantMessage'
           description: '`status: streaming`; attach to `streamAssistantMessage` with its `id`.'
     AssistantSource:
+      example:
+        index: 1
+        kind: guide_document
+        documentId: 0f6a1e2b-1111-4000-8000-000000000001
+        versionId: 0f6a1e2b-2222-4000-8000-000000000003
+        slug: plans.voting
+        title: GoGo guide · Plans
+        description: How voting and finalizing a plan work.
       type: object
       description: >
         One document an answer used. Every string comes from the published
@@ -18226,6 +18352,18 @@ components:
           place: '#/components/schemas/AssistantPlaceCard'
           plan: '#/components/schemas/AssistantPlanCard'
     AssistantPlaceCard:
+      example:
+        kind: place
+        placeId: 1b2c3d4e-0000-4000-8000-000000000001
+        available: true
+        facts:
+          name: Nhà Lá Café
+          areaKey: hcm-q3
+          priceMin: 45000
+          priceMax: 90000
+          currency: VND
+          openNow: true
+          checkedAt: '2026-10-20T03:00:00Z'
       type: object
       required: [kind, placeId, available, facts]
       properties:
@@ -18315,6 +18453,18 @@ components:
             ("End time assumed") and the user can change it before confirming.
         editable: { type: boolean }
     AssistantProposal:
+      example:
+        id: 5e9a0b7c-3333-4000-8000-000000000001
+        kind: create_room
+        status: pending
+        values:
+          - { field: type, value: couple, origin: explicit, editable: true }
+          - { field: startAt, value: '2026-10-31T11:00:00Z', origin: explicit, editable: true }
+          - { field: endAt, value: '2026-10-31T14:00:00Z', origin: assumed, editable: true }
+          - { field: budgetMode, value: total, origin: assumed, editable: true }
+          - { field: budgetAmount, value: 300000, origin: explicit, editable: true }
+        createdAt: '2026-10-26T02:14:30Z'
+        expiresAt: '2026-10-26T02:44:30Z'
       type: object
       required: [id, kind, status, values, createdAt, expiresAt]
       properties:
@@ -18342,6 +18492,17 @@ components:
           description: 'Edited fields only, `{ field: value }`; each becomes `explicit`.'
           additionalProperties: true
     AssistantProposalResult:
+      example:
+        proposalId: 5e9a0b7c-3333-4000-8000-000000000001
+        kind: create_room
+        resource: { type: room, id: 9a8b7c6d-4444-4000-8000-000000000001 }
+        savedValues:
+          - { field: type, value: couple }
+          - { field: startAt, value: '2026-10-31T11:00:00Z' }
+          - { field: endAt, value: '2026-10-31T14:00:00Z' }
+          - { field: budgetMode, value: total }
+          - { field: budgetAmount, value: 300000 }
+        confirmedAt: '2026-10-26T02:15:02Z'
       type: object
       description: What the server saved, read back after the write — the `TaskSummary`.
       required: [proposalId, kind, resource, savedValues, confirmedAt]
@@ -18371,6 +18532,12 @@ components:
               value: {}
         confirmedAt: { type: string, format: date-time }
     AssistantFollowUpGroup:
+      example:
+        field: date
+        label: 'Which day?'
+        options:
+          - { label: This Saturday, text: This Saturday }
+          - { label: This Sunday, text: This Sunday }
       type: object
       description: >
         A missing detail the assistant asks for, with quick answers. At most
@@ -18394,6 +18561,7 @@ components:
                 maxLength: 200
                 description: What is sent as the next user message when tapped.
     AssistantNotice:
+      example: { kind: fallback, reason: timeout, copyKey: assistant.notice.fallback }
       type: object
       description: A state the UI renders as `StateNotice`.
       required: [kind]
@@ -18719,7 +18887,7 @@ components:
             notice: { $ref: '#/components/schemas/AssistantNotice' }
             model:
               type: string
-              description: The model build that wrote the reply, as OpenRouter reported it.
+              description: Identifier of the model that wrote the reply, for quality review.
     CmsAssistantFeedbackPage:
       type: object
       required: [items, nextCursor]
@@ -18793,11 +18961,11 @@ components:
     AssistantDisabled:
       description: >
         `ASSISTANT_DISABLED` (`retryable: false`) — GoGo AI is off in this
-        environment: the kill switch (audited feature flag `assistant.enabled`,
-        seeded from `FLAG_ASSISTANT`) is off, the environment's monthly AI
-        budget is spent, or a budget / per-user limit is not configured (unset
-        means refuse, never unlimited — GoGo-Infra#257). One code for all of
-        them on purpose: the app shows the same "not available" state and must
+        environment: the kill switch (audited feature flag `assistant.enabled`)
+        is off, or the environment cannot take new replies (for example its
+        spending limit is reached, or no limit is configured — an unconfigured
+        limit refuses, it never means unlimited). One code for all of them on
+        purpose: the app shows the same "not available" state and must
         not retry in a loop. `GET /assistant/status` says when it is back.
       content:
         application/json:

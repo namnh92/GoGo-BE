@@ -676,7 +676,7 @@ export interface paths {
          *
          *     `context` overrides the conversation's context for this turn only (same rules as on create: place **or** plan, readable by the caller, else `404 CONTEXT_NOT_FOUND`). `attachments` are image upload keys from `POST /uploads` with `purpose: assistant_image` — images only, at most 3, each bound to the caller; anything else is `400 ATTACHMENT_INVALID` without saying which reason.
          *
-         *     One reply at a time per conversation: sending while a reply is still streaming is `409 ASSISTANT_TURN_IN_PROGRESS` — stop it first. The per-account daily message limit (GoGo-Infra#257 row `budget/assistant-user-daily-max-messages`) and a per-minute burst limit both answer `429` with `Retry-After`.
+         *     One reply at a time per conversation: sending while a reply is still streaming is `409 ASSISTANT_TURN_IN_PROGRESS` — stop it first. The per-account daily message limit and a per-minute burst limit both answer `429` with `Retry-After`.
          */
         post: operations["sendAssistantMessage"];
         delete?: never;
@@ -9498,9 +9498,9 @@ export interface components {
             }[];
         };
         AssistantStatus: {
-            /** @description `enabled` — sending works. `disabled` — kill switch off (`assistant.enabled`), or the environment's monthly AI budget is spent or not configured. `limit_reached` — this account's daily messages are spent until `resetsAt`. Unknown values mean "cannot send now". */
+            /** @description `enabled` — sending works. `disabled` — kill switch off (`assistant.enabled`), or the environment cannot take new replies (for example its spending limit is reached). `limit_reached` — this account's daily messages are spent until `resetsAt`. Unknown values mean "cannot send now". */
             state: string;
-            /** @description Messages this account may send per day (`budget/assistant-user-daily-max-messages`). */
+            /** @description Messages this account may send per day. */
             dailyMessageLimit: number;
             remainingToday: number;
             /**
@@ -9530,6 +9530,22 @@ export interface components {
             title?: string;
             context?: components["schemas"]["AssistantContext"];
         };
+        /**
+         * @example {
+         *       "id": "7d3f0c2e-5b1a-4c8e-9f21-2a6b1c0d9e11",
+         *       "title": "Cafés for Saturday",
+         *       "context": {
+         *         "kind": "place",
+         *         "id": "1b2c3d4e-0000-4000-8000-000000000001",
+         *         "label": "Nhà Lá Café"
+         *       },
+         *       "createdAt": "2026-10-26T02:10:00Z",
+         *       "lastMessageAt": "2026-10-26T02:14:31Z",
+         *       "expiresAt": "2027-01-24T02:14:31Z",
+         *       "messageCount": 4,
+         *       "preview": "I found 3 cafés that match."
+         *     }
+         */
         AssistantConversation: {
             /** Format: uuid */
             id: string;
@@ -9633,7 +9649,18 @@ export interface components {
             /** @description `status: streaming`; attach to `streamAssistantMessage` with its `id`. */
             assistantMessage: components["schemas"]["AssistantMessage"];
         };
-        /** @description One document an answer used. Every string comes from the published GoGo guide in the CMS (or, for `place_data`, from GoGo place data) — never from the model. */
+        /**
+         * @description One document an answer used. Every string comes from the published GoGo guide in the CMS (or, for `place_data`, from GoGo place data) — never from the model.
+         * @example {
+         *       "index": 1,
+         *       "kind": "guide_document",
+         *       "documentId": "0f6a1e2b-1111-4000-8000-000000000001",
+         *       "versionId": "0f6a1e2b-2222-4000-8000-000000000003",
+         *       "slug": "plans.voting",
+         *       "title": "GoGo guide · Plans",
+         *       "description": "How voting and finalizing a plan work."
+         *     }
+         */
         AssistantSource: {
             /** @description The `n` in the `[n]` citation markers of the message text. */
             index: number;
@@ -9654,6 +9681,22 @@ export interface components {
         };
         /** @description A structured result: ids the model chose **from the turn's allowlist**, and facts the server read from verified data. Discriminated by `kind`. */
         AssistantResultCard: components["schemas"]["AssistantPlaceCard"] | components["schemas"]["AssistantPlanCard"];
+        /**
+         * @example {
+         *       "kind": "place",
+         *       "placeId": "1b2c3d4e-0000-4000-8000-000000000001",
+         *       "available": true,
+         *       "facts": {
+         *         "name": "Nhà Lá Café",
+         *         "areaKey": "hcm-q3",
+         *         "priceMin": 45000,
+         *         "priceMax": 90000,
+         *         "currency": "VND",
+         *         "openNow": true,
+         *         "checkedAt": "2026-10-20T03:00:00Z"
+         *       }
+         *     }
+         */
         AssistantPlaceCard: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -9726,6 +9769,47 @@ export interface components {
             origin: "explicit" | "assumed";
             editable: boolean;
         };
+        /**
+         * @example {
+         *       "id": "5e9a0b7c-3333-4000-8000-000000000001",
+         *       "kind": "create_room",
+         *       "status": "pending",
+         *       "values": [
+         *         {
+         *           "field": "type",
+         *           "value": "couple",
+         *           "origin": "explicit",
+         *           "editable": true
+         *         },
+         *         {
+         *           "field": "startAt",
+         *           "value": "2026-10-31T11:00:00Z",
+         *           "origin": "explicit",
+         *           "editable": true
+         *         },
+         *         {
+         *           "field": "endAt",
+         *           "value": "2026-10-31T14:00:00Z",
+         *           "origin": "assumed",
+         *           "editable": true
+         *         },
+         *         {
+         *           "field": "budgetMode",
+         *           "value": "total",
+         *           "origin": "assumed",
+         *           "editable": true
+         *         },
+         *         {
+         *           "field": "budgetAmount",
+         *           "value": 300000,
+         *           "origin": "explicit",
+         *           "editable": true
+         *         }
+         *       ],
+         *       "createdAt": "2026-10-26T02:14:30Z",
+         *       "expiresAt": "2026-10-26T02:44:30Z"
+         *     }
+         */
         AssistantProposal: {
             /** Format: uuid */
             id: string;
@@ -9749,7 +9833,40 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        /** @description What the server saved, read back after the write — the `TaskSummary`. */
+        /**
+         * @description What the server saved, read back after the write — the `TaskSummary`.
+         * @example {
+         *       "proposalId": "5e9a0b7c-3333-4000-8000-000000000001",
+         *       "kind": "create_room",
+         *       "resource": {
+         *         "type": "room",
+         *         "id": "9a8b7c6d-4444-4000-8000-000000000001"
+         *       },
+         *       "savedValues": [
+         *         {
+         *           "field": "type",
+         *           "value": "couple"
+         *         },
+         *         {
+         *           "field": "startAt",
+         *           "value": "2026-10-31T11:00:00Z"
+         *         },
+         *         {
+         *           "field": "endAt",
+         *           "value": "2026-10-31T14:00:00Z"
+         *         },
+         *         {
+         *           "field": "budgetMode",
+         *           "value": "total"
+         *         },
+         *         {
+         *           "field": "budgetAmount",
+         *           "value": 300000
+         *         }
+         *       ],
+         *       "confirmedAt": "2026-10-26T02:15:02Z"
+         *     }
+         */
         AssistantProposalResult: {
             /** Format: uuid */
             proposalId: string;
@@ -9768,7 +9885,23 @@ export interface components {
             /** Format: date-time */
             confirmedAt: string;
         };
-        /** @description A missing detail the assistant asks for, with quick answers. At most two groups per reply; the user may type instead. */
+        /**
+         * @description A missing detail the assistant asks for, with quick answers. At most two groups per reply; the user may type instead.
+         * @example {
+         *       "field": "date",
+         *       "label": "Which day?",
+         *       "options": [
+         *         {
+         *           "label": "This Saturday",
+         *           "text": "This Saturday"
+         *         },
+         *         {
+         *           "label": "This Sunday",
+         *           "text": "This Sunday"
+         *         }
+         *       ]
+         *     }
+         */
         AssistantFollowUpGroup: {
             /** @description Stable key of what is asked (`date`, `budget`, `area`, …), for analytics and i18n. */
             field: string;
@@ -9779,7 +9912,14 @@ export interface components {
                 text: string;
             }[];
         };
-        /** @description A state the UI renders as `StateNotice`. */
+        /**
+         * @description A state the UI renders as `StateNotice`.
+         * @example {
+         *       "kind": "fallback",
+         *       "reason": "timeout",
+         *       "copyKey": "assistant.notice.fallback"
+         *     }
+         */
         AssistantNotice: {
             /** @description `empty` — GoGo has no documented answer. `fallback` — deterministic reply after a timeout or provider failure. `limit` — daily budget spent. `disabled` — kill switch off. Unknown values: generic notice. */
             kind: string;
@@ -10015,7 +10155,7 @@ export interface components {
                 cardKinds?: string[];
                 proposalKinds?: components["schemas"]["AssistantProposalKind"][];
                 notice?: components["schemas"]["AssistantNotice"];
-                /** @description The model build that wrote the reply, as OpenRouter reported it. */
+                /** @description Identifier of the model that wrote the reply, for quality review. */
                 model?: string;
             };
         };
@@ -10104,7 +10244,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorEnvelope"];
             };
         };
-        /** @description `ASSISTANT_DISABLED` (`retryable: false`) — GoGo AI is off in this environment: the kill switch (audited feature flag `assistant.enabled`, seeded from `FLAG_ASSISTANT`) is off, the environment's monthly AI budget is spent, or a budget / per-user limit is not configured (unset means refuse, never unlimited — GoGo-Infra#257). One code for all of them on purpose: the app shows the same "not available" state and must not retry in a loop. `GET /assistant/status` says when it is back. */
+        /** @description `ASSISTANT_DISABLED` (`retryable: false`) — GoGo AI is off in this environment: the kill switch (audited feature flag `assistant.enabled`) is off, or the environment cannot take new replies (for example its spending limit is reached, or no limit is configured — an unconfigured limit refuses, it never means unlimited). One code for all of them on purpose: the app shows the same "not available" state and must not retry in a loop. `GET /assistant/status` says when it is back. */
         AssistantDisabled: {
             headers: {
                 [name: string]: unknown;
