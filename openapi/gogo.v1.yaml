@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 2.0.0-alpha.1
+  version: 2.0.0-alpha.2
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -106,6 +106,16 @@ info:
     `PUT /rooms/{id}/votes/{placeId}` → `POST /rooms/{id}/votes/finalize` →
     plan appears (`GET /rooms/{id}/plans/current`) → lock/regenerate →
     `PATCH /rooms/{id}/status` (`active`) → complete stops + check-ins.
+
+    ## Planned operations (`x-gogo-planned`)
+
+    An operation marked `x-gogo-planned: <issue>` is declared ahead of its
+    implementation so clients can generate against it (contract-first). It is
+    **not served yet** — a deployed API answers `404` — and the marker is
+    removed in the PR that serves it (the route-coverage gate fails while a
+    served operation still carries it, or while an unmarked one is not
+    served). Today: the GoGo AI assistant, `/assistant/*` and
+    `/cms/assistant/*` (GoGo-BE#713).
 servers:
   - url: /v1
     description: Same-origin (app talks to the deployed API host)
@@ -130,6 +140,11 @@ tags:
     description: Profile, saved items, reviews, notifications, privacy.
   - name: cms
     description: Staff-only endpoints — not used by the mobile app.
+  - name: assistant
+    description: >
+      GoGo AI (GoGo-BE#713): conversations, streamed replies with sources and
+      verified result cards, proposals that only a confirm call performs, and
+      the CMS-managed "GoGo guide" it answers from. Registered users only.
 
 paths:
   /metrics:
@@ -1185,7 +1200,13 @@ paths:
               properties:
                 purpose:
                   type: string
-                  enum: [checkin_photo, bill_photo, place_photo, avatar]
+                  enum: [checkin_photo, bill_photo, place_photo, avatar, assistant_image]
+                  description: >
+                    `assistant_image` (GoGo-BE#713, planned with the assistant
+                    module): an image attached to a GoGo AI message — users
+                    only, `image/jpeg`, `image/png` or `image/webp`, private,
+                    deleted with its conversation. Refused until the assistant
+                    module ships.
                 contentType:
                   type: string
                   enum: [image/jpeg, image/png, image/webp, image/heic]
@@ -1212,6 +1233,627 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503':
           description: Object storage (or, for `avatar`, the public bucket) is not configured in this environment
+
+  /assistant/status:
+    get:
+      operationId: getAssistantStatus
+      tags: [assistant]
+      summary: 'GoGo AI: is the assistant available to this account, and how much is left today'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. **Planned — declared ahead of the module (contract-first);
+        not served until the module PR lands.** Every `/assistant/*` operation
+        carries `x-gogo-planned` until then and answers 404 on a deployed API.
+
+
+        Lets the app decide what the entry point does before the user types:
+        `disabled` means the kill switch is off (feature flag
+        `assistant.enabled`) and the app shows its own "not available" state;
+        `limit_reached` means the per-account daily message budget is spent
+        until `resetsAt`. The server still enforces both on every send — this
+        is a hint for the UI, never an authorization.
+
+
+        Registered users only. A guest session gets `403 USER_ONLY`; the app
+        shows the entry and asks the guest to sign in (owner decision on
+        GoGo-MobileApp#377, 2026-10-26).
+      responses:
+        '200':
+          description: Current availability for the caller
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+
+  /assistant/conversations:
+    get:
+      operationId: listAssistantConversations
+      tags: [assistant]
+      summary: "GoGo AI: the caller's conversations, most recent first (cursor), with search"
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. History screen. Keyset paging on `(lastMessageAt, id)`
+        descending: a conversation moves to the top whenever a message is
+        added, so an offset page would skip or repeat rows while it is read.
+
+
+        Grouping into "Today" / "Yesterday" / "Earlier" is the client's, from
+        `lastMessageAt` (ISO-8601 UTC) in the device's time zone — the server
+        does not know the user's local midnight and sends no group label.
+
+
+        `q` searches the conversation title and the text of its messages
+        (user and assistant turns; not attachments, sources or cards).
+        With `q` each item carries `match` saying where it matched, so the row
+        can show the matching line. Ordering stays `lastMessageAt` descending;
+        there is no relevance score.
+
+
+        Only the caller's own conversations, only those inside the 90-day
+        retention window. Registered users only (`403 USER_ONLY` for a guest).
+        Reading, renaming and deleting history keep working while the kill
+        switch is off — it stops new replies (and their cost), not a user's
+        access to or deletion of what is stored.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Case- and diacritic-insensitive substring of the title or a message; 2–100 characters.
+          schema: { type: string, minLength: 2, maxLength: 100 }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 50, default: 20 },
+          }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
+      responses:
+        '200':
+          description: One page of conversations
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantConversationPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+    post:
+      operationId: createAssistantConversation
+      tags: [assistant]
+      summary: 'GoGo AI: start a conversation ("New chat")'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. Creates an empty conversation; the first message is sent
+        with `sendAssistantMessage`. `title` is optional: when absent the
+        server derives one after the first exchange (it is user-visible text
+        the user can rename, never a fact).
+
+
+        `context` is the item the assistant was opened from (the `ContextChip`
+        "About …"): a place **or** a plan, never both. It is used only when the
+        app sends it and only when the caller may read that resource —
+        otherwise `404 CONTEXT_NOT_FOUND`, which does not say whether the
+        resource exists. Without a context the assistant sees no screen data.
+
+
+        `Idempotency-Key` is accepted, so a retried "New chat" tap does not
+        create two conversations.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssistantConversationCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantConversation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404':
+          description: '`CONTEXT_NOT_FOUND` — no such place/plan, or the caller may not read it.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: '`IDEMPOTENCY_KEY_REUSED` — same key, different request.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/AssistantRateLimited' }
+        '503': { $ref: '#/components/responses/AssistantDisabled' }
+
+  /assistant/conversations/{id}:
+    get:
+      operationId: getAssistantConversation
+      tags: [assistant]
+      summary: 'GoGo AI: one conversation (header data, not messages)'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. Another account's conversation, a deleted one and one past
+        retention are all `404` — the answer does not say which.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The conversation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantConversation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: renameAssistantConversation
+      tags: [assistant]
+      summary: 'GoGo AI: rename a conversation'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. Only `title` is writable. Renaming does not move the
+        conversation in the history order (`lastMessageAt` is unchanged).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              additionalProperties: false
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 80
+                  description: Trimmed server-side; blank after trimming is a 400.
+      responses:
+        '200':
+          description: Renamed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantConversation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteAssistantConversation
+      tags: [assistant]
+      summary: 'GoGo AI: delete a conversation and every message in it'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. A hard delete: messages, stored attachment references,
+        feedback and pending proposals go with it; nothing is kept for
+        analytics. Rooms, plans, invites or votes the user already confirmed
+        through the assistant are ordinary GoGo data and are **not** deleted.
+        A turn still streaming is stopped first. Deleting a conversation that
+        is already gone answers `204` too, so a retry is safe.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Deleted (or already absent) }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+
+  /assistant/conversations/{id}/messages:
+    get:
+      operationId: listAssistantMessages
+      tags: [assistant]
+      summary: 'GoGo AI: messages of a conversation, newest first (cursor)'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. Newest first, because the thread is a bottom-anchored
+        (inverted) list: page 1 is what the screen shows, later pages scroll
+        back in time. Keyset on `(createdAt, id)`.
+
+
+        Each assistant message carries what it was rendered from: `sources`,
+        `cards`, `proposals`, `followUps`, `notice`. Cards are **rehydrated
+        from verified data when read** — history stores ids, not a copy of
+        place or plan facts — so a card always shows today's verified facts
+        with their `checkedAt`, and a place that is no longer usable comes
+        back with `available: false` rather than stale prices.
+
+
+        A message still being generated has `status: streaming` and the text
+        written so far; attach to its stream to follow it.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 50, default: 30 },
+          }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
+      responses:
+        '200':
+          description: One page of messages
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantMessagePage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: sendAssistantMessage
+      tags: [assistant]
+      summary: 'GoGo AI: send a message; the reply is generated and streamed separately'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. Stores the user's message and starts the assistant's
+        reply. Answers `202` with both messages at once — the user turn as
+        sent, the assistant turn as `status: streaming` with empty text — and
+        the client then attaches to `streamAssistantMessage` for that
+        assistant message id.
+
+
+        Two calls rather than one `POST` that streams: the stream is a plain
+        `GET` with bearer auth and `Last-Event-ID` resume, exactly like
+        `GET /rooms/{id}/events`, so the same SSE client works for both and a
+        dropped connection resumes the reply instead of sending the question
+        again. The send itself is a short idempotent request.
+
+
+        `Idempotency-Key` is **required**: a retry after a flaky network
+        returns the same two messages (`x-idempotent-replay: true`) and does
+        not spend a second reply from the daily budget.
+
+
+        `context` overrides the conversation's context for this turn only
+        (same rules as on create: place **or** plan, readable by the caller,
+        else `404 CONTEXT_NOT_FOUND`). `attachments` are image upload keys
+        from `POST /uploads` with `purpose: assistant_image` — images only, at
+        most 3, each bound to the caller; anything else is
+        `400 ATTACHMENT_INVALID` without saying which reason.
+
+
+        One reply at a time per conversation: sending while a reply is still
+        streaming is `409 ASSISTANT_TURN_IN_PROGRESS` — stop it first.
+        The per-account daily message limit (GoGo-Infra#257 row
+        `budget/assistant-user-daily-max-messages`) and a
+        per-minute burst limit both answer `429` with `Retry-After`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssistantMessageSend' }
+      responses:
+        '202':
+          description: Accepted; attach to the assistant message's stream.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantTurn' }
+        '400':
+          description: >
+            Validation failure, `IDEMPOTENCY_KEY_REQUIRED`,
+            `INVALID_IDEMPOTENCY_KEY` or `ATTACHMENT_INVALID`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404':
+          description: >
+            No such conversation for this caller (`NOT_FOUND`), or
+            `CONTEXT_NOT_FOUND` for a place/plan the caller may not read.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: >
+            `ASSISTANT_TURN_IN_PROGRESS` — a reply in this conversation is still
+            streaming; or `IDEMPOTENT_REQUEST_IN_FLIGHT`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: '`IDEMPOTENCY_KEY_REUSED` — same key, different request.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/AssistantRateLimited' }
+        '503': { $ref: '#/components/responses/AssistantDisabled' }
+
+  /assistant/conversations/{id}/messages/{messageId}/stream:
+    get:
+      operationId: streamAssistantMessage
+      tags: [assistant]
+      summary: 'GoGo AI: the assistant reply as a server-sent event stream'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. SSE, the same transport as `GET /rooms/{id}/events`:
+        bearer auth, keep-alive `: ping` comment frames while idle, an opaque
+        SSE `id` per frame, resume with `Last-Event-ID` (or `lastEventId` for
+        a browser `EventSource`). A resumed stream replays the frames after
+        that id, then continues live; attaching to a reply that has already
+        ended replays it from the start and closes after `done`.
+
+
+        Each frame's SSE `event:` name selects the `data` schema
+        (`AssistantStreamEvent`, discriminated by `type`, which always equals
+        the event name):
+
+        - `step` — what the assistant is doing now, for `TypingIndicator`.
+        - `delta` — the next piece of answer text; append in order.
+        - `sources` — the documents the answer used, for `[1]`, `[2]`
+          citations. Titles and descriptions come from the published GoGo
+          guide in the CMS, never from the model.
+        - `card` — a place or plan result: **ids plus facts read from
+          verified data**. The model only chooses ids from the turn's
+          allowlist; it never writes a price, an opening hour or an
+          availability.
+        - `proposal` — a consequential action (create a room/plan, invite,
+          vote, finalize) prepared but **not performed**; every value says
+          whether the user stated it or the assistant assumed it. Nothing
+          happens until `confirmAssistantProposal`.
+        - `follow_ups` — at most two groups of quick answers when details are
+          missing.
+        - `notice` — a state the UI renders as `StateNotice`: `empty` (GoGo
+          has no documented answer; the assistant does not describe a feature
+          GoGo has not defined), `fallback` (the model did not answer in
+          time), `limit`, `disabled`.
+        - `done` — the last frame of a reply that ended normally, stopped or
+          fell back. The stream closes after it.
+        - `error` — the last frame of a reply that failed mid-way; carries the
+          standard error envelope. The partial text already streamed is kept
+          on the message.
+
+
+        **Timeout.** If the model has produced no text within 15 s the server
+        abandons that call and ends the turn deterministically: a `notice`
+        with `kind: fallback, reason: timeout`, the same answer every time
+        (sources, if any, plus fixed follow-ups the app renders from i18n
+        keys), and `done` with `status: fallback`. No retry happens on the
+        user's behalf.
+
+
+        **Stop.** `stopAssistantMessage` ends generation; the stream then
+        sends `done` with `status: stopped`, and the text streamed until then
+        is kept as the message text.
+
+
+        A `403`/`404` here is answered before the stream opens. The kill
+        switch turning off during a reply ends it with an `error` frame
+        `ASSISTANT_DISABLED`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: messageId, in: path, required: true, schema: { type: string, format: uuid } }
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: { type: string, maxLength: 128 }
+          description: Opaque SSE `id` of the last frame received, sent back verbatim to resume.
+        - name: lastEventId
+          in: query
+          required: false
+          schema: { type: string, maxLength: 128 }
+          description: Same as the header, for browser EventSource; the header wins when both are sent.
+      responses:
+        '200':
+          description: >
+            An event stream. Each frame's `data` is one `AssistantStreamEvent`
+            variant, chosen by the SSE `event:` name. The keep-alive `: ping`
+            comment frame carries no data and is not listed.
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/AssistantStreamEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429':
+          description: Too many open assistant streams for this session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503': { $ref: '#/components/responses/AssistantDisabled' }
+
+  /assistant/conversations/{id}/messages/{messageId}/stop:
+    post:
+      operationId: stopAssistantMessage
+      tags: [assistant]
+      summary: 'GoGo AI: stop generating; keep what was written'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. The composer's **Stop**. Ends generation and returns the
+        assistant message as stored: `status: stopped` and the text streamed
+        until the stop. Cards, sources and proposals already sent are kept;
+        nothing further is added. Idempotent: stopping a reply that already
+        ended returns it unchanged with its final status.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: messageId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The assistant message after stopping
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantMessage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assistant/conversations/{id}/messages/{messageId}/feedback:
+    put:
+      operationId: setAssistantMessageFeedback
+      tags: [assistant]
+      summary: 'GoGo AI: thumbs up / down on an assistant reply (idempotent)'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. One rating per assistant message, replaced by a later
+        call. `reason` is a closed code, not free text, so the moderation
+        queue carries no user-written PII. Deleted with the conversation.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: messageId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssistantFeedbackInput' }
+      responses:
+        '200':
+          description: Recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantFeedback' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: clearAssistantMessageFeedback
+      tags: [assistant]
+      summary: 'GoGo AI: withdraw a rating'
+      x-gogo-planned: GoGo-BE#713
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: messageId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Cleared (or there was none) }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assistant/proposals/{proposalId}:
+    get:
+      operationId: getAssistantProposal
+      tags: [assistant]
+      summary: 'GoGo AI: one proposal and its current state'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. For a `ConfirmationCard` reopened from history: whether
+        it is still `pending`, already `confirmed` (with the saved result),
+        `dismissed` or `expired`. Only the conversation owner can read it.
+      parameters:
+        - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The proposal
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantProposal' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assistant/proposals/{proposalId}/confirm:
+    post:
+      operationId: confirmAssistantProposal
+      tags: [assistant]
+      summary: 'GoGo AI: perform a proposed action (the only assistant call that writes GoGo data)'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. The user tapped the `ConfirmationCard` button. This is the
+        **only** way an assistant conversation changes rooms, plans, invites or
+        votes; chat text alone never runs an action.
+
+
+        The write goes through the same use case and the same policy as the
+        ordinary endpoint (`createRoom`, `createInvite`, `castVote`,
+        `finalizeVotes`), with the caller as actor — not the assistant. So a
+        member or guest cannot finalize a plan here any more than there
+        (`403 HOST_ONLY`), room state still gates it (`409 ROOM_NOT_MATCHING`,
+        …), and hard constraints are validated exactly as on that endpoint;
+        the assistant never overrides one. Ids in the proposal were checked
+        against the turn's allowlist when it was made and are checked again
+        here against what the caller can reach now.
+
+
+        `values` carries the fields the user edited on the card; an edited
+        value becomes `explicit`. Fields not listed keep the proposed value.
+        Fields the proposal kind does not define are a 400.
+
+
+        The response is the **server-saved** state, read back after the
+        write — what `TaskSummary` shows — not an echo of the request.
+
+
+        `Idempotency-Key` is **required**. A replay returns the original result
+        (`x-idempotent-replay: true`). A proposal confirms once: a second key
+        on a confirmed proposal is `409 PROPOSAL_NOT_PENDING` with the first
+        result readable from `getAssistantProposal`. Proposals expire
+        (`expiresAt`, default 30 minutes): `409 PROPOSAL_EXPIRED`.
+      parameters:
+        - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssistantProposalConfirm' }
+      responses:
+        '200':
+          description: Performed; server-saved values
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantProposalResult' }
+        '400':
+          description: >
+            Validation failure of the edited values (the underlying endpoint's
+            codes, with `field_errors` naming proposal fields),
+            `IDEMPOTENCY_KEY_REQUIRED` or `INVALID_IDEMPOTENCY_KEY`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: >
+            `USER_ONLY` for a guest session, or the underlying policy's refusal
+            (`HOST_ONLY`, `ROOM_SCOPE_VIOLATION`, …).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `PROPOSAL_NOT_PENDING`, `PROPOSAL_EXPIRED`,
+            `IDEMPOTENT_REQUEST_IN_FLIGHT`, or a room-state conflict from the
+            underlying use case (`ROOM_NOT_MATCHING`, …).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: '`IDEMPOTENCY_KEY_REUSED` — same key, different request.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AssistantDisabled' }
+
+  /assistant/proposals/{proposalId}/dismiss:
+    post:
+      operationId: dismissAssistantProposal
+      tags: [assistant]
+      summary: 'GoGo AI: decline a proposal ("Not now")'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713. Marks a pending proposal `dismissed`; nothing is written
+        anywhere else. Idempotent on an already dismissed proposal; a confirmed
+        or expired one is returned unchanged.
+      parameters:
+        - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The proposal after dismissal
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantProposal' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /administrative/version:
     get:
@@ -9285,6 +9927,326 @@ paths:
           description: Config weights are outside the engine's own bounds
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /cms/assistant/documents:
+    get:
+      operationId: cmsListAssistantDocuments
+      tags: [cms, assistant]
+      summary: 'Content: the "GoGo guide" source documents GoGo AI answers from (cursor)'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-BE#713, GoGo-CMS#249. **Planned — declared ahead of the module;
+        not served until the module PR lands.**
+
+
+        The assistant answers product questions only from **published**
+        versions of these documents, and cites them by `title` and
+        `description` — so those strings are what the app shows in
+        `SourceList`, never something the model wrote. Owner decision on
+        GoGo-MobileApp#377 (2026-10-26): the source set lives in the CMS, with
+        versions, publish / unpublish and audit.
+
+
+        Roles: written by `editor` and `ops_admin` (drafts) and published or
+        unpublished by `ops_admin` only; read under the hierarchical read rule
+        (BE-IMP-008), so `moderator` can read the set it reviews feedback
+        against. Keyset paging on `(updatedAt, id)` descending.
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AssistantDocumentStatus' }
+        - name: locale
+          in: query
+          schema: { type: string, enum: [vi, en] }
+        - name: q
+          in: query
+          description: Substring of slug or title.
+          schema: { type: string, minLength: 2, maxLength: 100 }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
+      responses:
+        '200':
+          description: One page of documents
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAssistantDocumentPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: cmsCreateAssistantDocument
+      tags: [cms, assistant]
+      summary: 'Content: create a guide document (its first version is a draft)'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        `editor` or `ops_admin`. Creates the document and version 1 as a
+        draft; nothing reaches the assistant until it is published. `slug` is
+        the stable identity across versions and locales (`plans.voting`) and
+        cannot be changed later. Audited (`assistant_document.created`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsAssistantDocumentCreate' }
+      responses:
+        '201':
+          description: Created as a draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAssistantDocument' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`DOCUMENT_SLUG_TAKEN` — a document with that slug and locale exists.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/assistant/documents/{id}:
+    get:
+      operationId: cmsGetAssistantDocument
+      tags: [cms, assistant]
+      summary: 'Content: one guide document with its draft and published versions'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        The editor screen: the open draft (if any) in full, and the published
+        version in full, so the console can preview and diff them.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The document
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAssistantDocumentDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: cmsUpdateAssistantDocumentDraft
+      tags: [cms, assistant]
+      summary: 'Content: edit the draft (opens a new draft version when none is open)'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        `editor` or `ops_admin`. Writes go to the draft only — a published
+        version is immutable, so what the assistant cited yesterday can always
+        be read back. When no draft is open the first edit opens one, copied
+        from the published version.
+
+
+        `baseRevision` is the draft revision the editor loaded; a stale one is
+        `409 REVISION_CONFLICT` rather than a silent overwrite of a colleague's
+        edit. Audited with before/after (`assistant_document.draft_updated`).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsAssistantDocumentDraftPatch' }
+      responses:
+        '200':
+          description: The document with the updated draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAssistantDocumentDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`REVISION_CONFLICT` — the draft changed since `baseRevision`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/assistant/documents/{id}/publish:
+    post:
+      operationId: cmsPublishAssistantDocument
+      tags: [cms, assistant]
+      summary: 'Content: publish a version — the assistant answers from it from now on'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        `ops_admin` only: publishing changes what GoGo AI tells every user, a
+        release decision rather than an edit, so it does not sit with the role
+        that wrote the draft (the same split as safety rules and campaigns).
+
+
+        `versionId` is the open draft, or an earlier version to roll back to.
+        The previously published version becomes `superseded`; exactly one
+        version per document is `published` at a time. Takes effect for new
+        replies; a reply already streaming keeps the version it started with.
+        Audited (`assistant_document.published`) with the version id and
+        `reason`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [versionId]
+              additionalProperties: false
+              properties:
+                versionId: { type: string, format: uuid }
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAssistantDocumentDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No such document, or `VERSION_NOT_FOUND` — the version is not one of this document's.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: '`VERSION_ALREADY_PUBLISHED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/assistant/documents/{id}/unpublish:
+    post:
+      operationId: cmsUnpublishAssistantDocument
+      tags: [cms, assistant]
+      summary: 'Content: withdraw the document from the assistant'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        `ops_admin` only. The published version becomes `withdrawn` and the
+        assistant stops citing the document for new replies. Older
+        conversations keep their source rows (title, version), so a citation
+        already shown still resolves. `reason` is required and audited
+        (`assistant_document.unpublished`).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              additionalProperties: false
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        '200':
+          description: Unpublished
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAssistantDocumentDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`DOCUMENT_NOT_PUBLISHED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /cms/assistant/documents/{id}/versions:
+    get:
+      operationId: cmsListAssistantDocumentVersions
+      tags: [cms, assistant]
+      summary: 'Content: version history of one document, newest first, with who did what'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        Every version ever created — the history is append-only. Each row says
+        who created it and, if it was ever published or withdrawn, who did
+        that, when and why. The full audit trail is also in `cmsListAudit`
+        with `resourceType=assistant_document`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
+      responses:
+        '200':
+          description: One page of versions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAssistantDocumentVersionPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/assistant/documents/{id}/versions/{versionId}:
+    get:
+      operationId: cmsGetAssistantDocumentVersion
+      tags: [cms, assistant]
+      summary: 'Content: one version in full (preview, diff, rollback)'
+      x-gogo-planned: GoGo-BE#713
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: versionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAssistantDocumentVersion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/assistant/feedback:
+    get:
+      operationId: cmsListAssistantFeedback
+      tags: [cms, assistant]
+      summary: 'Moderation: thumbs-down / thumbs-up on assistant replies, minimal PII (cursor)'
+      x-gogo-planned: GoGo-BE#713
+      description: >
+        GoGo-CMS#249. `moderator` (and, by the read rule, `ops_admin`). The
+        queue shows the **assistant's** reply, the sources it cited and the
+        reason code — enough to judge answer quality and fix the GoGo guide.
+        It does not show who rated it, the user's own message, attachments,
+        context place/plan, coordinates or email: none of that is needed to
+        judge a reply, and each is personal data. `conversationRef` is an
+        opaque per-conversation token that groups rows without naming the
+        account.
+
+
+        Rows disappear with their conversation (user deletion, account
+        deletion, privacy request, 90-day retention).
+      parameters:
+        - name: rating
+          in: query
+          schema: { type: string, enum: [up, down] }
+        - name: reason
+          in: query
+          schema: { $ref: '#/components/schemas/AssistantFeedbackReason' }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
+      responses:
+        '200':
+          description: Feedback, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAssistantFeedbackPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /cms/feature-flags:
     get:
       operationId: cmsListFeatureFlags
@@ -17007,6 +17969,766 @@ components:
               runId: { type: string, format: uuid }
               reason: { type: string }
 
+    # ── GoGo AI assistant (GoGo-BE#713) ───────────────────────────────────────
+    AssistantStatus:
+      type: object
+      required: [state, dailyMessageLimit, remainingToday, resetsAt]
+      properties:
+        state:
+          type: string
+          description: >
+            `enabled` — sending works. `disabled` — kill switch off
+            (`assistant.enabled`), or the environment's monthly AI budget is
+            spent or not configured. `limit_reached` — this account's daily
+            messages are spent until `resetsAt`. Unknown values mean "cannot
+            send now".
+          x-extensible-enum: [enabled, disabled, limit_reached]
+        dailyMessageLimit:
+          type: integer
+          minimum: 0
+          description: Messages this account may send per day (`budget/assistant-user-daily-max-messages`).
+        remainingToday: { type: integer, minimum: 0 }
+        resetsAt:
+          type: string
+          format: date-time
+          description: When `remainingToday` refills (start of the next day in Asia/Ho_Chi_Minh, as UTC).
+    AssistantContext:
+      description: >
+        What the assistant was opened from. Exactly one of `placeId` /
+        `planId`. Used only when sent, only when the caller may read it.
+      oneOf:
+        - type: object
+          required: [placeId]
+          additionalProperties: false
+          properties:
+            placeId: { type: string, format: uuid }
+        - type: object
+          required: [planId]
+          additionalProperties: false
+          properties:
+            planId: { type: string, format: uuid }
+    AssistantContextRef:
+      type: object
+      description: The context as stored, with the verified name to render on the `ContextChip`.
+      required: [kind, id, label]
+      properties:
+        kind: { type: string, enum: [place, plan] }
+        id: { type: string, format: uuid }
+        label:
+          type: string
+          description: The place name or the plan's room title, read from GoGo data — not model text.
+    AssistantConversationCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        title: { type: string, minLength: 1, maxLength: 80 }
+        context: { $ref: '#/components/schemas/AssistantContext' }
+    AssistantConversation:
+      type: object
+      required: [id, title, createdAt, lastMessageAt, expiresAt, messageCount]
+      properties:
+        id: { type: string, format: uuid }
+        title:
+          type: [string, 'null']
+          description: >
+            User-set, or derived after the first exchange. `null` until then;
+            the client shows its own "New chat" copy.
+        context:
+          oneOf:
+            - $ref: '#/components/schemas/AssistantContextRef'
+            - type: 'null'
+        createdAt: { type: string, format: date-time }
+        lastMessageAt:
+          type: string
+          format: date-time
+          description: History order and the Today / Yesterday / Earlier grouping key (group client-side, device time zone).
+        expiresAt:
+          type: string
+          format: date-time
+          description: >
+            When retention deletes it: 90 days after `lastMessageAt`. Moves
+            forward as the conversation continues.
+        messageCount: { type: integer, minimum: 0 }
+        preview:
+          type: string
+          maxLength: 160
+          description: Start of the last message's text, for the history row.
+        match:
+          $ref: '#/components/schemas/AssistantSearchMatch'
+    AssistantSearchMatch:
+      type: object
+      description: Present only on a `q` search.
+      required: [field]
+      properties:
+        field: { type: string, enum: [title, message] }
+        messageId:
+          type: string
+          format: uuid
+          description: The newest matching message when `field` is `message`.
+        snippet:
+          type: string
+          maxLength: 200
+          description: Text around the match, from that message or the title.
+    AssistantConversationPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AssistantConversation' }
+        nextCursor: { type: [string, 'null'] }
+    AssistantAttachmentInput:
+      type: object
+      required: [uploadKey]
+      additionalProperties: false
+      properties:
+        uploadKey:
+          type: string
+          maxLength: 512
+          description: '`key` from `POST /uploads` with `purpose: assistant_image`.'
+    AssistantAttachment:
+      type: object
+      required: [id, contentType]
+      properties:
+        id: { type: string, format: uuid }
+        contentType: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        width: { type: integer }
+        height: { type: integer }
+        url:
+          type: string
+          description: >
+            Short-lived signed URL to the processed image (owner only). Absent
+            once the image is past retention or storage is unavailable.
+        urlExpiresAt: { type: string, format: date-time }
+    AssistantMessageSend:
+      type: object
+      required: [text]
+      additionalProperties: false
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: Trimmed server-side; blank after trimming is a 400.
+        context: { $ref: '#/components/schemas/AssistantContext' }
+        attachments:
+          type: array
+          maxItems: 3
+          items: { $ref: '#/components/schemas/AssistantAttachmentInput' }
+        locale:
+          type: string
+          enum: [vi, en]
+          description: The app's UI language; the reply is written in it. Defaults to the account locale.
+    AssistantMessageStatus:
+      type: string
+      description: >
+        `streaming` — being generated. `complete` — ended normally.
+        `stopped` — the user pressed Stop; `text` is what was written.
+        `fallback` — the model did not answer within 15 s; a deterministic
+        reply was stored. `failed` — ended by an error; `text` keeps any
+        partial answer. User messages are always `complete`.
+      x-extensible-enum: [streaming, complete, stopped, fallback, failed]
+    AssistantMessage:
+      type: object
+      required: [id, conversationId, role, status, text, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        conversationId: { type: string, format: uuid }
+        role: { type: string, enum: [user, assistant] }
+        status: { $ref: '#/components/schemas/AssistantMessageStatus' }
+        text:
+          type: string
+          description: >
+            Markdown-light answer text (paragraphs, lists, `[n]` citation
+            markers that index `sources`). For a user message, what they sent.
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+        context: { $ref: '#/components/schemas/AssistantContextRef' }
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/AssistantAttachment' }
+        sources:
+          type: array
+          items: { $ref: '#/components/schemas/AssistantSource' }
+        cards:
+          type: array
+          items: { $ref: '#/components/schemas/AssistantResultCard' }
+        proposals:
+          type: array
+          items: { $ref: '#/components/schemas/AssistantProposal' }
+        followUps:
+          type: array
+          maxItems: 2
+          items: { $ref: '#/components/schemas/AssistantFollowUpGroup' }
+        notice: { $ref: '#/components/schemas/AssistantNotice' }
+        feedback:
+          oneOf:
+            - $ref: '#/components/schemas/AssistantFeedback'
+            - type: 'null'
+        error:
+          description: Set when `status` is `failed`.
+          $ref: '#/components/schemas/ErrorEnvelope'
+    AssistantMessagePage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          description: Newest first.
+          items: { $ref: '#/components/schemas/AssistantMessage' }
+        nextCursor: { type: [string, 'null'] }
+    AssistantTurn:
+      type: object
+      required: [userMessage, assistantMessage]
+      properties:
+        userMessage: { $ref: '#/components/schemas/AssistantMessage' }
+        assistantMessage:
+          $ref: '#/components/schemas/AssistantMessage'
+          description: '`status: streaming`; attach to `streamAssistantMessage` with its `id`.'
+    AssistantSource:
+      type: object
+      description: >
+        One document an answer used. Every string comes from the published
+        GoGo guide in the CMS (or, for `place_data`, from GoGo place data) —
+        never from the model.
+      required: [index, kind, title]
+      properties:
+        index:
+          type: integer
+          minimum: 1
+          description: The `n` in the `[n]` citation markers of the message text.
+        kind:
+          type: string
+          description: >
+            `guide_document` — a published GoGo guide version.
+            `place_data` — GoGo's verified place data, rendered as "From GoGo
+            place data · Last checked …" with `checkedAt`.
+          x-extensible-enum: [guide_document, place_data]
+        documentId: { type: string, format: uuid }
+        versionId: { type: string, format: uuid }
+        slug: { type: string }
+        title: { type: string }
+        description: { type: string }
+        checkedAt:
+          type: string
+          format: date-time
+          description: For `place_data`, the verified data's `freshnessCheckedAt`.
+    AssistantResultCard:
+      description: >
+        A structured result: ids the model chose **from the turn's allowlist**,
+        and facts the server read from verified data. Discriminated by `kind`.
+      oneOf:
+        - $ref: '#/components/schemas/AssistantPlaceCard'
+        - $ref: '#/components/schemas/AssistantPlanCard'
+      discriminator:
+        propertyName: kind
+        mapping:
+          place: '#/components/schemas/AssistantPlaceCard'
+          plan: '#/components/schemas/AssistantPlanCard'
+    AssistantPlaceCard:
+      type: object
+      required: [kind, placeId, available, facts]
+      properties:
+        kind: { type: string, enum: [place] }
+        placeId: { type: string, format: uuid }
+        available:
+          type: boolean
+          description: False when the place is no longer usable; `facts` is then minimal.
+        facts:
+          type: object
+          description: >
+            Verified GoGo place data at the time of reading — the same fields
+            and rules as `PlaceDetail`. Never model output; never a copy kept
+            in conversation history.
+          required: [name]
+          properties:
+            name: { type: string }
+            areaKey: { type: string }
+            addressText: { type: string }
+            priceLevel: { type: integer }
+            priceMin:
+              type: integer
+              description: Integer minor units, per person, when GoGo has a verified price.
+            priceMax: { type: integer }
+            currency: { type: string }
+            gogoRating:
+              type: number
+              description: Present under the same rule as `PlaceDetail.gogoRating` (5+ reviews).
+            gogoRatingCount: { type: integer }
+            openNow:
+              type: [boolean, 'null']
+              description: From verified hours in place-local time; `null` when hours are unknown.
+            photoUrl: { type: string }
+            checkedAt:
+              type: string
+              format: date-time
+              description: '`freshnessCheckedAt` of the facts — "Last checked …".'
+    AssistantPlanCard:
+      type: object
+      required: [kind, planId, roomId, available, facts]
+      properties:
+        kind: { type: string, enum: [plan] }
+        planId: { type: string, format: uuid }
+        roomId: { type: string, format: uuid }
+        available:
+          type: boolean
+          description: False when the caller can no longer read the plan.
+        facts:
+          type: object
+          description: Read from the plan as `getPlan` would return it to the caller.
+          properties:
+            roomTitle: { type: string }
+            roomType: { type: string }
+            participantCount: { type: integer }
+            status: { type: string }
+            version: { type: integer }
+            stopCount: { type: integer }
+            totals: { $ref: '#/components/schemas/PlanTotals' }
+            startAt: { type: string, format: date-time }
+    AssistantProposalKind:
+      type: string
+      description: >
+        A consequential action the assistant may prepare. Each maps to an
+        existing endpoint and its policy: `create_room` → `createRoom` (with
+        constraints), `create_invite` → `createInvite`, `cast_vote` →
+        `castVote`, `finalize_plan` → `finalizeVotes` (host only). Unknown
+        values: render the card generically from `values`.
+      x-extensible-enum: [create_room, create_invite, cast_vote, finalize_plan]
+    AssistantProposalValue:
+      type: object
+      required: [field, value, origin, editable]
+      properties:
+        field:
+          type: string
+          description: >
+            Field of the target request (`title`, `type`, `startAt`, `endAt`,
+            `budgetMode`, `budgetAmount`, `areaKey`, `roomId`, `placeId`,
+            `value`, …). Facts, not sentences: the card composes its own copy.
+        value:
+          description: JSON value in the target request's type (money in integer minor units, times ISO-8601 UTC).
+        origin:
+          type: string
+          enum: [explicit, assumed]
+          description: >
+            `explicit` — the user said it (or edited it on the card).
+            `assumed` — the assistant filled it in; the card flags it
+            ("End time assumed") and the user can change it before confirming.
+        editable: { type: boolean }
+    AssistantProposal:
+      type: object
+      required: [id, kind, status, values, createdAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        conversationId: { type: string, format: uuid }
+        messageId: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/AssistantProposalKind' }
+        status:
+          type: string
+          x-extensible-enum: [pending, confirmed, dismissed, expired]
+        values:
+          type: array
+          items: { $ref: '#/components/schemas/AssistantProposalValue' }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        result:
+          description: Present once `status` is `confirmed`.
+          $ref: '#/components/schemas/AssistantProposalResult'
+    AssistantProposalConfirm:
+      type: object
+      additionalProperties: false
+      properties:
+        values:
+          type: object
+          description: 'Edited fields only, `{ field: value }`; each becomes `explicit`.'
+          additionalProperties: true
+    AssistantProposalResult:
+      type: object
+      description: What the server saved, read back after the write — the `TaskSummary`.
+      required: [proposalId, kind, resource, savedValues, confirmedAt]
+      properties:
+        proposalId: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/AssistantProposalKind' }
+        resource:
+          type: object
+          required: [type, id]
+          properties:
+            type:
+              type: string
+              x-extensible-enum: [room, plan, invite, vote]
+            id: { type: string }
+            roomId: { type: string, format: uuid }
+        savedValues:
+          type: array
+          description: >
+            The stored values, which can differ from the proposal (server
+            defaults, normalisation). `origin` is not repeated: the record is
+            the server's now.
+          items:
+            type: object
+            required: [field, value]
+            properties:
+              field: { type: string }
+              value: {}
+        confirmedAt: { type: string, format: date-time }
+    AssistantFollowUpGroup:
+      type: object
+      description: >
+        A missing detail the assistant asks for, with quick answers. At most
+        two groups per reply; the user may type instead.
+      required: [field, label, options]
+      properties:
+        field:
+          type: string
+          description: Stable key of what is asked (`date`, `budget`, `area`, …), for analytics and i18n.
+        label: { type: string, maxLength: 80 }
+        options:
+          type: array
+          maxItems: 6
+          items:
+            type: object
+            required: [label, text]
+            properties:
+              label: { type: string, maxLength: 40 }
+              text:
+                type: string
+                maxLength: 200
+                description: What is sent as the next user message when tapped.
+    AssistantNotice:
+      type: object
+      description: A state the UI renders as `StateNotice`.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          description: >
+            `empty` — GoGo has no documented answer. `fallback` — deterministic
+            reply after a timeout or provider failure. `limit` — daily budget
+            spent. `disabled` — kill switch off. Unknown values: generic notice.
+          x-extensible-enum: [empty, fallback, limit, disabled]
+        reason:
+          type: string
+          description: For `fallback`.
+          x-extensible-enum: [timeout, provider_unavailable, invalid_output]
+        copyKey:
+          type: string
+          description: >
+            i18n key of the fixed copy to show (the app owns the strings), e.g.
+            `assistant.notice.empty`. Never model text.
+    AssistantFeedbackReason:
+      type: string
+      x-extensible-enum: [incorrect, not_helpful, unsafe, outdated, other]
+    AssistantFeedbackInput:
+      type: object
+      required: [rating]
+      additionalProperties: false
+      properties:
+        rating: { type: string, enum: [up, down] }
+        reason: { $ref: '#/components/schemas/AssistantFeedbackReason' }
+    AssistantFeedback:
+      type: object
+      required: [rating, createdAt]
+      properties:
+        rating: { type: string, enum: [up, down] }
+        reason: { $ref: '#/components/schemas/AssistantFeedbackReason' }
+        createdAt: { type: string, format: date-time }
+    AssistantStreamEvent:
+      description: >
+        One SSE frame of `streamAssistantMessage`. `type` equals the frame's
+        SSE `event:` name. `seq` increases by one per frame of this message.
+      oneOf:
+        - $ref: '#/components/schemas/AssistantStreamStep'
+        - $ref: '#/components/schemas/AssistantStreamDelta'
+        - $ref: '#/components/schemas/AssistantStreamSources'
+        - $ref: '#/components/schemas/AssistantStreamCard'
+        - $ref: '#/components/schemas/AssistantStreamProposal'
+        - $ref: '#/components/schemas/AssistantStreamFollowUps'
+        - $ref: '#/components/schemas/AssistantStreamNotice'
+        - $ref: '#/components/schemas/AssistantStreamDone'
+        - $ref: '#/components/schemas/AssistantStreamError'
+      discriminator:
+        propertyName: type
+        mapping:
+          step: '#/components/schemas/AssistantStreamStep'
+          delta: '#/components/schemas/AssistantStreamDelta'
+          sources: '#/components/schemas/AssistantStreamSources'
+          card: '#/components/schemas/AssistantStreamCard'
+          proposal: '#/components/schemas/AssistantStreamProposal'
+          follow_ups: '#/components/schemas/AssistantStreamFollowUps'
+          notice: '#/components/schemas/AssistantStreamNotice'
+          done: '#/components/schemas/AssistantStreamDone'
+          error: '#/components/schemas/AssistantStreamError'
+    AssistantStreamStep:
+      type: object
+      required: [type, seq, messageId, step]
+      properties:
+        type: { type: string, enum: [step] }
+        seq: { type: integer, minimum: 1 }
+        messageId: { type: string, format: uuid }
+        step:
+          type: string
+          description: 'For `TypingIndicator` (the app maps it to its own copy). Unknown values: generic "Thinking".'
+          x-extensible-enum: [reading_guide, searching_places, reading_plan, writing]
+    AssistantStreamDelta:
+      type: object
+      required: [type, seq, messageId, text]
+      properties:
+        type: { type: string, enum: [delta] }
+        seq: { type: integer, minimum: 1 }
+        messageId: { type: string, format: uuid }
+        text: { type: string, description: Append to the text so far. }
+    AssistantStreamSources:
+      type: object
+      required: [type, seq, messageId, sources]
+      properties:
+        type: { type: string, enum: [sources] }
+        seq: { type: integer, minimum: 1 }
+        messageId: { type: string, format: uuid }
+        sources:
+          type: array
+          description: The complete list for this reply so far; replaces any earlier `sources` frame.
+          items: { $ref: '#/components/schemas/AssistantSource' }
+    AssistantStreamCard:
+      type: object
+      required: [type, seq, messageId, card]
+      properties:
+        type: { type: string, enum: [card] }
+        seq: { type: integer, minimum: 1 }
+        messageId: { type: string, format: uuid }
+        card: { $ref: '#/components/schemas/AssistantResultCard' }
+    AssistantStreamProposal:
+      type: object
+      required: [type, seq, messageId, proposal]
+      properties:
+        type: { type: string, enum: [proposal] }
+        seq: { type: integer, minimum: 1 }
+        messageId: { type: string, format: uuid }
+        proposal: { $ref: '#/components/schemas/AssistantProposal' }
+    AssistantStreamFollowUps:
+      type: object
+      required: [type, seq, messageId, groups]
+      properties:
+        type: { type: string, enum: [follow_ups] }
+        seq: { type: integer, minimum: 1 }
+        messageId: { type: string, format: uuid }
+        groups:
+          type: array
+          maxItems: 2
+          items: { $ref: '#/components/schemas/AssistantFollowUpGroup' }
+    AssistantStreamNotice:
+      type: object
+      required: [type, seq, messageId, notice]
+      properties:
+        type: { type: string, enum: [notice] }
+        seq: { type: integer, minimum: 1 }
+        messageId: { type: string, format: uuid }
+        notice: { $ref: '#/components/schemas/AssistantNotice' }
+    AssistantStreamDone:
+      type: object
+      required: [type, seq, messageId, status]
+      properties:
+        type: { type: string, enum: [done] }
+        seq: { type: integer, minimum: 1 }
+        messageId: { type: string, format: uuid }
+        status:
+          type: string
+          description: Final status of the message; the stream closes after this frame.
+          x-extensible-enum: [complete, stopped, fallback]
+    AssistantStreamError:
+      type: object
+      required: [type, seq, messageId, error]
+      properties:
+        type: { type: string, enum: [error] }
+        seq: { type: integer, minimum: 1 }
+        messageId: { type: string, format: uuid }
+        error:
+          description: >
+            Standard envelope (`ASSISTANT_DISABLED`, `ASSISTANT_PROVIDER_UNAVAILABLE`,
+            …). The message is stored as `failed` with its partial text; the
+            stream closes after this frame.
+          $ref: '#/components/schemas/ErrorEnvelope'
+    AssistantDocumentStatus:
+      type: string
+      description: >
+        `draft` — never published. `published` — a version is live for the
+        assistant. `unpublished` — was published, now withdrawn.
+      enum: [draft, published, unpublished]
+    CmsAssistantActor:
+      type: object
+      description: The CMS account that acted. Staff identity only; never a GoGo user.
+      required: [adminId, role]
+      properties:
+        adminId: { type: string, format: uuid }
+        displayName: { type: string }
+        role: { type: string }
+    CmsAssistantDocumentCreate:
+      type: object
+      required: [slug, locale, title, description, body]
+      additionalProperties: false
+      properties:
+        slug:
+          type: string
+          pattern: '^[a-z0-9]+(?:[._-][a-z0-9]+)*$'
+          maxLength: 80
+        locale: { type: string, enum: [vi, en] }
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Shown verbatim to users as the source title ("GoGo guide · Plans").
+        description:
+          type: string
+          maxLength: 300
+          description: Shown under the title in `SourceList`.
+        body:
+          type: string
+          minLength: 1
+          maxLength: 100000
+          description: Markdown. The text the assistant grounds on; not rendered to users as-is.
+    CmsAssistantDocumentDraftPatch:
+      type: object
+      required: [baseRevision]
+      additionalProperties: false
+      properties:
+        baseRevision:
+          type: integer
+          minimum: 0
+          description: '`draft.revision` the editor loaded; 0 when no draft was open.'
+        title: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 300 }
+        body: { type: string, minLength: 1, maxLength: 100000 }
+    CmsAssistantDocumentVersionSummary:
+      type: object
+      required: [id, number, state, title, bodySha256, createdAt, createdBy]
+      properties:
+        id: { type: string, format: uuid }
+        number: { type: integer, minimum: 1 }
+        state:
+          type: string
+          description: '`draft` (open), `published` (live), `superseded` (was live), `withdrawn` (unpublished), `discarded` (draft never published and replaced).'
+          x-extensible-enum: [draft, published, superseded, withdrawn, discarded]
+        title: { type: string }
+        bodySha256:
+          { type: string, description: 'Hex SHA-256 of `body`, for a cheap "changed?" check.' }
+        revision:
+          type: integer
+          description: Edit counter of a draft; frozen once published.
+        createdAt: { type: string, format: date-time }
+        createdBy: { $ref: '#/components/schemas/CmsAssistantActor' }
+        publishedAt: { type: [string, 'null'], format: date-time }
+        publishedBy:
+          oneOf:
+            - $ref: '#/components/schemas/CmsAssistantActor'
+            - type: 'null'
+        publishReason: { type: [string, 'null'] }
+        withdrawnAt: { type: [string, 'null'], format: date-time }
+        withdrawnBy:
+          oneOf:
+            - $ref: '#/components/schemas/CmsAssistantActor'
+            - type: 'null'
+        withdrawReason: { type: [string, 'null'] }
+    CmsAssistantDocumentVersion:
+      allOf:
+        - $ref: '#/components/schemas/CmsAssistantDocumentVersionSummary'
+        - type: object
+          required: [documentId, description, body]
+          properties:
+            documentId: { type: string, format: uuid }
+            description: { type: string }
+            body: { type: string }
+    CmsAssistantDocumentVersionPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsAssistantDocumentVersionSummary' }
+        nextCursor: { type: [string, 'null'] }
+    CmsAssistantDocument:
+      type: object
+      required: [id, slug, locale, status, title, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        locale: { type: string, enum: [vi, en] }
+        status: { $ref: '#/components/schemas/AssistantDocumentStatus' }
+        title:
+          type: string
+          description: The published version's title, else the draft's.
+        publishedVersion:
+          oneOf:
+            - $ref: '#/components/schemas/CmsAssistantDocumentVersionSummary'
+            - type: 'null'
+        draftVersion:
+          oneOf:
+            - $ref: '#/components/schemas/CmsAssistantDocumentVersionSummary'
+            - type: 'null'
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CmsAssistantDocumentDetail:
+      type: object
+      required: [document, draft, published]
+      properties:
+        document: { $ref: '#/components/schemas/CmsAssistantDocument' }
+        draft:
+          oneOf:
+            - $ref: '#/components/schemas/CmsAssistantDocumentVersion'
+            - type: 'null'
+        published:
+          oneOf:
+            - $ref: '#/components/schemas/CmsAssistantDocumentVersion'
+            - type: 'null'
+    CmsAssistantDocumentPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsAssistantDocument' }
+        nextCursor: { type: [string, 'null'] }
+    CmsAssistantFeedbackItem:
+      type: object
+      description: >
+        Minimal PII by construction: no user id, email, user message,
+        attachment, context or coordinates.
+      required: [id, rating, createdAt, conversationRef, reply]
+      properties:
+        id: { type: string, format: uuid }
+        rating: { type: string, enum: [up, down] }
+        reason: { $ref: '#/components/schemas/AssistantFeedbackReason' }
+        createdAt: { type: string, format: date-time }
+        conversationRef:
+          type: string
+          description: Opaque token, stable per conversation, unrelated to any id the app sees.
+        reply:
+          type: object
+          required: [status, text, sources]
+          description: The assistant's rated reply.
+          properties:
+            status: { $ref: '#/components/schemas/AssistantMessageStatus' }
+            text: { type: string }
+            sources:
+              type: array
+              items: { $ref: '#/components/schemas/AssistantSource' }
+            cardKinds:
+              type: array
+              description: Which card kinds the reply carried (no ids).
+              items: { type: string }
+            proposalKinds:
+              type: array
+              items: { $ref: '#/components/schemas/AssistantProposalKind' }
+            notice: { $ref: '#/components/schemas/AssistantNotice' }
+            model:
+              type: string
+              description: The model build that wrote the reply, as OpenRouter reported it.
+    CmsAssistantFeedbackPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsAssistantFeedbackItem' }
+        nextCursor: { type: [string, 'null'] }
+
   headers:
     ETag:
       description: Deterministic entity tag over datasetVersion + the resolved request.
@@ -17014,6 +18736,9 @@ components:
     CacheControl:
       description: Always `public, max-age=0, must-revalidate` — immutable per version, but the active version can change.
       schema: { type: string }
+    RetryAfter:
+      description: Seconds until the request can succeed.
+      schema: { type: integer, minimum: 1 }
 
   responses:
     NotModified:
@@ -17055,6 +18780,36 @@ components:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     RateLimited:
       description: Rate limit exceeded
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    AssistantUserOnly:
+      description: >
+        `USER_ONLY` — a guest session (or a staff token). GoGo AI is for
+        registered accounts; the app asks a guest to sign in.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    AssistantDisabled:
+      description: >
+        `ASSISTANT_DISABLED` (`retryable: false`) — GoGo AI is off in this
+        environment: the kill switch (audited feature flag `assistant.enabled`,
+        seeded from `FLAG_ASSISTANT`) is off, the environment's monthly AI
+        budget is spent, or a budget / per-user limit is not configured (unset
+        means refuse, never unlimited — GoGo-Infra#257). One code for all of
+        them on purpose: the app shows the same "not available" state and must
+        not retry in a loop. `GET /assistant/status` says when it is back.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    AssistantRateLimited:
+      description: >
+        `RATE_LIMITED` (`retryable: true`) for the per-minute burst limit, or
+        `ASSISTANT_DAILY_LIMIT` (`retryable: false`) when the account's daily
+        message budget is spent. Both carry `Retry-After`; for the daily limit
+        it points at the reset.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
