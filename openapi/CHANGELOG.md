@@ -8,6 +8,44 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 2.0.0-alpha.3 — GoGo AI: SA decisions applied (GoGo-BE#713)
+
+**Additive.** oasdiff reports no breaking change (5 info findings). The owner
+delegated Astra's SA answers on GoGo-BE#713; this version writes them into the
+contract. Every `/assistant/*` operation is still `x-gogo-planned`.
+
+- **Limits (`AssistantStatus`, send, `AssistantRateLimited`).** Defaults are
+  now stated: per account, 30 accepted messages per day and 5 in any rolling
+  minute; the day resets at midnight Asia/Ho_Chi_Minh; idempotent replays
+  consume nothing; an unset limit refuses (`503 ASSISTANT_DISABLED`), never
+  unlimited. New optional `AssistantStatus.messagesPerMinuteLimit`. Defaults
+  are provisional and configurable — **read both limits from
+  `GET /assistant/status`, never hardcode them.**
+- **`truncated` status.** Added to `AssistantMessageStatus` and
+  `AssistantStreamDone.status` (both `x-extensible-enum`, so an older client
+  already treats it as an unknown finished value). The hard ceiling was hit:
+  partial text persisted, unfinished structured outputs discarded. Clients show
+  "Reply cut short" with an explicit retry; no automatic continuation.
+- **Export.** `GET /me/export` and `POST /me/exports/{id}/download` now
+  reference a new `UserExportDocument` (still `additionalProperties: true`)
+  with an optional `assistantConversations` section
+  (`UserExportAssistantConversation`, `UserExportAssistantMessage`): titles,
+  role, text, timestamps, terminal status, the account's own feedback. Never
+  internal prompts, retrieval internals or upload keys; attachments excluded
+  pending owner approval. **Absent until the assistant module lands** — treat
+  absent and `[]` alike.
+- **`PUT /cms/feature-flags/{key}` takes `reason`** (string, trimmed, 3–500),
+  recorded in the `feature_flag.set` audit entry. **Optional in this version**
+  so older writers keep working; it will become required in a later version
+  (a breaking change, announced here first). The CMS should send it on every
+  flag write now. Served today: an out-of-bounds reason is
+  `400 VALIDATION_FAILED` on `reason`.
+- **`GET /cms/assistant/feedback` roles.** `moderator`, `ops_admin`,
+  `super_admin` only — an explicit exception to the hierarchical read rule;
+  `editor` is refused. Guide documents stay hierarchical. Read-only in v1; it
+  never shows the user's own question (known limitation stated on the
+  operation).
+
 ## 2.0.0-alpha.2 — GoGo AI assistant, declared ahead of its module (`x-gogo-planned`)
 
 **Additive.** 24 new operations, all tagged `assistant` and marked

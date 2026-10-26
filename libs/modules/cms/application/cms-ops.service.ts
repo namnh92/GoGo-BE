@@ -411,6 +411,8 @@ export class CmsOpsService {
       value?: unknown;
       environment?: FlagEnvironment | undefined;
       platform?: FlagPlatform | undefined;
+      /** Already trimmed and bounded (3–500) by the controller. */
+      reason?: string | undefined;
     },
   ) {
     const definition = flagDefinition(key);
@@ -461,12 +463,15 @@ export class CmsOpsService {
       });
 
     // Before/after, because "who turned the kill switch on" is only half the
-    // question during an incident review.
+    // question during an incident review — and the reason (GoGo-BE#713 Q7),
+    // because "why" is the other half. Omitted, not null, when an older writer
+    // sent none, so a missing rationale is not mistaken for a recorded one.
     await this.audit(adminId, 'feature_flag.set', 'feature_flag', key, {
       environment,
       platform,
       before: before ? { enabled: before.enabled, value: before.payload } : null,
       after: { enabled: input.enabled, value },
+      ...(input.reason ? { reason: input.reason } : {}),
     });
     return {
       key,

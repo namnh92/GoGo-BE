@@ -576,6 +576,8 @@ export interface paths {
          *
          *     Lets the app decide what the entry point does before the user types: `disabled` means the kill switch is off (feature flag `assistant.enabled`) and the app shows its own "not available" state; `limit_reached` means the per-account daily message budget is spent until `resetsAt`. The server still enforces both on every send — this is a hint for the UI, never an authorization.
          *
+         *     Limits (2.0.0-alpha.3, owner-delegated SA decision on GoGo-BE#713): per signed-in account, **30 accepted messages per day** and **5 in any rolling minute** by default. These are provisional product limits, configurable per environment; the app reads `dailyMessageLimit` and `messagesPerMinuteLimit` from this response and never hardcodes them. The day resets at midnight Asia/Ho_Chi_Minh (`resetsAt`). Only accepted sends count; idempotent replays consume nothing. A limit that is not configured refuses (`disabled` / `503 ASSISTANT_DISABLED`) — it never means unlimited.
+         *
          *     Registered users only. A guest session gets `403 USER_ONLY`; the app shows the entry and asks the guest to sign in (owner decision on GoGo-MobileApp#377, 2026-10-26).
          */
         get: operations["getAssistantStatus"];
@@ -676,7 +678,7 @@ export interface paths {
          *
          *     `context` overrides the conversation's context for this turn only (same rules as on create: place **or** plan, readable by the caller, else `404 CONTEXT_NOT_FOUND`). `attachments` are image upload keys from `POST /uploads` with `purpose: assistant_image` — images only, at most 3, each bound to the caller; anything else is `400 ATTACHMENT_INVALID` without saying which reason.
          *
-         *     One reply at a time per conversation: sending while a reply is still streaming is `409 ASSISTANT_TURN_IN_PROGRESS` — stop it first. The per-account daily message limit and a per-minute burst limit both answer `429` with `Retry-After`.
+         *     One reply at a time per conversation: sending while a reply is still streaming is `409 ASSISTANT_TURN_IN_PROGRESS` — stop it first. The per-account daily message limit (default 30 per day, resetting at midnight Asia/Ho_Chi_Minh) and the per-minute burst limit (default 5 in any rolling minute) both answer `429` with `Retry-After`. Defaults are provisional and configurable: the current values are in `GET /assistant/status` (`dailyMessageLimit`, `messagesPerMinuteLimit`) — never hardcode them. Only an accepted send counts; an idempotent replay consumes nothing. An unconfigured limit refuses with `503 ASSISTANT_DISABLED`, never unlimited.
          */
         post: operations["sendAssistantMessage"];
         delete?: never;
@@ -1998,7 +2000,7 @@ export interface paths {
         };
         /**
          * Export all actor-owned data (privacy rule)
-         * @description Everything the account owns, as JSON, from an explicit allowlist: profile (display name, email, locale, avatar URL, home area, interests, usual budget — ADR-0022, date of birth — PROF-BE-013), memberships, preferences, votes, saved items, reviews, review reactions given (ADR-0026), and the push switch (`notificationSettings`, ADR-0025). Never a credential, a session, or an upload key. Audit-logged and recorded in the privacy ledger.
+         * @description Everything the account owns, as JSON, from an explicit allowlist: profile (display name, email, locale, avatar URL, home area, interests, usual budget — ADR-0022, date of birth — PROF-BE-013), memberships, preferences, votes, saved items, reviews, review reactions given (ADR-0026), the push switch (`notificationSettings`, ADR-0025), and — from 2.0.0-alpha.3 — retained GoGo AI conversations (`assistantConversations`, GoGo-BE#713; see `UserExportDocument`). Never a credential, a session, or an upload key. Audit-logged and recorded in the privacy ledger.
          *
          *     Kept for compatibility (GoGo-BE#256). New clients use the secure, asynchronous flow under `/me/exports`.
          */
@@ -4889,7 +4891,11 @@ export interface paths {
         };
         /**
          * Moderation: thumbs-down / thumbs-up on assistant replies, minimal PII (cursor)
-         * @description GoGo-CMS#249. `moderator` (and, by the read rule, `ops_admin`). The queue shows the **assistant's** reply, the sources it cited and the reason code — enough to judge answer quality and fix the GoGo guide. It does not show who rated it, the user's own message, attachments, context place/plan, coordinates or email: none of that is needed to judge a reply, and each is personal data. `conversationRef` is an opaque per-conversation token that groups rows without naming the account.
+         * @description GoGo-CMS#249. **Roles: `moderator`, `ops_admin`, `super_admin` only.** This is an explicit exception to the hierarchical read rule (BE-IMP-008): `editor` and `moderator` share rank 1, so the rank-read rule would let an editor in — it does not here. An `editor` gets `403 ROLE_DENIED`. The queue holds private conversational material, so access is narrower than for guide documents, which stay hierarchical (2.0.0-alpha.3, SA decision on GoGo-BE#713). Read-only in v1: no resolve / assign workflow.
+         *
+         *     The queue shows the **assistant's** reply, the sources it cited and the reason code — enough to judge answer quality and fix the GoGo guide. It does not show who rated it, the user's own message, attachments, context place/plan, coordinates or email: none of that is needed to judge a reply, and each is personal data. `conversationRef` is an opaque per-conversation token that groups rows without naming the account.
+         *
+         *     Known v1 limitation (SA decision Q3 on GoGo-BE#713): without the user's question, reply relevance sometimes cannot be judged; and a reply can itself repeat personal information the user wrote. Any later access to the question would be a separately authorized, audited disclosure of that turn, not full history.
          *
          *     Rows disappear with their conversation (user deletion, account deletion, privacy request, 90-day retention).
          */
@@ -4961,6 +4967,8 @@ export interface paths {
          *     A boolean flag's value is `enabled` — that is the column the kill switches read, and an incident is the wrong moment to discover it moved. For every other type the value goes in `value`; `payload` is the old name for the same field and still accepted.
          *
          *     Omitting `environment` / `platform` writes the unscoped `(all, all)` row, which is what every resolution falls back to.
+         *
+         *     `reason` (2.0.0-alpha.3, GoGo-BE#713 SA decision Q7) is the operator's rationale, stored in the `feature_flag.set` audit entry next to the before/after values. One audit rule for every flag, the GoGo AI kill switch included. **Optional in this version** so older writers keep working; it will become required in a later contract version, and the CMS always sends it. When present it is trimmed and must be 3–500 characters (the bound every other audited CMS write uses), else `400`.
          */
         put: operations["cmsSetFeatureFlag"];
         post?: never;
@@ -9500,14 +9508,16 @@ export interface components {
         AssistantStatus: {
             /** @description `enabled` — sending works. `disabled` — kill switch off (`assistant.enabled`), or the environment cannot take new replies (for example its spending limit is reached). `limit_reached` — this account's daily messages are spent until `resetsAt`. Unknown values mean "cannot send now". */
             state: string;
-            /** @description Messages this account may send per day. */
+            /** @description Accepted messages this account may send per day (default **30**; provisional and configurable — read it from here, never hardcode it). Only an accepted send (`202`) counts; an idempotent replay (`x-idempotent-replay: true`) consumes nothing. A limit that is not configured refuses (`503 ASSISTANT_DISABLED`), it never means unlimited. */
             dailyMessageLimit: number;
             remainingToday: number;
             /**
              * Format: date-time
-             * @description When `remainingToday` refills (start of the next day in Asia/Ho_Chi_Minh, as UTC).
+             * @description When `remainingToday` refills: midnight Asia/Ho_Chi_Minh (start of the next local day), expressed in UTC.
              */
             resetsAt: string;
+            /** @description 2.0.0-alpha.3. Accepted messages this account may send in any rolling 60-second window (default **5**; provisional and configurable — read it from here, never hardcode it). Same counting as `dailyMessageLimit`: replays consume nothing. Exceeding it is `429 RATE_LIMITED` with `Retry-After`. */
+            messagesPerMinuteLimit?: number;
         };
         /** @description What the assistant was opened from. Exactly one of `placeId` / `planId`. Used only when sent, only when the caller may read it. */
         AssistantContext: {
@@ -9612,7 +9622,7 @@ export interface components {
              */
             locale?: "vi" | "en";
         };
-        /** @description `streaming` — being generated. `complete` — ended normally. `stopped` — the user pressed Stop; `text` is what was written. `fallback` — the model did not answer within 15 s; a deterministic reply was stored. `failed` — ended by an error; `text` keeps any partial answer. User messages are always `complete`. */
+        /** @description `streaming` — being generated. `complete` — ended normally. `stopped` — the user pressed Stop; `text` is what was written. `fallback` — the model did not answer within 15 s; a deterministic reply was stored. `failed` — ended by an error; `text` keeps any partial answer. `truncated` (2.0.0-alpha.3) — the reply hit the server's hard ceiling (length or time) before it finished: `text` is the partial answer as persisted, and structured outputs (cards, proposals, follow-ups) that had not completed are discarded, never half-rendered. The client shows "Reply cut short" with an explicit retry action; there is no automatic continuation. User messages are always `complete`. As with every `x-extensible-enum`, treat an unknown value as a finished message. */
         AssistantMessageStatus: string;
         AssistantMessage: {
             /** Format: uuid */
@@ -9928,6 +9938,43 @@ export interface components {
             /** @description i18n key of the fixed copy to show (the app owns the strings), e.g. `assistant.notice.empty`. Never model text. */
             copyKey?: string;
         };
+        /** @description The allowlisted export document served by `GET /me/export` and by a redeemed secure export (`POST /me/exports/{id}/download`) — one shared collector, so both carry the same sections. Only the sections whose shape this contract pins are listed here; the rest of the allowlist (profile, memberships, preferences, votes, saved, reviews, reviewReactions, notificationSettings) is described on `exportMyData`. Unknown sections may appear; ignore them. */
+        UserExportDocument: {
+            /** Format: date-time */
+            exportedAt?: string;
+            /**
+             * @description 2.0.0-alpha.3 (GoGo-BE#713, owner-delegated SA decision Q2). The account's retained GoGo AI conversations (90-day retention, so only what still exists). **Absent until the assistant module lands** — the collector populates it then; a client must treat absent and `[]` alike.
+             *
+             *     Included: conversation titles, each message's role, text, timestamps and terminal status, and the account's own feedback on assistant replies. Excluded: internal prompts and system instructions, retrieval internals (guide sections and versions retrieved, scores, model identifiers), upload keys, and card / proposal internals. **Attachments are excluded pending explicit owner approval** of their portability scope — neither the images nor their metadata are exported in this version.
+             */
+            assistantConversations?: components["schemas"]["UserExportAssistantConversation"][];
+        } & {
+            [key: string]: unknown;
+        };
+        UserExportAssistantConversation: {
+            /** @description As shown in history; `null` if it never got one. */
+            title: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            lastMessageAt: string;
+            /** @description Oldest first. */
+            messages: components["schemas"]["UserExportAssistantMessage"][];
+        };
+        UserExportAssistantMessage: {
+            /** @enum {string} */
+            role: "user" | "assistant";
+            /** @description Terminal status; a reply still streaming at export time is exported as it stands. */
+            status: components["schemas"]["AssistantMessageStatus"];
+            /** @description What the user sent, or the assistant's reply text as stored. */
+            text: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            completedAt?: string | null;
+            /** @description The account's own rating of this assistant reply, if any. Never on a user message. */
+            feedback?: components["schemas"]["AssistantFeedback"] | null;
+        };
         AssistantFeedbackReason: string;
         AssistantFeedbackInput: {
             /** @enum {string} */
@@ -10032,7 +10079,7 @@ export interface components {
             seq: number;
             /** Format: uuid */
             messageId: string;
-            /** @description Final status of the message; the stream closes after this frame. */
+            /** @description Final status of the message; the stream closes after this frame. `truncated` (2.0.0-alpha.3) — the hard ceiling was hit: the text streamed so far is persisted, unfinished structured outputs are discarded, and the client shows "Reply cut short" with an explicit retry (no automatic continuation). See `AssistantMessageStatus`. */
             status: string;
         };
         AssistantStreamError: {
@@ -10253,7 +10300,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorEnvelope"];
             };
         };
-        /** @description `RATE_LIMITED` (`retryable: true`) for the per-minute burst limit, or `ASSISTANT_DAILY_LIMIT` (`retryable: false`) when the account's daily message budget is spent. Both carry `Retry-After`; for the daily limit it points at the reset. */
+        /** @description `RATE_LIMITED` (`retryable: true`) for the per-minute burst limit (default 5 accepted messages in any rolling minute), or `ASSISTANT_DAILY_LIMIT` (`retryable: false`) when the account's daily message budget is spent (default 30 accepted messages per day, reset at midnight Asia/Ho_Chi_Minh). Both carry `Retry-After`; for the daily limit it points at the reset. Defaults are provisional and configurable — `GET /assistant/status` carries the current values. Idempotent replays consume nothing; an unconfigured limit is `503 ASSISTANT_DISABLED`, never unlimited. */
         AssistantRateLimited: {
             headers: {
                 "Retry-After": components["headers"]["RetryAfter"];
@@ -13825,7 +13872,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["UserExportDocument"];
+                };
             };
             429: components["responses"]["RateLimited"];
         };
@@ -13953,9 +14002,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["UserExportDocument"];
                 };
             };
             /** @description `UNAUTHORIZED`, `INVALID_TOKEN` or `SESSION_REVOKED`. */
@@ -19667,11 +19714,13 @@ export interface operations {
                     payload?: unknown;
                     environment?: components["schemas"]["FlagEnvironment"];
                     platform?: components["schemas"]["FlagPlatform"];
+                    /** @description Why the flag is being changed; trimmed, then 3–500 characters. Recorded in the audit log. Optional in 2.0.0-alpha.3; will become required in a later version — the CMS always sends it. */
+                    reason?: string;
                 };
             };
         };
         responses: {
-            /** @description Flag updated (audited with before/after) */
+            /** @description Flag updated (audited with before/after and the reason, when given) */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -19680,7 +19729,7 @@ export interface operations {
                     "application/json": components["schemas"]["CmsFeatureFlagWriteResult"];
                 };
             };
-            /** @description Value does not match the declared type (`INVALID_FLAG_VALUE`), or a platform override was asked for on a key that has no per-platform form (`FLAG_NOT_PLATFORM_SCOPED`). */
+            /** @description Value does not match the declared type (`INVALID_FLAG_VALUE`), a platform override was asked for on a key that has no per-platform form (`FLAG_NOT_PLATFORM_SCOPED`), or `reason` is present but outside 3–500 characters after trimming (`VALIDATION_FAILED`, `field_errors[].field = reason`). */
             400: {
                 headers: {
                     [name: string]: unknown;
