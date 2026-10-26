@@ -563,6 +563,288 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assistant/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GoGo AI: is the assistant available to this account, and how much is left today
+         * @description GoGo-BE#713. **Planned — declared ahead of the module (contract-first); not served until the module PR lands.** Every `/assistant/*` operation carries `x-gogo-planned` until then and answers 404 on a deployed API.
+         *
+         *     Lets the app decide what the entry point does before the user types: `disabled` means the kill switch is off (feature flag `assistant.enabled`) and the app shows its own "not available" state; `limit_reached` means the per-account daily message budget is spent until `resetsAt`. The server still enforces both on every send — this is a hint for the UI, never an authorization.
+         *
+         *     Registered users only. A guest session gets `403 USER_ONLY`; the app shows the entry and asks the guest to sign in (owner decision on GoGo-MobileApp#377, 2026-10-26).
+         */
+        get: operations["getAssistantStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GoGo AI: the caller's conversations, most recent first (cursor), with search
+         * @description GoGo-BE#713. History screen. Keyset paging on `(lastMessageAt, id)` descending: a conversation moves to the top whenever a message is added, so an offset page would skip or repeat rows while it is read.
+         *
+         *     Grouping into "Today" / "Yesterday" / "Earlier" is the client's, from `lastMessageAt` (ISO-8601 UTC) in the device's time zone — the server does not know the user's local midnight and sends no group label.
+         *
+         *     `q` searches the conversation title and the text of its messages (user and assistant turns; not attachments, sources or cards). With `q` each item carries `match` saying where it matched, so the row can show the matching line. Ordering stays `lastMessageAt` descending; there is no relevance score.
+         *
+         *     Only the caller's own conversations, only those inside the 90-day retention window. Registered users only (`403 USER_ONLY` for a guest). Reading, renaming and deleting history keep working while the kill switch is off — it stops new replies (and their cost), not a user's access to or deletion of what is stored.
+         */
+        get: operations["listAssistantConversations"];
+        put?: never;
+        /**
+         * GoGo AI: start a conversation ("New chat")
+         * @description GoGo-BE#713. Creates an empty conversation; the first message is sent with `sendAssistantMessage`. `title` is optional: when absent the server derives one after the first exchange (it is user-visible text the user can rename, never a fact).
+         *
+         *     `context` is the item the assistant was opened from (the `ContextChip` "About …"): a place **or** a plan, never both. It is used only when the app sends it and only when the caller may read that resource — otherwise `404 CONTEXT_NOT_FOUND`, which does not say whether the resource exists. Without a context the assistant sees no screen data.
+         *
+         *     `Idempotency-Key` is accepted, so a retried "New chat" tap does not create two conversations.
+         */
+        post: operations["createAssistantConversation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/conversations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GoGo AI: one conversation (header data, not messages)
+         * @description GoGo-BE#713. Another account's conversation, a deleted one and one past retention are all `404` — the answer does not say which.
+         */
+        get: operations["getAssistantConversation"];
+        put?: never;
+        post?: never;
+        /**
+         * GoGo AI: delete a conversation and every message in it
+         * @description GoGo-BE#713. A hard delete: messages, stored attachment references, feedback and pending proposals go with it; nothing is kept for analytics. Rooms, plans, invites or votes the user already confirmed through the assistant are ordinary GoGo data and are **not** deleted. A turn still streaming is stopped first. Deleting a conversation that is already gone answers `204` too, so a retry is safe.
+         */
+        delete: operations["deleteAssistantConversation"];
+        options?: never;
+        head?: never;
+        /**
+         * GoGo AI: rename a conversation
+         * @description GoGo-BE#713. Only `title` is writable. Renaming does not move the conversation in the history order (`lastMessageAt` is unchanged).
+         */
+        patch: operations["renameAssistantConversation"];
+        trace?: never;
+    };
+    "/assistant/conversations/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GoGo AI: messages of a conversation, newest first (cursor)
+         * @description GoGo-BE#713. Newest first, because the thread is a bottom-anchored (inverted) list: page 1 is what the screen shows, later pages scroll back in time. Keyset on `(createdAt, id)`.
+         *
+         *     Each assistant message carries what it was rendered from: `sources`, `cards`, `proposals`, `followUps`, `notice`. Cards are **rehydrated from verified data when read** — history stores ids, not a copy of place or plan facts — so a card always shows today's verified facts with their `checkedAt`, and a place that is no longer usable comes back with `available: false` rather than stale prices.
+         *
+         *     A message still being generated has `status: streaming` and the text written so far; attach to its stream to follow it.
+         */
+        get: operations["listAssistantMessages"];
+        put?: never;
+        /**
+         * GoGo AI: send a message; the reply is generated and streamed separately
+         * @description GoGo-BE#713. Stores the user's message and starts the assistant's reply. Answers `202` with both messages at once — the user turn as sent, the assistant turn as `status: streaming` with empty text — and the client then attaches to `streamAssistantMessage` for that assistant message id.
+         *
+         *     Two calls rather than one `POST` that streams: the stream is a plain `GET` with bearer auth and `Last-Event-ID` resume, exactly like `GET /rooms/{id}/events`, so the same SSE client works for both and a dropped connection resumes the reply instead of sending the question again. The send itself is a short idempotent request.
+         *
+         *     `Idempotency-Key` is **required**: a retry after a flaky network returns the same two messages (`x-idempotent-replay: true`) and does not spend a second reply from the daily budget.
+         *
+         *     `context` overrides the conversation's context for this turn only (same rules as on create: place **or** plan, readable by the caller, else `404 CONTEXT_NOT_FOUND`). `attachments` are image upload keys from `POST /uploads` with `purpose: assistant_image` — images only, at most 3, each bound to the caller; anything else is `400 ATTACHMENT_INVALID` without saying which reason.
+         *
+         *     One reply at a time per conversation: sending while a reply is still streaming is `409 ASSISTANT_TURN_IN_PROGRESS` — stop it first. The per-account daily message limit and a per-minute burst limit both answer `429` with `Retry-After`.
+         */
+        post: operations["sendAssistantMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/conversations/{id}/messages/{messageId}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GoGo AI: the assistant reply as a server-sent event stream
+         * @description GoGo-BE#713. SSE, the same transport as `GET /rooms/{id}/events`: bearer auth, keep-alive `: ping` comment frames while idle, an opaque SSE `id` per frame, resume with `Last-Event-ID` (or `lastEventId` for a browser `EventSource`). A resumed stream replays the frames after that id, then continues live; attaching to a reply that has already ended replays it from the start and closes after `done`.
+         *
+         *     Each frame's SSE `event:` name selects the `data` schema (`AssistantStreamEvent`, discriminated by `type`, which always equals the event name):
+         *     - `step` — what the assistant is doing now, for `TypingIndicator`. - `delta` — the next piece of answer text; append in order. - `sources` — the documents the answer used, for `[1]`, `[2]`
+         *       citations. Titles and descriptions come from the published GoGo
+         *       guide in the CMS, never from the model.
+         *     - `card` — a place or plan result: **ids plus facts read from
+         *       verified data**. The model only chooses ids from the turn's
+         *       allowlist; it never writes a price, an opening hour or an
+         *       availability.
+         *     - `proposal` — a consequential action (create a room/plan, invite,
+         *       vote, finalize) prepared but **not performed**; every value says
+         *       whether the user stated it or the assistant assumed it. Nothing
+         *       happens until `confirmAssistantProposal`.
+         *     - `follow_ups` — at most two groups of quick answers when details are
+         *       missing.
+         *     - `notice` — a state the UI renders as `StateNotice`: `empty` (GoGo
+         *       has no documented answer; the assistant does not describe a feature
+         *       GoGo has not defined), `fallback` (the model did not answer in
+         *       time), `limit`, `disabled`.
+         *     - `done` — the last frame of a reply that ended normally, stopped or
+         *       fell back. The stream closes after it.
+         *     - `error` — the last frame of a reply that failed mid-way; carries the
+         *       standard error envelope. The partial text already streamed is kept
+         *       on the message.
+         *
+         *
+         *     **Timeout.** If the model has produced no text within 15 s the server abandons that call and ends the turn deterministically: a `notice` with `kind: fallback, reason: timeout`, the same answer every time (sources, if any, plus fixed follow-ups the app renders from i18n keys), and `done` with `status: fallback`. No retry happens on the user's behalf.
+         *
+         *     **Stop.** `stopAssistantMessage` ends generation; the stream then sends `done` with `status: stopped`, and the text streamed until then is kept as the message text.
+         *
+         *     A `403`/`404` here is answered before the stream opens. The kill switch turning off during a reply ends it with an `error` frame `ASSISTANT_DISABLED`.
+         */
+        get: operations["streamAssistantMessage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/conversations/{id}/messages/{messageId}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * GoGo AI: stop generating; keep what was written
+         * @description GoGo-BE#713. The composer's **Stop**. Ends generation and returns the assistant message as stored: `status: stopped` and the text streamed until the stop. Cards, sources and proposals already sent are kept; nothing further is added. Idempotent: stopping a reply that already ended returns it unchanged with its final status.
+         */
+        post: operations["stopAssistantMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/conversations/{id}/messages/{messageId}/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * GoGo AI: thumbs up / down on an assistant reply (idempotent)
+         * @description GoGo-BE#713. One rating per assistant message, replaced by a later call. `reason` is a closed code, not free text, so the moderation queue carries no user-written PII. Deleted with the conversation.
+         */
+        put: operations["setAssistantMessageFeedback"];
+        post?: never;
+        /** GoGo AI: withdraw a rating */
+        delete: operations["clearAssistantMessageFeedback"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/proposals/{proposalId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GoGo AI: one proposal and its current state
+         * @description GoGo-BE#713. For a `ConfirmationCard` reopened from history: whether it is still `pending`, already `confirmed` (with the saved result), `dismissed` or `expired`. Only the conversation owner can read it.
+         */
+        get: operations["getAssistantProposal"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/proposals/{proposalId}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * GoGo AI: perform a proposed action (the only assistant call that writes GoGo data)
+         * @description GoGo-BE#713. The user tapped the `ConfirmationCard` button. This is the **only** way an assistant conversation changes rooms, plans, invites or votes; chat text alone never runs an action.
+         *
+         *     The write goes through the same use case and the same policy as the ordinary endpoint (`createRoom`, `createInvite`, `castVote`, `finalizeVotes`), with the caller as actor — not the assistant. So a member or guest cannot finalize a plan here any more than there (`403 HOST_ONLY`), room state still gates it (`409 ROOM_NOT_MATCHING`, …), and hard constraints are validated exactly as on that endpoint; the assistant never overrides one. Ids in the proposal were checked against the turn's allowlist when it was made and are checked again here against what the caller can reach now.
+         *
+         *     `values` carries the fields the user edited on the card; an edited value becomes `explicit`. Fields not listed keep the proposed value. Fields the proposal kind does not define are a 400.
+         *
+         *     The response is the **server-saved** state, read back after the write — what `TaskSummary` shows — not an echo of the request.
+         *
+         *     `Idempotency-Key` is **required**. A replay returns the original result (`x-idempotent-replay: true`). A proposal confirms once: a second key on a confirmed proposal is `409 PROPOSAL_NOT_PENDING` with the first result readable from `getAssistantProposal`. Proposals expire (`expiresAt`, default 30 minutes): `409 PROPOSAL_EXPIRED`.
+         */
+        post: operations["confirmAssistantProposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assistant/proposals/{proposalId}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * GoGo AI: decline a proposal ("Not now")
+         * @description GoGo-BE#713. Marks a pending proposal `dismissed`; nothing is written anywhere else. Idempotent on an already dismissed proposal; a confirmed or expired one is returned unchanged.
+         */
+        post: operations["dismissAssistantProposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/administrative/version": {
         parameters: {
             query?: never;
@@ -4457,6 +4739,161 @@ export interface paths {
          *     Runs where no candidate passes the hard filters are skipped rather than counted as agreement, which would flatter every candidate config.
          */
         get: operations["cmsEvaluateRankingConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/assistant/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Content: the "GoGo guide" source documents GoGo AI answers from (cursor)
+         * @description GoGo-BE#713, GoGo-CMS#249. **Planned — declared ahead of the module; not served until the module PR lands.**
+         *
+         *     The assistant answers product questions only from **published** versions of these documents, and cites them by `title` and `description` — so those strings are what the app shows in `SourceList`, never something the model wrote. Owner decision on GoGo-MobileApp#377 (2026-10-26): the source set lives in the CMS, with versions, publish / unpublish and audit.
+         *
+         *     Roles: written by `editor` and `ops_admin` (drafts) and published or unpublished by `ops_admin` only; read under the hierarchical read rule (BE-IMP-008), so `moderator` can read the set it reviews feedback against. Keyset paging on `(updatedAt, id)` descending.
+         */
+        get: operations["cmsListAssistantDocuments"];
+        put?: never;
+        /**
+         * Content: create a guide document (its first version is a draft)
+         * @description `editor` or `ops_admin`. Creates the document and version 1 as a draft; nothing reaches the assistant until it is published. `slug` is the stable identity across versions and locales (`plans.voting`) and cannot be changed later. Audited (`assistant_document.created`).
+         */
+        post: operations["cmsCreateAssistantDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/assistant/documents/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Content: one guide document with its draft and published versions
+         * @description The editor screen: the open draft (if any) in full, and the published version in full, so the console can preview and diff them.
+         */
+        get: operations["cmsGetAssistantDocument"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Content: edit the draft (opens a new draft version when none is open)
+         * @description `editor` or `ops_admin`. Writes go to the draft only — a published version is immutable, so what the assistant cited yesterday can always be read back. When no draft is open the first edit opens one, copied from the published version.
+         *
+         *     `baseRevision` is the draft revision the editor loaded; a stale one is `409 REVISION_CONFLICT` rather than a silent overwrite of a colleague's edit. Audited with before/after (`assistant_document.draft_updated`).
+         */
+        patch: operations["cmsUpdateAssistantDocumentDraft"];
+        trace?: never;
+    };
+    "/cms/assistant/documents/{id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Content: publish a version — the assistant answers from it from now on
+         * @description `ops_admin` only: publishing changes what GoGo AI tells every user, a release decision rather than an edit, so it does not sit with the role that wrote the draft (the same split as safety rules and campaigns).
+         *
+         *     `versionId` is the open draft, or an earlier version to roll back to. The previously published version becomes `superseded`; exactly one version per document is `published` at a time. Takes effect for new replies; a reply already streaming keeps the version it started with. Audited (`assistant_document.published`) with the version id and `reason`.
+         */
+        post: operations["cmsPublishAssistantDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/assistant/documents/{id}/unpublish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Content: withdraw the document from the assistant
+         * @description `ops_admin` only. The published version becomes `withdrawn` and the assistant stops citing the document for new replies. Older conversations keep their source rows (title, version), so a citation already shown still resolves. `reason` is required and audited (`assistant_document.unpublished`).
+         */
+        post: operations["cmsUnpublishAssistantDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/assistant/documents/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Content: version history of one document, newest first, with who did what
+         * @description Every version ever created — the history is append-only. Each row says who created it and, if it was ever published or withdrawn, who did that, when and why. The full audit trail is also in `cmsListAudit` with `resourceType=assistant_document`.
+         */
+        get: operations["cmsListAssistantDocumentVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/assistant/documents/{id}/versions/{versionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Content: one version in full (preview, diff, rollback) */
+        get: operations["cmsGetAssistantDocumentVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/assistant/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Moderation: thumbs-down / thumbs-up on assistant replies, minimal PII (cursor)
+         * @description GoGo-CMS#249. `moderator` (and, by the read rule, `ops_admin`). The queue shows the **assistant's** reply, the sources it cited and the reason code — enough to judge answer quality and fix the GoGo guide. It does not show who rated it, the user's own message, attachments, context place/plan, coordinates or email: none of that is needed to judge a reply, and each is personal data. `conversationRef` is an opaque per-conversation token that groups rows without naming the account.
+         *
+         *     Rows disappear with their conversation (user deletion, account deletion, privacy request, 90-day retention).
+         */
+        get: operations["cmsListAssistantFeedback"];
         put?: never;
         post?: never;
         delete?: never;
@@ -9060,6 +9497,672 @@ export interface components {
                 reason: string;
             }[];
         };
+        AssistantStatus: {
+            /** @description `enabled` — sending works. `disabled` — kill switch off (`assistant.enabled`), or the environment cannot take new replies (for example its spending limit is reached). `limit_reached` — this account's daily messages are spent until `resetsAt`. Unknown values mean "cannot send now". */
+            state: string;
+            /** @description Messages this account may send per day. */
+            dailyMessageLimit: number;
+            remainingToday: number;
+            /**
+             * Format: date-time
+             * @description When `remainingToday` refills (start of the next day in Asia/Ho_Chi_Minh, as UTC).
+             */
+            resetsAt: string;
+        };
+        /** @description What the assistant was opened from. Exactly one of `placeId` / `planId`. Used only when sent, only when the caller may read it. */
+        AssistantContext: {
+            /** Format: uuid */
+            placeId: string;
+        } | {
+            /** Format: uuid */
+            planId: string;
+        };
+        /** @description The context as stored, with the verified name to render on the `ContextChip`. */
+        AssistantContextRef: {
+            /** @enum {string} */
+            kind: "place" | "plan";
+            /** Format: uuid */
+            id: string;
+            /** @description The place name or the plan's room title, read from GoGo data — not model text. */
+            label: string;
+        };
+        AssistantConversationCreate: {
+            title?: string;
+            context?: components["schemas"]["AssistantContext"];
+        };
+        /**
+         * @example {
+         *       "id": "7d3f0c2e-5b1a-4c8e-9f21-2a6b1c0d9e11",
+         *       "title": "Cafés for Saturday",
+         *       "context": {
+         *         "kind": "place",
+         *         "id": "1b2c3d4e-0000-4000-8000-000000000001",
+         *         "label": "Nhà Lá Café"
+         *       },
+         *       "createdAt": "2026-10-26T02:10:00Z",
+         *       "lastMessageAt": "2026-10-26T02:14:31Z",
+         *       "expiresAt": "2027-01-24T02:14:31Z",
+         *       "messageCount": 4,
+         *       "preview": "I found 3 cafés that match."
+         *     }
+         */
+        AssistantConversation: {
+            /** Format: uuid */
+            id: string;
+            /** @description User-set, or derived after the first exchange. `null` until then; the client shows its own "New chat" copy. */
+            title: string | null;
+            context?: components["schemas"]["AssistantContextRef"] | null;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description History order and the Today / Yesterday / Earlier grouping key (group client-side, device time zone).
+             */
+            lastMessageAt: string;
+            /**
+             * Format: date-time
+             * @description When retention deletes it: 90 days after `lastMessageAt`. Moves forward as the conversation continues.
+             */
+            expiresAt: string;
+            messageCount: number;
+            /** @description Start of the last message's text, for the history row. */
+            preview?: string;
+            match?: components["schemas"]["AssistantSearchMatch"];
+        };
+        /** @description Present only on a `q` search. */
+        AssistantSearchMatch: {
+            /** @enum {string} */
+            field: "title" | "message";
+            /**
+             * Format: uuid
+             * @description The newest matching message when `field` is `message`.
+             */
+            messageId?: string;
+            /** @description Text around the match, from that message or the title. */
+            snippet?: string;
+        };
+        AssistantConversationPage: {
+            items: components["schemas"]["AssistantConversation"][];
+            nextCursor: string | null;
+        };
+        AssistantAttachmentInput: {
+            /** @description `key` from `POST /uploads` with `purpose: assistant_image`. */
+            uploadKey: string;
+        };
+        AssistantAttachment: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            contentType: "image/jpeg" | "image/png" | "image/webp";
+            width?: number;
+            height?: number;
+            /** @description Short-lived signed URL to the processed image (owner only). Absent once the image is past retention or storage is unavailable. */
+            url?: string;
+            /** Format: date-time */
+            urlExpiresAt?: string;
+        };
+        AssistantMessageSend: {
+            /** @description Trimmed server-side; blank after trimming is a 400. */
+            text: string;
+            context?: components["schemas"]["AssistantContext"];
+            attachments?: components["schemas"]["AssistantAttachmentInput"][];
+            /**
+             * @description The app's UI language; the reply is written in it. Defaults to the account locale.
+             * @enum {string}
+             */
+            locale?: "vi" | "en";
+        };
+        /** @description `streaming` — being generated. `complete` — ended normally. `stopped` — the user pressed Stop; `text` is what was written. `fallback` — the model did not answer within 15 s; a deterministic reply was stored. `failed` — ended by an error; `text` keeps any partial answer. User messages are always `complete`. */
+        AssistantMessageStatus: string;
+        AssistantMessage: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            conversationId: string;
+            /** @enum {string} */
+            role: "user" | "assistant";
+            status: components["schemas"]["AssistantMessageStatus"];
+            /** @description Markdown-light answer text (paragraphs, lists, `[n]` citation markers that index `sources`). For a user message, what they sent. */
+            text: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            completedAt?: string | null;
+            context?: components["schemas"]["AssistantContextRef"];
+            attachments?: components["schemas"]["AssistantAttachment"][];
+            sources?: components["schemas"]["AssistantSource"][];
+            cards?: components["schemas"]["AssistantResultCard"][];
+            proposals?: components["schemas"]["AssistantProposal"][];
+            followUps?: components["schemas"]["AssistantFollowUpGroup"][];
+            notice?: components["schemas"]["AssistantNotice"];
+            feedback?: components["schemas"]["AssistantFeedback"] | null;
+            /** @description Set when `status` is `failed`. */
+            error?: components["schemas"]["ErrorEnvelope"];
+        };
+        AssistantMessagePage: {
+            /** @description Newest first. */
+            items: components["schemas"]["AssistantMessage"][];
+            nextCursor: string | null;
+        };
+        AssistantTurn: {
+            userMessage: components["schemas"]["AssistantMessage"];
+            /** @description `status: streaming`; attach to `streamAssistantMessage` with its `id`. */
+            assistantMessage: components["schemas"]["AssistantMessage"];
+        };
+        /**
+         * @description One document an answer used. Every string comes from the published GoGo guide in the CMS (or, for `place_data`, from GoGo place data) — never from the model.
+         * @example {
+         *       "index": 1,
+         *       "kind": "guide_document",
+         *       "documentId": "0f6a1e2b-1111-4000-8000-000000000001",
+         *       "versionId": "0f6a1e2b-2222-4000-8000-000000000003",
+         *       "slug": "plans.voting",
+         *       "title": "GoGo guide · Plans",
+         *       "description": "How voting and finalizing a plan work."
+         *     }
+         */
+        AssistantSource: {
+            /** @description The `n` in the `[n]` citation markers of the message text. */
+            index: number;
+            /** @description `guide_document` — a published GoGo guide version. `place_data` — GoGo's verified place data, rendered as "From GoGo place data · Last checked …" with `checkedAt`. */
+            kind: string;
+            /** Format: uuid */
+            documentId?: string;
+            /** Format: uuid */
+            versionId?: string;
+            slug?: string;
+            title: string;
+            description?: string;
+            /**
+             * Format: date-time
+             * @description For `place_data`, the verified data's `freshnessCheckedAt`.
+             */
+            checkedAt?: string;
+        };
+        /** @description A structured result: ids the model chose **from the turn's allowlist**, and facts the server read from verified data. Discriminated by `kind`. */
+        AssistantResultCard: components["schemas"]["AssistantPlaceCard"] | components["schemas"]["AssistantPlanCard"];
+        /**
+         * @example {
+         *       "kind": "place",
+         *       "placeId": "1b2c3d4e-0000-4000-8000-000000000001",
+         *       "available": true,
+         *       "facts": {
+         *         "name": "Nhà Lá Café",
+         *         "areaKey": "hcm-q3",
+         *         "priceMin": 45000,
+         *         "priceMax": 90000,
+         *         "currency": "VND",
+         *         "openNow": true,
+         *         "checkedAt": "2026-10-20T03:00:00Z"
+         *       }
+         *     }
+         */
+        AssistantPlaceCard: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "place";
+            /** Format: uuid */
+            placeId: string;
+            /** @description False when the place is no longer usable; `facts` is then minimal. */
+            available: boolean;
+            /** @description Verified GoGo place data at the time of reading — the same fields and rules as `PlaceDetail`. Never model output; never a copy kept in conversation history. */
+            facts: {
+                name: string;
+                areaKey?: string;
+                addressText?: string;
+                priceLevel?: number;
+                /** @description Integer minor units, per person, when GoGo has a verified price. */
+                priceMin?: number;
+                priceMax?: number;
+                currency?: string;
+                /** @description Present under the same rule as `PlaceDetail.gogoRating` (5+ reviews). */
+                gogoRating?: number;
+                gogoRatingCount?: number;
+                /** @description From verified hours in place-local time; `null` when hours are unknown. */
+                openNow?: boolean | null;
+                photoUrl?: string;
+                /**
+                 * Format: date-time
+                 * @description `freshnessCheckedAt` of the facts — "Last checked …".
+                 */
+                checkedAt?: string;
+            };
+        };
+        AssistantPlanCard: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "plan";
+            /** Format: uuid */
+            planId: string;
+            /** Format: uuid */
+            roomId: string;
+            /** @description False when the caller can no longer read the plan. */
+            available: boolean;
+            /** @description Read from the plan as `getPlan` would return it to the caller. */
+            facts: {
+                roomTitle?: string;
+                roomType?: string;
+                participantCount?: number;
+                status?: string;
+                version?: number;
+                stopCount?: number;
+                totals?: components["schemas"]["PlanTotals"];
+                /** Format: date-time */
+                startAt?: string;
+            };
+        };
+        /** @description A consequential action the assistant may prepare. Each maps to an existing endpoint and its policy: `create_room` → `createRoom` (with constraints), `create_invite` → `createInvite`, `cast_vote` → `castVote`, `finalize_plan` → `finalizeVotes` (host only). Unknown values: render the card generically from `values`. */
+        AssistantProposalKind: string;
+        AssistantProposalValue: {
+            /** @description Field of the target request (`title`, `type`, `startAt`, `endAt`, `budgetMode`, `budgetAmount`, `areaKey`, `roomId`, `placeId`, `value`, …). Facts, not sentences: the card composes its own copy. */
+            field: string;
+            /** @description JSON value in the target request's type (money in integer minor units, times ISO-8601 UTC). */
+            value: unknown;
+            /**
+             * @description `explicit` — the user said it (or edited it on the card). `assumed` — the assistant filled it in; the card flags it ("End time assumed") and the user can change it before confirming.
+             * @enum {string}
+             */
+            origin: "explicit" | "assumed";
+            editable: boolean;
+        };
+        /**
+         * @example {
+         *       "id": "5e9a0b7c-3333-4000-8000-000000000001",
+         *       "kind": "create_room",
+         *       "status": "pending",
+         *       "values": [
+         *         {
+         *           "field": "type",
+         *           "value": "couple",
+         *           "origin": "explicit",
+         *           "editable": true
+         *         },
+         *         {
+         *           "field": "startAt",
+         *           "value": "2026-10-31T11:00:00Z",
+         *           "origin": "explicit",
+         *           "editable": true
+         *         },
+         *         {
+         *           "field": "endAt",
+         *           "value": "2026-10-31T14:00:00Z",
+         *           "origin": "assumed",
+         *           "editable": true
+         *         },
+         *         {
+         *           "field": "budgetMode",
+         *           "value": "total",
+         *           "origin": "assumed",
+         *           "editable": true
+         *         },
+         *         {
+         *           "field": "budgetAmount",
+         *           "value": 300000,
+         *           "origin": "explicit",
+         *           "editable": true
+         *         }
+         *       ],
+         *       "createdAt": "2026-10-26T02:14:30Z",
+         *       "expiresAt": "2026-10-26T02:44:30Z"
+         *     }
+         */
+        AssistantProposal: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            conversationId?: string;
+            /** Format: uuid */
+            messageId?: string;
+            kind: components["schemas"]["AssistantProposalKind"];
+            status: string;
+            values: components["schemas"]["AssistantProposalValue"][];
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** @description Present once `status` is `confirmed`. */
+            result?: components["schemas"]["AssistantProposalResult"];
+        };
+        AssistantProposalConfirm: {
+            /** @description Edited fields only, `{ field: value }`; each becomes `explicit`. */
+            values?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * @description What the server saved, read back after the write — the `TaskSummary`.
+         * @example {
+         *       "proposalId": "5e9a0b7c-3333-4000-8000-000000000001",
+         *       "kind": "create_room",
+         *       "resource": {
+         *         "type": "room",
+         *         "id": "9a8b7c6d-4444-4000-8000-000000000001"
+         *       },
+         *       "savedValues": [
+         *         {
+         *           "field": "type",
+         *           "value": "couple"
+         *         },
+         *         {
+         *           "field": "startAt",
+         *           "value": "2026-10-31T11:00:00Z"
+         *         },
+         *         {
+         *           "field": "endAt",
+         *           "value": "2026-10-31T14:00:00Z"
+         *         },
+         *         {
+         *           "field": "budgetMode",
+         *           "value": "total"
+         *         },
+         *         {
+         *           "field": "budgetAmount",
+         *           "value": 300000
+         *         }
+         *       ],
+         *       "confirmedAt": "2026-10-26T02:15:02Z"
+         *     }
+         */
+        AssistantProposalResult: {
+            /** Format: uuid */
+            proposalId: string;
+            kind: components["schemas"]["AssistantProposalKind"];
+            resource: {
+                type: string;
+                id: string;
+                /** Format: uuid */
+                roomId?: string;
+            };
+            /** @description The stored values, which can differ from the proposal (server defaults, normalisation). `origin` is not repeated: the record is the server's now. */
+            savedValues: {
+                field: string;
+                value: unknown;
+            }[];
+            /** Format: date-time */
+            confirmedAt: string;
+        };
+        /**
+         * @description A missing detail the assistant asks for, with quick answers. At most two groups per reply; the user may type instead.
+         * @example {
+         *       "field": "date",
+         *       "label": "Which day?",
+         *       "options": [
+         *         {
+         *           "label": "This Saturday",
+         *           "text": "This Saturday"
+         *         },
+         *         {
+         *           "label": "This Sunday",
+         *           "text": "This Sunday"
+         *         }
+         *       ]
+         *     }
+         */
+        AssistantFollowUpGroup: {
+            /** @description Stable key of what is asked (`date`, `budget`, `area`, …), for analytics and i18n. */
+            field: string;
+            label: string;
+            options: {
+                label: string;
+                /** @description What is sent as the next user message when tapped. */
+                text: string;
+            }[];
+        };
+        /**
+         * @description A state the UI renders as `StateNotice`.
+         * @example {
+         *       "kind": "fallback",
+         *       "reason": "timeout",
+         *       "copyKey": "assistant.notice.fallback"
+         *     }
+         */
+        AssistantNotice: {
+            /** @description `empty` — GoGo has no documented answer. `fallback` — deterministic reply after a timeout or provider failure. `limit` — daily budget spent. `disabled` — kill switch off. Unknown values: generic notice. */
+            kind: string;
+            /** @description For `fallback`. */
+            reason?: string;
+            /** @description i18n key of the fixed copy to show (the app owns the strings), e.g. `assistant.notice.empty`. Never model text. */
+            copyKey?: string;
+        };
+        AssistantFeedbackReason: string;
+        AssistantFeedbackInput: {
+            /** @enum {string} */
+            rating: "up" | "down";
+            reason?: components["schemas"]["AssistantFeedbackReason"];
+        };
+        AssistantFeedback: {
+            /** @enum {string} */
+            rating: "up" | "down";
+            reason?: components["schemas"]["AssistantFeedbackReason"];
+            /** Format: date-time */
+            createdAt: string;
+        };
+        /** @description One SSE frame of `streamAssistantMessage`. `type` equals the frame's SSE `event:` name. `seq` increases by one per frame of this message. */
+        AssistantStreamEvent: components["schemas"]["AssistantStreamStep"] | components["schemas"]["AssistantStreamDelta"] | components["schemas"]["AssistantStreamSources"] | components["schemas"]["AssistantStreamCard"] | components["schemas"]["AssistantStreamProposal"] | components["schemas"]["AssistantStreamFollowUps"] | components["schemas"]["AssistantStreamNotice"] | components["schemas"]["AssistantStreamDone"] | components["schemas"]["AssistantStreamError"];
+        AssistantStreamStep: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "step";
+            seq: number;
+            /** Format: uuid */
+            messageId: string;
+            /** @description For `TypingIndicator` (the app maps it to its own copy). Unknown values: generic "Thinking". */
+            step: string;
+        };
+        AssistantStreamDelta: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "delta";
+            seq: number;
+            /** Format: uuid */
+            messageId: string;
+            /** @description Append to the text so far. */
+            text: string;
+        };
+        AssistantStreamSources: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "sources";
+            seq: number;
+            /** Format: uuid */
+            messageId: string;
+            /** @description The complete list for this reply so far; replaces any earlier `sources` frame. */
+            sources: components["schemas"]["AssistantSource"][];
+        };
+        AssistantStreamCard: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "card";
+            seq: number;
+            /** Format: uuid */
+            messageId: string;
+            card: components["schemas"]["AssistantResultCard"];
+        };
+        AssistantStreamProposal: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "proposal";
+            seq: number;
+            /** Format: uuid */
+            messageId: string;
+            proposal: components["schemas"]["AssistantProposal"];
+        };
+        AssistantStreamFollowUps: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "follow_ups";
+            seq: number;
+            /** Format: uuid */
+            messageId: string;
+            groups: components["schemas"]["AssistantFollowUpGroup"][];
+        };
+        AssistantStreamNotice: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "notice";
+            seq: number;
+            /** Format: uuid */
+            messageId: string;
+            notice: components["schemas"]["AssistantNotice"];
+        };
+        AssistantStreamDone: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "done";
+            seq: number;
+            /** Format: uuid */
+            messageId: string;
+            /** @description Final status of the message; the stream closes after this frame. */
+            status: string;
+        };
+        AssistantStreamError: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "error";
+            seq: number;
+            /** Format: uuid */
+            messageId: string;
+            /** @description Standard envelope (`ASSISTANT_DISABLED`, `ASSISTANT_PROVIDER_UNAVAILABLE`, …). The message is stored as `failed` with its partial text; the stream closes after this frame. */
+            error: components["schemas"]["ErrorEnvelope"];
+        };
+        /**
+         * @description `draft` — never published. `published` — a version is live for the assistant. `unpublished` — was published, now withdrawn.
+         * @enum {string}
+         */
+        AssistantDocumentStatus: "draft" | "published" | "unpublished";
+        /** @description The CMS account that acted. Staff identity only; never a GoGo user. */
+        CmsAssistantActor: {
+            /** Format: uuid */
+            adminId: string;
+            displayName?: string;
+            role: string;
+        };
+        CmsAssistantDocumentCreate: {
+            slug: string;
+            /** @enum {string} */
+            locale: "vi" | "en";
+            /** @description Shown verbatim to users as the source title ("GoGo guide · Plans"). */
+            title: string;
+            /** @description Shown under the title in `SourceList`. */
+            description: string;
+            /** @description Markdown. The text the assistant grounds on; not rendered to users as-is. */
+            body: string;
+        };
+        CmsAssistantDocumentDraftPatch: {
+            /** @description `draft.revision` the editor loaded; 0 when no draft was open. */
+            baseRevision: number;
+            title?: string;
+            description?: string;
+            body?: string;
+        };
+        CmsAssistantDocumentVersionSummary: {
+            /** Format: uuid */
+            id: string;
+            number: number;
+            /** @description `draft` (open), `published` (live), `superseded` (was live), `withdrawn` (unpublished), `discarded` (draft never published and replaced). */
+            state: string;
+            title: string;
+            /** @description Hex SHA-256 of `body`, for a cheap "changed?" check. */
+            bodySha256: string;
+            /** @description Edit counter of a draft; frozen once published. */
+            revision?: number;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: components["schemas"]["CmsAssistantActor"];
+            /** Format: date-time */
+            publishedAt?: string | null;
+            publishedBy?: components["schemas"]["CmsAssistantActor"] | null;
+            publishReason?: string | null;
+            /** Format: date-time */
+            withdrawnAt?: string | null;
+            withdrawnBy?: components["schemas"]["CmsAssistantActor"] | null;
+            withdrawReason?: string | null;
+        };
+        CmsAssistantDocumentVersion: components["schemas"]["CmsAssistantDocumentVersionSummary"] & {
+            /** Format: uuid */
+            documentId: string;
+            description: string;
+            body: string;
+        };
+        CmsAssistantDocumentVersionPage: {
+            items: components["schemas"]["CmsAssistantDocumentVersionSummary"][];
+            nextCursor: string | null;
+        };
+        CmsAssistantDocument: {
+            /** Format: uuid */
+            id: string;
+            slug: string;
+            /** @enum {string} */
+            locale: "vi" | "en";
+            status: components["schemas"]["AssistantDocumentStatus"];
+            /** @description The published version's title, else the draft's. */
+            title: string;
+            publishedVersion?: components["schemas"]["CmsAssistantDocumentVersionSummary"] | null;
+            draftVersion?: components["schemas"]["CmsAssistantDocumentVersionSummary"] | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CmsAssistantDocumentDetail: {
+            document: components["schemas"]["CmsAssistantDocument"];
+            draft: components["schemas"]["CmsAssistantDocumentVersion"] | null;
+            published: components["schemas"]["CmsAssistantDocumentVersion"] | null;
+        };
+        CmsAssistantDocumentPage: {
+            items: components["schemas"]["CmsAssistantDocument"][];
+            nextCursor: string | null;
+        };
+        /** @description Minimal PII by construction: no user id, email, user message, attachment, context or coordinates. */
+        CmsAssistantFeedbackItem: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            rating: "up" | "down";
+            reason?: components["schemas"]["AssistantFeedbackReason"];
+            /** Format: date-time */
+            createdAt: string;
+            /** @description Opaque token, stable per conversation, unrelated to any id the app sees. */
+            conversationRef: string;
+            /** @description The assistant's rated reply. */
+            reply: {
+                status: components["schemas"]["AssistantMessageStatus"];
+                text: string;
+                sources: components["schemas"]["AssistantSource"][];
+                /** @description Which card kinds the reply carried (no ids). */
+                cardKinds?: string[];
+                proposalKinds?: components["schemas"]["AssistantProposalKind"][];
+                notice?: components["schemas"]["AssistantNotice"];
+                /** @description Identifier of the model that wrote the reply, for quality review. */
+                model?: string;
+            };
+        };
+        CmsAssistantFeedbackPage: {
+            items: components["schemas"]["CmsAssistantFeedbackItem"][];
+            nextCursor: string | null;
+        };
     };
     responses: {
         /** @description The client's ETag still matches. No body, by definition — this is the whole saving the tag exists for. */
@@ -9132,6 +10235,34 @@ export interface components {
                 "application/json": components["schemas"]["ErrorEnvelope"];
             };
         };
+        /** @description `USER_ONLY` — a guest session (or a staff token). GoGo AI is for registered accounts; the app asks a guest to sign in. */
+        AssistantUserOnly: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description `ASSISTANT_DISABLED` (`retryable: false`) — GoGo AI is off in this environment: the kill switch (audited feature flag `assistant.enabled`) is off, or the environment cannot take new replies (for example its spending limit is reached, or no limit is configured — an unconfigured limit refuses, it never means unlimited). One code for all of them on purpose: the app shows the same "not available" state and must not retry in a loop. `GET /assistant/status` says when it is back. */
+        AssistantDisabled: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description `RATE_LIMITED` (`retryable: true`) for the per-minute burst limit, or `ASSISTANT_DAILY_LIMIT` (`retryable: false`) when the account's daily message budget is spent. Both carry `Retry-After`; for the daily limit it points at the reset. */
+        AssistantRateLimited: {
+            headers: {
+                "Retry-After": components["headers"]["RetryAfter"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
     };
     parameters: {
         /** @description ADM-003 / ADR-0019 §8. The ETag a client already holds. The tag is derived from the active datasetVersion plus the resolved request, so it carries no clock and no process-local state: two instances serving the same version answer with the same tag, and a restart does not invalidate anyone's cache. */
@@ -9159,6 +10290,8 @@ export interface components {
         ETag: string;
         /** @description Always `public, max-age=0, must-revalidate` — immutable per version, but the active version can change. */
         CacheControl: string;
+        /** @description Seconds until the request can succeed. */
+        RetryAfter: number;
     };
     pathItems: never;
 }
@@ -10228,8 +11361,11 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** @enum {string} */
-                    purpose: "checkin_photo" | "bill_photo" | "place_photo" | "avatar";
+                    /**
+                     * @description `assistant_image` (GoGo-BE#713, planned with the assistant module): an image attached to a GoGo AI message — users only, `image/jpeg`, `image/png` or `image/webp`, private, deleted with its conversation. Refused until the assistant module ships.
+                     * @enum {string}
+                     */
+                    purpose: "checkin_photo" | "bill_photo" | "place_photo" | "avatar" | "assistant_image";
                     /**
                      * @description HEIC is refused for purpose `avatar`.
                      * @enum {string}
@@ -10266,6 +11402,523 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    getAssistantStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current availability for the caller */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantStatus"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+        };
+    };
+    listAssistantConversations: {
+        parameters: {
+            query?: {
+                /** @description Case- and diacritic-insensitive substring of the title or a message; 2–100 characters. */
+                q?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of conversations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantConversationPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+        };
+    };
+    createAssistantConversation: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AssistantConversationCreate"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantConversation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            /** @description `CONTEXT_NOT_FOUND` — no such place/plan, or the caller may not read it. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `IDEMPOTENCY_KEY_REUSED` — same key, different request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["AssistantRateLimited"];
+            503: components["responses"]["AssistantDisabled"];
+        };
+    };
+    getAssistantConversation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The conversation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantConversation"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteAssistantConversation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted (or already absent) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+        };
+    };
+    renameAssistantConversation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Trimmed server-side; blank after trimming is a 400. */
+                    title: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Renamed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantConversation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listAssistantMessages: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of messages */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantMessagePage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    sendAssistantMessage: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistantMessageSend"];
+            };
+        };
+        responses: {
+            /** @description Accepted; attach to the assistant message's stream. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantTurn"];
+                };
+            };
+            /** @description Validation failure, `IDEMPOTENCY_KEY_REQUIRED`, `INVALID_IDEMPOTENCY_KEY` or `ATTACHMENT_INVALID`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            /** @description No such conversation for this caller (`NOT_FOUND`), or `CONTEXT_NOT_FOUND` for a place/plan the caller may not read. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `ASSISTANT_TURN_IN_PROGRESS` — a reply in this conversation is still streaming; or `IDEMPOTENT_REQUEST_IN_FLIGHT`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `IDEMPOTENCY_KEY_REUSED` — same key, different request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["AssistantRateLimited"];
+            503: components["responses"]["AssistantDisabled"];
+        };
+    };
+    streamAssistantMessage: {
+        parameters: {
+            query?: {
+                /** @description Same as the header, for browser EventSource; the header wins when both are sent. */
+                lastEventId?: string;
+            };
+            header?: {
+                /** @description Opaque SSE `id` of the last frame received, sent back verbatim to resume. */
+                "Last-Event-ID"?: string;
+            };
+            path: {
+                id: string;
+                messageId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description An event stream. Each frame's `data` is one `AssistantStreamEvent` variant, chosen by the SSE `event:` name. The keep-alive `: ping` comment frame carries no data and is not listed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["AssistantStreamEvent"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            404: components["responses"]["NotFound"];
+            /** @description Too many open assistant streams for this session */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: components["responses"]["AssistantDisabled"];
+        };
+    };
+    stopAssistantMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                messageId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The assistant message after stopping */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantMessage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    setAssistantMessageFeedback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                messageId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistantFeedbackInput"];
+            };
+        };
+        responses: {
+            /** @description Recorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantFeedback"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    clearAssistantMessageFeedback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                messageId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cleared (or there was none) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getAssistantProposal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposalId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The proposal */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantProposal"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    confirmAssistantProposal: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                proposalId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AssistantProposalConfirm"];
+            };
+        };
+        responses: {
+            /** @description Performed; server-saved values */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantProposalResult"];
+                };
+            };
+            /** @description Validation failure of the edited values (the underlying endpoint's codes, with `field_errors` naming proposal fields), `IDEMPOTENCY_KEY_REQUIRED` or `INVALID_IDEMPOTENCY_KEY`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description `USER_ONLY` for a guest session, or the underlying policy's refusal (`HOST_ONLY`, `ROOM_SCOPE_VIOLATION`, …). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description `PROPOSAL_NOT_PENDING`, `PROPOSAL_EXPIRED`, `IDEMPOTENT_REQUEST_IN_FLIGHT`, or a room-state conflict from the underlying use case (`ROOM_NOT_MATCHING`, …). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `IDEMPOTENCY_KEY_REUSED` — same key, different request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["AssistantDisabled"];
+        };
+    };
+    dismissAssistantProposal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposalId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The proposal after dismissal */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantProposal"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            404: components["responses"]["NotFound"];
         };
     };
     getAdministrativeVersion: {
@@ -17640,6 +19293,312 @@ export interface operations {
                 content?: never;
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    cmsListAssistantDocuments: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["AssistantDocumentStatus"];
+                locale?: "vi" | "en";
+                /** @description Substring of slug or title. */
+                q?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of documents */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAssistantDocumentPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    cmsCreateAssistantDocument: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsAssistantDocumentCreate"];
+            };
+        };
+        responses: {
+            /** @description Created as a draft */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAssistantDocument"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description `DOCUMENT_SLUG_TAKEN` — a document with that slug and locale exists. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsGetAssistantDocument: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The document */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAssistantDocumentDetail"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsUpdateAssistantDocumentDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsAssistantDocumentDraftPatch"];
+            };
+        };
+        responses: {
+            /** @description The document with the updated draft */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAssistantDocumentDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description `REVISION_CONFLICT` — the draft changed since `baseRevision`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsPublishAssistantDocument: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    versionId: string;
+                    reason?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Published */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAssistantDocumentDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description No such document, or `VERSION_NOT_FOUND` — the version is not one of this document's. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `VERSION_ALREADY_PUBLISHED`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsUnpublishAssistantDocument: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    reason: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Unpublished */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAssistantDocumentDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description `DOCUMENT_NOT_PUBLISHED`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsListAssistantDocumentVersions: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of versions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAssistantDocumentVersionPage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsGetAssistantDocumentVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                versionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The version */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAssistantDocumentVersion"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsListAssistantFeedback: {
+        parameters: {
+            query?: {
+                rating?: "up" | "down";
+                reason?: components["schemas"]["AssistantFeedbackReason"];
+                from?: string;
+                to?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Feedback, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAssistantFeedbackPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     cmsListFeatureFlags: {

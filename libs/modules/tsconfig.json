@@ -23,6 +23,7 @@
     "uploads",
     "profile",
     "privacy",
-    "shared"
+    "shared",
+    "assistant"
   ]
 }

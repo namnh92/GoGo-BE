@@ -8,6 +8,37 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 2.0.0-alpha.2 — GoGo AI assistant, declared ahead of its module (`x-gogo-planned`)
+
+**Additive.** 24 new operations, all tagged `assistant` and marked
+`x-gogo-planned: GoGo-BE#713`: `/assistant/*` (conversations, messages, the
+reply stream, stop, feedback, proposals and confirm) and
+`/cms/assistant/*` (the "GoGo guide" source documents with versions,
+publish / unpublish, and the feedback queue). `POST /uploads` accepts a new
+`purpose: assistant_image`. Nothing existing changed.
+
+- **New guarantee — planned operations.** An operation carrying
+  `x-gogo-planned: <issue>` is in the contract so clients can generate
+  against it (GoGo-MobileApp#378, GoGo-CMS#249) but is **not served yet**: a
+  deployed API answers `404`, and `assistant_image` uploads are refused, until
+  the module PR lands. That PR removes the marker; `pnpm api:routes` fails
+  while a served operation still carries it, and still fails any unmarked
+  operation that is not served. A consumer must not ship a user-facing
+  surface that depends on a planned operation without its own feature gate.
+- **Reply stream.** `GET /assistant/conversations/{id}/messages/{messageId}/stream`
+  is SSE in the same style as `GET /rooms/{id}/events` (bearer auth, opaque
+  `id`, `Last-Event-ID` resume, `: ping` keep-alive). Read the `event:` name
+  before parsing `data`; it equals `data.type` (`AssistantStreamEvent`).
+  Unknown event names must be ignored, not treated as errors — new ones may be
+  added under this MINOR line.
+- **Error codes introduced:** `USER_ONLY` (guest, reused), `ASSISTANT_DISABLED`
+  (503, kill switch), `ASSISTANT_DAILY_LIMIT` / `RATE_LIMITED` (429 with
+  `Retry-After`), `ASSISTANT_TURN_IN_PROGRESS`, `CONTEXT_NOT_FOUND`,
+  `ATTACHMENT_INVALID`, `PROPOSAL_NOT_PENDING`, `PROPOSAL_EXPIRED`,
+  `DOCUMENT_SLUG_TAKEN`, `REVISION_CONFLICT`, `VERSION_NOT_FOUND`,
+  `VERSION_ALREADY_PUBLISHED`, `DOCUMENT_NOT_PUBLISHED`.
+- **Design:** `docs/assistant.md`. Shipped in: GoGo-BE#713 PR 1 (contract only).
+
 ## 2.0.0-alpha.1 — `GET /v1/rooms/{id}/events` carries two frame shapes
 
 **Breaking.** The SSE response of `GET /v1/rooms/{id}/events` is a `oneOf`: a
