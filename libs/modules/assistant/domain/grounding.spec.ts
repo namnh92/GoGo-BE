@@ -7,6 +7,10 @@ import {
   rankGuideSections,
   type GroundedAnswerContext,
 } from './grounding';
+import { placeIdsIn, placeToken, renderPlaceTokens } from './place-tokens';
+
+const PLACE_A = '11111111-1111-4111-8111-111111111111';
+const PLACE_B = '22222222-2222-4222-8222-222222222222';
 
 const base: GroundedAnswerContext = {
   route: 'recommend_places',
@@ -70,13 +74,14 @@ describe('composer messages', () => {
 });
 
 describe('deterministic replies (validated data only)', () => {
-  it('lists verified places by name, never a price', () => {
+  it('lists verified places by token, never by name or price (A-R-04)', () => {
     const text = deterministicReply({
       ...base,
-      places: [{ position: 1, name: 'Nhà Lá Café', categories: [], moods: [] }],
+      places: [{ position: 1, placeId: PLACE_A, name: 'Nhà Lá Café', categories: [], moods: [] }],
     });
-    expect(text).toContain('- Nhà Lá Café');
-    expect(text).not.toMatch(/\d{2,3}[.,]?\d{3}/);
+    expect(text).toContain(`- ${placeToken(PLACE_A)}`);
+    expect(text).not.toContain('Nhà Lá Café');
+    expect(renderPlaceTokens(text, new Map(), '')).not.toMatch(/\d{2,3}[.,]?\d{3}/);
   });
 
   it('empty search: says so and does not invent alternatives', () => {
@@ -125,5 +130,54 @@ describe('guide section ranking', () => {
 
   it('returns nothing for an unrelated question', () => {
     expect(rankGuideSections(docs, 'Thời tiết hôm nay thế nào')).toEqual([]);
+  });
+});
+
+describe('place names never reach a stored reply (A-R-04)', () => {
+  const places = [
+    { position: 1, placeId: PLACE_A, name: 'Nhà Lá Café' },
+    { position: 2, placeId: PLACE_B, name: 'Phở Thìn Bờ Hồ' },
+  ];
+  const run = (deltas: string[]) => {
+    const s = new StreamSanitizer(0, places);
+    return deltas.map((d) => s.push(d)).join('') + s.flush();
+  };
+
+  it('turns [Pn] markers into tokens and drops markers out of range', () => {
+    const out = run(['Bạn thử [P1] hoặc [p2] nhé, ', 'còn [P3] thì không. ']);
+    expect(out).toBe(
+      `Bạn thử ${placeToken(PLACE_A)} hoặc ${placeToken(PLACE_B)} nhé, còn  thì không. `,
+    );
+  });
+
+  it('replaces a name the model wrote anyway, even split across deltas and in another case', () => {
+    const out = run(['Mình gợi ý Phở ', 'Thìn ', 'bờ hồ vì gần. Hoặc nhà lá', ' café.']);
+    expect(out).not.toMatch(/Phở Thìn|nhà lá/i);
+    expect(out).toContain(placeToken(PLACE_B));
+    expect(out).toContain(placeToken(PLACE_A));
+    expect(placeIdsIn(out).sort()).toEqual([PLACE_A, PLACE_B].sort());
+  });
+
+  it('a token typed into the model output is not a token', () => {
+    const forged = `${placeToken(PLACE_B)} `;
+    const out = new StreamSanitizer(0, []).push(forged);
+    expect(placeIdsIn(out)).toEqual([]);
+  });
+
+  it('renders tokens to names at read, and an unknown id to a neutral label', () => {
+    const text = `Thử ${placeToken(PLACE_A)} hoặc ${placeToken(PLACE_B)}.`;
+    expect(renderPlaceTokens(text, new Map([[PLACE_A, 'Nhà Lá Café']]), 'địa điểm này')).toBe(
+      'Thử Nhà Lá Café hoặc địa điểm này.',
+    );
+  });
+
+  it('history sent to the model carries no earlier place name or id', () => {
+    const msgs = buildComposerMessages(
+      base,
+      [{ role: 'assistant', text: `- ${placeToken(PLACE_A)}` }],
+      'x',
+    );
+    expect(msgs[1]!.content).not.toContain(PLACE_A);
+    expect(msgs[1]!.content).toContain('a place');
   });
 });

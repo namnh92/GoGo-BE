@@ -41,7 +41,7 @@ const STOP_POLL_MS = 500;
 const KILL_SWITCH_POLL_MS = 3_000;
 const REAPER_MS = 60_000;
 
-export type RunnableTurn = TurnInput & { ledgerId: string };
+export type RunnableTurn = TurnInput;
 
 type Running = { controller: AbortController; reason: AbortReason | null; done: Promise<void> };
 
@@ -137,6 +137,8 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
       const full = { ...stored, seq, messageId: turn.messageId } as AssistantFrame;
       frames.push(full);
       applyFrame(state, full);
+      // A deleted turn writes nothing more anywhere (A-R-08).
+      if (entry.reason === 'deleted') return chain;
       chain = chain.then(() => this.buffer.append(turn.messageId, [full])).catch(() => undefined);
       return chain;
     };
@@ -204,6 +206,8 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     let error: ErrorEnvelope | null = null;
     try {
       const outcome = await this.orchestrator.run(turn, state, sink, signal);
+      // A-R-06: a turn aborted while it was finishing ends as the abort says.
+      signal.throwIfAborted();
       status = outcome.status;
     } catch (err) {
       if (!signal.aborted) {
@@ -281,8 +285,15 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
         trace: state.trace,
         sources: state.sources,
       });
-      if (terminal) await this.buffer.append(turn.messageId, [terminal]).catch(() => undefined);
+      // A-R-11: only the writer that finalized publishes a terminal frame; a
+      // runner that lost to a stop or the reaper leaves theirs as the end.
+      if (terminal && row)
+        await this.buffer.append(turn.messageId, [terminal]).catch(() => undefined);
       if (row) await this.repo.setTitleIfEmpty(turn.conversationId, deriveTitle(turn.text));
+      else if (!(await this.repo.findMessageById(turn.messageId))) {
+        // Deleted (conversation or account) while it ran: no copy stays behind.
+        await this.buffer.drop(turn.messageId).catch(() => undefined);
+      }
       await this.repo.completeLedger(turn.ledgerId, status, state.costs);
       this.metrics.increment('assistant_turns_total', { status });
     } finally {
@@ -295,6 +306,7 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
    * checkpointed text and whatever frames the buffer still holds.
    */
   async reap(): Promise<number> {
+    await this.drainBufferPurges().catch(() => undefined);
     const expired = await this.repo.expiredStreaming(20);
     let reaped = 0;
     for (const row of expired) {
@@ -304,6 +316,7 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
           row,
           'failed',
           envelope('ASSISTANT_INTERRUPTED', 'The reply was interrupted', true),
+          { onlyIfLeaseExpired: true },
         )
       ) {
         reaped += 1;
@@ -313,11 +326,22 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     return reaped;
   }
 
+  /** Drops the live buffers of replies an erasure deleted (A-R-08). */
+  async drainBufferPurges(): Promise<void> {
+    const ids = await this.repo.pendingBufferPurges(100);
+    for (const id of ids) {
+      if (this.running.has(id)) this.abort(this.running.get(id)!, 'deleted');
+      await this.buffer.drop(id);
+    }
+    await this.repo.completeBufferPurges(ids);
+  }
+
   /** Ends a streaming turn no process here is running (stop fallback, reaper). */
   async finalizeOrphan(
     row: MessageRow,
     status: 'stopped' | 'failed',
     error: ErrorEnvelope | null,
+    options: { onlyIfLeaseExpired?: boolean } = {},
   ): Promise<MessageRow | null> {
     const frames = await this.buffer.read(row.id, 0).catch(() => [] as AssistantFrame[]);
     const state: TurnState = newTurnState();
@@ -328,20 +352,24 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
       ? { type: 'error', seq: (last?.seq ?? 0) + 1, messageId: row.id, error }
       : { type: 'done', seq: (last?.seq ?? 0) + 1, messageId: row.id, status: 'stopped' };
     const all = frames.length > 0 || state.text === '' ? [...frames, terminal] : null;
-    const finalized = await this.repo.finalizeMessage(row.id, {
-      status,
-      text: state.text,
-      cards: state.cards,
-      followUps: state.followUps,
-      notice: state.notice,
-      error,
-      frames: all,
-      trace: { orphaned: true },
-      sources: state.sources,
-    });
+    const finalized = await this.repo.finalizeMessage(
+      row.id,
+      {
+        status,
+        text: state.text,
+        cards: state.cards,
+        followUps: state.followUps,
+        notice: state.notice,
+        error,
+        frames: all,
+        trace: { orphaned: true },
+        sources: state.sources,
+      },
+      options,
+    );
     if (finalized) {
       await this.buffer.append(row.id, [terminal]).catch(() => undefined);
-      await this.repo.closeLedgerForMessage(row.id, status);
+      await this.repo.closeLedgerForMessage(row.id);
     }
     return finalized;
   }

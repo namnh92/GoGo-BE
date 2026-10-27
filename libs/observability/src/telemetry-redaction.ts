@@ -93,8 +93,26 @@ const PG_FAILING_ROW = /(\bFailing row contains )\([^\n]*/g;
 /** PostgreSQL detail for a unique/foreign-key violation: `Key (cols)=(values)`. */
 const PG_KEY_HEAD = /\bKey \(/g;
 
+/**
+ * GoGo-BE#717 A-R-12 — `q` on the assistant's conversation search is a
+ * person's own words searched out of their private history: never kept in a
+ * request log or an error report. Matched with its path, so `q` on the
+ * public place search is untouched.
+ */
+const ASSISTANT_SEARCH_QUERY = /(\/assistant\/conversations\/?\?(?:[^#\s"']*&)?q=)[^&#\s"']*/g;
+
+export function redactPrivateSearchQuery(text: string): string {
+  return text.replace(ASSISTANT_SEARCH_QUERY, `$1${REDACTED}`);
+}
+
+/** A bare query string (Sentry keeps it apart from the URL) of that route. */
+export function redactPrivateQueryString(url: string | undefined, query: string): string {
+  if (!url || !/\/assistant\/conversations\/?(?:[?#]|$)/.test(url)) return query;
+  return query.replace(/(^|&)q=[^&#]*/g, `$1q=${REDACTED}`);
+}
+
 export function redactCoordinateText(text: string): string {
-  const named = redactJsonContainers(text)
+  const named = redactJsonContainers(redactPrivateSearchQuery(text))
     .replace(QUERY_PARAMETER, (match, lead: string, name: string) =>
       isRedactedName(name) ? `${lead}${name}=${REDACTED}` : match,
     )

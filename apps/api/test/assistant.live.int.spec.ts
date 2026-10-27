@@ -211,6 +211,19 @@ describe.skipIf(!LIVE)('GoGo AI live (real Jev + Claude Haiku BYOK)', () => {
     expect(t.firstTextMs).toBeLessThan(15_000);
   });
 
+  it('1b. A-R-04: Haiku names places by marker; the stored reply holds no name, the read one does', async () => {
+    const t = await ask('place_tokens', 'Gợi ý nhà hàng yên tĩnh ở Cầu Giấy, Hà Nội cho tối nay');
+    expect(t.status).toBe('complete');
+    const stored = await f.db.execute(sql`
+      select m.text || coalesce(m.frames::text, '') as all_text from assistant_messages m
+      where m.id = ${t.messageId}`);
+    const allText = (stored.rows[0] as { all_text: string }).all_text;
+    const names = await f.db.execute(sql`select name from places`);
+    for (const { name } of names.rows as { name: string }[]) expect(allText).not.toContain(name);
+    // No marker or delimiter leaks to the reader.
+    expect(t.text).not.toMatch(/\[P\d+\]|[\uE000\uE001]/i);
+  });
+
   it('2. couple with a total budget: divided by two, couple-suitable places', async () => {
     const t = await ask(
       'couple_total_budget',

@@ -2,6 +2,8 @@ import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import { RETENTION_DAYS } from '../infrastructure/assistant.repository';
 import { isoUs } from '../domain/cursor';
+import { FRAME_TTL_SECONDS } from '../infrastructure/frame-buffer';
+import { renderPlaceTexts } from './place-text';
 
 type Exec = Pick<Db, 'execute'>;
 
@@ -14,7 +16,20 @@ export const LEDGER_RETENTION_DAYS = 400;
  * erasure transaction. The ledger keeps its cost rows without the person.
  */
 export async function eraseAssistantDataForUser(tx: Exec, userId: string): Promise<void> {
+  // A-R-08: replies of the last hour may still sit in a live frame buffer;
+  // the reaper on every instance drops them. A reply still streaming loses
+  // its row here, so its runner stops at its next lease renewal.
+  await tx.execute(sql`
+    insert into assistant_buffer_purges (message_id)
+    select id from assistant_messages
+    where user_id = ${userId} and role = 'assistant'
+      and created_at > now() - ${sql.raw(`interval '${FRAME_TTL_SECONDS} seconds'`)}
+    on conflict do nothing`);
   await tx.execute(sql`delete from assistant_conversations where user_id = ${userId}`);
+  // Send replay records hold ids only, but they are this person's too.
+  await tx.execute(sql`
+    delete from idempotency_keys
+    where actor_id = ${`user:${userId}`} and endpoint like '% /v1/assistant/%'`);
   await tx.execute(sql`update assistant_usage_ledger set user_id = null where user_id = ${userId}`);
 }
 
@@ -64,25 +79,29 @@ export async function collectAssistantExport(
       left join assistant_feedback f on f.message_id = m.id and f.user_id = ${userId}
       where m.conversation_id = ${c.id}
       order by m.created_at, m.id`);
+    const rows = messages.rows as {
+      role: 'user' | 'assistant';
+      status: string;
+      text: string;
+      created_at: string;
+      completed_at: string | null;
+      rating: 'up' | 'down' | null;
+      reason: string | null;
+      feedback_at: string | null;
+    }[];
+    // Replies name places by token (A-R-04): the export carries today's names.
+    const texts = await renderPlaceTexts(
+      exec,
+      rows.map((m) => m.text),
+    );
     const item: UserExportAssistantConversation = {
       title: c.title,
       createdAt: c.created_at,
       lastMessageAt: c.last_message_at,
-      messages: (
-        messages.rows as {
-          role: 'user' | 'assistant';
-          status: string;
-          text: string;
-          created_at: string;
-          completed_at: string | null;
-          rating: 'up' | 'down' | null;
-          reason: string | null;
-          feedback_at: string | null;
-        }[]
-      ).map((m) => ({
+      messages: rows.map((m, i) => ({
         role: m.role,
         status: m.status,
-        text: m.text,
+        text: texts[i]!,
         createdAt: m.created_at,
         completedAt: m.completed_at,
         feedback:

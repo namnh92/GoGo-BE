@@ -24,6 +24,9 @@ export type Readiness =
 /** After an `is_byok: false` Haiku answer, sends refuse this long (ADR-0036 §5). */
 export const BYOK_QUARANTINE_MS = 10 * 60 * 1000;
 
+/** What `readiness` needs to also run inside the send transaction. */
+type Exec = Pick<Db, 'execute'>;
+
 /**
  * GoGo-BE#713 — whether the assistant may take a new message, and how much of
  * the account's allowance is left. The status endpoint is a hint for the UI;
@@ -32,6 +35,7 @@ export const BYOK_QUARANTINE_MS = 10 * 60 * 1000;
  */
 @Injectable()
 export class AssistantAvailabilityService {
+  /** This process saw it first; the ledger tells every other replica. */
   private byokViolationAt: number | null = null;
 
   constructor(
@@ -56,22 +60,28 @@ export class AssistantAvailabilityService {
   }
 
   /** Haiku answered from OpenRouter shared credits instead of the BYOK key. */
-  recordByokViolation(): void {
+  async recordByokViolation(ledgerId: string): Promise<void> {
     this.byokViolationAt = Date.now();
+    await this.repo.markByokViolation(ledgerId);
   }
 
-  private byokQuarantined(): boolean {
-    return this.byokViolationAt !== null && Date.now() - this.byokViolationAt < BYOK_QUARANTINE_MS;
+  private async byokQuarantined(exec: Exec, now: Date): Promise<boolean> {
+    if (this.byokViolationAt !== null && now.getTime() - this.byokViolationAt < BYOK_QUARANTINE_MS)
+      return true;
+    // The ledger row is dated by its acceptance, which precedes the violation
+    // by at most one reply: the window is widened by that much.
+    const since = new Date(now.getTime() - BYOK_QUARANTINE_MS - this.config.ASSISTANT_REPLY_MAX_MS);
+    return this.repo.byokViolationSince(exec, since);
   }
 
-  async readiness(exec: Pick<Db, 'execute'> = this.db, now = new Date()): Promise<Readiness> {
+  async readiness(exec: Exec = this.db, now = new Date()): Promise<Readiness> {
     if (!(await this.killSwitchOn())) return { ok: false, reason: 'kill_switch' };
     const limits = this.limits();
     const budget = this.config.ASSISTANT_MONTHLY_BUDGET_USD;
     if (!limits || budget === undefined || !this.config.OPENROUTER_API_KEY) {
       return { ok: false, reason: 'unconfigured' };
     }
-    if (this.byokQuarantined()) return { ok: false, reason: 'byok_unverified' };
+    if (await this.byokQuarantined(exec, now)) return { ok: false, reason: 'byok_unverified' };
     const spent = await this.repo.monthSpendUsd(
       exec,
       utcMonthStart(now),
@@ -84,8 +94,12 @@ export class AssistantAvailabilityService {
     return { ok: true, limits, monthlyBudgetUsd: budget };
   }
 
-  /** Throws the contract's 503 for a send the environment cannot take. */
-  async requireReady(exec: Pick<Db, 'execute'> = this.db): Promise<AssistantLimits> {
+  /**
+   * Throws the contract's 503 for a send the environment cannot take. The send
+   * calls it again inside its transaction under the budget lock (A-R-01), so
+   * the check and the reservation cannot be split by another send.
+   */
+  async requireReady(exec: Exec = this.db): Promise<AssistantLimits> {
     const r = await this.readiness(exec);
     if (!r.ok) {
       this.metrics.increment('assistant_admission_total', { outcome: r.reason });

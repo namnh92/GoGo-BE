@@ -199,6 +199,36 @@ export class AssistantRepository {
     );
   }
 
+  /** Assistant messages young enough to still have a live frame buffer. */
+  async recentAssistantMessageIds(
+    userId: string,
+    conversationId: string,
+    withinSeconds: number,
+  ): Promise<string[]> {
+    const res = await this.db.execute(sql`
+      select id from assistant_messages
+      where conversation_id = ${conversationId} and user_id = ${userId} and role = 'assistant'
+        and created_at > now() - (${withinSeconds} * interval '1 second')`);
+    return rowsOf<{ id: string }>(res).map((r) => r.id);
+  }
+
+  /** Buffers an erasure left behind (A-R-08); see `assistant_buffer_purges`. */
+  async pendingBufferPurges(limit: number): Promise<string[]> {
+    const res = await this.db.execute(
+      sql`select message_id from assistant_buffer_purges order by created_at limit ${limit}`,
+    );
+    return rowsOf<{ message_id: string }>(res).map((r) => r.message_id);
+  }
+
+  async completeBufferPurges(messageIds: readonly string[]): Promise<void> {
+    if (messageIds.length === 0) return;
+    await this.db.execute(sql`
+      delete from assistant_buffer_purges where message_id in (${sql.join(
+        messageIds.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )})`);
+  }
+
   async streamingMessageIds(userId: string, conversationId: string): Promise<string[]> {
     const res = await this.db.execute(sql`
       select id from assistant_messages
@@ -386,6 +416,15 @@ export class AssistantRepository {
     );
   }
 
+  /**
+   * A-R-01 — serializes every account's budget check with its reservation (the
+   * ledger row), so concurrent sends cannot all read the same remaining
+   * budget. Always taken after the account lock, so the order never inverts.
+   */
+  async lockBudget(tx: Tx): Promise<void> {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('assistant:budget', 0))`);
+  }
+
   async renewLease(
     messageId: string,
     owner: string,
@@ -403,7 +442,9 @@ export class AssistantRepository {
 
   /**
    * The one terminal write. Conditional on `streaming`, so of a turn, a stop
-   * and the reaper, exactly one finalizes and the others see `null`.
+   * and the reaper, exactly one finalizes and the others see `null`. The
+   * reaper also re-checks, in the same statement, that the lease lapsed
+   * (A-R-11): a runner that renewed meanwhile keeps its turn.
    */
   async finalizeMessage(
     messageId: string,
@@ -418,7 +459,11 @@ export class AssistantRepository {
       trace: Record<string, unknown> | null;
       sources: AssistantSourceData[];
     },
+    options: { onlyIfLeaseExpired?: boolean } = {},
   ): Promise<MessageRow | null> {
+    const leaseLapsed = options.onlyIfLeaseExpired
+      ? sql`and (m.lease_expires_at is null or m.lease_expires_at < now())`
+      : sql``;
     return this.db.transaction(async (tx) => {
       const res = await tx.execute(sql`
         update assistant_messages m set
@@ -430,7 +475,7 @@ export class AssistantRepository {
           frames = ${update.frames ? JSON.stringify(update.frames) : null}::jsonb,
           trace = ${update.trace ? JSON.stringify(update.trace) : null}::jsonb,
           completed_at = now(), lease_owner = null, lease_expires_at = null
-        where m.id = ${messageId} and m.status = 'streaming'
+        where m.id = ${messageId} and m.status = 'streaming' ${leaseLapsed}
         returning ${MESSAGE_COLUMNS}`);
       const row = rowsOf<MessageRow>(res)[0] ?? null;
       if (!row) return null;
@@ -490,15 +535,18 @@ export class AssistantRepository {
 
   /**
    * This month's spend for the ceiling: reported costs where known, the
-   * configured per-turn ceiling where a cost is still unknown (in flight, or
-   * never reported) — never 0 for an unknown.
+   * configured per-turn ceiling where a cost is still unknown — in flight,
+   * never reported, or `unsettled` (its runner died, so whether a provider was
+   * called and what it charged is unknown: A-R-02). Never 0 for an unknown,
+   * and each cost component a call has must be known.
    */
   async monthSpendUsd(exec: Exec, monthStart: Date, unknownTurnUsd: number): Promise<number> {
     const res = await exec.execute(sql`
       select coalesce(sum(
         case
-          when status = 'accepted' or (jev_calls > 0 and jev_cost_usd is null)
-            or (haiku_calls > 0 and haiku_upstream_cost_usd is null)
+          when status in ('accepted', 'unsettled')
+            or (jev_calls > 0 and jev_cost_usd is null)
+            or (haiku_calls > 0 and (haiku_upstream_cost_usd is null or haiku_openrouter_cost_usd is null))
           then ${unknownTurnUsd}::numeric
           else coalesce(jev_cost_usd, 0) + coalesce(haiku_upstream_cost_usd, 0)
             + coalesce(haiku_openrouter_cost_usd, 0)
@@ -522,11 +570,36 @@ export class AssistantRepository {
       where id = ${ledgerId}`);
   }
 
-  /** A turn finalized by someone other than its runner (stop, reaper). */
-  async closeLedgerForMessage(messageId: string, status: string): Promise<void> {
+  /**
+   * A turn finalized by someone other than its runner (stop, reaper). Its
+   * runner may have called a provider before dying, so the reservation is
+   * kept as `unsettled` — counted at the per-turn ceiling, never released to 0
+   * (A-R-02). A runner still alive overwrites it with what it reported.
+   */
+  async closeLedgerForMessage(messageId: string): Promise<void> {
     await this.db.execute(sql`
-      update assistant_usage_ledger set status = ${status}, completed_at = now()
+      update assistant_usage_ledger set status = 'unsettled', completed_at = now()
       where message_id = ${messageId} and status = 'accepted'`);
+  }
+
+  /**
+   * A-R-03 — the BYOK quarantine lives in the shared ledger, not in one
+   * process: written the moment a non-BYOK answer is seen, read by every
+   * replica's admission, and it survives a restart.
+   */
+  async markByokViolation(ledgerId: string): Promise<void> {
+    await this.db.execute(
+      sql`update assistant_usage_ledger set haiku_is_byok = false where id = ${ledgerId}`,
+    );
+  }
+
+  async byokViolationSince(exec: Exec, since: Date): Promise<boolean> {
+    const res = await exec.execute(sql`
+      select exists(
+        select 1 from assistant_usage_ledger
+        where haiku_is_byok = false and accepted_at >= ${since.toISOString()}::timestamptz
+      ) as hit`);
+    return rowsOf<{ hit: boolean }>(res)[0]!.hit;
   }
 
   // --- proposals -------------------------------------------------------------

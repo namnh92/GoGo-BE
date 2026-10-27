@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { Db } from '@gogo/database';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError, type FieldError } from '../../shared/app-error';
@@ -36,6 +36,8 @@ type Execution = {
  */
 @Injectable()
 export class AssistantProposalsService {
+  private readonly logger = new Logger(AssistantProposalsService.name);
+
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly repo: AssistantRepository,
@@ -81,8 +83,23 @@ export class AssistantProposalsService {
     try {
       execution = await this.execute(actor, kind, merged.values);
     } catch (err) {
-      await this.repo.releaseProposal(proposalId);
-      this.metrics.increment('assistant_proposals_total', { outcome: 'refused' });
+      if (isRefusalBeforeWrite(err)) {
+        await this.repo.releaseProposal(proposalId);
+        this.metrics.increment('assistant_proposals_total', { outcome: 'refused' });
+        throw err;
+      }
+      // A-R-07: the target use case may have committed before it failed (a
+      // room created, then its summary read failed). Releasing the proposal
+      // would let a retry write a second time, so it stays `confirming` —
+      // refused as in flight — until it expires. A duplicate write is worse
+      // than one proposal that has to be redone.
+      this.metrics.increment('assistant_proposals_total', { outcome: 'ambiguous' });
+      this.logger.error({
+        msg: 'assistant proposal confirm ended ambiguously',
+        event: 'assistant.proposal_ambiguous',
+        kind,
+        error: (err as Error)?.name,
+      });
       throw err;
     }
     const confirmedAt = new Date().toISOString();
@@ -214,4 +231,13 @@ export class AssistantProposalsService {
       }
     }
   }
+}
+
+/**
+ * A refusal the target use case raised before writing: its own validation or
+ * policy answer (a 4xx). Anything else — a 5xx, a driver error, a timeout —
+ * may have followed a committed write.
+ */
+function isRefusalBeforeWrite(err: unknown): boolean {
+  return err instanceof AppError && err.httpStatus >= 400 && err.httpStatus < 500;
 }

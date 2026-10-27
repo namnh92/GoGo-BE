@@ -281,3 +281,13 @@ export const assistantDocumentVersions = pgTable(
     index('assistant_document_versions_doc_idx').on(t.documentId, t.number),
   ],
 );
+
+/**
+ * GoGo-BE#717 A-R-08 — messages an erasure deleted whose live frame buffer
+ * (Redis, up to an hour) must still be dropped. Drained by the assistant
+ * reaper on every API instance. Ids only.
+ */
+export const assistantBufferPurges = pgTable('assistant_buffer_purges', {
+  messageId: uuid('message_id').primaryKey(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});

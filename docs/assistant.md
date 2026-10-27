@@ -332,6 +332,53 @@ Where the implementation is more specific than (or differs from) the design abov
 - **Feedback queue ids** are keyed HMACs (row id, `conversationRef`), unlinkable to
   app ids.
 
+### Astra round 1 (PR #717) — what changed
+
+- **Place names are never stored (A-R-04, CLAUDE.md "no new persistent Google
+  content").** A reply names a place by a token holding its id only
+  (`domain/place-tokens.ts`, private-use delimiters). Haiku is told to write
+  `[P1]`, `[P2]`…; the sanitizer turns those, and any listed name it wrote anyway,
+  into tokens. The deterministic reply writes tokens. The message text, its frames,
+  the buffer and the preview therefore hold ids; every read (history, SSE, export,
+  moderation queue) renders today's name from `places`. Earlier replies reach Haiku
+  with their places as "a place". Search over reply text no longer matches a place's
+  name — accepted.
+- **Budget (A-R-01).** The send re-reads readiness inside its transaction under a
+  global `assistant:budget` advisory lock (after the account lock) and reserves the
+  ledger row before releasing it.
+- **Unsettled spend (A-R-02).** A turn finalized by a stop fallback or the reaper
+  leaves its ledger row `unsettled`, counted at the per-turn ceiling; a live runner
+  overwrites it with what it reported. A Haiku call with no OpenRouter fee reported
+  is also unknown.
+- **BYOK quarantine (A-R-03)** is read from the ledger (`haiku_is_byok = false`
+  within the quarantine window), written the moment the violation is seen, so it
+  holds on every replica and across restarts.
+- **One first-text deadline (A-R-05)** over every stage; a stage still running when
+  it passes is abandoned and the turn answers with a fixed "slower than usual"
+  reply and a `timeout` fallback notice.
+- **Cancellation (A-R-06)** is checked at every stage boundary, before the Haiku
+  call, before the deterministic reply and before a proposal is prepared; a turn
+  aborted while finishing ends as the abort says.
+- **Confirm (A-R-07).** Only a 4xx refusal from the target use case releases a
+  proposal to `pending`; any other failure may have followed a committed write, so
+  the proposal stays claimed until it expires (`assistant_proposals_total
+{outcome=ambiguous}`) — no second write.
+- **Erasure (A-R-08).** Send replay records keep ids only and are rebuilt from the
+  rows; erasure deletes the account's assistant replay records and lists recent
+  replies in `assistant_buffer_purges`, drained by the reaper on every instance
+  (live buffers dropped). Deleting a conversation drops its buffers directly; a
+  runner that finds its row gone writes nothing more and drops its own.
+- **Context place (A-R-09)** is a candidate only if the same search filters return
+  it (with no area named, the search is anchored 2 km around it).
+- **Frame holes (A-R-10).** The Redis buffer is read by `seq`, not list position;
+  readers deliver only frames contiguous with `Last-Event-ID` and fill a hole from
+  the finalized row.
+- **Terminal frames (A-R-11)** are published only by the writer that finalized; the
+  reaper re-checks lease expiry in its finalize statement.
+- **Telemetry (A-R-12).** `q` on the assistant conversation search is redacted in
+  request logs and Sentry (URL and query string).
+- **Feedback queue cursor (A-R-13)** is sealed with AES-256-GCM.
+
 Configuration (`apps/api/src/config/env.ts`): `OPENROUTER_API_KEY` (existing SSM
 backend row `openrouter/api-key`), `ASSISTANT_DAILY_MESSAGE_LIMIT`,
 `ASSISTANT_MESSAGES_PER_MINUTE_LIMIT`, `ASSISTANT_MONTHLY_BUDGET_USD` (all three

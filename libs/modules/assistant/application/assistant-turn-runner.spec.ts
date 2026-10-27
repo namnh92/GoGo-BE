@@ -22,15 +22,30 @@ function harness(
     sink: TurnSink,
     signal: AbortSignal,
   ) => Promise<{ status: 'complete' | 'fallback' | 'truncated' }>,
-  opts: { replyMaxMs?: number; killSwitch?: () => boolean } = {},
+  opts: {
+    replyMaxMs?: number;
+    killSwitch?: () => boolean;
+    /** false: another writer (a stop, the reaper) finalized first. */
+    finalizeWins?: boolean;
+    purges?: string[];
+  } = {},
 ) {
   const buffer = new InMemoryFrameBuffer();
   const finalized: Finalized[] = [];
+  const finalizeOptions: unknown[] = [];
   const ledger: { status: string }[] = [];
+  const closed: string[] = [];
+  const purged: string[][] = [];
   const repo = {
-    finalizeMessage: async (id: string, update: Finalized) => {
+    finalizeMessage: async (id: string, update: Finalized, options?: unknown) => {
       finalized.push({ ...update, id });
-      return { id, conversation_id: 'c' } as MessageRow;
+      finalizeOptions.push(options);
+      return opts.finalizeWins === false ? null : ({ id, conversation_id: 'c' } as MessageRow);
+    },
+    findMessageById: async (id: string) => ({ id }) as MessageRow,
+    pendingBufferPurges: async () => opts.purges ?? [],
+    completeBufferPurges: async (ids: string[]) => {
+      purged.push([...ids]);
     },
     setTitleIfEmpty: async () => undefined,
     completeLedger: async (_id: string, status: string) => {
@@ -38,7 +53,9 @@ function harness(
     },
     renewLease: async () => true,
     expiredStreaming: async () => [],
-    closeLedgerForMessage: async () => undefined,
+    closeLedgerForMessage: async (id: string) => {
+      closed.push(id);
+    },
   } as unknown as AssistantRepository;
   const orchestrator = {
     run: (_i: TurnInput, state: TurnState, sink: TurnSink, signal: AbortSignal) =>
@@ -65,7 +82,7 @@ function harness(
     locale: 'vi' as const,
     context: null,
   };
-  return { runner, buffer, finalized, ledger, turn };
+  return { runner, buffer, finalized, finalizeOptions, ledger, closed, purged, turn };
 }
 
 const until = async (cond: () => boolean, ms = 3_000) => {
@@ -193,6 +210,58 @@ describe('AssistantTurnRunner', () => {
       code: 'ASSISTANT_PROVIDER_UNAVAILABLE',
       retryable: true,
     });
+  });
+});
+
+describe('AssistantTurnRunner — Astra round 1 (GoGo-BE#717)', () => {
+  it('A-R-06: a Stop during a stage that then finishes normally still ends `stopped`', async () => {
+    const h = harness(async (_state, sink, signal) => {
+      await sink.emit({ type: 'delta', text: 'partial ' });
+      await new Promise<void>((r) => signal.addEventListener('abort', () => r(), { once: true }));
+      // The stage ignored the signal and returned as if nothing happened.
+      return { status: 'complete' };
+    });
+    h.runner.start(h.turn);
+    await new Promise((r) => setTimeout(r, 30));
+    await h.runner.stopLocal('m1');
+    expect(h.finalized[0]!.status).toBe('stopped');
+    expect(h.ledger).toEqual([{ status: 'stopped' }]);
+  });
+
+  it('A-R-11: a runner that lost finalization publishes no terminal frame of its own', async () => {
+    const h = harness(
+      async (_state, sink) => {
+        await sink.emit({ type: 'delta', text: 'late ' });
+        return { status: 'complete' };
+      },
+      { finalizeWins: false },
+    );
+    h.runner.start(h.turn);
+    await until(() => h.ledger.length === 1);
+    const live = await h.buffer.read('m1', 0);
+    expect(live.map((f) => f.type)).toEqual(['delta']);
+  });
+
+  it('A-R-11: the reaper finalizes only a turn whose lease lapsed, in the same statement', async () => {
+    const h = harness(async () => ({ status: 'complete' }));
+    await h.runner.finalizeOrphan({ id: 'm9', text: '' } as MessageRow, 'failed', null, {
+      onlyIfLeaseExpired: true,
+    });
+    expect(h.finalizeOptions[0]).toEqual({ onlyIfLeaseExpired: true });
+  });
+
+  it('A-R-02: a turn ended by someone else keeps its reservation unsettled', async () => {
+    const h = harness(async () => ({ status: 'complete' }));
+    await h.runner.finalizeOrphan({ id: 'm9', text: '' } as MessageRow, 'stopped', null);
+    expect(h.closed).toEqual(['m9']);
+  });
+
+  it('A-R-08: the reaper drops live buffers an erasure listed', async () => {
+    const h = harness(async () => ({ status: 'complete' }), { purges: ['m7'] });
+    await h.buffer.append('m7', [{ type: 'delta', seq: 1, messageId: 'm7', text: 'private' }]);
+    await h.runner.reap();
+    expect(await h.buffer.read('m7', 0)).toEqual([]);
+    expect(h.purged).toEqual([['m7']]);
   });
 });
 

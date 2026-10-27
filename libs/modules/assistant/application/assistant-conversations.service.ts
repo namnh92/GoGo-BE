@@ -13,17 +13,23 @@ import type { Actor } from '../../identity/domain/actor';
 import { SearchService } from '../../search/application/search.service';
 import type { AssistantContextInput, AssistantFeedbackReason } from '../domain/assistant.types';
 import { decodeCursor, encodeCursor } from '../domain/cursor';
+import { stripTokenDelimiters } from '../domain/place-tokens';
 import {
   AssistantRepository,
   type ConversationRow,
   type MessageRow,
 } from '../infrastructure/assistant.repository';
-import { ASSISTANT_FRAME_BUFFER, type AssistantFrameBuffer } from '../infrastructure/frame-buffer';
+import {
+  ASSISTANT_FRAME_BUFFER,
+  FRAME_TTL_SECONDS,
+  type AssistantFrameBuffer,
+} from '../infrastructure/frame-buffer';
 import { ASSISTANT_INSTANCE_ID, LEASE_MS } from './assistant.config';
 import { AssistantAvailabilityService } from './assistant-availability.service';
 import { AssistantTurnRunner } from './assistant-turn-runner.service';
 import { AssistantCardHydrator } from './card-hydrator.service';
 import { conversationView, messageView, refsOf, type ContextLabel } from './assistant-views';
+import { renderPlaceTexts } from './place-text';
 
 export function requireUser(actor: Actor): string {
   if (actor.type !== 'user') {
@@ -71,8 +77,9 @@ export class AssistantConversationsService {
       cursor: decodeCursor(query.cursor),
     });
     const page = rows.slice(0, query.limit);
+    const rendered = await this.renderConversations(page);
     const items = await Promise.all(
-      page.map(async (r) => conversationView(r, await this.contextLabel(actor, r))),
+      rendered.map(async (r) => conversationView(r, await this.contextLabel(actor, r))),
     );
     const last = page[page.length - 1];
     return {
@@ -98,8 +105,8 @@ export class AssistantConversationsService {
   }
 
   async get(actor: Actor, id: string) {
-    const row = await this.requireConversation(actor, id);
-    return conversationView(row, await this.contextLabel(actor, row));
+    const [row] = await this.renderConversations([await this.requireConversation(actor, id)]);
+    return conversationView(row!, await this.contextLabel(actor, row!));
   }
 
   async rename(actor: Actor, id: string, title: string) {
@@ -109,18 +116,25 @@ export class AssistantConversationsService {
         { field: 'title', code: 'blank', message: 'must not be blank' },
       ]);
     }
-    const row = await this.repo.renameConversation(requireUser(actor), id, trimmed);
-    if (!row) throw AppError.notFound();
-    return conversationView(row, await this.contextLabel(actor, row));
+    const renamed = await this.repo.renameConversation(requireUser(actor), id, trimmed);
+    if (!renamed) throw AppError.notFound();
+    const [row] = await this.renderConversations([renamed]);
+    return conversationView(row!, await this.contextLabel(actor, row!));
   }
 
-  /** Hard delete; a reply still streaming is stopped first. Idempotent. */
+  /**
+   * Hard delete; a reply still streaming is stopped first. Idempotent. The
+   * live frame buffers of its replies go too (A-R-08); a runner on another
+   * instance that is still ending drops its own once it finds the row gone.
+   */
   async remove(actor: Actor, id: string): Promise<void> {
     const userId = requireUser(actor);
     for (const messageId of await this.repo.streamingMessageIds(userId, id)) {
       if (!(await this.runner.stopLocal(messageId))) await this.buffer.requestStop(messageId);
     }
+    const buffered = await this.repo.recentAssistantMessageIds(userId, id, FRAME_TTL_SECONDS);
     await this.repo.deleteConversation(userId, id);
+    await Promise.all(buffered.map((m) => this.buffer.drop(m).catch(() => undefined)));
   }
 
   // --- messages ----------------------------------------------------------------
@@ -163,7 +177,9 @@ export class AssistantConversationsService {
   ): Promise<{ replay: boolean; status: number; body: unknown }> {
     const userId = requireUser(actor);
     const conversation = await this.requireConversation(actor, conversationId);
-    const text = input.text.trim();
+    // Only the server writes place tokens (A-R-04); their delimiters typed by
+    // a person are dropped.
+    const text = stripTokenDelimiters(input.text).trim();
     if (!text) {
       throw AppError.badRequest('VALIDATION_FAILED', 'Message is blank', [
         { field: 'text', code: 'blank', message: 'must not be blank' },
@@ -176,7 +192,9 @@ export class AssistantConversationsService {
     }
 
     const begun = await beginIdempotent(this.db, scope);
-    if (begun.kind === 'replay') return { replay: true, status: begun.status, body: begun.body };
+    if (begun.kind === 'replay') {
+      return { replay: true, status: begun.status, body: await this.replayBody(actor, begun.body) };
+    }
     const claim = begun.claim;
     try {
       const context = input.context
@@ -189,6 +207,10 @@ export class AssistantConversationsService {
       const turn = await this.db.transaction(async (tx) => {
         await this.repo.lockAccount(tx, userId);
         await this.availability.requireAllowance(tx, userId, limits);
+        // A-R-01: the budget is re-read under one lock shared by every account
+        // and reserved (the ledger row) before that lock is released.
+        await this.repo.lockBudget(tx);
+        await this.availability.requireReady(tx);
         let inserted;
         try {
           inserted = await this.repo.insertTurn(tx, {
@@ -225,7 +247,15 @@ export class AssistantConversationsService {
             feedback: null,
           }),
         };
-        if (!(await completeIdempotentWithin(tx, claim, 202, body))) {
+        // A-R-08: the replay record holds ids only. The question's text and the
+        // context's label are read again on a replay, so deleting the
+        // conversation or the account leaves no copy of them here.
+        const record: SendReplayRecord = {
+          conversationId,
+          userMessageId: inserted.user.id,
+          assistantMessageId: inserted.assistant.id,
+        };
+        if (!(await completeIdempotentWithin(tx, claim, 202, record))) {
           throw AppError.conflict(
             'IDEMPOTENT_REQUEST_IN_FLIGHT',
             'Original request is still processing',
@@ -248,6 +278,22 @@ export class AssistantConversationsService {
       await releaseIdempotent(this.db, claim).catch(() => undefined);
       throw err;
     }
+  }
+
+  /** The send's 202 body rebuilt from the rows a replay record names. */
+  private async replayBody(actor: Actor, stored: unknown) {
+    const record = stored as Partial<SendReplayRecord> | null;
+    if (!record?.conversationId || !record.userMessageId || !record.assistantMessageId) {
+      throw AppError.notFound();
+    }
+    const userId = requireUser(actor);
+    const [user, assistant] = await Promise.all([
+      this.repo.findMessage(userId, record.conversationId, record.userMessageId),
+      this.repo.findMessage(userId, record.conversationId, record.assistantMessageId),
+    ]);
+    if (!user || !assistant) throw AppError.notFound();
+    const [userView, assistantView] = await this.views(actor, [user, assistant]);
+    return { userMessage: userView, assistantMessage: assistantView };
   }
 
   /** Stop: idempotent; the message as stored after stopping. */
@@ -330,8 +376,14 @@ export class AssistantConversationsService {
       this.repo.proposalsFor(ids),
     ]);
     const at = new Date();
+    // Assistant text names places by token (A-R-04): today's names, at read.
+    const texts = await renderPlaceTexts(
+      this.db,
+      rows.map((r) => r.text),
+    );
     return Promise.all(
-      rows.map(async (r) => {
+      rows.map(async (stored, i) => {
+        const r = { ...stored, text: texts[i]! };
         const cards =
           r.role === 'assistant' ? await this.hydrator.hydrate(actor, refsOf(r), at) : [];
         const context =
@@ -360,6 +412,19 @@ export class AssistantConversationsService {
     return label;
   }
 
+  /** Preview and search snippet may quote a reply, so they render too. */
+  private async renderConversations(rows: ConversationRow[]): Promise<ConversationRow[]> {
+    const texts = await renderPlaceTexts(
+      this.db,
+      rows.flatMap((r) => [r.preview ?? '', r.match_text ?? '']),
+    );
+    return rows.map((r, i) => ({
+      ...r,
+      preview: r.preview === null ? null : texts[2 * i]!,
+      ...(r.match_text ? { match_text: texts[2 * i + 1]! } : {}),
+    }));
+  }
+
   private async contextLabel(actor: Actor, row: ConversationRow): Promise<ContextLabel | null> {
     if (!row.context_kind || !row.context_id) return null;
     return this.labelFor(actor, row.context_kind, row.context_id);
@@ -383,6 +448,13 @@ export class AssistantConversationsService {
     return card.available ? { kind, id, label: card.facts.roomTitle ?? '' } : null;
   }
 }
+
+/** What a send's idempotency record keeps: ids, never text or labels. */
+type SendReplayRecord = {
+  conversationId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+};
 
 function isUniqueViolation(err: unknown): boolean {
   let e: unknown = err;

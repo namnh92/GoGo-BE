@@ -12,6 +12,7 @@
 -- Rollback: turn `assistant.enabled` off (the default) — nothing reads or
 -- writes these tables while it is off except history reads/deletes, export and
 -- erasure. Rehearsal-only down, in this order:
+--   DROP TABLE assistant_buffer_purges;
 --   DROP TABLE assistant_document_versions;
 --   DROP TABLE assistant_documents;
 --   DROP TABLE assistant_usage_ledger;
@@ -207,3 +208,11 @@ CREATE INDEX assistant_document_versions_search_idx
 -- At most one published version per document.
 CREATE UNIQUE INDEX assistant_document_versions_one_published_uq
   ON assistant_document_versions (document_id) WHERE state = 'published';
+--> statement-breakpoint
+-- GoGo-BE#717 A-R-08: live frame buffers (Redis, 1 h) of messages an erasure
+-- deleted; every API instance's reaper drops them and removes the row. Ids
+-- only, never text.
+CREATE TABLE assistant_buffer_purges (
+  message_id uuid PRIMARY KEY,
+  created_at timestamptz NOT NULL DEFAULT now()
+);

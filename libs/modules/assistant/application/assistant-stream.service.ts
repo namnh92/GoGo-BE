@@ -9,8 +9,13 @@ import {
   type AssistantFrame,
 } from '../domain/assistant.types';
 import { AssistantRepository, type MessageRow } from '../infrastructure/assistant.repository';
-import { ASSISTANT_FRAME_BUFFER, type AssistantFrameBuffer } from '../infrastructure/frame-buffer';
+import {
+  ASSISTANT_FRAME_BUFFER,
+  contiguousAfter,
+  type AssistantFrameBuffer,
+} from '../infrastructure/frame-buffer';
 import { AssistantCardHydrator } from './card-hydrator.service';
+import { renderPlaceText } from './place-text';
 import { requireUser } from './assistant-conversations.service';
 
 export type SseMessage = { id?: string; type: string; data: string } | { comment: string };
@@ -136,11 +141,16 @@ export class AssistantStreamService {
         clearInterval(keepAlive);
         releaseSlot();
       };
+      const locale = first.locale ?? 'vi';
       const send = async (frame: AssistantFrame) => {
+        // Cards are hydrated and place tokens rendered on the way out
+        // (A-R-04): neither the buffer nor the row holds a place's facts.
         const body =
           frame.type === 'card'
             ? { ...frame, card: await this.hydrateCard(actor, frame.card as AssistantCardRef) }
-            : frame;
+            : frame.type === 'delta'
+              ? { ...frame, text: await renderPlaceText(this.repo.db, frame.text, locale) }
+              : frame;
         if (!closed)
           subscriber.next({ id: String(frame.seq), type: frame.type, data: JSON.stringify(body) });
         after = frame.seq;
@@ -157,7 +167,7 @@ export class AssistantStreamService {
         }
         let lastRowCheck = Date.now();
         while (!closed) {
-          const frames = await this.buffer.read(messageId, after);
+          const frames = contiguousAfter(await this.buffer.read(messageId, after), after);
           for (const f of frames) {
             await send(f);
             if (isTerminalFrame(f)) return;
@@ -168,7 +178,8 @@ export class AssistantStreamService {
             if (!now) return; // deleted
             if (now.status !== 'streaming') {
               // Finalized; anything the buffer did not deliver comes from the row.
-              const tail = await this.buffer.read(messageId, after);
+              // A hole the buffer kept is filled here from the complete row.
+              const tail = contiguousAfter(await this.buffer.read(messageId, after), after);
               for (const f of tail) await send(f);
               if (!tail.some(isTerminalFrame)) await replayRow(now);
               return;

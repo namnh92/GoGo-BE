@@ -8,8 +8,7 @@ import type { AssistantFrame } from '../domain/assistant.types';
  * message row, which is what a replay reads from then on. A reconnect is a
  * read, never a second inference.
  *
- * Redis when `REDIS_URL` is set (a list per message, so `seq` is the list
- * position + 1), in memory otherwise — the in-memory buffer is correct for one
+ * Redis when `REDIS_URL` is set (a list per message), in memory otherwise — the in-memory buffer is correct for one
  * API instance, exactly like the in-memory room event bus.
  */
 export const ASSISTANT_FRAME_BUFFER = Symbol('ASSISTANT_FRAME_BUFFER');
@@ -20,8 +19,14 @@ export const FRAME_TTL_SECONDS = 3600;
 export interface AssistantFrameBuffer {
   /** Appends frames in order; `seq` was assigned by the single writer. */
   append(messageId: string, frames: readonly AssistantFrame[]): Promise<void>;
-  /** Frames with `seq > afterSeq`, in order. */
+  /**
+   * Frames with `seq > afterSeq`, in `seq` order. A frame whose append failed
+   * is missing, so the result may have holes: readers deliver only the run
+   * contiguous with `afterSeq` (see `contiguousAfter`).
+   */
   read(messageId: string, afterSeq: number): Promise<AssistantFrame[]>;
+  /** Drops a message's frames and stop flag (A-R-08: deletion, erasure). */
+  drop(messageId: string): Promise<void>;
   /** Resolves when something may have been appended, or after `timeoutMs`. */
   wait(messageId: string, timeoutMs: number): Promise<void>;
   requestStop(messageId: string): Promise<void>;
@@ -50,7 +55,13 @@ export class InMemoryFrameBuffer implements AssistantFrameBuffer {
 
   read(messageId: string, afterSeq: number): Promise<AssistantFrame[]> {
     const entry = this.frames.get(messageId);
-    return Promise.resolve(entry ? entry.list.filter((f) => f.seq > afterSeq) : []);
+    return Promise.resolve(entry ? bySeqAfter(entry.list, afterSeq) : []);
+  }
+
+  drop(messageId: string): Promise<void> {
+    this.frames.delete(messageId);
+    this.stops.delete(messageId);
+    return Promise.resolve();
   }
 
   wait(messageId: string, timeoutMs: number): Promise<void> {
@@ -93,6 +104,7 @@ export type FrameRedis = {
   lrange(key: string, start: number, stop: number): Promise<string[]>;
   set(key: string, value: string, mode: 'EX', seconds: number): Promise<unknown>;
   exists(key: string): Promise<number>;
+  del(...keys: string[]): Promise<number>;
 };
 
 const framesKey = (id: string) => `assistant:frames:${id}`;
@@ -117,9 +129,21 @@ export class RedisFrameBuffer implements AssistantFrameBuffer {
     this.local.emit(messageId);
   }
 
+  /**
+   * A-R-10: the whole list, judged by each frame's own `seq`. After a failed
+   * append, list position and `seq` disagree, so an offset would skip frames.
+   * A reply is tens of frames, so reading it whole is cheap.
+   */
   async read(messageId: string, afterSeq: number): Promise<AssistantFrame[]> {
-    const raw = await this.redis.lrange(framesKey(messageId), Math.max(0, afterSeq), -1);
-    return raw.map((r) => JSON.parse(r) as AssistantFrame).filter((f) => f.seq > afterSeq);
+    const raw = await this.redis.lrange(framesKey(messageId), 0, -1);
+    return bySeqAfter(
+      raw.map((r) => JSON.parse(r) as AssistantFrame),
+      afterSeq,
+    );
+  }
+
+  async drop(messageId: string): Promise<void> {
+    await this.redis.del(framesKey(messageId), stopKey(messageId));
   }
 
   wait(messageId: string, timeoutMs: number): Promise<void> {
@@ -143,4 +167,31 @@ export class RedisFrameBuffer implements AssistantFrameBuffer {
   async stopRequested(messageId: string): Promise<boolean> {
     return (await this.redis.exists(stopKey(messageId))) === 1;
   }
+}
+
+function bySeqAfter(frames: readonly AssistantFrame[], afterSeq: number): AssistantFrame[] {
+  const seen = new Set<number>();
+  return frames
+    .filter((f) => f.seq > afterSeq && !seen.has(f.seq) && seen.add(f.seq))
+    .sort((a, b) => a.seq - b.seq);
+}
+
+/**
+ * The frames a reader may deliver now: those continuing `afterSeq` without a
+ * hole. A hole is a frame whose append failed; it is filled from the row
+ * once the turn is finalized, never skipped.
+ */
+export function contiguousAfter(
+  frames: readonly AssistantFrame[],
+  afterSeq: number,
+): AssistantFrame[] {
+  const out: AssistantFrame[] = [];
+  let next = afterSeq + 1;
+  for (const f of frames) {
+    if (f.seq < next) continue;
+    if (f.seq !== next) break;
+    out.push(f);
+    next += 1;
+  }
+  return out;
 }

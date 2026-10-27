@@ -10,6 +10,7 @@ import {
   type AssistantLlmPort,
   type DecisionProviderPort,
 } from '@gogo/providers';
+import { AppError } from '../../shared/app-error';
 import { APP_CONFIG } from '../../shared/config';
 import type { Actor } from '../../identity/domain/actor';
 import { SearchService } from '../../search/application/search.service';
@@ -58,6 +59,8 @@ const secondsSince = (startedAtMs: number) => (Date.now() - startedAtMs) / 1000;
 
 export type TurnInput = {
   messageId: string;
+  /** The turn's ledger row: its reservation, and where a BYOK violation is marked. */
+  ledgerId: string;
   conversationId: string;
   userId: string;
   text: string;
@@ -72,6 +75,8 @@ const CARD_LIMIT = 3;
 /** Below this much first-text budget, no further model call is started. */
 const MIN_COMPOSE_BUDGET_MS = 2_500;
 const HISTORY_LIMIT = 6;
+/** "Near the place I opened", when the request names no area. */
+const CONTEXT_RADIUS_M = 2_000;
 
 /**
  * ADR-0036 — one reply: admission already happened (the send), so this is
@@ -110,24 +115,52 @@ export class AssistantOrchestrator {
   ): Promise<TurnOutcome> {
     const startedAt = Date.now();
     const deadline = startedAt + this.config.ASSISTANT_FIRST_TEXT_TIMEOUT_MS;
+    // A-R-05: one first-text deadline over every stage, not only the Haiku
+    // call. A stage still running when it passes is abandoned (its result is
+    // never used, so it can emit nothing and prepare nothing) and the turn
+    // answers deterministically.
+    const guard = firstTextGuard(deadline, signal);
+    try {
+      return await this.runStages(input, state, sink, signal, startedAt, deadline, guard);
+    } catch (err) {
+      if (!(err instanceof FirstTextDeadlineError) || state.textStarted) throw err;
+      signal.throwIfAborted();
+      await sink.emit({ type: 'delta', text: timeoutReply(input.locale) });
+      await sink.emit({
+        type: 'notice',
+        notice: { kind: 'fallback', reason: 'timeout', copyKey: COPY_KEYS.fallback },
+      });
+      this.metrics.increment('assistant_fallbacks_total', { reason: 'timeout' });
+      state.trace.deadline = 'first_text';
+      state.trace.latencyMs = Date.now() - startedAt;
+      return { status: 'fallback' };
+    } finally {
+      guard.dispose();
+    }
+  }
+
+  private async runStages(
+    input: TurnInput,
+    state: TurnState,
+    sink: TurnSink,
+    signal: AbortSignal,
+    startedAt: number,
+    deadline: number,
+    guard: FirstTextGuard,
+  ): Promise<TurnOutcome> {
     const actor: Actor = { type: 'user', id: input.userId, sessionId: 'assistant-turn' };
     const remaining = () => deadline - Date.now();
 
     // ── context ──────────────────────────────────────────────────────────────
-    const history = await this.historyFor(input);
+    const history = await guard.run(this.historyFor(input));
     const previousRequest = [...history].reverse().find((t) => t.role === 'user')?.text ?? null;
-    const taxonomy = await this.taxonomy.taxonomy();
+    const taxonomy = await guard.run(this.taxonomy.taxonomy());
     const labels = this.taxonomy.labels(taxonomy);
     const facts = parseIntentFacts(input.text);
 
     // ── Jev decision 1 ───────────────────────────────────────────────────────
-    const decision = await this.decide(
-      input,
-      previousRequest,
-      taxonomy,
-      signal,
-      remaining(),
-      state,
+    const decision = await guard.run(
+      this.decide(input, previousRequest, taxonomy, signal, remaining(), state),
     );
     const c = decision.classification;
     state.trace.intent = {
@@ -195,13 +228,13 @@ export class AssistantOrchestrator {
     let perPerson: { amount: number | null; origin: Origin } = { amount: null, origin: 'unknown' };
 
     if (input.context?.kind === 'plan') {
-      planCard = await this.hydrator.planCard(actor, input.context.id, '');
+      planCard = await guard.run(this.hydrator.planCard(actor, input.context.id, ''));
       if (!planCard.available) planCard = null;
     }
 
     if (route === 'recommend_places') {
-      await sink.emit({ type: 'step', step: 'searching_places' });
-      const resolution = await this.areas.resolve(input.text, facts.areaText);
+      await guard.run(sink.emit({ type: 'step', step: 'searching_places' }));
+      const resolution = await guard.run(this.areas.resolve(input.text, facts.areaText));
       area = resolution.kind === 'resolved' ? resolution.value : null;
       perPerson = perPersonBudget(facts, c.occasion.key);
       ctx.constraints = constraintsFrom(facts, area?.label ?? null, {
@@ -213,21 +246,23 @@ export class AssistantOrchestrator {
         // No area and nothing to anchor on: a nationwide list would be noise.
         clarification.push('area');
       } else {
-        placeCards = await this.findPlaces(
-          input,
-          decision,
-          area,
-          perPerson.amount,
-          facts.timeHint,
-          contextPlaceId,
-          signal,
-          remaining,
-          state,
-          labels,
+        placeCards = await guard.run(
+          this.findPlaces(
+            input,
+            decision,
+            area,
+            perPerson.amount,
+            facts.timeHint,
+            contextPlaceId,
+            signal,
+            remaining,
+            state,
+            labels,
+          ),
         );
         if (!facts.budget && placeCards.length > 0) clarification.push('budget');
       }
-      ctx.places = await this.groundedPlaces(placeCards, labels);
+      ctx.places = await guard.run(this.groundedPlaces(placeCards, labels));
       state.trace.retrieval = {
         areaResolved: area !== null,
         areaAmbiguous: resolution.kind === 'ambiguous',
@@ -235,8 +270,8 @@ export class AssistantOrchestrator {
         perPersonBudget: perPerson.amount,
       };
     } else if (route === 'gogo_guide') {
-      await sink.emit({ type: 'step', step: 'reading_guide' });
-      const docs = await this.guide.searchPublished(input.text, input.locale);
+      await guard.run(sink.emit({ type: 'step', step: 'reading_guide' }));
+      const docs = await guard.run(this.guide.searchPublished(input.text, input.locale));
       const sections = rankGuideSections(docs, input.text, 3);
       // One source per document version; sections of it share the index.
       const byVersion = new Map<string, number>();
@@ -262,7 +297,7 @@ export class AssistantOrchestrator {
       }
       state.trace.retrieval = { guideVersions: [...byVersion.keys()], sections: sections.length };
     } else if (route === 'plan_help') {
-      await sink.emit({ type: 'step', step: 'reading_plan' });
+      await guard.run(sink.emit({ type: 'step', step: 'reading_plan' }));
       if (planCard) {
         ctx.plan = {
           roomTitle: planCard.facts.roomTitle ?? null,
@@ -312,6 +347,8 @@ export class AssistantOrchestrator {
     let status: TurnOutcome['status'] = 'complete';
     let fallbackReason: 'timeout' | 'provider_unavailable' | 'invalid_output' | null = null;
 
+    signal.throwIfAborted();
+    guard.release();
     if (composable && this.llm) {
       if (remaining() < MIN_COMPOSE_BUDGET_MS) {
         fallbackReason = 'timeout';
@@ -329,6 +366,7 @@ export class AssistantOrchestrator {
       // Deterministic reply from validated data: empty states, out-of-scope,
       // clarification, and every model failure before the first text.
       const text = deterministicReply(ctx);
+      signal.throwIfAborted();
       if (text) await sink.emit({ type: 'delta', text });
     }
 
@@ -338,6 +376,8 @@ export class AssistantOrchestrator {
     if (state.sources.length > 0) await sink.emit({ type: 'sources', sources: state.sources });
 
     if (status !== 'truncated') {
+      // A-R-06: a Stop or the kill switch during the reply prepares nothing.
+      signal.throwIfAborted();
       if (proposal) {
         const row = await this.repo.insertProposal({
           conversationId: input.conversationId,
@@ -488,7 +528,15 @@ export class AssistantOrchestrator {
     const c = decision.classification;
     const occasion = c.occasion.key;
     const now = new Date();
-    const result = area
+    // A-R-09: the place the person opened is a candidate only if the same
+    // hard filters keep it. Without a named area the search is anchored
+    // around it; with one, it must be in that area like any other result.
+    const scope = area
+      ? { administrativeArea: area.area }
+      : contextPlaceId
+        ? await this.anchorAround(contextPlaceId)
+        : null;
+    const result = scope
       ? await this.search.search({
           categories: c.category.key ? [c.category.key] : undefined,
           suitedFor:
@@ -499,7 +547,7 @@ export class AssistantOrchestrator {
           // Only "right now" is a hard opening-hours filter; a later time is
           // shown on the card instead of hiding places whose hours are unknown.
           openAt: timeHint === 'now' ? now : undefined,
-          administrativeArea: area.area,
+          ...scope,
           includeLodging: c.category.key === 'lodging',
           sort: 'relevance',
           limit: CANDIDATE_LIMIT,
@@ -507,7 +555,10 @@ export class AssistantOrchestrator {
         })
       : { results: [] as { id: string }[] };
     let ids = result.results.map((r) => r.id);
-    if (contextPlaceId && !ids.includes(contextPlaceId)) ids = [contextPlaceId, ...ids];
+    // The opened place leads when it passed the filters; it is never added.
+    if (contextPlaceId && ids.includes(contextPlaceId)) {
+      ids = [contextPlaceId, ...ids.filter((id) => id !== contextPlaceId)];
+    }
 
     // Optional Jev decision 2: only when the request carries a preference the
     // search cannot filter on, and only over the backend's own candidates.
@@ -540,6 +591,22 @@ export class AssistantOrchestrator {
       cards.push(card);
     }
     return cards;
+  }
+
+  /** A search scope around the opened place; none when it cannot be read. */
+  private async anchorAround(
+    placeId: string,
+  ): Promise<{ lat: number; lng: number; radiusM: number } | null> {
+    try {
+      const place = (await this.search.placeDetail(placeId)) as { lat?: unknown; lng?: unknown };
+      const lat = Number(place.lat);
+      const lng = Number(place.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+      return { lat, lng, radiusM: CONTEXT_RADIUS_M };
+    } catch (err) {
+      if (err instanceof AppError && err.httpStatus === 404) return null;
+      throw err;
+    }
   }
 
   private async rankByRelevance(
@@ -604,6 +671,7 @@ export class AssistantOrchestrator {
       const t = tags.get(card.placeId) ?? { categories: [], moods: [], settings: [] };
       return {
         position: i + 1,
+        placeId: card.placeId,
         name: card.facts.name,
         categories: t.categories.map((k) => labels.get(k) ?? k),
         moods: [...t.moods, ...t.settings].map((k) => labels.get(k) ?? k),
@@ -700,16 +768,16 @@ export class AssistantOrchestrator {
     | { kind: 'fallback'; reason: 'timeout' | 'provider_unavailable' | 'invalid_output' }
   > {
     const llm = this.llm!;
+    // A-R-06: an abort that fired before this point must still stop the call.
+    signal.throwIfAborted();
     const local = new AbortController();
-    const onAbort = () => local.abort();
-    signal.addEventListener('abort', onAbort, { once: true });
     const firstTextTimer = setTimeout(
       () => {
         if (!state.textStarted) local.abort();
       },
       Math.max(1, deadline - Date.now()),
     );
-    const sanitizer = new StreamSanitizer(state.sources.length);
+    const sanitizer = new StreamSanitizer(state.sources.length, ctx.places);
     const started = Date.now();
     state.costs.haikuCalls += 1;
     state.costs.haikuModel = llm.model;
@@ -718,7 +786,7 @@ export class AssistantOrchestrator {
       for await (const event of llm.stream({
         messages: buildComposerMessages(ctx, history, input.text),
         maxOutputTokens: this.config.ASSISTANT_MAX_OUTPUT_TOKENS,
-        signal: local.signal,
+        signal: AbortSignal.any([signal, local.signal]),
       })) {
         if (event.type === 'delta') {
           const clean = sanitizer.push(event.text);
@@ -737,7 +805,7 @@ export class AssistantOrchestrator {
           if (u.isByok === false) {
             // Billed to OpenRouter credits instead of GoGo's Anthropic key:
             // stop taking sends until someone looks (ADR-0036 strict BYOK).
-            this.availability.recordByokViolation();
+            await this.availability.recordByokViolation(input.ledgerId);
             this.logger.error({
               msg: 'assistant haiku call was not routed through Anthropic BYOK',
               event: 'assistant.byok_violation',
@@ -781,9 +849,65 @@ export class AssistantOrchestrator {
       return { kind: 'fallback', reason };
     } finally {
       clearTimeout(firstTextTimer);
-      signal.removeEventListener('abort', onAbort);
     }
   }
+}
+
+/** The first-text deadline passed before any stage produced text. */
+export class FirstTextDeadlineError extends Error {
+  constructor() {
+    super('assistant first-text deadline passed');
+    this.name = 'FirstTextDeadlineError';
+  }
+}
+
+export type FirstTextGuard = {
+  /** The stage's result, unless the deadline passes or the turn is aborted first. */
+  run<T>(work: Promise<T>): Promise<T>;
+  /** Text is about to start (or the compose stage owns the deadline from here). */
+  release(): void;
+  dispose(): void;
+};
+
+export function firstTextGuard(deadline: number, signal: AbortSignal): FirstTextGuard {
+  let released = false;
+  let expire: (() => void) | null = null;
+  const expired = new Promise<never>((_resolve, reject) => {
+    expire = () => reject(new FirstTextDeadlineError());
+  });
+  expired.catch(() => undefined);
+  const timer = setTimeout(() => expire?.(), Math.max(0, deadline - Date.now()));
+  timer.unref?.();
+  return {
+    async run<T>(work: Promise<T>): Promise<T> {
+      signal.throwIfAborted();
+      if (released) return work;
+      if (Date.now() >= deadline) throw new FirstTextDeadlineError();
+      const aborted = new Promise<never>((_resolve, reject) => {
+        const onAbort = () => reject(signal.reason ?? new Error('aborted'));
+        signal.addEventListener('abort', onAbort, { once: true });
+        void work
+          .finally(() => signal.removeEventListener('abort', onAbort))
+          .catch(() => undefined);
+      });
+      aborted.catch(() => undefined);
+      work.catch(() => undefined);
+      return Promise.race([work, expired, aborted]);
+    },
+    release() {
+      released = true;
+      clearTimeout(timer);
+    },
+    dispose() {
+      clearTimeout(timer);
+    },
+  };
+}
+
+function timeoutReply(locale: 'vi' | 'en'): string {
+  return locale === 'en'
+    ? 'Sorry, GoGo is slower than usual right now. Please try again in a moment.'
+    : 'Xin lỗi, GoGo đang phản hồi chậm hơn bình thường. Bạn thử lại sau ít phút nhé.';
 }
 
 /** Haiku failed after text was streamed: the runner ends the turn `failed`. */

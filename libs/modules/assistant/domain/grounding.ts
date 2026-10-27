@@ -3,6 +3,7 @@ import type { IntentFacts } from '../../search/domain/intent';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import type { AssistantRoute } from './decision';
 import type { AssistantFollowUpGroup } from './assistant.types';
+import { placeToken, renderPlaceTokens, stripTokenDelimiters } from './place-tokens';
 
 /**
  * ADR-0036 §3E — the backend-owned context Haiku explains. It is the only
@@ -17,6 +18,8 @@ export type GroundedConstraint = { name: string; value: string; origin: Origin }
 export type GroundedPlace = {
   /** 1-based position = the card order. */
   position: number;
+  placeId: string;
+  /** For the model's understanding only; never written into a reply (A-R-04). */
   name: string;
   categories: string[];
   moods: string[];
@@ -60,7 +63,7 @@ const SYSTEM_PROMPT_EN = `You are GoGo AI, the assistant inside GoGo, an app for
 Write the reply in {LANGUAGE}: friendly, concise (at most about 120 words), plain text with short paragraphs or "- " lists. No headings, tables, markdown links, URLs or code.
 
 You only explain what GoGo's backend has verified, given in <gogo_context>. Rules:
-1. Mention only places listed under "places", by name, in the listed order. Never introduce any other place, brand, address or area.
+1. Mention only places listed under "places", in the listed order, and refer to each one only by its marker, written exactly as [P1], [P2], …; never write a place's name, the app shows it in place of the marker. Never introduce any other place, brand, address or area.
 2. Never state prices, opening hours, availability, ratings, distances, travel times, phone numbers or addresses. The app shows verified facts on cards under your text; you may point the user to the cards.
 3. For questions about GoGo, describe features only from the "guide" sections and cite them as [n] with the section number. If the guide does not cover it, say GoGo has no documented answer. Never invent features, buttons or steps.
 4. Never say an action was performed. If "pending_action" is set, say the user can review and confirm it on the card; nothing happens until they confirm.
@@ -97,7 +100,7 @@ export function renderContext(ctx: GroundedAnswerContext): string {
     for (const p of ctx.places) {
       const tags = [...p.categories, ...p.moods];
       lines.push(
-        `  ${p.position}. ${fence(p.name)}${tags.length > 0 ? ` — ${tags.join(', ')}` : ''}`,
+        `  [P${p.position}] ${fence(p.name)}${tags.length > 0 ? ` — ${tags.join(', ')}` : ''}`,
       );
     }
   } else if (ctx.route === 'recommend_places') {
@@ -144,7 +147,10 @@ export function buildComposerMessages(
     parts.push(
       '<conversation>',
       ...recent.map(
-        (t) => `${t.role}: ${fence(t.text).slice(0, MAX_HISTORY_CHARS).replace(/\s+/g, ' ')}`,
+        (t) =>
+          `${t.role}: ${fence(renderPlaceTokens(t.text, new Map(), 'a place'))
+            .slice(0, MAX_HISTORY_CHARS)
+            .replace(/\s+/g, ' ')}`,
       ),
       '</conversation>',
     );
@@ -160,18 +166,39 @@ export function buildComposerMessages(
  * Output hygiene on a stream (ADR-0036 §3F): drops URLs, markdown link
  * targets and `[n]` markers that cite no source. Text is held back to the
  * last whitespace so a pattern split across deltas is judged whole.
+ *
+ * A-R-04: a place reaches the reply only as a token. `[Pn]` markers become
+ * the token of the n-th listed place (out of range: dropped); a listed name
+ * the model wrote anyway is replaced by its token too, and text that could be
+ * the start of a listed name is held back until it can be judged.
  */
 export class StreamSanitizer {
   private pending = '';
+  private readonly names: { exact: string; lower: string; token: string }[];
 
-  constructor(private readonly sourceCount: number) {}
+  constructor(
+    private readonly sourceCount: number,
+    private readonly places: readonly Pick<GroundedPlace, 'position' | 'placeId' | 'name'>[] = [],
+  ) {
+    this.names = places
+      .filter((p) => p.name.trim().length >= 2)
+      .map((p) => ({
+        exact: p.name.trim(),
+        lower: p.name.trim().toLowerCase(),
+        token: placeToken(p.placeId),
+      }))
+      // Longest first, so a name containing another is replaced whole.
+      .sort((a, b) => b.lower.length - a.lower.length);
+  }
 
   push(delta: string): string {
     this.pending += delta;
-    const cut = Math.max(this.pending.lastIndexOf(' '), this.pending.lastIndexOf('\n'));
+    let cut = Math.max(this.pending.lastIndexOf(' '), this.pending.lastIndexOf('\n'));
     if (cut < 0) return '';
-    const ready = this.pending.slice(0, cut + 1);
-    this.pending = this.pending.slice(cut + 1);
+    cut = this.holdBackNamePrefix(cut + 1);
+    if (cut <= 0) return '';
+    const ready = this.pending.slice(0, cut);
+    this.pending = this.pending.slice(cut);
     return this.clean(ready);
   }
 
@@ -181,15 +208,56 @@ export class StreamSanitizer {
     return rest;
   }
 
+  /** Moves the cut back to where a listed name may be starting. */
+  private holdBackNamePrefix(cut: number): number {
+    if (this.names.length === 0) return cut;
+    const ready = this.pending.slice(0, cut).toLowerCase();
+    const longest = this.names[0]!.lower.length;
+    for (let i = Math.max(0, ready.length - longest); i < ready.length; i += 1) {
+      if (i > 0 && !/\s/.test(ready[i - 1]!)) continue;
+      const tail = ready.slice(i).trimEnd();
+      if (!tail) continue;
+      if (this.names.some((n) => n.lower.length > tail.length && n.lower.startsWith(tail))) {
+        return i;
+      }
+    }
+    return cut;
+  }
+
   private clean(text: string): string {
-    return text
+    let out = stripTokenDelimiters(text)
       .replace(/\]\((?:[a-z][a-z0-9+.-]*:)?[^)\s]*\)/gi, ']')
       .replace(/\b(?:https?:\/\/|www\.)\S+/gi, '')
+      .replace(/\[P(\d{1,2})\]/gi, (_m, n: string) => {
+        const place = this.places.find((p) => p.position === Number(n));
+        return place ? placeToken(place.placeId) : '';
+      })
       .replace(/\[(\d{1,2})\]/g, (m, n: string) => {
         const i = Number(n);
         return i >= 1 && i <= this.sourceCount ? m : '';
       });
+    for (const n of this.names) out = replaceIgnoringCase(out, n, n.token);
+    return out;
   }
+}
+
+function replaceIgnoringCase(
+  text: string,
+  needle: { exact: string; lower: string },
+  replacement: string,
+): string {
+  const lower = text.toLowerCase();
+  // Indices line up only when lower-casing kept the length; otherwise the
+  // exact spelling is still replaced.
+  if (lower.length !== text.length) return text.split(needle.exact).join(replacement);
+  const lowerNeedle = needle.lower;
+  let out = '';
+  let from = 0;
+  for (let at = lower.indexOf(lowerNeedle); at >= 0; at = lower.indexOf(lowerNeedle, from)) {
+    out += text.slice(from, at) + replacement;
+    from = at + lowerNeedle.length;
+  }
+  return out + text.slice(from);
 }
 
 const vnd = (amount: number) => `${amount.toLocaleString('vi-VN')} VND`;
@@ -243,7 +311,7 @@ export function deterministicReply(ctx: GroundedAnswerContext): string {
             ? `Mình tìm thấy ${ctx.places.length} địa điểm trong dữ liệu GoGo phù hợp với yêu cầu của bạn:`
             : `I found ${ctx.places.length} places in GoGo's data that match your request:`,
         );
-        for (const p of ctx.places) lines.push(`- ${p.name}`);
+        for (const p of ctx.places) lines.push(`- ${placeToken(p.placeId)}`);
         lines.push(
           vi
             ? 'Giá và giờ mở cửa đã được GoGo xác minh nằm trên các thẻ bên dưới.'

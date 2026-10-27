@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { PrivacyJobs } from '@gogo/modules';
+import { AssistantRepository } from '../../../libs/modules/assistant/infrastructure/assistant.repository';
+import { AssistantTurnRunner } from '../../../libs/modules/assistant/application/assistant-turn-runner.service';
+import {
+  ASSISTANT_FRAME_BUFFER,
+  type AssistantFrameBuffer,
+} from '../../../libs/modules/assistant/infrastructure/frame-buffer';
 import {
   parseSse,
   startAssistantFixture,
@@ -274,7 +280,17 @@ describe('send, stream, stop', () => {
     );
     expect(replay.statusCode).toBe(202);
     expect(replay.headers['x-idempotent-replay']).toBe('true');
-    expect(replay.json()).toEqual(body);
+    // The same turns, read again (A-R-08: the record keeps ids, not text).
+    expect(replay.json().userMessage).toMatchObject({
+      id: body.userMessage.id,
+      text: body.userMessage.text,
+    });
+    expect(replay.json().assistantMessage.id).toBe(body.assistantMessage.id);
+    const record = await f.db.execute(sql`
+      select response_body::text as body from idempotency_keys
+      where response_body->>'assistantMessageId' = ${body.assistantMessage.id}`);
+    expect(record.rows).toHaveLength(1);
+    expect((record.rows[0] as { body: string }).body).not.toContain('Cầu Giấy');
     const reused = await send(bob, conversationId, 'khác', idem);
     expect(reused.statusCode).toBe(422);
     const after = (
@@ -331,6 +347,30 @@ describe('send, stream, stop', () => {
     const stored = row.rows[0] as { frames: string; cards: string };
     expect(stored.frames).not.toMatch(/priceMin|priceMax|"facts"|openNow/);
     expect(stored.cards).not.toMatch(/priceMin|name/);
+
+    // A-R-04: no place name is stored anywhere a reply is kept — the text,
+    // its frames, the conversation preview. Readers see today's names.
+    const names = [
+      'Ánh Trăng Bistro',
+      'Vườn Lá Kitchen',
+      'Bia Phố Sôi Động',
+      'Thượng Uyển Fine Dining',
+      'Cà Phê Gác Nhỏ',
+    ];
+    const kept = await f.db.execute(sql`
+      select m.text || m.frames::text || coalesce(c.preview, '') as all_text
+      from assistant_messages m join assistant_conversations c on c.id = m.conversation_id
+      where m.id = ${body.assistantMessage.id}`);
+    const allText = (kept.rows[0] as { all_text: string }).all_text;
+    for (const n of names) expect(allText).not.toContain(n);
+    const shownNames = done.cards.map((c: { facts: { name: string } }) => c.facts.name);
+    for (const n of shownNames) expect(done.text).toContain(n);
+    const delta = s.frames
+      .filter((x) => x.event === 'delta')
+      .map((x) => x.data.text)
+      .join('');
+    for (const n of shownNames) expect(delta).toContain(n);
+    expect(delta).not.toMatch(/[\uE000\uE001]/);
   });
 
   it('one reply at a time per conversation: 409 ASSISTANT_TURN_IN_PROGRESS', async () => {
@@ -727,6 +767,109 @@ describe('feedback and the CMS', () => {
   });
 });
 
+describe('Astra round 1 (GoGo-BE#717)', () => {
+  const repo = () => f.app.get(AssistantRepository);
+  const monthStart = () => {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  };
+
+  it('A-R-01: concurrent sends from different accounts cannot overspend the budget', async () => {
+    const users = await Promise.all([1, 2, 3, 4].map((i) => f.register(`budget${i}@gogo.test`)));
+    const convs = await Promise.all(users.map((u) => newConversation(u)));
+    // Leave room for exactly one more turn at the per-turn ceiling (0.005).
+    const spent = await repo().monthSpendUsd(f.db, monthStart(), 0.005);
+    const filler = await f.db.execute(sql`
+      insert into assistant_usage_ledger (status, jev_calls, jev_cost_usd)
+      values ('complete', 1, ${(0.9945 - spent).toFixed(8)}::numeric) returning id`);
+    const fillerId = (filler.rows[0] as { id: string }).id;
+    try {
+      const results = await Promise.all(
+        users.map((u, i) => send(u, convs[i]!, 'Tìm quán cà phê ở Cầu Giấy, Hà Nội')),
+      );
+      const codes = results.map((r) => r.statusCode).sort();
+      expect(codes).toEqual([202, 503, 503, 503]);
+      const ok = results.find((r) => r.statusCode === 202)!;
+      const i = results.indexOf(ok);
+      await waitTerminal(users[i]!, convs[i]!, ok.json().assistantMessage.id);
+    } finally {
+      await f.db.execute(sql`delete from assistant_usage_ledger where id = ${fillerId}`);
+    }
+  });
+
+  it('A-R-02: a reaped turn keeps its reservation; unknown spend is never 0', async () => {
+    const id = await newConversation(alice);
+    const me = (await f.inject({ method: 'GET', url: '/v1/me', token: alice })).json().id;
+    const m = await f.db.execute(sql`
+      insert into assistant_messages (conversation_id, user_id, role, status, lease_owner, lease_expires_at)
+      values (${id}, ${me}, 'assistant', 'streaming', 'dead-instance', now() - interval '1 minute')
+      returning id`);
+    const messageId = (m.rows[0] as { id: string }).id;
+    await f.db.execute(
+      sql`insert into assistant_usage_ledger (user_id, message_id) values (${me}, ${messageId})`,
+    );
+    const before = await repo().monthSpendUsd(f.db, monthStart(), 0.005);
+    await f.app.get(AssistantTurnRunner).reap();
+    const after = await repo().monthSpendUsd(f.db, monthStart(), 0.005);
+    const ledger = await f.db.execute(
+      sql`select status from assistant_usage_ledger where message_id = ${messageId}`,
+    );
+    expect((ledger.rows[0] as { status: string }).status).toBe('unsettled');
+    // Still counted at the ceiling after the reaper — not released to 0.
+    expect(after).toBeCloseTo(before, 8);
+  });
+
+  it('A-R-11: the reaper leaves a turn whose lease is still live', async () => {
+    const id = await newConversation(alice);
+    const me = (await f.inject({ method: 'GET', url: '/v1/me', token: alice })).json().id;
+    const m = await f.db.execute(sql`
+      insert into assistant_messages (conversation_id, user_id, role, status, lease_owner, lease_expires_at)
+      values (${id}, ${me}, 'assistant', 'streaming', 'live-instance', now() + interval '5 minutes')
+      returning id`);
+    const messageId = (m.rows[0] as { id: string }).id;
+    const row = await repo().findMessageById(messageId);
+    // As if the reaper read it as lapsed just before the owner renewed.
+    const finalized = await f.app
+      .get(AssistantTurnRunner)
+      .finalizeOrphan(row!, 'failed', null, { onlyIfLeaseExpired: true });
+    expect(finalized).toBeNull();
+    expect((await repo().findMessageById(messageId))!.status).toBe('streaming');
+    await f.db.execute(sql`delete from assistant_messages where id = ${messageId}`);
+  });
+
+  it('A-R-03: a non-BYOK answer seen by any replica refuses sends on every replica', async () => {
+    const violation = await f.db.execute(sql`
+      insert into assistant_usage_ledger (status, haiku_calls, haiku_is_byok)
+      values ('complete', 1, false) returning id`);
+    const violationId = (violation.rows[0] as { id: string }).id;
+    try {
+      // This process never saw the violation itself; the ledger tells it.
+      const status = await f.inject({ method: 'GET', url: '/v1/assistant/status', token: alice });
+      expect(status.json().state).toBe('disabled');
+      const conv = (
+        await f.db.execute(sql`
+          select c.id from assistant_conversations c join users u on u.id = c.user_id
+          where u.email = 'alice@gogo.test' order by c.created_at desc limit 1`)
+      ).rows[0] as { id: string };
+      const res = await send(alice, conv.id, 'Tìm quán cà phê ở Cầu Giấy');
+      expect(res.statusCode).toBe(503);
+    } finally {
+      await f.db.execute(sql`delete from assistant_usage_ledger where id = ${violationId}`);
+    }
+  });
+
+  it('A-R-09: the opened place is recommended only if the same filters keep it', async () => {
+    const id = await newConversation(alice, { context: { placeId: f.places.pricey } });
+    const res = await send(alice, id, 'Tìm quán cà phê yên tĩnh gần đây');
+    expect(res.statusCode).toBe(202);
+    const done = await waitTerminal(alice, id, res.json().assistantMessage.id);
+    const ids = done.cards.map((c: { placeId: string }) => c.placeId);
+    // A fine-dining restaurant is not a café: it is never prepended.
+    expect(ids).not.toContain(f.places.pricey);
+    expect(ids).toContain(f.places.cafe);
+  });
+});
+
 describe('privacy', () => {
   it('export includes the conversations; retention purges after 90 days; erasure deletes', async () => {
     const dave = await f.register('dave@gogo.test');
@@ -747,11 +890,30 @@ describe('privacy', () => {
     ).toBe(404);
 
     const kept = await newConversation(dave);
+    // A-R-08: a real turn first, so there is a replay record and a live buffer.
+    const sent = await send(dave, kept, 'Tìm quán cà phê ở Cầu Giấy, Hà Nội');
+    expect(sent.statusCode).toBe(202);
+    const replyId = sent.json().assistantMessage.id as string;
+    await waitTerminal(dave, kept, replyId);
+    const buffer = f.app.get<AssistantFrameBuffer>(ASSISTANT_FRAME_BUFFER);
+    expect((await buffer.read(replyId, 0)).length).toBeGreaterThan(0);
+    const daveId = (await f.inject({ method: 'GET', url: '/v1/me', token: dave })).json().id;
+
     const del = await f.inject({ method: 'DELETE', url: '/v1/me', token: dave });
     expect([200, 204]).toContain(del.statusCode);
     const left = await f.db.execute(
       sql`select count(*)::int as n from assistant_conversations where id = ${kept}`,
     );
     expect((left.rows[0] as { n: number }).n).toBe(0);
+    const replay = await f.db.execute(sql`
+      select count(*)::int as n from idempotency_keys
+      where actor_id = ${`user:${daveId}`} and endpoint like '% /v1/assistant/%'`);
+    expect((replay.rows[0] as { n: number }).n).toBe(0);
+    await f.app.get(AssistantTurnRunner).reap();
+    expect(await buffer.read(replyId, 0)).toEqual([]);
+    const pending = await f.db.execute(
+      sql`select count(*)::int as n from assistant_buffer_purges where message_id = ${replyId}`,
+    );
+    expect((pending.rows[0] as { n: number }).n).toBe(0);
   });
 });

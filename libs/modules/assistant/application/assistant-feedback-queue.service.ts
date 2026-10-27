@@ -1,10 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { createHmac } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import { APP_CONFIG } from '../../shared/config';
+import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import { decodeCursor, encodeCursor, isoUs } from '../domain/cursor';
+import { renderPlaceTexts } from './place-text';
 import type {
   AssistantCardRef,
   AssistantNotice,
@@ -36,6 +38,8 @@ type QueueRow = {
 @Injectable()
 export class AssistantFeedbackQueueService {
   private readonly key: Buffer;
+  /** Seals the page cursor, which names a message by its real id (A-R-13). */
+  private readonly cursorKey: Buffer;
 
   constructor(
     @Inject(DB) private readonly db: Db,
@@ -43,6 +47,9 @@ export class AssistantFeedbackQueueService {
   ) {
     this.key = createHmac('sha256', config.AUTH_JWT_SECRET)
       .update('assistant-feedback-ref')
+      .digest();
+    this.cursorKey = createHmac('sha256', config.AUTH_JWT_SECRET)
+      .update('assistant-feedback-cursor')
       .digest();
   }
 
@@ -59,7 +66,7 @@ export class AssistantFeedbackQueueService {
     if (query.reason) conditions.push(sql`f.reason = ${query.reason}`);
     if (query.from) conditions.push(sql`f.created_at >= ${query.from}::timestamptz`);
     if (query.to) conditions.push(sql`f.created_at < ${query.to}::timestamptz`);
-    const cursor = decodeCursor(query.cursor);
+    const cursor = this.openCursor(query.cursor);
     if (cursor) {
       conditions.push(
         sql`(f.created_at, f.message_id) < (${cursor.at}::timestamptz, ${cursor.id}::uuid)`,
@@ -84,8 +91,13 @@ export class AssistantFeedbackQueueService {
     const rows = res.rows as QueueRow[];
     const page = rows.slice(0, query.limit);
     const last = page[page.length - 1];
+    // Replies name places by token (A-R-04): moderators read today's names.
+    const texts = await renderPlaceTexts(
+      this.db,
+      page.map((r) => r.text),
+    );
     return {
-      items: page.map((r) => ({
+      items: page.map((r, i) => ({
         id: this.uuidRef(r.message_id),
         rating: r.rating,
         ...(r.reason ? { reason: r.reason } : {}),
@@ -93,7 +105,7 @@ export class AssistantFeedbackQueueService {
         conversationRef: this.ref(r.conversation_id),
         reply: {
           status: r.status,
-          text: r.text,
+          text: texts[i]!,
           sources: (r.sources ?? []).map((s) =>
             Object.fromEntries(Object.entries(s).filter(([, v]) => v !== null && v !== undefined)),
           ),
@@ -103,10 +115,35 @@ export class AssistantFeedbackQueueService {
           model: r.model ?? 'deterministic',
         },
       })),
-      // The cursor names the row by its real key; it never leaves the CMS.
+      // The cursor names the row by its real key, so it travels sealed: a
+      // moderator cannot read the app's message id out of it (A-R-13).
       nextCursor:
-        rows.length > query.limit && last ? encodeCursor(last.created_at, last.message_id) : null,
+        rows.length > query.limit && last
+          ? this.sealCursor(encodeCursor(last.created_at, last.message_id))
+          : null,
     };
+  }
+
+  private sealCursor(plain: string): string {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', this.cursorKey, iv);
+    const body = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+    return Buffer.concat([iv, cipher.getAuthTag(), body]).toString('base64url');
+  }
+
+  private openCursor(sealed: string | undefined): { at: string; id: string } | null {
+    if (!sealed) return null;
+    let plain: string;
+    try {
+      const raw = Buffer.from(sealed, 'base64url');
+      if (raw.length < 29) throw new Error('short');
+      const decipher = createDecipheriv('aes-256-gcm', this.cursorKey, raw.subarray(0, 12));
+      decipher.setAuthTag(raw.subarray(12, 28));
+      plain = Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString('utf8');
+    } catch {
+      throw AppError.badRequest('INVALID_CURSOR', 'Cursor is not valid');
+    }
+    return decodeCursor(plain);
   }
 
   private ref(id: string): string {
