@@ -62,7 +62,7 @@ repository on an up-to-date `develop`:
   a script, `env`, a path to git, `git -C …`/`-c …`, any other git subcommand or alias, a gh
   alias/extension, `gh pr merge`/`review`, `-R HOST/OWNER/REPO`, `--hostname`, a URL where a
   number belongs, `-w`/`-e` — is refused before any token is minted, and gh is pinned to
-  github.com. Run it from the checkout it concerns. (GoGo-Infra `docs/secrets.md` → *Using it* has the
+  github.com. Run it from the checkout it concerns. (GoGo-Infra `docs/secrets.md` → _Using it_ has the
   tables and the stated residuals; a new form is one table line plus a test, never a wider rule.)
 - The command runs in an environment the wrapper builds: your global/system git and gh config,
   `~/.netrc`, hooks and push signing are not loaded (proxy/CA only via the environment), and the
@@ -84,4 +84,4 @@ repository on an up-to-date `develop`:
 - Never print the token, write it to git config or a file, or put it in a remote URL.
 - Never merge. Merging stays with the owner.
 
-Details, creation and revocation: GoGo-Infra `docs/secrets.md` → *Agent GitHub App*.
+Details, creation and revocation: GoGo-Infra `docs/secrets.md` → _Agent GitHub App_.
