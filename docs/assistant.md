@@ -1,10 +1,13 @@
 # GoGo AI assistant — module design (GoGo-BE#713)
 
-Status: **contract landed (PR 1, amended by contract PR 2), module not built.**
-This note is what the module PRs implement against. The contract is
-`openapi/gogo.v1.yaml` 2.0.0-alpha.3, tag `assistant`, every operation marked
-`x-gogo-planned: GoGo-BE#713`. The SA decisions applied in 2.0.0-alpha.3 are
-listed under [Decisions](#decisions-sa-on-gogo-be713-owner-delegated).
+Status: **module built (PR 3, contract 2.0.0-alpha.4 — every `/assistant/*` and
+`/cms/assistant/*` operation served, `x-gogo-planned` removed).** Runtime models
+and billing are ADR-0036: Jev (`typesafe/jev-1.14`, OpenRouter Decisions API,
+OpenRouter-direct billing) decides; the backend executes and validates; Claude
+Haiku (`anthropic/claude-haiku-5.5`, OpenRouter Chat Completions, Anthropic
+BYOK) explains. See [As built](#as-built-pr-3) for where the implementation
+deliberately differs from the sketch below. The SA decisions applied in
+2.0.0-alpha.3 are listed under [Decisions](#decisions-sa-on-gogo-be713-owner-delegated).
 
 Authorities: epic GoGo-MobileApp#377 (owner decisions 2026-10-26 are binding),
 GoGo-CMS#249 (console),
@@ -281,10 +284,185 @@ as noted on the issue.
 Out of scope here (owner's separate configuration work): provider, credentials,
 model choice, settings names and spend limits.
 
+## As built (PR 3)
+
+Where the implementation is more specific than (or differs from) the design above:
+
+- **No fake LLM.** `FakeAssistantLlm` was not built (ADR-0036 forbids mock
+  inference). Without `OPENROUTER_API_KEY` neither model binding exists and sends
+  answer `503 ASSISTANT_DISABLED`.
+- **Pipeline** (`AssistantOrchestrator`): bounded history (6 turns) →
+  `parseIntentFacts` → **one** Jev call (the #709 intent questions + `assistant_intent`,
+  `action`, `needs_unverified_attribute`) → area through the published administrative
+  dataset (`AssistantAreaResolver`) → `SearchService.search` (category, suitability,
+  per-person price ceiling, `openAt` only for "now") → optional **one** Jev relevance
+  call over ≤ 6 server-keyed candidates (only when a mood/setting was asked) → card
+  re-validation (published, `priceMin ≤ budget`) → **one** Haiku stream → structured
+  frames. Out-of-scope, empty results, clarification and every model failure before
+  text use a deterministic reply built from validated data (`deterministicReply`).
+- **Where turns run.** In the API process after the send commits, under a DB
+  generation lease (`lease_owner`, `lease_expires_at`, renewed every 20 s, text
+  checkpointed). A process that dies mid-reply loses the lease; the reaper (every API
+  instance, every 60 s) ends the turn `failed` with the checkpointed text. The worker
+  is not involved: since #265 it holds no Redis connection and polls Postgres, which
+  would add seconds to time-to-first-text. Retention is in the worker's daily
+  `PrivacyJobs` run.
+- **Frames.** Redis list `assistant:frames:{messageId}` (TTL 1 h; in memory without
+  `REDIS_URL`), `seq` = SSE `id`, folded into `assistant_messages.frames` at the
+  terminal state. **Card frames store refs only** (`{kind, placeId}`); every SSE
+  reader and every history read hydrates facts from verified data, so neither Redis
+  nor the row keeps a copy of place facts.
+- **Allowance and spend** read `assistant_usage_ledger`, not messages, so deleting a
+  conversation neither refunds the day nor hides spend. Unknown cost is `NULL` in the
+  ledger and counted at `ASSISTANT_TURN_COST_CEILING_USD` against the monthly ceiling.
+- **Strict BYOK at runtime.** The Haiku request pins `provider.only = ['anthropic']`,
+  `allow_fallbacks: false`, `reasoning.enabled: false`. Each call's `usage.is_byok`
+  is recorded; an `is_byok: false` answer quarantines new sends for 10 minutes
+  (`byok_unverified`) and logs `assistant.byok_violation`.
+- **Cost Center.** Haiku runs on the backend key `gogo_be_*`; its activity items are
+  filed under `openrouter.claude_byok` (OpenRouter's BYOK fee + meters) instead of
+  `openrouter.decisions`, which stays Jev-only. The Anthropic inference itself is
+  `anthropic.claude_byok` (existing collector). Nothing is counted twice.
+- **Attachments** stay unavailable: `POST /uploads` does not accept
+  `purpose: assistant_image` yet, so any attachment is `400 ATTACHMENT_INVALID`.
+- **Proposals generated** from chat: `create_room` (any turn that asks to plan), and
+  `create_invite` / `finalize_plan` when opened from a plan. `cast_vote` is
+  confirmable but not yet proposed by the orchestrator. Invite codes are never stored
+  in a proposal result.
+- **Feedback queue ids** are keyed HMACs (row id, `conversationRef`), unlinkable to
+  app ids.
+
+### Astra round 1 (PR #717) — what changed
+
+- **Place names are never stored (A-R-04, CLAUDE.md "no new persistent Google
+  content").** A reply names a place by a token holding its id only
+  (`domain/place-tokens.ts`, private-use delimiters). Haiku is told to write
+  `[P1]`, `[P2]`…; the sanitizer turns those, and any listed name it wrote anyway,
+  into tokens. The deterministic reply writes tokens. The message text, its frames,
+  the buffer and the preview therefore hold ids; every read (history, SSE, export,
+  moderation queue) renders today's name from `places`. Earlier replies reach Haiku
+  with their places as "a place". Search over reply text no longer matches a place's
+  name — accepted.
+- **Budget (A-R-01).** The send re-reads readiness inside its transaction under a
+  global `assistant:budget` advisory lock (after the account lock) and reserves the
+  ledger row before releasing it.
+- **Unsettled spend (A-R-02).** A turn finalized by a stop fallback or the reaper
+  leaves its ledger row `unsettled`, counted at the per-turn ceiling; a live runner
+  overwrites it with what it reported. A Haiku call with no OpenRouter fee reported
+  is also unknown.
+- **BYOK quarantine (A-R-03)** is read from the ledger (`haiku_is_byok = false`
+  within the quarantine window), written the moment the violation is seen, so it
+  holds on every replica and across restarts.
+- **One first-text deadline (A-R-05)** over every stage; a stage still running when
+  it passes is abandoned and the turn answers with a fixed "slower than usual"
+  reply and a `timeout` fallback notice.
+- **Cancellation (A-R-06)** is checked at every stage boundary, before the Haiku
+  call, before the deterministic reply and before a proposal is prepared; a turn
+  aborted while finishing ends as the abort says.
+- **Confirm (A-R-07).** Only a 4xx refusal from the target use case releases a
+  proposal to `pending`; any other failure may have followed a committed write, so
+  the proposal stays claimed until it expires (`assistant_proposals_total
+{outcome=ambiguous}`) — no second write.
+- **Erasure (A-R-08).** Send replay records keep ids only and are rebuilt from the
+  rows; erasure deletes the account's assistant replay records and lists recent
+  replies in `assistant_buffer_purges`, drained by the reaper on every instance
+  (live buffers dropped). Deleting a conversation drops its buffers directly; a
+  runner that finds its row gone writes nothing more and drops its own.
+- **Context place (A-R-09)** is a candidate only if the same search filters return
+  it (with no area named, the search is anchored 2 km around it).
+- **Frame holes (A-R-10).** The Redis buffer is read by `seq`, not list position;
+  readers deliver only frames contiguous with `Last-Event-ID` and fill a hole from
+  the finalized row.
+- **Terminal frames (A-R-11)** are published only by the writer that finalized; the
+  reaper re-checks lease expiry in its finalize statement.
+- **Telemetry (A-R-12).** `q` on the assistant conversation search is redacted in
+  request logs and Sentry (URL and query string).
+- **Feedback queue cursor (A-R-13)** is sealed with AES-256-GCM.
+
+### Astra round 2 (PR #717) — what changed
+
+- **Names in any spelling (A-R2-02).** The sanitizer matches listed names
+  case-, diacritic- and whitespace-insensitively, after any punctuation, and
+  holds back enough text that a name split across deltas is judged whole. Owner
+  decision 2026-10-27: Haiku may not shorten a name, so any run of two or more
+  consecutive words of a listed name is replaced by its token too, and the
+  prompt forbids parts, abbreviations, nicknames, translations and respellings.
+  A respelling that matches none of these remains a residual of model prose.
+- **Export (A-R2-03, owner decision 2026-10-27).** The export is stored, so a
+  place in it reads "địa điểm GoGo (id)" — never a name.
+- **Replay records (A-R2-04).** Conversation create stores the new id only and
+  replays from the row; rename and stop are idempotent by themselves and store
+  no replay body (`NoIdempotencyReplay`).
+- **Preview (A-R2-05)** is truncated at a token boundary.
+- **Abandoned stages (A-R2-06)** get the guard's signal: a stage the deadline
+  abandoned starts no Jev call, and while any Jev call is in flight the turn's
+  Jev cost is unknown, so a ledger settled early is counted at the ceiling.
+- **Live buffer (A-R2-07)** is never awaited by the turn (at most 2 s when it
+  ends); a stalled append leaves a hole the reader fills from the row.
+- **Buffer purges (A-R2-08)** are queued in the conversation-delete transaction
+  as well as in erasure, for every reply younger than the buffer's lifetime
+  (`BUFFER_LIFETIME_SECONDS`); a failed drop keeps its row and is retried.
+- **Losing writers (A-R2-09)** append nothing after an abort unless they win
+  finalization, and a reader always ends with the committed terminal frame.
+- **Telemetry (A-R2-10)** redacts every decoded `q` (repeated, `%71`) on the
+  assistant search, in the URL and the query string.
+
+### Astra round 3 (PR #717) — what changed
+
+- **Exact names, never shortened (owner, 2026-10-27).** Haiku's reply may not
+  carry wrong or shortened place information: every mention it makes is turned
+  into a token, so the person always reads the full verified name.
+- **Emoji (A-R3-01).** Name matching maps every UTF-16 unit, so an emoji before,
+  between or after a name no longer lets the original name through.
+- **Long whitespace (A-R3-02).** Text is held back while its last words could
+  still begin a listed name, judged on the folded form — whatever whitespace
+  follows — instead of a fixed length.
+- **Visible-text deadline (A-R3-03).** Model text the sanitizer still holds back
+  does not count as started: at the deadline the call ends and the
+  deterministic reply is shown.
+- **Tombstones (A-R3-04).** Dropping a buffer leaves a tombstone for its whole
+  lifetime; an append still queued by a stale runner is refused atomically
+  (Redis Lua), so purged content cannot reappear.
+- **Input the search cannot place (owner, 2026-10-27).** An empty search says
+  nothing was found and asks the person to re-enter the place, area or budget —
+  it never guesses.
+- Tech debt: A-R3-05 (a reconnect after the terminal frame receives it again,
+  renumbered).
+
+### Sol review (PR #717) — what changed
+
+- **Two-stage sanitizer (S-F-01, S-F-02, S-F-04).** Hygiene (URLs, link targets,
+  invalid citations and markers) runs first on text released to its last
+  whitespace; names are judged afterwards on the hygienic text, so nothing
+  removed can join two name words that were judged apart. The release cut is
+  moved until it neither splits a complete name nor follows a possible name
+  prefix (overlapping names). The prefix scan folds once and walks word starts
+  only, so long whitespace costs nothing.
+- **Bounded buffer writes (S-F-03).** The buffer's Redis client has no offline
+  queue and a 5 s command timeout, and a runner issues no buffer write later
+  than 30 s after its turn ends — so no write can land after a purge's
+  tombstone (75 min) expires.
+- **Sol round 2.** Names that begin with punctuation are held across deltas
+  too (S2-F-01); the release loop folds once and walks spans from the end, so a
+  long chain of overlapping names stays linear (S2-F-03); and every buffer
+  write carries an absolute expiry (turn start + reply ceiling + 30 s) that
+  Redis checks with its own clock in the same script as the tombstone, so a
+  write delayed anywhere — a slow commit answer, the network — cannot land
+  after a purge (S2-F-02).
+
+Configuration (`apps/api/src/config/env.ts`): `OPENROUTER_API_KEY` (existing SSM
+backend row `openrouter/api-key`), `ASSISTANT_DAILY_MESSAGE_LIMIT`,
+`ASSISTANT_MESSAGES_PER_MINUTE_LIMIT`, `ASSISTANT_MONTHLY_BUDGET_USD` (all three
+unset ⇒ refuse), `ASSISTANT_TURN_COST_CEILING_USD`, `ASSISTANT_FIRST_TEXT_TIMEOUT_MS`
+(≤ 15 000), `ASSISTANT_REPLY_MAX_MS`, `ASSISTANT_MAX_OUTPUT_TOKENS`,
+`ASSISTANT_JEV_MODEL`, `ASSISTANT_JEV_TIMEOUT_MS`, `ASSISTANT_HAIKU_MODEL`. The kill
+switch is the feature flag `assistant.enabled` (default off).
+
 ## Open items
 
-1. **Configuration hand-off.** The port, credentials and spend limits are wired
-   by the owner separately; the module PR builds against `FakeAssistantLlm`.
+1. **Configuration hand-off.** Done for code (ADR-0036); the per-environment values
+   (limits, monthly budget) still have to be written to SSM by GoGo-Infra#257 before
+   the flag is turned on.
 2. **Search.** `q` is substring (unaccent + `ILIKE`/trigram) over the user's own
    rows. Fine at 90-day volume; revisit if a user's history gets large.
 3. **Attachment export scope.** Excluded until the owner approves what of an

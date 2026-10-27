@@ -584,3 +584,12 @@ export {
   type DiffIdentity,
   type DiffInput,
 } from '../administrative/domain/dataset-diff';
+
+// GoGo AI assistant (GoGo-BE#713, ADR-0036)
+export { AssistantModule } from '../assistant/presentation/assistant.module';
+export { GuideDocumentsService } from '../assistant/application/guide-documents.service';
+export {
+  purgeAssistantRetention,
+  eraseAssistantDataForUser,
+  type AssistantRetentionReport,
+} from '../assistant/application/assistant-privacy';

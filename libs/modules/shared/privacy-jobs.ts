@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
+import { purgeAssistantRetention } from '../assistant/application/assistant-privacy';
 
 export type PrivacyRunReport = {
   searchTermsPurged: number;
@@ -20,6 +21,10 @@ export type PrivacyRunReport = {
    * the legal basis lapsed with it. Somebody has to look.
    */
   privacyHoldReviewsOverdue: number;
+  /** GoGo-BE#713 — GoGo AI conversations past the 90-day window, hard-deleted. */
+  assistantConversationsPurged: number;
+  /** GoGo-BE#713 — assistant usage-ledger rows past 400 days (money records). */
+  assistantLedgerRowsPurged: number;
 };
 
 /**
@@ -39,6 +44,8 @@ export class PrivacyJobs {
       mediaUploadsPurged: 0,
       privacyRequestsPurged: 0,
       privacyHoldReviewsOverdue: 0,
+      assistantConversationsPurged: 0,
+      assistantLedgerRowsPurged: 0,
     };
 
     const count = async (query: string): Promise<number> => {
@@ -178,6 +185,10 @@ export class PrivacyJobs {
           and released_at is null
           and review_at <= now()`,
     );
+
+    // GoGo-BE#713 — 90 days after the last message (owner decision), cascading
+    // to messages, sources, proposals and feedback.
+    Object.assign(report, await purgeAssistantRetention(this.db, dryRun));
 
     return report;
   }

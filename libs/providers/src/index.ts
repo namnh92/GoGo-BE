@@ -197,6 +197,7 @@ export {
   OpenRouterDecisionProvider,
   parseDecisionResponse,
   type DecisionAnswer,
+  type DecisionCallOptions,
   type DecisionCriterion,
   type DecisionProviderPort,
   type DecisionQuestion,
@@ -216,3 +217,23 @@ export {
   type OpenRouterUsageErrorCode,
   type OpenRouterUsagePort,
 } from './openrouter-usage.adapter';
+export {
+  ASSISTANT_LLM,
+  AssistantLlmError,
+  HAIKU_MODEL,
+  type AssistantLlmBillingSource,
+  type AssistantLlmErrorKind,
+  type AssistantLlmEvent,
+  type AssistantLlmMessage,
+  type AssistantLlmPort,
+  type AssistantLlmRequest,
+  type AssistantLlmUsage,
+} from './assistant-llm.port';
+export {
+  OPENROUTER_CHAT_COMPLETIONS_URL,
+  OpenRouterAssistantLlmAdapter,
+  buildChatBody,
+  parseUsage as parseAssistantLlmUsage,
+  servedModelMatches,
+  type OpenRouterAssistantLlmOptions,
+} from './openrouter-assistant-llm.adapter';

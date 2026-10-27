@@ -349,6 +349,33 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   privacy_export_cleanup_pending: [],
   privacy_export_cleanup_dead_lettered: [],
   privacy_export_cleanup_overdue: [],
+
+  // --- GoGo AI assistant (GoGo-BE#713, ADR-0036) ----------------------------
+  // Closed sets only; never a user, conversation, message or text.
+  // `outcome`: accepted | kill_switch | unconfigured | budget_exhausted |
+  // byok_unverified | daily_limit | rate_limited.
+  assistant_admission_total: ['outcome'],
+  // `source`: decision_model | fallback; `intent`: the four ASSISTANT_INTENTS.
+  assistant_decisions_total: ['source', 'intent'],
+  // `reason`: timeout | provider_unavailable | invalid_output.
+  assistant_fallbacks_total: ['reason'],
+  // `route`: the AssistantRoute set; `status`: complete | fallback | truncated.
+  assistant_turn_duration_seconds: ['route', 'status'],
+  // `provider`: jev | haiku; `outcome`: ok or an IntentFallbackReason /
+  // composition fallback reason (closed sets).
+  assistant_provider_duration_seconds: ['provider', 'outcome'],
+  assistant_first_text_seconds: [],
+  // `billing_source`: anthropic_byok | openrouter_credits | unknown.
+  assistant_haiku_calls_total: ['billing_source'],
+  // `status`: terminal message status, or `reaped`.
+  assistant_turns_total: ['status'],
+  assistant_stops_total: [],
+  // `rating`: up | down.
+  assistant_feedback_total: ['rating'],
+  // `outcome`: confirmed | dismissed | refused.
+  assistant_proposals_total: ['outcome'],
+  // `reason`: actor_cap.
+  assistant_stream_refusals_total: ['reason'],
 };
 
 /**

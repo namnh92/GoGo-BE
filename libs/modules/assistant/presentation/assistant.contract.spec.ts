@@ -5,9 +5,8 @@ import { parse as parseYaml } from 'yaml';
 
 /**
  * GoGo-BE#713 — the GoGo AI contract, read from the published document the
- * way a generated client reads it. Contract-first: the module that serves
- * these operations lands in a later PR, so these are the guarantees Mobile#378
- * and CMS#249 generate against, pinned before any code can drift from them.
+ * way a generated client reads it: the guarantees Mobile#378 and CMS#249
+ * generate against, pinned so the served module cannot drift from them.
  */
 const SPEC = path.resolve(__dirname, '../../../../openapi/gogo.v1.yaml');
 
@@ -83,11 +82,12 @@ const CMS_OPERATIONS: [string, string][] = [
 
 describe('GoGo AI contract (GoGo-BE#713)', () => {
   it.each([...APP_OPERATIONS, ...CMS_OPERATIONS])(
-    '%s %s is declared, tagged assistant and marked planned',
+    '%s %s is declared, tagged assistant and served (no planned marker)',
     (route, method) => {
       const operation = op(route, method);
       expect(operation.tags).toContain('assistant');
-      expect(operation['x-gogo-planned']).toBe('GoGo-BE#713');
+      // 2.0.0-alpha.4: the module serves it; `pnpm api:routes` proves both directions.
+      expect(operation['x-gogo-planned']).toBeUndefined();
     },
   );
 

@@ -1,5 +1,6 @@
 import { withResilience } from './resilience';
 import {
+  ProviderCallAbortedError,
   ProviderConfigurationError,
   ProviderInvalidRequestError,
   ProviderQuotaExceededError,
@@ -71,8 +72,16 @@ export type DecisionResponse = {
   };
 };
 
+export type DecisionCallOptions = {
+  /**
+   * GoGo-BE#713 — the caller's own cancellation (a user pressing Stop). It
+   * aborts the in-flight request and is never counted against the breaker.
+   */
+  signal?: AbortSignal;
+};
+
 export interface DecisionProviderPort {
-  decide(request: DecisionRequest): Promise<DecisionResponse>;
+  decide(request: DecisionRequest, options?: DecisionCallOptions): Promise<DecisionResponse>;
 }
 
 export const DECISION_PROVIDER = Symbol('DECISION_PROVIDER');
@@ -116,10 +125,15 @@ export class OpenRouterDecisionProvider implements DecisionProviderPort {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async decide(request: DecisionRequest): Promise<DecisionResponse> {
+  async decide(
+    request: DecisionRequest,
+    options: DecisionCallOptions = {},
+  ): Promise<DecisionResponse> {
     if (!this.options.apiKey) {
       throw new ProviderConfigurationError('openrouter', 'MISSING_CREDENTIAL');
     }
+    const caller = options.signal;
+    if (caller?.aborted) throw new ProviderCallAbortedError('openrouter.decisions');
     // No retries: every attempt is billed per input token, and a caller with a
     // deterministic fallback is better served by falling back than by waiting.
     return withResilience(
@@ -130,7 +144,15 @@ export class OpenRouterDecisionProvider implements DecisionProviderPort {
         breakerThreshold: 5,
         breakerCooldownMs: 30_000,
       },
-      (signal) => this.send(request, signal),
+      async (signal) => {
+        try {
+          return await this.send(request, caller ? AbortSignal.any([signal, caller]) : signal);
+        } catch (err) {
+          // The caller's abort teaches nothing about the provider.
+          if (caller?.aborted) throw new ProviderCallAbortedError('openrouter.decisions');
+          throw err;
+        }
+      },
     );
   }
 
@@ -272,7 +294,10 @@ export class FakeDecisionProvider implements DecisionProviderPort {
     private readonly model = 'fake/decision-fixture',
   ) {}
 
-  async decide(request: DecisionRequest): Promise<DecisionResponse> {
+  async decide(
+    request: DecisionRequest,
+    _options?: DecisionCallOptions,
+  ): Promise<DecisionResponse> {
     this.requests.push(request);
     const answers = await this.answer(request);
     return parseDecisionResponse(request, {

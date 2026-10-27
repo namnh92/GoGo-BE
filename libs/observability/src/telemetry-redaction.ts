@@ -93,8 +93,53 @@ const PG_FAILING_ROW = /(\bFailing row contains )\([^\n]*/g;
 /** PostgreSQL detail for a unique/foreign-key violation: `Key (cols)=(values)`. */
 const PG_KEY_HEAD = /\bKey \(/g;
 
+/**
+ * GoGo-BE#717 A-R-12 — `q` on the assistant's conversation search is a
+ * person's own words searched out of their private history: never kept in a
+ * request log or an error report. Matched with its path, so `q` on the
+ * public place search is untouched.
+ */
+const ASSISTANT_SEARCH_URL = /(\/assistant\/conversations\/?\?)([^#\s"']*)/g;
+
+/** A query key as the server reads it: percent-decoded, `+` as space. */
+function decodedKey(raw: string): string {
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, ' '));
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Every `q` value in a query string, however the key is spelt (`q`, `%71`)
+ * and however often it repeats (A-R2-10); other parameters untouched.
+ */
+function redactQParams(query: string): string {
+  return query
+    .split('&')
+    .map((pair) => {
+      const eq = pair.indexOf('=');
+      const key = eq < 0 ? pair : pair.slice(0, eq);
+      return decodedKey(key).trim() === 'q' ? `${key}=${REDACTED}` : pair;
+    })
+    .join('&');
+}
+
+export function redactPrivateSearchQuery(text: string): string {
+  return text.replace(
+    ASSISTANT_SEARCH_URL,
+    (_m, path: string, query: string) => `${path}${redactQParams(query)}`,
+  );
+}
+
+/** A bare query string (Sentry keeps it apart from the URL) of that route. */
+export function redactPrivateQueryString(url: string | undefined, query: string): string {
+  if (!url || !/\/assistant\/conversations\/?(?:[?#]|$)/.test(url)) return query;
+  return redactQParams(query);
+}
+
 export function redactCoordinateText(text: string): string {
-  const named = redactJsonContainers(text)
+  const named = redactJsonContainers(redactPrivateSearchQuery(text))
     .replace(QUERY_PARAMETER, (match, lead: string, name: string) =>
       isRedactedName(name) ? `${lead}${name}=${REDACTED}` : match,
     )

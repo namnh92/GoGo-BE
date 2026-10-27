@@ -1,6 +1,6 @@
 import * as Sentry from '@sentry/node';
 import type { Breadcrumb, ErrorEvent, NodeOptions } from '@sentry/node';
-import { redactCoordinatesDeep } from './telemetry-redaction';
+import { redactCoordinatesDeep, redactPrivateQueryString } from './telemetry-redaction';
 
 type Integration = ReturnType<typeof Sentry.getDefaultIntegrations>[number];
 
@@ -64,7 +64,14 @@ export function sanitizeRequest<T extends WithRequest>(event: T): T {
     request: {
       ...(request.url !== undefined ? { url: request.url } : {}),
       ...(request.method !== undefined ? { method: request.method } : {}),
-      ...(request.query_string !== undefined ? { query_string: request.query_string } : {}),
+      ...(request.query_string !== undefined
+        ? {
+            query_string:
+              typeof request.query_string === 'string'
+                ? redactPrivateQueryString(request.url, request.query_string)
+                : request.query_string,
+          }
+        : {}),
       ...(headers ? { headers } : {}),
     },
   };
