@@ -1,24 +1,24 @@
-# ADR-0036 — GoGo AI Assistant: live OpenRouter BYOK, Jev decisions, Claude Haiku responses
+# ADR-0036 — GoGo AI Assistant: OpenRouter-direct Jev and Anthropic-BYOK Claude Haiku
 
-- **Status:** Accepted (owner decision, 2026-10-27); implementation pending
+- **Status:** Accepted (owner decisions, 2026-10-27; BYOK routing/billing clarified 2026-10-27); implementation pending
 - **Scope:** GoGo-BE runtime, GoGo-MobileApp assistant
 - **Related:** GoGo-BE#713, #709, #711; GoGo-Infra#257; GoGo-MobileApp#377
 - **References:** `docs/assistant.md`, `docs/adr/0035-decision-models-for-intent-classification.md`, `CLAUDE.md`
 
 ## 1. Decision
 
-GoGo Mobile App calls GoGo-BE only. Backend owns authorization, conversation state, query execution, hard constraints, ranking, card facts, SSE, usage and permitted write transactions. Two real models, both reached through **OpenRouter's existing live gateway key**, are used:
+GoGo Mobile App calls GoGo-BE only. Backend owns authorization, conversation state, query execution, hard constraints, ranking, card facts, SSE, usage and permitted write transactions. Two real models are reached via **GoGo-BE's existing live OpenRouter gateway key**, but their *upstream billing and credential routes are deliberately different*:
 
-| Purpose | Pinned model | OpenRouter endpoint | Responsibility |
-| --- | --- | --- | --- |
-| Semantic decisions | `typesafe/jev-1.14` | `POST https://openrouter.ai/api/alpha/decisions` | Typed intent, clarification, category/mood and (when justified) relevance judgments |
-| Answer composition | `anthropic/claude-haiku-5.5` | `POST https://openrouter.ai/api/v1/chat/completions`, streaming | Natural Vietnamese grounded response, no authoritative facts |
+| Purpose | Pinned model | OpenRouter endpoint | Upstream route / billing | Responsibility |
+| --- | --- | --- | --- | --- |
+| Semantic decisions | `typesafe/jev-1.14` | `POST https://openrouter.ai/api/alpha/decisions` | **OpenRouter native/direct** (NOT BYOK), billed to OpenRouter credits | Typed intent, clarification, category/mood and (when justified) relevance judgments |
+| Answer composition | `anthropic/claude-haiku-5.5` | `POST https://openrouter.ai/api/v1/chat/completions`, streaming | **Anthropic BYOK through OpenRouter**, billed by Anthropic; OpenRouter BYOK fee only if allowance exceeded | Natural Vietnamese grounded response, no authoritative facts |
 
 **Haiku 5.5 is the owner's cost-optimization choice, superseding Sonnet.** No automatic Sonnet fallback. Do not use `~latest` aliases or silently swap models. Model changes require a documented owner decision.
 
-The owner states that their live OpenRouter gateway key and upstream BYOK configuration for Claude and Jev **already exist**. **Reuse them; do not request, create, rotate or expose keys.** No mock, fake, demo, local-simulated or canned-inference assistant implementation or acceptance tests. Pure deterministic unit tests on code-level policy/parsing/repositories are allowed; these are not substitutes for live inference integration tests.
+The owner confirms **(2026-10-27)** that the live OpenRouter gateway API key is already provisioned; Anthropic Claude uses existing provider **BYOK in OpenRouter**, while **Jev uses OpenRouter's native/direct (non-BYOK) inference**, funded through OpenRouter credits. **Reuse existing credentials/configuration; do not ask the owner to create/provide another key, rotate existing keys or reveal their values.** No mock, fake, demo, local-simulated or canned-inference assistant implementation or acceptance tests. Pure deterministic unit tests on code-level policy/parsing/repositories are allowed; these are not substitutes for live inference integration tests.
 
-**Important distinction:** BE authenticates to OpenRouter with its existing runtime gateway key, not a provider's raw BYOK secret. OpenRouter chooses the upstream credential/endpoint. Before enabling real users, verify model allowlists, selected provider, BYOK routing and OpenRouter/shared-capacity fallback settings separately for **both** Jev and Haiku. A successful 200 response proves model availability, not that BYOK was used. For strict BYOK use, ensure shared-capacity fallback is disabled in the OpenRouter workspace/provider configuration; fail closed if credentials/routing do not meet the approved policy. Do not assume chat routing preferences apply to the Decisions API. Never print credentials or capture full upstream payloads in logs.
+**Gateway vs. upstream routing:** BE authenticates **both** API calls to OpenRouter with the existing gateway key, never with Anthropic's raw provider key. For **Haiku only**, OpenRouter must select the configured Anthropic BYOK key, with provider-key priority and fallback configured for **strict BYOK** (no silent shared-capacity fallback). For **Jev**, OpenRouter's Decisions API is explicitly **non-BYOK** and charged to the OpenRouter account; do not add BYOK-only constraints to Jev or assume chat provider routing policies apply to the Decisions API. Before enabling users, check Haiku's actual upstream BYOK route and Jev's actual direct OpenRouter route separately; 200 responses alone do not establish billing provenance. Never print credentials or capture full upstream payloads in logs.
 
 Runtime assistant must be completely isolated from GoGo-Infra development AI Harness; it cannot invoke agents, tool execution, shell or development policy modules.
 
@@ -43,7 +43,7 @@ Hard rules: no AI-generated price, address, opening hours, rating, availability,
 ### A. Admit and persist (short synchronous send)
 
 1. Authenticate the registered actor and verify ownership of the conversation, optional `placeId`/`planId` context chip, and any uploaded images.
-2. Check `assistant.enabled`, provider configuration/strict BYOK readiness, hard per-environment budget, per-account 30 accepted messages/day and five per rolling minute (configurable), and only one in-flight turn per conversation. Unconfigured spend limit means **disabled**, not unlimited.
+2. Check `assistant.enabled`, Haiku **Anthropic-BYOK** readiness, Jev **OpenRouter-direct** readiness, hard per-environment budget, per-account 30 accepted messages/day and five per rolling minute (configurable), and only one in-flight turn per conversation. Unconfigured spend limit means **disabled**, not unlimited.
 3. Honor send idempotency before debiting account allowance. Persist request and reserved assistant turn, enqueue background work, return existing contract's `202`.
 4. Do not send user chat or private data to models on rejected requests.
 
@@ -95,7 +95,7 @@ Use a short stable system prompt and only top relevant evidence; cap conversatio
 
 SSE frames and terminal statuses remain defined by the existing contract. Maintain append-only/replayable frames for reconnect, cancellation via `AbortSignal`, and persist text/usage/status at terminal state. **No first visible text within 15 seconds** from reply orchestration start triggers a deterministic timeout fallback; the 15-second ceiling applies to the combined Jev/retrieval/Haiku first-text path, not 15 seconds independently for each call. Configured hard reply time/token ceiling ends with `done{status: truncated}`, preserving partial text and discarding incomplete structured outputs.
 
-Jev timeout/quota/config/invalid response: deterministic intent fallback from ADR-0035; continue only if safe grounded data exists. Haiku failure **before text**: a deterministic Vietnamese response sourced from the validated data (not mocked Haiku output), `notice{kind: fallback}`, `done{status: fallback}`. Failure **after text started**: emit an error and preserve partial text. Mid-reply kill switch: stop, save partial. Repeated or cross-model fallback requests are not allowed. With strict BYOK, no shared-credit provider escalation.
+Jev timeout/quota/config/invalid response: deterministic intent fallback from ADR-0035; continue only if safe grounded data exists. Haiku failure **before text**: a deterministic Vietnamese response sourced from the validated data (not mocked Haiku output), `notice{kind: fallback}`, `done{status: fallback}`. Failure **after text started**: emit an error and preserve partial text. Mid-reply kill switch: stop, save partial. Repeated or cross-model fallback requests are not allowed. **Haiku must not silently fall back from Anthropic BYOK to OpenRouter shared-credit inference**; this restriction does **not** ban Jev's explicitly approved direct OpenRouter billing.
 
 ## 4. Public behavior examples
 
@@ -109,8 +109,8 @@ Jev timeout/quota/config/invalid response: deterministic intent fallback from AD
 
 - Reuse the existing runtime OpenRouter gateway credential provisioned in SSM (currently backend row `openrouter/api-key` -> `OPENROUTER_API_KEY`); **inspect existing config first** before any change. No new mandatory key provisioning or application-side credentials.
 - Keep provider adapters separated by transport: `openrouter-decisions.adapter.ts` for `/api/alpha/decisions` and `openrouter-assistant-llm.adapter.ts` for `/api/v1/chat/completions`.
-- Confirm actual **upstream BYOK** usage for Jev and Haiku separately in OpenRouter activity/provider routing and upstream billing. Provider key allowed-model and priority settings must include `anthropic/claude-haiku-5.5`, not merely an older Haiku model. Respect owner-configured strict-BYOK failure instead of using shared OpenRouter credits.
-- Charge and report separate dimensions `openrouter.decisions` and `openrouter.assistant_haiku` or compatible Cost Center taxonomy, keyed by model, role, env and actual API usage. Store provider-reported token usage and USD when present; unknown cost is `null` and not an invented 0.
+- Confirm **Haiku = Anthropic BYOK** (Anthropic provider key, model allowlist containing `anthropic/claude-haiku-5.5`, prioritized, strict no-shared-fallback) and **Jev = OpenRouter direct/non-BYOK** (Decisions API, charged to OpenRouter credits). Validate each separately in OpenRouter usage/activity and the Anthropic bill where available; never classify Jev as BYOK. If Haiku BYOK fails, do not route Haiku to OpenRouter shared credits.
+- Charge and report distinct Cost Center dimensions: **Jev** (`openrouter.decisions`) = OpenRouter credits (direct OpenRouter inference), **Haiku** (`openrouter.assistant_haiku`) = Anthropic provider invoice via BYOK, with a separate **OpenRouter BYOK platform fee** only when the workspace's aggregate monthly BYOK allowance is exceeded. Never count an OpenRouter list-price BYOK activity entry as a second inference charge on top of Anthropic. Reconcile actual usage by model, billing source and environment; actual unknown cost is `null`, not 0. Avoid double counting OpenRouter credit-purchase transaction fees.
 - Observe admission decisions, TTFT (including Jev), E2E latency, provider errors/429/402, token usage, spend vs alert threshold, cost per accepted turn, missing sources, invalid model selections and proposal outcomes. No message body, prompt, raw image, API key, private URL, PII-bearing message or full model response in metrics, logs or Sentry.
 - Avoid unnecessary model calls for out-of-scope, empty or already deterministically resolved requests; use a bounded Jev pass for applicable user queries and a single Haiku stream only when composed prose is needed.
 - Existing image-only attachments remain private and are forwarded to a model only if the configured upstream supports the modality and the user has access.
@@ -122,24 +122,27 @@ Jev timeout/quota/config/invalid response: deterministic intent fallback from AD
 2. **Provider wiring:** Reuse live Jev provider. Add the real OpenRouter Haiku adapter with SSE parsing, token usage, typed errors, abort support and a verified explicit model ID. Never add a fake LLM adapter for assistant runtime/test acceptance.
 3. **Orchestration:** Admission -> parse -> Jev -> authorized retrieval -> optional bounded Jev relevance -> backend validation -> Haiku -> SSE, plus deterministic no-source/failure paths.
 4. **Production guards:** Add feature flag, access checks, idempotency, limits, cost ceiling, safe termination, proposals with explicit user confirmation, privacy/retention, and structured outputs.
-5. **Live DEV validation:** Using already provisioned runtime credentials, call **both** endpoints, verify actual model name, actual BYOK route and billing, input/output usage, error cases, cancel and streaming. Do not print or persist the keys. E2E live tests should be intentionally gated, budget-bounded, rate-limited, and not run automatically on every CI push.
+5. **Live DEV validation:** Use the existing runtime OpenRouter gateway credential for **both** endpoints. Verify Jev is paid from OpenRouter credits (**not** BYOK); verify Haiku selects the Anthropic BYOK upstream (**not** shared-capacity credits). Verify actual model name, usage, error cases, cancel and streaming. Reconcile costs against their separate billing sources. Do not print or persist the keys. E2E live tests should be intentionally gated, budget-bounded, rate-limited, and not run automatically on every CI push.
 6. **Tests:** Pure deterministic unit/contract/integration tests for authorization, parsing, candidate allowlist, confirmation invariants, SSE replay/stop and fallback behavior; live paid integration tests for real provider responses, failure handling and grounded Vietnamese cases. No mock inference claimed as live proof.
 7. **Rollout:** DEV behind default-off feature flag, review spending/latency/relevance/grounding, then STAG and PROD only after the owner explicitly enables each environment. No automatic model substitution, no merge without owner review.
 
-**Acceptance must include:** verified successful live Jev and Haiku calls through existing OpenRouter key; documented BYOK route for both; correct Vietnamese grounded answer and valid server-hydrated cards; hard budget and room access upheld; no fabricated IDs or facts; no unexpected writes; stop/replay/timeout/retry safe; separate usage tracking; source-backed fallback; disabled mode refusing requests; no mock model execution.
+**Acceptance must include:** verified successful live Jev and Haiku calls through existing OpenRouter gateway key; **Jev = direct OpenRouter/non-BYOK and Haiku = Anthropic BYOK** evidenced separately; correct Vietnamese grounded answer and valid server-hydrated cards; hard budget and room access upheld; no fabricated IDs or facts; no unexpected writes; stop/replay/timeout/retry safe; split billing/usage; source-backed fallback; disabled mode refusing requests; no mock model execution.
 
 ## 7. Cost optimization
 
-OpenRouter's listed price for `anthropic/claude-haiku-5.5` on 2026-10-27: **$0.10 per 1M input tokens; $0.50 per 1M output tokens**, before any BYOK-provider-side and plan-dependent OpenRouter fees. Haiku 4.5 lists **$1/$5** (10x the listed rate). Do not embed either number as permanent billing truth; fetch current actual costs for dashboards. Jev 1.14 input is low-priced but must be billed by observed usage, not assumed free.
+OpenRouter lists `anthropic/claude-haiku-5.5` at **$0.10 per 1M input tokens and $0.50 per 1M output tokens** on 2026-10-27; the owner uses **Anthropic BYOK**, so the actual inference bill is sent to **Anthropic**, not also deducted from OpenRouter credits. Haiku 4.5 lists $1/$5 (10x those listed rates). Do not embed list prices as permanent billing truth. **Jev is NOT BYOK**: charge direct inference against OpenRouter credits based on reported actual usage.
+
+**Owner-confirmed BYOK fee policy (2026-10-27, verified against https://openrouter.ai/pricing):** Standard and Business pay-as-you-go include **$25,000 USD of aggregate list-price BYOK inference per month with zero additional OpenRouter BYOK fee**. Above this allowance, OpenRouter adds **5% of the comparable list-price amount on the excess BYOK usage**, deducted from OpenRouter credits; underlying provider still bills BYOK inference. The owner expects total monthly BYOK inference to remain **below $25,000**, hence for the current plan: **Anthropic inference cost only, additional OpenRouter BYOK fee = $0** while eligible and within the workspace's aggregated allowance. This **does not make Claude inference free** and **does not exempt direct OpenRouter Jev usage**. The $25k limit is an *allowance for waiving BYOK platform fees*, not a budget cap, and is **not** a credit grant for provider inference. Check the active workspace plan and aggregate BYOK consumption in monitoring; revise if the plan/policy changes. The ordinary OpenRouter credit-purchase fee for direct OpenRouter usage is separate.
 
 Start with **one** Jev intent call, **at most one** bounded Jev relevance call if needed and **one** Haiku composition call. Keep narrative short, avoid full-history replay, cap tokens and use only necessary published-guide excerpts. Consider prompt caching only when it is supported/beneficial on the actual BYOK upstream route and privacy constraints permit it.
 
 ## 8. Documentation and rollback
 
-This ADR supersedes the previous proposed Sonnet response-model selection for assistant runtime; it does **not** change the GoGo AI development harness or replace ADR-0035. Document the model/role/route in the assistant runbook and Cost Center. Roll back by turning `assistant.enabled` off per environment; retain stored conversation data subject to existing retention and privacy rules. Do not remove or rotate the owner's existing live credentials in a rollback.
+This ADR supersedes the earlier proposed Sonnet response-model selection and **corrects the previous mistaken statement that Jev and Claude were both BYOK**. The owner's final runtime decision (2026-10-27) is **Jev OpenRouter-direct/non-BYOK + Haiku Anthropic BYOK via OpenRouter**. It does **not** change the GoGo AI development harness or replace ADR-0035. Document model, role, routing and **two billing sources** in the assistant runbook and Cost Center. Roll back by turning `assistant.enabled` off per environment; retain stored conversation data subject to existing retention and privacy rules. Do not remove or rotate existing live credentials in rollback.
 
 ### Public references
 
+- OpenRouter pricing/BYOK allowance (checked 2026-10-27): https://openrouter.ai/pricing
 - OpenRouter Claude Haiku 5.5 model page: https://openrouter.ai/anthropic/claude-haiku-5.5
 - OpenRouter BYOK documentation: https://github.com/OpenRouterTeam/docs/blob/main/guides/overview/auth/byok.mdx
 - OpenRouter Jev 1.14 Decisions endpoint: https://openrouter.ai/blog/insights/what-is-jev/
