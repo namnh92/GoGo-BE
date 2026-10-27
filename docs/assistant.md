@@ -407,6 +407,28 @@ Where the implementation is more specific than (or differs from) the design abov
 - **Telemetry (A-R2-10)** redacts every decoded `q` (repeated, `%71`) on the
   assistant search, in the URL and the query string.
 
+### Astra round 3 (PR #717) — what changed
+
+- **Exact names, never shortened (owner, 2026-10-27).** Haiku's reply may not
+  carry wrong or shortened place information: every mention it makes is turned
+  into a token, so the person always reads the full verified name.
+- **Emoji (A-R3-01).** Name matching maps every UTF-16 unit, so an emoji before,
+  between or after a name no longer lets the original name through.
+- **Long whitespace (A-R3-02).** Text is held back while its last words could
+  still begin a listed name, judged on the folded form — whatever whitespace
+  follows — instead of a fixed length.
+- **Visible-text deadline (A-R3-03).** Model text the sanitizer still holds back
+  does not count as started: at the deadline the call ends and the
+  deterministic reply is shown.
+- **Tombstones (A-R3-04).** Dropping a buffer leaves a tombstone for its whole
+  lifetime; an append still queued by a stale runner is refused atomically
+  (Redis Lua), so purged content cannot reappear.
+- **Input the search cannot place (owner, 2026-10-27).** An empty search says
+  nothing was found and asks the person to re-enter the place, area or budget —
+  it never guesses.
+- Tech debt: A-R3-05 (a reconnect after the terminal frame receives it again,
+  renumbered).
+
 Configuration (`apps/api/src/config/env.ts`): `OPENROUTER_API_KEY` (existing SSM
 backend row `openrouter/api-key`), `ASSISTANT_DAILY_MESSAGE_LIMIT`,
 `ASSISTANT_MESSAGES_PER_MINUTE_LIMIT`, `ASSISTANT_MONTHLY_BUDGET_USD` (all three

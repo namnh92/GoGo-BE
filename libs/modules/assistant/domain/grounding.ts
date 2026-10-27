@@ -176,33 +176,25 @@ export function buildComposerMessages(
 export class StreamSanitizer {
   private pending = '';
   private readonly patterns: NamePattern[];
-  private readonly hold: number;
 
   constructor(
     private readonly sourceCount: number,
     private readonly places: readonly Pick<GroundedPlace, 'position' | 'placeId' | 'name'>[] = [],
   ) {
     this.patterns = namePatterns(places);
-    const longest = Math.max(0, ...places.map((p) => p.name.length));
-    // A name in the stream can be longer than in the list (decomposed
-    // diacritics, doubled spaces): three times is a safe bound.
-    this.hold = longest > 0 ? longest * 3 + 8 : 0;
   }
 
   push(delta: string): string {
     this.pending = (this.pending + delta).normalize('NFC');
-    let cut = -1;
-    for (let i = this.pending.length - 1 - this.hold; i >= 0; i -= 1) {
-      if (/\s/.test(this.pending[i]!)) {
-        cut = i + 1;
-        break;
-      }
-    }
+    let cut = Math.max(this.pending.lastIndexOf(' '), this.pending.lastIndexOf('\n')) + 1;
     if (cut <= 0) return '';
     // Never cut inside a name: a match spanning the cut is kept whole.
     for (const span of findNames(this.pending, this.patterns)) {
       if (span.start < cut && span.end > cut) cut = Math.min(cut, span.start);
     }
+    // A-R3-02: nor after words that could still become a name, however much
+    // whitespace follows them — judged on the folded form, not on lengths.
+    cut = this.holdBackNamePrefix(cut);
     if (cut <= 0) return '';
     const ready = this.pending.slice(0, cut);
     this.pending = this.pending.slice(cut);
@@ -213,6 +205,31 @@ export class StreamSanitizer {
     const rest = this.clean(this.pending.normalize('NFC'));
     this.pending = '';
     return rest;
+  }
+
+  /** The earliest word start in `pending[0, cut)` whose folded tail a longer name begins with. */
+  private holdBackNamePrefix(cut: number): number {
+    if (this.patterns.length === 0) return cut;
+    const ready = this.pending.slice(0, cut);
+    let earliest = cut;
+    for (let i = ready.length - 1; i >= 0; i -= 1) {
+      if (i > 0 && /[\p{L}\p{N}]/u.test(ready[i - 1]!)) continue;
+      const tail = foldWithMap(ready.slice(i)).folded.trim();
+      if (!tail) continue;
+      // Past the longest pattern nothing further back can be a prefix.
+      if (tail.length > this.patterns[0]!.folded.length) break;
+      if (
+        this.patterns.some(
+          (p) =>
+            p.folded.length > tail.length &&
+            p.folded.startsWith(tail) &&
+            p.folded[tail.length] === ' ',
+        )
+      ) {
+        earliest = i;
+      }
+    }
+    return earliest;
   }
 
   private clean(text: string): string {
@@ -260,8 +277,10 @@ function foldWithMap(text: string): { folded: string; map: number[] } {
       i += ch.length;
       continue;
     }
-    for (const c of f) {
-      folded += c;
+    // A-R3-01: one map entry per UTF-16 unit, since matching uses indexOf
+    // on the folded string (an emoji is two units, not one).
+    for (let k = 0; k < f.length; k += 1) {
+      folded += f[k];
       map.push(i);
     }
     i += ch.length;
@@ -381,8 +400,8 @@ export function deterministicReply(ctx: GroundedAnswerContext): string {
       } else {
         lines.push(
           vi
-            ? 'Mình chưa tìm thấy địa điểm nào trong dữ liệu GoGo khớp với yêu cầu này. Bạn thử đổi khu vực hoặc ngân sách nhé.'
-            : "I couldn't find a place in GoGo's data that matches this. Try another area or budget.",
+            ? 'Mình chưa tìm thấy địa điểm nào trong dữ liệu GoGo khớp với yêu cầu này. Bạn nhập lại giúp mình tên địa điểm, khu vực hoặc ngân sách nhé.'
+            : "I couldn't find a place in GoGo's data that matches this. Please re-enter the place, area or budget.",
         );
       }
       break;

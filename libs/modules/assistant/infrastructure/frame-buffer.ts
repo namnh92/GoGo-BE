@@ -33,7 +33,12 @@ export interface AssistantFrameBuffer {
    * contiguous with `afterSeq` (see `contiguousAfter`).
    */
   read(messageId: string, afterSeq: number): Promise<AssistantFrame[]>;
-  /** Drops a message's frames and stop flag (A-R-08: deletion, erasure). */
+  /**
+   * Drops a message's frames and stop flag (A-R-08: deletion, erasure) and
+   * leaves a tombstone for the buffer's whole lifetime: an append still
+   * queued by a runner that has not noticed the deletion is refused, so the
+   * content cannot reappear after the purge (A-R3-04).
+   */
   drop(messageId: string): Promise<void>;
   /** Resolves when something may have been appended, or after `timeoutMs`. */
   wait(messageId: string, timeoutMs: number): Promise<void>;
@@ -44,6 +49,7 @@ export interface AssistantFrameBuffer {
 export class InMemoryFrameBuffer implements AssistantFrameBuffer {
   private readonly frames = new Map<string, { list: AssistantFrame[]; expiresAt: number }>();
   private readonly stops = new Map<string, number>();
+  private readonly gone = new Map<string, number>();
   private readonly events = new EventEmitter();
   private lastSweep = Date.now();
 
@@ -53,6 +59,7 @@ export class InMemoryFrameBuffer implements AssistantFrameBuffer {
 
   append(messageId: string, frames: readonly AssistantFrame[]): Promise<void> {
     this.sweep();
+    if ((this.gone.get(messageId) ?? 0) > this.now()) return Promise.resolve();
     const entry = this.frames.get(messageId) ?? { list: [], expiresAt: 0 };
     entry.list.push(...frames);
     entry.expiresAt = this.now() + FRAME_TTL_SECONDS * 1000;
@@ -67,6 +74,7 @@ export class InMemoryFrameBuffer implements AssistantFrameBuffer {
   }
 
   drop(messageId: string): Promise<void> {
+    this.gone.set(messageId, this.now() + BUFFER_LIFETIME_SECONDS * 1000);
     this.frames.delete(messageId);
     this.stops.delete(messageId);
     return Promise.resolve();
@@ -102,6 +110,7 @@ export class InMemoryFrameBuffer implements AssistantFrameBuffer {
     this.lastSweep = now;
     for (const [k, v] of this.frames) if (v.expiresAt <= now) this.frames.delete(k);
     for (const [k, v] of this.stops) if (v <= now) this.stops.delete(k);
+    for (const [k, v] of this.gone) if (v <= now) this.gone.delete(k);
   }
 }
 
@@ -113,10 +122,29 @@ export type FrameRedis = {
   set(key: string, value: string, mode: 'EX', seconds: number): Promise<unknown>;
   exists(key: string): Promise<number>;
   del(...keys: string[]): Promise<number>;
+  eval(script: string, numKeys: number, ...keysAndArgs: (string | number)[]): Promise<unknown>;
 };
+
+/**
+ * Append unless tombstoned, in one atomic step: a check-then-push from the
+ * client could interleave with a drop and recreate the list (A-R3-04).
+ * KEYS: frames, tombstone. ARGV: ttl, frame…
+ */
+const APPEND_UNLESS_GONE = `
+if redis.call('exists', KEYS[2]) == 1 then return -1 end
+local n = redis.call('rpush', KEYS[1], unpack(ARGV, 2))
+if n == #ARGV - 1 then redis.call('expire', KEYS[1], ARGV[1]) end
+return n`;
+
+/** Tombstone first, then delete: an append after the tombstone is refused. */
+const DROP_WITH_TOMBSTONE = `
+redis.call('set', KEYS[3], '1', 'EX', ARGV[1])
+redis.call('del', KEYS[1], KEYS[2])
+return 1`;
 
 const framesKey = (id: string) => `assistant:frames:${id}`;
 const stopKey = (id: string) => `assistant:stop:${id}`;
+const goneKey = (id: string) => `assistant:gone:${id}`;
 
 export class RedisFrameBuffer implements AssistantFrameBuffer {
   constructor(
@@ -130,10 +158,15 @@ export class RedisFrameBuffer implements AssistantFrameBuffer {
 
   async append(messageId: string, frames: readonly AssistantFrame[]): Promise<void> {
     if (frames.length === 0) return;
-    const key = framesKey(messageId);
-    const length = await this.redis.rpush(key, ...frames.map((f) => JSON.stringify(f)));
     // Once per message: the first push sets the TTL, later ones inherit it.
-    if (length === frames.length) await this.redis.expire(key, FRAME_TTL_SECONDS);
+    await this.redis.eval(
+      APPEND_UNLESS_GONE,
+      2,
+      framesKey(messageId),
+      goneKey(messageId),
+      FRAME_TTL_SECONDS,
+      ...frames.map((f) => JSON.stringify(f)),
+    );
     this.local.emit(messageId);
   }
 
@@ -151,7 +184,14 @@ export class RedisFrameBuffer implements AssistantFrameBuffer {
   }
 
   async drop(messageId: string): Promise<void> {
-    await this.redis.del(framesKey(messageId), stopKey(messageId));
+    await this.redis.eval(
+      DROP_WITH_TOMBSTONE,
+      3,
+      framesKey(messageId),
+      stopKey(messageId),
+      goneKey(messageId),
+      BUFFER_LIFETIME_SECONDS,
+    );
   }
 
   wait(messageId: string, timeoutMs: number): Promise<void> {

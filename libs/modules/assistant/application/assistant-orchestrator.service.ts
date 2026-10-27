@@ -774,11 +774,12 @@ export class AssistantOrchestrator {
     // A-R-06: an abort that fired before this point must still stop the call.
     signal.throwIfAborted();
     const local = new AbortController();
-    let modelStarted = false;
     const firstTextTimer = setTimeout(
       () => {
-        // Text the sanitizer still holds back counts as started (A-R2-02).
-        if (!state.textStarted && !modelStarted) local.abort();
+        // A-R3-03: the deadline is about text the person sees. Model text the
+        // sanitizer still holds back does not count: at the deadline the
+        // call ends and the deterministic reply is shown instead.
+        if (!state.textStarted) local.abort();
       },
       Math.max(1, deadline - Date.now()),
     );
@@ -794,7 +795,6 @@ export class AssistantOrchestrator {
         signal: AbortSignal.any([signal, local.signal]),
       })) {
         if (event.type === 'delta') {
-          modelStarted = true;
           const clean = sanitizer.push(event.text);
           if (clean) await sink.emit({ type: 'delta', text: clean });
         } else if (event.type === 'usage') {

@@ -217,3 +217,45 @@ describe('no listed name survives in any spelling (A-R2-02, owner: no shortened 
     expect(run(['**Nhà Lá Café** và _Phở Thìn Bờ Hồ_. '])).not.toMatch(names);
   });
 });
+
+describe('Astra round 3: emoji and long whitespace (A-R3-01, A-R3-02)', () => {
+  const places = [
+    { position: 1, placeId: PLACE_A, name: 'Nhà Lá Café' },
+    { position: 2, placeId: PLACE_B, name: 'Phở Thìn Bờ Hồ' },
+  ];
+  const run = (deltas: string[]) => {
+    const s = new StreamSanitizer(0, places);
+    return deltas.map((d) => s.push(d)).join('') + s.flush();
+  };
+  const names = /nh[aà]\s*l[aá]|ph[oở]\s*th[iì]n|b[oờ]\s*h[oồ]/i;
+
+  it('an emoji before, between or after a name', () => {
+    for (const out of [
+      run(['😀 Nhà Lá Café']),
+      run(['Thử 🍜 Phở Thìn Bờ Hồ 🍜 và 😀Nhà Lá Café😀 nhé. ']),
+      run(['🎉🎉 Nhà ', 'Lá 🎉 Café 🎉 ']),
+    ]) {
+      expect(out).not.toMatch(names);
+    }
+  });
+
+  it('a name whose words are far apart in whitespace, split across deltas', () => {
+    // Astra's case: a two-word name, so neither word alone is a fragment.
+    const s = new StreamSanitizer(0, [{ position: 1, placeId: PLACE_A, name: 'Nhà Lá' }]);
+    const out = [s.push('Nhà'), s.push(' '.repeat(80)), s.push('Lá nhé. ')].join('') + s.flush();
+    expect(out).not.toMatch(/nh[aà]/i);
+    expect(placeIdsIn(out)).toEqual([PLACE_A]);
+  });
+
+  it('text that cannot become a name is not held back', () => {
+    const s = new StreamSanitizer(0, places);
+    expect(s.push('Tối nay mình gợi ý ')).toBe('Tối nay mình gợi ý ');
+  });
+});
+
+describe('an empty search asks the person to re-enter (owner, 2026-10-27)', () => {
+  it('Vietnamese and English', () => {
+    expect(deterministicReply(base)).toMatch(/nhập lại/);
+    expect(deterministicReply({ ...base, locale: 'en' })).toMatch(/re-enter/);
+  });
+});

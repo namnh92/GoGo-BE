@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { AssistantFrame } from '../domain/assistant.types';
-import { RedisFrameBuffer, contiguousAfter, type FrameRedis } from './frame-buffer';
+import {
+  InMemoryFrameBuffer,
+  RedisFrameBuffer,
+  contiguousAfter,
+  type FrameRedis,
+} from './frame-buffer';
 
 /** A Redis list whose pushes can be made to fail, like a dropped connection. */
 function fakeRedis() {
   const lists = new Map<string, string[]>();
+  const gone = new Set<string>();
   let failNext = false;
   const redis: FrameRedis = {
     rpush: async (key, ...values) => {
@@ -28,6 +34,19 @@ function fakeRedis() {
       let n = 0;
       for (const k of keys) if (lists.delete(k)) n += 1;
       return n;
+    },
+    // The two scripts' semantics; the scripts themselves run against a real
+    // Redis in apps/api/test/assistant-frame-buffer-redis.int.spec.ts.
+    eval: async (_script, numKeys, ...args) => {
+      const keys = args.slice(0, numKeys).map(String);
+      const argv = args.slice(numKeys).map(String);
+      if (numKeys === 3) {
+        gone.add(keys[2]!);
+        lists.delete(keys[0]!);
+        return 1;
+      }
+      if (gone.has(keys[1]!)) return -1;
+      return redis.rpush(keys[0]!, ...argv.slice(1));
     },
   };
   return { redis, failNextPush: () => (failNext = true) };
@@ -61,11 +80,21 @@ describe('frame buffer (A-R-10: replay after a failed append)', () => {
     expect(contiguousAfter(frames, 2).map((f) => f.seq)).toEqual([3, 4]);
   });
 
-  it('drop removes the frames (A-R-08)', async () => {
+  it('drop removes the frames, and a late append cannot bring them back (A-R-08, A-R3-04)', async () => {
     const { redis } = fakeRedis();
     const buffer = new RedisFrameBuffer(redis);
     await buffer.append('m', [delta(1)]);
     await buffer.drop('m');
+    expect(await buffer.read('m', 0)).toEqual([]);
+    await buffer.append('m', [delta(2)]);
+    expect(await buffer.read('m', 0)).toEqual([]);
+  });
+
+  it('the in-memory buffer refuses a late append after a drop too (A-R3-04)', async () => {
+    const buffer = new InMemoryFrameBuffer();
+    await buffer.append('m', [delta(1)]);
+    await buffer.drop('m');
+    await buffer.append('m', [delta(2)]);
     expect(await buffer.read('m', 0)).toEqual([]);
   });
 });
