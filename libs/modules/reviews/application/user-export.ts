@@ -6,6 +6,7 @@ import { publicMediaUrl } from '../../shared/media-url';
 import { pgArray } from '../../search/infrastructure/search.repository';
 import { pushAllowed } from '../../notifications/application/push-preference';
 import { ExportTooLargeError } from '../../privacy/domain/export-envelope';
+import { collectAssistantExport } from '../../assistant/application/assistant-privacy';
 
 export type NotificationSettingsView = {
   pushEnabled: boolean;
@@ -223,6 +224,8 @@ export async function collectUserExport(
   );
 
   const notificationSettings = await readNotificationSettings(db, userId);
+  // GoGo-BE#713 Q2 — retained GoGo AI conversations (absent before the module).
+  const assistantConversations = await collectAssistantExport(db, userId, (v) => budget.charge(v));
 
   await writeAudit(db, {
     actorType: by.actorType,
@@ -246,5 +249,6 @@ export async function collectUserExport(
       source: notificationSettings.source,
     },
     reviewReactions,
+    assistantConversations,
   };
 }

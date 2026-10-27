@@ -30,6 +30,17 @@ export const AllowWhilePasswordChangePending = (): CustomDecorator =>
 export const RequireRole = (...roles: AdminRole[]): CustomDecorator =>
   SetMetadata(ADMIN_ROLES_KEY, roles);
 
+export const EXACT_ROLE_READ_KEY = 'gogo:exact_role_read';
+
+/**
+ * GoGo-BE#713 Q8 — a read that does **not** follow the hierarchical rule.
+ * `editor` and `moderator` share rank 1, so rank-read would let an editor into
+ * a moderator-only queue (the assistant feedback queue holds private
+ * conversational material). With this, only the listed roles (and
+ * `super_admin`) pass.
+ */
+export const ExactRoleRead = (): CustomDecorator => SetMetadata(EXACT_ROLE_READ_KEY, true);
+
 export type AdminActor = Actor & { role: AdminRole };
 
 /**
@@ -135,7 +146,12 @@ export class AdminGuard implements CanActivate {
     }
 
     const byExactRole = roles.includes(admin.role);
+    const exactRead = this.reflector.getAllAndOverride<boolean | undefined>(EXACT_ROLE_READ_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
     const byRankRead =
+      !exactRead &&
       SAFE_METHODS.has((req.method ?? 'GET').toUpperCase()) &&
       ROLE_RANK[admin.role] >= Math.min(...roles.map((r) => ROLE_RANK[r]));
 

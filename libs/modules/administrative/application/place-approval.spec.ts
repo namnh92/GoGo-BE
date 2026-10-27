@@ -63,6 +63,8 @@ describe('every path that can set a place status', () => {
       'takedown: moves a place to suspended, never published',
     'libs/database/src/seed.ts':
       'development fixture: builds a database directly, never a product write path (ADR-0019 §7)',
+    'apps/api/test/support/assistant-fixture.ts':
+      'GoGo-BE#713 test fixture: seeds verified places into a throwaway test database, never a product write path',
   };
 
   function writers(): string[] {

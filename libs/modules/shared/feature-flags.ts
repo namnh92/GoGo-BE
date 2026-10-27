@@ -148,6 +148,16 @@ export const FEATURE_FLAGS = {
       'Show transient Google photos on Place Detail (fetched per view, never stored; Place Details Photos is billed per photo).',
     platformScoped: false,
   },
+  // GoGo-BE#713 (ADR-0036). The GoGo AI kill switch, default **off**: every
+  // accepted message is paid inference (Jev + Haiku), so shipping the code must
+  // not start spending. Off refuses new replies (`503 ASSISTANT_DISABLED`) and
+  // ends a reply in flight; history stays readable and deletable.
+  'assistant.enabled': {
+    valueType: 'boolean',
+    defaultValue: false,
+    description: 'GoGo AI assistant accepts new messages (paid inference: Jev + Claude Haiku).',
+    platformScoped: false,
+  },
 } as const satisfies Record<string, FlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAGS;

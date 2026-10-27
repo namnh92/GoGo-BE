@@ -3,6 +3,7 @@ import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { IdempotencyInterceptor } from '@gogo/modules';
 import {
   AdministrativeModule,
+  AssistantModule,
   CmsModule,
   FeedbackModule,
   IdentityModule,
@@ -63,6 +64,7 @@ class ConfigModule {}
     CmsModule,
     IngestionModule,
     UploadsModule,
+    AssistantModule,
   ],
   controllers: [HealthController, DocsController, MetricsController],
   providers: [

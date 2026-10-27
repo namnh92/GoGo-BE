@@ -28,6 +28,7 @@ import {
   type SavedAreaCodes,
   type SavedItemArea,
 } from '../domain/saved-area';
+import { eraseAssistantDataForUser } from '../../assistant/application/assistant-privacy';
 
 /** The kinds the per-kind contract (`NotificationKind`) exposes; campaigns never had a toggle. */
 const LEGACY_PUSH_KINDS = [
@@ -434,6 +435,9 @@ export class UserContentService {
       // on ADR-0023's retention list; the counts it added are derived and drop
       // with it.
       await tx.delete(schema.reviewReactions).where(eq(schema.reviewReactions.userId, userId));
+      // GoGo-BE#713 — GoGo AI history is personal data, not a contribution:
+      // hard-deleted, with its sources, proposals and feedback.
+      await eraseAssistantDataForUser(tx, userId);
       await tx.delete(schema.notifications).where(eq(schema.notifications.userId, userId));
       await tx
         .delete(schema.notificationPreferences)

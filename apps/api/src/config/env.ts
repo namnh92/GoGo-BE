@@ -513,6 +513,38 @@ const envSchema = z
      * feature or a day-long one.
      */
     PLACE_RESOLUTION_TTL_S: z.coerce.number().int().min(60).max(3_600).default(600),
+    /**
+     * GoGo-BE#713, ADR-0036 — GoGo AI. The existing OpenRouter gateway key
+     * (SSM backend row `openrouter/api-key`) authenticates both Jev
+     * (Decisions API, OpenRouter-direct billing) and Haiku (Chat Completions,
+     * Anthropic BYOK). Empty = the assistant is not ready and refuses sends.
+     */
+    OPENROUTER_API_KEY: z.string().default(''),
+    /**
+     * Per-account allowance (Q1). **Unset means refuse** (`503
+     * ASSISTANT_DISABLED`), never unlimited. Owner defaults: 30/day, 5/minute.
+     */
+    ASSISTANT_DAILY_MESSAGE_LIMIT: z.coerce.number().int().min(0).max(10_000).optional(),
+    ASSISTANT_MESSAGES_PER_MINUTE_LIMIT: z.coerce.number().int().min(0).max(600).optional(),
+    /**
+     * Environment spend ceiling per UTC month, USD, both models together
+     * (Jev OpenRouter credits + Haiku Anthropic BYOK inference + any BYOK fee).
+     * **Unset means refuse.**
+     */
+    ASSISTANT_MONTHLY_BUDGET_USD: z.coerce.number().min(0).optional(),
+    /**
+     * Counted against the ceiling for a turn whose cost is not (yet) reported —
+     * worst case, so an unknown can only stop spend sooner.
+     */
+    ASSISTANT_TURN_COST_CEILING_USD: z.coerce.number().min(0).max(1).default(0.005),
+    /** End-to-end first-text deadline (Jev + retrieval + Haiku). Never above 15 s. */
+    ASSISTANT_FIRST_TEXT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(15_000).default(15_000),
+    /** Hard reply ceiling: past it the reply ends `truncated`. */
+    ASSISTANT_REPLY_MAX_MS: z.coerce.number().int().min(5_000).max(120_000).default(60_000),
+    ASSISTANT_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(50).max(2_000).default(600),
+    ASSISTANT_JEV_MODEL: z.string().default('typesafe/jev-1.14'),
+    ASSISTANT_JEV_TIMEOUT_MS: z.coerce.number().int().min(500).max(15_000).default(6_000),
+    ASSISTANT_HAIKU_MODEL: z.string().default('anthropic/claude-haiku-5.5'),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
   })

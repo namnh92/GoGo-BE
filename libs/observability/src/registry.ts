@@ -72,6 +72,9 @@ const BUCKETS_BY_METRIC: Record<string, number[]> = {
    * and here they do not. The edge at 72 is the alert.
    */
   place_submission_publish_latency_hours: [1, 4, 8, 12, 24, 48, 72, 120, 168, 336],
+  /** GoGo-BE#713 — an edge on the 15 s first-text deadline (ADR-0036 §3G). */
+  assistant_first_text_seconds: [0.5, 1, 2, 3, 5, 7.5, 10, 15, 20, 30],
+  assistant_turn_duration_seconds: [0.5, 1, 2, 3, 5, 7.5, 10, 15, 30, 60, 120],
 };
 
 function bucketsFor(name: string): number[] {
