@@ -519,6 +519,13 @@
       "when": 1791417600000,
       "tag": "0075_admin-users-drop-totp",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1791504000000,
+      "tag": "0076_assistant",
+      "breakpoints": true
     }
   ]
 }
