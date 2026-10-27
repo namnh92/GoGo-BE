@@ -192,3 +192,55 @@ describe('parseDecisionResponse', () => {
     });
   });
 });
+
+describe('caller cancellation (GoGo-BE#713 Stop)', () => {
+  beforeEach(() => resetBreakers());
+
+  it('a caller abort is ProviderCallAbortedError and never trips the breaker', async () => {
+    const provider = new OpenRouterDecisionProvider({
+      apiKey: 'k',
+      model: 'typesafe/jev-1.14',
+      timeoutMs: 5_000,
+      fetchImpl: ((_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+        })) as unknown as typeof fetch,
+    });
+    for (let i = 0; i < 7; i += 1) {
+      const controller = new AbortController();
+      const pending = provider.decide(request, { signal: controller.signal });
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: 'ProviderCallAbortedError' });
+    }
+    // Seven aborts later the breaker (threshold 5) is still closed.
+    const ok2 = new OpenRouterDecisionProvider({
+      apiKey: 'k',
+      model: 'typesafe/jev-1.14',
+      timeoutMs: 5_000,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify(ok), { status: 200 })) as unknown as typeof fetch,
+    });
+    await expect(ok2.decide(request)).resolves.toMatchObject({ model: ok.model });
+  });
+
+  it('an already aborted signal sends nothing', async () => {
+    let called = false;
+    const provider = new OpenRouterDecisionProvider({
+      apiKey: 'k',
+      model: 'typesafe/jev-1.14',
+      timeoutMs: 5_000,
+      fetchImpl: (async () => {
+        called = true;
+        return new Response('{}');
+      }) as unknown as typeof fetch,
+    });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(provider.decide(request, { signal: controller.signal })).rejects.toMatchObject({
+      name: 'ProviderCallAbortedError',
+    });
+    expect(called).toBe(false);
+  });
+});
