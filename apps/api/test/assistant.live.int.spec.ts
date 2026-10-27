@@ -22,7 +22,8 @@ import {
  * guarantees (grounding, allowlist, budget, routing, billing provenance), not
  * the model's wording.
  */
-const LIVE = process.env.ASSISTANT_LIVE_AUTHORIZED === 'yes' && !!process.env.OPENROUTER_ASSISTANT_API_KEY;
+const LIVE =
+  process.env.ASSISTANT_LIVE_AUTHORIZED === 'yes' && !!process.env.OPENROUTER_ASSISTANT_API_KEY;
 
 type Turn = {
   scenario: string;
