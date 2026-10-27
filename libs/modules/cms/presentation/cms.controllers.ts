@@ -2157,7 +2157,8 @@ const searchAnalyticsQuery = z.object({
  * means the same thing as `value`, and sending both disagreeing values is a
  * rejection rather than a silent pick.
  */
-const flagSchema = z
+/** `PUT /cms/feature-flags/{key}` body. Exported for its unit spec. */
+export const flagSchema = z
   .object({
     enabled: z.boolean(),
     value: z.unknown().optional(),
@@ -2165,6 +2166,12 @@ const flagSchema = z
     payload: z.unknown().optional(),
     environment: z.enum(FLAG_ENVIRONMENTS).optional(),
     platform: z.enum(FLAG_PLATFORMS).optional(),
+    /**
+     * GoGo-BE#713 Q7 — the operator's rationale, kept in the audit entry.
+     * Optional in contract 2.0.0-alpha.3 so older writers keep working; it
+     * becomes required in a later version (the CMS always sends it).
+     */
+    reason: reasonSchema.optional(),
   })
   .refine(
     (body) => body.value === undefined || body.payload === undefined || body.value === body.payload,
@@ -2323,12 +2330,13 @@ export class CmsOpsController {
     @Param('key') key: string,
     @Body(new ZodValidationPipe(flagSchema)) body: z.infer<typeof flagSchema>,
   ) {
-    const { enabled, environment, platform } = body;
+    const { enabled, environment, platform, reason } = body;
     return this.ops.setFeatureFlag(actor.id, key, {
       enabled,
       value: body.value ?? body.payload,
       environment,
       platform,
+      reason,
     });
   }
 

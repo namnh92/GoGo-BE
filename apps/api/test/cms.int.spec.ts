@@ -7501,6 +7501,25 @@ describe('typed app flags (BE-CMS-G3 #221)', () => {
     expect(diff.environment).toBe('all');
   });
 
+  it('records the reason in the audit entry, and refuses one out of bounds (#713 Q7)', async () => {
+    const ok = await put('feature_group_planning', {
+      enabled: false,
+      reason: '  Pausing group planning during the incident  ',
+    });
+    expect(ok.statusCode).toBe(200);
+
+    const audit = await api().inject({
+      method: 'GET',
+      url: `/v1/cms/audit?actorId=${opsId}&action=feature_flag.set&resourceId=feature_group_planning&limit=1`,
+      headers: auth(opsToken),
+    });
+    expect(audit.json().items[0].diff.reason).toBe('Pausing group planning during the incident');
+
+    const short = await put('feature_group_planning', { enabled: true, reason: ' ab ' });
+    expect(short.statusCode).toBe(400);
+    expect(short.json().field_errors[0].field).toBe('reason');
+  });
+
   it('the import kill switch still reads the flag it always read', async () => {
     // #221 changed the primary key underneath this reader; the behaviour it
     // gates must not have moved with it.

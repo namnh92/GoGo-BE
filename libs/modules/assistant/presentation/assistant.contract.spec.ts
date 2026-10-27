@@ -230,6 +230,93 @@ describe('GoGo AI contract (GoGo-BE#713)', () => {
     }
   });
 
+  // ── 2.0.0-alpha.3: SA decisions on GoGo-BE#713 (owner-delegated) ────────
+
+  it('Q1 — status carries both limits, with the provisional defaults stated', () => {
+    const status = schema('AssistantStatus');
+    expect(Object.keys(status.properties ?? {})).toEqual(
+      expect.arrayContaining(['dailyMessageLimit', 'messagesPerMinuteLimit', 'resetsAt']),
+    );
+    const daily = String(status.properties!.dailyMessageLimit!.description);
+    expect(daily).toContain('30');
+    expect(daily).toMatch(/never hardcode/);
+    expect(daily).toMatch(/replay[^.]*consumes nothing/);
+    expect(daily).toMatch(/never means\s+unlimited/);
+    expect(String(status.properties!.messagesPerMinuteLimit!.description)).toMatch(
+      /rolling 60-second window \(default \*\*5\*\*/,
+    );
+    expect(String(status.properties!.resetsAt!.description)).toMatch(/midnight Asia\/Ho_Chi_Minh/);
+    const limited = String(doc.components.responses.AssistantRateLimited!.description);
+    expect(limited).toMatch(/default 5[\s\S]*rolling minute/);
+    expect(limited).toMatch(/default 30[\s\S]*midnight Asia\/Ho_Chi_Minh/);
+    expect(limited).toMatch(/never unlimited/);
+  });
+
+  it('Q5 — a reply cut off by the hard ceiling ends as `truncated`, not `complete`', () => {
+    const message = schema('AssistantMessageStatus');
+    expect(message['x-extensible-enum']).toContain('truncated');
+    const done = schema('AssistantStreamDone').properties!.status!;
+    expect(done['x-extensible-enum']).toContain('truncated');
+    for (const description of [message.description, done.description]) {
+      expect(String(description)).toContain('Reply cut short');
+      expect(String(description)).toMatch(/no automatic continuation/);
+    }
+    expect(String(message.description)).toMatch(/structured outputs[\s\S]*discarded/);
+  });
+
+  it('Q8 — the feedback queue is moderator / ops_admin / super_admin, editors excluded', () => {
+    const description = String(
+      (op('/cms/assistant/feedback', 'get') as Operation & { description?: string }).description,
+    );
+    expect(description).toMatch(/`moderator`, `ops_admin`, `super_admin` only/);
+    expect(description).toMatch(/exception to the hierarchical read rule/);
+    expect(description).toMatch(/`editor` gets\s+`403 ROLE_DENIED`/);
+    // Guide documents stay hierarchical: nothing about them changed.
+    expect(
+      String(
+        (op('/cms/assistant/documents', 'get') as Operation & { description?: string }).description,
+      ),
+    ).not.toMatch(/ROLE_DENIED/);
+  });
+
+  it('Q2 — both export entry points carry assistant conversations, minus internals', () => {
+    const exportDoc = (route: string, method: string) =>
+      (
+        op(route, method).responses['200'] as {
+          content?: Record<string, { schema: Schema }>;
+        }
+      ).content?.['application/json']?.schema.$ref;
+    expect(exportDoc('/me/export', 'get')).toBe(ref('UserExportDocument'));
+    expect(exportDoc('/me/exports/{id}/download', 'post')).toBe(ref('UserExportDocument'));
+
+    const section = schema('UserExportDocument').properties!.assistantConversations!;
+    expect(schema('UserExportDocument').required ?? []).not.toContain('assistantConversations');
+    expect(String(section.description)).toMatch(/Attachments are excluded pending explicit/);
+    expect((section as Schema & { items: Schema }).items.$ref).toBe(
+      ref('UserExportAssistantConversation'),
+    );
+    expect(schema('UserExportAssistantConversation').required).toEqual(
+      expect.arrayContaining(['title', 'createdAt', 'lastMessageAt', 'messages']),
+    );
+    const message = schema('UserExportAssistantMessage');
+    expect(message.required).toEqual(
+      expect.arrayContaining(['role', 'status', 'text', 'createdAt']),
+    );
+    const fields = Object.keys(message.properties ?? {});
+    expect(fields).toContain('feedback');
+    for (const internal of ['uploadKey', 'attachments', 'sources', 'prompt', 'model', 'cards']) {
+      expect(fields, internal).not.toContain(internal);
+    }
+  });
+
+  it('Q7 — a feature-flag write takes an optional, bounded reason', () => {
+    const body = op('/cms/feature-flags/{key}', 'put').requestBody!.content['application/json']!
+      .schema as Schema & { properties: Record<string, Schema & Record<string, unknown>> };
+    expect(body.properties.reason).toMatchObject({ type: 'string', minLength: 3, maxLength: 500 });
+    expect(body.required).not.toContain('reason');
+    expect(String(body.properties.reason!.description)).toMatch(/will become required/);
+  });
+
   it('every operationId is unique to the assistant surface', () => {
     const ids = [...APP_OPERATIONS, ...CMS_OPERATIONS].map(([r, m]) => op(r, m).operationId);
     expect(new Set(ids).size).toBe(ids.length);

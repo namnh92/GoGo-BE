@@ -1,8 +1,10 @@
 # GoGo AI assistant — module design (GoGo-BE#713)
 
-Status: **contract landed (PR 1), module not built.** This note is what PR 2+
-implement against. The contract is `openapi/gogo.v1.yaml` 2.0.0-alpha.2, tag
-`assistant`, every operation marked `x-gogo-planned: GoGo-BE#713`.
+Status: **contract landed (PR 1, amended by contract PR 2), module not built.**
+This note is what the module PRs implement against. The contract is
+`openapi/gogo.v1.yaml` 2.0.0-alpha.3, tag `assistant`, every operation marked
+`x-gogo-planned: GoGo-BE#713`. The SA decisions applied in 2.0.0-alpha.3 are
+listed under [Decisions](#decisions-sa-on-gogo-be713-owner-delegated).
 
 Authorities: epic GoGo-MobileApp#377 (owner decisions 2026-10-26 are binding),
 GoGo-CMS#249 (console),
@@ -39,9 +41,11 @@ CMS:
 
 - `/cms/assistant/documents` list/create, `/{id}` get/patch-draft,
   `/{id}/publish`, `/{id}/unpublish`, `/{id}/versions`, `/{id}/versions/{versionId}`.
-- `/cms/assistant/feedback` — moderator queue, minimal PII.
+- `/cms/assistant/feedback` — moderator queue, minimal PII, read-only;
+  `moderator`, `ops_admin`, `super_admin` only (not `editor`).
 - Kill switch: **no new endpoint.** Feature flag `assistant.enabled` through
-  the existing `PUT /cms/feature-flags/{key}` (`ops_admin`, audited). The key is
+  the existing `PUT /cms/feature-flags/{key}` (`ops_admin`, audited, with the
+  operator's `reason` — Q7). The key is
   added to `FEATURE_FLAGS` in the PR that reads it (registry rule: a key ships
   with its reader), default **off**, `platformScoped: false`.
 
@@ -57,13 +61,19 @@ at `done`), so a reconnect replays from the last id.
 
 ### CMS roles
 
-| Action                    | Roles                                          | Why                                                                                                            |
-| ------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Read documents / versions | `editor`, `moderator`, `ops_admin` (read rule) | BE-IMP-008 hierarchical read: controller declares `editor, ops_admin`; `moderator` (rank 1) reads as a peer.   |
-| Create / edit draft       | `editor`, `ops_admin`                          | Same as banners, plan templates and recommendations: user-visible content copy.                                |
-| Publish / unpublish       | `ops_admin`                                    | Changes what the AI tells every user — a release decision, split from authoring like safety rules / campaigns. |
-| Feedback queue            | `moderator` (+ `ops_admin` by read rule)       | GoGo-CMS#249 asks for moderator; content quality review, not policy.                                           |
-| Kill switch               | `ops_admin`                                    | Existing feature-flag endpoint.                                                                                |
+| Action                    | Roles                                          | Why                                                                                                                                                                                                         |
+| ------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Read documents / versions | `editor`, `moderator`, `ops_admin` (read rule) | BE-IMP-008 hierarchical read: controller declares `editor, ops_admin`; `moderator` (rank 1) reads as a peer.                                                                                                |
+| Create / edit draft       | `editor`, `ops_admin`                          | Same as banners, plan templates and recommendations: user-visible content copy.                                                                                                                             |
+| Publish / unpublish       | `ops_admin`                                    | Changes what the AI tells every user — a release decision, split from authoring like safety rules / campaigns.                                                                                              |
+| Feedback queue            | `moderator`, `ops_admin`, `super_admin` only   | **Explicit exception to rank-read (Q8):** `editor` and `moderator` are both rank 1, so the read rule would admit editors. Private conversational material → narrower access. Editors get `403 ROLE_DENIED`. |
+| Kill switch               | `ops_admin`                                    | Existing feature-flag endpoint; `reason` recorded in the audit entry (Q7).                                                                                                                                  |
+
+The feedback exception needs enforcement the guard does not have today:
+`RequireRole('moderator', 'ops_admin')` alone still lets an `editor` read
+(BE-IMP-008, `admin.guard.ts` `ROLE_RANK`). The module PR that serves the route
+adds an exact-role read for it (no rank read) and a test that an editor is
+refused; document routes keep the hierarchical rule.
 
 Every write goes through `CmsAuditService` (`resourceType = assistant_document`,
 actions `created | draft_updated | published | unpublished`) with before/after.
@@ -132,7 +142,7 @@ plain data; the orchestrator owns prompts. The module depends only on the port.
    with the deterministic fallback (retrieved sources, if any, plus fixed
    follow-ups by i18n key), `done{status: fallback}`. Provider error / invalid
    output → same path with `reason: provider_unavailable | invalid_output`.
-5. **End**: `done` (`complete | stopped | fallback`) or `error`; message row
+5. **End**: `done` (`complete | stopped | fallback | truncated`) or `error`; message row
    updated with final text, sources, card ids (not facts), proposal ids,
    status, and usage as reported by the port.
 
@@ -195,8 +205,10 @@ module only relies on these behaviours, which the contract already states:
 | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
 | Kill switch off (feature flag `assistant.enabled`)                             | `503 ASSISTANT_DISABLED`; `GET /assistant/status` → `disabled`                                                                 |
 | Environment cannot take new replies (spending limit reached or not configured) | `503 ASSISTANT_DISABLED` — unconfigured refuses, never unlimited                                                               |
-| Per-account daily message limit spent                                          | `429 ASSISTANT_DAILY_LIMIT` + `Retry-After` to the reset; status → `limit_reached`                                             |
-| Per-minute burst                                                               | `429 RATE_LIMITED` + `Retry-After`                                                                                             |
+| Per-account daily message limit spent (default 30 accepted/day, Q1)            | `429 ASSISTANT_DAILY_LIMIT` + `Retry-After` to the reset (midnight Asia/Ho_Chi_Minh); status → `limit_reached`                 |
+| Per-minute burst (default 5 accepted in any rolling minute, Q1)                | `429 RATE_LIMITED` + `Retry-After`                                                                                             |
+| Idempotent replay of a send                                                    | Same `202` (`x-idempotent-replay: true`); consumes no daily or burst allowance                                                 |
+| Hard reply ceiling (length or time) hit (Q5)                                   | `done{status: truncated}`; partial text persisted; unfinished structured outputs discarded; no auto-continuation               |
 | No first text within 15 s                                                      | `notice{fallback, timeout}` + `done{status: fallback}`, deterministic                                                          |
 | Port error / invalid structured output                                         | Same fallback path (`provider_unavailable` / `invalid_output`); after text started, `error` frame and the partial text is kept |
 | Kill switch turned off mid-reply                                               | `error` frame `ASSISTANT_DISABLED`; partial text kept                                                                          |
@@ -209,26 +221,71 @@ time-to-first-text and reply latency, errors by kind, rejected model outputs
 retention purges. Cost-side metrics and alerts belong to the separate
 configuration work.
 
+## Decisions (SA on GoGo-BE#713, owner-delegated)
+
+Astra's answers on GoGo-BE#713, applied in contract 2.0.0-alpha.3 (the owner
+delegated these, including the ones marked as owner calls). Each is reversible
+as noted on the issue.
+
+1. **Limits (Q1, owner call).** Per signed-in account: **30 accepted messages
+   per day** and **5 in any rolling minute**, the day resetting at midnight
+   Asia/Ho_Chi_Minh. These are provisional product limits, not capacity
+   findings, and are configurable per environment. Only accepted sends count;
+   idempotent replays consume nothing. An unset limit refuses — never
+   unlimited. Clients read `dailyMessageLimit` / `messagesPerMinuteLimit` from
+   `GET /assistant/status` and never hardcode them. Existing 429 codes and
+   `Retry-After` are kept.
+2. **Export (Q2, owner call).** `/me/export` and the secure `/me/exports` (one
+   shared collector) gain `assistantConversations`: titles, each message's
+   role, text, timestamps and terminal status, and the account's own feedback.
+   Excluded: internal prompts, retrieval internals, upload keys. **Attachments
+   are excluded pending explicit owner approval** of their portability scope.
+   The field is optional in the contract and absent until the module lands —
+   its collector populates it then. Ledger / delivery controls are unchanged;
+   CMS operators still never receive raw exports.
+3. **Original questions stay out of the feedback queue in v1 (Q3/Q10, owner
+   call).** Known limitation: reply-only review sometimes cannot judge
+   relevance, and a reply can itself repeat personal information. Any later
+   access to the question is a separately authorized, audited disclosure of
+   that turn, not full history.
+4. **No delete proposals in v1 (Q4).** `AssistantProposalKind` stays
+   `create_room | create_invite | cast_vote | finalize_plan`. Destructive
+   conversational actions need their own preview, authorization and recovery
+   design.
+5. **`truncated` status (Q5).** Hitting the hard ceiling ends the reply as
+   `done{status: truncated}` (also on `AssistantMessageStatus`): partial text
+   persisted, unfinished structured outputs discarded. Mobile shows "Reply cut
+   short" with an explicit retry; CMS displays the status. No automatic
+   continuation. (Replaces the earlier "ends as `complete`" behaviour.)
+6. **Keep `x-gogo-planned` during contract-first development (Q6).** No 503
+   stubs. Each module PR removes the marker from the operations it serves
+   (`pnpm api:routes` enforces both directions). Planned operations count as
+   **unavailable** for integration and release readiness, not as working
+   endpoints.
+7. **Feature-flag `reason` (Q7).** `PUT /cms/feature-flags/{key}` takes
+   `reason` (trimmed, 3–500, the bound of every other audited CMS write),
+   stored in the `feature_flag.set` audit entry. Optional in 2.0.0-alpha.3 so
+   older writers keep working; it becomes required in a later contract version,
+   and the CMS always sends it — on every flag-editing surface, the assistant
+   switch included. BE acceptance is implemented in this version.
+8. **Feedback queue roles (Q8).** `moderator`, `ops_admin`, `super_admin` only
+   — an explicit exception to rank-read (see CMS roles). Guide documents stay
+   hierarchical.
+9. **Feedback is read-only in v1 (Q9, owner call).** No resolve / assign
+   workflow; the queue identifies guide corrections without implying tracked
+   case resolution.
+10. **Suggestion copy is fixed app i18n in v1 (Q11, owner call).** No
+    CMS-managed interface copy and no endpoint for it; copy ships with the
+    apps. Contextual reply follow-ups keep their existing contract.
+
+Out of scope here (owner's separate configuration work): provider, credentials,
+model choice, settings names and spend limits.
+
 ## Open items
 
-1. **Limits.** The numbers (per-account daily messages, burst, reply length)
-   are the owner's, set with the configuration work.
-2. **Configuration hand-off.** The port, credentials and spend limits are wired
-   by the owner separately; PR 2 builds against `FakeAssistantLlm`.
-3. **Export.** Should `/me/export` (ADR-0033 allowlist) include assistant
-   conversations? Proposed: yes (title, messages, timestamps; no sources'
-   internals). Needs owner sign-off; not in this contract.
-4. **Moderator visibility.** The feedback queue shows only the assistant's
-   reply. If moderators need the user's question to judge an answer, that is a
-   PII decision for the owner (and a contract change).
-5. **Proposal kinds.** v1: `create_room`, `create_invite`, `cast_vote`,
-   `finalize_plan`. "Delete" from the design system is not included — no
-   assistant-initiated deletion until the owner asks for it.
-6. **Search.** `q` is substring (unaccent + `ILIKE`/trigram) over the user's own
+1. **Configuration hand-off.** The port, credentials and spend limits are wired
+   by the owner separately; the module PR builds against `FakeAssistantLlm`.
+2. **Search.** `q` is substring (unaccent + `ILIKE`/trigram) over the user's own
    rows. Fine at 90-day volume; revisit if a user's history gets large.
-7. **Stream ceiling.** A whole-reply time ceiling ends a long reply as
-   `complete`; whether it should be a distinct status is open.
-8. **Planned marker.** Until PR 2 the deployed `/v1/docs` lists 24 operations
-   that answer 404 (stated in each description and the CHANGELOG). If the owner
-   prefers, PR 2 can instead ship stub controllers answering
-   `503 ASSISTANT_DISABLED` first and drop the markers.
+3. **Attachment export scope.** Excluded until the owner approves what of an
+   image (bytes, metadata) is portable.
