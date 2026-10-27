@@ -174,7 +174,10 @@ export function buildComposerMessages(
  * held back long enough that a name split across deltas is judged whole.
  */
 export class StreamSanitizer {
-  private pending = '';
+  /** Raw model text not yet judged by the hygiene stage. */
+  private raw = '';
+  /** Hygienic text not yet released by the name stage. */
+  private held = '';
   private readonly patterns: NamePattern[];
 
   constructor(
@@ -184,40 +187,92 @@ export class StreamSanitizer {
     this.patterns = namePatterns(places);
   }
 
+  /**
+   * Two stages (S-F-02): hygiene first, on text released to its last
+   * whitespace, so nothing it removes can later join two name words that
+   * were judged apart; then names, on the hygienic text.
+   */
   push(delta: string): string {
-    this.pending = (this.pending + delta).normalize('NFC');
-    let cut = Math.max(this.pending.lastIndexOf(' '), this.pending.lastIndexOf('\n')) + 1;
-    if (cut <= 0) return '';
-    // Never cut inside a name: a match spanning the cut is kept whole.
-    for (const span of findNames(this.pending, this.patterns)) {
-      if (span.start < cut && span.end > cut) cut = Math.min(cut, span.start);
+    this.raw = (this.raw + delta).normalize('NFC');
+    const cut = Math.max(this.raw.lastIndexOf(' '), this.raw.lastIndexOf('\n')) + 1;
+    if (cut > 0) {
+      this.held += this.hygiene(this.raw.slice(0, cut));
+      this.raw = this.raw.slice(cut);
     }
-    // A-R3-02: nor after words that could still become a name, however much
-    // whitespace follows them — judged on the folded form, not on lengths.
-    cut = this.holdBackNamePrefix(cut);
-    if (cut <= 0) return '';
-    const ready = this.pending.slice(0, cut);
-    this.pending = this.pending.slice(cut);
-    return this.clean(ready);
+    return this.releaseNames(false);
   }
 
   flush(): string {
-    const rest = this.clean(this.pending.normalize('NFC'));
-    this.pending = '';
-    return rest;
+    this.held += this.hygiene(this.raw.normalize('NFC'));
+    this.raw = '';
+    return this.releaseNames(true);
   }
 
-  /** The earliest word start in `pending[0, cut)` whose folded tail a longer name begins with. */
-  private holdBackNamePrefix(cut: number): number {
-    if (this.patterns.length === 0) return cut;
-    const ready = this.pending.slice(0, cut);
+  private hygiene(text: string): string {
+    return stripTokenDelimiters(text)
+      .replace(/[\uE002\uE003]/g, '')
+      .replace(/\]\((?:[a-z][a-z0-9+.-]*:)?[^)\s]*\)/gi, ']')
+      .replace(/\b(?:https?:\/\/|www\.)\S+/gi, '')
+      .replace(/\[P(\d{1,2})\]/gi, (_m, n: string) =>
+        // A private-use placeholder, so name matching cannot touch it.
+        this.places.some((p) => p.position === Number(n)) ? `\uE002${Number(n)}\uE003` : '',
+      )
+      .replace(/\[(\d{1,2})\]/g, (m, n: string) => {
+        const i = Number(n);
+        return i >= 1 && i <= this.sourceCount ? m : '';
+      });
+  }
+
+  /**
+   * Releases held text up to a cut that splits no complete name and leaves
+   * no word that could still begin one (A-R3-02). The two rules are applied
+   * together until the cut stops moving (S-F-01: a prefix hold may land
+   * inside a complete name, which then moves the cut to its start).
+   */
+  private releaseNames(all: boolean): string {
+    const text = this.held;
+    const spans = findNames(text, this.patterns);
+    let cut = text.length;
+    if (!all) {
+      for (;;) {
+        let next = this.prefixStart(text, cut);
+        for (const span of spans) if (span.start < next && span.end > next) next = span.start;
+        if (next === cut) break;
+        cut = next;
+      }
+    }
+    if (cut <= 0) return '';
+    this.held = text.slice(cut);
+    let out = '';
+    let at = 0;
+    for (const span of spans) {
+      if (span.end > cut) break;
+      out += text.slice(at, span.start) + span.token;
+      at = span.end;
+    }
+    out += text.slice(at, cut);
+    return out.replace(/\uE002(\d{1,2})\uE003/g, (_m, n: string) => {
+      const place = this.places.find((p) => p.position === Number(n));
+      return place ? placeToken(place.placeId) : '';
+    });
+  }
+
+  /**
+   * The earliest word start before `cut` whose folded tail is a strict word
+   * prefix of a pattern; `cut` when there is none. One fold of the text and a
+   * walk over word starts only (S-F-04): whitespace runs are folded to one
+   * space, so their length costs nothing.
+   */
+  private prefixStart(text: string, cut: number): number {
+    if (this.patterns.length === 0 || cut === 0) return cut;
+    const { folded, map } = foldWithMap(text.slice(0, cut));
+    const longest = this.patterns[0]!.folded.length;
     let earliest = cut;
-    for (let i = ready.length - 1; i >= 0; i -= 1) {
-      if (i > 0 && /[\p{L}\p{N}]/u.test(ready[i - 1]!)) continue;
-      const tail = foldWithMap(ready.slice(i)).folded.trim();
-      if (!tail) continue;
-      // Past the longest pattern nothing further back can be a prefix.
-      if (tail.length > this.patterns[0]!.folded.length) break;
+    for (let k = folded.length - 1; k >= 0; k -= 1) {
+      if (!WORD_CHAR.test(folded[k]!)) continue;
+      if (k > 0 && WORD_CHAR.test(folded[k - 1]!)) continue;
+      const tail = folded.slice(k).trim();
+      if (tail.length > longest) break;
       if (
         this.patterns.some(
           (p) =>
@@ -226,35 +281,10 @@ export class StreamSanitizer {
             p.folded[tail.length] === ' ',
         )
       ) {
-        earliest = i;
+        earliest = map[k]!;
       }
     }
     return earliest;
-  }
-
-  private clean(text: string): string {
-    const hygienic = stripTokenDelimiters(text)
-      .replace(/\]\((?:[a-z][a-z0-9+.-]*:)?[^)\s]*\)/gi, ']')
-      .replace(/\b(?:https?:\/\/|www\.)\S+/gi, '')
-      .replace(/\[P(\d{1,2})\]/gi, (_m, n: string) => {
-        const place = this.places.find((p) => p.position === Number(n));
-        // A private-use placeholder, so name matching below cannot touch it.
-        return place ? `\uE002${place.position}\uE003` : '';
-      })
-      .replace(/\[(\d{1,2})\]/g, (m, n: string) => {
-        const i = Number(n);
-        return i >= 1 && i <= this.sourceCount ? m : '';
-      });
-    let out = '';
-    let at = 0;
-    for (const span of findNames(hygienic, this.patterns)) {
-      out += hygienic.slice(at, span.start) + span.token;
-      at = span.end;
-    }
-    out += hygienic.slice(at);
-    return out.replace(/\uE002(\d{1,2})\uE003/g, (_m, n: string) =>
-      placeToken(this.places.find((p) => p.position === Number(n))!.placeId),
-    );
   }
 }
 

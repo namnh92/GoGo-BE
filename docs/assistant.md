@@ -429,6 +429,20 @@ Where the implementation is more specific than (or differs from) the design abov
 - Tech debt: A-R3-05 (a reconnect after the terminal frame receives it again,
   renumbered).
 
+### Sol review (PR #717) — what changed
+
+- **Two-stage sanitizer (S-F-01, S-F-02, S-F-04).** Hygiene (URLs, link targets,
+  invalid citations and markers) runs first on text released to its last
+  whitespace; names are judged afterwards on the hygienic text, so nothing
+  removed can join two name words that were judged apart. The release cut is
+  moved until it neither splits a complete name nor follows a possible name
+  prefix (overlapping names). The prefix scan folds once and walks word starts
+  only, so long whitespace costs nothing.
+- **Bounded buffer writes (S-F-03).** The buffer's Redis client has no offline
+  queue and a 5 s command timeout, and a runner issues no buffer write later
+  than 30 s after its turn ends — so no write can land after a purge's
+  tombstone (75 min) expires.
+
 Configuration (`apps/api/src/config/env.ts`): `OPENROUTER_API_KEY` (existing SSM
 backend row `openrouter/api-key`), `ASSISTANT_DAILY_MESSAGE_LIMIT`,
 `ASSISTANT_MESSAGES_PER_MINUTE_LIMIT`, `ASSISTANT_MONTHLY_BUDGET_USD` (all three

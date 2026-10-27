@@ -35,6 +35,7 @@ import {
   ASSISTANT_FRAME_BUFFER,
   InMemoryFrameBuffer,
   RedisFrameBuffer,
+  BUFFER_COMMAND_TIMEOUT_MS,
 } from '../infrastructure/frame-buffer';
 import { AssistantController } from './assistant.controller';
 import {
@@ -85,12 +86,19 @@ type BufferConfig = { NODE_ENV: string; REDIS_URL?: string };
       provide: ASSISTANT_FRAME_BUFFER,
       useFactory: (config: BufferConfig) => {
         if (!config.REDIS_URL || config.NODE_ENV === 'test') return new InMemoryFrameBuffer();
+        // S-F-03: a buffer write must never land long after it was issued —
+        // a purge's tombstone outlives it only for a bounded time. So no
+        // offline queue (a command waiting for a reconnect could be sent hours
+        // later) and a command timeout; a refused write is a hole the reader
+        // fills from the row.
         const redis = new IORedis(config.REDIS_URL, {
           lazyConnect: true,
           maxRetriesPerRequest: 1,
-          enableOfflineQueue: true,
+          enableOfflineQueue: false,
+          commandTimeout: BUFFER_COMMAND_TIMEOUT_MS,
         });
         redis.on('error', () => undefined);
+        void redis.connect().catch(() => undefined);
         return new RedisFrameBuffer(redis);
       },
       inject: [APP_CONFIG],

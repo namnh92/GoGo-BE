@@ -24,6 +24,21 @@ export const FRAME_TTL_SECONDS = 3600;
  */
 export const BUFFER_LIFETIME_SECONDS = FRAME_TTL_SECONDS + 15 * 60;
 
+/** A buffer command not answered by then has failed (no offline queue). */
+export const BUFFER_COMMAND_TIMEOUT_MS = 5_000;
+
+/** After its turn ends, a runner issues no more buffer writes past this. */
+export const BUFFER_APPEND_GRACE_MS = 30_000;
+
+/*
+ * Why the tombstone's lifetime (`BUFFER_LIFETIME_SECONDS`, 75 min) is enough
+ * (S-F-03): a write is issued only while its turn runs (≤ 2 min) or within
+ * `BUFFER_APPEND_GRACE_MS` after it; with no offline queue it is sent at
+ * once or refused, and one already on the socket is answered, times out, or
+ * dies with the connection (TCP gives up within minutes). No write can reach
+ * Redis after the tombstone expires.
+ */
+
 export interface AssistantFrameBuffer {
   /** Appends frames in order; `seq` was assigned by the single writer. */
   append(messageId: string, frames: readonly AssistantFrame[]): Promise<void>;

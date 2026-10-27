@@ -259,3 +259,37 @@ describe('an empty search asks the person to re-enter (owner, 2026-10-27)', () =
     expect(deterministicReply({ ...base, locale: 'en' })).toMatch(/re-enter/);
   });
 });
+
+describe('Sol review (S-F-01, S-F-02, S-F-04)', () => {
+  it('S-F-01: overlapping names — a prefix hold never splits a complete name', () => {
+    const s = new StreamSanitizer(0, [
+      { position: 1, placeId: PLACE_A, name: 'Nhà Lá' },
+      { position: 2, placeId: PLACE_B, name: 'Lá Sen' },
+    ]);
+    const out = [s.push('Nhà Lá '), s.push('ngon. ')].join('') + s.flush();
+    expect(out).not.toMatch(/nh[aà]/i);
+    expect(placeIdsIn(out)).toEqual([PLACE_A]);
+  });
+
+  it('S-F-02: a citation removed between name words cannot join them unjudged', () => {
+    for (const parts of [
+      ['Nhà [99] ', 'Lá nhé. '],
+      ['Nhà https://x.y ', 'Lá nhé. '],
+      ['Nhà [P9] ', 'Lá nhé. '],
+    ]) {
+      const s = new StreamSanitizer(0, [{ position: 1, placeId: PLACE_A, name: 'Nhà Lá' }]);
+      const out = parts.map((p) => s.push(p)).join('') + s.flush();
+      expect(out).not.toMatch(/nh[aà]/i);
+    }
+  });
+
+  it('S-F-04: long whitespace after a name prefix stays cheap', () => {
+    const s = new StreamSanitizer(0, [{ position: 1, placeId: PLACE_A, name: 'Nhà Lá Café' }]);
+    const started = Date.now();
+    s.push('Nhà ');
+    for (let i = 0; i < 100; i += 1) s.push(' '.repeat(100));
+    const out = s.push('Lá Café. ') + s.flush();
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(placeIdsIn(out)).toEqual([PLACE_A]);
+  });
+});

@@ -15,7 +15,11 @@ import type {
   ErrorEnvelope,
 } from '../domain/assistant.types';
 import { AssistantRepository, type MessageRow } from '../infrastructure/assistant.repository';
-import { ASSISTANT_FRAME_BUFFER, type AssistantFrameBuffer } from '../infrastructure/frame-buffer';
+import {
+  ASSISTANT_FRAME_BUFFER,
+  BUFFER_APPEND_GRACE_MS,
+  type AssistantFrameBuffer,
+} from '../infrastructure/frame-buffer';
 import { ASSISTANT_INSTANCE_ID, LEASE_MS, LEASE_RENEW_MS } from './assistant.config';
 import { AssistantAvailabilityService } from './assistant-availability.service';
 import {
@@ -131,13 +135,21 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     let chain = Promise.resolve();
     /** Highest seq handed to the live buffer; later frames wait for the outcome. */
     let queuedUpTo = 0;
+    /** When the turn ended; queued writes past the grace are dropped (S-F-03). */
+    let endedAt: number | null = null;
     const toBuffer = (list: AssistantFrame[]) => {
       if (list.length === 0) return;
       queuedUpTo = list[list.length - 1]!.seq;
       // A-R2-07: the turn never waits on the buffer. Frames stay ordered on
       // one chain; a stalled or failed append leaves a hole readers fill
       // from the row once the turn is finalized.
-      chain = chain.then(() => this.buffer.append(turn.messageId, list)).catch(() => undefined);
+      chain = chain
+        .then(() =>
+          endedAt !== null && Date.now() - endedAt > BUFFER_APPEND_GRACE_MS
+            ? undefined
+            : this.buffer.append(turn.messageId, list),
+        )
+        .catch(() => undefined);
     };
 
     const push = (frame: AssistantFrameInput) => {
@@ -310,6 +322,7 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
       await this.repo.completeLedger(turn.ledgerId, status, state.costs);
       this.metrics.increment('assistant_turns_total', { status });
     } finally {
+      endedAt = Date.now();
       this.running.delete(turn.messageId);
     }
   }

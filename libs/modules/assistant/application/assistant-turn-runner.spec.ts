@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { InMemoryFrameBuffer, type AssistantFrameBuffer } from '../infrastructure/frame-buffer';
 import { AssistantTurnRunner, deriveTitle } from './assistant-turn-runner.service';
 import { parseLastEventId, synthesizeFrames } from './assistant-stream.service';
@@ -298,6 +298,39 @@ describe('AssistantTurnRunner — Astra round 2 (GoGo-BE#717)', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect((await h.buffer.read('m1', 0)).map((f) => f.seq)).toEqual([1]);
   });
+});
+
+describe('AssistantTurnRunner — Sol review (S-F-03)', () => {
+  it('writes still queued long after the turn ended are never issued', async () => {
+    const issued: number[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const slow = new InMemoryFrameBuffer();
+    slow.append = async (_id, frames) => {
+      issued.push(...frames.map((f) => f.seq));
+      if (issued.length === 1) await gate;
+    };
+    const h = harness(
+      async (_state, sink) => {
+        await sink.emit({ type: 'step', step: 'writing' });
+        await sink.emit({ type: 'notice', notice: { kind: 'empty', copyKey: 'x' } as never });
+        return { status: 'complete' };
+      },
+      { buffer: slow },
+    );
+    h.runner.start(h.turn);
+    await until(() => h.ledger.length === 1, 5_000);
+    // Far past the grace: the stalled first write finally returns.
+    const now = Date.now();
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(now + 10 * 60_000);
+    try {
+      release();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(issued).toEqual([1]);
+    } finally {
+      spy.mockRestore();
+    }
+  }, 10_000);
 });
 
 describe('stream helpers', () => {
