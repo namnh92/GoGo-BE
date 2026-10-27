@@ -4,6 +4,7 @@ import { schema, type Db } from '@gogo/database';
 import { DB } from '../../shared/tokens';
 import type { Tx } from '../../shared/outbox';
 import { isoUs } from '../domain/cursor';
+import { truncateTokenSafe } from '../domain/place-tokens';
 import type {
   AssistantCardRef,
   AssistantContextKind,
@@ -199,17 +200,29 @@ export class AssistantRepository {
     );
   }
 
-  /** Assistant messages young enough to still have a live frame buffer. */
-  async recentAssistantMessageIds(
+  /**
+   * Hard delete, queuing in the same transaction a buffer purge for every
+   * reply young enough to still have a live buffer (A-R2-08). Returns them.
+   */
+  async deleteConversationQueuingPurges(
     userId: string,
     conversationId: string,
-    withinSeconds: number,
+    lifetimeSeconds: number,
   ): Promise<string[]> {
-    const res = await this.db.execute(sql`
-      select id from assistant_messages
-      where conversation_id = ${conversationId} and user_id = ${userId} and role = 'assistant'
-        and created_at > now() - (${withinSeconds} * interval '1 second')`);
-    return rowsOf<{ id: string }>(res).map((r) => r.id);
+    return this.db.transaction(async (tx) => {
+      const res = await tx.execute(sql`
+        insert into assistant_buffer_purges (message_id)
+        select m.id from assistant_messages m
+        join assistant_conversations c on c.id = m.conversation_id
+        where c.id = ${conversationId} and c.user_id = ${userId} and m.role = 'assistant'
+          and m.created_at > now() - (${lifetimeSeconds} * interval '1 second')
+        on conflict do nothing
+        returning message_id`);
+      await tx.execute(
+        sql`delete from assistant_conversations where id = ${conversationId} and user_id = ${userId}`,
+      );
+      return rowsOf<{ message_id: string }>(res).map((r) => r.message_id);
+    });
   }
 
   /** Buffers an erasure left behind (A-R-08); see `assistant_buffer_purges`. */
@@ -495,7 +508,7 @@ export class AssistantRepository {
       await tx.execute(sql`
         update assistant_conversations set
           last_message_at = greatest(last_message_at, now()),
-          preview = coalesce(nullif(left(${update.text}, 160), ''), preview)
+          preview = coalesce(nullif(${truncateTokenSafe(update.text, 160)}, ''), preview)
         where id = ${row.conversation_id}`);
       return row;
     });

@@ -22,6 +22,9 @@ export type TurnState = {
   notice: AssistantNotice | null;
   proposalIds: string[];
   costs: LedgerCosts;
+  /** Jev calls started and not yet answered, and the cost reported so far. */
+  jevInFlight: number;
+  jevKnownUsd: number;
   trace: Record<string, unknown>;
 };
 
@@ -52,6 +55,8 @@ export function newTurnState(): TurnState {
     notice: null,
     proposalIds: [],
     costs: emptyCosts(),
+    jevInFlight: 0,
+    jevKnownUsd: 0,
     trace: {},
   };
 }

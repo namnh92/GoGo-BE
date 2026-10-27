@@ -74,12 +74,12 @@ describe('first-text deadline over the whole turn (A-R-05)', () => {
 
   it('the guard rejects at the deadline and on abort, and steps aside once released', async () => {
     const guard = firstTextGuard(Date.now() + 50, new AbortController().signal);
-    await expect(guard.run(never())).rejects.toBeInstanceOf(FirstTextDeadlineError);
+    await expect(guard.run(() => never())).rejects.toBeInstanceOf(FirstTextDeadlineError);
     guard.dispose();
 
     const controller = new AbortController();
     const g2 = firstTextGuard(Date.now() + 10_000, controller.signal);
-    const pending = g2.run(never());
+    const pending = g2.run(() => never());
     controller.abort();
     await expect(pending).rejects.toBeDefined();
     g2.dispose();
@@ -87,7 +87,7 @@ describe('first-text deadline over the whole turn (A-R-05)', () => {
     const g3 = firstTextGuard(Date.now() + 10, new AbortController().signal);
     g3.release();
     await new Promise((r) => setTimeout(r, 30));
-    await expect(g3.run(Promise.resolve(7))).resolves.toBe(7);
+    await expect(g3.run(() => Promise.resolve(7))).resolves.toBe(7);
   });
 });
 

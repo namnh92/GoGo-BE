@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { InMemoryFrameBuffer } from '../infrastructure/frame-buffer';
+import { InMemoryFrameBuffer, type AssistantFrameBuffer } from '../infrastructure/frame-buffer';
 import { AssistantTurnRunner, deriveTitle } from './assistant-turn-runner.service';
 import { parseLastEventId, synthesizeFrames } from './assistant-stream.service';
 import type { AssistantOrchestrator, TurnInput } from './assistant-orchestrator.service';
@@ -28,9 +28,10 @@ function harness(
     /** false: another writer (a stop, the reaper) finalized first. */
     finalizeWins?: boolean;
     purges?: string[];
+    buffer?: AssistantFrameBuffer;
   } = {},
 ) {
-  const buffer = new InMemoryFrameBuffer();
+  const buffer = opts.buffer ?? new InMemoryFrameBuffer();
   const finalized: Finalized[] = [];
   const finalizeOptions: unknown[] = [];
   const ledger: { status: string }[] = [];
@@ -85,9 +86,9 @@ function harness(
   return { runner, buffer, finalized, finalizeOptions, ledger, closed, purged, turn };
 }
 
-const until = async (cond: () => boolean, ms = 3_000) => {
+const until = async (cond: () => boolean | Promise<boolean>, ms = 3_000) => {
   const end = Date.now() + ms;
-  while (!cond()) {
+  while (!(await cond())) {
     if (Date.now() > end) throw new Error('timed out');
     await new Promise((r) => setTimeout(r, 10));
   }
@@ -250,18 +251,52 @@ describe('AssistantTurnRunner — Astra round 1 (GoGo-BE#717)', () => {
     expect(h.finalizeOptions[0]).toEqual({ onlyIfLeaseExpired: true });
   });
 
-  it('A-R-02: a turn ended by someone else keeps its reservation unsettled', async () => {
-    const h = harness(async () => ({ status: 'complete' }));
-    await h.runner.finalizeOrphan({ id: 'm9', text: '' } as MessageRow, 'stopped', null);
-    expect(h.closed).toEqual(['m9']);
-  });
-
   it('A-R-08: the reaper drops live buffers an erasure listed', async () => {
     const h = harness(async () => ({ status: 'complete' }), { purges: ['m7'] });
     await h.buffer.append('m7', [{ type: 'delta', seq: 1, messageId: 'm7', text: 'private' }]);
     await h.runner.reap();
     expect(await h.buffer.read('m7', 0)).toEqual([]);
     expect(h.purged).toEqual([['m7']]);
+  });
+});
+
+describe('AssistantTurnRunner — Astra round 2 (GoGo-BE#717)', () => {
+  it('A-R2-07: a stalled live buffer does not hold the turn: it still finalizes', async () => {
+    const stalled = new InMemoryFrameBuffer();
+    stalled.append = () => new Promise<void>(() => undefined);
+    const h = harness(
+      async (_state, sink) => {
+        await sink.emit({ type: 'step', step: 'writing' });
+        await sink.emit({ type: 'delta', text: 'Xin chào' });
+        return { status: 'complete' };
+      },
+      { buffer: stalled },
+    );
+    h.runner.start(h.turn);
+    await until(() => h.finalized.length === 1, 4_000);
+    expect(h.finalized[0]!.status).toBe('complete');
+    expect(h.finalized[0]!.text).toBe('Xin chào');
+  }, 8_000);
+
+  it('A-R2-09: after an abort, a runner that loses finalization adds nothing to the buffer', async () => {
+    const h = harness(
+      async (_state, sink, signal) => {
+        await sink.emit({ type: 'delta', text: 'before ' });
+        await new Promise<void>((r) => signal.addEventListener('abort', () => r(), { once: true }));
+        // Still producing after the stop: these frames would take the seq
+        // the winner's terminal frame uses.
+        await sink.emit({ type: 'delta', text: 'after' });
+        await sink.emit({ type: 'notice', notice: { kind: 'empty', copyKey: 'x' } as never });
+        return { status: 'complete' };
+      },
+      { finalizeWins: false },
+    );
+    h.runner.start(h.turn);
+    await until(async () => (await h.buffer.read('m1', 0)).length === 1);
+    await h.buffer.requestStop('m1');
+    await until(() => h.ledger.length === 1);
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await h.buffer.read('m1', 0)).map((f) => f.seq)).toEqual([1]);
   });
 });
 

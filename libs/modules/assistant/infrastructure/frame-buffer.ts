@@ -16,6 +16,14 @@ export const ASSISTANT_FRAME_BUFFER = Symbol('ASSISTANT_FRAME_BUFFER');
 /** Long enough for any reply plus a reconnect; the row holds them after that. */
 export const FRAME_TTL_SECONDS = 3600;
 
+/**
+ * How long after a reply's creation its buffer can still exist: the TTL runs
+ * from the first append (Redis) or the last one (memory), both within the
+ * reply's own run (≤ `ASSISTANT_REPLY_MAX_MS`, at most two minutes). A
+ * deletion queues a purge for every reply this young (A-R2-08).
+ */
+export const BUFFER_LIFETIME_SECONDS = FRAME_TTL_SECONDS + 15 * 60;
+
 export interface AssistantFrameBuffer {
   /** Appends frames in order; `seq` was assigned by the single writer. */
   append(messageId: string, frames: readonly AssistantFrame[]): Promise<void>;

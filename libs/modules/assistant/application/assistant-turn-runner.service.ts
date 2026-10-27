@@ -40,6 +40,8 @@ const DELTA_FLUSH_CHARS = 240;
 const STOP_POLL_MS = 500;
 const KILL_SWITCH_POLL_MS = 3_000;
 const REAPER_MS = 60_000;
+/** How long ending a turn waits for the live buffer to take its frames. */
+const BUFFER_DRAIN_MS = 2_000;
 
 export type RunnableTurn = TurnInput;
 
@@ -120,12 +122,23 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
 
   private async execute(turn: RunnableTurn, entry: Running): Promise<void> {
     const turnStartedAt = Date.now();
+    const signal = entry.controller.signal;
     const state = newTurnState();
     const frames: AssistantFrame[] = [];
     let seq = 0;
     let deltaBuffer = '';
     let deltaTimer: NodeJS.Timeout | undefined;
     let chain = Promise.resolve();
+    /** Highest seq handed to the live buffer; later frames wait for the outcome. */
+    let queuedUpTo = 0;
+    const toBuffer = (list: AssistantFrame[]) => {
+      if (list.length === 0) return;
+      queuedUpTo = list[list.length - 1]!.seq;
+      // A-R2-07: the turn never waits on the buffer. Frames stay ordered on
+      // one chain; a stalled or failed append leaves a hole readers fill
+      // from the row once the turn is finalized.
+      chain = chain.then(() => this.buffer.append(turn.messageId, list)).catch(() => undefined);
+    };
 
     const push = (frame: AssistantFrameInput) => {
       seq += 1;
@@ -137,18 +150,19 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
       const full = { ...stored, seq, messageId: turn.messageId } as AssistantFrame;
       frames.push(full);
       applyFrame(state, full);
-      // A deleted turn writes nothing more anywhere (A-R-08).
-      if (entry.reason === 'deleted') return chain;
-      chain = chain.then(() => this.buffer.append(turn.messageId, [full])).catch(() => undefined);
-      return chain;
+      // A-R2-09: once aborted, this runner may be about to lose the turn to
+      // a stop or the reaper, whose terminal frame takes the next seq. Its
+      // frames go to the buffer only if it wins finalization (below).
+      if (signal.aborted) return;
+      toBuffer([full]);
     };
     const flushDelta = () => {
       if (deltaTimer) clearTimeout(deltaTimer);
       deltaTimer = undefined;
-      if (!deltaBuffer) return chain;
+      if (!deltaBuffer) return;
       const text = deltaBuffer;
       deltaBuffer = '';
-      return push({ type: 'delta', text });
+      push({ type: 'delta', text });
     };
     const sink: TurnSink = {
       emit: async (frame) => {
@@ -165,16 +179,14 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
           // Counted as started at once, so the first-text deadline sees it.
           state.textStarted = true;
           deltaBuffer += frame.text;
-          if (deltaBuffer.length >= DELTA_FLUSH_CHARS) await flushDelta();
-          else deltaTimer ??= setTimeout(() => void flushDelta(), DELTA_FLUSH_MS);
+          if (deltaBuffer.length >= DELTA_FLUSH_CHARS) flushDelta();
+          else deltaTimer ??= setTimeout(flushDelta, DELTA_FLUSH_MS);
           return;
         }
-        await flushDelta();
-        await push(frame);
+        flushDelta();
+        push(frame);
       },
     };
-
-    const signal = entry.controller.signal;
     const ceiling = setTimeout(
       () => this.abort(entry, 'ceiling'),
       this.config.ASSISTANT_REPLY_MAX_MS,
@@ -254,8 +266,9 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await flushDelta();
-      await chain;
+      flushDelta();
+      // Bounded: a stalled buffer delays nothing durable (A-R2-07).
+      await Promise.race([chain, sleep(BUFFER_DRAIN_MS)]);
       // The terminal frame is folded into the row first and reaches the live
       // buffer only after the commit: a client that sees `done` and re-reads
       // the message must find it finished.
@@ -285,10 +298,10 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
         trace: state.trace,
         sources: state.sources,
       });
-      // A-R-11: only the writer that finalized publishes a terminal frame; a
-      // runner that lost to a stop or the reaper leaves theirs as the end.
-      if (terminal && row)
-        await this.buffer.append(turn.messageId, [terminal]).catch(() => undefined);
+      // A-R-11 / A-R2-09: only the writer that finalized publishes — the
+      // frames it held back after an abort, then its terminal. A runner that
+      // lost to a stop or the reaper adds nothing after their terminal.
+      if (row) toBuffer(frames.filter((f) => f.seq > queuedUpTo));
       if (row) await this.repo.setTitleIfEmpty(turn.conversationId, deriveTitle(turn.text));
       else if (!(await this.repo.findMessageById(turn.messageId))) {
         // Deleted (conversation or account) while it ran: no copy stays behind.
@@ -326,14 +339,23 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     return reaped;
   }
 
-  /** Drops the live buffers of replies an erasure deleted (A-R-08). */
+  /**
+   * Drops the live buffers of deleted replies (A-R-08, A-R2-08). A drop that
+   * fails keeps its row, so the next pass retries it.
+   */
   async drainBufferPurges(): Promise<void> {
     const ids = await this.repo.pendingBufferPurges(100);
+    const dropped: string[] = [];
     for (const id of ids) {
       if (this.running.has(id)) this.abort(this.running.get(id)!, 'deleted');
-      await this.buffer.drop(id);
+      try {
+        await this.buffer.drop(id);
+        dropped.push(id);
+      } catch {
+        // retried on the next pass
+      }
     }
-    await this.repo.completeBufferPurges(ids);
+    await this.repo.completeBufferPurges(dropped);
   }
 
   /** Ends a streaming turn no process here is running (stop fallback, reaper). */

@@ -152,15 +152,15 @@ export class AssistantOrchestrator {
     const remaining = () => deadline - Date.now();
 
     // ── context ──────────────────────────────────────────────────────────────
-    const history = await guard.run(this.historyFor(input));
+    const history = await guard.run(() => this.historyFor(input));
     const previousRequest = [...history].reverse().find((t) => t.role === 'user')?.text ?? null;
-    const taxonomy = await guard.run(this.taxonomy.taxonomy());
+    const taxonomy = await guard.run(() => this.taxonomy.taxonomy());
     const labels = this.taxonomy.labels(taxonomy);
     const facts = parseIntentFacts(input.text);
 
     // ── Jev decision 1 ───────────────────────────────────────────────────────
-    const decision = await guard.run(
-      this.decide(input, previousRequest, taxonomy, signal, remaining(), state),
+    const decision = await guard.run(() =>
+      this.decide(input, previousRequest, taxonomy, guard.signal, remaining(), state),
     );
     const c = decision.classification;
     state.trace.intent = {
@@ -228,13 +228,14 @@ export class AssistantOrchestrator {
     let perPerson: { amount: number | null; origin: Origin } = { amount: null, origin: 'unknown' };
 
     if (input.context?.kind === 'plan') {
-      planCard = await guard.run(this.hydrator.planCard(actor, input.context.id, ''));
+      const planId = input.context.id;
+      planCard = await guard.run(() => this.hydrator.planCard(actor, planId, ''));
       if (!planCard.available) planCard = null;
     }
 
     if (route === 'recommend_places') {
-      await guard.run(sink.emit({ type: 'step', step: 'searching_places' }));
-      const resolution = await guard.run(this.areas.resolve(input.text, facts.areaText));
+      await guard.run(() => sink.emit({ type: 'step', step: 'searching_places' }));
+      const resolution = await guard.run(() => this.areas.resolve(input.text, facts.areaText));
       area = resolution.kind === 'resolved' ? resolution.value : null;
       perPerson = perPersonBudget(facts, c.occasion.key);
       ctx.constraints = constraintsFrom(facts, area?.label ?? null, {
@@ -246,7 +247,7 @@ export class AssistantOrchestrator {
         // No area and nothing to anchor on: a nationwide list would be noise.
         clarification.push('area');
       } else {
-        placeCards = await guard.run(
+        placeCards = await guard.run(() =>
           this.findPlaces(
             input,
             decision,
@@ -254,7 +255,7 @@ export class AssistantOrchestrator {
             perPerson.amount,
             facts.timeHint,
             contextPlaceId,
-            signal,
+            guard.signal,
             remaining,
             state,
             labels,
@@ -262,7 +263,7 @@ export class AssistantOrchestrator {
         );
         if (!facts.budget && placeCards.length > 0) clarification.push('budget');
       }
-      ctx.places = await guard.run(this.groundedPlaces(placeCards, labels));
+      ctx.places = await guard.run(() => this.groundedPlaces(placeCards, labels));
       state.trace.retrieval = {
         areaResolved: area !== null,
         areaAmbiguous: resolution.kind === 'ambiguous',
@@ -270,8 +271,8 @@ export class AssistantOrchestrator {
         perPersonBudget: perPerson.amount,
       };
     } else if (route === 'gogo_guide') {
-      await guard.run(sink.emit({ type: 'step', step: 'reading_guide' }));
-      const docs = await guard.run(this.guide.searchPublished(input.text, input.locale));
+      await guard.run(() => sink.emit({ type: 'step', step: 'reading_guide' }));
+      const docs = await guard.run(() => this.guide.searchPublished(input.text, input.locale));
       const sections = rankGuideSections(docs, input.text, 3);
       // One source per document version; sections of it share the index.
       const byVersion = new Map<string, number>();
@@ -297,7 +298,7 @@ export class AssistantOrchestrator {
       }
       state.trace.retrieval = { guideVersions: [...byVersion.keys()], sections: sections.length };
     } else if (route === 'plan_help') {
-      await guard.run(sink.emit({ type: 'step', step: 'reading_plan' }));
+      await guard.run(() => sink.emit({ type: 'step', step: 'reading_plan' }));
       if (planCard) {
         ctx.plan = {
           roomTitle: planCard.facts.roomTitle ?? null,
@@ -467,7 +468,7 @@ export class AssistantOrchestrator {
     const budget = AbortSignal.timeout(
       Math.max(1, Math.min(budgetMs, this.config.ASSISTANT_JEV_TIMEOUT_MS)),
     );
-    state.costs.jevCalls += 1;
+    beginJevCall(state, signal);
     try {
       const response = await this.decisions.decide(request, {
         signal: AbortSignal.any([signal, budget]),
@@ -479,9 +480,8 @@ export class AssistantOrchestrator {
       });
       return mapAssistantAnswers(facts, response.answers, response.model);
     } catch (err) {
+      endJevCall(state, null);
       if (signal.aborted) throw err;
-      state.costs.jevCostUsd = null;
-      state.trace.jevUnknownCost = true;
       const reason = jevFallbackReason(err, budget.aborted);
       this.metrics.observe('assistant_provider_duration_seconds', secondsSince(started), {
         provider: 'jev',
@@ -505,12 +505,7 @@ export class AssistantOrchestrator {
     costs.jevModel = model;
     costs.jevInputTokens = (costs.jevInputTokens ?? 0) + (usage.inputTokens ?? 0);
     costs.jevOutputTokens = (costs.jevOutputTokens ?? 0) + (usage.outputTokens ?? 0);
-    if (usage.costUsd === null || state.trace.jevUnknownCost) {
-      state.trace.jevUnknownCost = true;
-      costs.jevCostUsd = null;
-    } else {
-      costs.jevCostUsd = (costs.jevCostUsd ?? 0) + usage.costUsd;
-    }
+    endJevCall(state, usage.costUsd);
   }
 
   private async findPlaces(
@@ -617,6 +612,7 @@ export class AssistantOrchestrator {
     state: TurnState,
     labels: Map<string, string>,
   ): Promise<string[]> {
+    const stageStartedAt = Date.now();
     const tags = await this.hydrator.placeTags(ids);
     const names = new Map<string, string>();
     for (const id of ids) names.set(id, (await this.hydrator.placeCard(id)).facts.name);
@@ -633,10 +629,18 @@ export class AssistantOrchestrator {
         };
       }),
     );
-    state.costs.jevCalls += 1;
+    // A-R2-06: an abandoned stage (deadline passed, turn ended) starts no
+    // paid call; the budget is re-read now, not when the stage began.
     const budget = AbortSignal.timeout(
-      Math.max(1, Math.min(budgetMs - MIN_COMPOSE_BUDGET_MS, this.config.ASSISTANT_JEV_TIMEOUT_MS)),
+      Math.max(
+        1,
+        Math.min(
+          budgetMs - (Date.now() - stageStartedAt) - MIN_COMPOSE_BUDGET_MS,
+          this.config.ASSISTANT_JEV_TIMEOUT_MS,
+        ),
+      ),
     );
+    beginJevCall(state, signal);
     try {
       const response = await this.decisions!.decide(request, {
         signal: AbortSignal.any([signal, budget]),
@@ -654,9 +658,8 @@ export class AssistantOrchestrator {
       // Nothing relevant enough: keep the deterministic order rather than nothing.
       return scored.length > 0 ? scored.map((s) => s.id) : ids;
     } catch (err) {
+      endJevCall(state, null);
       if (signal.aborted) throw err;
-      state.trace.jevUnknownCost = true;
-      state.costs.jevCostUsd = null;
       state.trace.relevance = { asked: keyed.length, fallback: true };
       return ids;
     }
@@ -771,9 +774,11 @@ export class AssistantOrchestrator {
     // A-R-06: an abort that fired before this point must still stop the call.
     signal.throwIfAborted();
     const local = new AbortController();
+    let modelStarted = false;
     const firstTextTimer = setTimeout(
       () => {
-        if (!state.textStarted) local.abort();
+        // Text the sanitizer still holds back counts as started (A-R2-02).
+        if (!state.textStarted && !modelStarted) local.abort();
       },
       Math.max(1, deadline - Date.now()),
     );
@@ -789,6 +794,7 @@ export class AssistantOrchestrator {
         signal: AbortSignal.any([signal, local.signal]),
       })) {
         if (event.type === 'delta') {
+          modelStarted = true;
           const clean = sanitizer.push(event.text);
           if (clean) await sink.emit({ type: 'delta', text: clean });
         } else if (event.type === 'usage') {
@@ -862,8 +868,17 @@ export class FirstTextDeadlineError extends Error {
 }
 
 export type FirstTextGuard = {
-  /** The stage's result, unless the deadline passes or the turn is aborted first. */
-  run<T>(work: Promise<T>): Promise<T>;
+  /**
+   * Aborts when the deadline passes (until released) or the turn is aborted:
+   * a stage hands it to provider calls so abandoned work cannot start or
+   * continue paid calls (A-R2-06).
+   */
+  readonly signal: AbortSignal;
+  /**
+   * The stage's result, unless the deadline passes or the turn is aborted
+   * first. Lazy, so a stage the deadline already refused never starts.
+   */
+  run<T>(work: () => Promise<T>): Promise<T>;
   /** Text is about to start (or the compose stage owns the deadline from here). */
   release(): void;
   dispose(): void;
@@ -876,13 +891,22 @@ export function firstTextGuard(deadline: number, signal: AbortSignal): FirstText
     expire = () => reject(new FirstTextDeadlineError());
   });
   expired.catch(() => undefined);
-  const timer = setTimeout(() => expire?.(), Math.max(0, deadline - Date.now()));
+  const deadlineController = new AbortController();
+  const timer = setTimeout(
+    () => {
+      deadlineController.abort(new FirstTextDeadlineError());
+      expire?.();
+    },
+    Math.max(0, deadline - Date.now()),
+  );
   timer.unref?.();
   return {
-    async run<T>(work: Promise<T>): Promise<T> {
+    signal: AbortSignal.any([signal, deadlineController.signal]),
+    async run<T>(stage: () => Promise<T>): Promise<T> {
       signal.throwIfAborted();
-      if (released) return work;
+      if (released) return stage();
       if (Date.now() >= deadline) throw new FirstTextDeadlineError();
+      const work = stage();
       const aborted = new Promise<never>((_resolve, reject) => {
         const onAbort = () => reject(signal.reason ?? new Error('aborted'));
         signal.addEventListener('abort', onAbort, { once: true });
@@ -902,6 +926,27 @@ export function firstTextGuard(deadline: number, signal: AbortSignal): FirstText
       clearTimeout(timer);
     },
   };
+}
+
+/**
+ * Jev cost accounting with calls in flight (A-R2-06): while any call is
+ * outstanding, or any reported no cost, the turn's Jev cost is unknown —
+ * so a ledger settled while an abandoned call was still running records an
+ * unknown, counted at the ceiling, never a partial sum.
+ */
+function beginJevCall(state: TurnState, signal: AbortSignal): void {
+  signal.throwIfAborted();
+  state.costs.jevCalls += 1;
+  state.jevInFlight += 1;
+  state.costs.jevCostUsd = null;
+}
+
+function endJevCall(state: TurnState, costUsd: number | null): void {
+  state.jevInFlight = Math.max(0, state.jevInFlight - 1);
+  if (costUsd === null) state.trace.jevUnknownCost = true;
+  else state.jevKnownUsd += costUsd;
+  state.costs.jevCostUsd =
+    state.jevInFlight === 0 && !state.trace.jevUnknownCost ? state.jevKnownUsd : null;
 }
 
 function timeoutReply(locale: 'vi' | 'en'): string {

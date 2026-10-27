@@ -45,4 +45,23 @@ export function renderPlaceTokens(
   return text.replace(TOKEN, (_m, id: string) => names.get(id.toLowerCase()) || fallback);
 }
 
+/** For copies that are themselves stored (the export): the id, never the name. */
+export function placeTokensAsIds(text: string, locale: 'vi' | 'en' = 'vi'): string {
+  const label = locale === 'en' ? 'GoGo place' : 'địa điểm GoGo';
+  return text.replace(TOKEN, (_m, id: string) => `${label} (${id.toLowerCase()})`);
+}
+
+/**
+ * Cuts stored text to `max` characters without splitting a token: a cut
+ * inside one moves to its start (A-R2-05), so a reader never gets a fragment.
+ */
+export function truncateTokenSafe(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let cut = max;
+  const open = text.lastIndexOf(OPEN, cut - 1);
+  const close = open >= 0 ? text.indexOf(CLOSE, open) : -1;
+  if (open >= 0 && (close < 0 || close >= cut)) cut = open;
+  return text.slice(0, cut);
+}
+
 export const UNKNOWN_PLACE_LABEL = { vi: 'địa điểm này', en: 'this place' } as const;

@@ -379,6 +379,34 @@ Where the implementation is more specific than (or differs from) the design abov
   request logs and Sentry (URL and query string).
 - **Feedback queue cursor (A-R-13)** is sealed with AES-256-GCM.
 
+### Astra round 2 (PR #717) — what changed
+
+- **Names in any spelling (A-R2-02).** The sanitizer matches listed names
+  case-, diacritic- and whitespace-insensitively, after any punctuation, and
+  holds back enough text that a name split across deltas is judged whole. Owner
+  decision 2026-10-27: Haiku may not shorten a name, so any run of two or more
+  consecutive words of a listed name is replaced by its token too, and the
+  prompt forbids parts, abbreviations, nicknames, translations and respellings.
+  A respelling that matches none of these remains a residual of model prose.
+- **Export (A-R2-03, owner decision 2026-10-27).** The export is stored, so a
+  place in it reads "địa điểm GoGo (id)" — never a name.
+- **Replay records (A-R2-04).** Conversation create stores the new id only and
+  replays from the row; rename and stop are idempotent by themselves and store
+  no replay body (`NoIdempotencyReplay`).
+- **Preview (A-R2-05)** is truncated at a token boundary.
+- **Abandoned stages (A-R2-06)** get the guard's signal: a stage the deadline
+  abandoned starts no Jev call, and while any Jev call is in flight the turn's
+  Jev cost is unknown, so a ledger settled early is counted at the ceiling.
+- **Live buffer (A-R2-07)** is never awaited by the turn (at most 2 s when it
+  ends); a stalled append leaves a hole the reader fills from the row.
+- **Buffer purges (A-R2-08)** are queued in the conversation-delete transaction
+  as well as in erasure, for every reply younger than the buffer's lifetime
+  (`BUFFER_LIFETIME_SECONDS`); a failed drop keeps its row and is retried.
+- **Losing writers (A-R2-09)** append nothing after an abort unless they win
+  finalization, and a reader always ends with the committed terminal frame.
+- **Telemetry (A-R2-10)** redacts every decoded `q` (repeated, `%71`) on the
+  assistant search, in the URL and the query string.
+
 Configuration (`apps/api/src/config/env.ts`): `OPENROUTER_API_KEY` (existing SSM
 backend row `openrouter/api-key`), `ASSISTANT_DAILY_MESSAGE_LIMIT`,
 `ASSISTANT_MESSAGES_PER_MINUTE_LIMIT`, `ASSISTANT_MONTHLY_BUDGET_USD` (all three

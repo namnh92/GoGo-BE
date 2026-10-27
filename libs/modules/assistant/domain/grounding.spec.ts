@@ -181,3 +181,39 @@ describe('place names never reach a stored reply (A-R-04)', () => {
     expect(msgs[1]!.content).toContain('a place');
   });
 });
+
+describe('no listed name survives in any spelling (A-R2-02, owner: no shortened names)', () => {
+  const places = [
+    { position: 1, placeId: PLACE_A, name: 'Nhà Lá Café' },
+    { position: 2, placeId: PLACE_B, name: 'Phở Thìn Bờ Hồ' },
+  ];
+  const run = (deltas: string[]) => {
+    const s = new StreamSanitizer(0, places);
+    return deltas.map((d) => s.push(d)).join('') + s.flush();
+  };
+  const names = /nh[aà]\s*l[aá]|ph[oở]\s*th[iì]n|b[oờ]\s*h[oồ]/i;
+
+  it('a name after punctuation, split across deltas', () => {
+    const out = run(['Bạn thử (Nhà ', 'Lá Café) nhé, hoặc "Phở', ' Thìn Bờ Hồ". ']);
+    expect(out).not.toMatch(names);
+    expect(placeIdsIn(out).sort()).toEqual([PLACE_A, PLACE_B].sort());
+  });
+
+  it('upper case, no diacritics, decomposed diacritics', () => {
+    expect(run(['Đi NHÀ LÁ CAFÉ nhé. '])).not.toMatch(names);
+    expect(run(['Thu Pho Thin Bo Ho xem. '])).not.toMatch(/pho thin/i);
+    expect(
+      run(['Thử Pho\u031B\u0309 Thi\u0300n Bo\u031B\u0300 Ho\u0302\u0300. ']).normalize('NFC'),
+    ).not.toMatch(names);
+  });
+
+  it('a shortened name (two or more consecutive words of it) is a name too', () => {
+    const out = run(['Mình thích Phở Thìn hơn, ', 'còn Bờ Hồ thì đông. ']);
+    expect(out).not.toMatch(names);
+    expect(placeIdsIn(out)).toEqual([PLACE_B]);
+  });
+
+  it('markdown and quotes around a name', () => {
+    expect(run(['**Nhà Lá Café** và _Phở Thìn Bờ Hồ_. '])).not.toMatch(names);
+  });
+});

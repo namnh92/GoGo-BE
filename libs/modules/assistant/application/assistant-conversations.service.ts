@@ -21,7 +21,7 @@ import {
 } from '../infrastructure/assistant.repository';
 import {
   ASSISTANT_FRAME_BUFFER,
-  FRAME_TTL_SECONDS,
+  BUFFER_LIFETIME_SECONDS,
   type AssistantFrameBuffer,
 } from '../infrastructure/frame-buffer';
 import { ASSISTANT_INSTANCE_ID, LEASE_MS } from './assistant.config';
@@ -89,19 +89,49 @@ export class AssistantConversationsService {
     };
   }
 
+  /**
+   * With an Idempotency-Key, the replay record keeps the conversation's id
+   * only and completes with the insert (A-R2-04): a replay re-reads the row,
+   * so neither the context's label nor anything else is stored with the key.
+   */
   async create(
     actor: Actor,
     input: { title?: string | undefined; context?: AssistantContextInput | undefined },
-  ) {
+    scope: IdempotencyScope | null = null,
+  ): Promise<{ replay: boolean; status: number; body: unknown }> {
     const userId = requireUser(actor);
-    await this.availability.requireReady();
-    const context = input.context ? await this.resolveContext(actor, input.context) : null;
-    const row = await this.repo.createConversation(this.db, {
-      userId,
-      title: input.title?.trim() || null,
-      context: context ? { kind: context.kind, id: context.id } : null,
-    });
-    return conversationView(row, context);
+    const begun = scope ? await beginIdempotent(this.db, scope) : null;
+    if (begun?.kind === 'replay') {
+      const id = (begun.body as { conversationId?: string } | null)?.conversationId;
+      if (!id) throw AppError.notFound();
+      return { replay: true, status: begun.status, body: await this.get(actor, id) };
+    }
+    const claim = begun?.kind === 'owned' ? begun.claim : null;
+    try {
+      await this.availability.requireReady();
+      const context = input.context ? await this.resolveContext(actor, input.context) : null;
+      const row = await this.db.transaction(async (tx) => {
+        const created = await this.repo.createConversation(tx, {
+          userId,
+          title: input.title?.trim() || null,
+          context: context ? { kind: context.kind, id: context.id } : null,
+        });
+        if (
+          claim &&
+          !(await completeIdempotentWithin(tx, claim, 201, { conversationId: created.id }))
+        ) {
+          throw AppError.conflict(
+            'IDEMPOTENT_REQUEST_IN_FLIGHT',
+            'Original request is still processing',
+          );
+        }
+        return created;
+      });
+      return { replay: false, status: 201, body: conversationView(row, context) };
+    } catch (err) {
+      if (claim) await releaseIdempotent(this.db, claim).catch(() => undefined);
+      throw err;
+    }
   }
 
   async get(actor: Actor, id: string) {
@@ -132,9 +162,23 @@ export class AssistantConversationsService {
     for (const messageId of await this.repo.streamingMessageIds(userId, id)) {
       if (!(await this.runner.stopLocal(messageId))) await this.buffer.requestStop(messageId);
     }
-    const buffered = await this.repo.recentAssistantMessageIds(userId, id, FRAME_TTL_SECONDS);
-    await this.repo.deleteConversation(userId, id);
-    await Promise.all(buffered.map((m) => this.buffer.drop(m).catch(() => undefined)));
+    // A-R2-08: the purge rows commit with the delete, so a buffer drop that
+    // fails here is retried by the reaper rather than forgotten.
+    const buffered = await this.repo.deleteConversationQueuingPurges(
+      userId,
+      id,
+      BUFFER_LIFETIME_SECONDS,
+    );
+    const dropped: string[] = [];
+    for (const m of buffered) {
+      try {
+        await this.buffer.drop(m);
+        dropped.push(m);
+      } catch {
+        // left for the reaper
+      }
+    }
+    await this.repo.completeBufferPurges(dropped);
   }
 
   // --- messages ----------------------------------------------------------------

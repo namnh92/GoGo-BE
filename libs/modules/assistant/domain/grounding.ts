@@ -63,7 +63,7 @@ const SYSTEM_PROMPT_EN = `You are GoGo AI, the assistant inside GoGo, an app for
 Write the reply in {LANGUAGE}: friendly, concise (at most about 120 words), plain text with short paragraphs or "- " lists. No headings, tables, markdown links, URLs or code.
 
 You only explain what GoGo's backend has verified, given in <gogo_context>. Rules:
-1. Mention only places listed under "places", in the listed order, and refer to each one only by its marker, written exactly as [P1], [P2], …; never write a place's name, the app shows it in place of the marker. Never introduce any other place, brand, address or area.
+1. Mention only places listed under "places", in the listed order, and refer to each one only by its marker, written exactly as [P1], [P2], …; never write a place's name or any part, abbreviation, nickname, translation or respelling of it, the app shows the name in place of the marker. Never introduce any other place, brand, address or area.
 2. Never state prices, opening hours, availability, ratings, distances, travel times, phone numbers or addresses. The app shows verified facts on cards under your text; you may point the user to the cards.
 3. For questions about GoGo, describe features only from the "guide" sections and cite them as [n] with the section number. If the guide does not cover it, say GoGo has no documented answer. Never invent features, buttons or steps.
 4. Never say an action was performed. If "pending_action" is set, say the user can review and confirm it on the card; nothing happens until they confirm.
@@ -164,38 +164,45 @@ export function buildComposerMessages(
 
 /**
  * Output hygiene on a stream (ADR-0036 §3F): drops URLs, markdown link
- * targets and `[n]` markers that cite no source. Text is held back to the
- * last whitespace so a pattern split across deltas is judged whole.
+ * targets and `[n]` markers that cite no source.
  *
- * A-R-04: a place reaches the reply only as a token. `[Pn]` markers become
- * the token of the n-th listed place (out of range: dropped); a listed name
- * the model wrote anyway is replaced by its token too, and text that could be
- * the start of a listed name is held back until it can be judged.
+ * A-R-04 / A-R2-02: a place reaches the reply only as a token. `[Pn]` markers
+ * become the token of the n-th listed place (out of range: dropped). A listed
+ * name the model wrote anyway — in any case, with or without diacritics,
+ * after any punctuation — becomes its token, and so does any run of two or
+ * more consecutive words of it (the owner forbids shortened names). Text is
+ * held back long enough that a name split across deltas is judged whole.
  */
 export class StreamSanitizer {
   private pending = '';
-  private readonly names: { exact: string; lower: string; token: string }[];
+  private readonly patterns: NamePattern[];
+  private readonly hold: number;
 
   constructor(
     private readonly sourceCount: number,
     private readonly places: readonly Pick<GroundedPlace, 'position' | 'placeId' | 'name'>[] = [],
   ) {
-    this.names = places
-      .filter((p) => p.name.trim().length >= 2)
-      .map((p) => ({
-        exact: p.name.trim(),
-        lower: p.name.trim().toLowerCase(),
-        token: placeToken(p.placeId),
-      }))
-      // Longest first, so a name containing another is replaced whole.
-      .sort((a, b) => b.lower.length - a.lower.length);
+    this.patterns = namePatterns(places);
+    const longest = Math.max(0, ...places.map((p) => p.name.length));
+    // A name in the stream can be longer than in the list (decomposed
+    // diacritics, doubled spaces): three times is a safe bound.
+    this.hold = longest > 0 ? longest * 3 + 8 : 0;
   }
 
   push(delta: string): string {
-    this.pending += delta;
-    let cut = Math.max(this.pending.lastIndexOf(' '), this.pending.lastIndexOf('\n'));
-    if (cut < 0) return '';
-    cut = this.holdBackNamePrefix(cut + 1);
+    this.pending = (this.pending + delta).normalize('NFC');
+    let cut = -1;
+    for (let i = this.pending.length - 1 - this.hold; i >= 0; i -= 1) {
+      if (/\s/.test(this.pending[i]!)) {
+        cut = i + 1;
+        break;
+      }
+    }
+    if (cut <= 0) return '';
+    // Never cut inside a name: a match spanning the cut is kept whole.
+    for (const span of findNames(this.pending, this.patterns)) {
+      if (span.start < cut && span.end > cut) cut = Math.min(cut, span.start);
+    }
     if (cut <= 0) return '';
     const ready = this.pending.slice(0, cut);
     this.pending = this.pending.slice(cut);
@@ -203,61 +210,113 @@ export class StreamSanitizer {
   }
 
   flush(): string {
-    const rest = this.clean(this.pending);
+    const rest = this.clean(this.pending.normalize('NFC'));
     this.pending = '';
     return rest;
   }
 
-  /** Moves the cut back to where a listed name may be starting. */
-  private holdBackNamePrefix(cut: number): number {
-    if (this.names.length === 0) return cut;
-    const ready = this.pending.slice(0, cut).toLowerCase();
-    const longest = this.names[0]!.lower.length;
-    for (let i = Math.max(0, ready.length - longest); i < ready.length; i += 1) {
-      if (i > 0 && !/\s/.test(ready[i - 1]!)) continue;
-      const tail = ready.slice(i).trimEnd();
-      if (!tail) continue;
-      if (this.names.some((n) => n.lower.length > tail.length && n.lower.startsWith(tail))) {
-        return i;
-      }
-    }
-    return cut;
-  }
-
   private clean(text: string): string {
-    let out = stripTokenDelimiters(text)
+    const hygienic = stripTokenDelimiters(text)
       .replace(/\]\((?:[a-z][a-z0-9+.-]*:)?[^)\s]*\)/gi, ']')
       .replace(/\b(?:https?:\/\/|www\.)\S+/gi, '')
       .replace(/\[P(\d{1,2})\]/gi, (_m, n: string) => {
         const place = this.places.find((p) => p.position === Number(n));
-        return place ? placeToken(place.placeId) : '';
+        // A private-use placeholder, so name matching below cannot touch it.
+        return place ? `\uE002${place.position}\uE003` : '';
       })
       .replace(/\[(\d{1,2})\]/g, (m, n: string) => {
         const i = Number(n);
         return i >= 1 && i <= this.sourceCount ? m : '';
       });
-    for (const n of this.names) out = replaceIgnoringCase(out, n, n.token);
-    return out;
+    let out = '';
+    let at = 0;
+    for (const span of findNames(hygienic, this.patterns)) {
+      out += hygienic.slice(at, span.start) + span.token;
+      at = span.end;
+    }
+    out += hygienic.slice(at);
+    return out.replace(/\uE002(\d{1,2})\uE003/g, (_m, n: string) =>
+      placeToken(this.places.find((p) => p.position === Number(n))!.placeId),
+    );
   }
 }
 
-function replaceIgnoringCase(
-  text: string,
-  needle: { exact: string; lower: string },
-  replacement: string,
-): string {
-  const lower = text.toLowerCase();
-  // Indices line up only when lower-casing kept the length; otherwise the
-  // exact spelling is still replaced.
-  if (lower.length !== text.length) return text.split(needle.exact).join(replacement);
-  const lowerNeedle = needle.lower;
-  let out = '';
-  let from = 0;
-  for (let at = lower.indexOf(lowerNeedle); at >= 0; at = lower.indexOf(lowerNeedle, from)) {
-    out += text.slice(from, at) + replacement;
-    from = at + lowerNeedle.length;
+type NamePattern = { folded: string; token: string };
+
+/** One code point → its comparison form: no diacritics, lower case, đ → d. */
+function foldChar(ch: string): string {
+  if (/\s/.test(ch)) return ' ';
+  return ch.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/đ/g, 'd');
+}
+
+/** The folded text, collapsed whitespace, and each folded index → original index. */
+function foldWithMap(text: string): { folded: string; map: number[] } {
+  let folded = '';
+  const map: number[] = [];
+  let i = 0;
+  for (const ch of text) {
+    const f = foldChar(ch);
+    if (f === ' ' && folded.endsWith(' ')) {
+      i += ch.length;
+      continue;
+    }
+    for (const c of f) {
+      folded += c;
+      map.push(i);
+    }
+    i += ch.length;
   }
-  return out + text.slice(from);
+  map.push(text.length);
+  return { folded, map };
+}
+
+/**
+ * Every listed name, and every run of two or more consecutive words of it,
+ * longest first. A one-word name is matched whole only.
+ */
+function namePatterns(places: readonly Pick<GroundedPlace, 'placeId' | 'name'>[]): NamePattern[] {
+  const out = new Map<string, string>();
+  for (const p of places) {
+    const words = foldWithMap(p.name.normalize('NFC')).folded.trim().split(' ').filter(Boolean);
+    const token = placeToken(p.placeId);
+    const add = (w: string[]) => {
+      const folded = w.join(' ');
+      if (folded.length >= 2 && !out.has(folded)) out.set(folded, token);
+    };
+    if (words.length === 1) add(words);
+    for (let len = words.length; len >= 2; len -= 1) {
+      for (let i = 0; i + len <= words.length; i += 1) add(words.slice(i, i + len));
+    }
+  }
+  return [...out]
+    .map(([folded, token]) => ({ folded, token }))
+    .sort((a, b) => b.folded.length - a.folded.length);
+}
+
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+
+/** Non-overlapping name spans in `text` (original indices), longest pattern first. */
+function findNames(
+  text: string,
+  patterns: readonly NamePattern[],
+): { start: number; end: number; token: string }[] {
+  if (patterns.length === 0) return [];
+  const { folded, map } = foldWithMap(text);
+  const taken: boolean[] = [];
+  const spans: { start: number; end: number; token: string }[] = [];
+  for (const p of patterns) {
+    for (let at = folded.indexOf(p.folded); at >= 0; at = folded.indexOf(p.folded, at + 1)) {
+      const end = at + p.folded.length;
+      if (at > 0 && WORD_CHAR.test(folded[at - 1]!)) continue;
+      if (end < folded.length && WORD_CHAR.test(folded[end]!)) continue;
+      let free = true;
+      for (let k = at; k < end; k += 1) if (taken[k]) free = false;
+      if (!free) continue;
+      for (let k = at; k < end; k += 1) taken[k] = true;
+      spans.push({ start: map[at]!, end: map[end]!, token: p.token });
+    }
+  }
+  return spans.sort((a, b) => a.start - b.start);
 }
 
 const vnd = (amount: number) => `${amount.toLocaleString('vi-VN')} VND`;

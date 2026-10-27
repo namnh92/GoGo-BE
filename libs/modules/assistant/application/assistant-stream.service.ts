@@ -157,7 +157,21 @@ export class AssistantStreamService {
       };
       const replayRow = async (r: MessageRow) => {
         const frames = r.frames && r.frames.length > 0 ? r.frames : synthesizeFrames(r);
-        for (const f of frames) if (f.seq > after) await send(f);
+        let ended = false;
+        for (const f of frames) {
+          if (f.seq <= after) continue;
+          await send(f);
+          if (isTerminalFrame(f)) ended = true;
+        }
+        // A-R2-09: a writer that lost the turn may have taken the committed
+        // terminal frame's seq in the buffer; the reader still ends with the
+        // committed outcome, numbered after what it already sent.
+        if (!ended) {
+          const terminal =
+            [...frames].reverse().find(isTerminalFrame) ??
+            synthesizeFrames(r).find(isTerminalFrame)!;
+          await send({ ...terminal, seq: after + 1 });
+        }
       };
 
       void (async () => {

@@ -45,8 +45,13 @@ export class AssistantAvailabilityService {
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
-  killSwitchOn(): Promise<boolean> {
-    return resolveBooleanFlag(this.db, 'assistant.enabled', {
+  /**
+   * `exec` is the caller's connection: inside the send transaction the flag is
+   * read on the connection that holds the budget lock, never on a second pooled
+   * one (A-R2-01: under load that second acquire starves the pool).
+   */
+  killSwitchOn(exec: Exec = this.db): Promise<boolean> {
+    return resolveBooleanFlag(exec, 'assistant.enabled', {
       environment: flagEnvironmentOf(this.config.APP_ENV),
     });
   }
@@ -75,7 +80,7 @@ export class AssistantAvailabilityService {
   }
 
   async readiness(exec: Exec = this.db, now = new Date()): Promise<Readiness> {
-    if (!(await this.killSwitchOn())) return { ok: false, reason: 'kill_switch' };
+    if (!(await this.killSwitchOn(exec))) return { ok: false, reason: 'kill_switch' };
     const limits = this.limits();
     const budget = this.config.ASSISTANT_MONTHLY_BUDGET_USD;
     if (!limits || budget === undefined || !this.config.OPENROUTER_API_KEY) {

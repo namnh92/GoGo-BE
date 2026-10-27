@@ -99,16 +99,43 @@ const PG_KEY_HEAD = /\bKey \(/g;
  * request log or an error report. Matched with its path, so `q` on the
  * public place search is untouched.
  */
-const ASSISTANT_SEARCH_QUERY = /(\/assistant\/conversations\/?\?(?:[^#\s"']*&)?q=)[^&#\s"']*/g;
+const ASSISTANT_SEARCH_URL = /(\/assistant\/conversations\/?\?)([^#\s"']*)/g;
+
+/** A query key as the server reads it: percent-decoded, `+` as space. */
+function decodedKey(raw: string): string {
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, ' '));
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Every `q` value in a query string, however the key is spelt (`q`, `%71`)
+ * and however often it repeats (A-R2-10); other parameters untouched.
+ */
+function redactQParams(query: string): string {
+  return query
+    .split('&')
+    .map((pair) => {
+      const eq = pair.indexOf('=');
+      const key = eq < 0 ? pair : pair.slice(0, eq);
+      return decodedKey(key).trim() === 'q' ? `${key}=${REDACTED}` : pair;
+    })
+    .join('&');
+}
 
 export function redactPrivateSearchQuery(text: string): string {
-  return text.replace(ASSISTANT_SEARCH_QUERY, `$1${REDACTED}`);
+  return text.replace(
+    ASSISTANT_SEARCH_URL,
+    (_m, path: string, query: string) => `${path}${redactQParams(query)}`,
+  );
 }
 
 /** A bare query string (Sentry keeps it apart from the URL) of that route. */
 export function redactPrivateQueryString(url: string | undefined, query: string): string {
   if (!url || !/\/assistant\/conversations\/?(?:[?#]|$)/.test(url)) return query;
-  return query.replace(/(^|&)q=[^&#]*/g, `$1q=${REDACTED}`);
+  return redactQParams(query);
 }
 
 export function redactCoordinateText(text: string): string {

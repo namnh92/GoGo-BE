@@ -870,6 +870,145 @@ describe('Astra round 1 (GoGo-BE#717)', () => {
   });
 });
 
+describe('Astra round 2 (GoGo-BE#717)', () => {
+  const repo = () => f.app.get(AssistantRepository);
+  const placeNames = [
+    'Ánh Trăng Bistro',
+    'Vườn Lá Kitchen',
+    'Bia Phố Sôi Động',
+    'Thượng Uyển Fine Dining',
+    'Cà Phê Gác Nhỏ',
+  ];
+
+  it('A-R2-03: the export never carries a place name, only "GoGo place" and its id', async () => {
+    const erin = await f.register('erin@gogo.test');
+    const id = await newConversation(erin);
+    const sent = await send(erin, id, 'Gợi ý nhà hàng ở Cầu Giấy, Hà Nội, 300k mỗi người');
+    const done = await waitTerminal(erin, id, sent.json().assistantMessage.id);
+    expect(done.cards.length).toBeGreaterThan(0);
+    const exported = await f.inject({ method: 'GET', url: '/v1/me/export', token: erin });
+    const text = JSON.stringify(exported.json().assistantConversations);
+    for (const n of placeNames) expect(text).not.toContain(n);
+    expect(text).toContain(`địa điểm GoGo (${done.cards[0].placeId})`);
+  });
+
+  it('A-R2-04: create replays from ids; stop and rename leave no stored body', async () => {
+    const frank = await f.register('frank@gogo.test');
+    const idem = key();
+    const create = () =>
+      f.inject({
+        method: 'POST',
+        url: '/v1/assistant/conversations',
+        token: frank,
+        headers: { 'idempotency-key': idem },
+        payload: { context: { placeId: f.places.cafe } },
+      });
+    const first = await create();
+    expect(first.statusCode).toBe(201);
+    const replay = await create();
+    expect(replay.statusCode).toBe(201);
+    expect(replay.json().id).toBe(first.json().id);
+    const conversationId = first.json().id as string;
+
+    const renameKey = key();
+    const rename = await f.inject({
+      method: 'PATCH',
+      url: `/v1/assistant/conversations/${conversationId}`,
+      token: frank,
+      headers: { 'idempotency-key': renameKey },
+      payload: { title: 'Cà phê cuối tuần' },
+    });
+    expect(rename.statusCode).toBe(200);
+    const sent = await send(frank, conversationId, 'Quán cà phê yên tĩnh ở Cầu Giấy, Hà Nội');
+    const replyId = sent.json().assistantMessage.id as string;
+    await waitTerminal(frank, conversationId, replyId);
+    const stop = await f.inject({
+      method: 'POST',
+      url: `/v1/assistant/conversations/${conversationId}/messages/${replyId}/stop`,
+      token: frank,
+      headers: { 'idempotency-key': key() },
+    });
+    expect(stop.statusCode).toBe(200);
+
+    const me = (await f.inject({ method: 'GET', url: '/v1/me', token: frank })).json().id;
+    const stored = await f.db.execute(sql`
+      select coalesce(string_agg(response_body::text, ' '), '') as bodies from idempotency_keys
+      where actor_id = ${`user:${me}`} and endpoint like '% /v1/assistant/%'`);
+    const bodies = (stored.rows[0] as { bodies: string }).bodies;
+    for (const n of placeNames) expect(bodies).not.toContain(n);
+    expect(bodies).not.toContain('Cà phê cuối tuần');
+    expect(bodies).toContain(conversationId);
+  });
+
+  it('A-R2-05: a preview cut inside a place token shows no fragment', async () => {
+    const id = await newConversation(alice);
+    const me = (await f.inject({ method: 'GET', url: '/v1/me', token: alice })).json().id;
+    const m = await f.db.execute(sql`
+      insert into assistant_messages (conversation_id, user_id, role, status, lease_owner, lease_expires_at)
+      values (${id}, ${me}, 'assistant', 'streaming', 'x', now() + interval '1 minute') returning id`);
+    const messageId = (m.rows[0] as { id: string }).id;
+    const token = `\uE000place:${f.places.cafe}\uE001`;
+    await repo().finalizeMessage(messageId, {
+      status: 'complete',
+      text: `${'a'.repeat(150)}${token} là lựa chọn tốt.`,
+      cards: [],
+      followUps: [],
+      notice: null,
+      error: null,
+      frames: null,
+      trace: null,
+      sources: [],
+    });
+    const got = await f.inject({
+      method: 'GET',
+      url: `/v1/assistant/conversations/${id}`,
+      token: alice,
+    });
+    const preview = got.json().preview as string;
+    expect(preview).not.toMatch(/[\uE000\uE001]|place:/);
+    expect(preview).not.toContain(f.places.cafe!.slice(0, 8));
+  });
+
+  it('A-R2-08: deleting a conversation queues its buffer purges; a failed drop is retried', async () => {
+    const gina = await f.register('gina@gogo.test');
+    const id = await newConversation(gina);
+    const sent = await send(gina, id, 'Quán cà phê ở Cầu Giấy, Hà Nội');
+    const replyId = sent.json().assistantMessage.id as string;
+    await waitTerminal(gina, id, replyId);
+    const buffer = f.app.get<AssistantFrameBuffer>(ASSISTANT_FRAME_BUFFER);
+    expect((await buffer.read(replyId, 0)).length).toBeGreaterThan(0);
+    const drop = buffer.drop.bind(buffer);
+    let failures = 0;
+    buffer.drop = async (messageId: string) => {
+      if (failures === 0) {
+        failures += 1;
+        throw new Error('redis unavailable');
+      }
+      return drop(messageId);
+    };
+    try {
+      const del = await f.inject({
+        method: 'DELETE',
+        url: `/v1/assistant/conversations/${id}`,
+        token: gina,
+      });
+      expect(del.statusCode).toBe(204);
+      const queued = await f.db.execute(
+        sql`select count(*)::int as n from assistant_buffer_purges where message_id = ${replyId}`,
+      );
+      expect((queued.rows[0] as { n: number }).n).toBe(1);
+      await f.app.get(AssistantTurnRunner).reap();
+      expect(await buffer.read(replyId, 0)).toEqual([]);
+      const left = await f.db.execute(
+        sql`select count(*)::int as n from assistant_buffer_purges where message_id = ${replyId}`,
+      );
+      expect((left.rows[0] as { n: number }).n).toBe(0);
+    } finally {
+      buffer.drop = drop;
+    }
+  });
+});
+
 describe('privacy', () => {
   it('export includes the conversations; retention purges after 90 days; erasure deletes', async () => {
     const dave = await f.register('dave@gogo.test');

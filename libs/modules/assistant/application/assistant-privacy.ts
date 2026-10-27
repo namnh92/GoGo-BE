@@ -2,8 +2,8 @@ import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import { RETENTION_DAYS } from '../infrastructure/assistant.repository';
 import { isoUs } from '../domain/cursor';
-import { FRAME_TTL_SECONDS } from '../infrastructure/frame-buffer';
-import { renderPlaceTexts } from './place-text';
+import { BUFFER_LIFETIME_SECONDS } from '../infrastructure/frame-buffer';
+import { placeTokensAsIds } from '../domain/place-tokens';
 
 type Exec = Pick<Db, 'execute'>;
 
@@ -23,7 +23,7 @@ export async function eraseAssistantDataForUser(tx: Exec, userId: string): Promi
     insert into assistant_buffer_purges (message_id)
     select id from assistant_messages
     where user_id = ${userId} and role = 'assistant'
-      and created_at > now() - ${sql.raw(`interval '${FRAME_TTL_SECONDS} seconds'`)}
+      and created_at > now() - ${sql.raw(`interval '${BUFFER_LIFETIME_SECONDS} seconds'`)}
     on conflict do nothing`);
   await tx.execute(sql`delete from assistant_conversations where user_id = ${userId}`);
   // Send replay records hold ids only, but they are this person's too.
@@ -89,11 +89,10 @@ export async function collectAssistantExport(
       reason: string | null;
       feedback_at: string | null;
     }[];
-    // Replies name places by token (A-R-04): the export carries today's names.
-    const texts = await renderPlaceTexts(
-      exec,
-      rows.map((m) => m.text),
-    );
+    // The export is stored (sealed, in R2) until it expires, so it must not
+    // hold a place's name either (A-R2-03, owner decision 2026-10-27): a
+    // place reads as "GoGo place" with its id, which the app resolves.
+    const texts = rows.map((m) => placeTokensAsIds(m.text));
     const item: UserExportAssistantConversation = {
       title: c.title,
       createdAt: c.created_at,

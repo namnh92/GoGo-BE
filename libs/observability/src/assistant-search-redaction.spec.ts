@@ -33,4 +33,22 @@ describe('assistant conversation search is not kept in telemetry', () => {
     const sent = options.beforeSend!(sanitizeRequest(event), {});
     expect(JSON.stringify(sent)).not.toContain(MARKER);
   });
+
+  it('every q is redacted: repeated, percent-encoded key, in the URL and the query string (A-R2-10)', () => {
+    for (const url of [
+      `/v1/assistant/conversations?q=${MARKER}&q=other`,
+      `/v1/assistant/conversations?q=other&q=${MARKER}`,
+      `/v1/assistant/conversations?%71=${MARKER}`,
+      `/v1/assistant/conversations?limit=5&%71=${MARKER}&cursor=abc`,
+    ]) {
+      expect(redactUrl(url)).not.toContain(MARKER);
+    }
+    const event = {
+      request: {
+        url: 'https://api.gogo.vn/v1/assistant/conversations?x=1',
+        query_string: `%71=${MARKER}&q=${MARKER}`,
+      },
+    } as ErrorEvent;
+    expect(JSON.stringify(sanitizeRequest(event))).not.toContain(MARKER);
+  });
 });

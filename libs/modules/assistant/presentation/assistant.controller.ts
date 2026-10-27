@@ -20,7 +20,11 @@ import type { Observable } from 'rxjs';
 import type { z } from 'zod';
 import { AppError } from '../../shared/app-error';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
-import { ManualIdempotency, idempotencyScope } from '../../shared/idempotency.interceptor';
+import {
+  ManualIdempotency,
+  NoIdempotencyReplay,
+  idempotencyScope,
+} from '../../shared/idempotency.interceptor';
 import type { Actor } from '../../identity/domain/actor';
 import { CurrentActor, RateLimit } from '../../identity/presentation/decorators';
 import { AssistantConversationsService } from '../application/assistant-conversations.service';
@@ -81,13 +85,24 @@ export class AssistantController {
     windowSeconds: 60,
     keyBy: 'actor',
   })
+  @ManualIdempotency()
   @Post('conversations')
-  create(
+  async create(
     @CurrentActor() actor: Actor,
+    @Req() req: FastifyRequest & { actor?: Actor },
+    @Res({ passthrough: true }) reply: FastifyReply,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Body(new ZodValidationPipe(createConversationBody))
     body: z.infer<typeof createConversationBody>,
   ) {
-    return this.conversations.create(actor, body);
+    // The record holds the new id only; a replay re-reads the row (A-R2-04).
+    const scope = idempotencyKey ? idempotencyScope(req, idempotencyKey) : null;
+    const result = await this.conversations.create(actor, body, scope);
+    if (result.replay) {
+      void reply.status(result.status);
+      void reply.header('x-idempotent-replay', 'true');
+    }
+    return result.body;
   }
 
   @Get('conversations/:id')
@@ -95,6 +110,8 @@ export class AssistantController {
     return this.conversations.get(actor, id);
   }
 
+  /** Idempotent by itself; its answer quotes the conversation, so it is never stored for replay (A-R2-04). */
+  @NoIdempotencyReplay()
   @Patch('conversations/:id')
   rename(
     @CurrentActor() actor: Actor,
@@ -160,6 +177,8 @@ export class AssistantController {
     return this.streams.stream(actor, id, messageId, headerId ?? queryId ?? null, signal);
   }
 
+  /** Idempotent by itself; its answer is the reply's text, so it is never stored for replay (A-R2-04). */
+  @NoIdempotencyReplay()
   @Post('conversations/:id/messages/:messageId/stop')
   @HttpCode(200)
   stop(
