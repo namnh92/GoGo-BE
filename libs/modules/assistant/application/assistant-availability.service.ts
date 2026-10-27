@@ -58,9 +58,9 @@ export class AssistantAvailabilityService {
 
   /** The configured limits, or null when any of them is missing. */
   limits(): AssistantLimits | null {
-    const daily = this.config.ASSISTANT_DAILY_MESSAGE_LIMIT;
-    const perMinute = this.config.ASSISTANT_MESSAGES_PER_MINUTE_LIMIT;
-    if (daily === undefined || perMinute === undefined) return null;
+    const daily = this.config.ASSISTANT_USER_DAILY_MAX_MESSAGES;
+    const perMinute = this.config.ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES;
+    if (daily === undefined) return null;
     return { dailyMessageLimit: daily, messagesPerMinuteLimit: perMinute };
   }
 
@@ -82,8 +82,8 @@ export class AssistantAvailabilityService {
   async readiness(exec: Exec = this.db, now = new Date()): Promise<Readiness> {
     if (!(await this.killSwitchOn(exec))) return { ok: false, reason: 'kill_switch' };
     const limits = this.limits();
-    const budget = this.config.ASSISTANT_MONTHLY_BUDGET_USD;
-    if (!limits || budget === undefined || !this.config.OPENROUTER_API_KEY) {
+    const budget = this.config.ASSISTANT_MONTHLY_MAX_USD;
+    if (!limits || budget === undefined || !this.config.OPENROUTER_ASSISTANT_API_KEY) {
       return { ok: false, reason: 'unconfigured' };
     }
     if (await this.byokQuarantined(exec, now)) return { ok: false, reason: 'byok_unverified' };

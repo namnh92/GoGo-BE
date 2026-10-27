@@ -10,7 +10,7 @@ import {
 /**
  * ADR-0036 §3F — Claude Haiku through OpenRouter Chat Completions, streaming.
  *
- * Authenticated with GoGo-BE's OpenRouter gateway key (`OPENROUTER_API_KEY`),
+ * Authenticated with the assistant's OpenRouter key (`OPENROUTER_ASSISTANT_API_KEY`),
  * never with an Anthropic key. Billing is decided upstream by OpenRouter: the
  * request pins the Anthropic provider (`provider.only`, `allow_fallbacks:
  * false`), so OpenRouter cannot route the call to Vertex, Bedrock or Azure,

@@ -1,10 +1,10 @@
 /** The configuration slice the assistant reads (validated in apps/api env.ts). */
 export type AssistantConfig = {
   APP_ENV: 'dev' | 'staging' | 'prod' | 'production';
-  OPENROUTER_API_KEY: string;
-  ASSISTANT_DAILY_MESSAGE_LIMIT?: number | undefined;
-  ASSISTANT_MESSAGES_PER_MINUTE_LIMIT?: number | undefined;
-  ASSISTANT_MONTHLY_BUDGET_USD?: number | undefined;
+  OPENROUTER_ASSISTANT_API_KEY: string;
+  ASSISTANT_USER_DAILY_MAX_MESSAGES?: number | undefined;
+  ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES: number;
+  ASSISTANT_MONTHLY_MAX_USD?: number | undefined;
   ASSISTANT_TURN_COST_CEILING_USD: number;
   ASSISTANT_FIRST_TEXT_TIMEOUT_MS: number;
   ASSISTANT_REPLY_MAX_MS: number;

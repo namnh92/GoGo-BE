@@ -514,24 +514,31 @@ const envSchema = z
      */
     PLACE_RESOLUTION_TTL_S: z.coerce.number().int().min(60).max(3_600).default(600),
     /**
-     * GoGo-BE#713, ADR-0036 — GoGo AI. The existing OpenRouter gateway key
-     * (SSM backend row `openrouter/api-key`) authenticates both Jev
-     * (Decisions API, OpenRouter-direct billing) and Haiku (Chat Completions,
-     * Anthropic BYOK). Empty = the assistant is not ready and refuses sends.
+     * GoGo-BE#713, ADR-0036 — GoGo AI. The assistant's own OpenRouter key
+     * (SSM backend row `openrouter/assistant-api-key`, key gogo_ai_anthropic_<env>,
+     * GoGo-Infra ADR-0014) authenticates both Jev (Decisions API,
+     * OpenRouter-direct billing) and Haiku (Chat Completions, Anthropic BYOK).
+     * Empty = the assistant is not ready and refuses sends.
      */
-    OPENROUTER_API_KEY: z.string().default(''),
+    OPENROUTER_ASSISTANT_API_KEY: z.string().default(''),
     /**
-     * Per-account allowance (Q1). **Unset means refuse** (`503
-     * ASSISTANT_DISABLED`), never unlimited. Owner defaults: 30/day, 5/minute.
+     * Per-account daily allowance (Q1; SSM `budget/assistant-user-daily-max-messages`).
+     * **Unset means refuse** (`503 ASSISTANT_DISABLED`), never unlimited.
+     * Owner default: 30/day.
      */
-    ASSISTANT_DAILY_MESSAGE_LIMIT: z.coerce.number().int().min(0).max(10_000).optional(),
-    ASSISTANT_MESSAGES_PER_MINUTE_LIMIT: z.coerce.number().int().min(0).max(600).optional(),
+    ASSISTANT_USER_DAILY_MAX_MESSAGES: z.coerce.number().int().min(0).max(10_000).optional(),
+    /**
+     * Per-account burst limit. A rate guard, not a spend line (the daily limit
+     * and the monthly ceiling bound spend), so it has the owner's default
+     * (5/minute) instead of an SSM row.
+     */
+    ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES: z.coerce.number().int().min(0).max(600).default(5),
     /**
      * Environment spend ceiling per UTC month, USD, both models together
      * (Jev OpenRouter credits + Haiku Anthropic BYOK inference + any BYOK fee).
-     * **Unset means refuse.**
+     * SSM `budget/assistant-monthly-max-usd`. **Unset means refuse.**
      */
-    ASSISTANT_MONTHLY_BUDGET_USD: z.coerce.number().min(0).optional(),
+    ASSISTANT_MONTHLY_MAX_USD: z.coerce.number().min(0).optional(),
     /**
      * Counted against the ceiling for a turn whose cost is not (yet) reported —
      * worst case, so an unknown can only stop spend sooner.
