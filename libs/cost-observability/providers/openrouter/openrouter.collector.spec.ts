@@ -384,3 +384,46 @@ describe('collector definition', () => {
     expect(executed).toHaveLength(0);
   });
 });
+
+describe('GoGo-BE#713 — Jev and Haiku on the backend key, two bills', () => {
+  it('files Haiku on gogo_be under claude_byok (fee + meters), Jev alone under decisions', () => {
+    const { cost, usage } = activitySamples(CTX, [
+      {
+        key: BE,
+        items: [
+          item('2026-10-21', 'typesafe/jev-1.14', 0.0012),
+          item('2026-10-21', 'anthropic/claude-haiku-5.5', 0, {
+            byokUsageUsd: 0.0031,
+            providerName: 'Anthropic',
+          }),
+        ],
+      },
+    ]);
+    const byService = Object.fromEntries(cost.map((c) => [c.serviceId, c]));
+    expect(byService['openrouter.decisions']!.amountMicros).toBe(1200);
+    expect(byService['openrouter.decisions']!.metadata).toMatchObject({
+      byModel: { 'typesafe/jev-1.14': 1200 },
+    });
+    // OpenRouter charged nothing for the BYOK call: the row is the fee, $0.
+    expect(byService['openrouter.claude_byok']!.amountMicros).toBe(0);
+    expect(byService['openrouter.claude_byok']!.metadata).toMatchObject({ byokUsageMicros: 3100 });
+    expect(
+      usage.filter((u) => u.serviceId === 'openrouter.claude_byok').map((u) => u.usageMetricId),
+    ).toEqual(['requests', 'input_tokens', 'output_tokens']);
+    // The Anthropic side is counted once, by its own collector.
+    const anthropic = anthropicByokSamples(CTX, [
+      {
+        key: BE,
+        items: [item('2026-10-21', 'anthropic/claude-haiku-5.5', 0, { byokUsageUsd: 0.0031 })],
+      },
+    ]);
+    expect(anthropic.map((a) => [a.providerId, a.amountMicros])).toEqual([['anthropic', 3100]]);
+  });
+
+  it('a harness key keeps its Claude on dev tooling', () => {
+    const { cost } = activitySamples(CTX, [
+      { key: HARNESS, items: [item('2026-10-21', 'anthropic/claude-haiku-5.5', 0.002)] },
+    ]);
+    expect(cost.map((c) => c.serviceId)).toEqual(['openrouter.dev_tooling']);
+  });
+});

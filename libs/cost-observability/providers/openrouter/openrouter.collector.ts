@@ -79,6 +79,25 @@ const DEFAULTS = {
   maxCallsPerDay: 8,
 };
 
+/**
+ * GoGo-BE#713 (ADR-0036) — the backend key `gogo_be_*` carries two models with
+ * two bills: Jev (OpenRouter-direct, `openrouter.decisions`) and Claude Haiku
+ * (Anthropic BYOK). A Claude item on that key is filed under
+ * `openrouter.claude_byok` — OpenRouter's own charge for it is the BYOK
+ * platform fee (0 inside the monthly allowance), its tokens are that
+ * service's meters, and the inference itself is Anthropic's
+ * (`anthropic_byok_openrouter`). So `openrouter.decisions` stays Jev alone and
+ * nothing is counted twice. Harness keys keep their Claude on dev tooling.
+ */
+function serviceForItem(
+  keyService: OpenRouterServiceId,
+  it: OpenRouterActivityItem,
+): OpenRouterServiceId {
+  if (keyService === OPENROUTER_SERVICE.decisions && isAnthropic(it))
+    return OPENROUTER_SERVICE.claudeByok;
+  return keyService;
+}
+
 /** A key's name → the service its spend belongs to. */
 export function openRouterServiceFor(name: string): OpenRouterServiceId {
   const l = name.trim().toLowerCase();
@@ -183,9 +202,10 @@ export function activitySamples(
 ): { cost: CostSample[]; usage: UsageSample[] } {
   const buckets = new Map<string, Bucket>();
   for (const { key, items } of keyed) {
-    const serviceId = openRouterServiceFor(key.name);
+    const keyService = openRouterServiceFor(key.name);
     for (const it of items) {
       if (it.day >= ctx.today) continue;
+      const serviceId = serviceForItem(keyService, it);
       const id = `${it.day}\u0000${serviceId}`;
       let b = buckets.get(id);
       if (!b) {
