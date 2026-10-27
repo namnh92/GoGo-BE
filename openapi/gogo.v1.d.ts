@@ -572,7 +572,7 @@ export interface paths {
         };
         /**
          * GoGo AI: is the assistant available to this account, and how much is left today
-         * @description GoGo-BE#713. **Planned — declared ahead of the module (contract-first); not served until the module PR lands.** Every `/assistant/*` operation carries `x-gogo-planned` until then and answers 404 on a deployed API.
+         * @description GoGo-BE#713. Served since 2.0.0-alpha.4 (ADR-0036: Jev decides, the backend executes and validates, Claude Haiku explains). Every `/assistant/*` operation answers only while the module is deployed; sends additionally need the kill switch on and the environment's limits and spend ceiling configured.
          *
          *     Lets the app decide what the entry point does before the user types: `disabled` means the kill switch is off (feature flag `assistant.enabled`) and the app shows its own "not available" state; `limit_reached` means the per-account daily message budget is spent until `resetsAt`. The server still enforces both on every send — this is a hint for the UI, never an authorization.
          *
@@ -4758,7 +4758,7 @@ export interface paths {
         };
         /**
          * Content: the "GoGo guide" source documents GoGo AI answers from (cursor)
-         * @description GoGo-BE#713, GoGo-CMS#249. **Planned — declared ahead of the module; not served until the module PR lands.**
+         * @description GoGo-BE#713, GoGo-CMS#249. Served since 2.0.0-alpha.4.
          *
          *     The assistant answers product questions only from **published** versions of these documents, and cites them by `title` and `description` — so those strings are what the app shows in `SourceList`, never something the model wrote. Owner decision on GoGo-MobileApp#377 (2026-10-26): the source set lives in the CMS, with versions, publish / unpublish and audit.
          *
@@ -9943,7 +9943,7 @@ export interface components {
             /** Format: date-time */
             exportedAt?: string;
             /**
-             * @description 2.0.0-alpha.3 (GoGo-BE#713, owner-delegated SA decision Q2). The account's retained GoGo AI conversations (90-day retention, so only what still exists). **Absent until the assistant module lands** — the collector populates it then; a client must treat absent and `[]` alike.
+             * @description 2.0.0-alpha.3 (GoGo-BE#713, owner-delegated SA decision Q2). The account's retained GoGo AI conversations (90-day retention, so only what still exists). Populated since 2.0.0-alpha.4, when the module landed; a client must still treat absent and `[]` alike.
              *
              *     Included: conversation titles, each message's role, text, timestamps and terminal status, and the account's own feedback on assistant replies. Excluded: internal prompts and system instructions, retrieval internals (guide sections and versions retrieved, scores, model identifiers), upload keys, and card / proposal internals. **Attachments are excluded pending explicit owner approval** of their portability scope — neither the images nor their metadata are exported in this version.
              */

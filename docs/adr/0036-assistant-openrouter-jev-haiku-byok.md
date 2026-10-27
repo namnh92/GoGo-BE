@@ -1,18 +1,18 @@
 # ADR-0036 — GoGo AI Assistant: OpenRouter-direct Jev and Anthropic-BYOK Claude Haiku
 
-- **Status:** Accepted (owner decisions, 2026-10-27; BYOK routing/billing clarified 2026-10-27); implementation pending
+- **Status:** Accepted (owner decisions, 2026-10-27; BYOK routing/billing clarified 2026-10-27); implemented in GoGo-BE#713 PR 3 (see `docs/assistant.md` → As built)
 - **Scope:** GoGo-BE runtime, GoGo-MobileApp assistant
 - **Related:** GoGo-BE#713, #709, #711; GoGo-Infra#257; GoGo-MobileApp#377
 - **References:** `docs/assistant.md`, `docs/adr/0035-decision-models-for-intent-classification.md`, `CLAUDE.md`
 
 ## 1. Decision
 
-GoGo Mobile App calls GoGo-BE only. Backend owns authorization, conversation state, query execution, hard constraints, ranking, card facts, SSE, usage and permitted write transactions. Two real models are reached via **GoGo-BE's existing live OpenRouter gateway key**, but their *upstream billing and credential routes are deliberately different*:
+GoGo Mobile App calls GoGo-BE only. Backend owns authorization, conversation state, query execution, hard constraints, ranking, card facts, SSE, usage and permitted write transactions. Two real models are reached via **GoGo-BE's existing live OpenRouter gateway key**, but their _upstream billing and credential routes are deliberately different_:
 
-| Purpose | Pinned model | OpenRouter endpoint | Upstream route / billing | Responsibility |
-| --- | --- | --- | --- | --- |
-| Semantic decisions | `typesafe/jev-1.14` | `POST https://openrouter.ai/api/alpha/decisions` | **OpenRouter native/direct** (NOT BYOK), billed to OpenRouter credits | Typed intent, clarification, category/mood and (when justified) relevance judgments |
-| Answer composition | `anthropic/claude-haiku-5.5` | `POST https://openrouter.ai/api/v1/chat/completions`, streaming | **Anthropic BYOK through OpenRouter**, billed by Anthropic; OpenRouter BYOK fee only if allowance exceeded | Natural Vietnamese grounded response, no authoritative facts |
+| Purpose            | Pinned model                 | OpenRouter endpoint                                             | Upstream route / billing                                                                                   | Responsibility                                                                      |
+| ------------------ | ---------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Semantic decisions | `typesafe/jev-1.14`          | `POST https://openrouter.ai/api/alpha/decisions`                | **OpenRouter native/direct** (NOT BYOK), billed to OpenRouter credits                                      | Typed intent, clarification, category/mood and (when justified) relevance judgments |
+| Answer composition | `anthropic/claude-haiku-5.5` | `POST https://openrouter.ai/api/v1/chat/completions`, streaming | **Anthropic BYOK through OpenRouter**, billed by Anthropic; OpenRouter BYOK fee only if allowance exceeded | Natural Vietnamese grounded response, no authoritative facts                        |
 
 **Haiku 5.5 is the owner's cost-optimization choice, superseding Sonnet.** No automatic Sonnet fallback. Do not use `~latest` aliases or silently swap models. Model changes require a documented owner decision.
 
@@ -75,6 +75,7 @@ The backend rechecks all selected candidates against the current allowlist and c
 ### E. Trusted decision executor
 
 Construct a typed, backend-owned `GroundedAnswerContext` containing:
+
 - Chosen intent and uncertainty / clarification decision.
 - Server-verified place/plan IDs and public facts, from authorized reads.
 - User constraints with provenance (`explicit` vs `assumed`).
@@ -132,13 +133,25 @@ Jev timeout/quota/config/invalid response: deterministic intent fallback from AD
 
 OpenRouter lists `anthropic/claude-haiku-5.5` at **$0.10 per 1M input tokens and $0.50 per 1M output tokens** on 2026-10-27; the owner uses **Anthropic BYOK**, so the actual inference bill is sent to **Anthropic**, not also deducted from OpenRouter credits. Haiku 4.5 lists $1/$5 (10x those listed rates). Do not embed list prices as permanent billing truth. **Jev is NOT BYOK**: charge direct inference against OpenRouter credits based on reported actual usage.
 
-**Owner-confirmed BYOK fee policy (2026-10-27, verified against https://openrouter.ai/pricing):** The OpenRouter **Pay-as-you-go** tier includes **$25,000 USD of aggregate list-price BYOK inference per month with zero additional OpenRouter BYOK fee**; **Enterprise** lists a different allowance of **$200,000/month**. Use the allowance of the workspace's actual subscribed tier. Above this allowance, OpenRouter adds **5% of the comparable list-price amount on the excess BYOK usage**, deducted from OpenRouter credits; underlying provider still bills BYOK inference. The owner expects total monthly BYOK inference to remain **below $25,000**, hence for the current plan: **Anthropic inference cost only, additional OpenRouter BYOK fee = $0** while eligible and within the workspace's aggregated allowance. This **does not make Claude inference free** and **does not exempt direct OpenRouter Jev usage**. The $25k limit is an *allowance for waiving BYOK platform fees*, not a budget cap, and is **not** a credit grant for provider inference. Check the active workspace plan and aggregate BYOK consumption in monitoring; revise if the plan/policy changes. The ordinary OpenRouter credit-purchase fee for direct OpenRouter usage is separate.
+**Owner-confirmed BYOK fee policy (2026-10-27, verified against https://openrouter.ai/pricing):** The OpenRouter **Pay-as-you-go** tier includes **$25,000 USD of aggregate list-price BYOK inference per month with zero additional OpenRouter BYOK fee**; **Enterprise** lists a different allowance of **$200,000/month**. Use the allowance of the workspace's actual subscribed tier. Above this allowance, OpenRouter adds **5% of the comparable list-price amount on the excess BYOK usage**, deducted from OpenRouter credits; underlying provider still bills BYOK inference. The owner expects total monthly BYOK inference to remain **below $25,000**, hence for the current plan: **Anthropic inference cost only, additional OpenRouter BYOK fee = $0** while eligible and within the workspace's aggregated allowance. This **does not make Claude inference free** and **does not exempt direct OpenRouter Jev usage**. The $25k limit is an _allowance for waiving BYOK platform fees_, not a budget cap, and is **not** a credit grant for provider inference. Check the active workspace plan and aggregate BYOK consumption in monitoring; revise if the plan/policy changes. The ordinary OpenRouter credit-purchase fee for direct OpenRouter usage is separate.
 
 Start with **one** Jev intent call, **at most one** bounded Jev relevance call if needed and **one** Haiku composition call. Keep narrative short, avoid full-history replay, cap tokens and use only necessary published-guide excerpts. Consider prompt caching only when it is supported/beneficial on the actual BYOK upstream route and privacy constraints permit it.
 
 ## 8. Documentation and rollback
 
 This ADR supersedes the earlier proposed Sonnet response-model selection and **corrects the previous mistaken statement that Jev and Claude were both BYOK**. The owner's final runtime decision (2026-10-27) is **Jev OpenRouter-direct/non-BYOK + Haiku Anthropic BYOK via OpenRouter**. It does **not** change the GoGo AI development harness or replace ADR-0035. Document model, role, routing and **two billing sources** in the assistant runbook and Cost Center. Roll back by turning `assistant.enabled` off per environment; retain stored conversation data subject to existing retention and privacy rules. Do not remove or rotate existing live credentials in rollback.
+
+### Live verification (2026-10-27, DEV key `gogo_be_dev`)
+
+- Haiku: `POST /api/v1/chat/completions`, `provider.only=['anthropic']`, streaming →
+  served `anthropic/claude-haiku-5.5-20261007`, provider `Anthropic`,
+  `usage.is_byok: true`, OpenRouter `cost: 0`, `upstream_inference_cost` reported
+  (Anthropic's bill); generation record `is_byok: true`. `reasoning: {enabled: false}`
+  accepted (0 reasoning tokens).
+- Jev: `POST /api/alpha/decisions` → `typesafe/jev-1.14-20261014`, provider
+  `TypeSafe`, `usage.cost` > 0 charged to OpenRouter credits; no BYOK field.
+- Cost Center: Haiku items on `gogo_be_*` are filed under `openrouter.claude_byok`
+  (BYOK fee, $0 inside the allowance), not `openrouter.decisions`.
 
 ### Public references
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 2.0.0-alpha.3
+  version: 2.0.0-alpha.4
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1239,11 +1239,12 @@ paths:
       operationId: getAssistantStatus
       tags: [assistant]
       summary: 'GoGo AI: is the assistant available to this account, and how much is left today'
-      x-gogo-planned: GoGo-BE#713
       description: >
-        GoGo-BE#713. **Planned — declared ahead of the module (contract-first);
-        not served until the module PR lands.** Every `/assistant/*` operation
-        carries `x-gogo-planned` until then and answers 404 on a deployed API.
+        GoGo-BE#713. Served since 2.0.0-alpha.4 (ADR-0036: Jev decides,
+        the backend executes and validates, Claude Haiku explains). Every
+        `/assistant/*` operation answers only while the module is deployed;
+        sends additionally need the kill switch on and the environment's
+        limits and spend ceiling configured.
 
 
         Lets the app decide what the entry point does before the user types:
@@ -1282,7 +1283,6 @@ paths:
       operationId: listAssistantConversations
       tags: [assistant]
       summary: "GoGo AI: the caller's conversations, most recent first (cursor), with search"
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. History screen. Keyset paging on `(lastMessageAt, id)`
         descending: a conversation moves to the top whenever a message is
@@ -1331,7 +1331,6 @@ paths:
       operationId: createAssistantConversation
       tags: [assistant]
       summary: 'GoGo AI: start a conversation ("New chat")'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. Creates an empty conversation; the first message is sent
         with `sendAssistantMessage`. `title` is optional: when absent the
@@ -1382,7 +1381,6 @@ paths:
       operationId: getAssistantConversation
       tags: [assistant]
       summary: 'GoGo AI: one conversation (header data, not messages)'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. Another account's conversation, a deleted one and one past
         retention are all `404` — the answer does not say which.
@@ -1401,7 +1399,6 @@ paths:
       operationId: renameAssistantConversation
       tags: [assistant]
       summary: 'GoGo AI: rename a conversation'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. Only `title` is writable. Renaming does not move the
         conversation in the history order (`lastMessageAt` is unchanged).
@@ -1435,7 +1432,6 @@ paths:
       operationId: deleteAssistantConversation
       tags: [assistant]
       summary: 'GoGo AI: delete a conversation and every message in it'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. A hard delete: messages, stored attachment references,
         feedback and pending proposals go with it; nothing is kept for
@@ -1455,7 +1451,6 @@ paths:
       operationId: listAssistantMessages
       tags: [assistant]
       summary: 'GoGo AI: messages of a conversation, newest first (cursor)'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. Newest first, because the thread is a bottom-anchored
         (inverted) list: page 1 is what the screen shows, later pages scroll
@@ -1493,7 +1488,6 @@ paths:
       operationId: sendAssistantMessage
       tags: [assistant]
       summary: 'GoGo AI: send a message; the reply is generated and streamed separately'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. Stores the user's message and starts the assistant's
         reply. Answers `202` with both messages at once — the user turn as
@@ -1585,7 +1579,6 @@ paths:
       operationId: streamAssistantMessage
       tags: [assistant]
       summary: 'GoGo AI: the assistant reply as a server-sent event stream'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. SSE, the same transport as `GET /rooms/{id}/events`:
         bearer auth, keep-alive `: ping` comment frames while idle, an opaque
@@ -1789,7 +1782,6 @@ paths:
       operationId: stopAssistantMessage
       tags: [assistant]
       summary: 'GoGo AI: stop generating; keep what was written'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. The composer's **Stop**. Ends generation and returns the
         assistant message as stored: `status: stopped` and the text streamed
@@ -1814,7 +1806,6 @@ paths:
       operationId: setAssistantMessageFeedback
       tags: [assistant]
       summary: 'GoGo AI: thumbs up / down on an assistant reply (idempotent)'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. One rating per assistant message, replaced by a later
         call. `reason` is a closed code, not free text, so the moderation
@@ -1841,7 +1832,6 @@ paths:
       operationId: clearAssistantMessageFeedback
       tags: [assistant]
       summary: 'GoGo AI: withdraw a rating'
-      x-gogo-planned: GoGo-BE#713
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: messageId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1856,7 +1846,6 @@ paths:
       operationId: getAssistantProposal
       tags: [assistant]
       summary: 'GoGo AI: one proposal and its current state'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. For a `ConfirmationCard` reopened from history: whether
         it is still `pending`, already `confirmed` (with the saved result),
@@ -1878,7 +1867,6 @@ paths:
       operationId: confirmAssistantProposal
       tags: [assistant]
       summary: 'GoGo AI: perform a proposed action (the only assistant call that writes GoGo data)'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. The user tapped the `ConfirmationCard` button. This is the
         **only** way an assistant conversation changes rooms, plans, invites or
@@ -1965,7 +1953,6 @@ paths:
       operationId: dismissAssistantProposal
       tags: [assistant]
       summary: 'GoGo AI: decline a proposal ("Not now")'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-BE#713. Marks a pending proposal `dismissed`; nothing is written
         anywhere else. Idempotent on an already dismissed proposal; a confirmed
@@ -10065,10 +10052,8 @@ paths:
       operationId: cmsListAssistantDocuments
       tags: [cms, assistant]
       summary: 'Content: the "GoGo guide" source documents GoGo AI answers from (cursor)'
-      x-gogo-planned: GoGo-BE#713
       description: >
-        GoGo-BE#713, GoGo-CMS#249. **Planned — declared ahead of the module;
-        not served until the module PR lands.**
+        GoGo-BE#713, GoGo-CMS#249. Served since 2.0.0-alpha.4.
 
 
         The assistant answers product questions only from **published**
@@ -10113,7 +10098,6 @@ paths:
       operationId: cmsCreateAssistantDocument
       tags: [cms, assistant]
       summary: 'Content: create a guide document (its first version is a draft)'
-      x-gogo-planned: GoGo-BE#713
       description: >
         `editor` or `ops_admin`. Creates the document and version 1 as a
         draft; nothing reaches the assistant until it is published. `slug` is
@@ -10144,7 +10128,6 @@ paths:
       operationId: cmsGetAssistantDocument
       tags: [cms, assistant]
       summary: 'Content: one guide document with its draft and published versions'
-      x-gogo-planned: GoGo-BE#713
       description: >
         The editor screen: the open draft (if any) in full, and the published
         version in full, so the console can preview and diff them.
@@ -10163,7 +10146,6 @@ paths:
       operationId: cmsUpdateAssistantDocumentDraft
       tags: [cms, assistant]
       summary: 'Content: edit the draft (opens a new draft version when none is open)'
-      x-gogo-planned: GoGo-BE#713
       description: >
         `editor` or `ops_admin`. Writes go to the draft only — a published
         version is immutable, so what the assistant cited yesterday can always
@@ -10202,7 +10184,6 @@ paths:
       operationId: cmsPublishAssistantDocument
       tags: [cms, assistant]
       summary: 'Content: publish a version — the assistant answers from it from now on'
-      x-gogo-planned: GoGo-BE#713
       description: >
         `ops_admin` only: publishing changes what GoGo AI tells every user, a
         release decision rather than an edit, so it does not sit with the role
@@ -10253,7 +10234,6 @@ paths:
       operationId: cmsUnpublishAssistantDocument
       tags: [cms, assistant]
       summary: 'Content: withdraw the document from the assistant'
-      x-gogo-planned: GoGo-BE#713
       description: >
         `ops_admin` only. The published version becomes `withdrawn` and the
         assistant stops citing the document for new replies. Older
@@ -10293,7 +10273,6 @@ paths:
       operationId: cmsListAssistantDocumentVersions
       tags: [cms, assistant]
       summary: 'Content: version history of one document, newest first, with who did what'
-      x-gogo-planned: GoGo-BE#713
       description: >
         Every version ever created — the history is append-only. Each row says
         who created it and, if it was ever published or withdrawn, who did
@@ -10322,7 +10301,6 @@ paths:
       operationId: cmsGetAssistantDocumentVersion
       tags: [cms, assistant]
       summary: 'Content: one version in full (preview, diff, rollback)'
-      x-gogo-planned: GoGo-BE#713
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: versionId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -10341,7 +10319,6 @@ paths:
       operationId: cmsListAssistantFeedback
       tags: [cms, assistant]
       summary: 'Moderation: thumbs-down / thumbs-up on assistant replies, minimal PII (cursor)'
-      x-gogo-planned: GoGo-BE#713
       description: >
         GoGo-CMS#249. **Roles: `moderator`, `ops_admin`, `super_admin` only.**
         This is an explicit exception to the hierarchical read rule
@@ -18684,9 +18661,8 @@ components:
           description: >
             2.0.0-alpha.3 (GoGo-BE#713, owner-delegated SA decision Q2). The
             account's retained GoGo AI conversations (90-day retention, so
-            only what still exists). **Absent until the assistant module
-            lands** — the collector populates it then; a client must treat
-            absent and `[]` alike.
+            only what still exists). Populated since 2.0.0-alpha.4, when the
+            module landed; a client must still treat absent and `[]` alike.
 
 
             Included: conversation titles, each message's role, text,

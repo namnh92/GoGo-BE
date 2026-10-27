@@ -1,10 +1,13 @@
 # GoGo AI assistant — module design (GoGo-BE#713)
 
-Status: **contract landed (PR 1, amended by contract PR 2), module not built.**
-This note is what the module PRs implement against. The contract is
-`openapi/gogo.v1.yaml` 2.0.0-alpha.3, tag `assistant`, every operation marked
-`x-gogo-planned: GoGo-BE#713`. The SA decisions applied in 2.0.0-alpha.3 are
-listed under [Decisions](#decisions-sa-on-gogo-be713-owner-delegated).
+Status: **module built (PR 3, contract 2.0.0-alpha.4 — every `/assistant/*` and
+`/cms/assistant/*` operation served, `x-gogo-planned` removed).** Runtime models
+and billing are ADR-0036: Jev (`typesafe/jev-1.14`, OpenRouter Decisions API,
+OpenRouter-direct billing) decides; the backend executes and validates; Claude
+Haiku (`anthropic/claude-haiku-5.5`, OpenRouter Chat Completions, Anthropic
+BYOK) explains. See [As built](#as-built-pr-3) for where the implementation
+deliberately differs from the sketch below. The SA decisions applied in
+2.0.0-alpha.3 are listed under [Decisions](#decisions-sa-on-gogo-be713-owner-delegated).
 
 Authorities: epic GoGo-MobileApp#377 (owner decisions 2026-10-26 are binding),
 GoGo-CMS#249 (console),
@@ -281,10 +284,67 @@ as noted on the issue.
 Out of scope here (owner's separate configuration work): provider, credentials,
 model choice, settings names and spend limits.
 
+## As built (PR 3)
+
+Where the implementation is more specific than (or differs from) the design above:
+
+- **No fake LLM.** `FakeAssistantLlm` was not built (ADR-0036 forbids mock
+  inference). Without `OPENROUTER_API_KEY` neither model binding exists and sends
+  answer `503 ASSISTANT_DISABLED`.
+- **Pipeline** (`AssistantOrchestrator`): bounded history (6 turns) →
+  `parseIntentFacts` → **one** Jev call (the #709 intent questions + `assistant_intent`,
+  `action`, `needs_unverified_attribute`) → area through the published administrative
+  dataset (`AssistantAreaResolver`) → `SearchService.search` (category, suitability,
+  per-person price ceiling, `openAt` only for "now") → optional **one** Jev relevance
+  call over ≤ 6 server-keyed candidates (only when a mood/setting was asked) → card
+  re-validation (published, `priceMin ≤ budget`) → **one** Haiku stream → structured
+  frames. Out-of-scope, empty results, clarification and every model failure before
+  text use a deterministic reply built from validated data (`deterministicReply`).
+- **Where turns run.** In the API process after the send commits, under a DB
+  generation lease (`lease_owner`, `lease_expires_at`, renewed every 20 s, text
+  checkpointed). A process that dies mid-reply loses the lease; the reaper (every API
+  instance, every 60 s) ends the turn `failed` with the checkpointed text. The worker
+  is not involved: since #265 it holds no Redis connection and polls Postgres, which
+  would add seconds to time-to-first-text. Retention is in the worker's daily
+  `PrivacyJobs` run.
+- **Frames.** Redis list `assistant:frames:{messageId}` (TTL 1 h; in memory without
+  `REDIS_URL`), `seq` = SSE `id`, folded into `assistant_messages.frames` at the
+  terminal state. **Card frames store refs only** (`{kind, placeId}`); every SSE
+  reader and every history read hydrates facts from verified data, so neither Redis
+  nor the row keeps a copy of place facts.
+- **Allowance and spend** read `assistant_usage_ledger`, not messages, so deleting a
+  conversation neither refunds the day nor hides spend. Unknown cost is `NULL` in the
+  ledger and counted at `ASSISTANT_TURN_COST_CEILING_USD` against the monthly ceiling.
+- **Strict BYOK at runtime.** The Haiku request pins `provider.only = ['anthropic']`,
+  `allow_fallbacks: false`, `reasoning.enabled: false`. Each call's `usage.is_byok`
+  is recorded; an `is_byok: false` answer quarantines new sends for 10 minutes
+  (`byok_unverified`) and logs `assistant.byok_violation`.
+- **Cost Center.** Haiku runs on the backend key `gogo_be_*`; its activity items are
+  filed under `openrouter.claude_byok` (OpenRouter's BYOK fee + meters) instead of
+  `openrouter.decisions`, which stays Jev-only. The Anthropic inference itself is
+  `anthropic.claude_byok` (existing collector). Nothing is counted twice.
+- **Attachments** stay unavailable: `POST /uploads` does not accept
+  `purpose: assistant_image` yet, so any attachment is `400 ATTACHMENT_INVALID`.
+- **Proposals generated** from chat: `create_room` (any turn that asks to plan), and
+  `create_invite` / `finalize_plan` when opened from a plan. `cast_vote` is
+  confirmable but not yet proposed by the orchestrator. Invite codes are never stored
+  in a proposal result.
+- **Feedback queue ids** are keyed HMACs (row id, `conversationRef`), unlinkable to
+  app ids.
+
+Configuration (`apps/api/src/config/env.ts`): `OPENROUTER_API_KEY` (existing SSM
+backend row `openrouter/api-key`), `ASSISTANT_DAILY_MESSAGE_LIMIT`,
+`ASSISTANT_MESSAGES_PER_MINUTE_LIMIT`, `ASSISTANT_MONTHLY_BUDGET_USD` (all three
+unset ⇒ refuse), `ASSISTANT_TURN_COST_CEILING_USD`, `ASSISTANT_FIRST_TEXT_TIMEOUT_MS`
+(≤ 15 000), `ASSISTANT_REPLY_MAX_MS`, `ASSISTANT_MAX_OUTPUT_TOKENS`,
+`ASSISTANT_JEV_MODEL`, `ASSISTANT_JEV_TIMEOUT_MS`, `ASSISTANT_HAIKU_MODEL`. The kill
+switch is the feature flag `assistant.enabled` (default off).
+
 ## Open items
 
-1. **Configuration hand-off.** The port, credentials and spend limits are wired
-   by the owner separately; the module PR builds against `FakeAssistantLlm`.
+1. **Configuration hand-off.** Done for code (ADR-0036); the per-environment values
+   (limits, monthly budget) still have to be written to SSM by GoGo-Infra#257 before
+   the flag is turned on.
 2. **Search.** `q` is substring (unaccent + `ILIKE`/trigram) over the user's own
    rows. Fine at 90-day volume; revisit if a user's history gets large.
 3. **Attachment export scope.** Excluded until the owner approves what of an
