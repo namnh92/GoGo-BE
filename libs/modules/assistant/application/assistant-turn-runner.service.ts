@@ -135,20 +135,16 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     let chain = Promise.resolve();
     /** Highest seq handed to the live buffer; later frames wait for the outcome. */
     let queuedUpTo = 0;
-    /** When the turn ended; queued writes past the grace are dropped (S-F-03). */
-    let endedAt: number | null = null;
+    /** Every buffer write of this turn expires here, wherever it lands (S2-F-02). */
+    const notAfter = turnStartedAt + this.config.ASSISTANT_REPLY_MAX_MS + BUFFER_APPEND_GRACE_MS;
     const toBuffer = (list: AssistantFrame[]) => {
       if (list.length === 0) return;
       queuedUpTo = list[list.length - 1]!.seq;
       // A-R2-07: the turn never waits on the buffer. Frames stay ordered on
-      // one chain; a stalled or failed append leaves a hole readers fill
-      // from the row once the turn is finalized.
+      // one chain; a stalled, failed or expired append leaves a hole readers
+      // fill from the row once the turn is finalized.
       chain = chain
-        .then(() =>
-          endedAt !== null && Date.now() - endedAt > BUFFER_APPEND_GRACE_MS
-            ? undefined
-            : this.buffer.append(turn.messageId, list),
-        )
+        .then(() => this.buffer.append(turn.messageId, list, notAfter))
         .catch(() => undefined);
     };
 
@@ -322,7 +318,6 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
       await this.repo.completeLedger(turn.ledgerId, status, state.costs);
       this.metrics.increment('assistant_turns_total', { status });
     } finally {
-      endedAt = Date.now();
       this.running.delete(turn.messageId);
     }
   }
@@ -403,7 +398,9 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
       options,
     );
     if (finalized) {
-      await this.buffer.append(row.id, [terminal]).catch(() => undefined);
+      await this.buffer
+        .append(row.id, [terminal], Date.now() + BUFFER_APPEND_GRACE_MS)
+        .catch(() => undefined);
       await this.repo.closeLedgerForMessage(row.id);
     }
     return finalized;

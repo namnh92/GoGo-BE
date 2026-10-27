@@ -442,6 +442,13 @@ Where the implementation is more specific than (or differs from) the design abov
   queue and a 5 s command timeout, and a runner issues no buffer write later
   than 30 s after its turn ends — so no write can land after a purge's
   tombstone (75 min) expires.
+- **Sol round 2.** Names that begin with punctuation are held across deltas
+  too (S2-F-01); the release loop folds once and walks spans from the end, so a
+  long chain of overlapping names stays linear (S2-F-03); and every buffer
+  write carries an absolute expiry (turn start + reply ceiling + 30 s) that
+  Redis checks with its own clock in the same script as the tombstone, so a
+  write delayed anywhere — a slow commit answer, the network — cannot land
+  after a purge (S2-F-02).
 
 Configuration (`apps/api/src/config/env.ts`): `OPENROUTER_API_KEY` (existing SSM
 backend row `openrouter/api-key`), `ASSISTANT_DAILY_MESSAGE_LIMIT`,

@@ -7,6 +7,9 @@ import {
   type FrameRedis,
 } from './frame-buffer';
 
+/** An expiry far in the future: the write is not late. */
+const FAR = Date.now() + 3_600_000;
+
 /** A Redis list whose pushes can be made to fail, like a dropped connection. */
 function fakeRedis() {
   const lists = new Map<string, string[]>();
@@ -45,8 +48,9 @@ function fakeRedis() {
         lists.delete(keys[0]!);
         return 1;
       }
+      if (Date.now() > Number(argv[1])) return -2;
       if (gone.has(keys[1]!)) return -1;
-      return redis.rpush(keys[0]!, ...argv.slice(1));
+      return redis.rpush(keys[0]!, ...argv.slice(2));
     },
   };
   return { redis, failNextPush: () => (failNext = true) };
@@ -63,11 +67,11 @@ describe('frame buffer (A-R-10: replay after a failed append)', () => {
   it('reads by each frame’s seq, not by list position, after a lost append', async () => {
     const { redis, failNextPush } = fakeRedis();
     const buffer = new RedisFrameBuffer(redis);
-    await buffer.append('m', [delta(1)]);
+    await buffer.append('m', [delta(1)], FAR);
     failNextPush();
-    await buffer.append('m', [delta(2)]).catch(() => undefined);
-    await buffer.append('m', [delta(3)]);
-    await buffer.append('m', [delta(4)]);
+    await buffer.append('m', [delta(2)], FAR).catch(() => undefined);
+    await buffer.append('m', [delta(3)], FAR);
+    await buffer.append('m', [delta(4)], FAR);
     // Position 2 now holds seq 4: an offset read after seq 2 would skip seq 3.
     expect((await buffer.read('m', 2)).map((f) => f.seq)).toEqual([3, 4]);
     expect((await buffer.read('m', 0)).map((f) => f.seq)).toEqual([1, 3, 4]);
@@ -83,18 +87,28 @@ describe('frame buffer (A-R-10: replay after a failed append)', () => {
   it('drop removes the frames, and a late append cannot bring them back (A-R-08, A-R3-04)', async () => {
     const { redis } = fakeRedis();
     const buffer = new RedisFrameBuffer(redis);
-    await buffer.append('m', [delta(1)]);
+    await buffer.append('m', [delta(1)], FAR);
     await buffer.drop('m');
     expect(await buffer.read('m', 0)).toEqual([]);
-    await buffer.append('m', [delta(2)]);
+    await buffer.append('m', [delta(2)], FAR);
     expect(await buffer.read('m', 0)).toEqual([]);
   });
 
   it('the in-memory buffer refuses a late append after a drop too (A-R3-04)', async () => {
     const buffer = new InMemoryFrameBuffer();
-    await buffer.append('m', [delta(1)]);
+    await buffer.append('m', [delta(1)], FAR);
     await buffer.drop('m');
-    await buffer.append('m', [delta(2)]);
+    await buffer.append('m', [delta(2)], FAR);
+    expect(await buffer.read('m', 0)).toEqual([]);
+  });
+
+  it('S2-F-02: a write arriving after its expiry is refused (memory and Redis semantics)', async () => {
+    const memory = new InMemoryFrameBuffer();
+    await memory.append('m', [delta(1)], Date.now() - 1);
+    expect(await memory.read('m', 0)).toEqual([]);
+    const { redis } = fakeRedis();
+    const buffer = new RedisFrameBuffer(redis);
+    await buffer.append('m', [delta(1)], Date.now() - 1);
     expect(await buffer.read('m', 0)).toEqual([]);
   });
 });

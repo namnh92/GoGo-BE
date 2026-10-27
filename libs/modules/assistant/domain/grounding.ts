@@ -227,16 +227,21 @@ export class StreamSanitizer {
    * Releases held text up to a cut that splits no complete name and leaves
    * no word that could still begin one (A-R3-02). The two rules are applied
    * together until the cut stops moving (S-F-01: a prefix hold may land
-   * inside a complete name, which then moves the cut to its start).
+   * inside a complete name, which then moves the cut to its start). The text
+   * is folded once and spans are walked from the end, so a long chain of
+   * overlapping names costs linear work (S2-F-03).
    */
   private releaseNames(all: boolean): string {
     const text = this.held;
     const spans = findNames(text, this.patterns);
     let cut = text.length;
-    if (!all) {
+    if (!all && this.patterns.length > 0) {
+      const { folded, map } = foldWithMap(text);
+      let si = spans.length - 1;
       for (;;) {
-        let next = this.prefixStart(text, cut);
-        for (const span of spans) if (span.start < next && span.end > next) next = span.start;
+        let next = this.prefixStart(folded, map, foldedIndex(map, cut), cut);
+        while (si >= 0 && spans[si]!.start >= next) si -= 1;
+        if (si >= 0 && spans[si]!.end > next) next = spans[si]!.start;
         if (next === cut) break;
         cut = next;
       }
@@ -258,20 +263,21 @@ export class StreamSanitizer {
   }
 
   /**
-   * The earliest word start before `cut` whose folded tail is a strict word
-   * prefix of a pattern; `cut` when there is none. One fold of the text and a
-   * walk over word starts only (S-F-04): whitespace runs are folded to one
-   * space, so their length costs nothing.
+   * The earliest position before the cut (folded index `end`) whose folded
+   * text up to the cut is a strict word prefix of a pattern; `cut` when there
+   * is none. Every position that is not inside a word is a candidate start,
+   * so a name beginning with punctuation is held too (S2-F-01). Whitespace
+   * runs are folded to one space, so their length costs nothing (S-F-04).
    */
-  private prefixStart(text: string, cut: number): number {
-    if (this.patterns.length === 0 || cut === 0) return cut;
-    const { folded, map } = foldWithMap(text.slice(0, cut));
+  private prefixStart(folded: string, map: readonly number[], end: number, cut: number): number {
+    if (end === 0) return cut;
     const longest = this.patterns[0]!.folded.length;
     let earliest = cut;
-    for (let k = folded.length - 1; k >= 0; k -= 1) {
-      if (!WORD_CHAR.test(folded[k]!)) continue;
-      if (k > 0 && WORD_CHAR.test(folded[k - 1]!)) continue;
-      const tail = folded.slice(k).trim();
+    for (let k = end - 1; k >= 0; k -= 1) {
+      const insideWord = k > 0 && WORD_CHAR.test(folded[k - 1]!) && WORD_CHAR.test(folded[k]!);
+      if (insideWord) continue;
+      const tail = folded.slice(k, end).trimEnd();
+      if (!tail || tail.startsWith(' ')) continue;
       if (tail.length > longest) break;
       if (
         this.patterns.some(
@@ -286,6 +292,18 @@ export class StreamSanitizer {
     }
     return earliest;
   }
+}
+
+/** The folded index whose original offset is `offset` (the first at or after it). */
+function foldedIndex(map: readonly number[], offset: number): number {
+  let lo = 0;
+  let hi = map.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (map[mid]! < offset) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 type NamePattern = { folded: string; token: string };

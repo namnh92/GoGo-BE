@@ -293,3 +293,25 @@ describe('Sol review (S-F-01, S-F-02, S-F-04)', () => {
     expect(placeIdsIn(out)).toEqual([PLACE_A]);
   });
 });
+
+describe('Sol review round 2 (S2-F-01, S2-F-03)', () => {
+  it('S2-F-01: a name that begins with punctuation is held across deltas', () => {
+    const s = new StreamSanitizer(0, [{ position: 1, placeId: PLACE_A, name: "'S Coffee" }]);
+    const out = [s.push("Thử 'S "), s.push('Coffee nhé. ')].join('') + s.flush();
+    expect(out).not.toMatch(/coffee/i);
+    expect(placeIdsIn(out)).toEqual([PLACE_A]);
+  });
+
+  it('S2-F-03: a long chain of overlapping names stays cheap and leaks nothing', () => {
+    const s = new StreamSanitizer(0, [
+      { position: 1, placeId: PLACE_A, name: 'Nhà Lá' },
+      { position: 2, placeId: PLACE_B, name: 'Lá Sen' },
+    ]);
+    const started = Date.now();
+    let out = '';
+    for (let i = 0; i < 400; i += 1) out += s.push('Nhà Lá ');
+    out += s.push('ngon. ') + s.flush();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(out).not.toMatch(/nh[aà]|l[aá] sen/i);
+  });
+});

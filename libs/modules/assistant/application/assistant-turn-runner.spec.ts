@@ -8,6 +8,9 @@ import type { AssistantAvailabilityService } from './assistant-availability.serv
 import type { AssistantConfig } from './assistant.config';
 import type { TurnSink, TurnState } from './turn-state';
 
+/** An expiry far in the future: the write is not late. */
+const FAR = Date.now() + 3_600_000;
+
 /**
  * The runner's state machine — stop, kill switch, hard ceiling, frame folding
  * — driven by a scripted orchestrator. No model is involved: the script only
@@ -29,6 +32,8 @@ function harness(
     finalizeWins?: boolean;
     purges?: string[];
     buffer?: AssistantFrameBuffer;
+    /** Holds finalizeMessage's answer until it resolves. */
+    finalizeGate?: Promise<void>;
   } = {},
 ) {
   const buffer = opts.buffer ?? new InMemoryFrameBuffer();
@@ -41,6 +46,7 @@ function harness(
     finalizeMessage: async (id: string, update: Finalized, options?: unknown) => {
       finalized.push({ ...update, id });
       finalizeOptions.push(options);
+      if (opts.finalizeGate) await opts.finalizeGate;
       return opts.finalizeWins === false ? null : ({ id, conversation_id: 'c' } as MessageRow);
     },
     findMessageById: async (id: string) => ({ id }) as MessageRow,
@@ -253,7 +259,7 @@ describe('AssistantTurnRunner — Astra round 1 (GoGo-BE#717)', () => {
 
   it('A-R-08: the reaper drops live buffers an erasure listed', async () => {
     const h = harness(async () => ({ status: 'complete' }), { purges: ['m7'] });
-    await h.buffer.append('m7', [{ type: 'delta', seq: 1, messageId: 'm7', text: 'private' }]);
+    await h.buffer.append('m7', [{ type: 'delta', seq: 1, messageId: 'm7', text: 'private' }], FAR);
     await h.runner.reap();
     expect(await h.buffer.read('m7', 0)).toEqual([]);
     expect(h.purged).toEqual([['m7']]);
@@ -301,14 +307,18 @@ describe('AssistantTurnRunner — Astra round 2 (GoGo-BE#717)', () => {
 });
 
 describe('AssistantTurnRunner — Sol review (S-F-03)', () => {
-  it('writes still queued long after the turn ended are never issued', async () => {
-    const issued: number[] = [];
+  it('writes still queued long after the turn ended never land', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const slow = new InMemoryFrameBuffer();
-    slow.append = async (_id, frames) => {
-      issued.push(...frames.map((f) => f.seq));
-      if (issued.length === 1) await gate;
+    const land = slow.append.bind(slow);
+    let first = true;
+    slow.append = async (id, frames, notAfter) => {
+      if (first) {
+        first = false;
+        await gate;
+      }
+      return land(id, frames, notAfter);
     };
     const h = harness(
       async (_state, sink) => {
@@ -320,17 +330,48 @@ describe('AssistantTurnRunner — Sol review (S-F-03)', () => {
     );
     h.runner.start(h.turn);
     await until(() => h.ledger.length === 1, 5_000);
-    // Far past the grace: the stalled first write finally returns.
-    const now = Date.now();
-    const spy = vi.spyOn(Date, 'now').mockReturnValue(now + 10 * 60_000);
+    // Far past the expiry: the stalled first write finally returns.
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 2 * 3_600_000);
     try {
       release();
       await new Promise((r) => setTimeout(r, 20));
-      expect(issued).toEqual([1]);
+      expect(await slow.read('m1', 0)).toEqual([]);
     } finally {
       spy.mockRestore();
     }
   }, 10_000);
+});
+
+describe('AssistantTurnRunner — Sol review round 2 (S2-F-02)', () => {
+  it('a finalization answered after the write expiry publishes nothing', async () => {
+    let releaseFinalize!: () => void;
+    const finalizeGate = new Promise<void>((r) => (releaseFinalize = r));
+    const h = harness(
+      async (_state, sink, signal) => {
+        await sink.emit({ type: 'delta', text: 'before ' });
+        await new Promise<void>((r) => signal.addEventListener('abort', () => r(), { once: true }));
+        await sink.emit({ type: 'delta', text: 'held back' });
+        return { status: 'complete' };
+      },
+      { finalizeGate },
+    );
+    h.runner.start(h.turn);
+    await until(async () => (await h.buffer.read('m1', 0)).length === 1);
+    await h.buffer.requestStop('m1');
+    await until(() => h.finalized.length === 1);
+    // The commit's answer comes back just after the turn's write expiry
+    // (reply ceiling 60 s + 30 s grace), long before the frames' own TTL.
+    const later = Date.now() + 120_000;
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(later);
+    try {
+      releaseFinalize();
+      await until(() => h.ledger.length === 1);
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await h.buffer.read('m1', 0)).map((f) => f.seq)).toEqual([1]);
+  });
 });
 
 describe('stream helpers', () => {

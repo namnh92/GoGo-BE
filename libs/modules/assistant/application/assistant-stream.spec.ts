@@ -4,6 +4,9 @@ import { AssistantStreamService, type SseMessage } from './assistant-stream.serv
 import type { MessageRow } from '../infrastructure/assistant.repository';
 import type { AssistantFrame } from '../domain/assistant.types';
 
+/** An expiry far in the future: the write is not late. */
+const FAR = Date.now() + 3_600_000;
+
 /**
  * GoGo-BE#717 A-R2-09 — a losing writer took the committed terminal frame's
  * seq in the live buffer. The reader must still end with the committed
@@ -19,7 +22,7 @@ describe('stream reader ends with the committed terminal frame (A-R2-09)', () =>
       text,
     });
     // seq 2 in the buffer is the losing runner's delta, not the terminal.
-    await buffer.append('m', [d(1, 'a '), d(2, 'late')]);
+    await buffer.append('m', [d(1, 'a '), d(2, 'late')], FAR);
     const base = {
       id: 'm',
       conversation_id: 'c',

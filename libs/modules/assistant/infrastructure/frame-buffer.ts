@@ -27,21 +27,29 @@ export const BUFFER_LIFETIME_SECONDS = FRAME_TTL_SECONDS + 15 * 60;
 /** A buffer command not answered by then has failed (no offline queue). */
 export const BUFFER_COMMAND_TIMEOUT_MS = 5_000;
 
-/** After its turn ends, a runner issues no more buffer writes past this. */
+/** How long after its turn's hard ceiling a runner's buffer writes may land. */
 export const BUFFER_APPEND_GRACE_MS = 30_000;
 
 /*
  * Why the tombstone's lifetime (`BUFFER_LIFETIME_SECONDS`, 75 min) is enough
- * (S-F-03): a write is issued only while its turn runs (≤ 2 min) or within
- * `BUFFER_APPEND_GRACE_MS` after it; with no offline queue it is sent at
- * once or refused, and one already on the socket is answered, times out, or
- * dies with the connection (TCP gives up within minutes). No write can reach
- * Redis after the tombstone expires.
+ * (S-F-03, S2-F-02): every write carries an absolute expiry — its turn's
+ * start + reply ceiling (≤ 2 min) + `BUFFER_APPEND_GRACE_MS` — checked by
+ * Redis's own clock in the same script that checks the tombstone. A deletion
+ * at time D either comes after that expiry (every later write is refused by
+ * it) or before it (the tombstone lives until D + 75 min, past the expiry).
+ * Either way no write lands after a purge, however long it was delayed.
+ * Clock skew between the API and Redis only needs to stay well under an
+ * hour.
  */
 
 export interface AssistantFrameBuffer {
-  /** Appends frames in order; `seq` was assigned by the single writer. */
-  append(messageId: string, frames: readonly AssistantFrame[]): Promise<void>;
+  /**
+   * Appends frames in order; `seq` was assigned by the single writer.
+   * `notAfter` (epoch ms) is an absolute expiry checked where the write
+   * lands (S2-F-02): a write that arrives later — however long its producer
+   * or the network delayed it — is refused.
+   */
+  append(messageId: string, frames: readonly AssistantFrame[], notAfter: number): Promise<void>;
   /**
    * Frames with `seq > afterSeq`, in `seq` order. A frame whose append failed
    * is missing, so the result may have holes: readers deliver only the run
@@ -68,12 +76,13 @@ export class InMemoryFrameBuffer implements AssistantFrameBuffer {
   private readonly events = new EventEmitter();
   private lastSweep = Date.now();
 
-  constructor(private readonly now: () => number = Date.now) {
+  constructor(private readonly now: () => number = () => Date.now()) {
     this.events.setMaxListeners(0);
   }
 
-  append(messageId: string, frames: readonly AssistantFrame[]): Promise<void> {
+  append(messageId: string, frames: readonly AssistantFrame[], notAfter: number): Promise<void> {
     this.sweep();
+    if (this.now() > notAfter) return Promise.resolve();
     if ((this.gone.get(messageId) ?? 0) > this.now()) return Promise.resolve();
     const entry = this.frames.get(messageId) ?? { list: [], expiresAt: 0 };
     entry.list.push(...frames);
@@ -141,14 +150,19 @@ export type FrameRedis = {
 };
 
 /**
- * Append unless tombstoned, in one atomic step: a check-then-push from the
- * client could interleave with a drop and recreate the list (A-R3-04).
- * KEYS: frames, tombstone. ARGV: ttl, frame…
+ * Append unless tombstoned or past its expiry, in one atomic step: a
+ * check-then-push from the client could interleave with a drop and recreate
+ * the list (A-R3-04), and a write delayed past `notAfter` is refused by the
+ * server's own clock (S2-F-02).
+ * KEYS: frames, tombstone. ARGV: ttl, notAfter (epoch ms), frame…
  */
 const APPEND_UNLESS_GONE = `
+local t = redis.call('time')
+local nowMs = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+if nowMs > tonumber(ARGV[2]) then return -2 end
 if redis.call('exists', KEYS[2]) == 1 then return -1 end
-local n = redis.call('rpush', KEYS[1], unpack(ARGV, 2))
-if n == #ARGV - 1 then redis.call('expire', KEYS[1], ARGV[1]) end
+local n = redis.call('rpush', KEYS[1], unpack(ARGV, 3))
+if n == #ARGV - 2 then redis.call('expire', KEYS[1], ARGV[1]) end
 return n`;
 
 /** Tombstone first, then delete: an append after the tombstone is refused. */
@@ -171,7 +185,11 @@ export class RedisFrameBuffer implements AssistantFrameBuffer {
     this.local.setMaxListeners(0);
   }
 
-  async append(messageId: string, frames: readonly AssistantFrame[]): Promise<void> {
+  async append(
+    messageId: string,
+    frames: readonly AssistantFrame[],
+    notAfter: number,
+  ): Promise<void> {
     if (frames.length === 0) return;
     // Once per message: the first push sets the TTL, later ones inherit it.
     await this.redis.eval(
@@ -180,6 +198,7 @@ export class RedisFrameBuffer implements AssistantFrameBuffer {
       framesKey(messageId),
       goneKey(messageId),
       FRAME_TTL_SECONDS,
+      Math.floor(notAfter),
       ...frames.map((f) => JSON.stringify(f)),
     );
     this.local.emit(messageId);
