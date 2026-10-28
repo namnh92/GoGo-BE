@@ -787,7 +787,7 @@ export class AssistantOrchestrator {
       },
       Math.max(1, deadline - Date.now()),
     );
-    const sanitizer = new StreamSanitizer(state.sources.length, ctx.places);
+    const sanitizer = new StreamSanitizer(state.sources.length, ctx.places, ctx.locale);
     const started = Date.now();
     state.costs.haikuCalls += 1;
     state.costs.haikuModel = llm.model;

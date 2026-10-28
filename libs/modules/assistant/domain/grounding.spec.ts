@@ -315,3 +315,61 @@ describe('Sol review round 2 (S2-F-01, S2-F-03)', () => {
     expect(out).not.toMatch(/nh[aà]|l[aá] sen/i);
   });
 });
+
+/**
+ * GoGo-BE#713 DEV acceptance 2026-10-28 — a run of common words inside a name
+ * ("cà phê" in "Cà phê Đỗ Phủ - Biệt động Sài Gòn") turned the model's
+ * "quán cà phê" into that place, so the reply said The Workshop Coffee "là
+ * quán Cà phê Đỗ Phủ". A shortened name is still the name; a common word is not.
+ */
+describe('a run of common words is not a name (DEV acceptance 2026-10-28)', () => {
+  const PLACE_C = '33333333-3333-4333-8333-333333333333';
+  const places = [
+    { position: 1, placeId: PLACE_A, name: 'Cà phê Đỗ Phủ - Biệt động Sài Gòn' },
+    { position: 2, placeId: PLACE_B, name: 'The Workshop Coffee' },
+  ];
+  const run = (deltas: string[], list = places) => {
+    const s = new StreamSanitizer(0, list);
+    return deltas.map((d) => s.push(d)).join('') + s.flush();
+  };
+
+  it('the reply measured on DEV keeps its common words', () => {
+    const out = run(['The Workshop Coffee là quán cà ', 'phê thư giãn ở Sài Gòn.']);
+    expect(out).toBe(`${placeToken(PLACE_B)} là quán cà phê thư giãn ở Sài Gòn.`);
+  });
+
+  it('a shortened name with a distinctive word is still the name', () => {
+    expect(run(['Bạn ghé Đỗ Phủ hoặc ', 'Workshop Coffee nhé.'])).toBe(
+      `Bạn ghé ${placeToken(PLACE_A)} hoặc ${placeToken(PLACE_B)} nhé.`,
+    );
+  });
+
+  it('a full name made only of common words is still matched whole', () => {
+    const list = [{ position: 1, placeId: PLACE_C, name: 'Quán Cà Phê' }];
+    expect(run(['Thử Quán Cà Phê nhé, ', 'cà phê ở đó ngon.'], list)).toBe(
+      `Thử ${placeToken(PLACE_C)} nhé, cà phê ở đó ngon.`,
+    );
+  });
+
+  it('a run two listed names share names neither, and is not stored (G-02)', () => {
+    const list = [
+      { position: 1, placeId: PLACE_A, name: 'Lò Gạch Bistro Quận Ba' },
+      { position: 2, placeId: PLACE_B, name: 'Lò Gạch Rooftop' },
+    ];
+    const out = run(['Bạn ghé Lò ', 'Gạch nhé.'], list);
+    expect(out).toBe('Bạn ghé một trong các địa điểm trên nhé.');
+    expect(placeIdsIn(out)).toEqual([]);
+    const en = new StreamSanitizer(0, list, 'en');
+    expect(en.push('Try lo gach ') + en.flush()).toBe('Try one of the places above ');
+  });
+
+  it('a number does not make a common run identifying (G-01)', () => {
+    const list = [{ position: 1, placeId: PLACE_C, name: 'Highlands Coffee Quận 1' }];
+    expect(run(['Quán khác cũng ở Quận 1 nhé.'], list)).toBe('Quán khác cũng ở Quận 1 nhé.');
+    expect(run(['Ghé Highlands Coffee nhé.'], list)).toBe(`Ghé ${placeToken(PLACE_C)} nhé.`);
+  });
+
+  it('a kept shortened name split across deltas is still caught', () => {
+    expect(run(['Ghé Đỗ ', 'Phủ', ' nhé.'])).toBe(`Ghé ${placeToken(PLACE_A)} nhé.`);
+  });
+});
