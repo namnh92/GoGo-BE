@@ -351,11 +351,25 @@ describe('a run of common words is not a name (DEV acceptance 2026-10-28)', () =
     );
   });
 
-  it('a run two listed names share is given to neither', () => {
+  it('a run two listed names share names neither, and is not stored (G-02)', () => {
     const list = [
       { position: 1, placeId: PLACE_A, name: 'Lò Gạch Bistro Quận Ba' },
       { position: 2, placeId: PLACE_B, name: 'Lò Gạch Rooftop' },
     ];
-    expect(run(['Cả hai đều ở khu Lò Gạch cũ.'], list)).toBe('Cả hai đều ở khu Lò Gạch cũ.');
+    const out = run(['Bạn ghé Lò ', 'Gạch nhé.'], list);
+    expect(out).toBe('Bạn ghé một trong các địa điểm trên nhé.');
+    expect(placeIdsIn(out)).toEqual([]);
+    const en = new StreamSanitizer(0, list, 'en');
+    expect(en.push('Try lo gach ') + en.flush()).toBe('Try one of the places above ');
+  });
+
+  it('a number does not make a common run identifying (G-01)', () => {
+    const list = [{ position: 1, placeId: PLACE_C, name: 'Highlands Coffee Quận 1' }];
+    expect(run(['Quán khác cũng ở Quận 1 nhé.'], list)).toBe('Quán khác cũng ở Quận 1 nhé.');
+    expect(run(['Ghé Highlands Coffee nhé.'], list)).toBe(`Ghé ${placeToken(PLACE_C)} nhé.`);
+  });
+
+  it('a kept shortened name split across deltas is still caught', () => {
+    expect(run(['Ghé Đỗ ', 'Phủ', ' nhé.'])).toBe(`Ghé ${placeToken(PLACE_A)} nhé.`);
   });
 });

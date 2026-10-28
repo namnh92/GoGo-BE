@@ -455,7 +455,9 @@ Where the implementation is more specific than (or differs from) the design abov
   DEV the model's "quán cà phê" had become "Cà phê Đỗ Phủ - Biệt động Sài Gòn",
   so the reply described another place as that one. A full name is still
   matched whole, and a shortened name with an identifying word ("Đỗ Phủ") is
-  still the name.
+  still the name. A run two listed names share becomes a neutral label ("một
+  trong các địa điểm trên") so it names neither place and stores no name; a
+  word with no letter ("1") never identifies a place (Sol G-01, G-02).
 
 Configuration (`apps/api/src/config/env.ts`), named after the GoGo-Infra
 manifest rows (ADR-0014) so a deploy renders them: `OPENROUTER_ASSISTANT_API_KEY`

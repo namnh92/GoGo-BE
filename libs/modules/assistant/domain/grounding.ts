@@ -183,8 +183,9 @@ export class StreamSanitizer {
   constructor(
     private readonly sourceCount: number,
     private readonly places: readonly Pick<GroundedPlace, 'position' | 'placeId' | 'name'>[] = [],
+    locale: 'vi' | 'en' = 'vi',
   ) {
-    this.patterns = namePatterns(places);
+    this.patterns = namePatterns(places, SHARED_RUN_LABEL[locale]);
   }
 
   /**
@@ -354,17 +355,30 @@ const COMMON_WORDS = new Set(
   ).split(' '),
 );
 
+/** A word with no letter ("1", "-") never identifies a place either (G-01). */
 const isCommonRun = (words: readonly string[]) =>
-  words.every((w) => !WORD_CHAR.test(w) || COMMON_WORDS.has(w));
+  words.every((w) => !/\p{L}/u.test(w) || COMMON_WORDS.has(w));
+
+/**
+ * What a run two listed names share becomes (G-02): naming neither place, so
+ * the reply says nothing false and no shortened name is stored.
+ */
+const SHARED_RUN_LABEL = {
+  vi: 'một trong các địa điểm trên',
+  en: 'one of the places above',
+} as const;
 
 /**
  * Every listed name, and every run of two or more consecutive words of it,
  * longest first. A one-word name is matched whole only. A run (not the whole
- * name) counts only when it holds a word that identifies the place, and only
- * when no other listed name holds it too: giving a shared or common run to
- * one place would make the reply say something false about another.
+ * name) counts only when it holds a word that identifies the place. A run
+ * another listed name holds too becomes `sharedLabel`: giving it to one place
+ * would make the reply say something false about the other.
  */
-function namePatterns(places: readonly Pick<GroundedPlace, 'placeId' | 'name'>[]): NamePattern[] {
+function namePatterns(
+  places: readonly Pick<GroundedPlace, 'placeId' | 'name'>[],
+  sharedLabel: string,
+): NamePattern[] {
   const full = new Map<string, string>();
   const runs = new Map<string, Set<string>>();
   for (const p of places) {
@@ -383,7 +397,7 @@ function namePatterns(places: readonly Pick<GroundedPlace, 'placeId' | 'name'>[]
   }
   const out = new Map(full);
   for (const [folded, tokens] of runs) {
-    if (tokens.size === 1 && !out.has(folded)) out.set(folded, [...tokens][0]!);
+    if (!out.has(folded)) out.set(folded, tokens.size === 1 ? [...tokens][0]! : sharedLabel);
   }
   return [...out]
     .map(([folded, token]) => ({ folded, token }))
