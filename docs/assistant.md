@@ -449,6 +449,12 @@ Where the implementation is more specific than (or differs from) the design abov
   Redis checks with its own clock in the same script as the tombstone, so a
   write delayed anywhere — a slow commit answer, the network — cannot land
   after a purge (S2-F-02).
+- **New administrative addresses (owner, 2026-10-28).** Places are searched by
+  the published post-2025 dataset only (province + ward/commune, no district);
+  old names such as "Quận 1" are not mapped. An area the resolver cannot place,
+  or places ambiguously, gets "Mình chưa nhận ra khu vực bạn nhập…" asking for a
+  new address with an example; a message with no area asks for one in the same
+  form. Neither case guesses or searches nationwide.
 
 Configuration (`apps/api/src/config/env.ts`), named after the GoGo-Infra
 manifest rows (ADR-0014) so a deploy renders them: `OPENROUTER_ASSISTANT_API_KEY`

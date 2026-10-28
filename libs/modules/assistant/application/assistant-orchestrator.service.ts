@@ -246,6 +246,7 @@ export class AssistantOrchestrator {
       if (!area && !contextPlaceId) {
         // No area and nothing to anchor on: a nationwide list would be noise.
         clarification.push('area');
+        ctx.areaUnrecognized = facts.areaText !== null || resolution.kind === 'ambiguous';
       } else {
         placeCards = await guard.run(() =>
           this.findPlaces(

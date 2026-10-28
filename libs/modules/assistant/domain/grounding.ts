@@ -50,6 +50,11 @@ export type GroundedAnswerContext = {
   plan: GroundedPlan | null;
   pendingAction: string | null;
   clarification: string[];
+  /**
+   * The person named an area the published (post-2025) administrative dataset
+   * does not place: the reply asks for it again as a new address.
+   */
+  areaUnrecognized?: boolean;
   unverifiableRequirement: boolean;
   conflicting: boolean;
 };
@@ -444,7 +449,21 @@ export function deterministicReply(ctx: GroundedAnswerContext): string {
             : 'Verified prices and opening hours are on the cards below.',
         );
       } else if (ctx.clarification.includes('area')) {
-        lines.push(vi ? 'Bạn muốn đi ở khu vực nào?' : 'Which area would you like to go to?');
+        // Owner 2026-10-28: places are searched by the new administrative
+        // address only; an area not recognised is asked again, never guessed.
+        if (ctx.areaUnrecognized) {
+          lines.push(
+            vi
+              ? 'Mình chưa nhận ra khu vực bạn nhập. Bạn nhập lại theo địa chỉ hành chính mới (phường/xã và tỉnh/thành phố, không còn quận/huyện), ví dụ “phường Bến Thành, TP Hồ Chí Minh” nhé.'
+              : "I couldn't recognise that area. Please re-enter it as a new administrative address (ward or commune and province or city, no district), for example “Ben Thanh ward, Ho Chi Minh City”.",
+          );
+        } else {
+          lines.push(
+            vi
+              ? 'Bạn muốn đi ở khu vực nào? Bạn nhập theo địa chỉ hành chính mới (phường/xã và tỉnh/thành phố), ví dụ “phường Bến Thành, TP Hồ Chí Minh” nhé.'
+              : 'Which area would you like to go to? Please give a new administrative address (ward or commune and province or city), for example “Ben Thanh ward, Ho Chi Minh City”.',
+          );
+        }
       } else {
         lines.push(
           vi
