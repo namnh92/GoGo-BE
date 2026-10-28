@@ -63,7 +63,9 @@ export class AssistantAreaResolver {
 
     if (!areaText) return province ? provinceArea(province) : { kind: 'none' };
     const needle = strip(areaText);
-    if (needle.length < 2) return province ? provinceArea(province) : { kind: 'none' };
+    // "Quận 1" strips to "1": an explicit phrase too short to name a current
+    // unit is not recognised either (Sol N-02).
+    if (needle.length < 2) return { kind: 'none' };
 
     // The phrase itself names a province ("ở Hà Nội").
     const named = snapshot.currentProvinces.find((p) => strip(p.name) === needle);

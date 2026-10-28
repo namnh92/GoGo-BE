@@ -47,6 +47,10 @@ describe('area resolution uses the new administrative address only', () => {
     });
   });
 
+  it('a single-digit old district with the city named is not recognised', async () => {
+    expect(await resolver.resolve('cà phê ở Quận 1 TP HCM', 'Quận 1')).toEqual({ kind: 'none' });
+  });
+
   it('the city alone resolves to the city', async () => {
     const r = await resolver.resolve('cà phê ở TP HCM', null);
     expect(r.kind).toBe('resolved');
