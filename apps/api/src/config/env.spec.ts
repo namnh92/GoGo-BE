@@ -377,4 +377,18 @@ describe('export wrapping keys (GoGo-BE#256)', () => {
       }),
     ).not.toThrow();
   });
+
+  it('reads the assistant settings by the GoGo-Infra manifest names (ADR-0014)', () => {
+    const env = loadEnv({
+      ...base,
+      NODE_ENV: 'development',
+      OPENROUTER_ASSISTANT_API_KEY: 'k',
+      ASSISTANT_USER_DAILY_MAX_MESSAGES: '30',
+      ASSISTANT_MONTHLY_MAX_USD: '5',
+    });
+    expect(env.OPENROUTER_ASSISTANT_API_KEY).toBe('k');
+    expect(env.ASSISTANT_USER_DAILY_MAX_MESSAGES).toBe(30);
+    expect(env.ASSISTANT_MONTHLY_MAX_USD).toBe(5);
+    expect(env.ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES).toBe(5);
+  });
 });

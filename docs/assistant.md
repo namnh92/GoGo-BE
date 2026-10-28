@@ -289,7 +289,7 @@ model choice, settings names and spend limits.
 Where the implementation is more specific than (or differs from) the design above:
 
 - **No fake LLM.** `FakeAssistantLlm` was not built (ADR-0036 forbids mock
-  inference). Without `OPENROUTER_API_KEY` neither model binding exists and sends
+  inference). Without `OPENROUTER_ASSISTANT_API_KEY` neither model binding exists and sends
   answer `503 ASSISTANT_DISABLED`.
 - **Pipeline** (`AssistantOrchestrator`): bounded history (6 turns) →
   `parseIntentFacts` → **one** Jev call (the #709 intent questions + `assistant_intent`,
@@ -450,10 +450,12 @@ Where the implementation is more specific than (or differs from) the design abov
   write delayed anywhere — a slow commit answer, the network — cannot land
   after a purge (S2-F-02).
 
-Configuration (`apps/api/src/config/env.ts`): `OPENROUTER_API_KEY` (existing SSM
-backend row `openrouter/api-key`), `ASSISTANT_DAILY_MESSAGE_LIMIT`,
-`ASSISTANT_MESSAGES_PER_MINUTE_LIMIT`, `ASSISTANT_MONTHLY_BUDGET_USD` (all three
-unset ⇒ refuse), `ASSISTANT_TURN_COST_CEILING_USD`, `ASSISTANT_FIRST_TEXT_TIMEOUT_MS`
+Configuration (`apps/api/src/config/env.ts`), named after the GoGo-Infra
+manifest rows (ADR-0014) so a deploy renders them: `OPENROUTER_ASSISTANT_API_KEY`
+(`openrouter/assistant-api-key`, key gogo_ai_anthropic_<env>),
+`ASSISTANT_USER_DAILY_MAX_MESSAGES` (`budget/assistant-user-daily-max-messages`),
+`ASSISTANT_MONTHLY_MAX_USD` (`budget/assistant-monthly-max-usd`) (any of the three
+unset ⇒ refuse), `ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES` (default 5, no SSM row), `ASSISTANT_TURN_COST_CEILING_USD`, `ASSISTANT_FIRST_TEXT_TIMEOUT_MS`
 (≤ 15 000), `ASSISTANT_REPLY_MAX_MS`, `ASSISTANT_MAX_OUTPUT_TOKENS`,
 `ASSISTANT_JEV_MODEL`, `ASSISTANT_JEV_TIMEOUT_MS`, `ASSISTANT_HAIKU_MODEL`. The kill
 switch is the feature flag `assistant.enabled` (default off).

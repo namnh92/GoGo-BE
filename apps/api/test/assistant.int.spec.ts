@@ -94,10 +94,10 @@ async function waitTerminal(token: string, conversationId: string, messageId: st
 
 beforeAll(async () => {
   f = await startAssistantFixture({
-    OPENROUTER_API_KEY: 'ci-key-never-reaches-a-model',
-    ASSISTANT_DAILY_MESSAGE_LIMIT: '6',
-    ASSISTANT_MESSAGES_PER_MINUTE_LIMIT: '4',
-    ASSISTANT_MONTHLY_BUDGET_USD: '1',
+    OPENROUTER_ASSISTANT_API_KEY: 'ci-key-never-reaches-a-model',
+    ASSISTANT_USER_DAILY_MAX_MESSAGES: '6',
+    ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES: '4',
+    ASSISTANT_MONTHLY_MAX_USD: '1',
     ASSISTANT_JEV_TIMEOUT_MS: '2000',
   });
   alice = await f.register('alice@gogo.test');
