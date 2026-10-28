@@ -458,6 +458,14 @@ Where the implementation is more specific than (or differs from) the design abov
   still the name. A run two listed names share becomes a neutral label ("một
   trong các địa điểm trên") so it names neither place and stores no name; a
   word with no letter ("1") never identifies a place (Sol G-01, G-02).
+- **New administrative addresses (owner, 2026-10-28).** Places are searched by
+  the published post-2025 dataset only (province + ward/commune, no district);
+  old names such as "Quận 1" are not mapped (the resolver's legacy-district →
+  province fallback is removed, Sol N-02). An area the resolver cannot place,
+  or places ambiguously, gets "Mình chưa nhận ra khu vực bạn nhập…" asking for a
+  new address with an example; a message with no area asks for one in the same
+  form, and it is never composed by the model, even with conflicting
+  preferences (Sol N-01). Neither case guesses or searches nationwide.
 
 Configuration (`apps/api/src/config/env.ts`), named after the GoGo-Infra
 manifest rows (ADR-0014) so a deploy renders them: `OPENROUTER_ASSISTANT_API_KEY`

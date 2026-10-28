@@ -246,6 +246,7 @@ export class AssistantOrchestrator {
       if (!area && !contextPlaceId) {
         // No area and nothing to anchor on: a nationwide list would be noise.
         clarification.push('area');
+        ctx.areaUnrecognized = facts.areaText !== null || resolution.kind === 'ambiguous';
       } else {
         placeCards = await guard.run(() =>
           this.findPlaces(
@@ -342,7 +343,10 @@ export class AssistantOrchestrator {
     }
 
     const composable =
-      (route === 'recommend_places' && (placeCards.length > 0 || conflicting)) ||
+      // An area clarification is the deterministic new-address question
+      // (owner 2026-10-28), never composed (Sol N-01).
+      (route === 'recommend_places' &&
+        (placeCards.length > 0 || (conflicting && !clarification.includes('area')))) ||
       (route === 'gogo_guide' && ctx.guide.length > 0) ||
       (route === 'plan_help' && ctx.plan !== null);
     let status: TurnOutcome['status'] = 'complete';
