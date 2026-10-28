@@ -338,22 +338,52 @@ function foldWithMap(text: string): { folded: string; map: number[] } {
 }
 
 /**
+ * Folded words that say what kind of place, food or city something is, or
+ * describe it — never which place it is. A run of a name made only of these
+ * ("cà phê", "Sài Gòn") is ordinary text the model may write about any place
+ * (GoGo-BE#713 DEV acceptance 2026-10-28).
+ */
+const COMMON_WORDS = new Set(
+  (
+    'quan tiem nha hang ca phe cafe caffe coffee tea tra sua bar pub beer bia lounge bistro ' +
+    'restaurant kitchen house garden rooftop shop store homestay hotel khach san resort spa ' +
+    'park cong vien rap phim cinema karaoke club kem banh bun pho com lau nuong che an uong ' +
+    'buffet chay mon food dining fine bakery ' +
+    'sai gon saigon ha noi hanoi ho chi minh hcm tp thanh phuong xa huyen tinh da nang viet nam ' +
+    'yen am cung dep ngon xanh view chill cozy the a of and at by cua va o'
+  ).split(' '),
+);
+
+const isCommonRun = (words: readonly string[]) =>
+  words.every((w) => !WORD_CHAR.test(w) || COMMON_WORDS.has(w));
+
+/**
  * Every listed name, and every run of two or more consecutive words of it,
- * longest first. A one-word name is matched whole only.
+ * longest first. A one-word name is matched whole only. A run (not the whole
+ * name) counts only when it holds a word that identifies the place, and only
+ * when no other listed name holds it too: giving a shared or common run to
+ * one place would make the reply say something false about another.
  */
 function namePatterns(places: readonly Pick<GroundedPlace, 'placeId' | 'name'>[]): NamePattern[] {
-  const out = new Map<string, string>();
+  const full = new Map<string, string>();
+  const runs = new Map<string, Set<string>>();
   for (const p of places) {
     const words = foldWithMap(p.name.normalize('NFC')).folded.trim().split(' ').filter(Boolean);
     const token = placeToken(p.placeId);
-    const add = (w: string[]) => {
-      const folded = w.join(' ');
-      if (folded.length >= 2 && !out.has(folded)) out.set(folded, token);
-    };
-    if (words.length === 1) add(words);
-    for (let len = words.length; len >= 2; len -= 1) {
-      for (let i = 0; i + len <= words.length; i += 1) add(words.slice(i, i + len));
+    const whole = words.join(' ');
+    if (whole.length >= 2 && !full.has(whole)) full.set(whole, token);
+    for (let len = words.length - 1; len >= 2; len -= 1) {
+      for (let i = 0; i + len <= words.length; i += 1) {
+        const run = words.slice(i, i + len);
+        if (isCommonRun(run)) continue;
+        const folded = run.join(' ');
+        runs.set(folded, (runs.get(folded) ?? new Set()).add(token));
+      }
     }
+  }
+  const out = new Map(full);
+  for (const [folded, tokens] of runs) {
+    if (tokens.size === 1 && !out.has(folded)) out.set(folded, [...tokens][0]!);
   }
   return [...out]
     .map(([folded, token]) => ({ folded, token }))

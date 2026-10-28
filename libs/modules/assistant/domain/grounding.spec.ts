@@ -315,3 +315,47 @@ describe('Sol review round 2 (S2-F-01, S2-F-03)', () => {
     expect(out).not.toMatch(/nh[aà]|l[aá] sen/i);
   });
 });
+
+/**
+ * GoGo-BE#713 DEV acceptance 2026-10-28 — a run of common words inside a name
+ * ("cà phê" in "Cà phê Đỗ Phủ - Biệt động Sài Gòn") turned the model's
+ * "quán cà phê" into that place, so the reply said The Workshop Coffee "là
+ * quán Cà phê Đỗ Phủ". A shortened name is still the name; a common word is not.
+ */
+describe('a run of common words is not a name (DEV acceptance 2026-10-28)', () => {
+  const PLACE_C = '33333333-3333-4333-8333-333333333333';
+  const places = [
+    { position: 1, placeId: PLACE_A, name: 'Cà phê Đỗ Phủ - Biệt động Sài Gòn' },
+    { position: 2, placeId: PLACE_B, name: 'The Workshop Coffee' },
+  ];
+  const run = (deltas: string[], list = places) => {
+    const s = new StreamSanitizer(0, list);
+    return deltas.map((d) => s.push(d)).join('') + s.flush();
+  };
+
+  it('the reply measured on DEV keeps its common words', () => {
+    const out = run(['The Workshop Coffee là quán cà ', 'phê thư giãn ở Sài Gòn.']);
+    expect(out).toBe(`${placeToken(PLACE_B)} là quán cà phê thư giãn ở Sài Gòn.`);
+  });
+
+  it('a shortened name with a distinctive word is still the name', () => {
+    expect(run(['Bạn ghé Đỗ Phủ hoặc ', 'Workshop Coffee nhé.'])).toBe(
+      `Bạn ghé ${placeToken(PLACE_A)} hoặc ${placeToken(PLACE_B)} nhé.`,
+    );
+  });
+
+  it('a full name made only of common words is still matched whole', () => {
+    const list = [{ position: 1, placeId: PLACE_C, name: 'Quán Cà Phê' }];
+    expect(run(['Thử Quán Cà Phê nhé, ', 'cà phê ở đó ngon.'], list)).toBe(
+      `Thử ${placeToken(PLACE_C)} nhé, cà phê ở đó ngon.`,
+    );
+  });
+
+  it('a run two listed names share is given to neither', () => {
+    const list = [
+      { position: 1, placeId: PLACE_A, name: 'Lò Gạch Bistro Quận Ba' },
+      { position: 2, placeId: PLACE_B, name: 'Lò Gạch Rooftop' },
+    ];
+    expect(run(['Cả hai đều ở khu Lò Gạch cũ.'], list)).toBe('Cả hai đều ở khu Lò Gạch cũ.');
+  });
+});
