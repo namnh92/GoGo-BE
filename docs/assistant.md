@@ -449,6 +449,15 @@ Where the implementation is more specific than (or differs from) the design abov
   Redis checks with its own clock in the same script as the tombstone, so a
   write delayed anywhere — a slow commit answer, the network — cannot land
   after a purge (S2-F-02).
+- **DEV acceptance 2026-10-28.** A run of a name made only of common words
+  (place types, food, cities, descriptors: "cà phê", "Sài Gòn") is no longer
+  read as the name, and a run two listed names share is given to neither. On
+  DEV the model's "quán cà phê" had become "Cà phê Đỗ Phủ - Biệt động Sài Gòn",
+  so the reply described another place as that one. A full name is still
+  matched whole, and a shortened name with an identifying word ("Đỗ Phủ") is
+  still the name. A run two listed names share becomes a neutral label ("một
+  trong các địa điểm trên") so it names neither place and stores no name; a
+  word with no letter ("1") never identifies a place (Sol G-01, G-02).
 
 Configuration (`apps/api/src/config/env.ts`), named after the GoGo-Infra
 manifest rows (ADR-0014) so a deploy renders them: `OPENROUTER_ASSISTANT_API_KEY`
