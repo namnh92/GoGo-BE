@@ -343,7 +343,10 @@ export class AssistantOrchestrator {
     }
 
     const composable =
-      (route === 'recommend_places' && (placeCards.length > 0 || conflicting)) ||
+      // An area clarification is the deterministic new-address question
+      // (owner 2026-10-28), never composed (Sol N-01).
+      (route === 'recommend_places' &&
+        (placeCards.length > 0 || (conflicting && !clarification.includes('area')))) ||
       (route === 'gogo_guide' && ctx.guide.length > 0) ||
       (route === 'plan_help' && ctx.plan !== null);
     let status: TurnOutcome['status'] = 'complete';

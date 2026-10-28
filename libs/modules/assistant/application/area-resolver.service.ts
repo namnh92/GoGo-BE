@@ -99,26 +99,10 @@ export class AssistantAreaResolver {
     }
     if (provinces.size > 1) return { kind: 'ambiguous' };
 
-    // A pre-2025 district name ("Quận 1") no longer names one commune: the
-    // legacy record says which province it was in, and the area is that province.
-    try {
-      const legacy = this.query
-        .search(snapshot, {
-          query: areaText,
-          provinceCode: province?.code,
-          includeLegacy: true,
-          limit: 20,
-        })
-        .items.filter((h) => !h.isCurrent && strip(h.name) === needle);
-      const parents = new Set(legacy.map((l) => l.parentCode));
-      if (legacy.length > 0 && parents.size === 1) {
-        const parent = snapshot.currentProvinces.find((p) => p.code === legacy[0]!.parentCode);
-        if (parent) return provinceArea(parent);
-      }
-      if (parents.size > 1 && !province) return { kind: 'ambiguous' };
-    } catch {
-      /* fall through */
-    }
-    return province ? provinceArea(province) : { kind: 'none' };
+    // Owner 2026-10-28 (Sol N-02): the new administrative address only. A
+    // pre-2025 district ("Quận 10") or any phrase that names no current unit
+    // is not recognised — not widened to a province, even one also named —
+    // so the person is asked for a new address.
+    return { kind: 'none' };
   }
 }

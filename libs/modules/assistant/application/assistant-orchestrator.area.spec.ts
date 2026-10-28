@@ -92,3 +92,67 @@ describe('an area the assistant cannot place asks for the new address (owner 202
     expect(text).toMatch(/new administrative address/);
   });
 });
+
+describe('Sol N-01: conflicting preferences do not skip the new-address question', () => {
+  it('no area + conflicting preferences: no model call, the deterministic question', async () => {
+    let streamed = 0;
+    const frames: AssistantFrame[] = [];
+    const orchestrator = new AssistantOrchestrator(
+      {
+        ASSISTANT_FIRST_TEXT_TIMEOUT_MS: 5_000,
+        ASSISTANT_JEV_TIMEOUT_MS: 4_000,
+        ASSISTANT_MAX_OUTPUT_TOKENS: 100,
+      } as never,
+      { history: async () => [], insertProposal: async () => ({}) } as never,
+      {
+        taxonomy: async () => ({
+          category: [{ key: 'category:cafe', label: 'cà phê' }],
+          mood: [],
+          setting: [],
+          suitability: [],
+        }),
+        labels: () => new Map<string, string>(),
+      } as never,
+      { search: async () => ({ results: [] }) } as never,
+      { placeTags: async () => new Map(), placeCard: async () => null } as never,
+      { resolve: async () => ({ kind: 'none' }) } as never,
+      {} as never,
+      {} as never,
+      {
+        decide: async () => ({
+          model: 'typesafe/jev-1.14',
+          answers: { ...answers, conflicting: { type: 'noul', noul: 0.99 } },
+          usage: { inputTokens: 1, outputTokens: 1, costUsd: 0.0001 },
+        }),
+      } as never,
+      {
+        model: 'anthropic/claude-haiku-5.5',
+        async *stream() {
+          streamed += 1;
+          yield { type: 'delta', text: 'Bạn thích yên tĩnh hay sôi động?' };
+          yield { type: 'finish', finishReason: 'stop' };
+        },
+      } as never,
+    );
+    await orchestrator.run(
+      {
+        messageId: 'm',
+        ledgerId: 'l',
+        conversationId: 'c',
+        userId: 'u',
+        text: 'Quán cà phê vừa yên tĩnh vừa thật sôi động ở Quận 1',
+        locale: 'vi',
+        context: null,
+      },
+      newTurnState(),
+      { emit: async (f: AssistantFrame) => void frames.push(f) } as never,
+      new AbortController().signal,
+    );
+    const text = frames
+      .filter((f): f is Extract<AssistantFrame, { type: 'delta' }> => f.type === 'delta')
+      .map((f) => f.text)
+      .join('');
+    expect(streamed).toBe(0);
+    expect(text).toMatch(/địa chỉ hành chính mới/);
+  });
+});
