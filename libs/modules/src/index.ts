@@ -107,6 +107,11 @@ export { PlaceImportService } from '../places/application/place-import.service';
 export { CmsModule } from '../cms/presentation/cms.module';
 export { AdminAuthService, ADMIN_LOCKOUT_THRESHOLD } from '../cms/application/admin-auth.service';
 export { CloudflareAccessService } from '../cms/application/cf-access.service';
+export {
+  CONFIG_CATALOGUE,
+  type ConfigCatalogue,
+  type ConfigCatalogueEntry,
+} from '../cms/domain/config-readiness';
 export { SessionRevocationService } from '../identity/application/session-revocation.service';
 
 // Place ingestion (PI-*)
@@ -205,6 +210,7 @@ export {
   ExportKeyringConfigError,
   ExportTooLargeError,
   openExport,
+  isExportKeyName,
   parseExportKeyring,
   pickExportKeyEnv,
   sealExport,

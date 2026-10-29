@@ -78,6 +78,7 @@ import { CmsOpsService } from '../application/cms-ops.service';
 import { CmsObservabilityService } from '../application/cms-observability.service';
 import { CmsCostCenterService } from '../application/cms-cost-center.service';
 import { CmsOpsMetricsService } from '../application/cms-ops-metrics.service';
+import { CmsConfigReadinessService } from '../application/cms-config-readiness.service';
 import { OPS_PROVIDERS, OPS_WINDOWS } from '../domain/ops-metrics';
 import { CmsUsersService } from '../application/cms-users.service';
 import { PrivacyRequestsService } from '../application/privacy-requests.service';
@@ -2249,6 +2250,7 @@ export class CmsOpsController {
     private readonly observability: CmsObservabilityService,
     private readonly opsMetrics: CmsOpsMetricsService,
     private readonly costCenter: CmsCostCenterService,
+    private readonly configReadiness: CmsConfigReadinessService,
   ) {}
 
   @Post('ranking-configs')
@@ -2502,6 +2504,18 @@ export class CmsOpsController {
    * `ops_admin` and above, like the three endpoints above it. Provider spend
    * and infrastructure health are not editorial data.
    */
+  /**
+   * GoGo-BE#727 (OPS-BE-002) — which variables this process holds, joined with
+   * the deploy's readiness projection. Presence only: no value, prefix, length
+   * or hash of any variable leaves here. Always 200; an absent projection is
+   * `infra: null` with its reason.
+   */
+  @RequireRole('ops_admin', 'super_admin')
+  @Get('ops/config-readiness')
+  opsConfigReadiness() {
+    return this.configReadiness.readiness();
+  }
+
   @RequireRole('ops_admin', 'super_admin')
   @Get('ops/summary')
   opsSummary(@Query(new ZodValidationPipe(opsWindowQuery)) query: z.infer<typeof opsWindowQuery>) {

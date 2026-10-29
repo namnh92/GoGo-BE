@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { loadEnv } from './env';
+import { CONDITIONALLY_REQUIRED_ENV_KEYS, envCatalogue, loadEnv } from './env';
 
 const base = {
   DATABASE_URL: 'postgres://gogo:gogo@localhost:5432/gogo',
@@ -390,5 +390,91 @@ describe('export wrapping keys (GoGo-BE#256)', () => {
     expect(env.ASSISTANT_USER_DAILY_MAX_MESSAGES).toBe(30);
     expect(env.ASSISTANT_MONTHLY_MAX_USD).toBe(5);
     expect(env.ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES).toBe(5);
+  });
+});
+
+/**
+ * GoGo-BE#727 — the config-readiness endpoint reports exactly the keys of this
+ * schema, derived from it; and `conditional` is pinned against what the
+ * schema's own `superRefine` refuses.
+ */
+describe('envCatalogue (GoGo-BE#727)', () => {
+  it('is derived from the schema: every parsed key, nothing else, with optionality', () => {
+    const catalogue = envCatalogue();
+    const names = new Set(catalogue.map((c) => c.name));
+    expect(names.size).toBe(catalogue.length);
+    // Every key the parse can return is in the catalogue (the keyring map is
+    // the dynamic loader's, reported apart) …
+    const parsedKeys = Object.keys(loadEnv({ ...base })).filter(
+      (k) => k !== 'EXPORT_WRAPPING_KEYS',
+    );
+    for (const k of parsedKeys) expect(names.has(k), k).toBe(true);
+    // … and so is a key with no default that a minimal parse leaves out.
+    expect(names.has('ASSISTANT_MONTHLY_MAX_USD')).toBe(true);
+    expect(parsedKeys).not.toContain('ASSISTANT_MONTHLY_MAX_USD');
+    const by = Object.fromEntries(catalogue.map((c) => [c.name, c]));
+    expect(by.DATABASE_URL).toEqual({ name: 'DATABASE_URL', optional: false, conditional: false });
+    expect(by.AUTH_JWT_SECRET).toEqual({
+      name: 'AUTH_JWT_SECRET',
+      optional: true,
+      conditional: true,
+    });
+    expect(by.APP_DEPLOY_ID?.optional).toBe(true);
+    expect(by.SECRETS_READINESS_FILE?.optional).toBe(true);
+  });
+
+  it('every conditional key is a schema key the schema lets be absent', () => {
+    const keys = new Map(envCatalogue().map((c) => [c.name, c]));
+    for (const name of CONDITIONALLY_REQUIRED_ENV_KEYS) {
+      expect(keys.get(name)?.optional, name).toBe(true);
+    }
+  });
+
+  // A deployed environment that boots. Removing any one optional key that
+  // makes superRefine refuse at that key's path must be listed conditional,
+  // so a new rule there cannot leave the endpoint calling a key plain optional.
+  const deployed: Record<string, string> = {
+    ...base,
+    NODE_ENV: 'production',
+    APP_ENV: 'dev',
+    DATABASE_URL: 'postgres://gogo:gogo@db:5432/gogo?sslmode=require',
+    TRUST_PROXY: '1',
+    AUTH_JWT_SECRET: 'x'.repeat(48),
+    AUTH_REFRESH_SECRET: 'y'.repeat(48),
+    COOKIE_SECRET: 'z'.repeat(48),
+    COOKIE_SECURE: 'true',
+    CMS_SUPER_ADMIN_EMAIL: 'boss@example.com',
+    CF_ACCESS_TEAM_DOMAIN: 'gogo.cloudflareaccess.com',
+    CF_ACCESS_AUD: 'aud-tag',
+    R2_ACCESS_KEY_ID: 'key',
+    R2_SECRET_ACCESS_KEY: 'secret',
+    R2_BUCKET: 'gogo-dev-assets',
+    R2_ACCOUNT_ID: 'acct',
+    R2_PUBLIC_BUCKET: 'gogo-dev-public',
+    R2_PUBLIC_ACCESS_KEY_ID: 'pkey',
+    R2_PUBLIC_SECRET_ACCESS_KEY: 'psecret',
+    CF_ZONE_ID: 'zone',
+    CF_CACHE_PURGE_TOKEN: 'token',
+  };
+
+  it('the deployed fixture boots', () => {
+    expect(() => loadEnv(deployed)).not.toThrow();
+  });
+
+  it('removing a key that superRefine then requires means it is listed conditional', () => {
+    const conditional = new Set<string>(CONDITIONALLY_REQUIRED_ENV_KEYS);
+    const optional = envCatalogue().filter((c) => c.optional && c.name in deployed);
+    const derived: string[] = [];
+    for (const { name } of optional) {
+      const rest = { ...deployed };
+      delete rest[name];
+      try {
+        loadEnv(rest);
+      } catch (err) {
+        if (err instanceof Error && err.message.includes(`${name}:`)) derived.push(name);
+      }
+    }
+    for (const name of derived) expect(conditional.has(name), name).toBe(true);
+    expect(derived.length).toBeGreaterThan(5);
   });
 });

@@ -57,10 +57,19 @@ import {
   createLogger,
   type MetricsPort,
 } from '@gogo/observability';
-import { COST_USAGE_LEDGER, DB, DbUsageLedger, privacyExportStorageFor } from '@gogo/modules';
+import {
+  CONFIG_CATALOGUE,
+  COST_USAGE_LEDGER,
+  DB,
+  DbUsageLedger,
+  isExportKeyName,
+  pickExportKeyEnv,
+  privacyExportStorageFor,
+  type ConfigCatalogue,
+} from '@gogo/modules';
 import type { Db } from '@gogo/database';
 import { METRICS_BASE, METRICS_REGISTRY } from './metrics.tokens';
-import { APP_CONFIG, type AppConfig } from './config/env';
+import { APP_CONFIG, envCatalogue, type AppConfig } from './config/env';
 
 /**
  * BE-BFF-011 — port binding. Real adapters only when credentials exist;
@@ -214,6 +223,20 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     },
     {
       /**
+       * GoGo-BE#727 — the names the config-readiness endpoint reports: every
+       * key of the env schema, derived from it, plus the export keyring's
+       * open-ended `EXPORT_WRAPPING_KEY_V<n>` (its own loader, the one
+       * exception to "derived from the schema"). Names only.
+       */
+      provide: CONFIG_CATALOGUE,
+      useFactory: (): ConfigCatalogue => ({
+        keys: envCatalogue(),
+        dynamicNames: (env) => Object.keys(pickExportKeyEnv(env)),
+        isDynamic: isExportKeyName,
+      }),
+    },
+    {
+      /**
        * #315 — reading the store back, for the CMS ops dashboard only.
        *
        * Bound to `null` when unconfigured rather than to a fake: a fake would
@@ -338,6 +361,7 @@ import { APP_CONFIG, type AppConfig } from './config/env';
     GAUGE_SINK,
     COST_USAGE_LEDGER,
     METRICS_QUERY,
+    CONFIG_CATALOGUE,
     PLACE_PROVIDER,
     PLACE_PHOTO_DISPLAY,
     AREA_AUTOCOMPLETE,

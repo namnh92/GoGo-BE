@@ -93,6 +93,15 @@ export function parseExportKeyring(env: Record<string, unknown>): ExportKeyring 
 }
 
 /**
+ * Whether `name` is wrapping-key configuration — the rule `pickExportKeyEnv`
+ * applies, exported so GoGo-BE#727 can tell such a variable from an unknown one
+ * without a second copy of the pattern.
+ */
+export function isExportKeyName(name: string): boolean {
+  return KEY_NAME.test(name) || name === 'EXPORT_WRAPPING_KEY_ACTIVE';
+}
+
+/**
  * PR #677 F-08 — the one place that decides which variables are wrapping-key
  * configuration: every `EXPORT_WRAPPING_KEY_V<n>` plus `EXPORT_WRAPPING_KEY_ACTIVE`,
  * for any n. The API (`loadEnv`) and the worker (`process.env`) both pass their
@@ -102,7 +111,7 @@ export function parseExportKeyring(env: Record<string, unknown>): ExportKeyring 
 export function pickExportKeyEnv(env: Record<string, unknown>): Record<string, string> {
   const picked: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
-    if ((KEY_NAME.test(name) || name === 'EXPORT_WRAPPING_KEY_ACTIVE') && value !== undefined) {
+    if (isExportKeyName(name) && value !== undefined) {
       picked[name] = String(value);
     }
   }
