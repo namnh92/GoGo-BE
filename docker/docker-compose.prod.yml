@@ -52,8 +52,19 @@ services:
       # the revision that erased it; GoGo-Infra deploy-vps.sh sets it on every
       # `up -d` that starts this service, the same way it does for migrate.
       GOGO_REVISION: ${GOGO_REVISION:-}
+      # GoGo-BE#727 / GoGo-Infra#309 D-6-B — the deploy's readiness projection,
+      # read by GET /v1/cms/ops/config-readiness. Names and states only.
+      SECRETS_READINESS_FILE: /run/gogo-ops/secrets-readiness.deploy.json
     env_file:
       - ../${ENV_FILE:-.env.prod}
+    # The directory, read-only, not the file: GoGo-Infra's deploy replaces the
+    # projection by rename, which a file bind mount would not see. ops/ holds
+    # the projection and nothing else — the env/report pairs the rollback uses
+    # live in .deploys/, outside this mount (GoGo-Infra#309 review). A host
+    # without ops/ (deploy-production, no projection yet) gets an empty one
+    # and the endpoint answers `reason: "missing"`.
+    volumes:
+      - ../ops:/run/gogo-ops:ro
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/v1/health']
       interval: 30s

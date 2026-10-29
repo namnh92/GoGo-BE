@@ -24,3 +24,10 @@ coverage/
 
 # Built by `pnpm artifacts`; published by CI, never committed.
 artifacts/
+
+# Written on a deploy host by GoGo-Infra's deploy-vps.sh (GoGo-Infra#309): the
+# readiness projection and the env/report pairs, which carry every secret.
+/ops/
+/.deploys/
+/.deployed-id
+/.previous-id
