@@ -56,7 +56,9 @@ const get = (url: string, role?: string) =>
 
 const SHA = 'c'.repeat(40);
 const DEPLOY_ID = `${SHA}-901-2`;
-const JWT_SECRET = 'jwt-secret-value-'.padEnd(48, 'q');
+// Shares no fragment with any name the response carries (paths, env_vars), so a
+// match below can only be a leak.
+const JWT_SECRET = 'Zq7v4lU3-'.padEnd(48, 'q');
 const dir = mkdtempSync(path.join(tmpdir(), 'gogo-727-int-'));
 const projectionFile = path.join(dir, 'secrets-readiness.deploy.json');
 
