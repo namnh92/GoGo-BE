@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 2.0.0-alpha.4
+  version: 2.0.0-alpha.5
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -11121,6 +11121,41 @@ paths:
                         $ref: '#/components/schemas/CmsOpsLatencySemantics'
         '403': { description: Role may not read operational data }
 
+  /cms/ops/config-readiness:
+    get:
+      operationId: cmsOpsConfigReadiness
+      tags: [cms]
+      summary: 'Ops: which variables this process holds, joined with the deploy readiness snapshot'
+      description: >
+        GoGo-BE#727 (OPS-BE-002; GoGo-Infra#309 D-9). Facts only, never a value:
+        for every variable the answer is a boolean — never the value, a prefix,
+        a length or a hash. `process` lists every key of the API's env schema,
+        derived from it; `process_dynamic` the export keyring's open-ended
+        `EXPORT_WRAPPING_KEY_V<n>`, the one loader outside the schema.
+
+
+        `infra` is the readiness projection the deploy left beside its env file
+        (GoGo-Infra `ops/secrets-readiness.deploy.json`): a dated snapshot of one
+        deploy, labelled `deploy_snapshot`. Its verdicts are copied, never
+        recomputed here; `deploy_match` says whether it describes the env file
+        this process was started with, and a mismatch is a warning, never
+        readiness. It proves neither the current SSM state nor that a credential
+        works. Nothing here calls AWS.
+
+
+        `ops_admin` and above.
+      responses:
+        '200':
+          description: >
+            Always 200. A projection that is not configured, missing,
+            unreadable, malformed or of an unknown schema is `infra: null` with
+            `reason`; `process` is complete either way.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsConfigReadiness' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /cms/ops/providers:
     get:
       operationId: cmsOpsProviders
@@ -12935,6 +12970,149 @@ components:
             null and 0 are different facts, and zero on a queue with work is
             the alarm.
 
+    CmsConfigVariable:
+      type: object
+      required: [name, present, optional, conditional]
+      properties:
+        name: { type: string, example: OPENROUTER_ASSISTANT_API_KEY }
+        present:
+          type: boolean
+          description: Set and not blank in the raw process environment — presence, not validity.
+        optional:
+          type: boolean
+          description: The env schema lets it be absent (optional or defaulted).
+        conditional:
+          type: boolean
+          description: Its requirement is decided by a cross-field rule at boot, not by the field.
+    CmsConfigInfraRow:
+      type: object
+      required:
+        [
+          path,
+          env_var,
+          lifecycle,
+          presence,
+          findings,
+          verdict,
+          capabilities,
+          applicable,
+          process_present,
+        ]
+      properties:
+        path: { type: string, example: /gogo/dev/backend/openrouter/assistant-api-key }
+        env_var: { type: [string, 'null'] }
+        lifecycle:
+          type: string
+          description: required, optional, planned or parked, from the manifest.
+        presence:
+          type: string
+          enum: [present, absent, unknown]
+          description: In SSM at deploy time.
+        findings: { type: array, items: { type: string } }
+        verdict: { $ref: '#/components/schemas/CmsReadinessVerdict' }
+        capabilities: { type: array, items: { type: string } }
+        applicable:
+          type: string
+          enum: [api, host]
+          description: >
+            `api` when the API process reads the variable; `host` for the deploy
+            host's own variables in the same env file (DOMAIN, ACME_EMAIL,
+            TUNNEL_TOKEN …), which never get a process column.
+        process_present:
+          type: [boolean, 'null']
+          description: Whether this process holds it; `null` for a host row.
+    CmsReadinessVerdict:
+      type: string
+      enum: [OK, FAIL, UNKNOWN]
+    CmsConfigInfra:
+      type: object
+      required:
+        [
+          label,
+          schema_version,
+          env,
+          generated_at,
+          manifest_sha,
+          deploy_id,
+          release_sha,
+          run_id,
+          run_attempt,
+          process_deploy_id,
+          deploy_match,
+          rows,
+        ]
+      properties:
+        label: { type: string, enum: [deploy_snapshot] }
+        schema_version: { type: integer, enum: [1] }
+        env: { type: string, example: dev }
+        generated_at: { type: string, format: date-time }
+        manifest_sha: { type: [string, 'null'] }
+        deploy_id:
+          type: string
+          description: '`<release commit>-<run id>-<run attempt>`.'
+        release_sha: { type: string }
+        run_id: { type: string }
+        run_attempt: { type: string }
+        process_deploy_id:
+          type: [string, 'null']
+          description: This process's APP_DEPLOY_ID, an identifier (not a secret); null when unset.
+        deploy_match:
+          type: boolean
+          description: The snapshot describes the env file this process was started with. Show false as a warning.
+        rows: { type: array, items: { $ref: '#/components/schemas/CmsConfigInfraRow' } }
+    CmsConfigCapability:
+      type: object
+      required:
+        [
+          name,
+          status,
+          ssm_verdict,
+          ssm_ready,
+          ssm_missing,
+          ssm_present,
+          process_ready,
+          process_missing,
+          excluded_from_process,
+        ]
+      properties:
+        name: { type: string, example: public_catalogue_uploads }
+        status: { type: string, enum: [enabled, planned] }
+        ssm_verdict:
+          $ref: '#/components/schemas/CmsReadinessVerdict'
+        ssm_ready:
+          type: boolean
+          description: Copied from the snapshot (verdict OK); never recomputed here.
+        ssm_missing: { type: array, items: { type: string } }
+        ssm_present:
+          type: object
+          required: [present, total]
+          description: A count of its rows stored in SSM — shown as a count, never as readiness.
+          properties:
+            present: { type: integer }
+            total: { type: integer }
+        process_ready:
+          type: [boolean, 'null']
+          description: Every api-applicable row is present in this process; null when it has none.
+        process_missing: { type: array, items: { type: string } }
+        excluded_from_process:
+          type: array
+          items: { type: string }
+          description: Host rows, left out of process_ready.
+    CmsConfigReadiness:
+      type: object
+      required: [process, process_dynamic, infra, reason, capabilities]
+      properties:
+        process: { type: array, items: { $ref: '#/components/schemas/CmsConfigVariable' } }
+        process_dynamic: { type: array, items: { $ref: '#/components/schemas/CmsConfigVariable' } }
+        infra:
+          oneOf:
+            - $ref: '#/components/schemas/CmsConfigInfra'
+            - type: 'null'
+        reason:
+          type: [string, 'null']
+          enum: [not_configured, missing, unreadable, invalid, unknown_schema, null]
+          description: Why `infra` is null; null when it is not.
+        capabilities: { type: array, items: { $ref: '#/components/schemas/CmsConfigCapability' } }
     CmsOpsEnvelope:
       type: object
       required: [window, effectiveWindow, retentionDays, truncated, generatedAt, backend]

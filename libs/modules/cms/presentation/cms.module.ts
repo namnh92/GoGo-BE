@@ -33,6 +33,7 @@ import { CmsOpsService } from '../application/cms-ops.service';
 import { CmsObservabilityService } from '../application/cms-observability.service';
 import { CmsCostCenterService } from '../application/cms-cost-center.service';
 import { CmsOpsMetricsService } from '../application/cms-ops-metrics.service';
+import { CmsConfigReadinessService } from '../application/cms-config-readiness.service';
 import { CmsUsersService } from '../application/cms-users.service';
 import { PrivacyRequestsService } from '../application/privacy-requests.service';
 import { ModerationQueueService } from '../application/moderation-queue.service';
@@ -100,6 +101,7 @@ import {
     CmsObservabilityService,
     CmsCostCenterService,
     CmsOpsMetricsService,
+    CmsConfigReadinessService,
     CmsUsersService,
     PrivacyRequestsService,
     BannersService,

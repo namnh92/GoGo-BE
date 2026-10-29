@@ -13,6 +13,7 @@ import {
   resolveR2AccountId,
 } from '@gogo/providers';
 import {
+  type ConfigCatalogueEntry,
   EDGE_AUTH_TOKEN_MIN_LENGTH,
   parseExportKeyring,
   pickExportKeyEnv,
@@ -554,6 +555,20 @@ const envSchema = z
     ASSISTANT_HAIKU_MODEL: z.string().default('anthropic/claude-haiku-5.5'),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
+    /**
+     * GoGo-BE#727 / GoGo-Infra#309 D-6-B — the identifier of the deploy that
+     * rendered this env file, `<commit>-<run id>-<run attempt>`, written by
+     * GoGo-Infra's deploy-vps.sh. Compared with the `deploy_id` of the
+     * readiness projection beside it; a mismatch is a warning, never readiness.
+     * Not a secret. Unset on a workstation.
+     */
+    APP_DEPLOY_ID: z.string().default(''),
+    /**
+     * GoGo-BE#727 — where the deploy-time readiness projection is mounted
+     * (`ops/secrets-readiness.deploy.json`, read-only). Unset: the endpoint
+     * answers `infra: null` with `reason: "not_configured"`.
+     */
+    SECRETS_READINESS_FILE: z.string().default(''),
   })
   .superRefine((env, ctx) => {
     // GoGo-BE#548: a credential with no resolvable account id signs for the
@@ -809,6 +824,45 @@ const envSchema = z
       });
     }
   });
+
+/**
+ * GoGo-BE#727 (GoGo-Infra#309 D-9) — keys whose requirement is decided in
+ * `superRefine` rather than by the field: optional in the object schema, and
+ * refused at boot in some deployment (production secrets and cookie flags,
+ * Access and the super admin's SSO-only switch, the R2 and cache-purge groups). Reported `conditional: true` by the config-readiness
+ * endpoint. `env.spec.ts` derives the set from a deployed fixture and pins it.
+ */
+export const CONDITIONALLY_REQUIRED_ENV_KEYS = [
+  'AUTH_JWT_SECRET',
+  'COOKIE_SECRET',
+  'COOKIE_SECURE',
+  'TRUST_PROXY',
+  'CMS_SUPER_ADMIN_SSO_ONLY',
+  'CMS_SUPER_ADMIN_EMAIL',
+  'CF_ACCESS_TEAM_DOMAIN',
+  'CF_ACCESS_AUD',
+  'R2_ACCOUNT_ID',
+  'R2_PUBLIC_BUCKET',
+  'R2_PUBLIC_ACCESS_KEY_ID',
+  'R2_PUBLIC_SECRET_ACCESS_KEY',
+  'CF_ZONE_ID',
+  'CF_CACHE_PURGE_TOKEN',
+] as const;
+
+/**
+ * GoGo-BE#727 — every key of the env object schema, with whether the schema
+ * lets it be absent. Derived from the schema itself, never a second list: a key
+ * added to `envSchema` appears here, and so in the config-readiness endpoint.
+ * Names only; nothing about a value.
+ */
+export function envCatalogue(): ConfigCatalogueEntry[] {
+  const conditional = new Set<string>(CONDITIONALLY_REQUIRED_ENV_KEYS);
+  return Object.entries(envSchema.innerType().shape).map(([name, field]) => ({
+    name,
+    optional: (field as z.ZodTypeAny).isOptional(),
+    conditional: conditional.has(name),
+  }));
+}
 
 export type AppConfig = z.infer<typeof envSchema> & {
   /**
