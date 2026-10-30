@@ -1,7 +1,10 @@
 /** The configuration slice the assistant reads (validated in apps/api env.ts). */
 export type AssistantConfig = {
   APP_ENV: 'dev' | 'staging' | 'prod' | 'production';
+  /** Haiku, Anthropic BYOK (gogo_ai_anthropic_<env>). */
   OPENROUTER_ASSISTANT_API_KEY: string;
+  /** Jev, OpenRouter-direct (gogo_be_<env>) — GoGo-BE#731. */
+  OPENROUTER_API_KEY: string;
   ASSISTANT_USER_DAILY_MAX_MESSAGES?: number | undefined;
   ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES: number;
   ASSISTANT_MONTHLY_MAX_USD?: number | undefined;

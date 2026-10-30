@@ -9,10 +9,11 @@ import {
 
 /**
  * GoGo-BE#713 — LIVE end-to-end against the real models (ADR-0036): Jev on the
- * OpenRouter Decisions API and Claude Haiku via Anthropic BYOK, through the
- * assistant's own key. Paid inference, so it never runs by default:
+ * OpenRouter Decisions API on OPENROUTER_API_KEY (gogo_be_<env>) and Claude
+ * Haiku via Anthropic BYOK on OPENROUTER_ASSISTANT_API_KEY (GoGo-BE#731).
+ * Paid inference, so it never runs by default:
  *
- *   ASSISTANT_LIVE_AUTHORIZED=yes OPENROUTER_ASSISTANT_API_KEY=… \
+ *   ASSISTANT_LIVE_AUTHORIZED=yes OPENROUTER_ASSISTANT_API_KEY=… OPENROUTER_API_KEY=… \
  *     [ASSISTANT_TEST_DATABASE_URL=postgres://…/postgres] \
  *     [ASSISTANT_LIVE_REPORT=/path/report.json] \
  *     pnpm vitest run --project integration apps/api/test/assistant.live.int.spec.ts
@@ -23,7 +24,9 @@ import {
  * the model's wording.
  */
 const LIVE =
-  process.env.ASSISTANT_LIVE_AUTHORIZED === 'yes' && !!process.env.OPENROUTER_ASSISTANT_API_KEY;
+  process.env.ASSISTANT_LIVE_AUTHORIZED === 'yes' &&
+  !!process.env.OPENROUTER_ASSISTANT_API_KEY &&
+  !!process.env.OPENROUTER_API_KEY;
 
 type Turn = {
   scenario: string;
@@ -141,6 +144,7 @@ describe.skipIf(!LIVE)('GoGo AI live (real Jev + Claude Haiku BYOK)', () => {
   beforeAll(async () => {
     f = await startAssistantFixture({
       OPENROUTER_ASSISTANT_API_KEY: process.env.OPENROUTER_ASSISTANT_API_KEY!,
+      OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY!,
       ASSISTANT_USER_DAILY_MAX_MESSAGES: '40',
       ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES: '20',
       ASSISTANT_MONTHLY_MAX_USD: '0.2',

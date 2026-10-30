@@ -515,13 +515,20 @@ const envSchema = z
      */
     PLACE_RESOLUTION_TTL_S: z.coerce.number().int().min(60).max(3_600).default(600),
     /**
-     * GoGo-BE#713, ADR-0036 — GoGo AI. The assistant's own OpenRouter key
-     * (SSM backend row `openrouter/assistant-api-key`, key gogo_ai_anthropic_<env>,
-     * GoGo-Infra ADR-0014) authenticates both Jev (Decisions API,
-     * OpenRouter-direct billing) and Haiku (Chat Completions, Anthropic BYOK).
-     * Empty = the assistant is not ready and refuses sends.
+     * GoGo-BE#713, ADR-0036 — GoGo AI. The assistant's Haiku key (SSM backend
+     * row `openrouter/assistant-api-key`, key gogo_ai_anthropic_<env>, GoGo-Infra
+     * ADR-0014): Chat Completions through Anthropic BYOK — the workspace's
+     * Anthropic provider key applies to this key only. Empty = the assistant is
+     * not ready and refuses sends.
      */
     OPENROUTER_ASSISTANT_API_KEY: z.string().default(''),
+    /**
+     * GoGo-BE#731 (owner 2026-10-31, ADR-0036 §9) — the assistant's Jev key
+     * (SSM backend row `openrouter/api-key`, key gogo_be_<env>): Decisions API,
+     * OpenRouter-direct credits, never BYOK. Its own key so Jev's spend is its
+     * own line. Empty = the assistant is not ready and refuses sends.
+     */
+    OPENROUTER_API_KEY: z.string().default(''),
     /**
      * Per-account daily allowance (Q1; SSM `budget/assistant-user-daily-max-messages`).
      * **Unset means refuse** (`503 ASSISTANT_DISABLED`), never unlimited.
