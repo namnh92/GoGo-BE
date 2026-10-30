@@ -95,6 +95,7 @@ async function waitTerminal(token: string, conversationId: string, messageId: st
 beforeAll(async () => {
   f = await startAssistantFixture({
     OPENROUTER_ASSISTANT_API_KEY: 'ci-key-never-reaches-a-model',
+    OPENROUTER_API_KEY: 'ci-jev-key-never-reaches-a-model',
     ASSISTANT_USER_DAILY_MAX_MESSAGES: '6',
     ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES: '4',
     ASSISTANT_MONTHLY_MAX_USD: '1',

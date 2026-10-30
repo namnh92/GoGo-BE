@@ -83,7 +83,9 @@ export class AssistantAvailabilityService {
     if (!(await this.killSwitchOn(exec))) return { ok: false, reason: 'kill_switch' };
     const limits = this.limits();
     const budget = this.config.ASSISTANT_MONTHLY_MAX_USD;
-    if (!limits || budget === undefined || !this.config.OPENROUTER_ASSISTANT_API_KEY) {
+    // Both models' keys (GoGo-BE#731): Haiku's BYOK key and Jev's own key.
+    const keys = this.config.OPENROUTER_ASSISTANT_API_KEY && this.config.OPENROUTER_API_KEY;
+    if (!limits || budget === undefined || !keys) {
       return { ok: false, reason: 'unconfigured' };
     }
     if (await this.byokQuarantined(exec, now)) return { ok: false, reason: 'byok_unverified' };

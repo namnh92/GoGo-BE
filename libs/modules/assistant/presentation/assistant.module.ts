@@ -106,9 +106,10 @@ type BufferConfig = { NODE_ENV: string; REDIS_URL?: string };
     {
       provide: ASSISTANT_DECISION_PROVIDER,
       useFactory: (config: AssistantConfig) =>
-        config.OPENROUTER_ASSISTANT_API_KEY
+        // GoGo-BE#731: Jev has its own key (gogo_be_<env>); the BYOK key is Haiku's.
+        config.OPENROUTER_API_KEY
           ? new OpenRouterDecisionProvider({
-              apiKey: config.OPENROUTER_ASSISTANT_API_KEY,
+              apiKey: config.OPENROUTER_API_KEY,
               model: config.ASSISTANT_JEV_MODEL,
               timeoutMs: config.ASSISTANT_JEV_TIMEOUT_MS,
             })

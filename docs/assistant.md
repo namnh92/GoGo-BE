@@ -289,8 +289,9 @@ model choice, settings names and spend limits.
 Where the implementation is more specific than (or differs from) the design above:
 
 - **No fake LLM.** `FakeAssistantLlm` was not built (ADR-0036 forbids mock
-  inference). Without `OPENROUTER_ASSISTANT_API_KEY` neither model binding exists and sends
-  answer `503 ASSISTANT_DISABLED`.
+  inference). Each model has its own key (GoGo-BE#731): Haiku on
+  `OPENROUTER_ASSISTANT_API_KEY`, Jev on `OPENROUTER_API_KEY`. Without either one that
+  model's binding is absent and sends answer `503 ASSISTANT_DISABLED`.
 - **Pipeline** (`AssistantOrchestrator`): bounded history (6 turns) →
   `parseIntentFacts` → **one** Jev call (the #709 intent questions + `assistant_intent`,
   `action`, `needs_unverified_attribute`) → area through the published administrative
@@ -469,7 +470,9 @@ Where the implementation is more specific than (or differs from) the design abov
 
 Configuration (`apps/api/src/config/env.ts`), named after the GoGo-Infra
 manifest rows (ADR-0014) so a deploy renders them: `OPENROUTER_ASSISTANT_API_KEY`
-(`openrouter/assistant-api-key`, key gogo_ai_anthropic_<env>),
+(`openrouter/assistant-api-key`, key gogo_ai_anthropic_<env>, Haiku via Anthropic BYOK),
+`OPENROUTER_API_KEY` (`openrouter/api-key`, key gogo_be_<env>, every Jev call — intent and
+the `recommend_places` relevance judgment; GoGo-BE#731),
 `ASSISTANT_USER_DAILY_MAX_MESSAGES` (`budget/assistant-user-daily-max-messages`),
 `ASSISTANT_MONTHLY_MAX_USD` (`budget/assistant-monthly-max-usd`) (any of the three
 unset ⇒ refuse), `ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES` (default 5, no SSM row), `ASSISTANT_TURN_COST_CEILING_USD`, `ASSISTANT_FIRST_TEXT_TIMEOUT_MS`

@@ -153,6 +153,24 @@ This ADR supersedes the earlier proposed Sonnet response-model selection and **c
 - Cost Center: Haiku items on `gogo_be_*` are filed under `openrouter.claude_byok`
   (BYOK fee, $0 inside the allowance), not `openrouter.decisions`.
 
+## 9. Amendment — one key per model (owner, 2026-10-31, GoGo-BE#731)
+
+Supersedes "one gateway key for both calls" in §1, §5 and §6.5. Billing routes are unchanged
+(Jev OpenRouter-direct, Haiku strict Anthropic BYOK); only the credential is split:
+
+| Call                                                                                        | Key (OpenRouter name)     | Env / SSM row                                                               |
+| ------------------------------------------------------------------------------------------- | ------------------------- | --------------------------------------------------------------------------- |
+| Every Jev call — intent routing (§3.C) and the `recommend_places` relevance judgment (§3.D) | `gogo_be_<env>`           | `OPENROUTER_API_KEY` / `openrouter/api-key` (now `runtime`, GoGo-Infra#323) |
+| Haiku composition (§3.F)                                                                    | `gogo_ai_anthropic_<env>` | `OPENROUTER_ASSISTANT_API_KEY` / `openrouter/assistant-api-key`             |
+
+Why: the workspace's Anthropic BYOK key is scoped to `gogo_ai_anthropic_<env>` and Claude
+Haiku 5.5 only, and Jev's spend becomes its own key line (`openrouter.decisions` in the Cost
+Center) instead of sharing the BYOK key's. Readiness needs both keys; missing either is
+`unconfigured`. Strict BYOK for Haiku still rests on the request (`provider.only`,
+`allow_fallbacks: false`) plus the key's "never use OpenRouter capacity" setting — not on the
+workspace's "BYOK-only routing" switch, which must stay **off** because it also refuses Jev
+(measured on DEV 2026-10-30: 404 "restricted to BYOK capacity" for both calls).
+
 ### Public references
 
 - OpenRouter pricing/BYOK allowance (checked 2026-10-27): https://openrouter.ai/pricing
