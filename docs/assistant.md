@@ -474,8 +474,8 @@ manifest rows (ADR-0014) so a deploy renders them: `OPENROUTER_ASSISTANT_API_KEY
 `OPENROUTER_API_KEY` (`openrouter/api-key`, key gogo_be_<env>, every Jev call — intent and
 the `recommend_places` relevance judgment; GoGo-BE#731),
 `ASSISTANT_USER_DAILY_MAX_MESSAGES` (`budget/assistant-user-daily-max-messages`),
-`ASSISTANT_MONTHLY_MAX_USD` (`budget/assistant-monthly-max-usd`) (any of the three
-unset ⇒ refuse), `ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES` (default 5, no SSM row), `ASSISTANT_TURN_COST_CEILING_USD`, `ASSISTANT_FIRST_TEXT_TIMEOUT_MS`
+`ASSISTANT_MONTHLY_MAX_USD` (`budget/assistant-monthly-max-usd`) (either key, the daily
+limit or the monthly budget unset ⇒ refuse), `ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES` (default 5, no SSM row), `ASSISTANT_TURN_COST_CEILING_USD`, `ASSISTANT_FIRST_TEXT_TIMEOUT_MS`
 (≤ 15 000), `ASSISTANT_REPLY_MAX_MS`, `ASSISTANT_MAX_OUTPUT_TOKENS`,
 `ASSISTANT_JEV_MODEL`, `ASSISTANT_JEV_TIMEOUT_MS`, `ASSISTANT_HAIKU_MODEL`. The kill
 switch is the feature flag `assistant.enabled` (default off).

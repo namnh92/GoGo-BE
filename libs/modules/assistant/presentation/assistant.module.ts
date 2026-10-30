@@ -46,10 +46,11 @@ import {
 type BufferConfig = { NODE_ENV: string; REDIS_URL?: string };
 
 /**
- * GoGo-BE#713 — GoGo AI (ADR-0036). Both models are reached through the
- * existing OpenRouter gateway key: Jev on the Decisions API (OpenRouter
- * direct billing), Haiku on Chat Completions (Anthropic BYOK). Without the key
- * neither binding exists and the assistant refuses sends; there is no fake.
+ * GoGo-BE#713 — GoGo AI (ADR-0036). One OpenRouter key per model (GoGo-BE#731,
+ * ADR-0036 §9): Jev on the Decisions API with `OPENROUTER_API_KEY` (OpenRouter
+ * direct billing), Haiku on Chat Completions with `OPENROUTER_ASSISTANT_API_KEY`
+ * (Anthropic BYOK). Without its key a model's binding is absent, readiness
+ * needs both, and the assistant refuses sends; there is no fake.
  */
 @Module({
   imports: [
