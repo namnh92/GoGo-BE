@@ -15,6 +15,7 @@ import {
  */
 
 const KEY = ['sk', 'or', 'v1', 'management', 'test'].join('-');
+const WS = '6c0053e7-ee6e-48c0-8e45-4ff6b0237c7e';
 const HASH = 'f01d52606dc8f0a8303a7b5cc3fa07109c2e346cec7c0a16b40de462992ce943';
 
 // Shape seen on the live account (2026-10-22): `label` is a masked preview of
@@ -239,6 +240,31 @@ describe('OpenRouterUsageClient', () => {
     expect(calls).toEqual([]);
   });
 
+  it('GoGo-BE#729: a workspace id scopes /keys; /activity stays key-hash only', async () => {
+    const calls: Call[] = [];
+    const k = new OpenRouterUsageClient(KEY, fetchWith(200, KEYS, calls).fetchImpl, undefined, WS);
+    await k.keys();
+    const a = new OpenRouterUsageClient(
+      KEY,
+      fetchWith(200, ACTIVITY, calls).fetchImpl,
+      undefined,
+      WS,
+    );
+    await a.activity(HASH);
+    expect(calls.map((c) => c.url)).toEqual([
+      `${OPENROUTER_API_BASE}/keys?workspace_id=${WS}`,
+      `${OPENROUTER_API_BASE}/activity?api_key_hash=${HASH}`,
+    ]);
+  });
+
+  it('GoGo-BE#729: refuses a workspace slug or anything but a UUID before any request', () => {
+    for (const bad of ['', 'gogo', `${WS}&x=1`, `${WS} `, '../keys']) {
+      expect(() => new OpenRouterUsageClient(KEY, fetch, undefined, bad)).toThrow(
+        OpenRouterUsageError,
+      );
+    }
+  });
+
   it('refuses an empty or whitespace key', () => {
     expect(() => new OpenRouterUsageClient('')).toThrow(OpenRouterUsageError);
     expect(() => new OpenRouterUsageClient('a b')).toThrow(OpenRouterUsageError);
@@ -253,5 +279,21 @@ describe('openRouterUsageFromEnv', () => {
     expect(openRouterUsageFromEnv({ OPENROUTER_MANAGEMENT_KEY: KEY })).toBeInstanceOf(
       OpenRouterUsageClient,
     );
+  });
+
+  it('GoGo-BE#729: OPENROUTER_WORKSPACE_ID scopes /keys; blank keeps the Default Workspace', async () => {
+    for (const [ws, url] of [
+      [` ${WS} `, `${OPENROUTER_API_BASE}/keys?workspace_id=${WS}`],
+      ['  ', `${OPENROUTER_API_BASE}/keys`],
+      [undefined, `${OPENROUTER_API_BASE}/keys`],
+    ] as const) {
+      const calls: Call[] = [];
+      const env = { OPENROUTER_MANAGEMENT_KEY: KEY, OPENROUTER_WORKSPACE_ID: ws };
+      await openRouterUsageFromEnv(env, fetchWith(200, KEYS, calls).fetchImpl)!.keys();
+      expect(calls.map((c) => c.url)).toEqual([url]);
+    }
+    expect(() =>
+      openRouterUsageFromEnv({ OPENROUTER_MANAGEMENT_KEY: KEY, OPENROUTER_WORKSPACE_ID: 'gogo' }),
+    ).toThrow(OpenRouterUsageError);
   });
 });

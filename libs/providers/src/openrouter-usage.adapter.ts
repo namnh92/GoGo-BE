@@ -18,6 +18,11 @@
  *   key), `requests`, `prompt_tokens`, `completion_tokens`,
  *   `reasoning_tokens`, `cached_tokens`. **Management key required.**
  *
+ * OpenRouter keys live in workspaces. `/keys` without `workspace_id` lists
+ * only the Default Workspace, so the account's GoGo workspace is named by
+ * `OPENROUTER_WORKSPACE_ID` (GoGo-BE#729) — a UUID; the slug answers 400.
+ * `/activity` takes the key hash alone, whatever its workspace.
+ *
  * Only these two GETs are made. A management key can also create and delete
  * keys; this client never calls those endpoints, and the key lives only in
  * the worker's environment (`openrouter/management-key`, GoGo-Infra#241).
@@ -87,6 +92,7 @@ export class OpenRouterUsageError extends Error {
 export const OPENROUTER_API_BASE = 'https://openrouter.ai/api/v1';
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const HASH = /^[A-Za-z0-9_-]{8,128}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const num = (v: unknown): number | null =>
   typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
@@ -155,16 +161,24 @@ export class OpenRouterUsageClient implements OpenRouterUsagePort {
     private readonly managementKey: string,
     private readonly fetchImpl: typeof fetch = fetch,
     endpoint?: string,
+    /** Workspace whose keys `/keys` lists; absent = the Default Workspace. */
+    private readonly workspaceId?: string,
   ) {
     if (!managementKey || /\s/.test(managementKey)) {
       throw new OpenRouterUsageError('INVALID_ARGUMENT', 'bad openrouter management key');
+    }
+    if (workspaceId !== undefined && !UUID.test(workspaceId)) {
+      throw new OpenRouterUsageError('INVALID_ARGUMENT', 'bad openrouter workspace id');
     }
     this.base = (endpoint ?? OPENROUTER_API_BASE).replace(/\/+$/, '');
   }
 
   async keys(signal?: AbortSignal): Promise<OpenRouterKeyUsage[]> {
     // GoGo holds a handful of keys; the first page holds them all.
-    return foldKeys(await this.get('keys', '/keys', signal));
+    const path = this.workspaceId
+      ? `/keys?${new URLSearchParams([['workspace_id', this.workspaceId]])}`
+      : '/keys';
+    return foldKeys(await this.get('keys', path, signal));
   }
 
   async activity(apiKeyHash: string, signal?: AbortSignal): Promise<OpenRouterActivityItem[]> {
@@ -205,6 +219,8 @@ export class OpenRouterUsageClient implements OpenRouterUsagePort {
  * No key → `null`, and the caller registers nothing: the provider stays
  * visible with freshness UNKNOWN. One OpenRouter account serves every
  * environment, so only the environment holding the key counts it (dev).
+ * `OPENROUTER_WORKSPACE_ID` (GoGo-BE#729, `openrouter/workspace-id`) picks the
+ * workspace; blank keeps the Default Workspace, a non-UUID throws.
  */
 export function openRouterUsageFromEnv(
   env: Record<string, string | undefined>,
@@ -212,5 +228,6 @@ export function openRouterUsageFromEnv(
 ): OpenRouterUsageClient | null {
   const key = env.OPENROUTER_MANAGEMENT_KEY?.trim();
   if (!key) return null;
-  return new OpenRouterUsageClient(key, fetchImpl);
+  const workspaceId = env.OPENROUTER_WORKSPACE_ID?.trim() || undefined;
+  return new OpenRouterUsageClient(key, fetchImpl, undefined, workspaceId);
 }
