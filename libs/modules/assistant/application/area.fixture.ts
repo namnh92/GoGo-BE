@@ -18,12 +18,17 @@ export const HCM_V5 = unit('79', 'Hồ Chí Minh', 'Thành phố Hồ Chí Minh'
 export const HN_V5 = unit('01', 'Hà Nội', 'Thành phố Hà Nội', null);
 export const SAI_GON_WARD = unit('26740', 'Sài Gòn', 'Phường Sài Gòn', '79');
 export const BEN_THANH_WARD = unit('26734', 'Bến Thành', 'Phường Bến Thành', '79');
+export const PHU_THO_V5 = unit('25', 'Phú Thọ', 'Tỉnh Phú Thọ', null);
 const UNITS = [
   HN_V5,
+  PHU_THO_V5,
   HCM_V5,
   unit('00004', 'Ba Đình', 'Phường Ba Đình', '01'),
+  // The same ward name in two provinces, as in v5.1.0.
+  unit('07942', 'Phú Thọ', 'Phường Phú Thọ', '25'),
   BEN_THANH_WARD,
   SAI_GON_WARD,
+  unit('27226', 'Phú Thọ', 'Phường Phú Thọ', '79'),
 ];
 
 /** An `AdministrativeQueryService` double over the units above. */
@@ -31,7 +36,7 @@ export function v5Query() {
   return {
     snapshot: async () => ({
       datasetVersion: 'v5.1.0',
-      currentProvinces: [HN_V5, HCM_V5],
+      currentProvinces: [HN_V5, PHU_THO_V5, HCM_V5],
       currentSearch: UNITS.map((u) => ({
         unit: u,
         nameNormalized: normalizeVietnamese(u.name),

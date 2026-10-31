@@ -133,13 +133,6 @@ export class AssistantAreaResolver {
       t !== null && !QUALIFIER_ONLY.has(normalizeVietnamese(t).replace(/\./g, '').trim())
         ? t
         : null;
-    const aliasIn = (text: string) => {
-      for (const [re, target] of PROVINCE_ALIASES) {
-        const m = re.exec(text);
-        if (m) return { phrase: m[1]!, target };
-      }
-      return null;
-    };
     const phrase =
       meaningful(latest.areaText) ??
       aliasIn(foldedLatest)?.phrase ??
@@ -148,16 +141,9 @@ export class AssistantAreaResolver {
       null;
 
     // A province named anywhere else in the text scopes the commune search.
-    const contextAlias = aliasIn(foldedLatest) ?? aliasIn(folded);
-    const byAlias = (target: string) =>
-      snapshot.currentProvinces.find((p) => strip(p.name).includes(target));
+    const byAlias = (target: string) => provinceByAlias(snapshot, target);
     const contextProvince =
-      (contextAlias ? byAlias(contextAlias.target) : undefined) ??
-      snapshot.currentProvinces.find((p) => {
-        const n = strip(p.name);
-        return n.length >= 4 && folded.includes(` ${n} `);
-      }) ??
-      null;
+      provinceNamedIn(snapshot, foldedLatest) ?? provinceNamedIn(snapshot, folded);
 
     if (!phrase) return contextProvince ? provinceArea(contextProvince) : { kind: 'none' };
     const needle = strip(phrase);
@@ -175,8 +161,12 @@ export class AssistantAreaResolver {
       null;
 
     // The level word right before the phrase, read before `strip` drops it.
-    const at = folded.indexOf(` ${normalizeVietnamese(phrase).replace(/[^\p{L}\p{N} ]/gu, ' ')} `);
-    const before = at >= 0 ? folded.slice(0, at + 1) : '';
+    // The newest message first: a typed "cả Sài Gòn" answers the question
+    // an earlier "ở Sài Gòn" raised.
+    const target = fold(phrase);
+    const source = foldedLatest.includes(target) ? foldedLatest : folded;
+    const at = source.indexOf(target);
+    const before = at >= 0 ? source.slice(0, at + 1) : '';
     const qualifier = PROVINCE_QUALIFIER.test(before)
       ? 'province'
       : COMMUNE_QUALIFIER.test(before)
@@ -220,6 +210,31 @@ export class AssistantAreaResolver {
   }
 }
 
+function aliasIn(folded: string): { phrase: string; target: string } | null {
+  for (const [re, target] of PROVINCE_ALIASES) {
+    const m = re.exec(folded);
+    if (m) return { phrase: m[1]!, target };
+  }
+  return null;
+}
+
+function provinceByAlias(snapshot: Snapshot, target: string): Unit | undefined {
+  return snapshot.currentProvinces.find((p) => strip(p.name).includes(target));
+}
+
+/** A province the folded text names, by alias or by its name (≥ 4 letters). */
+function provinceNamedIn(snapshot: Snapshot, folded: string): Unit | null {
+  const alias = aliasIn(folded);
+  return (
+    (alias ? provinceByAlias(snapshot, alias.target) : undefined) ??
+    snapshot.currentProvinces.find((p) => {
+      const n = strip(p.name);
+      return n.length >= 4 && folded.includes(` ${n} `);
+    }) ??
+    null
+  );
+}
+
 /** Current units whose full dataset name the folded text contains as whole words. */
 function exactHits(snapshot: Snapshot, folded: string): Unit[] {
   const out: Unit[] = [];
@@ -241,7 +256,15 @@ function exactResolution(snapshot: Snapshot, folded: string): Unit | 'ambiguous'
   const provinces = hits.filter((u) => u.level === 'PROVINCE');
   if (communes.length === 1) return communes[0]!;
   if (communes.length > 1) {
-    const narrowed = communes.filter((c) => provinces.some((p) => p.code === c.parentCode));
+    // Narrowed by a province also named — by its full name, or by an alias or
+    // its name outside the commune names ("phường Phú Thọ, TP HCM"); a
+    // province named only inside a commune's own name ("Phú Thọ") is not one.
+    let rest = folded;
+    for (const c of communes) rest = rest.split(fold(c.fullName)).join('  ');
+    const context = provinceNamedIn(snapshot, rest);
+    const narrowed = communes.filter(
+      (c) => provinces.some((p) => p.code === c.parentCode) || c.parentCode === context?.code,
+    );
     return narrowed.length === 1 ? narrowed[0]! : 'ambiguous';
   }
   return provinces.length === 1 ? provinces[0]! : null;

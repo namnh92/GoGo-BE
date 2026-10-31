@@ -1067,6 +1067,12 @@ describe('create a room through the chat (GoGo-BE#733)', () => {
       'tạo kèo cà phê với 4 người ở Phường Cầu Giấy, Thành phố Hà Nội',
     );
     const p2 = second.find((x) => x.event === 'proposal')!.data.proposal;
+    const p2Cards = second
+      .filter((x) => x.event === 'card')
+      .map((x) => x.data.card.placeId as string);
+    const seeds = p2.values.find((v: { field: string }) => v.field === 'seedPlaceIds').value;
+    expect(seeds.length).toBeGreaterThan(0);
+    for (const id of seeds) expect(p2Cards).toContain(id);
     const p1Now = await f.inject({
       method: 'GET',
       url: `/v1/assistant/proposals/${p1.id}`,
@@ -1089,7 +1095,11 @@ describe('create a room through the chat (GoGo-BE#733)', () => {
       url: `/v1/rooms/${ok.json().resource.id}`,
       token: ivy,
     });
-    expect(room.json()).toMatchObject({ participantCount: 4, myRole: 'host' });
+    expect(room.json()).toMatchObject({
+      participantCount: 4,
+      myRole: 'host',
+      constraints: { administrativeArea: { ...f.area } },
+    });
     const stale = await f.inject({
       method: 'POST',
       url: `/v1/assistant/proposals/${p1.id}/confirm`,

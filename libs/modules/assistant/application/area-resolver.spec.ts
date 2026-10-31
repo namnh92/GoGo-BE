@@ -107,6 +107,20 @@ describe('#733 province alias that is also a commune name', () => {
     }
   });
 
+  it('U-6c a ward name in two provinces: the city named settles it, alone it is asked', async () => {
+    expect(await communeOf('ở phường Phú Thọ, TP HCM', null)).toBe('27226');
+    expect(await communeOf('Phường Phú Thọ, Thành phố Hồ Chí Minh', null)).toBe('27226');
+    expect(await kindOf('ở phường Phú Thọ', null)).toBe('ambiguous');
+  });
+
+  it('a typed qualifier in the newest message answers the scope question', async () => {
+    const r = await v5.resolve('ăn tối ở Sài Gòn\ncả Sài Gòn', 'Sài Gòn', {
+      text: 'cả Sài Gòn',
+      areaText: null,
+    });
+    expect(r).toMatchObject({ kind: 'resolved', value: { area: { communeCode: null } } });
+  });
+
   it('U-6b a province named elsewhere is context, not a scope question', async () => {
     expect(await communeOf('Ở Bến Thành, Sài Gòn', 'Bến Thành')).toBe('26734');
   });
