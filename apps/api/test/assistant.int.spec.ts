@@ -1034,8 +1034,11 @@ describe('create a room through the chat (GoGo-BE#733)', () => {
     return (await streamOf(token, conversationId, replyId)).frames;
   }
 
+  // Its own account: alice's 20/min conversation budget is spent by then.
+  let kim: string | null = null;
   async function proposalInput() {
-    const conversationId = await newConversation(alice);
+    kim ??= await f.register('kim-733@gogo.test');
+    const conversationId = await newConversation(kim);
     const result = await f.db.execute(sql`
       insert into assistant_messages (conversation_id, user_id, role, status, text)
       select id, user_id, 'assistant', 'complete', 'proposal'
