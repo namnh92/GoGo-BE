@@ -124,7 +124,15 @@ describe('intent facts — Vietnamese case set', () => {
 describe('intent questions', () => {
   it('options are the taxonomy keys passed in, plus a no-match option', () => {
     const { questions, state } = buildIntentRequest('đi ăn lẩu', SEED_TAXONOMY);
-    expect(state).toEqual({ request: 'đi ăn lẩu' });
+    expect(state).toEqual({
+      request: 'đi ăn lẩu',
+      taxonomy: {
+        category: Object.fromEntries(SEED_TAXONOMY.category.map((t) => [t.key, t.label])),
+        occasion: Object.fromEntries(SEED_TAXONOMY.suitability.map((t) => [t.key, t.label])),
+        mood: Object.fromEntries(SEED_TAXONOMY.mood.map((t) => [t.key, t.label])),
+        setting: Object.fromEntries(SEED_TAXONOMY.setting.map((t) => [t.key, t.label])),
+      },
+    });
     const category = questions.category;
     expect(category?.type).toBe('choice');
     expect(Object.keys(category?.type === 'choice' ? category.criteria : {})).toEqual([

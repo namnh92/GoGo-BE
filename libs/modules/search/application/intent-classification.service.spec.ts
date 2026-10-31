@@ -56,7 +56,10 @@ describe('IntentClassificationService', () => {
       calls.push(c),
     ).classify(EXAMPLE, SEED_TAXONOMY);
     expect(provider.requests).toHaveLength(1);
-    expect(provider.requests[0]?.state).toEqual({ request: EXAMPLE });
+    expect(provider.requests[0]?.state).toMatchObject({
+      request: EXAMPLE,
+      taxonomy: expect.any(Object),
+    });
     expect(r.source).toBe('decision_model');
     expect(r.category.key).toBe('restaurant');
     expect(r.moods).toEqual([{ key: 'chill', probability: 0.9 }]);

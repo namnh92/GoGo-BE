@@ -67,7 +67,8 @@ describe('assistant decision request', () => {
       'plan_help',
       'out_of_scope',
     ]);
-    expect(req.state).toEqual({ request: 'Tối nay ăn gì ở Cầu Giấy?' });
+    expect(req.state).toMatchObject({ request: 'Tối nay ăn gì ở Cầu Giấy?' });
+    expect(Object.keys(req.state)).toEqual(['request', 'taxonomy']);
   });
 
   it('bounds the previous request and names the opening screen', () => {
