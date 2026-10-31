@@ -31,7 +31,13 @@ const base = {
   needs_unverified_attribute: { type: 'noul', noul: 0.01 },
 };
 
-type HistoryRow = { role: 'user' | 'assistant'; text: string; follow_ups: { field: string }[] };
+type HistoryRow = {
+  id?: string;
+  role: 'user' | 'assistant';
+  text: string;
+  follow_ups: { field: string; options?: { text: string }[] }[];
+  trace?: Record<string, unknown>;
+};
 const asked = (field: string): HistoryRow => ({
   role: 'assistant',
   text: 'Bạn chọn giúp mình nhé.',
@@ -45,6 +51,7 @@ type Run = {
   searches: Record<string, unknown>[];
   jevRequests: string[];
   superseded: unknown[][];
+  trace: Record<string, unknown>;
   proposal: { kind: string; values: { field: string; value: unknown; origin: string }[] } | null;
   followUps: { field: string; options: { label: string; text: string }[] }[];
   value: (field: string) => { value: unknown; origin: string } | undefined;
@@ -55,6 +62,7 @@ async function turn(
   opts: {
     answers?: Record<string, unknown> | null;
     history?: HistoryRow[];
+    archive?: HistoryRow[];
     context?: { kind: 'place' | 'plan'; id: string };
   } = {},
 ): Promise<Run> {
@@ -70,7 +78,12 @@ async function turn(
       ASSISTANT_MAX_OUTPUT_TOKENS: 100,
     } as never,
     {
-      history: async () => opts.history ?? [],
+      history: async (_conversationId: string, _messageId: string, limit: number) =>
+        [...(opts.history ?? []), { ...said(text), id: `user-${opts.archive?.length ?? 0}` }].slice(
+          -limit,
+        ),
+      episodeMessages: async (_conversationId: string, ids: string[]) =>
+        (opts.archive ?? []).filter((row) => ids.includes(row.id!)),
       insertProposal: async (p: { kind: string; values: unknown }) => ({
         id: 'p-new',
         conversation_id: 'c',
@@ -146,6 +159,7 @@ async function turn(
         } as never),
     null,
   );
+  const state = newTurnState();
   await orchestrator.run(
     {
       messageId: 'm',
@@ -156,7 +170,7 @@ async function turn(
       locale: 'vi',
       context: opts.context ?? null,
     },
-    newTurnState(),
+    state,
     { emit: async (f: AssistantFrame) => void frames.push(f) } as never,
     new AbortController().signal,
   );
@@ -175,6 +189,7 @@ async function turn(
     searches,
     jevRequests,
     superseded,
+    trace: state.trace,
     proposal,
     followUps,
     value: (field) => proposal?.values.find((v) => v.field === field),
@@ -428,5 +443,136 @@ describe('#733 a "tạo kèo" turn', () => {
     });
     expect(r.proposal?.kind).toBe('create_room');
     expect(r.value('administrativeArea')).toMatchObject({ value: { provinceCode: '01' } });
+  });
+
+  it('A-F-01 retains the opening request and facts after raw-history eviction', async () => {
+    const archive: HistoryRow[] = [];
+    let result: Run | undefined;
+    for (const text of [
+      'tạo kèo cà phê',
+      'Sài Gòn',
+      'Cả Thành phố Hồ Chí Minh',
+      'Thứ 7',
+      'Thứ 7 tối',
+      '6 người',
+      '8 người',
+      '6 người',
+      '300k/người',
+    ]) {
+      const id = `user-${archive.length}`;
+      result = await turn(text, { answers: null, history: archive, archive });
+      archive.push(
+        { ...said(text), id },
+        { role: 'assistant', text: result.text, follow_ups: result.followUps, trace: result.trace },
+      );
+      expect((result.trace.episodeRefs as unknown[]).length).toBeLessThanOrEqual(8);
+    }
+    expect(result!.proposal?.kind).toBe('create_room');
+    expect(cards(result!)).toBeGreaterThan(0);
+    expect(result!.value('participantCount')).toMatchObject({ value: 6, origin: 'explicit' });
+    expect(result!.value('budgetAmount')).toMatchObject({ value: 300_000, origin: 'explicit' });
+    expect(result!.value('administrativeArea')).toMatchObject({
+      value: { provinceCode: '79', communeCode: null },
+      origin: 'explicit',
+    });
+    expect(result!.value('startAt')).toMatchObject({ value: SATURDAY_EVENING, origin: 'explicit' });
+    for (const field of ['activity', 'area', 'time', 'party_size', 'budget']) {
+      expect(fields(result!)).not.toContain(field);
+    }
+  });
+
+  it.each([null, base])(
+    'F-12 a second explicit create request starts fresh (%s)',
+    async (answers) => {
+      const text = 'tạo kèo cà phê với 4 người ở Phường Ba Đình, Thành phố Hà Nội';
+      const r = await turn(text, {
+        answers,
+        history: [said('tạo kèo ăn tối thứ 7 với 6 người, 300k/người'), asked('area')],
+      });
+      if (answers) expect(r.jevRequests[0]).toBe(text);
+      expect(cards(r)).toBeGreaterThan(0);
+      expect(fields(r)).not.toContain('activity');
+      expect(r.value('seedPlaceIds')).toBeDefined();
+      expect(r.value('participantCount')).toMatchObject({ value: 4, origin: 'explicit' });
+      expect(r.value('budgetAmount')).toMatchObject({ origin: 'assumed' });
+      expect(r.value('startAt')).toBeUndefined();
+      expect(r.followUps.find((group) => group.field === 'time')!.options[0]!.text).toBe('Tối nay');
+    },
+  );
+
+  it('F-12 a fact-bearing search request does not inherit the old action or facts', async () => {
+    const r = await turn('thôi, tìm cà phê ở Hà Nội', {
+      answers: null,
+      history: [said('tạo kèo ăn tối thứ 7 với 6 người, 300k/người'), asked('area')],
+    });
+    expect(r.proposal).toBeNull();
+    expect(cards(r)).toBeGreaterThan(0);
+  });
+
+  it('F-12 later answers cannot cross a fact-bearing fresh request boundary', async () => {
+    const r = await turn('6 người', {
+      answers: null,
+      history: [
+        said('tạo kèo ăn tối thứ 7 với 4 người, 300k/người'),
+        asked('area'),
+        said('tạo kèo cà phê ở Hà Nội'),
+        asked('party_size'),
+      ],
+    });
+    expect(cards(r)).toBeGreaterThan(0);
+    expect(r.value('participantCount')).toMatchObject({ value: 6, origin: 'explicit' });
+    expect(r.value('budgetAmount')).toMatchObject({ origin: 'assumed' });
+    expect(r.value('startAt')).toBeUndefined();
+  });
+
+  it('F-12 an offered activity reply still continues the room request', async () => {
+    const r = await turn('Tìm quán cà phê', {
+      answers: null,
+      history: [
+        said('tạo kèo ở Hà Nội với 4 người'),
+        {
+          ...asked('activity'),
+          follow_ups: [{ field: 'activity', options: [{ text: 'Tìm quán cà phê' }] }],
+        },
+      ],
+    });
+    expect(r.proposal?.kind).toBe('create_room');
+    expect(cards(r)).toBeGreaterThan(0);
+    expect(r.value('participantCount')).toMatchObject({ value: 4, origin: 'explicit' });
+  });
+
+  it('A-F-07 a typed preference keeps the selected province', async () => {
+    const r = await turn('bình yên', {
+      answers: null,
+      history: [said('tạo kèo cà phê ở Tỉnh Thái Nguyên'), asked('preference')],
+    });
+    expect(r.proposal?.kind).toBe('create_room');
+    expect(r.value('administrativeArea')).toMatchObject({
+      value: { provinceCode: '19', communeCode: null },
+    });
+  });
+
+  it.each([
+    ["B'Lao", '99991'],
+    ["D'Ran", '99992'],
+    ['bình yên', '05587'],
+  ])('A-F-07/F-11 a prompted bare area answers the episode: %s', async (text, communeCode) => {
+    const r = await turn(text, {
+      answers: null,
+      history: [said('tạo kèo cà phê'), asked('area')],
+    });
+    expect(r.proposal?.kind).toBe('create_room');
+    expect(r.value('administrativeArea')).toMatchObject({ value: { communeCode } });
+  });
+
+  it('A-F-02/F-10 a legacy city correction asks for a current area', async () => {
+    const r = await turn('Thành phố Thủ Đức, Thành phố Hồ Chí Minh', {
+      answers: null,
+      history: [said('tạo kèo cà phê ở Hà Nội'), asked('time')],
+    });
+    expect(r.proposal?.kind).toBe('create_room');
+    expect(r.value('administrativeArea')).toBeUndefined();
+    expect(fields(r)).toContain('area');
+    expect(cards(r)).toBe(0);
   });
 });

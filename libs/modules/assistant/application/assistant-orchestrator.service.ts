@@ -31,7 +31,7 @@ import {
   buildAssistantDecisionRequest,
   buildRelevanceRequest,
   fallbackAssistantDecision,
-  hasQuestionTerm,
+  startsNewRequest,
   mapAssistantAnswers,
   type AssistantDecision,
   type AssistantRoute,
@@ -88,16 +88,26 @@ const HISTORY_LIMIT = 6;
 /** "Near the place I opened", when the request names no area. */
 const CONTEXT_RADIUS_M = 2_000;
 /**
- * Earlier user turns a clarification answer may merge with (#733 D-5): a
- * room card asks up to six items two at a time, plus a scope question and a
- * correction (Astra A-F-01). The episode reads its own, longer history
- * window; the composer still sees `HISTORY_LIMIT` rows.
+ * Older replies without episode references can be reconstructed within this
+ * window. New replies retain bounded source-message references independently.
  */
 const MAX_EPISODE_EARLIER = 5;
 const EPISODE_HISTORY_LIMIT = 2 * MAX_EPISODE_EARLIER;
 
 /** A history row, plus the quick-reply texts it offered when it asked. */
-type ContextTurn = HistoryTurn & { askedTexts: string[] | null };
+type EpisodeMessage = {
+  id?: string | undefined;
+  text: string;
+  allowBareArea: boolean;
+  answerField?: 'activity' | 'preference' | undefined;
+};
+type ContextTurn = HistoryTurn & {
+  id?: string | undefined;
+  askedTexts: string[] | null;
+  asksArea: boolean;
+  answerField?: 'activity' | 'preference' | undefined;
+  episode?: EpisodeMessage[];
+};
 
 /**
  * #733 D-5 — the request a turn answers: the current message alone, or merged
@@ -106,6 +116,7 @@ type ContextTurn = HistoryTurn & { askedTexts: string[] | null };
 type Episode = {
   /** User texts, oldest first; the last one is the current message. */
   texts: string[];
+  messages: EpisodeMessage[];
   facts: IntentFacts;
   dayPart: DayPart | null;
   /** The current message's own area phrase (the newest decides, D-6). */
@@ -187,12 +198,19 @@ export class AssistantOrchestrator {
     const remaining = () => deadline - Date.now();
 
     // ── context ──────────────────────────────────────────────────────────────
-    const history = await guard.run(() => this.historyFor(input));
+    const { history, currentId } = await guard.run(() => this.historyFor(input));
     const taxonomy = await guard.run(() => this.taxonomy.taxonomy());
     const labels = this.taxonomy.labels(taxonomy);
-    const episode = await guard.run(() => this.episodeFor(input.text, history));
+    const episode = await guard.run(() => this.episodeFor(input.text, history, currentId));
     const { facts, dayPart } = episode;
     const requestText = joinRequest(episode.texts);
+    if (episode.messages.every((message) => message.id)) {
+      state.trace.episodeRefs = episode.messages.map(({ id, allowBareArea, answerField }) => ({
+        id,
+        allowBareArea,
+        answerField,
+      }));
+    }
     if (episode.texts.length > 1) {
       state.trace.episode = {
         turns: episode.texts.length,
@@ -311,7 +329,7 @@ export class AssistantOrchestrator {
           episode.texts.join('\n'),
           facts.areaText,
           { text: input.text, areaText: episode.latestAreaText },
-          episode.texts.map((t) => ({ text: t, areaText: parseIntentFacts(t).areaText })),
+          episode.messages.map((m) => ({ ...m, areaText: parseIntentFacts(m.text).areaText })),
         ),
       );
       area = resolution.kind === 'resolved' ? resolution.value : null;
@@ -566,7 +584,10 @@ export class AssistantOrchestrator {
 
   // ── stages ───────────────────────────────────────────────────────────────
 
-  private async historyFor(input: TurnInput): Promise<ContextTurn[]> {
+  private async historyFor(input: TurnInput): Promise<{
+    history: ContextTurn[];
+    currentId?: string | undefined;
+  }> {
     const rows = await this.repo.history(
       input.conversationId,
       input.messageId,
@@ -574,15 +595,36 @@ export class AssistantOrchestrator {
     );
     // The newest user turn is the question itself; it goes in separately.
     const last = rows[rows.length - 1];
-    if (last && last.role === 'user' && last.text === input.text) rows.pop();
-    return rows.slice(-EPISODE_HISTORY_LIMIT).map((r) => ({
+    const currentId =
+      last?.role === 'user' && last.text === input.text ? rows.pop()!.id : undefined;
+    const history: ContextTurn[] = rows.slice(-EPISODE_HISTORY_LIMIT).map((r) => ({
+      id: r.id,
       role: r.role,
       text: r.text,
       askedTexts:
         r.role === 'assistant' && r.follow_ups?.length
           ? r.follow_ups.flatMap((g) => (g.options ?? []).map((o) => o.text))
           : null,
+      asksArea: r.follow_ups?.some((g) => g.field === 'area' || g.field === 'area_scope') ?? false,
+      answerField: r.follow_ups?.some((g) => g.field === 'activity')
+        ? 'activity'
+        : r.follow_ups?.some((g) => g.field === 'preference')
+          ? 'preference'
+          : undefined,
     }));
+    const refs = rows[rows.length - 1]?.trace?.episodeRefs;
+    const previous = history[history.length - 1];
+    if (previous?.role === 'assistant' && previous.askedTexts && isEpisodeRefs(refs)) {
+      const sources = await this.repo.episodeMessages(
+        input.conversationId,
+        refs.map((r) => r.id),
+      );
+      const byId = new Map(sources.map((row) => [row.id, row]));
+      if (refs.every((ref) => byId.has(ref.id))) {
+        previous.episode = refs.map((ref) => ({ ...ref, text: byId.get(ref.id)!.text }));
+      }
+    }
+    return { history, currentId };
   }
 
   /**
@@ -592,23 +634,29 @@ export class AssistantOrchestrator {
    * names a unit by its full dataset name, or is one of the offered quick
    * replies — and asks no how-to question (D-1). Newest non-null fact wins.
    */
-  private async episodeFor(text: string, history: ContextTurn[]): Promise<Episode> {
+  private async episodeFor(
+    text: string,
+    history: ContextTurn[],
+    currentId?: string,
+  ): Promise<Episode> {
     const own = parseIntentFacts(text);
     const ownDayPart = parseDayPart(text);
     const lastUser = (turns: ContextTurn[]) =>
       [...turns].reverse().find((t) => t.role === 'user')?.text ?? null;
     const single: Episode = {
       texts: [text],
+      messages: [{ id: currentId, text, allowBareArea: false }],
       facts: own,
       dayPart: ownDayPart,
       latestAreaText: own.areaText,
-      previousRequest: lastUser(history),
+      previousRequest: startsNewRequest(text) ? null : lastUser(history),
     };
     // Each link must hold (Astra A-F-04): a turn is merged only when the turn
     // after it answered it, so a fresh request typed under the chips is a
     // boundary the walk never crosses later.
-    const answers = async (message: string, offered: readonly string[]) => {
-      if (hasQuestionTerm(message)) return false;
+    const answers = async (message: string, asked: ContextTurn) => {
+      if (asked.askedTexts!.includes(message.trim())) return true;
+      if (startsNewRequest(message)) return false;
       const f = parseIntentFacts(message);
       const hasFact =
         f.partySize !== null ||
@@ -616,23 +664,42 @@ export class AssistantOrchestrator {
         f.timeHint !== null ||
         f.areaText !== null ||
         parseDayPart(message) !== null;
-      return hasFact || offered.includes(message.trim()) || (await this.areas.namesArea(message));
+      return (
+        hasFact ||
+        asked.answerField !== undefined ||
+        (await this.areas.namesArea(message, asked.asksArea))
+      );
     };
-    const earlier: string[] = [];
+    const earlier: EpisodeMessage[] = [];
     let current = text;
     let j = history.length - 1;
     while (j >= 1 && earlier.length < MAX_EPISODE_EARLIER) {
       const asked = history[j]!;
       const user = history[j - 1]!;
       if (asked.role !== 'assistant' || !asked.askedTexts || user.role !== 'user') break;
-      if (!(await answers(current, asked.askedTexts))) break;
-      earlier.unshift(user.text);
+      if (!(await answers(current, asked))) break;
+      if (earlier.length === 0) {
+        single.messages[0]!.allowBareArea = asked.asksArea;
+        single.messages[0]!.answerField = asked.answerField;
+      }
+      if (asked.episode) {
+        earlier.unshift(...asked.episode);
+        j -= 2;
+        break;
+      }
+      earlier.unshift({
+        id: user.id,
+        text: user.text,
+        allowBareArea: history[j - 2]?.asksArea ?? false,
+        answerField: history[j - 2]?.answerField,
+      });
       current = user.text;
       j -= 2;
     }
     if (earlier.length === 0) return single;
 
-    const texts = [...earlier, text];
+    const messages = [...earlier, ...single.messages];
+    const texts = messages.map((message) => message.text);
     const facts: IntentFacts = { partySize: null, budget: null, timeHint: null, areaText: null };
     let dayPart: DayPart | null = null;
     for (const t of texts) {
@@ -647,13 +714,42 @@ export class AssistantOrchestrator {
       if (f.areaText !== null) facts.areaText = f.areaText;
       dayPart = parseDayPart(t) ?? dayPart;
     }
+    const retained = await this.retainEpisode(messages);
     return {
-      texts,
+      texts: retained.map((message) => message.text),
+      messages: retained,
       facts,
       dayPart,
       latestAreaText: own.areaText,
       previousRequest: lastUser(history.slice(0, j + 1)),
     };
+  }
+
+  /** Keep the opening request and the latest source of each fact, area and other answer. */
+  private async retainEpisode(messages: EpisodeMessage[]): Promise<EpisodeMessage[]> {
+    const latest = new Map<string, number>();
+    for (const [i, message] of messages.entries()) {
+      const facts = parseIntentFacts(message.text);
+      for (const field of ['partySize', 'budget', 'timeHint'] as const) {
+        if (facts[field] !== null) latest.set(field, i);
+      }
+      if (parseDayPart(message.text)) latest.set('dayPart', i);
+      if (
+        facts.areaText !== null ||
+        (await this.areas.namesArea(message.text, message.allowBareArea))
+      ) {
+        latest.set('area', i);
+      }
+      if (
+        Object.values(facts).every((value) => value === null) &&
+        !parseDayPart(message.text) &&
+        latest.get('area') !== i
+      ) {
+        latest.set(message.answerField ?? 'preference', i);
+      }
+    }
+    const keep = new Set([0, ...latest.values()]);
+    return messages.filter((_, i) => keep.has(i));
   }
 
   private async decide(
@@ -1269,6 +1365,25 @@ function joinRequest(texts: readonly string[]): string {
   const head = texts[0]!.slice(0, Math.floor(MAX_REQUEST_CHARS / 2));
   const rest = texts.slice(1).join('\n');
   return `${head}\n${rest.slice(-(MAX_REQUEST_CHARS - head.length - 1))}`;
+}
+
+function isEpisodeRefs(
+  value: unknown,
+): value is (Omit<EpisodeMessage, 'id' | 'text'> & { id: string })[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.length <= 8 &&
+    value.every(
+      (ref) =>
+        ref &&
+        typeof ref.id === 'string' &&
+        typeof ref.allowBareArea === 'boolean' &&
+        (ref.answerField === undefined ||
+          ref.answerField === 'activity' ||
+          ref.answerField === 'preference'),
+    )
+  );
 }
 
 /** The proposal values in `createRoom`'s request shape. */

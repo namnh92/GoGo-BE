@@ -22,7 +22,7 @@ export type AreaResolution =
   | { kind: 'none' };
 
 /** The newest message of an episode (#733 D-5): its own words decide first. */
-export type LatestMessage = { text: string; areaText: string | null };
+export type LatestMessage = { text: string; areaText: string | null; allowBareArea?: boolean };
 
 /** Spoken names for the provinces people abbreviate, folded. */
 const PROVINCE_ALIASES: [RegExp, string][] = [
@@ -35,7 +35,8 @@ const PROVINCE_ALIASES: [RegExp, string][] = [
 const PROVINCE_QUALIFIER = /(?:^| )(?:thanh pho|tp|tinh|ca) $/;
 const COMMUNE_QUALIFIER = /(?:^| )(?:phuong|xa|dac khu) $/;
 /** A pre-2025 district or town as typed ("Quận 1", "Huyện Củ Chi", "Q.3"). */
-const LEGACY_LOCALITY = /^(?:quan |huyen |thi xa |q\.?\s*\d)/;
+const LOCALITY_QUALIFIER =
+  /(?:^|[^\p{L}\p{N}])((?:quận|quan|huyện|huyen|thị\s+xã|thi\s+xa|thành\s+phố|thanh\s+pho|tp)[.\s]+|q\.?\s*\d)/gu;
 /** Locative words a bare answer may start with ("ở Bến Thành"). */
 const LOCATIVE = /^ (?:o|tai|khu vuc|khu|gan|quanh) /;
 
@@ -79,10 +80,10 @@ export class AssistantAreaResolver {
    * Read before the decision call, to tell an answer from a fresh request; a
    * snapshot failure is "no", never an error.
    */
-  async namesArea(text: string): Promise<boolean> {
+  async namesArea(text: string, allowBareArea = true): Promise<boolean> {
     try {
       const snapshot = await this.query.snapshot();
-      return namesAreaIn(snapshot, { text, areaText: null });
+      return namesAreaIn(snapshot, { text, areaText: null, allowBareArea });
     } catch {
       return false;
     }
@@ -148,7 +149,7 @@ export class AssistantAreaResolver {
     // recognised, and a province named next to it ("Quận 1, Thành phố Hồ Chí
     // Minh") does not widen it to the province.
     const area = meaningful(message.areaText);
-    if (area && LEGACY_LOCALITY.test(normalizeVietnamese(area))) return { kind: 'none' };
+    if (hasLegacyLocality(snapshot, message.text)) return { kind: 'none' };
 
     // 0. An exact level-qualified name in the message wins.
     const hit = exactResolution(snapshot, own);
@@ -158,7 +159,8 @@ export class AssistantAreaResolver {
 
     // The phrase under test: the message's area, else an alias in it, else a
     // bare unit name typed as the whole message.
-    const phrase = area ?? aliasIn(own)?.phrase ?? bareName(snapshot, own) ?? null;
+    const bare = acceptsBareArea(message, own) ? bareHits(snapshot, own) : [];
+    const phrase = bare[0]?.name ?? area ?? aliasIn(own)?.phrase ?? null;
 
     // A province named elsewhere (this message first) scopes the commune search.
     const byAlias = (target: string) => provinceByAlias(snapshot, target);
@@ -193,12 +195,15 @@ export class AssistantAreaResolver {
 
     let hits;
     try {
-      hits = this.query.search(snapshot, {
-        query: needle,
-        provinceCode: qualifier === 'commune' ? undefined : (named ?? contextProvince)?.code,
-        includeLegacy: false,
-        limit: 20,
-      }).items;
+      hits =
+        bare.length > 0
+          ? bare
+          : this.query.search(snapshot, {
+              query: needle,
+              provinceCode: qualifier === 'commune' ? undefined : (named ?? contextProvince)?.code,
+              includeLegacy: false,
+              limit: 20,
+            }).items;
     } catch {
       return named || contextProvince
         ? provinceArea((named ?? contextProvince)!)
@@ -253,13 +258,40 @@ function provinceNamedIn(snapshot: Snapshot, folded: string): Unit | null {
 }
 
 /** The whole message is a current unit's or province's bare name (Astra A-F-05). */
-function bareName(snapshot: Snapshot, folded: string): string | null {
+function bareHits(snapshot: Snapshot, folded: string): Unit[] {
   const answer = folded.replace(LOCATIVE, ' ').trim();
-  if (answer.length < 2) return null;
-  for (const entry of snapshot.currentSearch ?? []) {
-    if (strip(entry.unit.name) === answer) return answer;
+  if (answer.length < 2) return [];
+  const units = snapshot.currentSearch?.map((entry) => entry.unit) ?? snapshot.currentProvinces;
+  return units.filter((unit) => fold(strip(unit.name)).trim() === answer);
+}
+
+function acceptsBareArea(message: LatestMessage, folded: string): boolean {
+  return message.allowBareArea !== false || LOCATIVE.test(folded);
+}
+
+/** Read qualifiers before folding ("quán" is not "quận"); current provinces are exempt. */
+function hasLegacyLocality(snapshot: Snapshot, text: string): boolean {
+  const raw = text.normalize('NFC').toLowerCase();
+  for (const match of raw.matchAll(LOCALITY_QUALIFIER)) {
+    const qualifier = fold(match[1]!).trim();
+    if (!['thanh pho', 'tp'].includes(qualifier)) return true;
+    const suffix = fold(raw.slice(match.index! + match[0].indexOf(match[1]!)));
+    if (snapshot.currentProvinces.some((p) => suffix.startsWith(fold(p.fullName)))) continue;
+    const name = suffix.replace(/^ (?:thanh pho|tp) /, ' ');
+    const alias = aliasIn(name);
+    if (alias && name.startsWith(fold(alias.phrase)) && provinceByAlias(snapshot, alias.target)) {
+      continue;
+    }
+    if (
+      qualifier === 'tp' &&
+      snapshot.currentProvinces.some(
+        (p) => fold(p.fullName).startsWith(' thanh pho ') && name.startsWith(fold(strip(p.name))),
+      )
+    )
+      continue;
+    return true;
   }
-  return snapshot.currentProvinces.some((p) => strip(p.name) === answer) ? answer : null;
+  return false;
 }
 
 /** The message names an area on its own (D-5 gate, A-F-03 newest-first). */
@@ -267,9 +299,10 @@ function namesAreaIn(snapshot: Snapshot, message: LatestMessage): boolean {
   const own = fold(message.text);
   return (
     meaningful(message.areaText) !== null ||
+    hasLegacyLocality(snapshot, message.text) ||
     aliasIn(own) !== null ||
     exactHits(snapshot, own).length > 0 ||
-    bareName(snapshot, own) !== null
+    (acceptsBareArea(message, own) && bareHits(snapshot, own).length > 0)
   );
 }
 

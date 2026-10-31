@@ -226,6 +226,18 @@ export function hasQuestionTerm(text: string): boolean {
   return QUESTION_TERMS.some((t) => haystack.includes(` ${t}`));
 }
 
+/** An explicit new request ends a clarification episode, even when it carries facts. */
+export function startsNewRequest(text: string): boolean {
+  const haystack = haystackOf(text).replace(/[^\p{L}\p{N} ]/gu, ' ');
+  return (
+    hasQuestionTerm(text) ||
+    INJECTION_TERMS.some((term) => haystack.includes(term)) ||
+    ACTION_TERMS.some(([, terms]) => terms.some((term) => haystack.includes(` ${term}`))) ||
+    /(?:^| )(?:tim|goi y|de xuat|cho minh|cho toi|recommend|find|suggest) /.test(haystack) ||
+    /(?:^| )ru .+ di(?: |$)/.test(haystack)
+  );
+}
+
 /**
  * #733 D-1 — applied to both decision paths: an injection phrase is out of
  * scope with no action (so the create_room routing override can never send

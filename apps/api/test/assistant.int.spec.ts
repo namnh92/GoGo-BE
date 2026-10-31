@@ -1034,6 +1034,83 @@ describe('create a room through the chat (GoGo-BE#733)', () => {
     return (await streamOf(token, conversationId, replyId)).frames;
   }
 
+  async function proposalInput() {
+    const conversationId = await newConversation(alice);
+    const result = await f.db.execute(sql`
+      insert into assistant_messages (conversation_id, user_id, role, status, text)
+      select id, user_id, 'assistant', 'complete', 'proposal'
+      from assistant_conversations where id = ${conversationId}
+      returning id, user_id`);
+    const row = result.rows[0] as { id: string; user_id: string };
+    return {
+      conversationId,
+      messageId: row.id,
+      userId: row.user_id,
+      kind: 'create_room',
+      values: [],
+      expiresAt: new Date(Date.now() + 30 * 60_000),
+    };
+  }
+
+  it.each(['pending', 'confirming', 'confirmed', 'dismissed', 'expired'])(
+    'A-F-06/F-09 a replacement in %s never resurrects the older card',
+    async (status) => {
+      const repository = f.app.get(AssistantRepository);
+      const input = await proposalInput();
+      const { row: old } = await repository.insertSupersedingProposal(input);
+      expect(await repository.claimProposal(input.userId, old.id)).not.toBeNull();
+      const { row: replacement } = await repository.insertSupersedingProposal(input);
+      await f.db.execute(sql`
+        update assistant_proposals set status = ${status} where id = ${replacement.id}`);
+      await repository.releaseProposal(old.id);
+      expect((await repository.findProposal(input.userId, old.id))?.status).toBe('dismissed');
+      expect(await repository.claimProposal(input.userId, old.id)).toBeNull();
+    },
+  );
+
+  it.each(['old-first', 'new-first'])(
+    'A-F-06 two refused confirms leave only the replacement pending: %s',
+    async (order) => {
+      const repository = f.app.get(AssistantRepository);
+      const input = await proposalInput();
+      const { row: old } = await repository.insertSupersedingProposal(input);
+      await repository.claimProposal(input.userId, old.id);
+      const { row: replacement } = await repository.insertSupersedingProposal(input);
+      await repository.claimProposal(input.userId, replacement.id);
+      const ids = order === 'old-first' ? [old.id, replacement.id] : [replacement.id, old.id];
+      for (const id of ids) await repository.releaseProposal(id);
+      expect((await repository.findProposal(input.userId, old.id))?.status).toBe('dismissed');
+      expect((await repository.findProposal(input.userId, replacement.id))?.status).toBe('pending');
+    },
+  );
+
+  it('A-F-06 release racing replacement insertion leaves one pending card', async () => {
+    const repository = f.app.get(AssistantRepository);
+    const input = await proposalInput();
+    const { row: old } = await repository.insertSupersedingProposal(input);
+    await repository.claimProposal(input.userId, old.id);
+    const [, { row: replacement }] = await Promise.all([
+      repository.releaseProposal(old.id),
+      repository.insertSupersedingProposal(input),
+    ]);
+    expect((await repository.findProposal(input.userId, old.id))?.status).toBe('dismissed');
+    expect((await repository.findProposal(input.userId, replacement.id))?.status).toBe('pending');
+  });
+
+  it('A-F-01 episode source reads cannot cross conversations', async () => {
+    const input = await proposalInput();
+    const result = await f.db.execute(sql`
+      insert into assistant_messages (conversation_id, user_id, role, status, text)
+      values (${input.conversationId}, ${input.userId}, 'user', 'complete', 'tạo kèo cà phê')
+      returning id`);
+    const id = (result.rows[0] as { id: string }).id;
+    const other = await newConversation(bob);
+    const repository = f.app.get(AssistantRepository);
+    expect(await repository.episodeMessages(input.conversationId, [id])).toHaveLength(1);
+    expect(await repository.episodeMessages(other, [id])).toEqual([]);
+    expect(await repository.episodeMessages(input.conversationId, [input.messageId])).toEqual([]);
+  });
+
   it('IT-1 cards + a pending card, zero rooms; a second card supersedes; confirm creates one', async () => {
     const ivy = await f.register('ivy-733@gogo.test');
     const conversationId = await newConversation(ivy);

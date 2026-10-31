@@ -7,7 +7,7 @@ import { v5Query } from './area.fixture';
  * address only. A pre-2025 district name is not mapped to its old province;
  * it is not recognised, so the assistant asks for a new address.
  */
-const HCM = { code: '79', name: 'Thành phố Hồ Chí Minh' };
+const HCM = { code: '79', name: 'Thành phố Hồ Chí Minh', fullName: 'Thành phố Hồ Chí Minh' };
 const BEN_THANH = {
   code: '26740',
   name: 'Bến Thành',
@@ -138,6 +138,57 @@ describe('#733 province alias that is also a commune name', () => {
   it('Astra A-F-02 an old district stays unrecognised with its city named in full', async () => {
     expect(await kindOf('cà phê ở Quận 1, Thành phố Hồ Chí Minh', 'Quận 1')).toBe('none');
     expect(await kindOf('cà phê ở Huyện Củ Chi, TP HCM', 'Huyện Củ Chi')).toBe('none');
+  });
+
+  it.each([
+    'Quận Bình Thạnh, Thành phố Hồ Chí Minh',
+    'Thành phố Thủ Đức, Thành phố Hồ Chí Minh',
+    'Thành phố Đà Lạt, Tỉnh Lâm Đồng',
+    'TP. Thủ Đức, TP.HCM',
+    'Huyện Củ Chi, TP HCM',
+    'Thị xã Bến Cát, Thành phố Hồ Chí Minh',
+  ])('A-F-02/F-10 rejects legacy qualifiers without areaText: %s', async (text) => {
+    expect(await kindOf(text, null)).toBe('none');
+    expect(await v5.namesArea(text, false)).toBe(true);
+  });
+
+  it.each(['Thành phố Hồ Chí Minh', 'Thành phố Hà Nội', 'Tỉnh Lâm Đồng'])(
+    'F-10 exempts a current province: %s',
+    async (text) => {
+      expect(await kindOf(text, null)).toBe('resolved');
+      expect(await communeOf(text, null)).toBeNull();
+    },
+  );
+
+  it('F-10 does not confuse quán with the legacy qualifier quận', async () => {
+    expect(await kindOf('tìm quán cà phê ở Thành phố Hà Nội', 'Thành phố Hà Nội')).toBe('resolved');
+    expect(await kindOf('tìm quán cà phê ở Hà Nội', 'Hà Nội')).toBe('resolved');
+  });
+
+  it('A-F-07 a bare preference cannot replace an established area', async () => {
+    const messages = [
+      { text: 'Tỉnh Thái Nguyên', areaText: null, allowBareArea: true },
+      { text: 'bình yên', areaText: null, allowBareArea: false },
+    ];
+    const result = await v5.resolve('Tỉnh Thái Nguyên\nbình yên', null, messages[1], messages);
+    expect(result).toMatchObject({
+      kind: 'resolved',
+      value: { area: { provinceCode: '19', communeCode: null } },
+    });
+    expect(await v5.namesArea('bình yên', false)).toBe(false);
+    expect(await v5.namesArea('bình yên', true)).toBe(true);
+    expect(await v5.namesArea('ở Bình Yên', false)).toBe(true);
+    expect(await v5.namesArea('Xã Bình Yên', false)).toBe(true);
+  });
+
+  it.each([
+    ["B'Lao", '99991'],
+    ["D'Ran", '99992'],
+    ['B’Lao', '99991'],
+  ])('F-11 folds dataset and typed punctuation together: %s', async (text, code) => {
+    expect(await v5.namesArea(text, true)).toBe(true);
+    expect(await communeOf(text, null)).toBe(code);
+    expect(await communeOf(`ở ${text}`, text.split(/['’]/)[0]!)).toBe(code);
   });
 
   it('Astra A-F-05 a bare name typed as the whole answer names the area', async () => {

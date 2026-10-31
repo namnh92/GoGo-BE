@@ -512,12 +512,19 @@ No contract change: `AssistantFollowUpGroup.field` is a free string; new values 
   preference › area (or `area_scope`) › activity › time › party size › budget — and the contract
   cap keeps two; the rest ride on the card as assumed. The deterministic reply appends one
   sentence naming the missing time / party size / budget.
-- **Episode (D-5).** A message merges with the earlier user turns it answers (each following
-  assistant turn has stored `follow_ups`, at most three, inside the 6-row history window) when it
-  carries a fact, names a unit by its full dataset name, or is one of the quick replies offered —
-  and has no how-to term. Facts: newest non-null wins (the part of the day resets when a new day
-  is named). Jev gets the joined texts, cut from the oldest end to 500 chars; the resolver gets the
-  joined text, the newest message deciding first. `trace.episode = { turns, merged }`.
+- **Episode (D-5, amended for A-F-01/F-12).** A clarification answer merges only after an
+  assistant reply with stored `follow_ups`. An explicit new action/search request or how-to question
+  starts fresh, even if it carries facts; an exact offered activity chip still answers its question.
+  Typed activity/preference answers also continue their pending question. Facts: newest non-null wins
+  (the part of the day resets when a new day is named). Each reply stores at most eight source-message
+  references in the existing internal `trace.episodeRefs`: the opening request and the latest source
+  of party size, budget, day, day part, area, activity and preference. Only user rows from that same
+  conversation within retention can be reloaded. References carry whether a bare area was prompted;
+  no message body or administrative id is copied into the trace. This bounded state survives raw-history
+  eviction. Older replies without references use the existing 10-row reconstruction window; already
+  evicted context from those replies is not recovered. Jev receives at most 500 characters, preserving
+  the opening request's head and newest answers; Haiku still sees six recent rows. The diagnostic
+  `trace.episode = { turns, merged }` counts retained source turns. No schema or model-call change.
 - **Area scope (D-6).** Step 0: the full dataset name of a current unit in the text wins (newest
   message first) — "Phường Sài Gòn, Thành phố Hồ Chí Minh" → the ward, "Cả Thành phố Hồ Chí Minh"
   → the city. Otherwise the phrase is the newest area, an alias in it, the episode's area, an alias
@@ -526,14 +533,22 @@ No contract change: `AssistantFollowUpGroup.field` is a free string; new values 
   (`thanh pho`, `tp`, `tinh`, `ca` / `phuong`, `xa`, `dac khu`), is `scope_choice`: no search, a
   deterministic delta, one `area_scope` group — "Cả <province fullName>" then each commune's
   `fullName` (text `<fullName>, <province fullName>`, ≤ 5). Data-driven; on v5.1.0 Phường Sài Gòn
-  (26740) is the case. Old districts stay unrecognised (owner 2026-10-28).
+  (26740) is the case. Legacy locality qualifiers are rejected in the user's message before exact
+  province matching, including district-level cities; exact current provinces and supported province
+  aliases remain valid. Bare commune names count only after an area/scope question or a locative word,
+  so a preference such as "bình yên" does not replace an established area. Both typed and dataset names
+  use the same punctuation fold; a bare hit resolves from the matched current units.
 - **After Sol r1 / Astra r1.** A `create_room` turn with no known kind of place asks the activity on both
   paths; `create_room` from an opened plan takes the room flow; the room `type` is `explicit` only from a
-  stated party size. The episode reads up to five earlier user turns from its own 10-row window (the
-  composer still sees 6), each link gated on its own (a fresh request is a boundary), and the newest
-  message that names an area decides — a bare name ("Hà Nội", "Bến Thành") counts. A pre-2025 district
-  stays `none` even with its city named in full. Insert + supersede is one statement; a refused confirm of
-  a replaced card is retired (`dismissed`), not handed back.
+  stated party size. Each reconstructed link is gated on its own (a fresh request is a boundary), and
+  the newest message that names an area decides. Insert + supersede remains one statement, now inside
+  a short transaction sharing a conversation lock with release. A refused confirm is retired when
+  any newer same-kind card exists, regardless of that card's status. The insertion timestamp is taken
+  after acquiring the lock. No provider call runs inside these transactions.
+- **Shape amendment (2026-10-31 review fixes).** The D-5 bounded-history-only mechanism and R-1's
+  deferred fresh-request boundary are replaced by the source references and deterministic boundary
+  above. D-3 release and D-6 locality/bare-name rules are tightened as described. Owner Q-1/Q-2 and
+  invariants I-1… I-8 remain binding. The original shape is outside this worktree and is not edited.
 - **Never written before confirm (D-7).** Unchanged; the int test counts `rooms` before and after.
 
 ## Open items

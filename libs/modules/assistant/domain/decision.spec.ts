@@ -7,7 +7,25 @@ import {
   buildRelevanceRequest,
   fallbackAssistantDecision,
   mapAssistantAnswers,
+  startsNewRequest,
 } from './decision';
+
+describe('F-12 explicit episode boundaries', () => {
+  it.each([
+    'tạo kèo cà phê với 4 người ở Hà Nội',
+    'thôi, tìm cà phê ở Hà Nội',
+    'gợi ý nhà hàng thứ 7',
+    'rủ bạn đi cà phê ở Hà Nội',
+    'Làm sao để mời bạn?',
+  ])('starts a fresh request: %s', (text) => {
+    expect(startsNewRequest(text)).toBe(true);
+  });
+
+  it.each(['Thứ 7 tối', '6 người', '300k/người', 'Ở Hà Nội', "B'Lao", 'bình yên'])(
+    'keeps a possible clarification answer: %s',
+    (text) => expect(startsNewRequest(text)).toBe(false),
+  );
+});
 
 /**
  * Deterministic tests of the decision request/response contract — no model is
