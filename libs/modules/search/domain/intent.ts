@@ -37,7 +37,11 @@ export type IntentTaxonomy = {
   categorySynonyms?: Record<string, string[]>;
 };
 
-export type TimeHint = 'now' | 'tonight' | 'today' | 'tomorrow' | 'weekend';
+/** `saturday`/`sunday` name the day; `weekend` names neither (#733). */
+export type TimeHint = 'now' | 'tonight' | 'today' | 'tomorrow' | 'saturday' | 'sunday' | 'weekend';
+
+/** A part of the day said next to a day ("thứ 7 tối"), for an exact start (#733 Q-2). */
+export type DayPart = 'morning' | 'noon' | 'afternoon' | 'evening';
 
 export type IntentFacts = {
   partySize: number | null;
@@ -220,7 +224,7 @@ function toAmount(number: string, unit: string): number {
 }
 
 // Not `ông`/`bà`: "Hai Bà Trưng" is a district, not two grandmothers.
-const PARTY_NOUN = '(?:người|ng|đứa|bạn|mạng|thằng|anh em|chị em|đứa bạn)';
+const PARTY_NOUN = '(?:người|ng|đứa|bạn|mạng|thằng|anh em|chị em|đứa bạn|people)';
 
 function parsePartySize(text: string): number | null {
   const digits = new RegExp(`(?<![\\d/.,])(\\d{1,2})\\s*${PARTY_NOUN}${END}`, 'u').exec(text);
@@ -244,9 +248,15 @@ function parsePartySize(text: string): number | null {
 }
 
 const TIME_RULES: Array<[RegExp, TimeHint]> = [
-  [/(?:tối nay|đêm nay|tối hôm nay)/u, 'tonight'],
-  [/(?:ngày mai|tối mai|trưa mai|sáng mai|chiều mai)/u, 'tomorrow'],
-  [/(?:cuối tuần|thứ 7|thứ bảy|chủ nhật|(?:^|\s)cn(?=\s|$))/u, 'weekend'],
+  [/(?:tối nay|đêm nay|tối hôm nay|(?:^|[^\p{L}])tonight(?=$|[^\p{L}]))/u, 'tonight'],
+  [
+    /(?:ngày mai|tối mai|trưa mai|sáng mai|chiều mai|(?:^|[^\p{L}])tomorrow(?=$|[^\p{L}]))/u,
+    'tomorrow',
+  ],
+  // The day before the weekend: "thứ 7" is a day the person named (#733).
+  [/(?:thứ 7|thứ bảy|(?:^|[^\p{L}])saturday(?=$|[^\p{L}]))/u, 'saturday'],
+  [/(?:chủ nhật|(?:^|\s)cn(?=\s|$)|(?:^|[^\p{L}])sunday(?=$|[^\p{L}]))/u, 'sunday'],
+  [/(?:cuối tuần|(?:^|[^\p{L}])weekend(?=$|[^\p{L}]))/u, 'weekend'],
   [/(?:hôm nay|trưa nay|chiều nay|sáng nay|bữa nay)/u, 'today'],
   [/(?:bây giờ|giờ luôn|ngay bây giờ|ngay lúc này|liền luôn|đi liền)/u, 'now'],
 ];
@@ -257,6 +267,37 @@ function parseTimeHint(text: string, input: string): TimeHint | null {
     if (hint === 'tomorrow' && hasBareMai(input)) return hint;
   }
   return null;
+}
+
+const DAY_PART_WORDS: Record<string, DayPart> = {
+  sáng: 'morning',
+  trưa: 'noon',
+  chiều: 'afternoon',
+  tối: 'evening',
+  morning: 'morning',
+  noon: 'noon',
+  afternoon: 'afternoon',
+  evening: 'evening',
+};
+const DAY_WORD = '(?:thứ 7|thứ bảy|chủ nhật|cn|saturday|sunday)';
+const PART_WORD = '(sáng|trưa|chiều|tối|morning|noon|afternoon|evening)';
+
+/**
+ * #733 Q-2 — the part of the day, only when it is said right next to a named
+ * day ("thứ 7 tối", "tối thứ 7", "Saturday evening"): a meal ("ăn tối"), a
+ * mood ("sáng sủa") or "tối đa" is not an hour. Today and tomorrow keep their
+ * own hints and are not read here.
+ */
+export function parseDayPart(input: string): DayPart | null {
+  const text = input.normalize('NFC').toLowerCase();
+  const after = new RegExp(`${DAY_WORD}\\s+${PART_WORD}(?=$|[^\\p{L}])`, 'u').exec(text);
+  const before = new RegExp(
+    // "ăn tối thứ 7" is a meal on a day, not an hour.
+    `(?:^|[^\\p{L}])(?<!(?:ăn|bữa)\\s)${PART_WORD}\\s+${DAY_WORD}(?=$|[^\\p{L}\\p{N}])`,
+    'u',
+  ).exec(text);
+  const word = after?.[1] ?? before?.[1];
+  return word ? (DAY_PART_WORDS[word] ?? null) : null;
 }
 
 /**

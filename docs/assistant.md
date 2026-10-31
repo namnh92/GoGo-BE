@@ -480,6 +480,55 @@ limit or the monthly budget unset ⇒ refuse), `ASSISTANT_USER_PER_MINUTE_MAX_ME
 `ASSISTANT_JEV_MODEL`, `ASSISTANT_JEV_TIMEOUT_MS`, `ASSISTANT_HAIKU_MODEL`. The kill
 switch is the feature flag `assistant.enabled` (default off).
 
+### "Tạo kèo" through the chat (GoGo-BE#733)
+
+Shape `dev/handoffs/sa-shape-be-733-create-room-chat.fable.md` (D-1…D-7) with the owner's
+answers of 2026-10-31 (Q-1: the card is shown at once; Q-2: a day with no hour is asked).
+No contract change: `AssistantFollowUpGroup.field` is a free string; new values `area_scope`,
+`time`, `party_size`.
+
+- **Detection (D-1).** Jev's `action` criterion `create_room` now names "tạo kèo", "lập kèo",
+  "lên kèo", "rủ … đi", "tạo plan", "tạo room"; the instruction adds _"Asking how to do
+  something in the app is not an action."_ The fallback's `create_room` terms gain `tao keo`,
+  `lap keo`, `len keo`, `mo keo`, `tao plan`, `tao room`; `tao phong`, `tao ke hoach`, `moi ban`
+  left `GUIDE_TERMS`. `guardDecision` runs on both paths: an injection phrase → `out_of_scope`,
+  no action; a how-to term (`lam sao`, `cach nao`, `cach tao`, `cach moi`, `huong dan`,
+  `the nao`, `how do i`, `how to`) → no action.
+- **Routing (D-2).** `create_room` on `gogo_guide`/`out_of_scope` becomes `recommend_places`
+  (`trace.routeOverride = 'create_room'`; the decision metric keeps Jev's intent).
+- **Proposal (D-3).** Prepared on every `create_room` turn; the area is resolved on that turn
+  even when it still asks what to do (`clarify`). A new room card marks the conversation's
+  other pending room cards `dismissed` (`assistant_proposals_total{outcome=superseded}`).
+- **Time (D-3 + Q-2).** `TimeHint` gains `saturday`/`sunday` ("cuối tuần" stays `weekend`).
+  `parseDayPart` reads a part of the day only next to a named day ("thứ 7 tối", "tối thứ 7",
+  "Saturday evening"; not "ăn tối thứ 7", "tối đa"). Hours: sáng 09:00, trưa 12:00, chiều 15:00,
+  tối 19:00 Asia/Ho_Chi_Minh. A named day **with** a part → the coming such day (next week when
+  the hour has passed), origin `explicit` (`weekend` + part → Saturday, `assumed`); **without**
+  one → no `startAt`/`endAt`, and `time` is asked with that day's chips ("Thứ 7 trưa/chiều/tối";
+  `weekend` offers both days, six chips). Not changed, read literally from Q-2 and left for
+  review: "tối nay"/"hôm nay"/"ngày mai" still give an assumed 19:00, so "tối nay" stays
+  `assumed` while the "Thứ 7 tối" chip is `explicit`.
+- **Questions (D-4).** On a `create_room` turn the missing items are asked by priority —
+  preference › area (or `area_scope`) › activity › time › party size › budget — and the contract
+  cap keeps two; the rest ride on the card as assumed. The deterministic reply appends one
+  sentence naming the missing time / party size / budget.
+- **Episode (D-5).** A message merges with the earlier user turns it answers (each following
+  assistant turn has stored `follow_ups`, at most three, inside the 6-row history window) when it
+  carries a fact, names a unit by its full dataset name, or is one of the quick replies offered —
+  and has no how-to term. Facts: newest non-null wins (the part of the day resets when a new day
+  is named). Jev gets the joined texts, cut from the oldest end to 500 chars; the resolver gets the
+  joined text, the newest message deciding first. `trace.episode = { turns, merged }`.
+- **Area scope (D-6).** Step 0: the full dataset name of a current unit in the text wins (newest
+  message first) — "Phường Sài Gòn, Thành phố Hồ Chí Minh" → the ward, "Cả Thành phố Hồ Chí Minh"
+  → the city. Otherwise the phrase is the newest area, an alias in it, the episode's area, an alias
+  anywhere (a level-word-only phrase such as "TP" from "Ở TP.HCM" is skipped). A phrase that names
+  a province (name or alias) **and** a commune of that name inside it, with no qualifier
+  (`thanh pho`, `tp`, `tinh`, `ca` / `phuong`, `xa`, `dac khu`), is `scope_choice`: no search, a
+  deterministic delta, one `area_scope` group — "Cả <province fullName>" then each commune's
+  `fullName` (text `<fullName>, <province fullName>`, ≤ 5). Data-driven; on v5.1.0 Phường Sài Gòn
+  (26740) is the case. Old districts stay unrecognised (owner 2026-10-28).
+- **Never written before confirm (D-7).** Unchanged; the int test counts `rooms` before and after.
+
 ## Open items
 
 1. **Configuration hand-off.** Done for code (ADR-0036); the per-environment values

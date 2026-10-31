@@ -55,6 +55,16 @@ export type GroundedAnswerContext = {
    * does not place: the reply asks for it again as a new address.
    */
   areaUnrecognized?: boolean;
+  /**
+   * #733 D-6 — the area named is both a province and a commune inside it:
+   * the dataset names offered as the two (or more) scopes.
+   */
+  areaScope?: {
+    province: { name: string; fullName: string };
+    communes: { name: string; fullName: string }[];
+  };
+  /** #733 Q-2 — the day named without an hour, so the hour is asked for it. */
+  timeDay?: 'saturday' | 'sunday' | 'weekend' | null;
   unverifiableRequirement: boolean;
   conflicting: boolean;
 };
@@ -492,6 +502,15 @@ export function deterministicReply(ctx: GroundedAnswerContext): string {
             ? 'Giá và giờ mở cửa đã được GoGo xác minh nằm trên các thẻ bên dưới.'
             : 'Verified prices and opening hours are on the cards below.',
         );
+      } else if (ctx.clarification.includes('area_scope') && ctx.areaScope) {
+        // #733 D-6: built from dataset names only, never composed.
+        const { province, communes } = ctx.areaScope;
+        const either = communes.map((c) => c.fullName).join(vi ? ' hoặc ' : ' or ');
+        lines.push(
+          vi
+            ? `Mình thấy “${communes[0]!.name}” có thể là cả ${province.fullName} hoặc ${either}. Bạn chọn giúp mình nhé.`
+            : `“${communes[0]!.name}” could mean all of ${province.fullName} or ${either}. Which one do you mean?`,
+        );
       } else if (ctx.clarification.includes('area')) {
         // Owner 2026-10-28: places are searched by the new administrative
         // address only; an area not recognised is asked again, never guessed.
@@ -562,6 +581,16 @@ export function deterministicReply(ctx: GroundedAnswerContext): string {
       );
       break;
   }
+  // #733 D-4: a room card still missing details names them in one sentence.
+  const missing = MISSING_WORDS.filter(([field]) => ctx.clarification.includes(field));
+  if (ctx.pendingAction === 'create_room' && missing.length > 0) {
+    const words = missing.map(([, w]) => (vi ? w.vi : w.en));
+    const list =
+      words.length === 1
+        ? words[0]!
+        : `${words.slice(0, -1).join(', ')} ${vi ? 'và' : 'and'} ${words[words.length - 1]!}`;
+    lines.push(vi ? `Bạn cho mình biết thêm ${list} nhé.` : `Please tell me the ${list} too.`);
+  }
   if (ctx.unverifiableRequirement) {
     lines.push(
       vi
@@ -579,9 +608,39 @@ export function deterministicReply(ctx: GroundedAnswerContext): string {
   return lines.join('\n');
 }
 
+const MISSING_WORDS: [string, { vi: string; en: string }][] = [
+  ['time', { vi: 'thời gian', en: 'time' }],
+  ['party_size', { vi: 'số người', en: 'number of people' }],
+  ['budget', { vi: 'ngân sách', en: 'budget' }],
+];
+
 const AREA_OPTIONS = ['Hà Nội', 'TP.HCM', 'Đà Nẵng'];
 
-/** At most two groups (contract), from fixed vocabulary — never model text. */
+/** Part-of-day chips: texts `parseTimeHint` + `parseDayPart` read back exactly. */
+const DAY_PARTS = { vi: ['trưa', 'chiều', 'tối'], en: ['noon', 'afternoon', 'evening'] };
+const DAY_NAMES = {
+  saturday: { vi: 'Thứ 7', en: 'Saturday' },
+  sunday: { vi: 'Chủ nhật', en: 'Sunday' },
+} as const;
+
+function timeOptions(day: GroundedAnswerContext['timeDay'], vi: boolean): string[] {
+  const lang = vi ? 'vi' : 'en';
+  const days: ('saturday' | 'sunday')[] =
+    day === 'saturday' ? ['saturday'] : day === 'sunday' ? ['sunday'] : ['saturday', 'sunday'];
+  if (!day) {
+    return vi
+      ? ['Tối nay', 'Ngày mai', 'Thứ 7', 'Chủ nhật']
+      : ['Tonight', 'Tomorrow', 'Saturday', 'Sunday'];
+  }
+  return days.flatMap((d) => DAY_PARTS[lang].map((p) => `${DAY_NAMES[d][lang]} ${p}`));
+}
+
+/**
+ * At most two groups (contract), from fixed vocabulary — never model text.
+ * #733 D-4: by priority, so the cap drops the least needed: preference, the
+ * area (or its scope), activity — the order of today — then time, party
+ * size, budget.
+ */
 export function followUpsFor(ctx: GroundedAnswerContext): AssistantFollowUpGroup[] {
   const vi = ctx.locale !== 'en';
   const groups: AssistantFollowUpGroup[] = [];
@@ -595,6 +654,21 @@ export function followUpsFor(ctx: GroundedAnswerContext): AssistantFollowUpGroup
         label: l.slice(0, 40),
         text: vi ? `Ưu tiên ${l}` : `Prefer ${l}`,
       })),
+    });
+  }
+  if (ctx.clarification.includes('area_scope') && ctx.areaScope) {
+    const { province, communes } = ctx.areaScope;
+    const whole = `Cả ${province.fullName}`;
+    groups.push({
+      field: 'area_scope',
+      label: vi ? 'Bạn muốn tìm ở đâu?' : 'Which scope?',
+      options: [
+        { label: whole.slice(0, 40), text: whole },
+        ...communes.slice(0, 5).map((c) => ({
+          label: c.fullName.slice(0, 40),
+          text: `${c.fullName}, ${province.fullName}`,
+        })),
+      ],
     });
   }
   if (ctx.clarification.includes('area')) {
@@ -621,7 +695,24 @@ export function followUpsFor(ctx: GroundedAnswerContext): AssistantFollowUpGroup
           ],
     });
   }
-  if (ctx.clarification.includes('budget') && groups.length < 2) {
+  if (ctx.clarification.includes('time')) {
+    groups.push({
+      field: 'time',
+      label: ctx.timeDay ? (vi ? 'Mấy giờ?' : 'What time?') : vi ? 'Khi nào?' : 'When?',
+      options: timeOptions(ctx.timeDay ?? null, vi).map((t) => ({ label: t, text: t })),
+    });
+  }
+  if (ctx.clarification.includes('party_size')) {
+    groups.push({
+      field: 'party_size',
+      label: vi ? 'Mấy người?' : 'How many people?',
+      options: [2, 4, 6].map((n) => {
+        const t = vi ? `${n} người` : `${n} people`;
+        return { label: t, text: t };
+      }),
+    });
+  }
+  if (ctx.clarification.includes('budget')) {
     groups.push({
       field: 'budget',
       label: vi ? 'Ngân sách bao nhiêu?' : 'What budget?',

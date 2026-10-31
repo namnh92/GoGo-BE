@@ -1010,6 +1010,131 @@ describe('Astra round 2 (GoGo-BE#717)', () => {
   });
 });
 
+/**
+ * GoGo-BE#733 — "tạo kèo" through the chat, on the real administrative
+ * snapshot and the provider-down path (deterministic decision, D-1/U-14).
+ * Owner 2026-10-31: the card comes at once (Q-1); nothing is written before
+ * confirm (D-7); one live room card per conversation (D-3).
+ */
+describe('create a room through the chat (GoGo-BE#733)', () => {
+  const roomCount = async () =>
+    (
+      (await f.db.execute(sql`select count(*)::int as n from rooms`)).rows[0] as {
+        n: number;
+      }
+    ).n;
+
+  async function turnFrames(token: string, conversationId: string, text: string) {
+    const sent = await send(token, conversationId, text);
+    expect(sent.statusCode).toBe(202);
+    const replyId = sent.json().assistantMessage.id as string;
+    await waitTerminal(token, conversationId, replyId);
+    return (await streamOf(token, conversationId, replyId)).frames;
+  }
+
+  it('IT-1 cards + a pending card, zero rooms; a second card supersedes; confirm creates one', async () => {
+    const ivy = await f.register('ivy-733@gogo.test');
+    const conversationId = await newConversation(ivy);
+    const rooms = await roomCount();
+
+    const first = await turnFrames(
+      ivy,
+      conversationId,
+      'tạo kèo đi ăn tối thứ 7 với 4 người ở Phường Cầu Giấy, Thành phố Hà Nội',
+    );
+    const cardIds = first
+      .filter((x) => x.event === 'card')
+      .map((x) => x.data.card.placeId as string);
+    expect(cardIds.length).toBeGreaterThan(0);
+    const p1 = first.find((x) => x.event === 'proposal')!.data.proposal;
+    expect(p1).toMatchObject({ kind: 'create_room', status: 'pending' });
+    const value = (field: string) =>
+      p1.values.find((v: { field: string }) => v.field === field) as
+        { value: unknown; origin: string } | undefined;
+    expect(value('participantCount')).toMatchObject({ value: 4, origin: 'explicit' });
+    expect(value('administrativeArea')).toMatchObject({ value: { ...f.area }, origin: 'explicit' });
+    // Owner Q-2: "thứ 7" with no hour is asked, not assumed.
+    expect(value('startAt')).toBeUndefined();
+    const asked = first
+      .find((x) => x.event === 'follow_ups')!
+      .data.groups.map((g: { field: string }) => g.field);
+    expect(asked).toEqual(['time', 'budget']);
+    expect(await roomCount()).toBe(rooms);
+
+    const second = await turnFrames(
+      ivy,
+      conversationId,
+      'tạo kèo cà phê với 4 người ở Phường Cầu Giấy, Thành phố Hà Nội',
+    );
+    const p2 = second.find((x) => x.event === 'proposal')!.data.proposal;
+    const p1Now = await f.inject({
+      method: 'GET',
+      url: `/v1/assistant/proposals/${p1.id}`,
+      token: ivy,
+    });
+    expect(p1Now.json().status).toBe('dismissed');
+    expect(await roomCount()).toBe(rooms);
+
+    const ok = await f.inject({
+      method: 'POST',
+      url: `/v1/assistant/proposals/${p2.id}/confirm`,
+      token: ivy,
+      headers: { 'idempotency-key': key() },
+      payload: {},
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(await roomCount()).toBe(rooms + 1);
+    const room = await f.inject({
+      method: 'GET',
+      url: `/v1/rooms/${ok.json().resource.id}`,
+      token: ivy,
+    });
+    expect(room.json()).toMatchObject({ participantCount: 4, myRole: 'host' });
+    const stale = await f.inject({
+      method: 'POST',
+      url: `/v1/assistant/proposals/${p1.id}/confirm`,
+      token: ivy,
+      headers: { 'idempotency-key': key() },
+      payload: {},
+    });
+    expect(stale.json().code).toBe('PROPOSAL_NOT_PENDING');
+    const again = await f.inject({
+      method: 'POST',
+      url: `/v1/assistant/proposals/${p2.id}/confirm`,
+      token: ivy,
+      headers: { 'idempotency-key': key() },
+      payload: {},
+    });
+    expect(again.json().code).toBe('PROPOSAL_NOT_PENDING');
+    expect(await roomCount()).toBe(rooms + 1);
+  });
+
+  it('IT-2 "Sài Gòn" asks the scope with dataset names, and searches nothing', async () => {
+    const jun = await f.register('jun-733@gogo.test');
+    const conversationId = await newConversation(jun);
+    const frames = await turnFrames(jun, conversationId, 'tạo kèo ăn tối ở Sài Gòn');
+    expect(frames.some((x) => x.event === 'card')).toBe(false);
+    expect(frames.some((x) => x.event === 'step' && x.data.step === 'searching_places')).toBe(true);
+    const groups = frames.find((x) => x.event === 'follow_ups')!.data.groups;
+    expect(groups[0]).toMatchObject({
+      field: 'area_scope',
+      options: [
+        { label: 'Cả Thành phố Hồ Chí Minh', text: 'Cả Thành phố Hồ Chí Minh' },
+        { label: 'Phường Sài Gòn', text: 'Phường Sài Gòn, Thành phố Hồ Chí Minh' },
+      ],
+    });
+    expect(frames.find((x) => x.event === 'proposal')!.data.proposal.kind).toBe('create_room');
+
+    // The ward chip, as the next message: cards scoped to the ward or the
+    // empty notice (the fixture has no place there) — never the whole city.
+    const ward = await turnFrames(jun, conversationId, 'Phường Sài Gòn, Thành phố Hồ Chí Minh');
+    const p = ward.find((x) => x.event === 'proposal')!.data.proposal;
+    expect(
+      p.values.find((v: { field: string }) => v.field === 'administrativeArea').value,
+    ).toMatchObject({ provinceCode: '79', communeCode: '26740' });
+  });
+});
+
 describe('privacy', () => {
   it('export includes the conversations; retention purges after 90 days; erasure deletes', async () => {
     const dave = await f.register('dave@gogo.test');

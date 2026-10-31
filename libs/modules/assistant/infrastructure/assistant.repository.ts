@@ -633,6 +633,24 @@ export class AssistantRepository {
     return rowsOf<ProposalRow>(res)[0]!;
   }
 
+  /**
+   * #733 D-3 — a new card of `kind` retires the conversation's earlier pending
+   * ones (status `dismissed`, assistant table only), so one stays live.
+   * Returns how many were retired.
+   */
+  async supersedeProposals(
+    conversationId: string,
+    kind: string,
+    exceptId: string,
+  ): Promise<number> {
+    const res = await this.db.execute(sql`
+      update assistant_proposals set status = 'dismissed', dismissed_at = now()
+      where conversation_id = ${conversationId} and kind = ${kind}
+        and status = 'pending' and id <> ${exceptId}
+      returning id`);
+    return rowsOf<{ id: string }>(res).length;
+  }
+
   async findProposal(userId: string, proposalId: string): Promise<ProposalRow | null> {
     const res = await this.db.execute(sql`
       select ${PROPOSAL_COLUMNS} from assistant_proposals p

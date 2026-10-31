@@ -17,6 +17,8 @@ import { newTurnState } from './turn-state';
 // Sunday 2026-11-01 01:00 +07: the coming Saturday is 2026-11-07.
 const NOW = new Date('2026-10-31T18:00:00Z');
 const SATURDAY_EVENING = '2026-11-07T12:00:00.000Z';
+const PLACE_1 = '0b6f3c1e-7d2a-4c11-9a3e-5f1d2c3b4a01';
+const PLACE_2 = '0b6f3c1e-7d2a-4c11-9a3e-5f1d2c3b4a02';
 
 const base = {
   in_scope: { type: 'noul', noul: 0.99 },
@@ -95,7 +97,7 @@ async function turn(
     {
       search: async (q: Record<string, unknown>) => {
         searches.push(q);
-        return { results: [{ id: 'pl-1' }, { id: 'pl-2' }] };
+        return { results: [{ id: PLACE_1 }, { id: PLACE_2 }] };
       },
     } as never,
     {

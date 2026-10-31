@@ -15,10 +15,15 @@ import { APP_CONFIG } from '../../shared/config';
 import type { Actor } from '../../identity/domain/actor';
 import { SearchService } from '../../search/application/search.service';
 import {
+  MAX_REQUEST_CHARS,
   fallbackIntent,
+  parseDayPart,
   parseIntentFacts,
+  type DayPart,
+  type IntentFacts,
   type IntentFallbackReason,
   type IntentTaxonomy,
+  type TimeHint,
 } from '../../search/domain/intent';
 import { createRoomSchema } from '../../rooms/presentation/dtos';
 import {
@@ -26,6 +31,7 @@ import {
   buildAssistantDecisionRequest,
   buildRelevanceRequest,
   fallbackAssistantDecision,
+  hasQuestionTerm,
   mapAssistantAnswers,
   type AssistantDecision,
   type AssistantRoute,
@@ -48,7 +54,11 @@ import { vnDayStart } from '../domain/limits';
 import { AssistantRepository } from '../infrastructure/assistant.repository';
 import { ASSISTANT_DECISION_PROVIDER, type AssistantConfig } from './assistant.config';
 import { AssistantAvailabilityService } from './assistant-availability.service';
-import { AssistantAreaResolver, type ResolvedArea } from './area-resolver.service';
+import {
+  AssistantAreaResolver,
+  type AreaResolution,
+  type ResolvedArea,
+} from './area-resolver.service';
 import { AssistantCardHydrator, type PlaceCard, type PlanCard } from './card-hydrator.service';
 import { GuideDocumentsService } from './guide-documents.service';
 import { AssistantTaxonomyService } from './taxonomy.service';
@@ -77,6 +87,25 @@ const MIN_COMPOSE_BUDGET_MS = 2_500;
 const HISTORY_LIMIT = 6;
 /** "Near the place I opened", when the request names no area. */
 const CONTEXT_RADIUS_M = 2_000;
+/** Earlier user turns a clarification answer may merge with (#733 D-5). */
+const MAX_EPISODE_EARLIER = 3;
+
+/** A history row, plus the quick-reply texts it offered when it asked. */
+type ContextTurn = HistoryTurn & { askedTexts: string[] | null };
+
+/**
+ * #733 D-5 — the request a turn answers: the current message alone, or merged
+ * with the earlier user turns it answers (each preceding assistant turn asked).
+ */
+type Episode = {
+  /** User texts, oldest first; the last one is the current message. */
+  texts: string[];
+  facts: IntentFacts;
+  dayPart: DayPart | null;
+  /** The current message's own area phrase (the newest decides, D-6). */
+  latestAreaText: string | null;
+  previousRequest: string | null;
+};
 
 /**
  * ADR-0036 — one reply: admission already happened (the send), so this is
@@ -153,14 +182,32 @@ export class AssistantOrchestrator {
 
     // ── context ──────────────────────────────────────────────────────────────
     const history = await guard.run(() => this.historyFor(input));
-    const previousRequest = [...history].reverse().find((t) => t.role === 'user')?.text ?? null;
     const taxonomy = await guard.run(() => this.taxonomy.taxonomy());
     const labels = this.taxonomy.labels(taxonomy);
-    const facts = parseIntentFacts(input.text);
+    const episode = await guard.run(() => this.episodeFor(input.text, history));
+    const { facts, dayPart } = episode;
+    const requestText = joinRequest(episode.texts);
+    if (episode.texts.length > 1) {
+      state.trace.episode = {
+        turns: episode.texts.length,
+        merged: (['partySize', 'budget', 'timeHint', 'areaText'] as const).filter(
+          (f) => facts[f] !== null,
+        ),
+      };
+    }
 
     // ── Jev decision 1 ───────────────────────────────────────────────────────
     const decision = await guard.run(() =>
-      this.decide(input, previousRequest, taxonomy, guard.signal, remaining(), state),
+      this.decide(
+        input,
+        requestText,
+        facts,
+        episode.previousRequest,
+        taxonomy,
+        guard.signal,
+        remaining(),
+        state,
+      ),
     );
     const c = decision.classification;
     state.trace.intent = {
@@ -186,6 +233,14 @@ export class AssistantOrchestrator {
     // `plan_help` is about a plan the person opened; without one, a question
     // about plans is a question about how GoGo works.
     if (route === 'plan_help' && input.context?.kind !== 'plan') route = 'gogo_guide';
+    // #733 D-2: an explicit "tạo kèo" is about places even when the model
+    // filed it under the guide or out of scope (the guards already cleared
+    // the action for how-to questions and injection phrases).
+    const createRoom = decision.action === 'create_room';
+    if (createRoom && (route === 'gogo_guide' || route === 'out_of_scope')) {
+      route = 'recommend_places';
+      state.trace.routeOverride = 'create_room';
+    }
     const clarification: string[] = [];
     const conflicting = c.clarification.reasons.includes('conflicting_preferences');
     if (conflicting) clarification.push('preference');
@@ -233,9 +288,19 @@ export class AssistantOrchestrator {
       if (!planCard.available) planCard = null;
     }
 
-    if (route === 'recommend_places') {
-      await guard.run(() => sink.emit({ type: 'step', step: 'searching_places' }));
-      const resolution = await guard.run(() => this.areas.resolve(input.text, facts.areaText));
+    // #733 D-3: a create_room turn resolves the area whatever the route, so a
+    // turn that still asks what to do already carries the area on the card.
+    const resolvesArea = route === 'recommend_places' || (createRoom && route === 'clarify');
+    if (resolvesArea) {
+      if (route === 'recommend_places') {
+        await guard.run(() => sink.emit({ type: 'step', step: 'searching_places' }));
+      }
+      const resolution: AreaResolution = await guard.run(() =>
+        this.areas.resolve(episode.texts.join('\n'), facts.areaText, {
+          text: input.text,
+          areaText: episode.latestAreaText,
+        }),
+      );
       area = resolution.kind === 'resolved' ? resolution.value : null;
       perPerson = perPersonBudget(facts, c.occasion.key);
       ctx.constraints = constraintsFrom(facts, area?.label ?? null, {
@@ -243,14 +308,22 @@ export class AssistantOrchestrator {
         perPersonOrigin: perPerson.origin,
       });
       const contextPlaceId = input.context?.kind === 'place' ? input.context.id : null;
-      if (!area && !contextPlaceId) {
+      if (resolution.kind === 'scope_choice') {
+        // #733 D-6: a city and a ward of the same name — the person chooses.
+        clarification.push('area_scope');
+        ctx.areaScope = {
+          province: resolution.province,
+          communes: resolution.communes.slice(0, 5),
+        };
+      } else if (!area && !contextPlaceId) {
         // No area and nothing to anchor on: a nationwide list would be noise.
         clarification.push('area');
         ctx.areaUnrecognized = facts.areaText !== null || resolution.kind === 'ambiguous';
-      } else {
+      } else if (route === 'recommend_places') {
         placeCards = await guard.run(() =>
           this.findPlaces(
             input,
+            requestText,
             decision,
             area,
             perPerson.amount,
@@ -262,12 +335,29 @@ export class AssistantOrchestrator {
             labels,
           ),
         );
-        if (!facts.budget && placeCards.length > 0) clarification.push('budget');
+        if (!createRoom && !facts.budget && placeCards.length > 0) clarification.push('budget');
+      }
+      if (createRoom) {
+        // #733 D-4: ask only what is missing; the card carries the rest as
+        // assumed. Owner Q-2: a day with no hour is asked, never assumed.
+        if (!startFor(facts.timeHint, dayPart)) {
+          clarification.push('time');
+          ctx.timeDay = isDayHint(facts.timeHint) ? facts.timeHint : null;
+        }
+        if (facts.partySize === null && c.occasion.key !== 'couple') {
+          clarification.push('party_size');
+        }
+        if (!facts.budget) clarification.push('budget');
       }
       ctx.places = await guard.run(() => this.groundedPlaces(placeCards, labels));
       state.trace.retrieval = {
         areaResolved: area !== null,
-        areaAmbiguous: resolution.kind === 'ambiguous',
+        areaAmbiguous:
+          resolution.kind === 'scope_choice'
+            ? 'scope'
+            : resolution.kind === 'ambiguous'
+              ? 'communes'
+              : false,
         candidates: placeCards.length,
         perPersonBudget: perPerson.amount,
       };
@@ -311,13 +401,17 @@ export class AssistantOrchestrator {
     }
 
     // ── proposal (prepared, never performed) ────────────────────────────────
-    // Only a turn that is about places or the opened plan may prepare one: an
-    // out-of-scope or unclear request ("…and create a room now") never does.
+    // Only a turn that is about places, the opened plan or an explicit
+    // "tạo kèo" may prepare one (#733 D-3: shown at once, owner Q-1); an
+    // out-of-scope request never does — the guards clear its action.
     const proposal =
-      route === 'recommend_places' || route === 'plan_help'
+      (createRoom && route !== 'out_of_scope') ||
+      route === 'recommend_places' ||
+      route === 'plan_help'
         ? this.prepareProposal(
             decision,
             facts,
+            dayPart,
             area,
             perPerson,
             placeCards,
@@ -342,11 +436,11 @@ export class AssistantOrchestrator {
       });
     }
 
+    // An area clarification (a new address, or the scope of one) is the
+    // deterministic question (owner 2026-10-28), never composed (Sol N-01).
+    const areaAsked = clarification.includes('area') || clarification.includes('area_scope');
     const composable =
-      // An area clarification is the deterministic new-address question
-      // (owner 2026-10-28), never composed (Sol N-01).
-      (route === 'recommend_places' &&
-        (placeCards.length > 0 || (conflicting && !clarification.includes('area')))) ||
+      (route === 'recommend_places' && (placeCards.length > 0 || (conflicting && !areaAsked))) ||
       (route === 'gogo_guide' && ctx.guide.length > 0) ||
       (route === 'plan_help' && ctx.plan !== null);
     let status: TurnOutcome['status'] = 'complete';
@@ -393,6 +487,21 @@ export class AssistantOrchestrator {
           expiresAt: new Date(Date.now() + PROPOSAL_TTL_MS),
         });
         state.proposalIds.push(row.id);
+        if (row.kind === 'create_room') {
+          // #733 D-3: one live room card per conversation.
+          const superseded = await this.repo.supersedeProposals(
+            input.conversationId,
+            'create_room',
+            row.id,
+          );
+          if (superseded > 0) {
+            this.metrics.increment(
+              'assistant_proposals_total',
+              { outcome: 'superseded' },
+              superseded,
+            );
+          }
+        }
         await sink.emit({
           type: 'proposal',
           proposal: {
@@ -413,7 +522,7 @@ export class AssistantOrchestrator {
 
     const noAnswer =
       (route === 'gogo_guide' && ctx.guide.length === 0) ||
-      (route === 'recommend_places' && placeCards.length === 0 && !clarification.includes('area'));
+      (route === 'recommend_places' && placeCards.length === 0 && !areaAsked);
     if (fallbackReason) {
       status = 'fallback';
       await sink.emit({
@@ -436,37 +545,101 @@ export class AssistantOrchestrator {
 
   // ── stages ───────────────────────────────────────────────────────────────
 
-  private async historyFor(input: TurnInput): Promise<HistoryTurn[]> {
+  private async historyFor(input: TurnInput): Promise<ContextTurn[]> {
     const rows = await this.repo.history(input.conversationId, input.messageId, HISTORY_LIMIT + 1);
     // The newest user turn is the question itself; it goes in separately.
     const last = rows[rows.length - 1];
     if (last && last.role === 'user' && last.text === input.text) rows.pop();
-    return rows.slice(-HISTORY_LIMIT).map((r) => ({ role: r.role, text: r.text }));
+    return rows.slice(-HISTORY_LIMIT).map((r) => ({
+      role: r.role,
+      text: r.text,
+      askedTexts:
+        r.role === 'assistant' && r.follow_ups?.length
+          ? r.follow_ups.flatMap((g) => (g.options ?? []).map((o) => o.text))
+          : null,
+    }));
+  }
+
+  /**
+   * #733 D-5 — walking back from the current message, the user turns whose
+   * following assistant turn asked (bounded by the history window). They
+   * merge only when the current message is answer-shaped: it carries a fact,
+   * names a unit by its full dataset name, or is one of the offered quick
+   * replies — and asks no how-to question (D-1). Newest non-null fact wins.
+   */
+  private async episodeFor(text: string, history: ContextTurn[]): Promise<Episode> {
+    const own = parseIntentFacts(text);
+    const ownDayPart = parseDayPart(text);
+    const lastUser = (turns: ContextTurn[]) =>
+      [...turns].reverse().find((t) => t.role === 'user')?.text ?? null;
+    const single: Episode = {
+      texts: [text],
+      facts: own,
+      dayPart: ownDayPart,
+      latestAreaText: own.areaText,
+      previousRequest: lastUser(history),
+    };
+    const earlier: string[] = [];
+    let j = history.length - 1;
+    while (j >= 1 && earlier.length < MAX_EPISODE_EARLIER) {
+      const asked = history[j]!;
+      const user = history[j - 1]!;
+      if (asked.role !== 'assistant' || !asked.askedTexts || user.role !== 'user') break;
+      earlier.unshift(user.text);
+      j -= 2;
+    }
+    if (earlier.length === 0 || hasQuestionTerm(text)) return single;
+    const offered = history[history.length - 1]!.askedTexts ?? [];
+    const hasFact =
+      own.partySize !== null ||
+      own.budget !== null ||
+      own.timeHint !== null ||
+      own.areaText !== null ||
+      ownDayPart !== null;
+    const answer =
+      hasFact || offered.includes(text.trim()) || (await this.areas.hasExactUnitName(text));
+    if (!answer) return single;
+
+    const texts = [...earlier, text];
+    const facts: IntentFacts = { partySize: null, budget: null, timeHint: null, areaText: null };
+    let dayPart: DayPart | null = null;
+    for (const t of texts) {
+      const f = parseIntentFacts(t);
+      if (f.partySize !== null) facts.partySize = f.partySize;
+      if (f.budget !== null) facts.budget = f.budget;
+      if (f.timeHint !== null) {
+        // A new day without an hour does not keep an hour said for another.
+        if (f.timeHint !== facts.timeHint) dayPart = null;
+        facts.timeHint = f.timeHint;
+      }
+      if (f.areaText !== null) facts.areaText = f.areaText;
+      dayPart = parseDayPart(t) ?? dayPart;
+    }
+    return {
+      texts,
+      facts,
+      dayPart,
+      latestAreaText: own.areaText,
+      previousRequest: lastUser(history.slice(0, j + 1)),
+    };
   }
 
   private async decide(
     input: TurnInput,
+    text: string,
+    facts: IntentFacts,
     previousRequest: string | null,
     taxonomy: IntentTaxonomy,
     signal: AbortSignal,
     budgetMs: number,
     state: TurnState,
   ): Promise<AssistantDecision> {
-    const facts = parseIntentFacts(input.text);
     const openedFrom = input.context?.kind ?? null;
     const fallback = (reason: IntentFallbackReason) =>
-      fallbackAssistantDecision(
-        input.text,
-        fallbackIntent(input.text, facts, taxonomy, reason),
-        openedFrom,
-      );
+      fallbackAssistantDecision(text, fallbackIntent(text, facts, taxonomy, reason), openedFrom);
     if (!this.decisions) return fallback('disabled');
-    if (input.text.trim().length < 2) return fallback('empty_request');
-    const request = buildAssistantDecisionRequest(
-      input.text,
-      { previousRequest, openedFrom },
-      taxonomy,
-    );
+    if (text.trim().length < 2) return fallback('empty_request');
+    const request = buildAssistantDecisionRequest(text, { previousRequest, openedFrom }, taxonomy);
     const started = Date.now();
     // The adapter has its own timeout; the turn's remaining budget caps it too.
     const budget = AbortSignal.timeout(
@@ -482,7 +655,7 @@ export class AssistantOrchestrator {
         provider: 'jev',
         outcome: 'ok',
       });
-      return mapAssistantAnswers(facts, response.answers, response.model);
+      return mapAssistantAnswers(facts, response.answers, response.model, text);
     } catch (err) {
       endJevCall(state, null);
       if (signal.aborted) throw err;
@@ -514,6 +687,7 @@ export class AssistantOrchestrator {
 
   private async findPlaces(
     input: TurnInput,
+    requestText: string,
     decision: AssistantDecision,
     area: ResolvedArea | null,
     perPersonBudget: number | null,
@@ -564,7 +738,7 @@ export class AssistantOrchestrator {
     const wantsSemantic = c.moods.length + c.settings.length > 0;
     if (this.decisions && wantsSemantic && ids.length > CARD_LIMIT && remaining() > 5_000) {
       ids = await this.rankByRelevance(
-        input.text,
+        requestText,
         ids.slice(0, RELEVANCE_MAX),
         signal,
         remaining(),
@@ -688,7 +862,8 @@ export class AssistantOrchestrator {
 
   private prepareProposal(
     decision: AssistantDecision,
-    facts: ReturnType<typeof parseIntentFacts>,
+    facts: IntentFacts,
+    dayPart: DayPart | null,
     area: ResolvedArea | null,
     perPerson: { amount: number | null; origin: Origin },
     places: PlaceCard[],
@@ -718,11 +893,11 @@ export class AssistantOrchestrator {
         v('participantCount', participants, facts.partySize !== null ? 'explicit' : 'assumed'),
         v('decisionMode', couple ? 'match' : 'vote', 'assumed'),
       ];
-      const start = startFor(facts.timeHint);
+      const start = startFor(facts.timeHint, dayPart);
       if (start) {
-        values.push(v('startAt', start.toISOString(), 'assumed'));
+        values.push(v('startAt', start.at.toISOString(), start.origin));
         values.push(
-          v('endAt', new Date(start.getTime() + 3 * 3600 * 1000).toISOString(), 'assumed'),
+          v('endAt', new Date(start.at.getTime() + 3 * 3600 * 1000).toISOString(), 'assumed'),
         );
       }
       if (facts.budget) {
@@ -1004,20 +1179,53 @@ export function perPersonBudget(
   return { amount: b.amount, origin: 'assumed' };
 }
 
-/** The local evening the hint names, 19:00 Asia/Ho_Chi_Minh; null when none. */
-function startFor(hint: string | null, now = new Date()): Date | null {
+/** Local hours a part of the day stands for (#733 Q-2), Asia/Ho_Chi_Minh. */
+const DAY_PART_HOUR: Record<DayPart, number> = { morning: 9, noon: 12, afternoon: 15, evening: 19 };
+
+const isDayHint = (hint: TimeHint | null): hint is 'saturday' | 'sunday' | 'weekend' =>
+  hint === 'saturday' || hint === 'sunday' || hint === 'weekend';
+
+/**
+ * The start the hint names; null when none can be stated. Today, tonight and
+ * tomorrow are the local evening, 19:00, assumed. A named day (#733, owner
+ * Q-2) needs its part of the day: "thứ 7 tối" is the coming Saturday 19:00,
+ * as said (explicit); "thứ 7" alone has no start and the hour is asked.
+ */
+function startFor(
+  hint: TimeHint | null,
+  dayPart: DayPart | null,
+  now = new Date(),
+): { at: Date; origin: 'explicit' | 'assumed' } | null {
   const today = vnDayStart(now).getTime();
   const evening = (dayOffset: number) =>
     new Date(today + dayOffset * 86_400_000 + 19 * 3600 * 1000);
+  const assumed = (at: Date) => ({ at, origin: 'assumed' as const });
   if (hint === 'tonight' || hint === 'today') {
     const e = evening(0);
-    return e.getTime() > now.getTime()
-      ? e
-      : new Date(Math.ceil(now.getTime() / 900_000) * 900_000 + 900_000);
+    return assumed(
+      e.getTime() > now.getTime()
+        ? e
+        : new Date(Math.ceil(now.getTime() / 900_000) * 900_000 + 900_000),
+    );
   }
-  if (hint === 'tomorrow') return evening(1);
-  if (hint === 'now') return new Date(Math.ceil(now.getTime() / 900_000) * 900_000);
+  if (hint === 'tomorrow') return assumed(evening(1));
+  if (hint === 'now') return assumed(new Date(Math.ceil(now.getTime() / 900_000) * 900_000));
+  if (isDayHint(hint) && dayPart) {
+    // The local weekday: noon of the local day, read in UTC.
+    const weekday = new Date(today + 12 * 3600 * 1000).getUTCDay();
+    const target = hint === 'sunday' ? 0 : 6;
+    let at = today + ((target - weekday + 7) % 7) * 86_400_000 + DAY_PART_HOUR[dayPart] * 3600_000;
+    if (at <= now.getTime()) at += 7 * 86_400_000;
+    // "Cuối tuần tối" names neither day: Saturday is a guess.
+    return { at: new Date(at), origin: hint === 'weekend' ? 'assumed' : 'explicit' };
+  }
   return null;
+}
+
+/** The episode's user texts for Jev, cut from the oldest end (#733 D-5). */
+function joinRequest(texts: readonly string[]): string {
+  const joined = texts.join('\n');
+  return joined.length > MAX_REQUEST_CHARS ? joined.slice(-MAX_REQUEST_CHARS) : joined;
 }
 
 /** The proposal values in `createRoom`'s request shape. */
