@@ -87,8 +87,14 @@ const MIN_COMPOSE_BUDGET_MS = 2_500;
 const HISTORY_LIMIT = 6;
 /** "Near the place I opened", when the request names no area. */
 const CONTEXT_RADIUS_M = 2_000;
-/** Earlier user turns a clarification answer may merge with (#733 D-5). */
-const MAX_EPISODE_EARLIER = 3;
+/**
+ * Earlier user turns a clarification answer may merge with (#733 D-5): a
+ * room card asks up to six items two at a time, plus a scope question and a
+ * correction (Astra A-F-01). The episode reads its own, longer history
+ * window; the composer still sees `HISTORY_LIMIT` rows.
+ */
+const MAX_EPISODE_EARLIER = 5;
+const EPISODE_HISTORY_LIMIT = 2 * MAX_EPISODE_EARLIER;
 
 /** A history row, plus the quick-reply texts it offered when it asked. */
 type ContextTurn = HistoryTurn & { askedTexts: string[] | null };
@@ -301,10 +307,12 @@ export class AssistantOrchestrator {
         await guard.run(() => sink.emit({ type: 'step', step: 'searching_places' }));
       }
       const resolution: AreaResolution = await guard.run(() =>
-        this.areas.resolve(episode.texts.join('\n'), facts.areaText, {
-          text: input.text,
-          areaText: episode.latestAreaText,
-        }),
+        this.areas.resolve(
+          episode.texts.join('\n'),
+          facts.areaText,
+          { text: input.text, areaText: episode.latestAreaText },
+          episode.texts.map((t) => ({ text: t, areaText: parseIntentFacts(t).areaText })),
+        ),
       );
       area = resolution.kind === 'resolved' ? resolution.value : null;
       perPerson = perPersonBudget(facts, c.occasion.key);
@@ -458,7 +466,15 @@ export class AssistantOrchestrator {
         fallbackReason = 'timeout';
       } else {
         await sink.emit({ type: 'step', step: 'writing' });
-        const composed = await this.compose(input, ctx, history, state, sink, signal, deadline);
+        const composed = await this.compose(
+          input,
+          ctx,
+          history.slice(-HISTORY_LIMIT),
+          state,
+          sink,
+          signal,
+          deadline,
+        );
         if (composed.kind === 'fallback') fallbackReason = composed.reason;
         else if (composed.kind === 'truncated') status = 'truncated';
       }
@@ -551,11 +567,15 @@ export class AssistantOrchestrator {
   // ── stages ───────────────────────────────────────────────────────────────
 
   private async historyFor(input: TurnInput): Promise<ContextTurn[]> {
-    const rows = await this.repo.history(input.conversationId, input.messageId, HISTORY_LIMIT + 1);
+    const rows = await this.repo.history(
+      input.conversationId,
+      input.messageId,
+      EPISODE_HISTORY_LIMIT + 1,
+    );
     // The newest user turn is the question itself; it goes in separately.
     const last = rows[rows.length - 1];
     if (last && last.role === 'user' && last.text === input.text) rows.pop();
-    return rows.slice(-HISTORY_LIMIT).map((r) => ({
+    return rows.slice(-EPISODE_HISTORY_LIMIT).map((r) => ({
       role: r.role,
       text: r.text,
       askedTexts:
@@ -584,26 +604,33 @@ export class AssistantOrchestrator {
       latestAreaText: own.areaText,
       previousRequest: lastUser(history),
     };
+    // Each link must hold (Astra A-F-04): a turn is merged only when the turn
+    // after it answered it, so a fresh request typed under the chips is a
+    // boundary the walk never crosses later.
+    const answers = async (message: string, offered: readonly string[]) => {
+      if (hasQuestionTerm(message)) return false;
+      const f = parseIntentFacts(message);
+      const hasFact =
+        f.partySize !== null ||
+        f.budget !== null ||
+        f.timeHint !== null ||
+        f.areaText !== null ||
+        parseDayPart(message) !== null;
+      return hasFact || offered.includes(message.trim()) || (await this.areas.namesArea(message));
+    };
     const earlier: string[] = [];
+    let current = text;
     let j = history.length - 1;
     while (j >= 1 && earlier.length < MAX_EPISODE_EARLIER) {
       const asked = history[j]!;
       const user = history[j - 1]!;
       if (asked.role !== 'assistant' || !asked.askedTexts || user.role !== 'user') break;
+      if (!(await answers(current, asked.askedTexts))) break;
       earlier.unshift(user.text);
+      current = user.text;
       j -= 2;
     }
-    if (earlier.length === 0 || hasQuestionTerm(text)) return single;
-    const offered = history[history.length - 1]!.askedTexts ?? [];
-    const hasFact =
-      own.partySize !== null ||
-      own.budget !== null ||
-      own.timeHint !== null ||
-      own.areaText !== null ||
-      ownDayPart !== null;
-    const answer =
-      hasFact || offered.includes(text.trim()) || (await this.areas.hasExactUnitName(text));
-    if (!answer) return single;
+    if (earlier.length === 0) return single;
 
     const texts = [...earlier, text];
     const facts: IntentFacts = { partySize: null, budget: null, timeHint: null, areaText: null };
@@ -1229,10 +1256,19 @@ function startFor(
   return null;
 }
 
-/** The episode's user texts for Jev, cut from the oldest end (#733 D-5). */
+/**
+ * The episode's user texts for Jev (#733 D-5). Over the cap, the request that
+ * opened the episode keeps its head (it carries the action and the kind of
+ * place, Astra A-F-01) and the newest answers fill the rest.
+ */
 function joinRequest(texts: readonly string[]): string {
   const joined = texts.join('\n');
-  return joined.length > MAX_REQUEST_CHARS ? joined.slice(-MAX_REQUEST_CHARS) : joined;
+  if (joined.length <= MAX_REQUEST_CHARS || texts.length < 2) {
+    return joined.slice(-MAX_REQUEST_CHARS);
+  }
+  const head = texts[0]!.slice(0, Math.floor(MAX_REQUEST_CHARS / 2));
+  const rest = texts.slice(1).join('\n');
+  return `${head}\n${rest.slice(-(MAX_REQUEST_CHARS - head.length - 1))}`;
 }
 
 /** The proposal values in `createRoom`'s request shape. */

@@ -1063,6 +1063,10 @@ describe('create a room through the chat (GoGo-BE#733)', () => {
     expect(asked).toEqual(['time', 'budget']);
     expect(await roomCount()).toBe(rooms);
 
+    // Astra A-F-06: p1 is mid-confirm when the newer card arrives.
+    await f.db.execute(
+      sql`update assistant_proposals set status = 'confirming' where id = ${p1.id}`,
+    );
     const second = await turnFrames(
       ivy,
       conversationId,
@@ -1075,6 +1079,8 @@ describe('create a room through the chat (GoGo-BE#733)', () => {
     const seeds = p2.values.find((v: { field: string }) => v.field === 'seedPlaceIds').value;
     expect(seeds.length).toBeGreaterThan(0);
     for (const id of seeds) expect(p2Cards).toContain(id);
+    // A refused confirm hands p1 back — retired, since p2 replaced it.
+    await f.app.get(AssistantRepository).releaseProposal(p1.id);
     const p1Now = await f.inject({
       method: 'GET',
       url: `/v1/assistant/proposals/${p1.id}`,

@@ -34,6 +34,14 @@ const PROVINCE_ALIASES: [RegExp, string][] = [
 /** The word right before a phrase that says which level it means (D-6). */
 const PROVINCE_QUALIFIER = /(?:^| )(?:thanh pho|tp|tinh|ca) $/;
 const COMMUNE_QUALIFIER = /(?:^| )(?:phuong|xa|dac khu) $/;
+/** A pre-2025 district or town as typed ("Quận 1", "Huyện Củ Chi", "Q.3"). */
+const LEGACY_LOCALITY = /^(?:quan |huyen |thi xa |q\.?\s*\d)/;
+/** Locative words a bare answer may start with ("ở Bến Thành"). */
+const LOCATIVE = /^ (?:o|tai|khu vuc|khu|gan|quanh) /;
+
+const meaningful = (t: string | null) =>
+  t !== null && !QUALIFIER_ONLY.has(normalizeVietnamese(t).replace(/\./g, '').trim()) ? t : null;
+
 /** An area phrase that is only a level word ("Ở TP.HCM" parses to "TP"). */
 const QUALIFIER_ONLY = new Set(['tp', 'thanh pho', 'tinh', 'phuong', 'xa']);
 
@@ -65,23 +73,31 @@ export class AssistantAreaResolver {
   constructor(private readonly query: AdministrativeQueryService) {}
 
   /**
-   * #733 D-5 — whether the text names a current unit by its full dataset name
-   * ("Phường Sài Gòn", "Thành phố Hồ Chí Minh"). Read before the decision
-   * call, to tell an answer from a fresh request; a snapshot failure is
-   * "no", never an error.
+   * #733 D-5 — whether the text, on its own, names an area: a current unit's
+   * full dataset name ("Phường Sài Gòn"), a province alias ("Hà Nội", "SG"),
+   * or a bare current unit name typed as the whole answer ("Bến Thành").
+   * Read before the decision call, to tell an answer from a fresh request; a
+   * snapshot failure is "no", never an error.
    */
-  async hasExactUnitName(text: string): Promise<boolean> {
+  async namesArea(text: string): Promise<boolean> {
     try {
-      return exactHits(await this.query.snapshot(), fold(text)).length > 0;
+      const snapshot = await this.query.snapshot();
+      return namesAreaIn(snapshot, { text, areaText: null });
     } catch {
       return false;
     }
   }
 
+  /**
+   * `messages` (#733 D-5/D-6, oldest first) are the episode's user turns:
+   * the newest one that names an area decides (Astra A-F-03), so a later
+   * correction outlives the turns after it. Without them, `latest` alone.
+   */
   async resolve(
     fullText: string,
     areaText: string | null,
     latest: LatestMessage = { text: fullText, areaText },
+    messages?: readonly LatestMessage[],
   ): Promise<AreaResolution> {
     let snapshot: Snapshot;
     try {
@@ -89,8 +105,18 @@ export class AssistantAreaResolver {
     } catch {
       return { kind: 'none' };
     }
-    const folded = fold(fullText);
-    const foldedLatest = fold(latest.text);
+    const list = messages && messages.length > 0 ? messages : [latest];
+    const chosen =
+      [...list].reverse().find((m) => namesAreaIn(snapshot, m)) ?? list[list.length - 1]!;
+    return this.resolveMessage(snapshot, chosen, fold(fullText));
+  }
+
+  private resolveMessage(
+    snapshot: Snapshot,
+    message: LatestMessage,
+    folded: string,
+  ): AreaResolution {
+    const own = fold(message.text);
 
     const provinceArea = (p: { code: string; name: string }): AreaResolution => ({
       kind: 'resolved',
@@ -118,37 +144,25 @@ export class AssistantAreaResolver {
       };
     };
 
-    // The phrase under test: the newest message's area, else an alias in it,
-    // else the episode's area, else an alias anywhere.
-    const meaningful = (t: string | null) =>
-      t !== null && !QUALIFIER_ONLY.has(normalizeVietnamese(t).replace(/\./g, '').trim())
-        ? t
-        : null;
-    // 0. An exact level-qualified name wins — the newest message first, so a
-    //    chip answer settles what the request before it left open.
-    // Older episode text is scanned only when the newest message names no
-    // area of its own (Sol F-03): "Ở Hà Nội" answers over an older full name.
-    const latestNamesArea = meaningful(latest.areaText) !== null || aliasIn(foldedLatest) !== null;
-    const scans =
-      foldedLatest === folded || latestNamesArea ? [foldedLatest] : [foldedLatest, folded];
-    for (const text of scans) {
-      const hit = exactResolution(snapshot, text);
-      if (hit === 'ambiguous') return { kind: 'ambiguous' };
-      if (hit?.level === 'PROVINCE') return provinceArea(hit);
-      if (hit) return communeArea(hit);
-    }
+    // Owner 2026-10-28 / I-8 (Astra A-F-02): a pre-2025 district is not
+    // recognised, and a province named next to it ("Quận 1, Thành phố Hồ Chí
+    // Minh") does not widen it to the province.
+    const area = meaningful(message.areaText);
+    if (area && LEGACY_LOCALITY.test(normalizeVietnamese(area))) return { kind: 'none' };
 
-    const phrase =
-      meaningful(latest.areaText) ??
-      aliasIn(foldedLatest)?.phrase ??
-      meaningful(areaText) ??
-      aliasIn(folded)?.phrase ??
-      null;
+    // 0. An exact level-qualified name in the message wins.
+    const hit = exactResolution(snapshot, own);
+    if (hit === 'ambiguous') return { kind: 'ambiguous' };
+    if (hit?.level === 'PROVINCE') return provinceArea(hit);
+    if (hit) return communeArea(hit);
 
-    // A province named anywhere else in the text scopes the commune search.
+    // The phrase under test: the message's area, else an alias in it, else a
+    // bare unit name typed as the whole message.
+    const phrase = area ?? aliasIn(own)?.phrase ?? bareName(snapshot, own) ?? null;
+
+    // A province named elsewhere (this message first) scopes the commune search.
     const byAlias = (target: string) => provinceByAlias(snapshot, target);
-    const contextProvince =
-      provinceNamedIn(snapshot, foldedLatest) ?? provinceNamedIn(snapshot, folded);
+    const contextProvince = provinceNamedIn(snapshot, own) ?? provinceNamedIn(snapshot, folded);
 
     if (!phrase) return contextProvince ? provinceArea(contextProvince) : { kind: 'none' };
     const needle = strip(phrase);
@@ -165,13 +179,11 @@ export class AssistantAreaResolver {
         : undefined) ??
       null;
 
-    // The level word right before the phrase, read before `strip` drops it.
-    // The newest message first: a typed "cả Sài Gòn" answers the question
-    // an earlier "ở Sài Gòn" raised.
+    // The level word right before the phrase, read in this message before
+    // `strip` drops it: a typed "cả Sài Gòn" answers the scope question.
     const target = fold(phrase);
-    const source = foldedLatest.includes(target) ? foldedLatest : folded;
-    const at = source.indexOf(target);
-    const before = at >= 0 ? source.slice(0, at + 1) : '';
+    const at = own.indexOf(target);
+    const before = at >= 0 ? own.slice(0, at + 1) : '';
     const qualifier = PROVINCE_QUALIFIER.test(before)
       ? 'province'
       : COMMUNE_QUALIFIER.test(before)
@@ -237,6 +249,27 @@ function provinceNamedIn(snapshot: Snapshot, folded: string): Unit | null {
       return n.length >= 4 && folded.includes(` ${n} `);
     }) ??
     null
+  );
+}
+
+/** The whole message is a current unit's or province's bare name (Astra A-F-05). */
+function bareName(snapshot: Snapshot, folded: string): string | null {
+  const answer = folded.replace(LOCATIVE, ' ').trim();
+  if (answer.length < 2) return null;
+  for (const entry of snapshot.currentSearch ?? []) {
+    if (strip(entry.unit.name) === answer) return answer;
+  }
+  return snapshot.currentProvinces.some((p) => strip(p.name) === answer) ? answer : null;
+}
+
+/** The message names an area on its own (D-5 gate, A-F-03 newest-first). */
+function namesAreaIn(snapshot: Snapshot, message: LatestMessage): boolean {
+  const own = fold(message.text);
+  return (
+    meaningful(message.areaText) !== null ||
+    aliasIn(own) !== null ||
+    exactHits(snapshot, own).length > 0 ||
+    bareName(snapshot, own) !== null
   );
 }
 

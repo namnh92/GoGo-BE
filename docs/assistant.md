@@ -527,6 +527,13 @@ No contract change: `AssistantFollowUpGroup.field` is a free string; new values 
   deterministic delta, one `area_scope` group — "Cả <province fullName>" then each commune's
   `fullName` (text `<fullName>, <province fullName>`, ≤ 5). Data-driven; on v5.1.0 Phường Sài Gòn
   (26740) is the case. Old districts stay unrecognised (owner 2026-10-28).
+- **After Sol r1 / Astra r1.** A `create_room` turn with no known kind of place asks the activity on both
+  paths; `create_room` from an opened plan takes the room flow; the room `type` is `explicit` only from a
+  stated party size. The episode reads up to five earlier user turns from its own 10-row window (the
+  composer still sees 6), each link gated on its own (a fresh request is a boundary), and the newest
+  message that names an area decides — a bare name ("Hà Nội", "Bến Thành") counts. A pre-2025 district
+  stays `none` even with its city named in full. Insert + supersede is one statement; a refused confirm of
+  a replaced card is retired (`dismissed`), not handed back.
 - **Never written before confirm (D-7).** Unchanged; the int test counts `rooms` before and after.
 
 ## Open items

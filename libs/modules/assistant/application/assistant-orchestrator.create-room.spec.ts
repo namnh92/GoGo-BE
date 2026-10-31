@@ -372,4 +372,61 @@ describe('#733 a "tạo kèo" turn', () => {
     expect(fields(r)).toContain('area_scope');
     expect(r.text).toMatch(/Phường Sài Gòn/);
   });
+
+  it('Astra A-F-01 a long clarification chain keeps the request that opened it', async () => {
+    const r = await turn('6 người', {
+      answers: null,
+      history: [
+        said('tạo kèo cà phê'),
+        asked('area'),
+        said('Ở Hà Nội'),
+        asked('time'),
+        said('Thứ 7'),
+        asked('time'),
+        said('Thứ 7 tối'),
+        asked('party_size'),
+      ],
+    });
+    expect(r.proposal?.kind).toBe('create_room');
+    expect(r.value('participantCount')).toMatchObject({ value: 6, origin: 'explicit' });
+    expect(r.value('administrativeArea')).toMatchObject({ value: { provinceCode: '01' } });
+    expect(r.value('startAt')).toMatchObject({ value: SATURDAY_EVENING });
+  });
+
+  it('Astra A-F-03 an area correction outlives the turns after it', async () => {
+    const r = await turn('4 người', {
+      history: [
+        said('tạo kèo cà phê ở Phường Bến Thành, Thành phố Hồ Chí Minh'),
+        asked('time'),
+        said('Ở Hà Nội'),
+        asked('party_size'),
+      ],
+    });
+    expect(r.value('administrativeArea')).toMatchObject({
+      value: { provinceCode: '01', communeCode: null },
+    });
+  });
+
+  it('Astra A-F-04 a fresh request under the chips is a boundary the walk keeps', async () => {
+    const r = await turn('Ở Hà Nội', {
+      history: [
+        said('tạo kèo ăn tối 4 người'),
+        asked('area'),
+        said('tìm quán cà phê'),
+        asked('area'),
+      ],
+    });
+    expect(r.jevRequests[0]).not.toContain('tạo kèo ăn tối');
+    expect(r.jevRequests[0]).toContain('tìm quán cà phê');
+    expect(r.value('participantCount')).not.toMatchObject({ value: 4, origin: 'explicit' });
+  });
+
+  it('Astra A-F-05 a bare typed area answers the area question', async () => {
+    const r = await turn('Hà Nội', {
+      answers: null,
+      history: [said('tạo kèo cà phê'), asked('area')],
+    });
+    expect(r.proposal?.kind).toBe('create_room');
+    expect(r.value('administrativeArea')).toMatchObject({ value: { provinceCode: '01' } });
+  });
 });

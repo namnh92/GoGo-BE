@@ -683,9 +683,25 @@ export class AssistantRepository {
     return rowsOf<ProposalRow>(res)[0] ?? null;
   }
 
+  /**
+   * A refused confirm hands the card back — unless a newer pending card of
+   * the same kind replaced it meanwhile (#733 D-3, Astra A-F-06): then it is
+   * retired, so a conversation never ends with two live room cards.
+   */
   async releaseProposal(proposalId: string): Promise<void> {
     await this.db.execute(sql`
-      update assistant_proposals set status = 'pending' where id = ${proposalId} and status = 'confirming'`);
+      update assistant_proposals p set
+        status = case when exists (
+          select 1 from assistant_proposals n
+          where n.conversation_id = p.conversation_id and n.kind = p.kind
+            and n.status = 'pending' and n.id <> p.id and n.created_at > p.created_at
+        ) then 'dismissed' else 'pending' end,
+        dismissed_at = case when exists (
+          select 1 from assistant_proposals n
+          where n.conversation_id = p.conversation_id and n.kind = p.kind
+            and n.status = 'pending' and n.id <> p.id and n.created_at > p.created_at
+        ) then now() else p.dismissed_at end
+      where p.id = ${proposalId} and p.status = 'confirming'`);
   }
 
   async confirmProposal(

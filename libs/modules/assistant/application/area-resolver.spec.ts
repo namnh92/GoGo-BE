@@ -135,6 +135,18 @@ describe('#733 province alias that is also a commune name', () => {
     expect(r).toMatchObject({ kind: 'resolved', value: { area: { provinceCode: '01' } } });
   });
 
+  it('Astra A-F-02 an old district stays unrecognised with its city named in full', async () => {
+    expect(await kindOf('cà phê ở Quận 1, Thành phố Hồ Chí Minh', 'Quận 1')).toBe('none');
+    expect(await kindOf('cà phê ở Huyện Củ Chi, TP HCM', 'Huyện Củ Chi')).toBe('none');
+  });
+
+  it('Astra A-F-05 a bare name typed as the whole answer names the area', async () => {
+    expect(await v5.namesArea('Hà Nội')).toBe(true);
+    expect(await v5.namesArea('Bến Thành')).toBe(true);
+    expect(await v5.namesArea('4 người')).toBe(false);
+    expect(await communeOf('Bến Thành', null)).toBe('26734');
+  });
+
   it('U-6b a province named elsewhere is context, not a scope question', async () => {
     expect(await communeOf('Ở Bến Thành, Sài Gòn', 'Bến Thành')).toBe('26734');
   });
@@ -154,8 +166,8 @@ describe('#733 province alias that is also a commune name', () => {
   });
 
   it('an exact unit name is found before any model call (episode gate)', async () => {
-    expect(await v5.hasExactUnitName('Phường Sài Gòn, Thành phố Hồ Chí Minh')).toBe(true);
-    expect(await v5.hasExactUnitName('Cả Thành phố Hồ Chí Minh')).toBe(true);
-    expect(await v5.hasExactUnitName('Làm sao để mời bạn?')).toBe(false);
+    expect(await v5.namesArea('Phường Sài Gòn, Thành phố Hồ Chí Minh')).toBe(true);
+    expect(await v5.namesArea('Cả Thành phố Hồ Chí Minh')).toBe(true);
+    expect(await v5.namesArea('Làm sao để mời bạn?')).toBe(false);
   });
 });
