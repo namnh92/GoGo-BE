@@ -568,7 +568,8 @@ No contract change: `AssistantFollowUpGroup.field` is a free string; new values 
   `assistant_guide_retrieval_total{outcome}` and written to the turn trace (`retrieval.outcome`).
   Only an empty result pays the extra "is anything live" read.
 - **CMS check.** `GET /v1/cms/assistant/guide-coverage?question=&locale=` (`editor`/`ops_admin`,
-  read-only, nothing stored) returns `outcome`, the folded `terms` and the sections with heading and
+  read-only, nothing stored; `question` is redacted from request logs and error reports like `q` on the
+  conversation search — PR #742 F-01) returns `outcome`, the folded `terms` and the sections with heading and
   score — the backend half of GoGo-CMS#266.
 - **Coverage fixture.** `domain/guide-coverage.fixture.ts` lists sample questions (with and without
   diacritics) for creating a room, inviting, preferences, voting and plans, each with the document

@@ -1,6 +1,10 @@
 import * as Sentry from '@sentry/node';
 import type { Breadcrumb, ErrorEvent, NodeOptions } from '@sentry/node';
-import { redactCoordinatesDeep, redactPrivateQueryString } from './telemetry-redaction';
+import {
+  redactCoordinatesDeep,
+  redactPrivateQueryPairs,
+  redactPrivateQueryString,
+} from './telemetry-redaction';
 
 type Integration = ReturnType<typeof Sentry.getDefaultIntegrations>[number];
 
@@ -69,7 +73,11 @@ export function sanitizeRequest<T extends WithRequest>(event: T): T {
             query_string:
               typeof request.query_string === 'string'
                 ? redactPrivateQueryString(request.url, request.query_string)
-                : request.query_string,
+                : Array.isArray(request.query_string)
+                  ? redactPrivateQueryPairs(request.url, request.query_string)
+                  : Object.fromEntries(
+                      redactPrivateQueryPairs(request.url, Object.entries(request.query_string)),
+                    ),
           }
         : {}),
       ...(headers ? { headers } : {}),
