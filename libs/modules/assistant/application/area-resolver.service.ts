@@ -34,9 +34,9 @@ const PROVINCE_ALIASES: [RegExp, string][] = [
 /** The word right before a phrase that says which level it means (D-6). */
 const PROVINCE_QUALIFIER = /(?:^| )(?:thanh pho|tp|tinh|ca) $/;
 const COMMUNE_QUALIFIER = /(?:^| )(?:phuong|xa|dac khu) $/;
-/** A pre-2025 district or town as typed ("Quận 1", "Huyện Củ Chi", "Q.3"). */
+/** A pre-2025 district or town as typed ("Quận 1", "Huyện Củ Chi", "Q. Bình Thạnh"). */
 const LOCALITY_QUALIFIER =
-  /(?:^|[^\p{L}\p{N}])((?:quận|quan|huyện|huyen|thị\s+xã|thi\s+xa|thành\s+phố|thanh\s+pho|tp)[.\s]+|q\.?\s*\d)/gu;
+  /(?:^|[^\p{L}\p{N}])((?:quận|quan|huyện|huyen|thị\s+xã|thi\s+xa|thành\s+phố|thanh\s+pho|tp)[.\s]+|q(?:[.\s]+(?=[\p{L}\p{N}])|\d))/gu;
 /** Locative words a bare answer may start with ("ở Bến Thành"). */
 const LOCATIVE = /^ (?:o|tai|khu vuc|khu|gan|quanh) /;
 

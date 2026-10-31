@@ -160,6 +160,16 @@ describe('#733 province alias that is also a commune name', () => {
     },
   );
 
+  it.each(['Q. Bình Thạnh', 'Q Bình Thạnh', 'Q.Bình Thạnh', 'Q.1', 'Q1', 'Q 1'])(
+    'F-15 rejects an abbreviated district even beside a current province: %s',
+    async (district) => {
+      const text = `${district}, TP.HCM`;
+      expect(await kindOf(text, null)).toBe('none');
+      expect(await kindOf(text, district)).toBe('none');
+      expect(await v5.namesArea(district, false)).toBe(true);
+    },
+  );
+
   it('F-10 does not confuse quán with the legacy qualifier quận', async () => {
     expect(await kindOf('tìm quán cà phê ở Thành phố Hà Nội', 'Thành phố Hà Nội')).toBe('resolved');
     expect(await kindOf('tìm quán cà phê ở Hà Nội', 'Hà Nội')).toBe('resolved');

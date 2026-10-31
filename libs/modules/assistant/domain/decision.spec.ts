@@ -25,6 +25,16 @@ describe('F-12 explicit episode boundaries', () => {
     'keeps a possible clarification answer: %s',
     (text) => expect(startsNewRequest(text)).toBe(false),
   );
+
+  it.each(['cho mình 4 người', 'cho tôi 6 người', 'cho mình 300k/người', 'cho tôi thứ 7 tối'])(
+    'F-13 keeps a polite clarification answer: %s',
+    (text) => expect(startsNewRequest(text)).toBe(false),
+  );
+
+  it.each(['cho mình quán cà phê ở Hà Nội', 'cho tôi một nhà hàng', 'cho mình 3 địa điểm'])(
+    'F-13 a polite request with a search target starts fresh: %s',
+    (text) => expect(startsNewRequest(text)).toBe(true),
+  );
 });
 
 /**

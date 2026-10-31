@@ -740,12 +740,14 @@ export class AssistantOrchestrator {
       ) {
         latest.set('area', i);
       }
-      if (
+      if (message.answerField) {
+        latest.set(message.answerField, i);
+      } else if (
         Object.values(facts).every((value) => value === null) &&
         !parseDayPart(message.text) &&
         latest.get('area') !== i
       ) {
-        latest.set(message.answerField ?? 'preference', i);
+        latest.set('preference', i);
       }
     }
     const keep = new Set([0, ...latest.values()]);

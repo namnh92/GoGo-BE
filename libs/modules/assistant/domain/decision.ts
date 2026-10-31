@@ -233,7 +233,10 @@ export function startsNewRequest(text: string): boolean {
     hasQuestionTerm(text) ||
     INJECTION_TERMS.some((term) => haystack.includes(term)) ||
     ACTION_TERMS.some(([, terms]) => terms.some((term) => haystack.includes(` ${term}`))) ||
-    /(?:^| )(?:tim|goi y|de xuat|cho minh|cho toi|recommend|find|suggest) /.test(haystack) ||
+    /(?:^| )(?:tim|goi y|de xuat|recommend|find|suggest) /.test(haystack) ||
+    /(?:^| )cho (?:minh|toi) (?:(?:mot vai|mot|vai|\d+) )?(?:quan|nha hang|dia diem|cho|noi) /.test(
+      haystack,
+    ) ||
     /(?:^| )ru .+ di(?: |$)/.test(haystack)
   );
 }

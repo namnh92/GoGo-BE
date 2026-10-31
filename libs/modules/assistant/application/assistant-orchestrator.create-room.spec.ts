@@ -525,6 +525,55 @@ describe('#733 a "tạo kèo" turn', () => {
     expect(r.value('startAt')).toBeUndefined();
   });
 
+  it.each(['cho mình 4 người', 'cho tôi 4 người'])(
+    'F-13 a polite party-size answer keeps the room episode: %s',
+    async (text) => {
+      const r = await turn(text, {
+        answers: null,
+        history: [said('tạo kèo cà phê ở Hà Nội'), asked('party_size')],
+      });
+      expect(r.proposal?.kind).toBe('create_room');
+      expect(r.value('participantCount')).toMatchObject({ value: 4, origin: 'explicit' });
+      expect(r.value('administrativeArea')).toMatchObject({ value: { provinceCode: '01' } });
+      expect(fields(r)).not.toContain('activity');
+      expect(cards(r)).toBeGreaterThan(0);
+    },
+  );
+
+  it('F-14 retains a mixed activity answer across corrections and stored refs', async () => {
+    const archive: HistoryRow[] = [];
+    let result: Run | undefined;
+    for (const text of ['tạo kèo', 'cà phê với 4 người', 'Ở Hà Nội', '6 người']) {
+      const id = `user-${archive.length}`;
+      result = await turn(text, { answers: null, history: archive.slice(-2), archive });
+      archive.push(
+        { ...said(text), id },
+        { role: 'assistant', text: result.text, follow_ups: result.followUps, trace: result.trace },
+      );
+    }
+    expect(result!.proposal?.kind).toBe('create_room');
+    expect(result!.value('participantCount')).toMatchObject({ value: 6, origin: 'explicit' });
+    expect(result!.value('administrativeArea')).toMatchObject({ value: { provinceCode: '01' } });
+    expect(fields(result!)).not.toContain('activity');
+    expect(cards(result!)).toBeGreaterThan(0);
+    expect(result!.trace.episodeRefs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'user-2', answerField: 'activity' })]),
+    );
+  });
+
+  it('F-14 a mixed preference answer survives a later party-size correction', async () => {
+    const r = await turn('6 người', {
+      history: [
+        said('tạo kèo cà phê ở Hà Nội'),
+        asked('preference'),
+        said('yên tĩnh với 4 người'),
+        asked('time'),
+      ],
+    });
+    expect(r.jevRequests[0]).toContain('yên tĩnh với 4 người');
+    expect(r.value('participantCount')).toMatchObject({ value: 6, origin: 'explicit' });
+  });
+
   it('F-12 an offered activity reply still continues the room request', async () => {
     const r = await turn('Tìm quán cà phê', {
       answers: null,
