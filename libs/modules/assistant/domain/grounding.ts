@@ -504,13 +504,7 @@ export function deterministicReply(ctx: GroundedAnswerContext): string {
         );
       } else if (ctx.clarification.includes('area_scope') && ctx.areaScope) {
         // #733 D-6: built from dataset names only, never composed.
-        const { province, communes } = ctx.areaScope;
-        const either = communes.map((c) => c.fullName).join(vi ? ' hoặc ' : ' or ');
-        lines.push(
-          vi
-            ? `Mình thấy “${communes[0]!.name}” có thể là cả ${province.fullName} hoặc ${either}. Bạn chọn giúp mình nhé.`
-            : `“${communes[0]!.name}” could mean all of ${province.fullName} or ${either}. Which one do you mean?`,
-        );
+        lines.push(scopeQuestion(ctx.areaScope, vi));
       } else if (ctx.clarification.includes('area')) {
         // Owner 2026-10-28: places are searched by the new administrative
         // address only; an area not recognised is asked again, never guessed.
@@ -563,6 +557,10 @@ export function deterministicReply(ctx: GroundedAnswerContext): string {
       );
       break;
     case 'clarify':
+      // #733 (Sol F-08): a scope question rides on a "what to do" turn too.
+      if (ctx.clarification.includes('area_scope') && ctx.areaScope) {
+        lines.push(scopeQuestion(ctx.areaScope, vi));
+      }
       lines.push(
         ctx.conflicting
           ? vi
@@ -606,6 +604,17 @@ export function deterministicReply(ctx: GroundedAnswerContext): string {
     );
   }
   return lines.join('\n');
+}
+
+function scopeQuestion(
+  scope: NonNullable<GroundedAnswerContext['areaScope']>,
+  vi: boolean,
+): string {
+  const { province, communes } = scope;
+  const either = communes.map((c) => c.fullName).join(vi ? ' hoặc ' : ' or ');
+  return vi
+    ? `Mình thấy “${communes[0]!.name}” có thể là cả ${province.fullName} hoặc ${either}. Bạn chọn giúp mình nhé.`
+    : `“${communes[0]!.name}” could mean all of ${province.fullName} or ${either}. Which one do you mean?`;
 }
 
 const MISSING_WORDS: [string, { vi: string; en: string }][] = [

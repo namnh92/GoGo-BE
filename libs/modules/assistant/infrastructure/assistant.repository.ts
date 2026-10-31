@@ -634,21 +634,35 @@ export class AssistantRepository {
   }
 
   /**
-   * #733 D-3 — a new card of `kind` retires the conversation's earlier pending
-   * ones (status `dismissed`, assistant table only), so one stays live.
-   * Returns how many were retired.
+   * #733 D-3 — inserts a card and, in the same statement, retires the
+   * conversation's other pending cards of that kind (status `dismissed`,
+   * assistant table only), so one stays live and no failure can leave both.
+   * One streaming turn per conversation (`ASSISTANT_TURN_IN_PROGRESS`) keeps
+   * two such statements from overlapping. Returns the row and how many retired.
    */
-  async supersedeProposals(
-    conversationId: string,
-    kind: string,
-    exceptId: string,
-  ): Promise<number> {
+  async insertSupersedingProposal(input: {
+    conversationId: string;
+    messageId: string;
+    userId: string;
+    kind: string;
+    values: AssistantProposalValue[];
+    expiresAt: Date;
+  }): Promise<{ row: ProposalRow; superseded: number }> {
     const res = await this.db.execute(sql`
-      update assistant_proposals set status = 'dismissed', dismissed_at = now()
-      where conversation_id = ${conversationId} and kind = ${kind}
-        and status = 'pending' and id <> ${exceptId}
-      returning id`);
-    return rowsOf<{ id: string }>(res).length;
+      with p as (
+        insert into assistant_proposals (conversation_id, message_id, user_id, kind, values, expires_at)
+        values (${input.conversationId}, ${input.messageId}, ${input.userId}, ${input.kind},
+          ${JSON.stringify(input.values)}::jsonb, ${input.expiresAt.toISOString()}::timestamptz)
+        returning *
+      ), retired as (
+        update assistant_proposals set status = 'dismissed', dismissed_at = now()
+        where conversation_id = ${input.conversationId} and kind = ${input.kind}
+          and status = 'pending' and id <> (select id from p)
+        returning id
+      )
+      select ${PROPOSAL_COLUMNS}, (select count(*)::int from retired) as superseded from p`);
+    const { superseded, ...row } = rowsOf<ProposalRow & { superseded: number }>(res)[0]!;
+    return { row, superseded };
   }
 
   async findProposal(userId: string, proposalId: string): Promise<ProposalRow | null> {

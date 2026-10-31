@@ -52,7 +52,11 @@ type Run = {
 
 async function turn(
   text: string,
-  opts: { answers?: Record<string, unknown> | null; history?: HistoryRow[] } = {},
+  opts: {
+    answers?: Record<string, unknown> | null;
+    history?: HistoryRow[];
+    context?: { kind: 'place' | 'plan'; id: string };
+  } = {},
 ): Promise<Run> {
   const frames: AssistantFrame[] = [];
   const searches: Record<string, unknown>[] = [];
@@ -76,9 +80,24 @@ async function turn(
         created_at: NOW.toISOString(),
         expires_at: NOW.toISOString(),
       }),
-      supersedeProposals: async (...args: unknown[]) => {
-        superseded.push(args);
-        return 1;
+      insertSupersedingProposal: async (p: {
+        conversationId: string;
+        kind: string;
+        values: unknown;
+      }) => {
+        superseded.push([p.conversationId, p.kind]);
+        return {
+          row: {
+            id: 'p-new',
+            conversation_id: 'c',
+            message_id: 'm',
+            kind: p.kind,
+            values: p.values,
+            created_at: NOW.toISOString(),
+            expires_at: NOW.toISOString(),
+          },
+          superseded: 1,
+        };
       },
     } as never,
     {
@@ -102,6 +121,7 @@ async function turn(
     } as never,
     {
       placeTags: async () => new Map(),
+      planCard: async () => ({ kind: 'plan', available: false, facts: {} }),
       placeCard: async (id: string) => ({
         kind: 'place',
         placeId: id,
@@ -134,7 +154,7 @@ async function turn(
       userId: 'u',
       text,
       locale: 'vi',
-      context: null,
+      context: opts.context ?? null,
     },
     newTurnState(),
     { emit: async (f: AssistantFrame) => void frames.push(f) } as never,
@@ -293,7 +313,7 @@ describe('#733 a "tạo kèo" turn', () => {
 
   it('U-13 a new room card supersedes the pending ones of the conversation', async () => {
     const r = await turn('tạo kèo cà phê ở Hà Nội');
-    expect(r.superseded).toEqual([['c', 'create_room', 'p-new']]);
+    expect(r.superseded).toEqual([['c', 'create_room']]);
   });
 
   it('U-2 a how-to question is never a card, whatever Jev said', async () => {
@@ -315,5 +335,41 @@ describe('#733 a "tạo kèo" turn', () => {
     const c = await turn('tạo kèo ăn tối ở Sài Gòn', { answers: null });
     expect(fields(c)).toEqual(['area_scope', 'time']);
     expect(c.proposal?.kind).toBe('create_room');
+  });
+
+  it('Sol F-02 Jev down and no kind of place: the activity is asked, nothing searched', async () => {
+    const r = await turn('tạo kèo ở Hà Nội với 4 người', { answers: null });
+    expect(fields(r)[0]).toBe('activity');
+    expect(r.searches).toHaveLength(0);
+    expect(r.proposal?.kind).toBe('create_room');
+    expect(r.value('administrativeArea')).toMatchObject({ value: { provinceCode: '01' } });
+  });
+
+  it('Sol F-06 an occasion the model inferred does not make the room type explicit', async () => {
+    const r = await turn('tạo kèo cà phê ở Hà Nội', {
+      answers: { ...base, occasion: { type: 'choice', choice: 'couple' } },
+    });
+    expect(r.value('type')).toMatchObject({ origin: 'assumed' });
+  });
+
+  it('Sol F-07 from an opened plan, "tạo kèo" still takes the room flow', async () => {
+    const r = await turn('tạo kèo cà phê ở Hà Nội', {
+      answers: { ...base, assistant_intent: { type: 'choice', choice: 'plan_help' } },
+      context: { kind: 'plan', id: '0b6f3c1e-7d2a-4c11-9a3e-5f1d2c3b4aff' },
+    });
+    expect(r.searches).toHaveLength(1);
+    expect(r.value('administrativeArea')).toMatchObject({ value: { provinceCode: '01' } });
+  });
+
+  it('Sol F-08 a "what to do" turn in Sài Gòn still names both scopes', async () => {
+    const r = await turn('tạo kèo thứ 7 ở Sài Gòn', {
+      answers: {
+        ...base,
+        category: { type: 'choice', choice: 'none' },
+        needs_clarification: { type: 'noul', noul: 0.99 },
+      },
+    });
+    expect(fields(r)).toContain('area_scope');
+    expect(r.text).toMatch(/Phường Sài Gòn/);
   });
 });

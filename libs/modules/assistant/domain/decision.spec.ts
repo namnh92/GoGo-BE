@@ -206,6 +206,10 @@ describe('#733 create_room vocabulary and the question guard', () => {
     const text = 'Cách tạo phòng trên GoGo?';
     expect(fb(text)).toMatchObject({ action: 'none', intent: 'gogo_guide' });
     expect(fb('Làm sao để tạo kèo?')).toMatchObject({ action: 'none', intent: 'gogo_guide' });
+    // Sol F-04: every create-room verb, asked as a how-to.
+    for (const t of ['Cách lập kèo?', 'Cách lên kèo trên GoGo?', 'Cách mở kèo?', 'Cách đặt kèo?']) {
+      expect(fb(t).action, t).toBe('none');
+    }
     // Jev said create_room at 0.9: the guard overrules it.
     expect(jev(text, 'gogo_guide', 'create_room')).toMatchObject({
       action: 'none',

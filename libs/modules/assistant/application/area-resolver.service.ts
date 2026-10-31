@@ -118,21 +118,26 @@ export class AssistantAreaResolver {
       };
     };
 
-    // 0. An exact level-qualified name wins — the newest message first, so a
-    //    chip answer settles what the request before it left open.
-    for (const text of foldedLatest === folded ? [folded] : [foldedLatest, folded]) {
-      const hit = exactResolution(snapshot, text);
-      if (hit === 'ambiguous') return { kind: 'ambiguous' };
-      if (hit?.level === 'PROVINCE') return provinceArea(hit);
-      if (hit) return communeArea(hit);
-    }
-
     // The phrase under test: the newest message's area, else an alias in it,
     // else the episode's area, else an alias anywhere.
     const meaningful = (t: string | null) =>
       t !== null && !QUALIFIER_ONLY.has(normalizeVietnamese(t).replace(/\./g, '').trim())
         ? t
         : null;
+    // 0. An exact level-qualified name wins — the newest message first, so a
+    //    chip answer settles what the request before it left open.
+    // Older episode text is scanned only when the newest message names no
+    // area of its own (Sol F-03): "Ở Hà Nội" answers over an older full name.
+    const latestNamesArea = meaningful(latest.areaText) !== null || aliasIn(foldedLatest) !== null;
+    const scans =
+      foldedLatest === folded || latestNamesArea ? [foldedLatest] : [foldedLatest, folded];
+    for (const text of scans) {
+      const hit = exactResolution(snapshot, text);
+      if (hit === 'ambiguous') return { kind: 'ambiguous' };
+      if (hit?.level === 'PROVINCE') return provinceArea(hit);
+      if (hit) return communeArea(hit);
+    }
+
     const phrase =
       meaningful(latest.areaText) ??
       aliasIn(foldedLatest)?.phrase ??
@@ -254,14 +259,20 @@ function exactResolution(snapshot: Snapshot, folded: string): Unit | 'ambiguous'
   const hits = exactHits(snapshot, folded);
   const communes = hits.filter((u) => u.level !== 'PROVINCE');
   const provinces = hits.filter((u) => u.level === 'PROVINCE');
-  if (communes.length === 1) return communes[0]!;
+  // A province also named — by its full name, or by an alias or its name
+  // outside the commune names ("phường Phú Thọ, TP HCM"); a province named
+  // only inside a commune's own name ("Phú Thọ") is not one.
+  let rest = folded;
+  for (const c of communes) rest = rest.split(fold(c.fullName)).join('  ');
+  const context = provinceNamedIn(snapshot, rest);
+  if (communes.length === 1) {
+    const commune = communes[0]!;
+    // Sol F-05: a ward with a different province named next to it
+    // ("Phường Ba Đình, TP HCM") is not guessed either way.
+    const named = [...provinces.map((p) => p.code), ...(context ? [context.code] : [])];
+    return named.every((code) => code === commune.parentCode) ? commune : 'ambiguous';
+  }
   if (communes.length > 1) {
-    // Narrowed by a province also named — by its full name, or by an alias or
-    // its name outside the commune names ("phường Phú Thọ, TP HCM"); a
-    // province named only inside a commune's own name ("Phú Thọ") is not one.
-    let rest = folded;
-    for (const c of communes) rest = rest.split(fold(c.fullName)).join('  ');
-    const context = provinceNamedIn(snapshot, rest);
     const narrowed = communes.filter(
       (c) => provinces.some((p) => p.code === c.parentCode) || c.parentCode === context?.code,
     );

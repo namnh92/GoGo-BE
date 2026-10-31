@@ -121,6 +121,20 @@ describe('#733 province alias that is also a commune name', () => {
     expect(r).toMatchObject({ kind: 'resolved', value: { area: { communeCode: null } } });
   });
 
+  it('Sol F-05 a ward with another province named next to it is not guessed', async () => {
+    expect(await kindOf('Phường Ba Đình, TP HCM', null)).toBe('ambiguous');
+    expect(await kindOf('Phường Ba Đình, Thành phố Hồ Chí Minh', null)).toBe('ambiguous');
+    expect(await communeOf('Phường Ba Đình, Thành phố Hà Nội', null)).toBe('00004');
+  });
+
+  it('Sol F-03 a newest non-exact area wins over an older full name', async () => {
+    const r = await v5.resolve('cà phê ở Phường Bến Thành\nỞ Hà Nội', 'Hà Nội', {
+      text: 'Ở Hà Nội',
+      areaText: 'Hà Nội',
+    });
+    expect(r).toMatchObject({ kind: 'resolved', value: { area: { provinceCode: '01' } } });
+  });
+
   it('U-6b a province named elsewhere is context, not a scope question', async () => {
     expect(await communeOf('Ở Bến Thành, Sài Gòn', 'Bến Thành')).toBe('26734');
   });

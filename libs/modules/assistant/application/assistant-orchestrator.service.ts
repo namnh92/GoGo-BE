@@ -234,10 +234,13 @@ export class AssistantOrchestrator {
     // about plans is a question about how GoGo works.
     if (route === 'plan_help' && input.context?.kind !== 'plan') route = 'gogo_guide';
     // #733 D-2: an explicit "tạo kèo" is about places even when the model
-    // filed it under the guide or out of scope (the guards already cleared
-    // the action for how-to questions and injection phrases).
+    // filed it under the guide, out of scope or the opened plan (Sol F-07;
+    // the guards already cleared the action for how-to and injection text).
     const createRoom = decision.action === 'create_room';
-    if (createRoom && (route === 'gogo_guide' || route === 'out_of_scope')) {
+    if (
+      createRoom &&
+      (route === 'gogo_guide' || route === 'out_of_scope' || route === 'plan_help')
+    ) {
       route = 'recommend_places';
       state.trace.routeOverride = 'create_room';
     }
@@ -246,10 +249,12 @@ export class AssistantOrchestrator {
     if (conflicting) clarification.push('preference');
     // Only an unknown kind of place needs asking about; a missing area or
     // budget is handled as its own follow-up below.
+    // #733 (Sol F-02): a "tạo kèo" with no known kind of place asks it on
+    // both paths — the deterministic fallback never reports unclear_activity.
     if (
       route === 'recommend_places' &&
-      c.clarification.reasons.includes('unclear_activity') &&
-      c.category.key === null
+      c.category.key === null &&
+      (c.clarification.reasons.includes('unclear_activity') || createRoom)
     ) {
       route = 'clarify';
       clarification.push('activity');
@@ -478,30 +483,30 @@ export class AssistantOrchestrator {
       // A-R-06: a Stop or the kill switch during the reply prepares nothing.
       signal.throwIfAborted();
       if (proposal) {
-        const row = await this.repo.insertProposal({
+        const draft = {
           conversationId: input.conversationId,
           messageId: input.messageId,
           userId: input.userId,
           kind: proposal.kind,
           values: proposal.values,
           expiresAt: new Date(Date.now() + PROPOSAL_TTL_MS),
-        });
-        state.proposalIds.push(row.id);
-        if (row.kind === 'create_room') {
-          // #733 D-3: one live room card per conversation.
-          const superseded = await this.repo.supersedeProposals(
-            input.conversationId,
-            'create_room',
-            row.id,
-          );
-          if (superseded > 0) {
+        };
+        let row;
+        if (proposal.kind === 'create_room') {
+          // #733 D-3: one live room card per conversation, in one statement.
+          const inserted = await this.repo.insertSupersedingProposal(draft);
+          row = inserted.row;
+          if (inserted.superseded > 0) {
             this.metrics.increment(
               'assistant_proposals_total',
               { outcome: 'superseded' },
-              superseded,
+              inserted.superseded,
             );
           }
+        } else {
+          row = await this.repo.insertProposal(draft);
         }
+        state.proposalIds.push(row.id);
         await sink.emit({
           type: 'proposal',
           proposal: {
@@ -889,7 +894,9 @@ export class AssistantOrchestrator {
       const type = couple ? 'couple' : 'group';
       const participants = couple ? 2 : Math.min(20, Math.max(2, facts.partySize ?? 4));
       values = [
-        v('type', type, facts.partySize !== null || occasion !== null ? 'explicit' : 'assumed'),
+        // I-5 (Sol F-06): explicit only from a stated party size; an occasion
+        // the model inferred is a guess.
+        v('type', type, facts.partySize !== null ? 'explicit' : 'assumed'),
         v('participantCount', participants, facts.partySize !== null ? 'explicit' : 'assumed'),
         v('decisionMode', couple ? 'match' : 'vote', 'assumed'),
       ];
