@@ -8,19 +8,23 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
-## 2.0.0-alpha.6 — taxonomy labels are one line of plain text (GoGo-BE#737)
+## 3.0.0-alpha.1 — taxonomy labels are one line of plain text (GoGo-BE#737)
 
-**Narrows a request.** `cmsCreateTaxonomy` and `cmsUpdateTaxonomy` now state
-what a label may be, which they did not before (`labels` values were any
-string; the server already refused more than 80 characters). The server first
-normalises each label — NFC, every space separator to one ASCII space,
-trimmed — then requires 1–80 code points of letters, combining marks, digits,
-spaces and `' " ‘ ’ “ ” ( ) & + , . / - – —`. Anything else, newlines and
-markup or template delimiters included, is refused with `400`; nothing is
-stripped or truncated. Why: labels are shown to people and read by the
-assistant's models as data, so a label must not carry a second line or a
-block delimiter. The response schema (`TaxonomyList`) is unchanged; labels
-stored before this version were checked on DEV (42/42 conform) but are not
+**Breaking for writers of taxonomy labels.** `cmsCreateTaxonomy` and
+`cmsUpdateTaxonomy` now refuse labels they used to accept (`labels` values were
+any string; the server already refused more than 80 characters). As sent, a
+label may contain letters, combining marks, digits, space separators and
+`' " ‘ ’ “ ” ( ) & + , . / - – —` — the request `pattern`. The server then
+normalises it (NFC, every space separator to one ASCII space, runs collapsed,
+leading and trailing spaces removed) and requires 1–80 code points; anything
+else, newlines, tabs, a BOM, markup or template delimiters included, is
+refused with `400` and nothing is stripped or truncated. A request the pattern
+accepts can still be refused when it is empty or longer than 80 code points
+after normalisation. MAJOR because a published guarantee (any string) is
+withdrawn (`git.md` SemVer). Why: labels are shown to people and read by the
+assistant's models as data, so a label must not carry a second line or a block
+delimiter. The response schema (`TaxonomyList`) is unchanged; labels stored
+before this version were checked on DEV (42/42 conform) but are not
 re-validated. Owner decision 2026-10-31 (option B, rule from Astra).
 
 ## 2.0.0-alpha.3 — GoGo AI: SA decisions applied (GoGo-BE#713)

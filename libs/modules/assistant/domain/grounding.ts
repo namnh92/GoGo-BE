@@ -104,7 +104,10 @@ function fence(text: string): string {
  * block (GoGo-BE#737 R-1).
  */
 function oneLine(text: string): string {
-  return fence(text).replace(/\s+/g, ' ').trim();
+  // Angle brackets become look-alikes instead of tags being cut out: removing
+  // `</system>` from `</gogo_con</system>text>` would rebuild the very
+  // delimiter it meant to remove (Astra A-F-03).
+  return text.replace(/</g, '‹').replace(/>/g, '›').replace(/\s+/g, ' ').trim();
 }
 
 export function renderContext(ctx: GroundedAnswerContext): string {

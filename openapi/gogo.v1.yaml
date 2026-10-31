@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 2.0.0-alpha.6
+  version: 3.0.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -8134,17 +8134,17 @@ paths:
                 labels:
                   type: object
                   description: >
-                    Locale → label. Each label is one line of plain text (GoGo-BE#737):
-                    the server normalises it first (NFC, every space separator to one
-                    ASCII space, trimmed), then requires 1–80 code points of letters,
-                    combining marks, digits, spaces and the punctuation listed in the
-                    pattern. A label outside the rule is refused (400), never stripped
-                    or truncated.
+                    Locale → label. Each label is one line of plain text (GoGo-BE#737).
+                    The pattern states the characters a label may contain as sent:
+                    letters, combining marks, digits, space separators and
+                    ' " ‘ ’ “ ” ( ) & + , . / - – —. The server then normalises it (NFC,
+                    every space separator to one ASCII space, runs collapsed, leading
+                    and trailing spaces removed) and requires 1–80 code points after
+                    normalisation. A label outside the rule is refused (400), never
+                    stripped or truncated.
                   additionalProperties:
                     type: string
-                    minLength: 1
-                    maxLength: 80
-                    pattern: "^[\\p{L}\\p{M}\\p{N} '\"‘’“”()&+,./\\-–—]{1,80}$"
+                    pattern: "^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"‘’“”()&+,./\\-–—]*$"
                 sortOrder: { type: integer }
       responses:
         '201': { description: Created }
@@ -8166,17 +8166,17 @@ paths:
                 labels:
                   type: object
                   description: >
-                    Locale → label. Each label is one line of plain text (GoGo-BE#737):
-                    the server normalises it first (NFC, every space separator to one
-                    ASCII space, trimmed), then requires 1–80 code points of letters,
-                    combining marks, digits, spaces and the punctuation listed in the
-                    pattern. A label outside the rule is refused (400), never stripped
-                    or truncated.
+                    Locale → label. Each label is one line of plain text (GoGo-BE#737).
+                    The pattern states the characters a label may contain as sent:
+                    letters, combining marks, digits, space separators and
+                    ' " ‘ ’ “ ” ( ) & + , . / - – —. The server then normalises it (NFC,
+                    every space separator to one ASCII space, runs collapsed, leading
+                    and trailing spaces removed) and requires 1–80 code points after
+                    normalisation. A label outside the rule is refused (400), never
+                    stripped or truncated.
                   additionalProperties:
                     type: string
-                    minLength: 1
-                    maxLength: 80
-                    pattern: "^[\\p{L}\\p{M}\\p{N} '\"‘’“”()&+,./\\-–—]{1,80}$"
+                    pattern: "^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"‘’“”()&+,./\\-–—]*$"
                 sortOrder: { type: integer }
                 isActive: { type: boolean }
       responses:

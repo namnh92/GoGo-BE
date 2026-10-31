@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { TAXONOMY_LABEL_PATTERN, taxonomyLabelSchema } from './cms.controllers';
+import { TAXONOMY_LABEL_RAW_PATTERN, taxonomyLabelSchema } from './cms.controllers';
 
 /**
  * GoGo-BE#737 F-01 (owner chose option B, 2026-10-31; rule from Astra): a
@@ -28,7 +28,7 @@ describe('#737 taxonomy label rule', () => {
 
   it('normalises: NFC, any space to one ASCII space, trimmed', () => {
     const decomposed = 'Lãng mạn'.normalize('NFD');
-    expect(parseLabel(`  ${decomposed}  bên   hồ `)).toMatchObject({
+    expect(parseLabel(`  ${decomposed}\u00a0\u00a0bên   hồ `)).toMatchObject({
       success: true,
       data: 'Lãng mạn bên hồ',
     });
@@ -47,6 +47,10 @@ describe('#737 taxonomy label rule', () => {
       '',
       '   ',
       'a'.repeat(81),
+      // Sol F-03 / Astra A-F-02: an edge control is refused, not trimmed away.
+      '\nLãng mạn',
+      'Lãng mạn\t',
+      '\uFEFFChill',
     ]) {
       expect(parseLabel(label).success, JSON.stringify(label)).toBe(false);
     }
@@ -86,12 +90,9 @@ describe('#737 taxonomy label rule', () => {
       labelOf('/cms/taxonomies', 'post'),
       labelOf('/cms/taxonomies/{id}', 'patch'),
     ]) {
-      expect(schema).toMatchObject({
-        type: 'string',
-        minLength: 1,
-        maxLength: 80,
-        pattern: TAXONOMY_LABEL_PATTERN,
-      });
+      // Raw input only (Sol F-04 / Astra A-F-01): the 1–80 rule applies after
+      // normalisation, so it is described, not declared as min/maxLength.
+      expect(schema).toEqual({ type: 'string', pattern: TAXONOMY_LABEL_RAW_PATTERN });
     }
   });
 });

@@ -1249,6 +1249,8 @@ export class CmsAreasController {
  */
 export const TAXONOMY_LABEL_PATTERN = '^[\\p{L}\\p{M}\\p{N} \'"‘’“”()&+,./\\-–—]{1,80}$';
 const TAXONOMY_LABEL = new RegExp(TAXONOMY_LABEL_PATTERN, 'u');
+/** The characters a label may contain as sent, declared in OpenAPI (raw input). */
+export const TAXONOMY_LABEL_RAW_PATTERN = '^[\\p{L}\\p{M}\\p{N}\\p{Zs}\'"‘’“”()&+,./\\-–—]*$';
 export const taxonomyLabelSchema = z
   .string()
   .transform((s) =>
@@ -1256,7 +1258,9 @@ export const taxonomyLabelSchema = z
       .normalize('NFC')
       .replace(/\p{Zs}/gu, ' ')
       .replace(/ {2,}/g, ' ')
-      .trim(),
+      // ASCII spaces only: `trim()` would quietly drop a newline, tab or BOM
+      // at an edge, and the rule refuses those rather than strips them.
+      .replace(/^ +| +$/g, ''),
   )
   .refine((s) => TAXONOMY_LABEL.test(s), {
     message: 'a label is 1–80 letters, digits, spaces or simple punctuation, on one line',
