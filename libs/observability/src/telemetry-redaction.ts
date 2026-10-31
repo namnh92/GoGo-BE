@@ -94,12 +94,29 @@ const PG_FAILING_ROW = /(\bFailing row contains )\([^\n]*/g;
 const PG_KEY_HEAD = /\bKey \(/g;
 
 /**
- * GoGo-BE#717 A-R-12 — `q` on the assistant's conversation search is a
- * person's own words searched out of their private history: never kept in a
- * request log or an error report. Matched with its path, so `q` on the
- * public place search is untouched.
+ * Free text a person typed that a request carries in its query string and no
+ * telemetry may keep, by route — matched with its path, so `q` on the public
+ * place search is untouched.
+ *
+ * - GoGo-BE#717 A-R-12: `q` on the assistant's conversation search is a
+ *   person's own words searched out of their private history.
+ * - GoGo-BE#742 F-01: `question` on the CMS guide coverage check is whatever
+ *   staff pasted to test retrieval — possibly a user's message with an email
+ *   or a phone number in it; the endpoint promises it is not stored.
  */
-const ASSISTANT_SEARCH_URL = /(\/assistant\/conversations\/?\?)([^#\s"']*)/g;
+const PRIVATE_QUERY_ROUTES: readonly { path: string; keys: ReadonlySet<string> }[] = [
+  { path: '/assistant/conversations', keys: new Set(['q']) },
+  { path: '/cms/assistant/guide-coverage', keys: new Set(['question']) },
+];
+
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** `<path>?<query>` inside any text: a log line, a URL, an error message. */
+const PRIVATE_QUERY_URLS = PRIVATE_QUERY_ROUTES.map((route) => ({
+  keys: route.keys,
+  inText: new RegExp(`(${escapeRe(route.path)}\\/?\\?)([^#\\s"']*)`, 'g'),
+  isUrl: new RegExp(`${escapeRe(route.path)}\\/?(?:[?#]|$)`),
+}));
 
 /** A query key as the server reads it: percent-decoded, `+` as space. */
 function decodedKey(raw: string): string {
@@ -111,31 +128,47 @@ function decodedKey(raw: string): string {
 }
 
 /**
- * Every `q` value in a query string, however the key is spelt (`q`, `%71`)
- * and however often it repeats (A-R2-10); other parameters untouched.
+ * Every value of `keys` in a query string, however the key is spelt (`q`,
+ * `%71`) and however often it repeats (A-R2-10); other parameters untouched.
  */
-function redactQParams(query: string): string {
+function redactParams(query: string, keys: ReadonlySet<string>): string {
   return query
     .split('&')
     .map((pair) => {
       const eq = pair.indexOf('=');
       const key = eq < 0 ? pair : pair.slice(0, eq);
-      return decodedKey(key).trim() === 'q' ? `${key}=${REDACTED}` : pair;
+      return keys.has(decodedKey(key).trim()) ? `${key}=${REDACTED}` : pair;
     })
     .join('&');
 }
 
 export function redactPrivateSearchQuery(text: string): string {
-  return text.replace(
-    ASSISTANT_SEARCH_URL,
-    (_m, path: string, query: string) => `${path}${redactQParams(query)}`,
-  );
+  let out = text;
+  for (const route of PRIVATE_QUERY_URLS) {
+    out = out.replace(
+      route.inText,
+      (_m, path: string, query: string) => `${path}${redactParams(query, route.keys)}`,
+    );
+  }
+  return out;
 }
 
-/** A bare query string (Sentry keeps it apart from the URL) of that route. */
+/** A bare query string (Sentry keeps it apart from the URL) of a private route. */
 export function redactPrivateQueryString(url: string | undefined, query: string): string {
-  if (!url || !/\/assistant\/conversations\/?(?:[?#]|$)/.test(url)) return query;
-  return redactQParams(query);
+  const route = url ? PRIVATE_QUERY_URLS.find((r) => r.isUrl.test(url)) : undefined;
+  return route ? redactParams(query, route.keys) : query;
+}
+
+/** The same, for a query string Sentry sends as `[key, value]` pairs. */
+export function redactPrivateQueryPairs(
+  url: string | undefined,
+  pairs: readonly (readonly [string, string])[],
+): [string, string][] {
+  const route = url ? PRIVATE_QUERY_URLS.find((r) => r.isUrl.test(url)) : undefined;
+  return pairs.map(([key, value]) => [
+    key,
+    route && route.keys.has(decodedKey(key).trim()) ? REDACTED : value,
+  ]);
 }
 
 export function redactCoordinateText(text: string): string {

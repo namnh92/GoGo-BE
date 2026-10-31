@@ -10,6 +10,7 @@ import {
   cmsDocumentsQuery,
   cmsDraftPatchBody,
   cmsFeedbackQuery,
+  cmsGuideCoverageQuery,
   cmsPublishBody,
   cmsUnpublishBody,
   cmsVersionsQuery,
@@ -89,6 +90,38 @@ export class AssistantDocumentsCmsController {
   @Get(':id/versions/:versionId')
   version(@Param('id', UuidPipe) id: string, @Param('versionId', UuidPipe) versionId: string) {
     return this.documents.version(id, versionId);
+  }
+}
+
+/**
+ * GoGo-BE#736 / GoGo-CMS#266 — which published sections a question retrieves,
+ * through the same path an assistant turn uses, and why it found none
+ * (`no_published` vs `no_match`). Read-only; the question is not stored.
+ */
+@RequireRole('editor', 'ops_admin')
+@Controller('cms/assistant/guide-coverage')
+export class AssistantGuideCoverageCmsController {
+  constructor(private readonly documents: GuideDocumentsService) {}
+
+  @Get()
+  async check(
+    @Query(new ZodValidationPipe(cmsGuideCoverageQuery))
+    query: z.infer<typeof cmsGuideCoverageQuery>,
+  ) {
+    const result = await this.documents.retrieve(query.question, query.locale);
+    return {
+      outcome: result.outcome,
+      terms: result.terms,
+      sections: result.sections.map((s) => ({
+        documentId: s.documentId,
+        versionId: s.versionId,
+        slug: s.slug,
+        title: s.title,
+        heading: s.heading,
+        excerpt: s.excerpt,
+        score: s.score,
+      })),
+    };
   }
 }
 

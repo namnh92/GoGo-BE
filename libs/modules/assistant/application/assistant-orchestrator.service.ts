@@ -42,7 +42,6 @@ import {
   constraintsFrom,
   deterministicReply,
   followUpsFor,
-  rankGuideSections,
   type GroundedAnswerContext,
   type GroundedPlace,
   type HistoryTurn,
@@ -394,8 +393,10 @@ export class AssistantOrchestrator {
       };
     } else if (route === 'gogo_guide') {
       await guard.run(() => sink.emit({ type: 'step', step: 'reading_guide' }));
-      const docs = await guard.run(() => this.guide.searchPublished(input.text, input.locale));
-      const sections = rankGuideSections(docs, input.text, 3);
+      const retrieval = await guard.run(() => this.guide.retrieve(input.text, input.locale, 3));
+      const sections = retrieval.sections;
+      // GoGo-BE#736: nothing live and a wording that misses are different fixes.
+      this.metrics.increment('assistant_guide_retrieval_total', { outcome: retrieval.outcome });
       // One source per document version; sections of it share the index.
       const byVersion = new Map<string, number>();
       for (const s of sections) {
@@ -418,7 +419,11 @@ export class AssistantOrchestrator {
           excerpt: s.excerpt,
         });
       }
-      state.trace.retrieval = { guideVersions: [...byVersion.keys()], sections: sections.length };
+      state.trace.retrieval = {
+        outcome: retrieval.outcome,
+        guideVersions: [...byVersion.keys()],
+        sections: sections.length,
+      };
     } else if (route === 'plan_help') {
       await guard.run(() => sink.emit({ type: 'step', step: 'reading_plan' }));
       if (planCard) {

@@ -558,6 +558,30 @@ No contract change: `AssistantFollowUpGroup.field` is a free string; new values 
   match against the snapshot's legacy district names instead of a regex.
 - **Never written before confirm (D-7).** Unchanged; the int test counts `rooms` before and after.
 
+### Guide coverage and publish revision (GoGo-BE#736)
+
+- **One retrieval path.** `GuideDocumentsService.retrieve` (FTS prefilter over published versions,
+  then `rankGuideSections`, top 3) serves both the assistant turn and the CMS check, so a preview
+  shows exactly what a reply would cite.
+- **Why nothing was found.** An empty result is `no_published` (no document is live — a content
+  gap) or `no_match` (documents are live, none answers this wording — a coverage gap). Counted as
+  `assistant_guide_retrieval_total{outcome}` and written to the turn trace (`retrieval.outcome`).
+  Only an empty result pays the extra "is anything live" read.
+- **CMS check.** `GET /v1/cms/assistant/guide-coverage?question=&locale=` (`editor`/`ops_admin`,
+  read-only, nothing stored; `question` is redacted from request logs and error reports like `q` on the
+  conversation search — PR #742 F-01) returns `outcome`, the folded `terms` and the sections with heading and
+  score — the backend half of GoGo-CMS#266.
+- **Coverage fixture.** `domain/guide-coverage.fixture.ts` lists sample questions (with and without
+  diacritics) for creating a room, inviting, preferences, voting and plans, each with the document
+  that must answer it; `guide-coverage.spec.ts` fails when a question stops reaching its document
+  or once that document is removed. The fixture documents are test data, not product copy: the
+  onboarding articles that go live are written and approved by owner/ops in the CMS.
+- **Publish binds the reviewed revision.** `POST …/publish` takes an optional `revision`; when it is
+  not the version's current revision (the draft was edited after review) the publish is
+  `409 REVISION_CONFLICT` (`field_errors[0].field = revision`). The audit row records the published
+  `revision` and `bodySha256`. Optional so an older console keeps working; the CMS sends it from
+  GoGo-CMS#266.
+
 ## Open items
 
 1. **Configuration hand-off.** Done for code (ADR-0036); the per-environment values

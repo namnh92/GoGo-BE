@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 3.0.0-alpha.1
+  version: 3.0.0-alpha.2
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -10216,8 +10216,16 @@ paths:
         The previously published version becomes `superseded`; exactly one
         version per document is `published` at a time. Takes effect for new
         replies; a reply already streaming keeps the version it started with.
-        Audited (`assistant_document.published`) with the version id and
-        `reason`.
+        Audited (`assistant_document.published`) with the version id,
+        its revision, `bodySha256` and `reason`.
+
+
+        `revision` (GoGo-BE#736) is the revision of `versionId` the publisher
+        reviewed. When sent and the version has moved on — the draft was
+        edited after review — the publish is `409 REVISION_CONFLICT` with a
+        `field_errors` entry on `revision`, so what goes live is what was
+        read. Consoles send it; it is optional only so an older client keeps
+        working.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -10230,6 +10238,10 @@ paths:
               additionalProperties: false
               properties:
                 versionId: { type: string, format: uuid }
+                revision:
+                  type: integer
+                  minimum: 1
+                  description: The revision of `versionId` that was reviewed (GoGo-BE#736).
                 reason: { type: string, maxLength: 500 }
       responses:
         '200':
@@ -10246,7 +10258,9 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '409':
-          description: '`VERSION_ALREADY_PUBLISHED`.'
+          description: >
+            `VERSION_ALREADY_PUBLISHED`, or `REVISION_CONFLICT` — `revision`
+            is not the version's current revision.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -10335,6 +10349,38 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/assistant/guide-coverage:
+    get:
+      operationId: cmsCheckAssistantGuideCoverage
+      tags: [cms, assistant]
+      summary: 'Content: which published guide sections a question retrieves'
+      description: >
+        GoGo-BE#736 / GoGo-CMS#266. Runs `question` through the same
+        retrieval an assistant turn uses — published versions only, the
+        caller's `locale` first, at most 3 sections — and says why nothing
+        was found: `no_published` (no document is live: a content gap) or
+        `no_match` (documents are live, none answers this wording: a
+        coverage or retrieval gap). `editor` / `ops_admin`; reads follow the
+        hierarchical rule. Read-only; the question is not stored or audited.
+      parameters:
+        - name: question
+          in: query
+          required: true
+          schema: { type: string, minLength: 2, maxLength: 2000 }
+        - name: locale
+          in: query
+          required: false
+          schema: { type: string, enum: [vi, en], default: vi }
+      responses:
+        '200':
+          description: The retrieval result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAssistantGuideCoverage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /cms/assistant/feedback:
     get:
@@ -19161,6 +19207,42 @@ components:
             - type: 'null'
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    CmsAssistantGuideCoverage:
+      type: object
+      required: [outcome, terms, sections]
+      additionalProperties: false
+      description: GoGo-BE#736 — what an assistant turn would retrieve for a question.
+      properties:
+        outcome:
+          type: string
+          enum: [hit, no_match, no_published]
+          description: >
+            `hit` — at least one section; `no_match` — documents are live but
+            none answers this wording; `no_published` — no document is live.
+        terms:
+          type: array
+          description: The folded search terms the question was reduced to (stopwords dropped).
+          items: { type: string }
+        sections:
+          type: array
+          maxItems: 3
+          description: Best first, as a reply would cite them.
+          items:
+            type: object
+            required: [documentId, versionId, slug, title, heading, excerpt, score]
+            additionalProperties: false
+            properties:
+              documentId: { type: string, format: uuid }
+              versionId: { type: string, format: uuid }
+              slug: { type: string }
+              title: { type: string }
+              heading:
+                type: [string, 'null']
+                description: The markdown heading the section sits under; null before the first one.
+              excerpt: { type: string, maxLength: 1200 }
+              score:
+                type: number
+                description: Term-overlap score; only comparable within one response.
     CmsAssistantDocumentDetail:
       type: object
       required: [document, draft, published]

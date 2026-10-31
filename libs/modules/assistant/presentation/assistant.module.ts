@@ -41,6 +41,7 @@ import { AssistantController } from './assistant.controller';
 import {
   AssistantDocumentsCmsController,
   AssistantFeedbackCmsController,
+  AssistantGuideCoverageCmsController,
 } from './assistant-cms.controller';
 
 type BufferConfig = { NODE_ENV: string; REDIS_URL?: string };
@@ -65,6 +66,7 @@ type BufferConfig = { NODE_ENV: string; REDIS_URL?: string };
     AssistantController,
     AssistantDocumentsCmsController,
     AssistantFeedbackCmsController,
+    AssistantGuideCoverageCmsController,
   ],
   providers: [
     AssistantRepository,

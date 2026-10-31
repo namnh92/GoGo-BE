@@ -143,7 +143,7 @@ async function turn(
       }),
     } as never,
     new AssistantAreaResolver(v5Query() as never),
-    { searchPublished: async () => [] } as never,
+    { retrieve: async () => ({ outcome: 'no_published', terms: [], sections: [] }) } as never,
     {} as never,
     answers === null
       ? null
