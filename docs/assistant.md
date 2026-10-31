@@ -554,8 +554,16 @@ No contract change: `AssistantFollowUpGroup.field` is a free string; new values 
   ("cho mình quán cà phê") under an activity question is read as a fresh search and drops the room
   request; **F-17** a brand starting with "Q" ("Q Coffee ở TP.HCM") is read as a legacy district and the
   area is not recognised (the assistant asks for a new address). Measured on DEV in L-1…L-3; the
-  mechanism change considered and not taken: a Jev `continues_previous` noul for the boundary and a
-  match against the snapshot's legacy district names instead of a regex.
+  mechanism change considered and not taken: a Jev `continues_previous` noul for the boundary.
+- **F-17 closed (GoGo-BE#739).** The legacy district check no longer trusts a level word: a qualifier
+  (quận/huyện/thị xã/thành phố/TP/Q, read before folding so "quán" is not "quận") counts only when
+  the name right after it is a `LEGACY_DISTRICT` in the published snapshot (`legacySearch`). "Q
+  Coffee ở TP.HCM" resolves TP.HCM; "Q. Bình Thạnh, TP.HCM", "Quận 1, …", "Thành phố Thủ Đức, …"
+  stay `none`. A current province-level city after "Thành phố"/"TP" ("Thành phố Quảng Ninh") is the
+  city, not its same-name old district (Huyện Quảng Ninh). No brand-name exceptions. Residual: a
+  district dissolved before the historical snapshot (Quận 2, Quận 9 — merged into Thủ Đức in 2021)
+  is not in `legacySearch`; typed with no area phrase beside a city ("Quận 2, TP HCM") the city
+  resolves instead of `none`.
 - **Never written before confirm (D-7).** Unchanged; the int test counts `rooms` before and after.
 
 ## Open items

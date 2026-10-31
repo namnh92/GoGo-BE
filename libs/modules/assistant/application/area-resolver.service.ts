@@ -34,9 +34,27 @@ const PROVINCE_ALIASES: [RegExp, string][] = [
 /** The word right before a phrase that says which level it means (D-6). */
 const PROVINCE_QUALIFIER = /(?:^| )(?:thanh pho|tp|tinh|ca) $/;
 const COMMUNE_QUALIFIER = /(?:^| )(?:phuong|xa|dac khu) $/;
-/** A pre-2025 district or town as typed ("Quận 1", "Huyện Củ Chi", "Q. Bình Thạnh"). */
-const LOCALITY_QUALIFIER =
-  /(?:^|[^\p{L}\p{N}])((?:quận|quan|huyện|huyen|thị\s+xã|thi\s+xa|thành\s+phố|thanh\s+pho|tp)[.\s]+|q(?:[.\s]+(?=[\p{L}\p{N}])|\d))/gu;
+/**
+ * #739 (F-17) — the words that, typed right before a pre-2025 district's name,
+ * say the person means that district ("Quận 1", "Huyện Củ Chi", "Q. Bình
+ * Thạnh", "TP Thủ Đức"). Raw tokens, read before folding: "quán" is not "quận".
+ * A level word alone decides nothing — the name after it must be a legacy
+ * district in the published snapshot, so "Q Coffee" is a brand, not a district.
+ */
+const LEGACY_QUALIFIERS: readonly (readonly string[])[] = [
+  ['quận'],
+  ['quan'],
+  ['q'],
+  ['huyện'],
+  ['huyen'],
+  ['thị', 'xã'],
+  ['thi', 'xa'],
+  ['thành', 'phố'],
+  ['thanh', 'pho'],
+  ['tp'],
+];
+/** Qualifiers a current province-level city is also called by ("TP Huế"). */
+const CITY_QUALIFIERS = new Set(['thành phố', 'thanh pho', 'tp']);
 /** Locative words a bare answer may start with ("ở Bến Thành"). */
 const LOCATIVE = /^ (?:o|tai|khu vuc|khu|gan|quanh) /;
 
@@ -269,27 +287,73 @@ function acceptsBareArea(message: LatestMessage, folded: string): boolean {
   return message.allowBareArea !== false || LOCATIVE.test(folded);
 }
 
-/** Read qualifiers before folding ("quán" is not "quận"); current provinces are exempt. */
+/** Lowercase NFC words; "q1" splits into "q" and "1" as people type it. */
+function rawTokens(text: string): string[] {
+  const words =
+    text
+      .normalize('NFC')
+      .toLowerCase()
+      .match(/[\p{L}\p{N}]+/gu) ?? [];
+  return words.flatMap((w) => (/^q\d+$/.test(w) ? ['q', w.slice(1)] : [w]));
+}
+
+/** A name as folded tokens ("Bình Thạnh" → ["binh", "thanh"]). */
+const foldedTokens = (name: string) => fold(name).trim().split(' ').filter(Boolean);
+
+type LegacyIndex = {
+  /** Legacy district names by their first folded token. */
+  districts: ReadonlyMap<string, readonly (readonly string[])[]>;
+  /** Current provinces whose dataset name starts with "Thành phố", by name. */
+  cities: readonly (readonly string[])[];
+};
+
+/** Built once per snapshot: snapshots are immutable (ADR-0019 §8). */
+const legacyIndexes = new WeakMap<Snapshot, LegacyIndex>();
+
+function legacyIndex(snapshot: Snapshot): LegacyIndex {
+  const cached = legacyIndexes.get(snapshot);
+  if (cached) return cached;
+  const districts = new Map<string, string[][]>();
+  for (const { unit } of snapshot.legacySearch ?? []) {
+    if (unit.level !== 'LEGACY_DISTRICT') continue;
+    const tokens = foldedTokens(unit.name);
+    if (tokens.length === 0) continue;
+    const list = districts.get(tokens[0]!);
+    if (list) list.push(tokens);
+    else districts.set(tokens[0]!, [tokens]);
+  }
+  const cities = snapshot.currentProvinces
+    .filter((p) => fold(p.fullName).startsWith(' thanh pho '))
+    .map((p) => foldedTokens(strip(p.name)));
+  const index = { districts, cities };
+  legacyIndexes.set(snapshot, index);
+  return index;
+}
+
+const startsWith = (tokens: readonly string[], at: number, prefix: readonly string[]) =>
+  prefix.length > 0 && prefix.every((t, i) => tokens[at + i] === t);
+
+/**
+ * #739 (F-17) — the text names a pre-2025 district: a level word (raw) right
+ * before the name of a legacy district in the published snapshot
+ * (`legacySearch`, level `LEGACY_DISTRICT`). A current province-level city
+ * named after "Thành phố"/"TP" ("Thành phố Huế") is that city, not its old
+ * same-name district. Owner 2026-10-28: such a district is not recognised.
+ */
 function hasLegacyLocality(snapshot: Snapshot, text: string): boolean {
-  const raw = text.normalize('NFC').toLowerCase();
-  for (const match of raw.matchAll(LOCALITY_QUALIFIER)) {
-    const qualifier = fold(match[1]!).trim();
-    if (!['thanh pho', 'tp'].includes(qualifier)) return true;
-    const suffix = fold(raw.slice(match.index! + match[0].indexOf(match[1]!)));
-    if (snapshot.currentProvinces.some((p) => suffix.startsWith(fold(p.fullName)))) continue;
-    const name = suffix.replace(/^ (?:thanh pho|tp) /, ' ');
-    const alias = aliasIn(name);
-    if (alias && name.startsWith(fold(alias.phrase)) && provinceByAlias(snapshot, alias.target)) {
-      continue;
+  const { districts, cities } = legacyIndex(snapshot);
+  if (districts.size === 0) return false;
+  const raw = rawTokens(text);
+  const folded = raw.map((t) => foldedTokens(t).join(' '));
+  for (let i = 0; i < raw.length; i++) {
+    for (const qualifier of LEGACY_QUALIFIERS) {
+      if (!startsWith(raw, i, qualifier)) continue;
+      const at = i + qualifier.length;
+      if (CITY_QUALIFIERS.has(qualifier.join(' ')) && cities.some((c) => startsWith(folded, at, c)))
+        continue;
+      const candidates = districts.get(folded[at] ?? '') ?? [];
+      if (candidates.some((name) => startsWith(folded, at, name))) return true;
     }
-    if (
-      qualifier === 'tp' &&
-      snapshot.currentProvinces.some(
-        (p) => fold(p.fullName).startsWith(' thanh pho ') && name.startsWith(fold(strip(p.name))),
-      )
-    )
-      continue;
-    return true;
   }
   return false;
 }
