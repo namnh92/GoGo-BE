@@ -8,7 +8,26 @@ import { DB } from '../../shared/tokens';
 import type { Tx } from '../../shared/outbox';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { decodeCursor, encodeCursor, isoUs } from '../domain/cursor';
-import { queryTerms, type GuideDocumentForRanking } from '../domain/grounding';
+import {
+  queryTerms,
+  rankGuideSections,
+  type GuideDocumentForRanking,
+  type RankedGuideSection,
+} from '../domain/grounding';
+
+/**
+ * GoGo-BE#736 — why a guide question did or did not find a section: `hit`;
+ * `no_published` (nothing is live, a content gap); `no_match` (documents are
+ * live but none answers this wording, a retrieval or coverage gap).
+ */
+export type GuideRetrievalOutcome = 'hit' | 'no_match' | 'no_published';
+
+export type GuideRetrieval = {
+  outcome: GuideRetrievalOutcome;
+  /** The folded terms the question was searched with. */
+  terms: string[];
+  sections: RankedGuideSection[];
+};
 
 /**
  * GoGo-BE#713, GoGo-CMS#249 — the "GoGo guide" the assistant answers product
@@ -154,6 +173,37 @@ export class GuideDocumentsService {
       description: r.description,
       body: r.body,
     }));
+  }
+
+  /**
+   * GoGo-BE#736 — the one retrieval path: the assistant turn and the CMS
+   * coverage check both read it, so a preview shows exactly what a reply would
+   * cite. Only an empty result pays for the extra "is anything live" read.
+   */
+  async retrieve(question: string, locale: 'vi' | 'en', limit = 3): Promise<GuideRetrieval> {
+    const terms = queryTerms(question);
+    const sections = rankGuideSections(
+      await this.searchPublished(question, locale),
+      question,
+      limit,
+    );
+    if (sections.length > 0) return { outcome: 'hit', terms, sections };
+    return {
+      outcome: (await this.hasPublished()) ? 'no_match' : 'no_published',
+      terms,
+      sections,
+    };
+  }
+
+  /** Whether any document is live for the assistant, in any locale. */
+  async hasPublished(): Promise<boolean> {
+    const res = await this.db.execute(sql`
+      select exists (
+        select 1 from assistant_documents d
+        join assistant_document_versions v on v.id = d.published_version_id
+        where d.status = 'published' and v.state = 'published'
+      ) as live`);
+    return (res.rows as { live: boolean }[])[0]?.live === true;
   }
 
   // --- CMS ---------------------------------------------------------------------
@@ -346,7 +396,7 @@ export class GuideDocumentsService {
 
   async publish(
     id: string,
-    input: { versionId: string; reason?: string | undefined },
+    input: { versionId: string; revision?: number | undefined; reason?: string | undefined },
     by: CmsActor,
   ) {
     await this.db.transaction(async (tx) => {
@@ -356,6 +406,17 @@ export class GuideDocumentsService {
         throw AppError.notFound('VERSION_NOT_FOUND', "The version is not one of this document's");
       if (target.state === 'published') {
         throw AppError.conflict('VERSION_ALREADY_PUBLISHED', 'This version is already published');
+      }
+      // GoGo-BE#736 — the revision the publisher reviewed. A draft edited after
+      // review is a different text; publishing it would ship what nobody saw.
+      if (input.revision !== undefined && input.revision !== target.revision) {
+        throw AppError.conflict('REVISION_CONFLICT', 'The version changed since it was reviewed', [
+          {
+            field: 'revision',
+            code: 'stale',
+            message: `current revision is ${target.revision}`,
+          },
+        ]);
       }
       const previous = doc.published_version_id;
       if (previous) {
@@ -375,7 +436,12 @@ export class GuideDocumentsService {
         where id = ${id}`);
       await this.audit(tx, by, id, 'assistant_document.published', {
         before: { publishedVersionId: previous },
-        after: { publishedVersionId: target.id, number: target.number },
+        after: {
+          publishedVersionId: target.id,
+          number: target.number,
+          revision: target.revision,
+          bodySha256: target.body_sha256,
+        },
         reason: input.reason ?? null,
       });
     });

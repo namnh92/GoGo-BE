@@ -359,6 +359,8 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   assistant_decisions_total: ['source', 'intent'],
   // `reason`: timeout | provider_unavailable | invalid_output.
   assistant_fallbacks_total: ['reason'],
+  // GoGo-BE#736 — `outcome`: hit | no_match | no_published (gogo_guide turns).
+  assistant_guide_retrieval_total: ['outcome'],
   // `route`: the AssistantRoute set; `status`: complete | fallback | truncated.
   assistant_turn_duration_seconds: ['route', 'status'],
   // `provider`: jev | haiku; `outcome`: ok or an IntentFallbackReason /

@@ -84,8 +84,18 @@ export const cmsDraftPatchBody = z
   .strict();
 
 export const cmsPublishBody = z
-  .object({ versionId: uuid, reason: z.string().trim().max(500).optional() })
+  .object({
+    versionId: uuid,
+    /** GoGo-BE#736 — the revision reviewed; a different one is 409 REVISION_CONFLICT. */
+    revision: z.number().int().min(1).optional(),
+    reason: z.string().trim().max(500).optional(),
+  })
   .strict();
+
+export const cmsGuideCoverageQuery = z.object({
+  question: z.string().trim().min(2).max(2000),
+  locale: z.enum(['vi', 'en']).default('vi'),
+});
 
 export const cmsUnpublishBody = z.object({ reason: z.string().trim().min(1).max(500) }).strict();
 

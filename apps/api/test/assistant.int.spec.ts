@@ -707,11 +707,34 @@ describe('feedback and the CMS', () => {
       payload: { versionId: detail.draft.id },
     });
     expect(denied.statusCode).toBe(403);
+    // GoGo-BE#736: nothing is live yet — a content gap, not a retrieval miss.
+    const coverage = (question: string) =>
+      f.inject({
+        method: 'GET',
+        url: `/v1/cms/assistant/guide-coverage?question=${encodeURIComponent(question)}&locale=vi`,
+        token: editor,
+      });
+    expect((await coverage('Làm sao để mời bạn vào phòng?')).json()).toMatchObject({
+      outcome: 'no_published',
+      sections: [],
+    });
+    // GoGo-BE#736 AC-2: publishing the revision reviewed before the edit is refused.
+    const reviewedEarlier = await f.inject({
+      method: 'POST',
+      url: `/v1/cms/assistant/documents/${docId}/publish`,
+      token: ops,
+      payload: { versionId: detail.draft.id, revision: detail.draft.revision },
+    });
+    expect(reviewedEarlier.statusCode).toBe(409);
+    expect(reviewedEarlier.json()).toMatchObject({
+      code: 'REVISION_CONFLICT',
+      field_errors: [expect.objectContaining({ field: 'revision' })],
+    });
     const published = await f.inject({
       method: 'POST',
       url: `/v1/cms/assistant/documents/${docId}/publish`,
       token: ops,
-      payload: { versionId: detail.draft.id, reason: 'launch' },
+      payload: { versionId: detail.draft.id, revision: 2, reason: 'launch' },
     });
     expect(published.json()).toMatchObject({
       document: { status: 'published' },
@@ -725,6 +748,16 @@ describe('feedback and the CMS', () => {
       payload: { versionId: detail.draft.id },
     });
     expect(again.json().code).toBe('VERSION_ALREADY_PUBLISHED');
+
+    const hit = (await coverage('Làm sao để mời bạn vào phòng?')).json();
+    expect(hit).toMatchObject({
+      outcome: 'hit',
+      sections: [expect.objectContaining({ slug: 'rooms.invite', heading: 'Mời bạn' })],
+    });
+    expect((await coverage('giá vé máy bay')).json()).toMatchObject({
+      outcome: 'no_match',
+      sections: [],
+    });
 
     // The assistant now cites it for a product question (deterministic path: Haiku is down).
     const id = await newConversation(alice);

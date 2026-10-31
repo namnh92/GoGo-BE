@@ -4816,7 +4816,9 @@ export interface paths {
          * Content: publish a version — the assistant answers from it from now on
          * @description `ops_admin` only: publishing changes what GoGo AI tells every user, a release decision rather than an edit, so it does not sit with the role that wrote the draft (the same split as safety rules and campaigns).
          *
-         *     `versionId` is the open draft, or an earlier version to roll back to. The previously published version becomes `superseded`; exactly one version per document is `published` at a time. Takes effect for new replies; a reply already streaming keeps the version it started with. Audited (`assistant_document.published`) with the version id and `reason`.
+         *     `versionId` is the open draft, or an earlier version to roll back to. The previously published version becomes `superseded`; exactly one version per document is `published` at a time. Takes effect for new replies; a reply already streaming keeps the version it started with. Audited (`assistant_document.published`) with the version id, its revision, `bodySha256` and `reason`.
+         *
+         *     `revision` (GoGo-BE#736) is the revision of `versionId` the publisher reviewed. When sent and the version has moved on — the draft was edited after review — the publish is `409 REVISION_CONFLICT` with a `field_errors` entry on `revision`, so what goes live is what was read. Consoles send it; it is optional only so an older client keeps working.
          */
         post: operations["cmsPublishAssistantDocument"];
         delete?: never;
@@ -4874,6 +4876,26 @@ export interface paths {
         };
         /** Content: one version in full (preview, diff, rollback) */
         get: operations["cmsGetAssistantDocumentVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/assistant/guide-coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Content: which published guide sections a question retrieves
+         * @description GoGo-BE#736 / GoGo-CMS#266. Runs `question` through the same retrieval an assistant turn uses — published versions only, the caller's `locale` first, at most 3 sections — and says why nothing was found: `no_published` (no document is live: a content gap) or `no_match` (documents are live, none answers this wording: a coverage or retrieval gap). `editor` / `ops_admin`; reads follow the hierarchical rule. Read-only; the question is not stored or audited.
+         */
+        get: operations["cmsCheckAssistantGuideCoverage"];
         put?: never;
         post?: never;
         delete?: never;
@@ -10282,6 +10304,30 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        /** @description GoGo-BE#736 — what an assistant turn would retrieve for a question. */
+        CmsAssistantGuideCoverage: {
+            /**
+             * @description `hit` — at least one section; `no_match` — documents are live but none answers this wording; `no_published` — no document is live.
+             * @enum {string}
+             */
+            outcome: "hit" | "no_match" | "no_published";
+            /** @description The folded search terms the question was reduced to (stopwords dropped). */
+            terms: string[];
+            /** @description Best first, as a reply would cite them. */
+            sections: {
+                /** Format: uuid */
+                documentId: string;
+                /** Format: uuid */
+                versionId: string;
+                slug: string;
+                title: string;
+                /** @description The markdown heading the section sits under; null before the first one. */
+                heading: string | null;
+                excerpt: string;
+                /** @description Term-overlap score; only comparable within one response. */
+                score: number;
+            }[];
         };
         CmsAssistantDocumentDetail: {
             document: components["schemas"]["CmsAssistantDocument"];
@@ -19598,6 +19644,8 @@ export interface operations {
                 "application/json": {
                     /** Format: uuid */
                     versionId: string;
+                    /** @description The revision of `versionId` that was reviewed (GoGo-BE#736). */
+                    revision?: number;
                     reason?: string;
                 };
             };
@@ -19624,7 +19672,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description `VERSION_ALREADY_PUBLISHED`. */
+            /** @description `VERSION_ALREADY_PUBLISHED`, or `REVISION_CONFLICT` — `revision` is not the version's current revision. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -19728,6 +19776,32 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    cmsCheckAssistantGuideCoverage: {
+        parameters: {
+            query: {
+                question: string;
+                locale?: "vi" | "en";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The retrieval result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAssistantGuideCoverage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     cmsListAssistantFeedback: {
