@@ -552,7 +552,7 @@ No contract change: `AssistantFollowUpGroup.field` is a free string; new values 
 - **Known limits (owner accepted 2026-10-31, Sol r5 @855b011).** The episode boundary and the legacy
   district check are word heuristics, and two edge cases remain: **F-16** a typed polite activity answer
   ("cho mình quán cà phê") under an activity question is read as a fresh search and drops the room
-  request; **F-17** a brand starting with "Q" ("Q Coffee ở TP.HCM") is read as a legacy district and the
+  request (closed by GoGo-BE#738 except when Jev is down); **F-17** a brand starting with "Q" ("Q Coffee ở TP.HCM") is read as a legacy district and the
   area is not recognised (the assistant asks for a new address). Measured on DEV in L-1…L-3; the
   mechanism change considered and not taken: a Jev `continues_previous` noul for the boundary.
 - **F-17 closed (GoGo-BE#739).** The legacy district check no longer trusts a level word: a qualifier
@@ -565,6 +565,33 @@ No contract change: `AssistantFollowUpGroup.field` is a free string; new values 
   current unit is a quận, and Quận 2/9 (merged into Thủ Đức in 2021) are absent from the pinned
   v2.4.1 snapshot — so it is never widened to the city (PR #741 F-01).
 - **Never written before confirm (D-7).** Unchanged; the int test counts `rooms` before and after.
+
+### Episode boundary by `turn_relation` (GoGo-BE#738)
+
+Closes the F-16 known limit. **Shape not yet confirmed by Fable** — implemented on the owner's
+request from Astra's proposal (`astra-suggest-assistant-cms-rules.out` §6).
+
+- **Order changed.** The episode is settled after the Jev call, not before. When the previous
+  assistant turn asked a clarification and the newest message is not one of its quick replies, the
+  request sent to Jev is the episode as it would read if the message answered (the `answer` walk),
+  with `pending_question` (that turn's text) and `latest_message` apart in `state`, and one closed
+  question `turn_relation = answer_pending | new_request | unclear` — in the same call (ADR-0036 §7:
+  still one Jev call per turn). A quick reply needs no question: it is an answer by construction.
+- **`answer_pending`** keeps the merged episode and Jev's answers ("cho mình quán cà phê" under the
+  activity question keeps the `create_room` card).
+- **`new_request`** takes the newest message alone. Jev's answers were about the merged text, so the
+  turn is classified deterministically (`fallbackReason = new_request`): a new request typed under a
+  question loses Jev's mood/occasion reading for that one turn. Trade-off to confirm in the Fable
+  shape; the alternative costs a second Jev call.
+- **`unclear`** neither merges nor drops: the deterministic reply asks whether the person continues,
+  with two fixed chips (`turn_relation` follow-up group, asked alone). The turn stores the merged
+  episode by reference; "Tiếp tục yêu cầu trước" resumes it, "Đây là yêu cầu mới" starts from the
+  unclear message alone. Nothing is searched or prepared on the asking turn.
+- **Jev down or its answer invalid** (a missing `turn_relation` is invalid when asked): the #733
+  word heuristic decides as before, so F-16 remains on that path only.
+- Counted as `assistant_turn_relations_total{source: jev|heuristic|person, relation}` and written
+  to the turn trace (`turnRelation`).
+- AC-4 (DEV live: the two sentences) is not covered by unit tests; it needs a deploy.
 
 ### Guide coverage and publish revision (GoGo-BE#736)
 

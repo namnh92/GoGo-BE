@@ -267,3 +267,88 @@ describe('#733 create_room vocabulary and the question guard', () => {
     expect(action.instructions).toMatch(/how to do something in the app is not an action/i);
   });
 });
+
+/**
+ * GoGo-BE#738 — the pending clarification travels in the same request: the
+ * question asked and the reply apart, plus one closed `turn_relation` question.
+ */
+describe('#738 turn_relation in the decision request', () => {
+  const pending = { question: 'Bạn muốn làm gì?', latest: 'cho mình quán cà phê' };
+  const request = () =>
+    buildAssistantDecisionRequest(
+      'tạo kèo đi chơi tối nay\ncho mình quán cà phê',
+      { previousRequest: null, openedFrom: null, pending },
+      SEED_TAXONOMY,
+    );
+  const answersFor = (req: ReturnType<typeof request>, relation?: string) => {
+    const answers: Record<string, unknown> = {};
+    for (const [k, q] of Object.entries(req.questions)) {
+      answers[k] =
+        q.type === 'noul'
+          ? { type: 'noul', noul: 0.1 }
+          : { type: 'choice', choice: Object.keys(q.type === 'choice' ? q.criteria : {})[0] };
+    }
+    if (relation) answers.turn_relation = { type: 'choice', choice: relation };
+    else delete answers.turn_relation;
+    return answers;
+  };
+
+  it('sends the question and the reply apart, with a closed relation question', () => {
+    const req = request();
+    expect(req.state.pending_question).toBe('Bạn muốn làm gì?');
+    expect(req.state.latest_message).toBe('cho mình quán cà phê');
+    expect(req.questions.turn_relation).toMatchObject({ type: 'choice' });
+    expect(Object.keys((req.questions.turn_relation as { criteria: object }).criteria)).toEqual([
+      'answer_pending',
+      'new_request',
+      'unclear',
+    ]);
+  });
+
+  it('asks nothing extra when no clarification is pending', () => {
+    const req = buildAssistantDecisionRequest(
+      'cho mình quán cà phê',
+      { previousRequest: null, openedFrom: null },
+      SEED_TAXONOMY,
+    );
+    expect(req.questions.turn_relation).toBeUndefined();
+    expect(req.state.latest_message).toBeUndefined();
+  });
+
+  it.each(['answer_pending', 'new_request', 'unclear'])('maps the relation %s', (relation) => {
+    const req = request();
+    const parsed = parseDecisionResponse(req, {
+      model: 'typesafe/jev-1.14-x',
+      answers: answersFor(req, relation),
+    });
+    const d = mapAssistantAnswers(
+      parseIntentFacts('cho mình quán cà phê'),
+      parsed.answers,
+      parsed.model,
+      undefined,
+      { expectRelation: true },
+    );
+    expect(d.turnRelation).toBe(relation);
+  });
+
+  it('a relation outside the closed set is refused by the adapter', () => {
+    const req = request();
+    expect(() =>
+      parseDecisionResponse(req, { model: 'm', answers: answersFor(req, 'maybe') }),
+    ).toThrow(/not an option/);
+  });
+
+  it('a missing relation, when asked, is an invalid answer (the turn falls back)', () => {
+    const req = request();
+    const answers = answersFor(req);
+    expect(() =>
+      mapAssistantAnswers(
+        parseIntentFacts('cho mình quán cà phê'),
+        answers as never,
+        'm',
+        undefined,
+        { expectRelation: true },
+      ),
+    ).toThrow(/turn_relation/);
+  });
+});

@@ -55,8 +55,20 @@ export type IntentFacts = {
 export type ClarificationReason =
   'empty_request' | 'out_of_scope' | 'unclear_activity' | 'conflicting_preferences';
 
+/**
+ * `new_request` (GoGo-BE#738): the assistant's Jev call classified a request
+ * merged with a clarification it answered, and Jev judged the newest message a
+ * new request instead — the merged answers do not describe it, so it is
+ * classified deterministically. Never produced by the search path.
+ */
 export type IntentFallbackReason =
-  'disabled' | 'empty_request' | 'timeout' | 'quota' | 'provider_error' | 'invalid_response';
+  | 'disabled'
+  | 'empty_request'
+  | 'timeout'
+  | 'quota'
+  | 'provider_error'
+  | 'invalid_response'
+  | 'new_request';
 
 export type ScoredKey = { key: string; probability: number };
 

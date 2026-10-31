@@ -573,6 +573,16 @@ export function deterministicReply(ctx: GroundedAnswerContext): string {
       );
       break;
     case 'clarify':
+      // #738: Jev could not tell whether the message continues the request
+      // GoGo asked about — asked, never merged or dropped silently.
+      if (ctx.clarification.includes('turn_relation')) {
+        lines.push(
+          vi
+            ? 'Mình chưa rõ tin nhắn này trả lời câu hỏi lúc nãy hay là một yêu cầu mới. Bạn muốn tiếp tục yêu cầu trước, hay tìm theo tin nhắn mới?'
+            : "I'm not sure whether this answers my earlier question or is a new request. Do you want to continue the earlier request, or start from this message?",
+        );
+        break;
+      }
       // #733 (Sol F-08): a scope question rides on a "what to do" turn too.
       if (ctx.clarification.includes('area_scope') && ctx.areaScope) {
         lines.push(scopeQuestion(ctx.areaScope, vi));
@@ -666,9 +676,35 @@ function timeOptions(day: GroundedAnswerContext['timeDay'], vi: boolean): string
  * area (or its scope), activity — the order of today — then time, party
  * size, budget.
  */
+/**
+ * GoGo-BE#738 — the two answers to "are you continuing?", fixed text. The
+ * first continues the earlier request, the second starts from the message
+ * that was unclear; the next turn reads them back by position.
+ */
+export const TURN_RELATION_OPTIONS = {
+  vi: [
+    { label: 'Tiếp tục yêu cầu trước', text: 'Tiếp tục yêu cầu trước' },
+    { label: 'Đây là yêu cầu mới', text: 'Đây là yêu cầu mới' },
+  ],
+  en: [
+    { label: 'Continue my request', text: 'Continue my earlier request' },
+    { label: 'This is a new request', text: 'This is a new request' },
+  ],
+} as const;
+
 export function followUpsFor(ctx: GroundedAnswerContext): AssistantFollowUpGroup[] {
   const vi = ctx.locale !== 'en';
   const groups: AssistantFollowUpGroup[] = [];
+  if (ctx.clarification.includes('turn_relation')) {
+    // #738: asked alone — any other chip would be read as an answer to it.
+    return [
+      {
+        field: 'turn_relation',
+        label: vi ? 'Bạn đang tiếp tục yêu cầu trước?' : 'Are you continuing?',
+        options: TURN_RELATION_OPTIONS[vi ? 'vi' : 'en'].map((o) => ({ ...o })),
+      },
+    ];
+  }
   const preference = ctx.preferences.moods.length + ctx.preferences.settings.length >= 2;
   if (ctx.clarification.includes('preference') && preference) {
     const labels = [...ctx.preferences.moods, ...ctx.preferences.settings].slice(0, 4);
