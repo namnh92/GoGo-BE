@@ -340,12 +340,35 @@ function parseAreaText(input: string): string | null {
 
 // ── Judgments ────────────────────────────────────────────────────────────────
 
+/**
+ * The CMS-owned labels Jev reads, as data (GoGo-BE#737): kind → taxonomy key →
+ * label. Question texts only point at a record (`taxonomy.mood.chill`), so a
+ * label is never part of an instruction and a quote in one ends nothing.
+ */
+export type IntentStateTaxonomy = Record<
+  'category' | 'occasion' | 'mood' | 'setting',
+  Record<string, string>
+>;
+
 export function buildIntentRequest(
   text: string,
   taxonomy: IntentTaxonomy,
-): { state: { request: string }; questions: Record<string, DecisionQuestion> } {
-  const options = (terms: IntentTaxonomyTerm[]) =>
+): {
+  state: { request: string; taxonomy: IntentStateTaxonomy };
+  questions: Record<string, DecisionQuestion>;
+} {
+  const labels = (terms: IntentTaxonomyTerm[]) =>
     Object.fromEntries(terms.map((t) => [t.key, t.label]));
+  const stateTaxonomy: IntentStateTaxonomy = {
+    category: labels(taxonomy.category),
+    occasion: labels(taxonomy.suitability),
+    mood: labels(taxonomy.mood),
+    setting: labels(taxonomy.setting),
+  };
+  const options = (kind: keyof IntentStateTaxonomy, terms: IntentTaxonomyTerm[]) =>
+    Object.fromEntries(
+      terms.map((t) => [t.key, `The one named in \`taxonomy.${kind}.${t.key}\`.`]),
+    );
   const questions: Record<string, DecisionQuestion> = {
     in_scope: {
       type: 'noul',
@@ -362,7 +385,7 @@ export function buildIntentRequest(
       instructions:
         'Which kind of place does `request` most want? A dish or drink implies the kind of place that serves it.',
       criteria: {
-        ...options(taxonomy.category),
+        ...options('category', taxonomy.category),
         [NONE]: 'No listed kind fits, or the request does not say what kind of place.',
       },
     },
@@ -370,7 +393,7 @@ export function buildIntentRequest(
       type: 'choice',
       instructions: 'Who is the outing in `request` for?',
       criteria: {
-        ...options(taxonomy.suitability),
+        ...options('occasion', taxonomy.suitability),
         [NOT_STATED]: 'The request does not say or imply who is going.',
       },
     },
@@ -396,16 +419,19 @@ export function buildIntentRequest(
   for (const term of taxonomy.mood) {
     questions[`mood:${term.key}`] = {
       type: 'noul',
-      instructions: `Does the person in \`request\` want a place whose atmosphere is "${term.label}"?`,
+      instructions: `Does the person in \`request\` want a place whose atmosphere is the one named in \`taxonomy.mood.${term.key}\`?`,
     };
   }
   for (const term of taxonomy.setting) {
     questions[`setting:${term.key}`] = {
       type: 'noul',
-      instructions: `Does the person in \`request\` want a place that is "${term.label}"?`,
+      instructions: `Does the person in \`request\` want a place that is the one named in \`taxonomy.setting.${term.key}\`?`,
     };
   }
-  return { state: { request: text.slice(0, MAX_REQUEST_CHARS) }, questions };
+  return {
+    state: { request: text.slice(0, MAX_REQUEST_CHARS), taxonomy: stateTaxonomy },
+    questions,
+  };
 }
 
 export function mapIntentAnswers(

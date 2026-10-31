@@ -55,9 +55,9 @@ export function buildAssistantDecisionRequest(
   text: string,
   options: { previousRequest: string | null; openedFrom: 'place' | 'plan' | null },
   taxonomy: IntentTaxonomy,
-): { state: Record<string, string>; questions: Record<string, DecisionQuestion> } {
+): { state: Record<string, DecisionCriterion>; questions: Record<string, DecisionQuestion> } {
   const base = buildIntentRequest(text, taxonomy);
-  const state: Record<string, string> = { ...base.state };
+  const state: Record<string, DecisionCriterion> = { ...base.state };
   if (options.previousRequest) {
     state.previous_request = options.previousRequest.slice(0, MAX_PREVIOUS_REQUEST_CHARS);
   }

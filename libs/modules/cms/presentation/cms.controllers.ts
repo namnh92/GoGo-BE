@@ -1239,6 +1239,33 @@ export class CmsAreasController {
 
 // ---------------------------------------------------------------- content
 
+/**
+ * GoGo-BE#737 F-01 (owner chose option B, 2026-10-31; rule from Astra): a
+ * taxonomy label is one line of plain text, shown to people and read by the
+ * assistant's models as data. Letters, combining marks, digits, spaces and a
+ * short punctuation list; NFC, every space separator one ASCII space, trimmed,
+ * then 1–80 code points. Nothing is stripped or truncated — a label outside
+ * the rule is refused. The same pattern is declared in OpenAPI.
+ */
+export const TAXONOMY_LABEL_PATTERN = '^[\\p{L}\\p{M}\\p{N} \'"‘’“”()&+,./\\-–—]{1,80}$';
+const TAXONOMY_LABEL = new RegExp(TAXONOMY_LABEL_PATTERN, 'u');
+/** The characters a label may contain as sent, declared in OpenAPI (raw input). */
+export const TAXONOMY_LABEL_RAW_PATTERN = '^[\\p{L}\\p{M}\\p{N}\\p{Zs}\'"‘’“”()&+,./\\-–—]*$';
+export const taxonomyLabelSchema = z
+  .string()
+  .transform((s) =>
+    s
+      .normalize('NFC')
+      .replace(/\p{Zs}/gu, ' ')
+      .replace(/ {2,}/g, ' ')
+      // ASCII spaces only: `trim()` would quietly drop a newline, tab or BOM
+      // at an edge, and the rule refuses those rather than strips them.
+      .replace(/^ +| +$/g, ''),
+  )
+  .refine((s) => TAXONOMY_LABEL.test(s), {
+    message: 'a label is 1–80 letters, digits, spaces or simple punctuation, on one line',
+  });
+
 const taxonomyCreateSchema = z.object({
   kind: z.enum([
     'mood',
@@ -1250,11 +1277,11 @@ const taxonomyCreateSchema = z.object({
     'suitability',
   ]),
   key: z.string().regex(/^[a-z0-9_]{2,40}$/),
-  labels: z.record(z.string(), z.string().max(80)),
+  labels: z.record(z.string(), taxonomyLabelSchema),
   sortOrder: z.number().int().min(0).optional(),
 });
 const taxonomyUpdateSchema = z.object({
-  labels: z.record(z.string(), z.string().max(80)).optional(),
+  labels: z.record(z.string(), taxonomyLabelSchema).optional(),
   sortOrder: z.number().int().min(0).optional(),
   isActive: z.boolean().optional(),
 });
