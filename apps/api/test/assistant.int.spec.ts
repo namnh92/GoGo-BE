@@ -1014,7 +1014,9 @@ describe('Astra round 2 (GoGo-BE#717)', () => {
  * GoGo-BE#733 — "tạo kèo" through the chat, on the real administrative
  * snapshot and the provider-down path (deterministic decision, D-1/U-14).
  * Owner 2026-10-31: the card comes at once (Q-1); nothing is written before
- * confirm (D-7); one live room card per conversation (D-3).
+ * confirm (D-7); one live room card per conversation (D-3). The kind of place
+ * is named by its CMS label, which the fallback reads; without one a create_room
+ * turn asks what to do (Sol F-02).
  */
 describe('create a room through the chat (GoGo-BE#733)', () => {
   const roomCount = async () =>
@@ -1040,7 +1042,7 @@ describe('create a room through the chat (GoGo-BE#733)', () => {
     const first = await turnFrames(
       ivy,
       conversationId,
-      'tạo kèo đi ăn tối thứ 7 với 4 người ở Phường Cầu Giấy, Thành phố Hà Nội',
+      'tạo kèo đi nhà hàng thứ 7 với 4 người ở Phường Cầu Giấy, Thành phố Hà Nội',
     );
     const cardIds = first
       .filter((x) => x.event === 'card')
@@ -1122,7 +1124,7 @@ describe('create a room through the chat (GoGo-BE#733)', () => {
   it('IT-2 "Sài Gòn" asks the scope with dataset names, and searches nothing', async () => {
     const jun = await f.register('jun-733@gogo.test');
     const conversationId = await newConversation(jun);
-    const frames = await turnFrames(jun, conversationId, 'tạo kèo ăn tối ở Sài Gòn');
+    const frames = await turnFrames(jun, conversationId, 'tạo kèo nhà hàng ở Sài Gòn');
     expect(frames.some((x) => x.event === 'card')).toBe(false);
     expect(frames.some((x) => x.event === 'step' && x.data.step === 'searching_places')).toBe(true);
     const groups = frames.find((x) => x.event === 'follow_ups')!.data.groups;
