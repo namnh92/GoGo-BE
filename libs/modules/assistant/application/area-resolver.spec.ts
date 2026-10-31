@@ -231,4 +231,54 @@ describe('#733 province alias that is also a commune name', () => {
     expect(await v5.namesArea('Cả Thành phố Hồ Chí Minh')).toBe(true);
     expect(await v5.namesArea('Làm sao để mời bạn?')).toBe(false);
   });
+
+  describe('#739 F-17 a legacy district is a snapshot name, not a level word', () => {
+    it('a brand starting with "Q" beside a city resolves the city', async () => {
+      for (const text of ['Q Coffee ở TP.HCM', 'Q. Coffee ở TP.HCM', 'cà phê Q Bar, TP HCM']) {
+        expect(await kindOf(text, null), text).toBe('resolved');
+        expect(await communeOf(text, null), text).toBeNull();
+      }
+    });
+
+    it.each([
+      'Q. Bình Thạnh, TP.HCM',
+      'Quận 1, Thành phố Hồ Chí Minh',
+      'Thành phố Thủ Đức, Thành phố Hồ Chí Minh',
+      'quan binh thanh, tp hcm',
+      'Thành phố Thái Nguyên, Tỉnh Thái Nguyên',
+      'Huyện Quảng Ninh',
+    ])('a legacy district from the snapshot stays unrecognised: %s', async (text) => {
+      expect(await kindOf(text, null)).toBe('none');
+    });
+
+    it.each([
+      'Q2, TP HCM',
+      'Q9, TP HCM',
+      'Q.2, TP.HCM',
+      'Quận 2, Thành phố Hồ Chí Minh',
+      'quan 9 tp hcm',
+      'cà phê ở Quận 2',
+    ])(
+      'PR #741 F-01 a numbered district missing from the snapshot is not widened to the city: %s',
+      async (text) => {
+        expect(await kindOf(text, null)).toBe('none');
+        expect(await v5.namesArea(text, false)).toBe(true);
+      },
+    );
+
+    it('PR #741 F-01 a number elsewhere is not a district', async () => {
+      expect(await kindOf('Q Coffee ở TP.HCM', null)).toBe('resolved');
+      expect(await kindOf('quán cà phê 2 tầng ở TP HCM', null)).toBe('resolved');
+      expect(await kindOf('đi 2 người ở TP HCM', null)).toBe('resolved');
+    });
+
+    it('a current province-level city is not its same-name old district', async () => {
+      expect(await kindOf('Thành phố Quảng Ninh', null)).toBe('resolved');
+      expect(await kindOf('cà phê ở TP Quảng Ninh', null)).toBe('resolved');
+    });
+
+    it('"quán" and other words are not level words', async () => {
+      expect(await kindOf('quán Bình Thạnh ở TP HCM', null)).toBe('resolved');
+    });
+  });
 });
