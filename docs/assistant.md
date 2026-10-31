@@ -549,6 +549,13 @@ No contract change: `AssistantFollowUpGroup.field` is a free string; new values 
   deferred fresh-request boundary are replaced by the source references and deterministic boundary
   above. D-3 release and D-6 locality/bare-name rules are tightened as described. Owner Q-1/Q-2 and
   invariants I-1… I-8 remain binding. The original shape is outside this worktree and is not edited.
+- **Known limits (owner accepted 2026-10-31, Sol r5 @855b011).** The episode boundary and the legacy
+  district check are word heuristics, and two edge cases remain: **F-16** a typed polite activity answer
+  ("cho mình quán cà phê") under an activity question is read as a fresh search and drops the room
+  request; **F-17** a brand starting with "Q" ("Q Coffee ở TP.HCM") is read as a legacy district and the
+  area is not recognised (the assistant asks for a new address). Measured on DEV in L-1…L-3; the
+  mechanism change considered and not taken: a Jev `continues_previous` noul for the boundary and a
+  match against the snapshot's legacy district names instead of a regex.
 - **Never written before confirm (D-7).** Unchanged; the int test counts `rooms` before and after.
 
 ## Open items
