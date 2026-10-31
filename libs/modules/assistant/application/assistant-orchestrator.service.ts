@@ -15,10 +15,15 @@ import { APP_CONFIG } from '../../shared/config';
 import type { Actor } from '../../identity/domain/actor';
 import { SearchService } from '../../search/application/search.service';
 import {
+  MAX_REQUEST_CHARS,
   fallbackIntent,
+  parseDayPart,
   parseIntentFacts,
+  type DayPart,
+  type IntentFacts,
   type IntentFallbackReason,
   type IntentTaxonomy,
+  type TimeHint,
 } from '../../search/domain/intent';
 import { createRoomSchema } from '../../rooms/presentation/dtos';
 import {
@@ -26,6 +31,7 @@ import {
   buildAssistantDecisionRequest,
   buildRelevanceRequest,
   fallbackAssistantDecision,
+  startsNewRequest,
   mapAssistantAnswers,
   type AssistantDecision,
   type AssistantRoute,
@@ -48,7 +54,11 @@ import { vnDayStart } from '../domain/limits';
 import { AssistantRepository } from '../infrastructure/assistant.repository';
 import { ASSISTANT_DECISION_PROVIDER, type AssistantConfig } from './assistant.config';
 import { AssistantAvailabilityService } from './assistant-availability.service';
-import { AssistantAreaResolver, type ResolvedArea } from './area-resolver.service';
+import {
+  AssistantAreaResolver,
+  type AreaResolution,
+  type ResolvedArea,
+} from './area-resolver.service';
 import { AssistantCardHydrator, type PlaceCard, type PlanCard } from './card-hydrator.service';
 import { GuideDocumentsService } from './guide-documents.service';
 import { AssistantTaxonomyService } from './taxonomy.service';
@@ -77,6 +87,42 @@ const MIN_COMPOSE_BUDGET_MS = 2_500;
 const HISTORY_LIMIT = 6;
 /** "Near the place I opened", when the request names no area. */
 const CONTEXT_RADIUS_M = 2_000;
+/**
+ * Older replies without episode references can be reconstructed within this
+ * window. New replies retain bounded source-message references independently.
+ */
+const MAX_EPISODE_EARLIER = 5;
+const EPISODE_HISTORY_LIMIT = 2 * MAX_EPISODE_EARLIER;
+
+/** A history row, plus the quick-reply texts it offered when it asked. */
+type EpisodeMessage = {
+  id?: string | undefined;
+  text: string;
+  allowBareArea: boolean;
+  answerField?: 'activity' | 'preference' | undefined;
+};
+type ContextTurn = HistoryTurn & {
+  id?: string | undefined;
+  askedTexts: string[] | null;
+  asksArea: boolean;
+  answerField?: 'activity' | 'preference' | undefined;
+  episode?: EpisodeMessage[];
+};
+
+/**
+ * #733 D-5 — the request a turn answers: the current message alone, or merged
+ * with the earlier user turns it answers (each preceding assistant turn asked).
+ */
+type Episode = {
+  /** User texts, oldest first; the last one is the current message. */
+  texts: string[];
+  messages: EpisodeMessage[];
+  facts: IntentFacts;
+  dayPart: DayPart | null;
+  /** The current message's own area phrase (the newest decides, D-6). */
+  latestAreaText: string | null;
+  previousRequest: string | null;
+};
 
 /**
  * ADR-0036 — one reply: admission already happened (the send), so this is
@@ -152,15 +198,40 @@ export class AssistantOrchestrator {
     const remaining = () => deadline - Date.now();
 
     // ── context ──────────────────────────────────────────────────────────────
-    const history = await guard.run(() => this.historyFor(input));
-    const previousRequest = [...history].reverse().find((t) => t.role === 'user')?.text ?? null;
+    const { history, currentId } = await guard.run(() => this.historyFor(input));
     const taxonomy = await guard.run(() => this.taxonomy.taxonomy());
     const labels = this.taxonomy.labels(taxonomy);
-    const facts = parseIntentFacts(input.text);
+    const episode = await guard.run(() => this.episodeFor(input.text, history, currentId));
+    const { facts, dayPart } = episode;
+    const requestText = joinRequest(episode.texts);
+    if (episode.messages.every((message) => message.id)) {
+      state.trace.episodeRefs = episode.messages.map(({ id, allowBareArea, answerField }) => ({
+        id,
+        allowBareArea,
+        answerField,
+      }));
+    }
+    if (episode.texts.length > 1) {
+      state.trace.episode = {
+        turns: episode.texts.length,
+        merged: (['partySize', 'budget', 'timeHint', 'areaText'] as const).filter(
+          (f) => facts[f] !== null,
+        ),
+      };
+    }
 
     // ── Jev decision 1 ───────────────────────────────────────────────────────
     const decision = await guard.run(() =>
-      this.decide(input, previousRequest, taxonomy, guard.signal, remaining(), state),
+      this.decide(
+        input,
+        requestText,
+        facts,
+        episode.previousRequest,
+        taxonomy,
+        guard.signal,
+        remaining(),
+        state,
+      ),
     );
     const c = decision.classification;
     state.trace.intent = {
@@ -186,15 +257,28 @@ export class AssistantOrchestrator {
     // `plan_help` is about a plan the person opened; without one, a question
     // about plans is a question about how GoGo works.
     if (route === 'plan_help' && input.context?.kind !== 'plan') route = 'gogo_guide';
+    // #733 D-2: an explicit "tạo kèo" is about places even when the model
+    // filed it under the guide, out of scope or the opened plan (Sol F-07;
+    // the guards already cleared the action for how-to and injection text).
+    const createRoom = decision.action === 'create_room';
+    if (
+      createRoom &&
+      (route === 'gogo_guide' || route === 'out_of_scope' || route === 'plan_help')
+    ) {
+      route = 'recommend_places';
+      state.trace.routeOverride = 'create_room';
+    }
     const clarification: string[] = [];
     const conflicting = c.clarification.reasons.includes('conflicting_preferences');
     if (conflicting) clarification.push('preference');
     // Only an unknown kind of place needs asking about; a missing area or
     // budget is handled as its own follow-up below.
+    // #733 (Sol F-02): a "tạo kèo" with no known kind of place asks it on
+    // both paths — the deterministic fallback never reports unclear_activity.
     if (
       route === 'recommend_places' &&
-      c.clarification.reasons.includes('unclear_activity') &&
-      c.category.key === null
+      c.category.key === null &&
+      (c.clarification.reasons.includes('unclear_activity') || createRoom)
     ) {
       route = 'clarify';
       clarification.push('activity');
@@ -233,9 +317,21 @@ export class AssistantOrchestrator {
       if (!planCard.available) planCard = null;
     }
 
-    if (route === 'recommend_places') {
-      await guard.run(() => sink.emit({ type: 'step', step: 'searching_places' }));
-      const resolution = await guard.run(() => this.areas.resolve(input.text, facts.areaText));
+    // #733 D-3: a create_room turn resolves the area whatever the route, so a
+    // turn that still asks what to do already carries the area on the card.
+    const resolvesArea = route === 'recommend_places' || (createRoom && route === 'clarify');
+    if (resolvesArea) {
+      if (route === 'recommend_places') {
+        await guard.run(() => sink.emit({ type: 'step', step: 'searching_places' }));
+      }
+      const resolution: AreaResolution = await guard.run(() =>
+        this.areas.resolve(
+          episode.texts.join('\n'),
+          facts.areaText,
+          { text: input.text, areaText: episode.latestAreaText },
+          episode.messages.map((m) => ({ ...m, areaText: parseIntentFacts(m.text).areaText })),
+        ),
+      );
       area = resolution.kind === 'resolved' ? resolution.value : null;
       perPerson = perPersonBudget(facts, c.occasion.key);
       ctx.constraints = constraintsFrom(facts, area?.label ?? null, {
@@ -243,14 +339,22 @@ export class AssistantOrchestrator {
         perPersonOrigin: perPerson.origin,
       });
       const contextPlaceId = input.context?.kind === 'place' ? input.context.id : null;
-      if (!area && !contextPlaceId) {
+      if (resolution.kind === 'scope_choice') {
+        // #733 D-6: a city and a ward of the same name — the person chooses.
+        clarification.push('area_scope');
+        ctx.areaScope = {
+          province: resolution.province,
+          communes: resolution.communes.slice(0, 5),
+        };
+      } else if (!area && !contextPlaceId) {
         // No area and nothing to anchor on: a nationwide list would be noise.
         clarification.push('area');
         ctx.areaUnrecognized = facts.areaText !== null || resolution.kind === 'ambiguous';
-      } else {
+      } else if (route === 'recommend_places') {
         placeCards = await guard.run(() =>
           this.findPlaces(
             input,
+            requestText,
             decision,
             area,
             perPerson.amount,
@@ -262,12 +366,29 @@ export class AssistantOrchestrator {
             labels,
           ),
         );
-        if (!facts.budget && placeCards.length > 0) clarification.push('budget');
+        if (!createRoom && !facts.budget && placeCards.length > 0) clarification.push('budget');
+      }
+      if (createRoom) {
+        // #733 D-4: ask only what is missing; the card carries the rest as
+        // assumed. Owner Q-2: a day with no hour is asked, never assumed.
+        if (!startFor(facts.timeHint, dayPart)) {
+          clarification.push('time');
+          ctx.timeDay = isDayHint(facts.timeHint) ? facts.timeHint : null;
+        }
+        if (facts.partySize === null && c.occasion.key !== 'couple') {
+          clarification.push('party_size');
+        }
+        if (!facts.budget) clarification.push('budget');
       }
       ctx.places = await guard.run(() => this.groundedPlaces(placeCards, labels));
       state.trace.retrieval = {
         areaResolved: area !== null,
-        areaAmbiguous: resolution.kind === 'ambiguous',
+        areaAmbiguous:
+          resolution.kind === 'scope_choice'
+            ? 'scope'
+            : resolution.kind === 'ambiguous'
+              ? 'communes'
+              : false,
         candidates: placeCards.length,
         perPersonBudget: perPerson.amount,
       };
@@ -311,13 +432,17 @@ export class AssistantOrchestrator {
     }
 
     // ── proposal (prepared, never performed) ────────────────────────────────
-    // Only a turn that is about places or the opened plan may prepare one: an
-    // out-of-scope or unclear request ("…and create a room now") never does.
+    // Only a turn that is about places, the opened plan or an explicit
+    // "tạo kèo" may prepare one (#733 D-3: shown at once, owner Q-1); an
+    // out-of-scope request never does — the guards clear its action.
     const proposal =
-      route === 'recommend_places' || route === 'plan_help'
+      (createRoom && route !== 'out_of_scope') ||
+      route === 'recommend_places' ||
+      route === 'plan_help'
         ? this.prepareProposal(
             decision,
             facts,
+            dayPart,
             area,
             perPerson,
             placeCards,
@@ -342,11 +467,11 @@ export class AssistantOrchestrator {
       });
     }
 
+    // An area clarification (a new address, or the scope of one) is the
+    // deterministic question (owner 2026-10-28), never composed (Sol N-01).
+    const areaAsked = clarification.includes('area') || clarification.includes('area_scope');
     const composable =
-      // An area clarification is the deterministic new-address question
-      // (owner 2026-10-28), never composed (Sol N-01).
-      (route === 'recommend_places' &&
-        (placeCards.length > 0 || (conflicting && !clarification.includes('area')))) ||
+      (route === 'recommend_places' && (placeCards.length > 0 || (conflicting && !areaAsked))) ||
       (route === 'gogo_guide' && ctx.guide.length > 0) ||
       (route === 'plan_help' && ctx.plan !== null);
     let status: TurnOutcome['status'] = 'complete';
@@ -359,7 +484,15 @@ export class AssistantOrchestrator {
         fallbackReason = 'timeout';
       } else {
         await sink.emit({ type: 'step', step: 'writing' });
-        const composed = await this.compose(input, ctx, history, state, sink, signal, deadline);
+        const composed = await this.compose(
+          input,
+          ctx,
+          history.slice(-HISTORY_LIMIT),
+          state,
+          sink,
+          signal,
+          deadline,
+        );
         if (composed.kind === 'fallback') fallbackReason = composed.reason;
         else if (composed.kind === 'truncated') status = 'truncated';
       }
@@ -384,14 +517,29 @@ export class AssistantOrchestrator {
       // A-R-06: a Stop or the kill switch during the reply prepares nothing.
       signal.throwIfAborted();
       if (proposal) {
-        const row = await this.repo.insertProposal({
+        const draft = {
           conversationId: input.conversationId,
           messageId: input.messageId,
           userId: input.userId,
           kind: proposal.kind,
           values: proposal.values,
           expiresAt: new Date(Date.now() + PROPOSAL_TTL_MS),
-        });
+        };
+        let row;
+        if (proposal.kind === 'create_room') {
+          // #733 D-3: one live room card per conversation, in one statement.
+          const inserted = await this.repo.insertSupersedingProposal(draft);
+          row = inserted.row;
+          if (inserted.superseded > 0) {
+            this.metrics.increment(
+              'assistant_proposals_total',
+              { outcome: 'superseded' },
+              inserted.superseded,
+            );
+          }
+        } else {
+          row = await this.repo.insertProposal(draft);
+        }
         state.proposalIds.push(row.id);
         await sink.emit({
           type: 'proposal',
@@ -413,7 +561,7 @@ export class AssistantOrchestrator {
 
     const noAnswer =
       (route === 'gogo_guide' && ctx.guide.length === 0) ||
-      (route === 'recommend_places' && placeCards.length === 0 && !clarification.includes('area'));
+      (route === 'recommend_places' && placeCards.length === 0 && !areaAsked);
     if (fallbackReason) {
       status = 'fallback';
       await sink.emit({
@@ -436,37 +584,192 @@ export class AssistantOrchestrator {
 
   // ── stages ───────────────────────────────────────────────────────────────
 
-  private async historyFor(input: TurnInput): Promise<HistoryTurn[]> {
-    const rows = await this.repo.history(input.conversationId, input.messageId, HISTORY_LIMIT + 1);
+  private async historyFor(input: TurnInput): Promise<{
+    history: ContextTurn[];
+    currentId?: string | undefined;
+  }> {
+    const rows = await this.repo.history(
+      input.conversationId,
+      input.messageId,
+      EPISODE_HISTORY_LIMIT + 1,
+    );
     // The newest user turn is the question itself; it goes in separately.
     const last = rows[rows.length - 1];
-    if (last && last.role === 'user' && last.text === input.text) rows.pop();
-    return rows.slice(-HISTORY_LIMIT).map((r) => ({ role: r.role, text: r.text }));
+    const currentId =
+      last?.role === 'user' && last.text === input.text ? rows.pop()!.id : undefined;
+    const history: ContextTurn[] = rows.slice(-EPISODE_HISTORY_LIMIT).map((r) => ({
+      id: r.id,
+      role: r.role,
+      text: r.text,
+      askedTexts:
+        r.role === 'assistant' && r.follow_ups?.length
+          ? r.follow_ups.flatMap((g) => (g.options ?? []).map((o) => o.text))
+          : null,
+      asksArea: r.follow_ups?.some((g) => g.field === 'area' || g.field === 'area_scope') ?? false,
+      answerField: r.follow_ups?.some((g) => g.field === 'activity')
+        ? 'activity'
+        : r.follow_ups?.some((g) => g.field === 'preference')
+          ? 'preference'
+          : undefined,
+    }));
+    const refs = rows[rows.length - 1]?.trace?.episodeRefs;
+    const previous = history[history.length - 1];
+    if (previous?.role === 'assistant' && previous.askedTexts && isEpisodeRefs(refs)) {
+      const sources = await this.repo.episodeMessages(
+        input.conversationId,
+        refs.map((r) => r.id),
+      );
+      const byId = new Map(sources.map((row) => [row.id, row]));
+      if (refs.every((ref) => byId.has(ref.id))) {
+        previous.episode = refs.map((ref) => ({ ...ref, text: byId.get(ref.id)!.text }));
+      }
+    }
+    return { history, currentId };
+  }
+
+  /**
+   * #733 D-5 — walking back from the current message, the user turns whose
+   * following assistant turn asked (bounded by the history window). They
+   * merge only when the current message is answer-shaped: it carries a fact,
+   * names a unit by its full dataset name, or is one of the offered quick
+   * replies — and asks no how-to question (D-1). Newest non-null fact wins.
+   */
+  private async episodeFor(
+    text: string,
+    history: ContextTurn[],
+    currentId?: string,
+  ): Promise<Episode> {
+    const own = parseIntentFacts(text);
+    const ownDayPart = parseDayPart(text);
+    const lastUser = (turns: ContextTurn[]) =>
+      [...turns].reverse().find((t) => t.role === 'user')?.text ?? null;
+    const single: Episode = {
+      texts: [text],
+      messages: [{ id: currentId, text, allowBareArea: false }],
+      facts: own,
+      dayPart: ownDayPart,
+      latestAreaText: own.areaText,
+      previousRequest: startsNewRequest(text) ? null : lastUser(history),
+    };
+    // Each link must hold (Astra A-F-04): a turn is merged only when the turn
+    // after it answered it, so a fresh request typed under the chips is a
+    // boundary the walk never crosses later.
+    const answers = async (message: string, asked: ContextTurn) => {
+      if (asked.askedTexts!.includes(message.trim())) return true;
+      if (startsNewRequest(message)) return false;
+      const f = parseIntentFacts(message);
+      const hasFact =
+        f.partySize !== null ||
+        f.budget !== null ||
+        f.timeHint !== null ||
+        f.areaText !== null ||
+        parseDayPart(message) !== null;
+      return (
+        hasFact ||
+        asked.answerField !== undefined ||
+        (await this.areas.namesArea(message, asked.asksArea))
+      );
+    };
+    const earlier: EpisodeMessage[] = [];
+    let current = text;
+    let j = history.length - 1;
+    while (j >= 1 && earlier.length < MAX_EPISODE_EARLIER) {
+      const asked = history[j]!;
+      const user = history[j - 1]!;
+      if (asked.role !== 'assistant' || !asked.askedTexts || user.role !== 'user') break;
+      if (!(await answers(current, asked))) break;
+      if (earlier.length === 0) {
+        single.messages[0]!.allowBareArea = asked.asksArea;
+        single.messages[0]!.answerField = asked.answerField;
+      }
+      if (asked.episode) {
+        earlier.unshift(...asked.episode);
+        j -= 2;
+        break;
+      }
+      earlier.unshift({
+        id: user.id,
+        text: user.text,
+        allowBareArea: history[j - 2]?.asksArea ?? false,
+        answerField: history[j - 2]?.answerField,
+      });
+      current = user.text;
+      j -= 2;
+    }
+    if (earlier.length === 0) return single;
+
+    const messages = [...earlier, ...single.messages];
+    const texts = messages.map((message) => message.text);
+    const facts: IntentFacts = { partySize: null, budget: null, timeHint: null, areaText: null };
+    let dayPart: DayPart | null = null;
+    for (const t of texts) {
+      const f = parseIntentFacts(t);
+      if (f.partySize !== null) facts.partySize = f.partySize;
+      if (f.budget !== null) facts.budget = f.budget;
+      if (f.timeHint !== null) {
+        // A new day without an hour does not keep an hour said for another.
+        if (f.timeHint !== facts.timeHint) dayPart = null;
+        facts.timeHint = f.timeHint;
+      }
+      if (f.areaText !== null) facts.areaText = f.areaText;
+      dayPart = parseDayPart(t) ?? dayPart;
+    }
+    const retained = await this.retainEpisode(messages);
+    return {
+      texts: retained.map((message) => message.text),
+      messages: retained,
+      facts,
+      dayPart,
+      latestAreaText: own.areaText,
+      previousRequest: lastUser(history.slice(0, j + 1)),
+    };
+  }
+
+  /** Keep the opening request and the latest source of each fact, area and other answer. */
+  private async retainEpisode(messages: EpisodeMessage[]): Promise<EpisodeMessage[]> {
+    const latest = new Map<string, number>();
+    for (const [i, message] of messages.entries()) {
+      const facts = parseIntentFacts(message.text);
+      for (const field of ['partySize', 'budget', 'timeHint'] as const) {
+        if (facts[field] !== null) latest.set(field, i);
+      }
+      if (parseDayPart(message.text)) latest.set('dayPart', i);
+      if (
+        facts.areaText !== null ||
+        (await this.areas.namesArea(message.text, message.allowBareArea))
+      ) {
+        latest.set('area', i);
+      }
+      if (message.answerField) {
+        latest.set(message.answerField, i);
+      } else if (
+        Object.values(facts).every((value) => value === null) &&
+        !parseDayPart(message.text) &&
+        latest.get('area') !== i
+      ) {
+        latest.set('preference', i);
+      }
+    }
+    const keep = new Set([0, ...latest.values()]);
+    return messages.filter((_, i) => keep.has(i));
   }
 
   private async decide(
     input: TurnInput,
+    text: string,
+    facts: IntentFacts,
     previousRequest: string | null,
     taxonomy: IntentTaxonomy,
     signal: AbortSignal,
     budgetMs: number,
     state: TurnState,
   ): Promise<AssistantDecision> {
-    const facts = parseIntentFacts(input.text);
     const openedFrom = input.context?.kind ?? null;
     const fallback = (reason: IntentFallbackReason) =>
-      fallbackAssistantDecision(
-        input.text,
-        fallbackIntent(input.text, facts, taxonomy, reason),
-        openedFrom,
-      );
+      fallbackAssistantDecision(text, fallbackIntent(text, facts, taxonomy, reason), openedFrom);
     if (!this.decisions) return fallback('disabled');
-    if (input.text.trim().length < 2) return fallback('empty_request');
-    const request = buildAssistantDecisionRequest(
-      input.text,
-      { previousRequest, openedFrom },
-      taxonomy,
-    );
+    if (text.trim().length < 2) return fallback('empty_request');
+    const request = buildAssistantDecisionRequest(text, { previousRequest, openedFrom }, taxonomy);
     const started = Date.now();
     // The adapter has its own timeout; the turn's remaining budget caps it too.
     const budget = AbortSignal.timeout(
@@ -482,7 +785,7 @@ export class AssistantOrchestrator {
         provider: 'jev',
         outcome: 'ok',
       });
-      return mapAssistantAnswers(facts, response.answers, response.model);
+      return mapAssistantAnswers(facts, response.answers, response.model, text);
     } catch (err) {
       endJevCall(state, null);
       if (signal.aborted) throw err;
@@ -514,6 +817,7 @@ export class AssistantOrchestrator {
 
   private async findPlaces(
     input: TurnInput,
+    requestText: string,
     decision: AssistantDecision,
     area: ResolvedArea | null,
     perPersonBudget: number | null,
@@ -564,7 +868,7 @@ export class AssistantOrchestrator {
     const wantsSemantic = c.moods.length + c.settings.length > 0;
     if (this.decisions && wantsSemantic && ids.length > CARD_LIMIT && remaining() > 5_000) {
       ids = await this.rankByRelevance(
-        input.text,
+        requestText,
         ids.slice(0, RELEVANCE_MAX),
         signal,
         remaining(),
@@ -688,7 +992,8 @@ export class AssistantOrchestrator {
 
   private prepareProposal(
     decision: AssistantDecision,
-    facts: ReturnType<typeof parseIntentFacts>,
+    facts: IntentFacts,
+    dayPart: DayPart | null,
     area: ResolvedArea | null,
     perPerson: { amount: number | null; origin: Origin },
     places: PlaceCard[],
@@ -714,15 +1019,17 @@ export class AssistantOrchestrator {
       const type = couple ? 'couple' : 'group';
       const participants = couple ? 2 : Math.min(20, Math.max(2, facts.partySize ?? 4));
       values = [
-        v('type', type, facts.partySize !== null || occasion !== null ? 'explicit' : 'assumed'),
+        // I-5 (Sol F-06): explicit only from a stated party size; an occasion
+        // the model inferred is a guess.
+        v('type', type, facts.partySize !== null ? 'explicit' : 'assumed'),
         v('participantCount', participants, facts.partySize !== null ? 'explicit' : 'assumed'),
         v('decisionMode', couple ? 'match' : 'vote', 'assumed'),
       ];
-      const start = startFor(facts.timeHint);
+      const start = startFor(facts.timeHint, dayPart);
       if (start) {
-        values.push(v('startAt', start.toISOString(), 'assumed'));
+        values.push(v('startAt', start.at.toISOString(), start.origin));
         values.push(
-          v('endAt', new Date(start.getTime() + 3 * 3600 * 1000).toISOString(), 'assumed'),
+          v('endAt', new Date(start.at.getTime() + 3 * 3600 * 1000).toISOString(), 'assumed'),
         );
       }
       if (facts.budget) {
@@ -1004,20 +1311,81 @@ export function perPersonBudget(
   return { amount: b.amount, origin: 'assumed' };
 }
 
-/** The local evening the hint names, 19:00 Asia/Ho_Chi_Minh; null when none. */
-function startFor(hint: string | null, now = new Date()): Date | null {
+/** Local hours a part of the day stands for (#733 Q-2), Asia/Ho_Chi_Minh. */
+const DAY_PART_HOUR: Record<DayPart, number> = { morning: 9, noon: 12, afternoon: 15, evening: 19 };
+
+const isDayHint = (hint: TimeHint | null): hint is 'saturday' | 'sunday' | 'weekend' =>
+  hint === 'saturday' || hint === 'sunday' || hint === 'weekend';
+
+/**
+ * The start the hint names; null when none can be stated. Today, tonight and
+ * tomorrow are the local evening, 19:00, assumed. A named day (#733, owner
+ * Q-2) needs its part of the day: "thứ 7 tối" is the coming Saturday 19:00,
+ * as said (explicit); "thứ 7" alone has no start and the hour is asked.
+ */
+function startFor(
+  hint: TimeHint | null,
+  dayPart: DayPart | null,
+  now = new Date(),
+): { at: Date; origin: 'explicit' | 'assumed' } | null {
   const today = vnDayStart(now).getTime();
   const evening = (dayOffset: number) =>
     new Date(today + dayOffset * 86_400_000 + 19 * 3600 * 1000);
+  const assumed = (at: Date) => ({ at, origin: 'assumed' as const });
   if (hint === 'tonight' || hint === 'today') {
     const e = evening(0);
-    return e.getTime() > now.getTime()
-      ? e
-      : new Date(Math.ceil(now.getTime() / 900_000) * 900_000 + 900_000);
+    return assumed(
+      e.getTime() > now.getTime()
+        ? e
+        : new Date(Math.ceil(now.getTime() / 900_000) * 900_000 + 900_000),
+    );
   }
-  if (hint === 'tomorrow') return evening(1);
-  if (hint === 'now') return new Date(Math.ceil(now.getTime() / 900_000) * 900_000);
+  if (hint === 'tomorrow') return assumed(evening(1));
+  if (hint === 'now') return assumed(new Date(Math.ceil(now.getTime() / 900_000) * 900_000));
+  if (isDayHint(hint) && dayPart) {
+    // The local weekday: noon of the local day, read in UTC.
+    const weekday = new Date(today + 12 * 3600 * 1000).getUTCDay();
+    const target = hint === 'sunday' ? 0 : 6;
+    let at = today + ((target - weekday + 7) % 7) * 86_400_000 + DAY_PART_HOUR[dayPart] * 3600_000;
+    if (at <= now.getTime()) at += 7 * 86_400_000;
+    // "Cuối tuần tối" names neither day: Saturday is a guess.
+    return { at: new Date(at), origin: hint === 'weekend' ? 'assumed' : 'explicit' };
+  }
   return null;
+}
+
+/**
+ * The episode's user texts for Jev (#733 D-5). Over the cap, the request that
+ * opened the episode keeps its head (it carries the action and the kind of
+ * place, Astra A-F-01) and the newest answers fill the rest.
+ */
+function joinRequest(texts: readonly string[]): string {
+  const joined = texts.join('\n');
+  if (joined.length <= MAX_REQUEST_CHARS || texts.length < 2) {
+    return joined.slice(-MAX_REQUEST_CHARS);
+  }
+  const head = texts[0]!.slice(0, Math.floor(MAX_REQUEST_CHARS / 2));
+  const rest = texts.slice(1).join('\n');
+  return `${head}\n${rest.slice(-(MAX_REQUEST_CHARS - head.length - 1))}`;
+}
+
+function isEpisodeRefs(
+  value: unknown,
+): value is (Omit<EpisodeMessage, 'id' | 'text'> & { id: string })[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.length <= 8 &&
+    value.every(
+      (ref) =>
+        ref &&
+        typeof ref.id === 'string' &&
+        typeof ref.allowBareArea === 'boolean' &&
+        (ref.answerField === undefined ||
+          ref.answerField === 'activity' ||
+          ref.answerField === 'preference'),
+    )
+  );
 }
 
 /** The proposal values in `createRoom`'s request shape. */

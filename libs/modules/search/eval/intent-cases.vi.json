@@ -201,7 +201,7 @@
       "expect": {
         "partySize": 5,
         "budget": null,
-        "timeHint": "weekend",
+        "timeHint": "sunday",
         "areaText": null,
         "category": "park",
         "occasion": "family",
@@ -717,7 +717,7 @@
       "expect": {
         "partySize": 5,
         "budget": null,
-        "timeHint": "weekend",
+        "timeHint": "saturday",
         "areaText": null,
         "category": "bar",
         "occasion": "group",
@@ -1914,7 +1914,7 @@
       "expect": {
         "partySize": 7,
         "budget": null,
-        "timeHint": "weekend",
+        "timeHint": "saturday",
         "areaText": null,
         "category": "bar",
         "occasion": "group",
@@ -1962,7 +1962,7 @@
       "expect": {
         "partySize": null,
         "budget": null,
-        "timeHint": "weekend",
+        "timeHint": "sunday",
         "areaText": null,
         "category": "restaurant",
         "occasion": "family",
@@ -2361,7 +2361,7 @@
       "expect": {
         "partySize": null,
         "budget": null,
-        "timeHint": "weekend",
+        "timeHint": "saturday",
         "areaText": "Hoàng Mai",
         "category": "cafe",
         "occasion": null,

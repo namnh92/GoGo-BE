@@ -302,6 +302,23 @@ export class AssistantRepository {
     return rowsOf<MessageRow>(res).reverse();
   }
 
+  /** Bounded episode sources, scoped to the already-authorized conversation. */
+  async episodeMessages(
+    conversationId: string,
+    messageIds: readonly string[],
+  ): Promise<MessageRow[]> {
+    if (messageIds.length === 0 || messageIds.length > 8) return [];
+    const res = await this.db.execute(sql`
+      select ${MESSAGE_COLUMNS} from assistant_messages m
+      where m.conversation_id = ${conversationId} and m.role = 'user'
+        and m.created_at > ${LIVE}
+        and m.id in (${sql.join(
+          messageIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})`);
+    return rowsOf<MessageRow>(res);
+  }
+
   async sourcesFor(messageIds: readonly string[]): Promise<Map<string, AssistantSourceData[]>> {
     const out = new Map<string, AssistantSourceData[]>();
     if (messageIds.length === 0) return out;
@@ -633,6 +650,44 @@ export class AssistantRepository {
     return rowsOf<ProposalRow>(res)[0]!;
   }
 
+  /**
+   * #733 D-3 — inserts a card and, in the same statement, retires the
+   * conversation's other pending cards of that kind (status `dismissed`,
+   * assistant table only), so one stays live and no failure can leave both.
+   * The conversation lock serializes this with refused confirms returning a
+   * card to pending. Returns the row and how many retired.
+   */
+  async insertSupersedingProposal(input: {
+    conversationId: string;
+    messageId: string;
+    userId: string;
+    kind: string;
+    values: AssistantProposalValue[];
+    expiresAt: Date;
+  }): Promise<{ row: ProposalRow; superseded: number }> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select id from assistant_conversations where id = ${input.conversationId} for update`);
+      const res = await tx.execute(sql`
+      with p as (
+        insert into assistant_proposals
+          (conversation_id, message_id, user_id, kind, values, expires_at, created_at)
+        values (${input.conversationId}, ${input.messageId}, ${input.userId}, ${input.kind},
+          ${JSON.stringify(input.values)}::jsonb, ${input.expiresAt.toISOString()}::timestamptz,
+          clock_timestamp())
+        returning *
+      ), retired as (
+        update assistant_proposals set status = 'dismissed', dismissed_at = now()
+        where conversation_id = ${input.conversationId} and kind = ${input.kind}
+          and status = 'pending' and id <> (select id from p)
+        returning id
+      )
+      select ${PROPOSAL_COLUMNS}, (select count(*)::int from retired) as superseded from p`);
+      const { superseded, ...row } = rowsOf<ProposalRow & { superseded: number }>(res)[0]!;
+      return { row, superseded };
+    });
+  }
+
   async findProposal(userId: string, proposalId: string): Promise<ProposalRow | null> {
     const res = await this.db.execute(sql`
       select ${PROPOSAL_COLUMNS} from assistant_proposals p
@@ -651,9 +706,31 @@ export class AssistantRepository {
     return rowsOf<ProposalRow>(res)[0] ?? null;
   }
 
+  /**
+   * A refused confirm hands the card back — unless a newer card of
+   * the same kind replaced it meanwhile (#733 D-3, Astra A-F-06): then it is
+   * retired, so a conversation never ends with two live room cards.
+   */
   async releaseProposal(proposalId: string): Promise<void> {
-    await this.db.execute(sql`
-      update assistant_proposals set status = 'pending' where id = ${proposalId} and status = 'confirming'`);
+    await this.db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select id from assistant_conversations where id = (
+          select conversation_id from assistant_proposals where id = ${proposalId}
+        ) for update`);
+      await tx.execute(sql`
+      update assistant_proposals p set
+        status = case when exists (
+          select 1 from assistant_proposals n
+          where n.conversation_id = p.conversation_id and n.kind = p.kind
+            and n.id <> p.id and n.created_at > p.created_at
+        ) then 'dismissed' else 'pending' end,
+        dismissed_at = case when exists (
+          select 1 from assistant_proposals n
+          where n.conversation_id = p.conversation_id and n.kind = p.kind
+            and n.id <> p.id and n.created_at > p.created_at
+        ) then now() else p.dismissed_at end
+      where p.id = ${proposalId} and p.status = 'confirming'`);
+    });
   }
 
   async confirmProposal(

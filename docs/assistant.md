@@ -480,6 +480,84 @@ limit or the monthly budget unset ⇒ refuse), `ASSISTANT_USER_PER_MINUTE_MAX_ME
 `ASSISTANT_JEV_MODEL`, `ASSISTANT_JEV_TIMEOUT_MS`, `ASSISTANT_HAIKU_MODEL`. The kill
 switch is the feature flag `assistant.enabled` (default off).
 
+### "Tạo kèo" through the chat (GoGo-BE#733)
+
+Shape `dev/handoffs/sa-shape-be-733-create-room-chat.fable.md` (D-1…D-7) with the owner's
+answers of 2026-10-31 (Q-1: the card is shown at once; Q-2: a day with no hour is asked).
+No contract change: `AssistantFollowUpGroup.field` is a free string; new values `area_scope`,
+`time`, `party_size`.
+
+- **Detection (D-1).** Jev's `action` criterion `create_room` now names "tạo kèo", "lập kèo",
+  "lên kèo", "rủ … đi", "tạo plan", "tạo room"; the instruction adds _"Asking how to do
+  something in the app is not an action."_ The fallback's `create_room` terms gain `tao keo`,
+  `lap keo`, `len keo`, `mo keo`, `tao plan`, `tao room`; `tao phong`, `tao ke hoach`, `moi ban`
+  left `GUIDE_TERMS`. `guardDecision` runs on both paths: an injection phrase → `out_of_scope`,
+  no action; a how-to term (`lam sao`, `cach nao`, `cach tao`, `cach moi`, `huong dan`,
+  `the nao`, `how do i`, `how to`) → no action.
+- **Routing (D-2).** `create_room` on `gogo_guide`/`out_of_scope` becomes `recommend_places`
+  (`trace.routeOverride = 'create_room'`; the decision metric keeps Jev's intent).
+- **Proposal (D-3).** Prepared on every `create_room` turn; the area is resolved on that turn
+  even when it still asks what to do (`clarify`). A new room card marks the conversation's
+  other pending room cards `dismissed` (`assistant_proposals_total{outcome=superseded}`).
+- **Time (D-3 + Q-2).** `TimeHint` gains `saturday`/`sunday` ("cuối tuần" stays `weekend`).
+  `parseDayPart` reads a part of the day only next to a named day ("thứ 7 tối", "tối thứ 7",
+  "Saturday evening"; not "ăn tối thứ 7", "tối đa"). Hours: sáng 09:00, trưa 12:00, chiều 15:00,
+  tối 19:00 Asia/Ho_Chi_Minh. A named day **with** a part → the coming such day (next week when
+  the hour has passed), origin `explicit` (`weekend` + part → Saturday, `assumed`); **without**
+  one → no `startAt`/`endAt`, and `time` is asked with that day's chips ("Thứ 7 trưa/chiều/tối";
+  `weekend` offers both days, six chips). Not changed, read literally from Q-2 and left for
+  review: "tối nay"/"hôm nay"/"ngày mai" still give an assumed 19:00, so "tối nay" stays
+  `assumed` while the "Thứ 7 tối" chip is `explicit`.
+- **Questions (D-4).** On a `create_room` turn the missing items are asked by priority —
+  preference › area (or `area_scope`) › activity › time › party size › budget — and the contract
+  cap keeps two; the rest ride on the card as assumed. The deterministic reply appends one
+  sentence naming the missing time / party size / budget.
+- **Episode (D-5, amended for A-F-01/F-12).** A clarification answer merges only after an
+  assistant reply with stored `follow_ups`. An explicit new action/search request or how-to question
+  starts fresh, even if it carries facts; an exact offered activity chip still answers its question.
+  Typed activity/preference answers also continue their pending question. Facts: newest non-null wins
+  (the part of the day resets when a new day is named). Each reply stores at most eight source-message
+  references in the existing internal `trace.episodeRefs`: the opening request and the latest source
+  of party size, budget, day, day part, area, activity and preference. Only user rows from that same
+  conversation within retention can be reloaded. References carry whether a bare area was prompted;
+  no message body or administrative id is copied into the trace. This bounded state survives raw-history
+  eviction. Older replies without references use the existing 10-row reconstruction window; already
+  evicted context from those replies is not recovered. Jev receives at most 500 characters, preserving
+  the opening request's head and newest answers; Haiku still sees six recent rows. The diagnostic
+  `trace.episode = { turns, merged }` counts retained source turns. No schema or model-call change.
+- **Area scope (D-6).** Step 0: the full dataset name of a current unit in the text wins (newest
+  message first) — "Phường Sài Gòn, Thành phố Hồ Chí Minh" → the ward, "Cả Thành phố Hồ Chí Minh"
+  → the city. Otherwise the phrase is the newest area, an alias in it, the episode's area, an alias
+  anywhere (a level-word-only phrase such as "TP" from "Ở TP.HCM" is skipped). A phrase that names
+  a province (name or alias) **and** a commune of that name inside it, with no qualifier
+  (`thanh pho`, `tp`, `tinh`, `ca` / `phuong`, `xa`, `dac khu`), is `scope_choice`: no search, a
+  deterministic delta, one `area_scope` group — "Cả <province fullName>" then each commune's
+  `fullName` (text `<fullName>, <province fullName>`, ≤ 5). Data-driven; on v5.1.0 Phường Sài Gòn
+  (26740) is the case. Legacy locality qualifiers are rejected in the user's message before exact
+  province matching, including district-level cities; exact current provinces and supported province
+  aliases remain valid. Bare commune names count only after an area/scope question or a locative word,
+  so a preference such as "bình yên" does not replace an established area. Both typed and dataset names
+  use the same punctuation fold; a bare hit resolves from the matched current units.
+- **After Sol r1 / Astra r1.** A `create_room` turn with no known kind of place asks the activity on both
+  paths; `create_room` from an opened plan takes the room flow; the room `type` is `explicit` only from a
+  stated party size. Each reconstructed link is gated on its own (a fresh request is a boundary), and
+  the newest message that names an area decides. Insert + supersede remains one statement, now inside
+  a short transaction sharing a conversation lock with release. A refused confirm is retired when
+  any newer same-kind card exists, regardless of that card's status. The insertion timestamp is taken
+  after acquiring the lock. No provider call runs inside these transactions.
+- **Shape amendment (2026-10-31 review fixes).** The D-5 bounded-history-only mechanism and R-1's
+  deferred fresh-request boundary are replaced by the source references and deterministic boundary
+  above. D-3 release and D-6 locality/bare-name rules are tightened as described. Owner Q-1/Q-2 and
+  invariants I-1… I-8 remain binding. The original shape is outside this worktree and is not edited.
+- **Known limits (owner accepted 2026-10-31, Sol r5 @855b011).** The episode boundary and the legacy
+  district check are word heuristics, and two edge cases remain: **F-16** a typed polite activity answer
+  ("cho mình quán cà phê") under an activity question is read as a fresh search and drops the room
+  request; **F-17** a brand starting with "Q" ("Q Coffee ở TP.HCM") is read as a legacy district and the
+  area is not recognised (the assistant asks for a new address). Measured on DEV in L-1…L-3; the
+  mechanism change considered and not taken: a Jev `continues_previous` noul for the boundary and a
+  match against the snapshot's legacy district names instead of a regex.
+- **Never written before confirm (D-7).** Unchanged; the int test counts `rooms` before and after.
+
 ## Open items
 
 1. **Configuration hand-off.** Done for code (ADR-0036); the per-environment values

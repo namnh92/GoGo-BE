@@ -82,11 +82,11 @@ export function buildAssistantDecisionRequest(
     action: {
       type: 'choice',
       instructions:
-        'Does `request` explicitly ask GoGo to perform one of these actions now? Asking for ideas is not an action.',
+        'Does `request` explicitly ask GoGo to perform one of these actions now? Asking for ideas is not an action. Asking how to do something in the app is not an action.',
       criteria: {
         none: 'No action is requested, or it is only a question.',
         create_room:
-          'Create a new room or plan for an outing (for example "tạo kế hoạch", "lên lịch đi chơi với nhóm").',
+          'Create a new room or plan for an outing (for example "tạo kèo", "lập kèo", "lên kèo", "rủ … đi", "tạo plan", "tạo room", "tạo kế hoạch", "lên lịch đi chơi với nhóm").',
         create_invite: 'Invite someone to the room or plan being discussed.',
         finalize_plan: 'Finalize or lock in the plan or choice being discussed.',
       },
@@ -104,10 +104,15 @@ export function buildAssistantDecisionRequest(
   return { state, questions };
 }
 
+/**
+ * `text`, when given, is the request the answers are about: the #733 guards
+ * then hold on this path as on the fallback one.
+ */
 export function mapAssistantAnswers(
   facts: IntentFacts,
   answers: Record<string, DecisionAnswer>,
   model: string,
+  text?: string,
 ): AssistantDecision {
   const classification = mapIntentAnswers(facts, answers, model);
   const intentAnswer = answers.assistant_intent;
@@ -123,7 +128,7 @@ export function mapAssistantAnswers(
   const intent = intentAnswer.choice as AssistantIntent;
   const intentProbability = intentAnswer.probabilities?.[intent] ?? intentAnswer.confidence ?? null;
   const actionP = actionAnswer.probabilities?.[actionAnswer.choice] ?? actionAnswer.confidence ?? 1;
-  return {
+  const decision: AssistantDecision = {
     source: 'decision_model',
     model,
     fallbackReason: null,
@@ -136,6 +141,7 @@ export function mapAssistantAnswers(
     unverifiedAttribute: unverified.noul,
     classification,
   };
+  return text === undefined ? decision : guardDecision(text, decision);
 }
 
 const GUIDE_TERMS = [
@@ -149,9 +155,6 @@ const GUIDE_TERMS = [
   'cach moi',
   'binh chon',
   'bo phieu',
-  'moi ban',
-  'tao phong',
-  'tao ke hoach',
   'tai khoan',
   'how do i',
   'how to',
@@ -168,10 +171,42 @@ const INJECTION_TERMS = [
   'developer mode',
 ];
 
+/**
+ * #733 D-1 — asking how to do something: never an action, on either path.
+ * Checked before the action terms ("cách tạo phòng" is a guide question).
+ */
+const QUESTION_TERMS = [
+  'lam sao',
+  'cach nao',
+  'cach tao',
+  'cach lap',
+  'cach len',
+  'cach mo',
+  'cach moi',
+  'cach dat',
+  'huong dan',
+  'the nao',
+  'how do i',
+  'how to',
+];
+
 const ACTION_TERMS: [AssistantAction, string[]][] = [
   [
     'create_room',
-    ['tao ke hoach', 'tao phong', 'len ke hoach', 'len lich', 'create a plan', 'create a room'],
+    [
+      'tao ke hoach',
+      'tao phong',
+      'len ke hoach',
+      'len lich',
+      'tao keo',
+      'lap keo',
+      'len keo',
+      'mo keo',
+      'tao plan',
+      'tao room',
+      'create a plan',
+      'create a room',
+    ],
   ],
   ['create_invite', ['moi ', 'gui loi moi', 'invite']],
   ['finalize_plan', ['chot ', 'finalize', 'xac nhan ke hoach']],
@@ -183,14 +218,52 @@ const ACTION_TERMS: [AssistantAction, string[]][] = [
  * `fallbackIntent` already returns none), and an action is proposed only from
  * an explicit phrase — a proposal is never executed anyway.
  */
+const haystackOf = (text: string) => ` ${normalizeVietnamese(text)} `;
+
+/** The message asks how to do something (#733 D-1). */
+export function hasQuestionTerm(text: string): boolean {
+  const haystack = haystackOf(text);
+  return QUESTION_TERMS.some((t) => haystack.includes(` ${t}`));
+}
+
+/** An explicit new request ends a clarification episode, even when it carries facts. */
+export function startsNewRequest(text: string): boolean {
+  const haystack = haystackOf(text).replace(/[^\p{L}\p{N} ]/gu, ' ');
+  return (
+    hasQuestionTerm(text) ||
+    INJECTION_TERMS.some((term) => haystack.includes(term)) ||
+    ACTION_TERMS.some(([, terms]) => terms.some((term) => haystack.includes(` ${term}`))) ||
+    /(?:^| )(?:tim|goi y|de xuat|recommend|find|suggest) /.test(haystack) ||
+    /(?:^| )cho (?:minh|toi) (?:(?:mot vai|mot|vai|\d+) )?(?:quan|nha hang|dia diem|cho|noi) /.test(
+      haystack,
+    ) ||
+    /(?:^| )ru .+ di(?: |$)/.test(haystack)
+  );
+}
+
+/**
+ * #733 D-1 — applied to both decision paths: an injection phrase is out of
+ * scope with no action (so the create_room routing override can never send
+ * it to retrieval), and a how-to question carries no action.
+ */
+export function guardDecision(text: string, decision: AssistantDecision): AssistantDecision {
+  const haystack = haystackOf(text);
+  if (INJECTION_TERMS.some((t) => haystack.includes(t))) {
+    return { ...decision, intent: 'out_of_scope', intentProbability: null, action: 'none' };
+  }
+  if (hasQuestionTerm(text)) return { ...decision, action: 'none' };
+  return decision;
+}
+
 export function fallbackAssistantDecision(
   text: string,
   classification: IntentClassification,
   openedFrom: 'place' | 'plan' | null,
 ): AssistantDecision {
-  const haystack = ` ${normalizeVietnamese(text)} `;
-  const action =
-    ACTION_TERMS.find(([, terms]) => terms.some((t) => haystack.includes(t)))?.[0] ?? 'none';
+  const haystack = haystackOf(text);
+  const action = hasQuestionTerm(text)
+    ? 'none'
+    : (ACTION_TERMS.find(([, terms]) => terms.some((t) => haystack.includes(t)))?.[0] ?? 'none');
   const facts = classification.facts;
   const looksLikePlaces =
     classification.category.key !== null ||

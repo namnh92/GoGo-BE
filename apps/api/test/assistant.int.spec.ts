@@ -1010,6 +1010,229 @@ describe('Astra round 2 (GoGo-BE#717)', () => {
   });
 });
 
+/**
+ * GoGo-BE#733 — "tạo kèo" through the chat, on the real administrative
+ * snapshot and the provider-down path (deterministic decision, D-1/U-14).
+ * Owner 2026-10-31: the card comes at once (Q-1); nothing is written before
+ * confirm (D-7); one live room card per conversation (D-3). The kind of place
+ * is named by its CMS label, which the fallback reads; without one a create_room
+ * turn asks what to do (Sol F-02).
+ */
+describe('create a room through the chat (GoGo-BE#733)', () => {
+  const roomCount = async () =>
+    (
+      (await f.db.execute(sql`select count(*)::int as n from rooms`)).rows[0] as {
+        n: number;
+      }
+    ).n;
+
+  async function turnFrames(token: string, conversationId: string, text: string) {
+    const sent = await send(token, conversationId, text);
+    expect(sent.statusCode).toBe(202);
+    const replyId = sent.json().assistantMessage.id as string;
+    await waitTerminal(token, conversationId, replyId);
+    return (await streamOf(token, conversationId, replyId)).frames;
+  }
+
+  // Its own account: alice's 20/min conversation budget is spent by then.
+  let kim: string | null = null;
+  async function proposalInput() {
+    kim ??= await f.register('kim-733@gogo.test');
+    const conversationId = await newConversation(kim);
+    const result = await f.db.execute(sql`
+      insert into assistant_messages (conversation_id, user_id, role, status, text)
+      select id, user_id, 'assistant', 'complete', 'proposal'
+      from assistant_conversations where id = ${conversationId}
+      returning id, user_id`);
+    const row = result.rows[0] as { id: string; user_id: string };
+    return {
+      conversationId,
+      messageId: row.id,
+      userId: row.user_id,
+      kind: 'create_room',
+      values: [],
+      expiresAt: new Date(Date.now() + 30 * 60_000),
+    };
+  }
+
+  it.each(['pending', 'confirming', 'confirmed', 'dismissed', 'expired'])(
+    'A-F-06/F-09 a replacement in %s never resurrects the older card',
+    async (status) => {
+      const repository = f.app.get(AssistantRepository);
+      const input = await proposalInput();
+      const { row: old } = await repository.insertSupersedingProposal(input);
+      expect(await repository.claimProposal(input.userId, old.id)).not.toBeNull();
+      const { row: replacement } = await repository.insertSupersedingProposal(input);
+      await f.db.execute(sql`
+        update assistant_proposals set status = ${status} where id = ${replacement.id}`);
+      await repository.releaseProposal(old.id);
+      expect((await repository.findProposal(input.userId, old.id))?.status).toBe('dismissed');
+      expect(await repository.claimProposal(input.userId, old.id)).toBeNull();
+    },
+  );
+
+  it.each(['old-first', 'new-first'])(
+    'A-F-06 two refused confirms leave only the replacement pending: %s',
+    async (order) => {
+      const repository = f.app.get(AssistantRepository);
+      const input = await proposalInput();
+      const { row: old } = await repository.insertSupersedingProposal(input);
+      await repository.claimProposal(input.userId, old.id);
+      const { row: replacement } = await repository.insertSupersedingProposal(input);
+      await repository.claimProposal(input.userId, replacement.id);
+      const ids = order === 'old-first' ? [old.id, replacement.id] : [replacement.id, old.id];
+      for (const id of ids) await repository.releaseProposal(id);
+      expect((await repository.findProposal(input.userId, old.id))?.status).toBe('dismissed');
+      expect((await repository.findProposal(input.userId, replacement.id))?.status).toBe('pending');
+    },
+  );
+
+  it('A-F-06 release racing replacement insertion leaves one pending card', async () => {
+    const repository = f.app.get(AssistantRepository);
+    const input = await proposalInput();
+    const { row: old } = await repository.insertSupersedingProposal(input);
+    await repository.claimProposal(input.userId, old.id);
+    const [, { row: replacement }] = await Promise.all([
+      repository.releaseProposal(old.id),
+      repository.insertSupersedingProposal(input),
+    ]);
+    expect((await repository.findProposal(input.userId, old.id))?.status).toBe('dismissed');
+    expect((await repository.findProposal(input.userId, replacement.id))?.status).toBe('pending');
+  });
+
+  it('A-F-01 episode source reads cannot cross conversations', async () => {
+    const input = await proposalInput();
+    const result = await f.db.execute(sql`
+      insert into assistant_messages (conversation_id, user_id, role, status, text)
+      values (${input.conversationId}, ${input.userId}, 'user', 'complete', 'tạo kèo cà phê')
+      returning id`);
+    const id = (result.rows[0] as { id: string }).id;
+    const other = await newConversation(bob);
+    const repository = f.app.get(AssistantRepository);
+    expect(await repository.episodeMessages(input.conversationId, [id])).toHaveLength(1);
+    expect(await repository.episodeMessages(other, [id])).toEqual([]);
+    expect(await repository.episodeMessages(input.conversationId, [input.messageId])).toEqual([]);
+  });
+
+  it('IT-1 cards + a pending card, zero rooms; a second card supersedes; confirm creates one', async () => {
+    const ivy = await f.register('ivy-733@gogo.test');
+    const conversationId = await newConversation(ivy);
+    const rooms = await roomCount();
+
+    const first = await turnFrames(
+      ivy,
+      conversationId,
+      'tạo kèo đi nhà hàng thứ 7 với 4 người ở Phường Cầu Giấy, Thành phố Hà Nội',
+    );
+    const cardIds = first
+      .filter((x) => x.event === 'card')
+      .map((x) => x.data.card.placeId as string);
+    expect(cardIds.length).toBeGreaterThan(0);
+    const p1 = first.find((x) => x.event === 'proposal')!.data.proposal;
+    expect(p1).toMatchObject({ kind: 'create_room', status: 'pending' });
+    const value = (field: string) =>
+      p1.values.find((v: { field: string }) => v.field === field) as
+        { value: unknown; origin: string } | undefined;
+    expect(value('participantCount')).toMatchObject({ value: 4, origin: 'explicit' });
+    expect(value('administrativeArea')).toMatchObject({ value: { ...f.area }, origin: 'explicit' });
+    // Owner Q-2: "thứ 7" with no hour is asked, not assumed.
+    expect(value('startAt')).toBeUndefined();
+    const asked = first
+      .find((x) => x.event === 'follow_ups')!
+      .data.groups.map((g: { field: string }) => g.field);
+    expect(asked).toEqual(['time', 'budget']);
+    expect(await roomCount()).toBe(rooms);
+
+    // Astra A-F-06: p1 is mid-confirm when the newer card arrives.
+    await f.db.execute(
+      sql`update assistant_proposals set status = 'confirming' where id = ${p1.id}`,
+    );
+    const second = await turnFrames(
+      ivy,
+      conversationId,
+      'tạo kèo cà phê với 4 người ở Phường Cầu Giấy, Thành phố Hà Nội',
+    );
+    const p2 = second.find((x) => x.event === 'proposal')!.data.proposal;
+    const p2Cards = second
+      .filter((x) => x.event === 'card')
+      .map((x) => x.data.card.placeId as string);
+    const seeds = p2.values.find((v: { field: string }) => v.field === 'seedPlaceIds').value;
+    expect(seeds.length).toBeGreaterThan(0);
+    for (const id of seeds) expect(p2Cards).toContain(id);
+    // A refused confirm hands p1 back — retired, since p2 replaced it.
+    await f.app.get(AssistantRepository).releaseProposal(p1.id);
+    const p1Now = await f.inject({
+      method: 'GET',
+      url: `/v1/assistant/proposals/${p1.id}`,
+      token: ivy,
+    });
+    expect(p1Now.json().status).toBe('dismissed');
+    expect(await roomCount()).toBe(rooms);
+
+    const ok = await f.inject({
+      method: 'POST',
+      url: `/v1/assistant/proposals/${p2.id}/confirm`,
+      token: ivy,
+      headers: { 'idempotency-key': key() },
+      payload: {},
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(await roomCount()).toBe(rooms + 1);
+    const room = await f.inject({
+      method: 'GET',
+      url: `/v1/rooms/${ok.json().resource.id}`,
+      token: ivy,
+    });
+    expect(room.json()).toMatchObject({
+      participantCount: 4,
+      myRole: 'host',
+      constraints: { administrativeArea: { ...f.area } },
+    });
+    const stale = await f.inject({
+      method: 'POST',
+      url: `/v1/assistant/proposals/${p1.id}/confirm`,
+      token: ivy,
+      headers: { 'idempotency-key': key() },
+      payload: {},
+    });
+    expect(stale.json().code).toBe('PROPOSAL_NOT_PENDING');
+    const again = await f.inject({
+      method: 'POST',
+      url: `/v1/assistant/proposals/${p2.id}/confirm`,
+      token: ivy,
+      headers: { 'idempotency-key': key() },
+      payload: {},
+    });
+    expect(again.json().code).toBe('PROPOSAL_NOT_PENDING');
+    expect(await roomCount()).toBe(rooms + 1);
+  });
+
+  it('IT-2 "Sài Gòn" asks the scope with dataset names, and searches nothing', async () => {
+    const jun = await f.register('jun-733@gogo.test');
+    const conversationId = await newConversation(jun);
+    const frames = await turnFrames(jun, conversationId, 'tạo kèo nhà hàng ở Sài Gòn');
+    expect(frames.some((x) => x.event === 'card')).toBe(false);
+    expect(frames.some((x) => x.event === 'step' && x.data.step === 'searching_places')).toBe(true);
+    const groups = frames.find((x) => x.event === 'follow_ups')!.data.groups;
+    expect(groups[0]).toMatchObject({
+      field: 'area_scope',
+      options: [
+        { label: 'Cả Thành phố Hồ Chí Minh', text: 'Cả Thành phố Hồ Chí Minh' },
+        { label: 'Phường Sài Gòn', text: 'Phường Sài Gòn, Thành phố Hồ Chí Minh' },
+      ],
+    });
+    expect(frames.find((x) => x.event === 'proposal')!.data.proposal.kind).toBe('create_room');
+
+    // The ward chip, as the next message: cards scoped to the ward or the
+    // empty notice (the fixture has no place there) — never the whole city.
+    const ward = await turnFrames(jun, conversationId, 'Phường Sài Gòn, Thành phố Hồ Chí Minh');
+    const p = ward.find((x) => x.event === 'proposal')!.data.proposal;
+    expect(
+      p.values.find((v: { field: string }) => v.field === 'administrativeArea').value,
+    ).toMatchObject({ provinceCode: '79', communeCode: '26740' });
+  });
+});
+
 describe('privacy', () => {
   it('export includes the conversations; retention purges after 90 days; erasure deletes', async () => {
     const dave = await f.register('dave@gogo.test');
