@@ -13,6 +13,32 @@
       "diagnostic": "in API GET /rooms/{id}/events the response body was restructured into a oneOf, so a field that was previously guaranteed may no longer be present",
       "reason": "ADR-0027: the SSE stream carries a `resync` control frame that has no RoomEvent envelope, so the published schema was wrong rather than the change being wrong. Keeping the oneOf is the owner's decision; the contract moves to 2.0.0-alpha.1 because a published guarantee is withdrawn. openapi/CHANGELOG.md carries the consumer-facing note.",
       "note": "revisionCommit is the squash merge of PR #666 on develop; its openapi/gogo.v1.yaml is byte-identical to the reviewed PR head 0aaeca876f4bd72de789b4023e90f2e58eee63a2 (same sha256), which is the head CI run 37112927270 judged. The merge commit is used because refs/pull/* is not fetched in CI."
+    },
+    {
+      "id": "BE-737-taxonomy-label-pattern-create",
+      "issue": "https://github.com/namnh92/GoGo-BE/issues/737",
+      "decidedAt": "2026-10-31",
+      "decidedBy": "product owner (CODEOWNER for openapi/gogo.v1.yaml), in session on PR #740: option B on Sol F-01 after asking Fable and Astra",
+      "baseCommit": "842219e63a9f0d0244f5478240cadae144f8cd8e",
+      "baseSha256": "5cdd11f359a813dd726692cb15b7761134c7ebec3a1ff02d1623264b1940d5fd",
+      "revisionCommit": "ce6fc7a35ba0bc3b9124c1ebadba79dd78c386af",
+      "revisionSha256": "840aba4b94afc144f06501dddf389f24883a06b1a5b2eb1f1fb47d33be0fa04d",
+      "reason": "Taxonomy labels are shown to people and read by the assistant's models as data, so a label must be one line of plain text. Refusing other characters withdraws the old 'any string' guarantee; the contract moves to 3.0.0-alpha.1 and openapi/CHANGELOG.md carries the consumer-facing note. Rule from Astra (dev/handoffs/sa-question-GoGo-BE-740-f01.astra.out).",
+      "note": "revisionCommit is the reviewed PR head that CI run 41189461106 judged; a later commit that only edits this file leaves openapi/gogo.v1.yaml byte-identical.",
+      "diagnostic": "in API POST /cms/taxonomies added the pattern `^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"‘’“”()&+,./\\-–—]*$` to the request property `labels/additionalProperties/`"
+    },
+    {
+      "id": "BE-737-taxonomy-label-pattern-update",
+      "issue": "https://github.com/namnh92/GoGo-BE/issues/737",
+      "decidedAt": "2026-10-31",
+      "decidedBy": "product owner (CODEOWNER for openapi/gogo.v1.yaml), in session on PR #740: option B on Sol F-01 after asking Fable and Astra",
+      "baseCommit": "842219e63a9f0d0244f5478240cadae144f8cd8e",
+      "baseSha256": "5cdd11f359a813dd726692cb15b7761134c7ebec3a1ff02d1623264b1940d5fd",
+      "revisionCommit": "ce6fc7a35ba0bc3b9124c1ebadba79dd78c386af",
+      "revisionSha256": "840aba4b94afc144f06501dddf389f24883a06b1a5b2eb1f1fb47d33be0fa04d",
+      "reason": "Taxonomy labels are shown to people and read by the assistant's models as data, so a label must be one line of plain text. Refusing other characters withdraws the old 'any string' guarantee; the contract moves to 3.0.0-alpha.1 and openapi/CHANGELOG.md carries the consumer-facing note. Rule from Astra (dev/handoffs/sa-question-GoGo-BE-740-f01.astra.out).",
+      "note": "revisionCommit is the reviewed PR head that CI run 41189461106 judged; a later commit that only edits this file leaves openapi/gogo.v1.yaml byte-identical.",
+      "diagnostic": "in API PATCH /cms/taxonomies/{id} added the pattern `^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"‘’“”()&+,./\\-–—]*$` to the request property `labels/additionalProperties/`"
     }
   ]
 }
