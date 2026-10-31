@@ -5,6 +5,7 @@ import {
   buildIntentRequest,
   fallbackIntent,
   mapIntentAnswers,
+  parseDayPart,
   parseIntentFacts,
   type IntentFacts,
 } from './intent';
@@ -76,7 +77,7 @@ describe('intent facts — the owner example', () => {
 
   it('"Mai" in a place name is not tomorrow (#710 r3)', () => {
     const time = (t: string) => parseIntentFacts(t).timeHint;
-    expect(time('Tối thứ 7 đi cafe gần Hoàng Mai')).toBe('weekend');
+    expect(time('Tối thứ 7 đi cafe gần Hoàng Mai')).toBe('saturday');
     expect(time('hôm nay ăn gì gần Hoàng Mai')).toBe('today');
     expect(time('đi ăn ở Bạch Mai')).toBeNull();
     expect(time('ăn lẩu khu Mai Dịch')).toBeNull();
@@ -247,5 +248,37 @@ describe('intent fallback', () => {
     expect(
       fallbackIntent(text, parseIntentFacts(text), SEED_TAXONOMY, 'timeout').category.key,
     ).toBeNull();
+  });
+});
+
+/**
+ * GoGo-BE#733 D-3 + owner Q-2 (2026-10-31): the day is read apart from the
+ * weekend, and the part of the day only when it is said next to a day, so a
+ * chip like "Thứ 7 tối" reads back to an exact start.
+ */
+describe('#733 day and part of day', () => {
+  const time = (t: string) => parseIntentFacts(t).timeHint;
+  it('U-4 thứ 7 → saturday, chủ nhật → sunday, cuối tuần → weekend', () => {
+    expect(time('đi ăn thứ 7')).toBe('saturday');
+    expect(time('tối thứ bảy đi bar')).toBe('saturday');
+    expect(time('chủ nhật đi công viên')).toBe('sunday');
+    expect(time('cn đi cafe')).toBe('sunday');
+    expect(time('cuối tuần đi chơi')).toBe('weekend');
+    expect(time('Saturday evening')).toBe('saturday');
+    expect(time('Sunday noon')).toBe('sunday');
+  });
+
+  it('a part of the day counts only next to a day', () => {
+    expect(parseDayPart('Thứ 7 tối')).toBe('evening');
+    expect(parseDayPart('tối thứ 7 đi bar')).toBe('evening');
+    expect(parseDayPart('Chủ nhật trưa')).toBe('noon');
+    expect(parseDayPart('Thứ 7 chiều')).toBe('afternoon');
+    expect(parseDayPart('sáng chủ nhật ăn dimsum')).toBe('morning');
+    expect(parseDayPart('Saturday evening')).toBe('evening');
+    // A meal or a mood is not an hour; "tối đa" is not evening.
+    expect(parseDayPart('đi ăn tối thứ 7')).toBeNull();
+    expect(parseDayPart('quán sáng sủa thứ 7')).toBeNull();
+    expect(parseDayPart('tối đa 300k thứ 7')).toBeNull();
+    expect(parseDayPart('thứ 7')).toBeNull();
   });
 });
