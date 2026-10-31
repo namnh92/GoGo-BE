@@ -17372,6 +17372,7 @@ export interface operations {
                     /** @enum {string} */
                     kind: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability" | "checkin_tag";
                     key: string;
+                    /** @description Locale → label. Each label is one line of plain text (GoGo-BE#737): the server normalises it first (NFC, every space separator to one ASCII space, trimmed), then requires 1–80 code points of letters, combining marks, digits, spaces and the punctuation listed in the pattern. A label outside the rule is refused (400), never stripped or truncated. */
                     labels: {
                         [key: string]: string;
                     };
@@ -17401,6 +17402,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description Locale → label. Each label is one line of plain text (GoGo-BE#737): the server normalises it first (NFC, every space separator to one ASCII space, trimmed), then requires 1–80 code points of letters, combining marks, digits, spaces and the punctuation listed in the pattern. A label outside the rule is refused (400), never stripped or truncated. */
                     labels?: {
                         [key: string]: string;
                     };

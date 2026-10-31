@@ -98,6 +98,15 @@ function fence(text: string): string {
   return text.replace(/<\/?\s*(gogo_context|conversation|user_message|system)[^>]*>/gi, '');
 }
 
+/**
+ * A CMS-owned label (mood, setting, occasion, category) in the context block:
+ * one line, fenced, so a stored label can neither add a field nor close the
+ * block (GoGo-BE#737 R-1).
+ */
+function oneLine(text: string): string {
+  return fence(text).replace(/\s+/g, ' ').trim();
+}
+
 export function renderContext(ctx: GroundedAnswerContext): string {
   const lines: string[] = ['<gogo_context>', `route: ${ctx.route}`];
   if (ctx.constraints.length > 0) {
@@ -105,17 +114,21 @@ export function renderContext(ctx: GroundedAnswerContext): string {
     for (const c of ctx.constraints) lines.push(`  - ${c.name}: ${c.value} (${c.origin})`);
   }
   const prefs = [
-    ctx.preferences.occasion ? `occasion=${ctx.preferences.occasion}` : null,
-    ctx.preferences.moods.length > 0 ? `mood=${ctx.preferences.moods.join(', ')}` : null,
-    ctx.preferences.settings.length > 0 ? `setting=${ctx.preferences.settings.join(', ')}` : null,
+    ctx.preferences.occasion ? `occasion=${oneLine(ctx.preferences.occasion)}` : null,
+    ctx.preferences.moods.length > 0
+      ? `mood=${ctx.preferences.moods.map(oneLine).join(', ')}`
+      : null,
+    ctx.preferences.settings.length > 0
+      ? `setting=${ctx.preferences.settings.map(oneLine).join(', ')}`
+      : null,
   ].filter(Boolean);
   if (prefs.length > 0) lines.push(`preferences: ${prefs.join('; ')}`);
   if (ctx.places.length > 0) {
     lines.push('places (verified by GoGo; their facts are on the cards, do not restate them):');
     for (const p of ctx.places) {
-      const tags = [...p.categories, ...p.moods];
+      const tags = [...p.categories, ...p.moods].map(oneLine);
       lines.push(
-        `  [P${p.position}] ${fence(p.name)}${tags.length > 0 ? ` — ${tags.join(', ')}` : ''}`,
+        `  [P${p.position}] ${oneLine(p.name)}${tags.length > 0 ? ` — ${tags.join(', ')}` : ''}`,
       );
     }
   } else if (ctx.route === 'recommend_places') {
