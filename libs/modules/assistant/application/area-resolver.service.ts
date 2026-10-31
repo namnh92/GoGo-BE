@@ -55,6 +55,15 @@ const LEGACY_QUALIFIERS: readonly (readonly string[])[] = [
 ];
 /** Qualifiers a current province-level city is also called by ("TP Huế"). */
 const CITY_QUALIFIERS = new Set(['thành phố', 'thanh pho', 'tp']);
+/**
+ * PR #741 F-01 — "Quận"/"Q" before a number names a district whatever the
+ * snapshot holds: no current unit is a quận (2025-07-01 left provinces,
+ * phường, xã and đặc khu), and the pinned historical snapshot (v2.4.1) lacks
+ * Quận 2 and Quận 9, dissolved into Thủ Đức in 2021. Not finding one there
+ * must not widen "Q2, TP HCM" to the city (owner 2026-10-28).
+ */
+const NUMBERED_DISTRICT_QUALIFIERS = new Set(['quận', 'quan', 'q']);
+const NUMBER = /^\d{1,2}$/;
 /** Locative words a bare answer may start with ("ở Bến Thành"). */
 const LOCATIVE = /^ (?:o|tai|khu vuc|khu|gan|quanh) /;
 
@@ -342,7 +351,6 @@ const startsWith = (tokens: readonly string[], at: number, prefix: readonly stri
  */
 function hasLegacyLocality(snapshot: Snapshot, text: string): boolean {
   const { districts, cities } = legacyIndex(snapshot);
-  if (districts.size === 0) return false;
   const raw = rawTokens(text);
   const folded = raw.map((t) => foldedTokens(t).join(' '));
   for (let i = 0; i < raw.length; i++) {
@@ -351,6 +359,8 @@ function hasLegacyLocality(snapshot: Snapshot, text: string): boolean {
       const at = i + qualifier.length;
       if (CITY_QUALIFIERS.has(qualifier.join(' ')) && cities.some((c) => startsWith(folded, at, c)))
         continue;
+      if (NUMBERED_DISTRICT_QUALIFIERS.has(qualifier.join(' ')) && NUMBER.test(folded[at] ?? ''))
+        return true;
       const candidates = districts.get(folded[at] ?? '') ?? [];
       if (candidates.some((name) => startsWith(folded, at, name))) return true;
     }
