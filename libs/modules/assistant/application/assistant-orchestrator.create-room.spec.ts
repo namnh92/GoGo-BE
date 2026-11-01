@@ -1041,4 +1041,37 @@ describe('#738 a new request asks "new or update?", then one item at a time', ()
     expect(fields(r)).not.toContain('reconcile_mode');
     expect(r.frames.some((f) => f.type === 'step' && f.step === 'reading_guide')).toBe(true);
   });
+
+  it('Jev down (as in integration IT-1): a different room request asks first, then "new" makes the card', async () => {
+    const first = await turn(
+      'tạo kèo đi nhà hàng thứ 7 với 4 người ở Phường Ba Đình, Thành phố Hà Nội',
+      {
+        answers: null,
+      },
+    );
+    expect(first.proposal?.kind).toBe('create_room');
+    const u1: HistoryRow = {
+      ...said('tạo kèo đi nhà hàng thứ 7 với 4 người ở Phường Ba Đình, Thành phố Hà Nội'),
+      id: 'user-0',
+    };
+    const changed = await turn('tạo kèo cà phê với 4 người ở Phường Ba Đình, Thành phố Hà Nội', {
+      answers: null,
+      history: [u1, replyOf(first)],
+      archive: [u1],
+    });
+    expect(changed.trace.turnRelation).toEqual({ source: 'heuristic', relation: 'new_request' });
+    expect(fields(changed)).toEqual(['reconcile_mode']);
+    expect(changed.proposal).toBeNull();
+    const u2: HistoryRow = {
+      ...said('tạo kèo cà phê với 4 người ở Phường Ba Đình, Thành phố Hà Nội'),
+      id: 'user-1',
+    };
+    const fresh = await turn(changed.followUps[0]!.options[0]!.text, {
+      answers: null,
+      history: [u1, replyOf(first), u2, replyOf(changed)],
+      archive: [u1, u2],
+    });
+    expect(fresh.proposal?.kind).toBe('create_room');
+    expect(cards(fresh)).toBeGreaterThan(0);
+  });
 });
