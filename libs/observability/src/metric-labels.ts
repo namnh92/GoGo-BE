@@ -359,6 +359,10 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   assistant_decisions_total: ['source', 'intent'],
   // `reason`: timeout | provider_unavailable | invalid_output.
   assistant_fallbacks_total: ['reason'],
+  // GoGo-BE#738 — a message typed under a clarification: `source` = jev |
+  // heuristic (Jev down) | person (the "are you continuing?" chip);
+  // `relation` = answer_pending | new_request | unclear.
+  assistant_turn_relations_total: ['source', 'relation'],
   // GoGo-BE#736 — `outcome`: hit | no_match | no_published (gogo_guide turns).
   assistant_guide_retrieval_total: ['outcome'],
   // `route`: the AssistantRoute set; `status`: complete | fallback | truncated.

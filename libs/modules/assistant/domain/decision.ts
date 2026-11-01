@@ -26,6 +26,14 @@ export type AssistantIntent = (typeof ASSISTANT_INTENTS)[number];
 export const ASSISTANT_ACTIONS = ['none', 'create_room', 'create_invite', 'finalize_plan'] as const;
 export type AssistantAction = (typeof ASSISTANT_ACTIONS)[number];
 
+/**
+ * GoGo-BE#738 — how the newest message relates to the clarification GoGo just
+ * asked: it answers it (the episode continues), it replaces the request, or a
+ * planner could not tell (the person is asked; nothing is merged or dropped).
+ */
+export const TURN_RELATIONS = ['answer_pending', 'new_request', 'unclear'] as const;
+export type TurnRelation = (typeof TURN_RELATIONS)[number];
+
 /** Where a turn goes. `clarify` is decided by the server, never asked of a model. */
 export type AssistantRoute = AssistantIntent | 'clarify';
 
@@ -39,6 +47,8 @@ export type AssistantDecision = {
   /** P(the request needs an attribute GoGo does not verify), null without a model. */
   unverifiedAttribute: number | null;
   classification: IntentClassification;
+  /** #738: Jev's answer when the request asked it (a clarification was pending). */
+  turnRelation?: TurnRelation | null;
 };
 
 /** Gates, PROVISIONAL (ADR-0036 §3D: calibrate on labelled Vietnamese requests). */
@@ -50,10 +60,24 @@ export const ASSISTANT_THRESHOLDS = {
 } as const;
 
 export const MAX_PREVIOUS_REQUEST_CHARS = 300;
+export const MAX_PENDING_QUESTION_CHARS = 300;
+export const MAX_LATEST_MESSAGE_CHARS = 500;
+
+/** #738: the question GoGo asked and the reply typed under it, sent apart. */
+export type PendingClarification = { question: string; latest: string };
 
 export function buildAssistantDecisionRequest(
   text: string,
-  options: { previousRequest: string | null; openedFrom: 'place' | 'plan' | null },
+  options: {
+    previousRequest: string | null;
+    openedFrom: 'place' | 'plan' | null;
+    /**
+     * #738: a clarification is pending. `text` is then the request as it
+     * would read if the newest message answered it, and Jev also says whether
+     * it does — in this same call (ADR-0036 §7: one Jev call per turn).
+     */
+    pending?: PendingClarification | null;
+  },
   taxonomy: IntentTaxonomy,
 ): { state: Record<string, DecisionCriterion>; questions: Record<string, DecisionQuestion> } {
   const base = buildIntentRequest(text, taxonomy);
@@ -62,6 +86,10 @@ export function buildAssistantDecisionRequest(
     state.previous_request = options.previousRequest.slice(0, MAX_PREVIOUS_REQUEST_CHARS);
   }
   if (options.openedFrom) state.opened_from = options.openedFrom;
+  if (options.pending) {
+    state.pending_question = options.pending.question.slice(0, MAX_PENDING_QUESTION_CHARS);
+    state.latest_message = options.pending.latest.slice(0, MAX_LATEST_MESSAGE_CHARS);
+  }
   const questions: Record<string, DecisionQuestion> = {
     ...base.questions,
     assistant_intent: {
@@ -101,6 +129,21 @@ export function buildAssistantDecisionRequest(
       },
     },
   };
+  if (options.pending) {
+    questions.turn_relation = {
+      type: 'choice',
+      instructions:
+        'GoGo, a date and group-outing planning app, asked `pending_question` and the person then wrote `latest_message`. `request` is the earlier request with `latest_message` appended, as it would read if the message answered the question. How does `latest_message` relate to that earlier request?',
+      criteria: {
+        answer_pending:
+          'It answers the question or adds detail to the same request: a kind of place or activity, an area, a time, a number of people, a budget or a preference (for example "cho mình quán cà phê" after being asked what to do).',
+        new_request:
+          'It drops the earlier request or asks for something different instead (for example "thôi, tìm cà phê ở Hà Nội"), or it asks how to use GoGo.',
+        unclear:
+          'It could be either; a planner would have to ask the person whether they are continuing.',
+      },
+    };
+  }
   return { state, questions };
 }
 
@@ -113,7 +156,18 @@ export function mapAssistantAnswers(
   answers: Record<string, DecisionAnswer>,
   model: string,
   text?: string,
+  options: { expectRelation?: boolean } = {},
 ): AssistantDecision {
+  const relationAnswer = answers.turn_relation;
+  let turnRelation: TurnRelation | null = null;
+  if (relationAnswer?.type === 'choice') {
+    if (!(TURN_RELATIONS as readonly string[]).includes(relationAnswer.choice)) {
+      throw new Error('assistant turn_relation answer is not a known relation');
+    }
+    turnRelation = relationAnswer.choice as TurnRelation;
+  } else if (options.expectRelation) {
+    throw new Error('assistant turn_relation answer is missing');
+  }
   const classification = mapIntentAnswers(facts, answers, model);
   const intentAnswer = answers.assistant_intent;
   const actionAnswer = answers.action;
@@ -140,6 +194,7 @@ export function mapAssistantAnswers(
         : 'none',
     unverifiedAttribute: unverified.noul,
     classification,
+    ...(turnRelation ? { turnRelation } : {}),
   };
   return text === undefined ? decision : guardDecision(text, decision);
 }

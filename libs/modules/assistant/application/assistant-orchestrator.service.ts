@@ -35,6 +35,8 @@ import {
   mapAssistantAnswers,
   type AssistantDecision,
   type AssistantRoute,
+  type PendingClarification,
+  type TurnRelation,
 } from '../domain/decision';
 import {
   StreamSanitizer,
@@ -106,7 +108,12 @@ type ContextTurn = HistoryTurn & {
   asksArea: boolean;
   answerField?: 'activity' | 'preference' | undefined;
   episode?: EpisodeMessage[];
+  /** #738: this turn asked "are you continuing?"; the two chip texts, in order. */
+  relationOptions?: { proceed: string; fresh: string } | undefined;
 };
+
+/** How the episode walk treats the newest message's link to the question before it. */
+type EpisodeMode = 'heuristic' | 'answer' | 'single';
 
 /**
  * #733 D-5 — the request a turn answers: the current message alone, or merged
@@ -122,6 +129,24 @@ type Episode = {
   latestAreaText: string | null;
   previousRequest: string | null;
 };
+
+/** #738: the episode Jev is asked about, and what is still open about it. */
+type ResolvedEpisode = {
+  candidate: Episode;
+  /** A clarification the newest message may or may not answer: Jev decides. */
+  pending: PendingClarification | null;
+  /** The person already said, with a "are you continuing?" chip. */
+  person: TurnRelation | null;
+};
+
+/** #738: the two chip texts of a "are you continuing?" group, in order. */
+function relationOptionsOf(
+  groups: { field: string; options?: { text: string }[] }[] | null | undefined,
+): { proceed: string; fresh: string } | undefined {
+  const group = groups?.find((g) => g.field === 'turn_relation');
+  const [proceed, fresh] = group?.options ?? [];
+  return proceed && fresh ? { proceed: proceed.text, fresh: fresh.text } : undefined;
+}
 
 /**
  * ADR-0036 — one reply: admission already happened (the send), so this is
@@ -200,7 +225,40 @@ export class AssistantOrchestrator {
     const { history, currentId } = await guard.run(() => this.historyFor(input));
     const taxonomy = await guard.run(() => this.taxonomy.taxonomy());
     const labels = this.taxonomy.labels(taxonomy);
-    const episode = await guard.run(() => this.episodeFor(input.text, history, currentId));
+    // #738: with a clarification pending, the request is built as if the
+    // newest message answered it, and Jev says in the same call whether it
+    // does; the episode is settled from that answer, not before it.
+    const resolved = await guard.run(() => this.resolveEpisode(input, history, currentId));
+    const candidate = resolved.candidate;
+
+    // ── Jev decision 1 ───────────────────────────────────────────────────────
+    const answered = await guard.run(() =>
+      this.decide(
+        input,
+        joinRequest(candidate.texts),
+        candidate.facts,
+        candidate.previousRequest,
+        taxonomy,
+        guard.signal,
+        remaining(),
+        state,
+        resolved.pending,
+      ),
+    );
+    const settled = await guard.run(() =>
+      this.settleRelation(
+        input,
+        history,
+        currentId,
+        resolved,
+        answered,
+        taxonomy,
+        state,
+        guard.signal,
+        remaining,
+      ),
+    );
+    const { episode, decision, relation } = settled;
     const { facts, dayPart } = episode;
     const requestText = joinRequest(episode.texts);
     if (episode.messages.every((message) => message.id)) {
@@ -219,19 +277,6 @@ export class AssistantOrchestrator {
       };
     }
 
-    // ── Jev decision 1 ───────────────────────────────────────────────────────
-    const decision = await guard.run(() =>
-      this.decide(
-        input,
-        requestText,
-        facts,
-        episode.previousRequest,
-        taxonomy,
-        guard.signal,
-        remaining(),
-        state,
-      ),
-    );
     const c = decision.classification;
     state.trace.intent = {
       source: decision.source,
@@ -281,6 +326,12 @@ export class AssistantOrchestrator {
     ) {
       route = 'clarify';
       clarification.push('activity');
+    }
+    if (relation === 'unclear') {
+      // #738 AC-2: neither merged nor dropped — the person says which.
+      route = 'clarify';
+      clarification.length = 0;
+      clarification.push('turn_relation');
     }
     const unverifiable =
       decision.unverifiedAttribute !== null &&
@@ -616,6 +667,7 @@ export class AssistantOrchestrator {
         : r.follow_ups?.some((g) => g.field === 'preference')
           ? 'preference'
           : undefined,
+      relationOptions: relationOptionsOf(r.follow_ups),
     }));
     const refs = rows[rows.length - 1]?.trace?.episodeRefs;
     const previous = history[history.length - 1];
@@ -643,6 +695,7 @@ export class AssistantOrchestrator {
     text: string,
     history: ContextTurn[],
     currentId?: string,
+    mode: EpisodeMode = 'heuristic',
   ): Promise<Episode> {
     const own = parseIntentFacts(text);
     const ownDayPart = parseDayPart(text);
@@ -656,6 +709,7 @@ export class AssistantOrchestrator {
       latestAreaText: own.areaText,
       previousRequest: startsNewRequest(text) ? null : lastUser(history),
     };
+    if (mode === 'single') return single;
     // Each link must hold (Astra A-F-04): a turn is merged only when the turn
     // after it answered it, so a fresh request typed under the chips is a
     // boundary the walk never crosses later.
@@ -682,7 +736,10 @@ export class AssistantOrchestrator {
       const asked = history[j]!;
       const user = history[j - 1]!;
       if (asked.role !== 'assistant' || !asked.askedTexts || user.role !== 'user') break;
-      if (!(await answers(current, asked))) break;
+      // #738: in `answer` mode Jev decides the newest link, so it is taken as
+      // given here; earlier links were decided on their own turns.
+      const forced = mode === 'answer' && earlier.length === 0;
+      if (!forced && !(await answers(current, asked))) break;
       if (earlier.length === 0) {
         single.messages[0]!.allowBareArea = asked.asksArea;
         single.messages[0]!.answerField = asked.answerField;
@@ -703,7 +760,19 @@ export class AssistantOrchestrator {
     }
     if (earlier.length === 0) return single;
 
-    const messages = [...earlier, ...single.messages];
+    return this.episodeOf(
+      [...earlier, ...single.messages],
+      own.areaText,
+      lastUser(history.slice(0, j + 1)),
+    );
+  }
+
+  /** The facts and retained texts of a chain of user messages, oldest first. */
+  private async episodeOf(
+    messages: EpisodeMessage[],
+    latestAreaText: string | null,
+    previousRequest: string | null,
+  ): Promise<Episode> {
     const texts = messages.map((message) => message.text);
     const facts: IntentFacts = { partySize: null, budget: null, timeHint: null, areaText: null };
     let dayPart: DayPart | null = null;
@@ -725,8 +794,8 @@ export class AssistantOrchestrator {
       messages: retained,
       facts,
       dayPart,
-      latestAreaText: own.areaText,
-      previousRequest: lastUser(history.slice(0, j + 1)),
+      latestAreaText,
+      previousRequest,
     };
   }
 
@@ -759,6 +828,130 @@ export class AssistantOrchestrator {
     return messages.filter((_, i) => keep.has(i));
   }
 
+  /**
+   * #738 — the episode Jev is asked about. A chip answering "are you
+   * continuing?" settles it by itself; a message typed under any other
+   * question is joined to the request it would answer, and marked pending so
+   * Jev also says whether it does; otherwise the #733 walk as before.
+   */
+  private async resolveEpisode(
+    input: TurnInput,
+    history: ContextTurn[],
+    currentId: string | undefined,
+  ): Promise<ResolvedEpisode> {
+    const previous = history[history.length - 1];
+    const typed = input.text.trim();
+    if (previous?.role === 'assistant' && previous.relationOptions && previous.episode?.length) {
+      const { proceed, fresh } = previous.relationOptions;
+      const choice = typed === proceed ? 'proceed' : typed === fresh ? 'fresh' : null;
+      if (choice) {
+        const messages = choice === 'proceed' ? previous.episode : previous.episode.slice(-1);
+        const last = messages[messages.length - 1]!;
+        return {
+          candidate: await this.episodeOf(
+            messages.map((m) => ({ ...m })),
+            parseIntentFacts(last.text).areaText,
+            null,
+          ),
+          pending: null,
+          person: choice === 'proceed' ? 'answer_pending' : 'new_request',
+        };
+      }
+    }
+    if (
+      previous?.role === 'assistant' &&
+      previous.askedTexts &&
+      !previous.askedTexts.includes(typed)
+    ) {
+      const merged = await this.episodeFor(input.text, history, currentId, 'answer');
+      if (merged.messages.length > 1) {
+        return {
+          candidate: merged,
+          pending: { question: previous.text, latest: input.text },
+          person: null,
+        };
+      }
+    }
+    return {
+      candidate: await this.episodeFor(input.text, history, currentId),
+      pending: null,
+      person: null,
+    };
+  }
+
+  /**
+   * #738 — the episode and decision a pending clarification ends with. Jev's
+   * `turn_relation` decides; without it (Jev down or invalid) the #733 word
+   * heuristic does, as before. A new request is not described by answers
+   * about the merged text, so Jev classifies it again on its own — owner
+   * 2026-11-01: one Jev call per text classified, each counted and costed in
+   * the turn's ledger (`jev_calls`, tokens, `jev_cost_usd`).
+   */
+  private async settleRelation(
+    input: TurnInput,
+    history: ContextTurn[],
+    currentId: string | undefined,
+    resolved: ResolvedEpisode,
+    decision: AssistantDecision,
+    taxonomy: IntentTaxonomy,
+    state: TurnState,
+    signal: AbortSignal,
+    remaining: () => number,
+  ): Promise<{ episode: Episode; decision: AssistantDecision; relation: TurnRelation | null }> {
+    const record = (source: 'jev' | 'heuristic' | 'person', relation: TurnRelation) => {
+      state.trace.turnRelation = { source, relation };
+      this.metrics.increment('assistant_turn_relations_total', { source, relation });
+    };
+    if (resolved.person) {
+      record('person', resolved.person);
+      return { episode: resolved.candidate, decision, relation: resolved.person };
+    }
+    if (!resolved.pending) return { episode: resolved.candidate, decision, relation: null };
+
+    let relation: TurnRelation;
+    let source: 'jev' | 'heuristic';
+    if (decision.source === 'decision_model' && decision.turnRelation) {
+      relation = decision.turnRelation;
+      source = 'jev';
+    } else {
+      const heuristic = await this.episodeFor(input.text, history, currentId, 'heuristic');
+      relation = heuristic.messages.length > 1 ? 'answer_pending' : 'new_request';
+      source = 'heuristic';
+    }
+    record(source, relation);
+    if (relation === 'answer_pending') return { episode: resolved.candidate, decision, relation };
+    if (relation === 'unclear') {
+      return { episode: resolved.candidate, decision: { ...decision, action: 'none' }, relation };
+    }
+    const single = await this.episodeFor(input.text, history, currentId, 'single');
+    const text = joinRequest(single.texts);
+    if (source === 'jev') {
+      // The second classification of this turn: the new request alone.
+      state.trace.jevDecisionCalls = 2;
+      const fresh = await this.decide(
+        input,
+        text,
+        single.facts,
+        single.previousRequest,
+        taxonomy,
+        signal,
+        remaining(),
+        state,
+      );
+      return { episode: single, decision: fresh, relation };
+    }
+    // Jev did not answer the first call: the deterministic path, on the new text.
+    return {
+      episode: single,
+      decision: fallbackAssistantDecision(
+        text,
+        fallbackIntent(text, single.facts, taxonomy, decision.fallbackReason ?? 'provider_error'),
+        input.context?.kind ?? null,
+      ),
+      relation,
+    };
+  }
+
   private async decide(
     input: TurnInput,
     text: string,
@@ -768,13 +961,18 @@ export class AssistantOrchestrator {
     signal: AbortSignal,
     budgetMs: number,
     state: TurnState,
+    pending: PendingClarification | null = null,
   ): Promise<AssistantDecision> {
     const openedFrom = input.context?.kind ?? null;
     const fallback = (reason: IntentFallbackReason) =>
       fallbackAssistantDecision(text, fallbackIntent(text, facts, taxonomy, reason), openedFrom);
     if (!this.decisions) return fallback('disabled');
     if (text.trim().length < 2) return fallback('empty_request');
-    const request = buildAssistantDecisionRequest(text, { previousRequest, openedFrom }, taxonomy);
+    const request = buildAssistantDecisionRequest(
+      text,
+      { previousRequest, openedFrom, pending },
+      taxonomy,
+    );
     const started = Date.now();
     // The adapter has its own timeout; the turn's remaining budget caps it too.
     const budget = AbortSignal.timeout(
@@ -790,7 +988,9 @@ export class AssistantOrchestrator {
         provider: 'jev',
         outcome: 'ok',
       });
-      return mapAssistantAnswers(facts, response.answers, response.model, text);
+      return mapAssistantAnswers(facts, response.answers, response.model, text, {
+        expectRelation: pending !== null,
+      });
     } catch (err) {
       endJevCall(state, null);
       if (signal.aborted) throw err;
