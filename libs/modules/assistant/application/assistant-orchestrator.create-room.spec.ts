@@ -54,6 +54,7 @@ type Run = {
   jevCalls: { state: Record<string, unknown>; questions: string[] }[];
   superseded: unknown[][];
   trace: Record<string, unknown>;
+  costs: { jevCalls: number; jevCostUsd: number | null; jevInputTokens: number | null };
   proposal: { kind: string; values: { field: string; value: unknown; origin: string }[] } | null;
   followUps: { field: string; options: { label: string; text: string }[] }[];
   value: (field: string) => { value: unknown; origin: string } | undefined;
@@ -62,7 +63,8 @@ type Run = {
 async function turn(
   text: string,
   opts: {
-    answers?: Record<string, unknown> | null;
+    /** One answer set for every call, or one per Jev call in order (#738). */
+    answers?: Record<string, unknown> | Record<string, unknown>[] | null;
     history?: HistoryRow[];
     archive?: HistoryRow[];
     context?: { kind: 'place' | 'plan'; id: string };
@@ -159,7 +161,7 @@ async function turn(
             jevCalls.push({ state: req.state, questions: Object.keys(req.questions) });
             return {
               model: 'typesafe/jev-1.14',
-              answers,
+              answers: Array.isArray(answers) ? answers[jevCalls.length - 1] : answers,
               usage: { inputTokens: 1, outputTokens: 1, costUsd: 0.0001 },
             };
           },
@@ -198,6 +200,7 @@ async function turn(
     jevCalls,
     superseded,
     trace: state.trace,
+    costs: state.costs as Run['costs'],
     proposal,
     followUps,
     value: (field) => proposal?.values.find((v) => v.field === field),
@@ -667,22 +670,49 @@ describe('#738 turn_relation decides the episode boundary', () => {
     expect(r.value('participantCount')).toMatchObject({ value: 4, origin: 'explicit' });
   });
 
-  it('AC-1 "thôi, tìm cà phê ở Hà Nội" is a new request: no room card, nothing inherited', async () => {
+  it('AC-1 "thôi, tìm cà phê ở Hà Nội" is a new request: classified again alone, no room card', async () => {
     const r = await turn('thôi, tìm cà phê ở Hà Nội', {
-      answers: {
-        ...relation('new_request'),
-        action: { type: 'choice', choice: 'create_room', confidence: 0.9 },
-      },
+      answers: [
+        // About the merged text: it still reads as the room request.
+        relation('new_request'),
+        // The second call, about the new request alone.
+        { ...base, action: { type: 'choice', choice: 'none' } },
+      ],
       history: [said('tạo kèo ăn tối thứ 7 với 6 người, 300k/người'), asked('activity')],
     });
-    expect(r.jevCalls).toHaveLength(1);
     expect(r.trace.turnRelation).toEqual({ source: 'jev', relation: 'new_request' });
-    // Answers about the merged text do not describe the new request.
-    expect((r.trace.intent as { source: string; fallbackReason: string }).source).toBe('fallback');
-    expect((r.trace.intent as { fallbackReason: string }).fallbackReason).toBe('new_request');
+    // Owner 2026-11-01: one Jev call per text classified.
+    expect(r.jevCalls).toHaveLength(2);
+    expect(r.jevCalls[1]!.state.request).toBe('thôi, tìm cà phê ở Hà Nội');
+    expect(r.jevCalls[1]!.questions).not.toContain('turn_relation');
+    expect(r.trace.jevDecisionCalls).toBe(2);
+    expect((r.trace.intent as { source: string }).source).toBe('decision_model');
     expect(r.proposal).toBeNull();
     expect(cards(r)).toBeGreaterThan(0);
     expect(r.trace.episode).toBeUndefined();
+  });
+
+  it('each Jev call is counted and costed in the turn', async () => {
+    const r = await turn('thôi, tìm cà phê ở Hà Nội', {
+      answers: [relation('new_request'), { ...base, action: { type: 'choice', choice: 'none' } }],
+      history: [said('tạo kèo ăn tối thứ 7 với 6 người, 300k/người'), asked('activity')],
+    });
+    // The stub reports 1 input token and $0.0001 per call; the relevance call
+    // (recommend_places) is a Jev call of its own and counts the same way.
+    const decisionCalls = 2;
+    expect(r.costs.jevCalls).toBeGreaterThanOrEqual(decisionCalls);
+    expect(r.costs.jevInputTokens).toBe(r.costs.jevCalls);
+    expect(r.costs.jevCostUsd).toBeCloseTo(0.0001 * r.costs.jevCalls, 10);
+  });
+
+  it('the second call failing classifies the new request deterministically', async () => {
+    const r = await turn('thôi, tìm cà phê ở Hà Nội', {
+      answers: [relation('new_request'), {}],
+      history: [said('tạo kèo ăn tối thứ 7 với 6 người, 300k/người'), asked('activity')],
+    });
+    expect(r.jevCalls).toHaveLength(2);
+    expect((r.trace.intent as { source: string }).source).toBe('fallback');
+    expect(r.proposal).toBeNull();
   });
 
   it('AC-2 unclear: asked whether to continue — not merged, not dropped, nothing prepared', async () => {
@@ -798,13 +828,17 @@ describe('#738 turn_relation decides the episode boundary', () => {
     expect(r.trace.turnRelation).toBeUndefined();
   });
 
-  it('AC-3 one Jev call per turn whatever the relation', async () => {
-    for (const choice of ['answer_pending', 'new_request', 'unclear']) {
+  it('one decision call when the message continues or is unclear, two for a new request', async () => {
+    for (const [choice, calls] of [
+      ['answer_pending', 1],
+      ['unclear', 1],
+      ['new_request', 2],
+    ] as const) {
       const r = await turn('cho mình quán cà phê', {
         answers: relation(choice),
         history: [said(ROOM), asked('activity')],
       });
-      expect(r.jevCalls, choice).toHaveLength(1);
+      expect(r.jevCalls, choice).toHaveLength(calls);
     }
   });
 

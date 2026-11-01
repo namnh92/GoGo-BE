@@ -246,7 +246,17 @@ export class AssistantOrchestrator {
       ),
     );
     const settled = await guard.run(() =>
-      this.settleRelation(input, history, currentId, resolved, answered, taxonomy, state),
+      this.settleRelation(
+        input,
+        history,
+        currentId,
+        resolved,
+        answered,
+        taxonomy,
+        state,
+        guard.signal,
+        remaining,
+      ),
     );
     const { episode, decision, relation } = settled;
     const { facts, dayPart } = episode;
@@ -873,7 +883,9 @@ export class AssistantOrchestrator {
    * #738 — the episode and decision a pending clarification ends with. Jev's
    * `turn_relation` decides; without it (Jev down or invalid) the #733 word
    * heuristic does, as before. A new request is not described by answers
-   * about the merged text, so it is classified deterministically on its own.
+   * about the merged text, so Jev classifies it again on its own — owner
+   * 2026-11-01: one Jev call per text classified, each counted and costed in
+   * the turn's ledger (`jev_calls`, tokens, `jev_cost_usd`).
    */
   private async settleRelation(
     input: TurnInput,
@@ -883,6 +895,8 @@ export class AssistantOrchestrator {
     decision: AssistantDecision,
     taxonomy: IntentTaxonomy,
     state: TurnState,
+    signal: AbortSignal,
+    remaining: () => number,
   ): Promise<{ episode: Episode; decision: AssistantDecision; relation: TurnRelation | null }> {
     const record = (source: 'jev' | 'heuristic' | 'person', relation: TurnRelation) => {
       state.trace.turnRelation = { source, relation };
@@ -911,12 +925,27 @@ export class AssistantOrchestrator {
     }
     const single = await this.episodeFor(input.text, history, currentId, 'single');
     const text = joinRequest(single.texts);
-    const reason = source === 'jev' ? 'new_request' : (decision.fallbackReason ?? 'provider_error');
+    if (source === 'jev') {
+      // The second classification of this turn: the new request alone.
+      state.trace.jevDecisionCalls = 2;
+      const fresh = await this.decide(
+        input,
+        text,
+        single.facts,
+        single.previousRequest,
+        taxonomy,
+        signal,
+        remaining(),
+        state,
+      );
+      return { episode: single, decision: fresh, relation };
+    }
+    // Jev did not answer the first call: the deterministic path, on the new text.
     return {
       episode: single,
       decision: fallbackAssistantDecision(
         text,
-        fallbackIntent(text, single.facts, taxonomy, reason),
+        fallbackIntent(text, single.facts, taxonomy, decision.fallbackReason ?? 'provider_error'),
         input.context?.kind ?? null,
       ),
       relation,

@@ -575,14 +575,14 @@ request from Astra's proposal (`astra-suggest-assistant-cms-rules.out` §6).
   assistant turn asked a clarification and the newest message is not one of its quick replies, the
   request sent to Jev is the episode as it would read if the message answered (the `answer` walk),
   with `pending_question` (that turn's text) and `latest_message` apart in `state`, and one closed
-  question `turn_relation = answer_pending | new_request | unclear` — in the same call (ADR-0036 §7:
-  still one Jev call per turn). A quick reply needs no question: it is an answer by construction.
+  question `turn_relation = answer_pending | new_request | unclear` — in the same call. A quick reply needs no question: it is an answer by construction.
 - **`answer_pending`** keeps the merged episode and Jev's answers ("cho mình quán cà phê" under the
   activity question keeps the `create_room` card).
-- **`new_request`** takes the newest message alone. Jev's answers were about the merged text, so the
-  turn is classified deterministically (`fallbackReason = new_request`): a new request typed under a
-  question loses Jev's mood/occasion reading for that one turn. Trade-off to confirm in the Fable
-  shape; the alternative costs a second Jev call.
+- **`new_request`** takes the newest message alone, and Jev classifies it again by itself — owner
+  2026-11-01: **one Jev call per text classified**, so such a turn makes two decision calls (plus
+  the relevance call when it searches). Each call is counted and costed in the turn's ledger
+  (`jev_calls`, input/output tokens, `jev_cost_usd` summed from OpenRouter's reported usage; unknown
+  stays `null`, never 0). If the second call fails, that text is classified deterministically.
 - **`unclear`** neither merges nor drops: the deterministic reply asks whether the person continues,
   with two fixed chips (`turn_relation` follow-up group, asked alone). The turn stores the merged
   episode by reference; "Tiếp tục yêu cầu trước" resumes it, "Đây là yêu cầu mới" starts from the
@@ -591,6 +591,9 @@ request from Astra's proposal (`astra-suggest-assistant-cms-rules.out` §6).
   word heuristic decides as before, so F-16 remains on that path only.
 - Counted as `assistant_turn_relations_total{source: jev|heuristic|person, relation}` and written
   to the turn trace (`turnRelation`).
+- `ASSISTANT_TURN_COST_CEILING_USD` (default 0.005) is the admission reservation per turn; a
+  new-request turn now spends up to three Jev calls, so the ceiling should be checked against the
+  DEV ledger (`jev_cost_usd` of turns with `trace.jevDecisionCalls = 2`).
 - AC-4 (DEV live: the two sentences) is not covered by unit tests; it needs a deploy.
 
 ### Guide coverage and publish revision (GoGo-BE#736)
