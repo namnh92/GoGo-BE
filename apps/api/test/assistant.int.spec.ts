@@ -1180,11 +1180,18 @@ describe('create a room through the chat (GoGo-BE#733)', () => {
     await f.db.execute(
       sql`update assistant_proposals set status = 'confirming' where id = ${p1.id}`,
     );
-    const second = await turnFrames(
+    const changed = await turnFrames(
       ivy,
       conversationId,
       'tạo kèo cà phê với 4 người ở Phường Cầu Giấy, Thành phố Hà Nội',
     );
+    // #738 follow-up (owner 2026-11-01): a different request first asks
+    // "new or update?" — nothing searched or prepared on that turn.
+    const mode = changed.find((x) => x.event === 'follow_ups')!.data.groups[0];
+    expect(mode.field).toBe('reconcile_mode');
+    expect(changed.some((x) => x.event === 'proposal')).toBe(false);
+    expect(await roomCount()).toBe(rooms);
+    const second = await turnFrames(ivy, conversationId, mode.options[0].text);
     const p2 = second.find((x) => x.event === 'proposal')!.data.proposal;
     const p2Cards = second
       .filter((x) => x.event === 'card')

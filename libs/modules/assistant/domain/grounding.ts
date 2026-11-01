@@ -51,6 +51,11 @@ export type GroundedAnswerContext = {
   pendingAction: string | null;
   clarification: string[];
   /**
+   * #738 follow-up: the "new or update?" question (or one of its items) this
+   * turn asks — fixed wording from `domain/reconcile`, never composed.
+   */
+  reconcile?: { text: string; group: AssistantFollowUpGroup };
+  /**
    * The person named an area the published (post-2025) administrative dataset
    * does not place: the reply asks for it again as a new address.
    */
@@ -573,6 +578,10 @@ export function deterministicReply(ctx: GroundedAnswerContext): string {
       );
       break;
     case 'clarify':
+      if (ctx.reconcile) {
+        lines.push(ctx.reconcile.text);
+        break;
+      }
       // #738: Jev could not tell whether the message continues the request
       // GoGo asked about — asked, never merged or dropped silently.
       if (ctx.clarification.includes('turn_relation')) {
@@ -695,6 +704,7 @@ export const TURN_RELATION_OPTIONS = {
 export function followUpsFor(ctx: GroundedAnswerContext): AssistantFollowUpGroup[] {
   const vi = ctx.locale !== 'en';
   const groups: AssistantFollowUpGroup[] = [];
+  if (ctx.reconcile) return [ctx.reconcile.group];
   if (ctx.clarification.includes('turn_relation')) {
     // #738: asked alone — any other chip would be read as an answer to it.
     return [

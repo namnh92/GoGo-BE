@@ -129,7 +129,12 @@ async function turn(
         suitability: [],
         categorySynonyms: { 'category:cafe': ['cà phê'], 'category:restaurant': ['ăn tối'] },
       }),
-      labels: () => new Map<string, string>(),
+      labels: () =>
+        new Map<string, string>([
+          ['romantic', 'lãng mạn'],
+          ['outdoor', 'ngoài trời'],
+          ['category:cafe', 'cà phê'],
+        ]),
     } as never,
     {
       search: async (q: Record<string, unknown>) => {
@@ -858,5 +863,215 @@ describe('#738 turn_relation decides the episode boundary', () => {
     });
     expect(r.trace.turnRelation).toEqual({ source: 'heuristic', relation: 'answer_pending' });
     expect((r.trace.intent as { source: string }).source).toBe('fallback');
+  });
+});
+
+/**
+ * GoGo-BE#738 follow-up (owner 2026-11-01): a new request after a place
+ * request that said things asks "new or update?" first; keeping walks one
+ * question per differing item, then joins the two. The owner's example.
+ */
+describe('#738 a new request asks "new or update?", then one item at a time', () => {
+  const OLD_TEXT = 'Cho tôi quán cà phê lãng mạn cho 2 người ở Hà Nội';
+  const NEW_TEXT = 'Cho tôi quán cà phê ngoài trời cho 3 người';
+  const oldUser: HistoryRow = { ...said(OLD_TEXT), id: 'u1' };
+  const resultsTurn: HistoryRow = {
+    role: 'assistant',
+    text: 'Mình tìm thấy 2 địa điểm.',
+    follow_ups: [],
+    trace: {
+      intent: {
+        intent: 'recommend_places',
+        action: 'none',
+        category: 'category:cafe',
+        occasion: null,
+        moods: ['romantic'],
+        settings: [],
+        model: 'typesafe/jev-1.14',
+      },
+      episodeRefs: [{ id: 'u1', allowBareArea: false }],
+    },
+  };
+  const freshAnswers = {
+    ...base,
+    action: { type: 'choice', choice: 'none' },
+    'setting:outdoor': { type: 'noul', noul: 0.9 },
+  };
+  /** The assistant row a turn leaves for the next one to read. */
+  const replyOf = (r: Run): HistoryRow => ({
+    role: 'assistant',
+    text: r.text,
+    follow_ups: r.followUps,
+    trace: r.trace,
+  });
+
+  async function firstTurn() {
+    return turn(NEW_TEXT, {
+      answers: [
+        { ...base, turn_relation: { type: 'choice', choice: 'new_request' } },
+        freshAnswers,
+      ],
+      history: [oldUser, resultsTurn],
+      archive: [oldUser],
+    });
+  }
+
+  it('asks "new or update?" first: nothing searched or prepared', async () => {
+    const r = await firstTurn();
+    // The relation, then the new request alone: two classifications.
+    expect(r.jevCalls).toHaveLength(2);
+    expect(r.jevCalls[0]!.questions).toContain('turn_relation');
+    expect(r.jevCalls[1]!.state.request).toBe(NEW_TEXT);
+    expect(fields(r)).toEqual(['reconcile_mode']);
+    expect(r.followUps[0]!.options.map((o) => o.text)).toEqual([
+      'Tạo yêu cầu mới',
+      'Giữ thông tin cũ và cập nhật',
+    ]);
+    expect(r.text).toMatch(/tạo yêu cầu mới, hay giữ thông tin đã có/);
+    expect(r.searches).toHaveLength(0);
+    expect(r.proposal).toBeNull();
+    const state = r.trace.reconcile as { items: { field: string }[]; newRef: { id: string } };
+    expect(state.items.map((i) => i.field)).toEqual(['preferences', 'partySize', 'area']);
+    expect(state.newRef.id).toBe('user-1');
+    // Keys and ids only: no message text is stored with the walk.
+    expect(JSON.stringify(state)).not.toContain('Hà Nội');
+  });
+
+  it('keep and update: one question per turn, no Jev decision, then the joined search', async () => {
+    const first = await firstTurn();
+    const newUser: HistoryRow = { ...said(NEW_TEXT), id: 'user-1' };
+    const history: HistoryRow[] = [oldUser, resultsTurn, newUser, replyOf(first)];
+    const archive: HistoryRow[] = [oldUser, newUser];
+    const step = async (chip: string) => {
+      const r = await turn(chip, { answers: freshAnswers, history: [...history], archive });
+      history.push(said(chip), replyOf(r));
+      return r;
+    };
+
+    const prefs = await step('Giữ thông tin cũ và cập nhật');
+    expect(prefs.jevCalls).toHaveLength(0);
+    expect(prefs.text).toBe('Bạn muốn ngoài trời hay lãng mạn?');
+    expect(prefs.followUps[0]!.options.map((o) => o.label)).toEqual([
+      'ngoài trời',
+      'lãng mạn',
+      'Cả hai',
+    ]);
+    expect(prefs.searches).toHaveLength(0);
+
+    const party = await step(prefs.followUps[0]!.options[2]!.text);
+    expect(party.jevCalls).toHaveLength(0);
+    expect(party.text).toBe('Bạn muốn cho 3 người? (trước đó là 2 người)');
+
+    const area = await step(party.followUps[0]!.options[0]!.text);
+    expect(area.text).toBe('Bạn vẫn muốn ở Hà Nội?');
+
+    const done = await step(area.followUps[0]!.options[0]!.text);
+    // No decision call on any reconciling turn (a relevance call may run).
+    expect(done.jevCalls.every((c) => !c.questions.includes('assistant_intent'))).toBe(true);
+    expect(done.trace.reconcile).toBeUndefined();
+    expect((done.trace.intent as { reconciled?: boolean }).reconciled).toBe(true);
+    expect(done.searches).toHaveLength(1);
+    expect(cards(done)).toBeGreaterThan(0);
+    expect(done.trace.episodeRefs).toEqual([
+      { id: 'u1', allowBareArea: false },
+      { id: 'user-1', allowBareArea: false },
+    ]);
+  });
+
+  it('"Tạo yêu cầu mới" starts over from the new message alone', async () => {
+    const first = await firstTurn();
+    const newUser: HistoryRow = { ...said(NEW_TEXT), id: 'user-1' };
+    const r = await turn('Tạo yêu cầu mới', {
+      answers: freshAnswers,
+      history: [oldUser, resultsTurn, newUser, replyOf(first)],
+      archive: [oldUser, newUser],
+    });
+    expect(r.jevRequests).toEqual([NEW_TEXT]);
+    expect(r.trace.reconcile).toBeUndefined();
+    expect(fields(r)).not.toContain('reconcile_mode');
+    // Hà Nội was the old request's: the new one has no area, so it is asked.
+    expect(fields(r)).toContain('area');
+  });
+
+  it('a new request that only adds to the old one is not asked about', async () => {
+    const r = await turn(`${OLD_TEXT} tối nay`, {
+      answers: [
+        { ...base, turn_relation: { type: 'choice', choice: 'new_request' } },
+        {
+          ...base,
+          action: { type: 'choice', choice: 'none' },
+          'mood:romantic': { type: 'noul', noul: 0.9 },
+        },
+      ],
+      history: [oldUser, resultsTurn],
+      archive: [oldUser],
+    });
+    expect(r.trace.reconcile).toBeUndefined();
+    expect(r.searches).toHaveLength(1);
+  });
+
+  it('a short refinement after results continues the request (answer_pending)', async () => {
+    const r = await turn('cho 4 người nhé', {
+      answers: { ...base, turn_relation: { type: 'choice', choice: 'answer_pending' } },
+      history: [oldUser, resultsTurn],
+      archive: [oldUser],
+    });
+    expect(r.jevCalls).toHaveLength(1);
+    expect(r.jevRequests[0]).toContain(OLD_TEXT);
+    expect(r.trace.turnRelation).toEqual({ source: 'jev', relation: 'answer_pending' });
+    expect(r.trace.reconcile).toBeUndefined();
+  });
+
+  it('a guide question after results is not reconciled', async () => {
+    const r = await turn('Làm sao để mời bạn?', {
+      answers: [
+        { ...base, turn_relation: { type: 'choice', choice: 'new_request' } },
+        {
+          ...base,
+          assistant_intent: { type: 'choice', choice: 'gogo_guide' },
+          action: { type: 'choice', choice: 'none' },
+          category: { type: 'choice', choice: 'none' },
+        },
+      ],
+      history: [oldUser, resultsTurn],
+      archive: [oldUser],
+    });
+    // A how-to question is answered as itself: nothing to keep or drop.
+    expect(r.trace.reconcile).toBeUndefined();
+    expect(fields(r)).not.toContain('reconcile_mode');
+    expect(r.frames.some((f) => f.type === 'step' && f.step === 'reading_guide')).toBe(true);
+  });
+
+  it('Jev down (as in integration IT-1): a different room request asks first, then "new" makes the card', async () => {
+    const first = await turn(
+      'tạo kèo đi nhà hàng thứ 7 với 4 người ở Phường Ba Đình, Thành phố Hà Nội',
+      {
+        answers: null,
+      },
+    );
+    expect(first.proposal?.kind).toBe('create_room');
+    const u1: HistoryRow = {
+      ...said('tạo kèo đi nhà hàng thứ 7 với 4 người ở Phường Ba Đình, Thành phố Hà Nội'),
+      id: 'user-0',
+    };
+    const changed = await turn('tạo kèo cà phê với 4 người ở Phường Ba Đình, Thành phố Hà Nội', {
+      answers: null,
+      history: [u1, replyOf(first)],
+      archive: [u1],
+    });
+    expect(changed.trace.turnRelation).toEqual({ source: 'heuristic', relation: 'new_request' });
+    expect(fields(changed)).toEqual(['reconcile_mode']);
+    expect(changed.proposal).toBeNull();
+    const u2: HistoryRow = {
+      ...said('tạo kèo cà phê với 4 người ở Phường Ba Đình, Thành phố Hà Nội'),
+      id: 'user-1',
+    };
+    const fresh = await turn(changed.followUps[0]!.options[0]!.text, {
+      answers: null,
+      history: [u1, replyOf(first), u2, replyOf(changed)],
+      archive: [u1, u2],
+    });
+    expect(fresh.proposal?.kind).toBe('create_room');
+    expect(cards(fresh)).toBeGreaterThan(0);
   });
 });
