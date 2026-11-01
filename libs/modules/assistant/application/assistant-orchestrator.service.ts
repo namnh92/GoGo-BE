@@ -27,6 +27,7 @@ import {
 } from '../../search/domain/intent';
 import { createRoomSchema } from '../../rooms/presentation/dtos';
 import {
+  ASSISTANT_ACTIONS,
   ASSISTANT_THRESHOLDS,
   buildAssistantDecisionRequest,
   buildRelevanceRequest,
@@ -49,7 +50,24 @@ import {
   type HistoryTurn,
   type Origin,
 } from '../domain/grounding';
-import { COPY_KEYS, type AssistantProposalValue } from '../domain/assistant.types';
+import {
+  COPY_KEYS,
+  type AssistantFollowUpGroup,
+  type AssistantProposalValue,
+} from '../domain/assistant.types';
+import {
+  RECONCILE_MODE_CHOICES,
+  choicesFor,
+  diffRequests,
+  hasDetails,
+  isReconcileState,
+  itemQuestion,
+  mergeRequests,
+  modeQuestion,
+  type IntentKeys,
+  type ReconcileState,
+  type RequestSnapshot,
+} from '../domain/reconcile';
 import { PROPOSAL_TTL_MS, validateProposalValues } from '../domain/proposal';
 import { vnDayStart } from '../domain/limits';
 import { AssistantRepository } from '../infrastructure/assistant.repository';
@@ -110,6 +128,12 @@ type ContextTurn = HistoryTurn & {
   episode?: EpisodeMessage[];
   /** #738: this turn asked "are you continuing?"; the two chip texts, in order. */
   relationOptions?: { proceed: string; fresh: string } | undefined;
+  /** The classification keys this assistant turn answered with (its trace). */
+  intentKeys?: IntentKeys | undefined;
+  /** #738 follow-up: a "new or update?" walk is open on this turn. */
+  reconcile?: ReconcileState | undefined;
+  /** …and the texts of the chips it offered, in choice order. */
+  reconcileOptions?: string[] | undefined;
 };
 
 /** How the episode walk treats the newest message's link to the question before it. */
@@ -128,6 +152,11 @@ type Episode = {
   /** The current message's own area phrase (the newest decides, D-6). */
   latestAreaText: string | null;
   previousRequest: string | null;
+  /**
+   * #738 follow-up: the messages the area is resolved from, when not all of
+   * them — a reconciled request keeps the area of the side the person chose.
+   */
+  areaMessages?: EpisodeMessage[];
 };
 
 /** #738: the episode Jev is asked about, and what is still open about it. */
@@ -137,7 +166,85 @@ type ResolvedEpisode = {
   pending: PendingClarification | null;
   /** The person already said, with a "are you continuing?" chip. */
   person: TurnRelation | null;
+  /** A chip answering a "new or update?" question: index into its choices. */
+  reconcile?: { state: ReconcileState; choice: number } | undefined;
+  /** The keys the earlier request was classified with (the previous turn). */
+  previousIntent?: IntentKeys | undefined;
 };
+
+/** #738 follow-up: what a reconciling turn asks, and the state it stores. */
+type ReconcileAsk = { text: string; group: AssistantFollowUpGroup; state: ReconcileState };
+
+/** The episode and decision a turn goes on with, once its relation is settled. */
+type Settled = {
+  episode: Episode;
+  decision: AssistantDecision;
+  relation: TurnRelation | null;
+  /** A "new or update?" question (or one of its items) this turn asks instead. */
+  ask: ReconcileAsk | null;
+  /** The decision is the person's joined answers, not a decision call. */
+  reconciled: boolean;
+};
+
+/** The classification keys a decision carries, as the trace keeps them. */
+function keysOf(decision: AssistantDecision): IntentKeys {
+  const c = decision.classification;
+  return {
+    intent: decision.intent,
+    action: decision.action,
+    category: c.category.key,
+    occasion: c.occasion.key,
+    moods: c.moods.map((m) => m.key),
+    settings: c.settings.map((m) => m.key),
+    model: decision.model,
+  };
+}
+
+/**
+ * #738 follow-up: the decision a reconciled request goes on with — the
+ * person chose each value; the keys are the ones Jev answered on the turns
+ * that classified the two requests. No model is asked again.
+ */
+function reconciledDecision(
+  snapshot: RequestSnapshot,
+  keys: { action: string; model: string | null },
+): AssistantDecision {
+  const scored = (list: string[]) => list.map((key) => ({ key, probability: 1 }));
+  return {
+    source: 'decision_model',
+    model: keys.model,
+    fallbackReason: null,
+    intent: 'recommend_places',
+    intentProbability: null,
+    action: (ASSISTANT_ACTIONS as readonly string[]).includes(keys.action)
+      ? (keys.action as AssistantDecision['action'])
+      : 'none',
+    unverifiedAttribute: null,
+    classification: {
+      source: 'decision_model',
+      model: keys.model,
+      fallbackReason: null,
+      facts: snapshot.facts,
+      inScope: { value: true, probability: null },
+      category: { key: snapshot.category },
+      occasion: { key: snapshot.occasion },
+      moods: scored(snapshot.moods),
+      settings: scored(snapshot.settings),
+      clarification: { needed: false, reasons: [] },
+    },
+  };
+}
+
+const isIntentKeys = (v: unknown): v is IntentKeys =>
+  !!v &&
+  typeof v === 'object' &&
+  typeof (v as IntentKeys).intent === 'string' &&
+  Array.isArray((v as IntentKeys).moods) &&
+  Array.isArray((v as IntentKeys).settings);
+
+/** A place request worth reconciling against: it was about places or a room. */
+const isPlaceRequest = (k: IntentKeys | undefined) =>
+  !!k && (k.intent === 'recommend_places' || k.action === 'create_room');
 
 /** #738: the two chip texts of a "are you continuing?" group, in order. */
 function relationOptionsOf(
@@ -228,37 +335,60 @@ export class AssistantOrchestrator {
     // #738: with a clarification pending, the request is built as if the
     // newest message answered it, and Jev says in the same call whether it
     // does; the episode is settled from that answer, not before it.
-    const resolved = await guard.run(() => this.resolveEpisode(input, history, currentId));
-    const candidate = resolved.candidate;
+    let resolved = await guard.run(() => this.resolveEpisode(input, history, currentId));
+
+    // #738 follow-up: a chip answering "new or update?" or one of its items.
+    // Asking and joining are deterministic — no Jev call on those turns.
+    let settled: Settled | null = null;
+    if (resolved.reconcile) {
+      const step = await guard.run(() => this.reconcileStep(input, resolved, labels));
+      if (step.kind === 'fresh') {
+        resolved = { candidate: step.episode, pending: null, person: null };
+      } else {
+        settled = {
+          episode: step.episode,
+          decision: step.decision,
+          relation: null,
+          ask: step.kind === 'ask' ? step.ask : null,
+          reconciled: true,
+        };
+      }
+    }
 
     // ── Jev decision 1 ───────────────────────────────────────────────────────
-    const answered = await guard.run(() =>
-      this.decide(
-        input,
-        joinRequest(candidate.texts),
-        candidate.facts,
-        candidate.previousRequest,
-        taxonomy,
-        guard.signal,
-        remaining(),
-        state,
-        resolved.pending,
-      ),
-    );
-    const settled = await guard.run(() =>
-      this.settleRelation(
-        input,
-        history,
-        currentId,
-        resolved,
-        answered,
-        taxonomy,
-        state,
-        guard.signal,
-        remaining,
-      ),
-    );
+    if (!settled) {
+      const candidate = resolved.candidate;
+      const pending = resolved.pending;
+      const answered = await guard.run(() =>
+        this.decide(
+          input,
+          joinRequest(candidate.texts),
+          candidate.facts,
+          candidate.previousRequest,
+          taxonomy,
+          guard.signal,
+          remaining(),
+          state,
+          pending,
+        ),
+      );
+      const current = resolved;
+      settled = await guard.run(() =>
+        this.settleRelation(
+          input,
+          history,
+          currentId,
+          current,
+          answered,
+          taxonomy,
+          state,
+          guard.signal,
+          remaining,
+        ),
+      );
+    }
     const { episode, decision, relation } = settled;
+    if (settled.ask) state.trace.reconcile = settled.ask.state;
     const { facts, dayPart } = episode;
     const requestText = joinRequest(episode.texts);
     if (episode.messages.every((message) => message.id)) {
@@ -281,6 +411,7 @@ export class AssistantOrchestrator {
     state.trace.intent = {
       source: decision.source,
       model: decision.model,
+      ...(settled.reconciled ? { reconciled: true } : {}),
       fallbackReason: decision.fallbackReason,
       intent: decision.intent,
       intentProbability: decision.intentProbability,
@@ -292,10 +423,13 @@ export class AssistantOrchestrator {
       clarification: c.clarification.reasons,
       unverifiedAttribute: decision.unverifiedAttribute,
     };
-    this.metrics.increment('assistant_decisions_total', {
-      source: decision.source,
-      intent: decision.intent,
-    });
+    // A reconciled turn made no decision call: its answer is the person's.
+    if (!settled.reconciled) {
+      this.metrics.increment('assistant_decisions_total', {
+        source: decision.source,
+        intent: decision.intent,
+      });
+    }
 
     let route: AssistantRoute = decision.intent;
     // `plan_help` is about a plan the person opened; without one, a question
@@ -333,6 +467,12 @@ export class AssistantOrchestrator {
       clarification.length = 0;
       clarification.push('turn_relation');
     }
+    if (settled.ask) {
+      // #738 follow-up: one question per turn; nothing searched or prepared.
+      route = 'clarify';
+      clarification.length = 0;
+      clarification.push('reconcile');
+    }
     const unverifiable =
       decision.unverifiedAttribute !== null &&
       decision.unverifiedAttribute >= ASSISTANT_THRESHOLDS.unverifiedAttributeMin;
@@ -353,6 +493,7 @@ export class AssistantOrchestrator {
       clarification,
       unverifiableRequirement: unverifiable,
       conflicting,
+      ...(settled.ask ? { reconcile: { text: settled.ask.text, group: settled.ask.group } } : {}),
     };
 
     // ── retrieval (authorized, deterministic) ───────────────────────────────
@@ -376,10 +517,18 @@ export class AssistantOrchestrator {
       }
       const resolution: AreaResolution = await guard.run(() =>
         this.areas.resolve(
-          episode.texts.join('\n'),
+          (episode.areaMessages ?? episode.messages).map((m) => m.text).join('\n'),
           facts.areaText,
-          { text: input.text, areaText: episode.latestAreaText },
-          episode.messages.map((m) => ({ ...m, areaText: parseIntentFacts(m.text).areaText })),
+          episode.areaMessages
+            ? {
+                text: episode.areaMessages[episode.areaMessages.length - 1]?.text ?? '',
+                areaText: episode.latestAreaText,
+              }
+            : { text: input.text, areaText: episode.latestAreaText },
+          (episode.areaMessages ?? episode.messages).map((m) => ({
+            ...m,
+            areaText: parseIntentFacts(m.text).areaText,
+          })),
         ),
       );
       area = resolution.kind === 'resolved' ? resolution.value : null;
@@ -668,10 +817,23 @@ export class AssistantOrchestrator {
           ? 'preference'
           : undefined,
       relationOptions: relationOptionsOf(r.follow_ups),
+      ...(r.role === 'assistant' && isIntentKeys(r.trace?.intent)
+        ? { intentKeys: r.trace!.intent as IntentKeys }
+        : {}),
+      ...(r.role === 'assistant' && isReconcileState(r.trace?.reconcile)
+        ? {
+            reconcile: r.trace!.reconcile as ReconcileState,
+            reconcileOptions: r.follow_ups
+              ?.find((g) => g.field.startsWith('reconcile_'))
+              ?.options?.map((o) => o.text),
+          }
+        : {}),
     }));
     const refs = rows[rows.length - 1]?.trace?.episodeRefs;
     const previous = history[history.length - 1];
-    if (previous?.role === 'assistant' && previous.askedTexts && isEpisodeRefs(refs)) {
+    // #738 follow-up: the earlier request is read back whether or not that
+    // turn asked something — a new request after results is compared too.
+    if (previous?.role === 'assistant' && isEpisodeRefs(refs)) {
       const sources = await this.repo.episodeMessages(
         input.conversationId,
         refs.map((r) => r.id),
@@ -841,6 +1003,20 @@ export class AssistantOrchestrator {
   ): Promise<ResolvedEpisode> {
     const previous = history[history.length - 1];
     const typed = input.text.trim();
+    const previousIntent = previous?.role === 'assistant' ? previous.intentKeys : undefined;
+    // #738 follow-up: a chip of the open "new or update?" walk.
+    if (previous?.role === 'assistant' && previous.reconcile && previous.reconcileOptions) {
+      const choice = previous.reconcileOptions.indexOf(typed);
+      if (choice >= 0) {
+        return {
+          candidate: await this.episodeFor(input.text, history, currentId, 'single'),
+          pending: null,
+          person: null,
+          reconcile: { state: previous.reconcile, choice },
+          previousIntent,
+        };
+      }
+    }
     if (previous?.role === 'assistant' && previous.relationOptions && previous.episode?.length) {
       const { proceed, fresh } = previous.relationOptions;
       const choice = typed === proceed ? 'proceed' : typed === fresh ? 'fresh' : null;
@@ -855,6 +1031,7 @@ export class AssistantOrchestrator {
           ),
           pending: null,
           person: choice === 'proceed' ? 'answer_pending' : 'new_request',
+          previousIntent,
         };
       }
     }
@@ -869,13 +1046,176 @@ export class AssistantOrchestrator {
           candidate: merged,
           pending: { question: previous.text, latest: input.text },
           person: null,
+          previousIntent,
         };
       }
+    }
+    // #738 follow-up (owner 2026-11-01): after a place request that asked
+    // nothing — results shown — the newest message is weighed against it too.
+    if (
+      previous?.role === 'assistant' &&
+      !previous.askedTexts &&
+      previous.episode?.length &&
+      isPlaceRequest(previousIntent)
+    ) {
+      const own = parseIntentFacts(input.text);
+      const merged = await this.episodeOf(
+        [...previous.episode, { id: currentId, text: input.text, allowBareArea: false }],
+        own.areaText,
+        null,
+      );
+      return {
+        candidate: merged,
+        pending: { question: previous.text, latest: input.text },
+        person: null,
+        previousIntent,
+      };
     }
     return {
       candidate: await this.episodeFor(input.text, history, currentId),
       pending: null,
       person: null,
+      previousIntent,
+    };
+  }
+
+  /**
+   * #738 follow-up — a step of the "new or update?" walk. The first chip
+   * starts over (the new message alone, classified as usual) or keeps the
+   * earlier details; each item chip records one answer; after the last, the
+   * two requests are joined from the answers. Messages are read back by id.
+   */
+  private async reconcileStep(
+    input: TurnInput,
+    resolved: ResolvedEpisode,
+    labels: ReadonlyMap<string, string>,
+  ): Promise<
+    | { kind: 'fresh'; episode: Episode }
+    | { kind: 'ask'; episode: Episode; decision: AssistantDecision; ask: ReconcileAsk }
+    | { kind: 'final'; episode: Episode; decision: AssistantDecision }
+  > {
+    const { state: st, choice } = resolved.reconcile!;
+    const ids = [...st.oldRefs.map((r) => r.id), st.newRef.id];
+    const rows = await this.repo.episodeMessages(input.conversationId, ids);
+    const byId = new Map(rows.map((row) => [row.id, row.text]));
+    // A message gone (deleted, expired): nothing to join — the chip starts over.
+    if (!ids.every((id) => byId.has(id))) return { kind: 'fresh', episode: resolved.candidate };
+    const oldMsgs: EpisodeMessage[] = st.oldRefs.map((r) => ({
+      id: r.id,
+      text: byId.get(r.id)!,
+      allowBareArea: r.allowBareArea,
+    }));
+    const newMsg: EpisodeMessage = {
+      id: st.newRef.id,
+      text: byId.get(st.newRef.id)!,
+      allowBareArea: st.newRef.allowBareArea,
+    };
+    const oldEp = await this.episodeOf(
+      oldMsgs,
+      parseIntentFacts(oldMsgs[oldMsgs.length - 1]!.text).areaText,
+      null,
+    );
+    const newEp = await this.episodeOf([newMsg], parseIntentFacts(newMsg.text).areaText, null);
+    const snap = (ep: Episode, k: IntentKeys): RequestSnapshot => ({
+      facts: ep.facts,
+      dayPart: ep.dayPart,
+      category: k.category,
+      occasion: k.occasion,
+      moods: k.moods,
+      settings: k.settings,
+    });
+    const old = snap(oldEp, st.oldIntent);
+    const fresh = snap(newEp, st.newIntent);
+    const choices = { ...st.choices };
+    let next: number;
+    if (st.asked === null) {
+      if (RECONCILE_MODE_CHOICES[choice] !== 'update') return { kind: 'fresh', episode: newEp };
+      next = 0;
+    } else {
+      const item = st.items[st.asked]!;
+      const answer = choicesFor(item)[choice];
+      if (answer) choices[item.field] = answer;
+      next = st.asked + 1;
+    }
+    const lang = input.locale === 'en' ? 'en' : 'vi';
+    if (next < st.items.length) {
+      const question = itemQuestion(st.items[next]!, old, fresh, labels, lang);
+      return {
+        kind: 'ask',
+        episode: newEp,
+        decision: reconciledDecision(fresh, { action: 'none', model: st.newIntent.model }),
+        ask: { ...question, state: { ...st, asked: next, choices } },
+      };
+    }
+    const merged = mergeRequests(old, fresh, choices);
+    const messages = [...oldMsgs, newMsg];
+    return {
+      kind: 'final',
+      episode: {
+        texts: messages.map((m) => m.text),
+        messages,
+        facts: merged.snapshot.facts,
+        dayPart: merged.snapshot.dayPart,
+        latestAreaText: merged.snapshot.facts.areaText,
+        previousRequest: null,
+        areaMessages: merged.area === 'old' ? oldMsgs : merged.area === 'new' ? [newMsg] : [],
+      },
+      decision: reconciledDecision(merged.snapshot, {
+        action: st.newIntent.action !== 'none' ? st.newIntent.action : st.oldIntent.action,
+        model: st.newIntent.model,
+      }),
+    };
+  }
+
+  /**
+   * #738 follow-up — whether a new request should ask "new or update?": the
+   * earlier request was about places and said something, and the two differ
+   * in something only the person can settle. Ids are required to read the
+   * messages back on the next turns.
+   */
+  private async reconcileAskFor(
+    input: TurnInput,
+    resolved: ResolvedEpisode,
+    single: Episode,
+    fresh: AssistantDecision,
+  ): Promise<ReconcileAsk | null> {
+    // Both must be about places: a how-to question or chit-chat after results
+    // is answered as itself, with nothing to keep or drop.
+    if (!isPlaceRequest(resolved.previousIntent) || !isPlaceRequest(keysOf(fresh))) return null;
+    const oldMsgs = resolved.candidate.messages.slice(0, -1);
+    const newMsg = single.messages[0];
+    if (oldMsgs.length === 0 || !newMsg?.id || !oldMsgs.every((m) => m.id)) return null;
+    const oldEp = await this.episodeOf(
+      oldMsgs,
+      parseIntentFacts(oldMsgs[oldMsgs.length - 1]!.text).areaText,
+      null,
+    );
+    const oldKeys = resolved.previousIntent!;
+    const newKeys = keysOf(fresh);
+    const snapshot = (ep: Episode, k: IntentKeys): RequestSnapshot => ({
+      facts: ep.facts,
+      dayPart: ep.dayPart,
+      category: k.category,
+      occasion: k.occasion,
+      moods: k.moods,
+      settings: k.settings,
+    });
+    const old = snapshot(oldEp, oldKeys);
+    if (!hasDetails(old)) return null;
+    const items = diffRequests(old, snapshot(single, newKeys));
+    if (items.length === 0) return null;
+    const question = modeQuestion(input.locale === 'en' ? 'en' : 'vi');
+    return {
+      ...question,
+      state: {
+        oldRefs: oldMsgs.map((m) => ({ id: m.id!, allowBareArea: m.allowBareArea })),
+        newRef: { id: newMsg.id, allowBareArea: newMsg.allowBareArea },
+        oldIntent: oldKeys,
+        newIntent: newKeys,
+        items,
+        asked: null,
+        choices: {},
+      },
     };
   }
 
@@ -897,16 +1237,23 @@ export class AssistantOrchestrator {
     state: TurnState,
     signal: AbortSignal,
     remaining: () => number,
-  ): Promise<{ episode: Episode; decision: AssistantDecision; relation: TurnRelation | null }> {
+  ): Promise<Settled> {
+    const done = (episode: Episode, d: AssistantDecision, relation: TurnRelation | null) => ({
+      episode,
+      decision: d,
+      relation,
+      ask: null,
+      reconciled: false,
+    });
     const record = (source: 'jev' | 'heuristic' | 'person', relation: TurnRelation) => {
       state.trace.turnRelation = { source, relation };
       this.metrics.increment('assistant_turn_relations_total', { source, relation });
     };
     if (resolved.person) {
       record('person', resolved.person);
-      return { episode: resolved.candidate, decision, relation: resolved.person };
+      return done(resolved.candidate, decision, resolved.person);
     }
-    if (!resolved.pending) return { episode: resolved.candidate, decision, relation: null };
+    if (!resolved.pending) return done(resolved.candidate, decision, null);
 
     let relation: TurnRelation;
     let source: 'jev' | 'heuristic';
@@ -919,9 +1266,9 @@ export class AssistantOrchestrator {
       source = 'heuristic';
     }
     record(source, relation);
-    if (relation === 'answer_pending') return { episode: resolved.candidate, decision, relation };
+    if (relation === 'answer_pending') return done(resolved.candidate, decision, relation);
     if (relation === 'unclear') {
-      return { episode: resolved.candidate, decision: { ...decision, action: 'none' }, relation };
+      return done(resolved.candidate, { ...decision, action: 'none' }, relation);
     }
     const single = await this.episodeFor(input.text, history, currentId, 'single');
     const text = joinRequest(single.texts);
@@ -938,17 +1285,32 @@ export class AssistantOrchestrator {
         remaining(),
         state,
       );
-      return { episode: single, decision: fresh, relation };
+      return this.withReconcile(input, resolved, single, fresh, relation);
     }
     // Jev did not answer the first call: the deterministic path, on the new text.
+    const fallback = fallbackAssistantDecision(
+      text,
+      fallbackIntent(text, single.facts, taxonomy, decision.fallbackReason ?? 'provider_error'),
+      input.context?.kind ?? null,
+    );
+    return this.withReconcile(input, resolved, single, fallback, relation);
+  }
+
+  /** A new request goes on, or first asks "new or update?" (owner 2026-11-01). */
+  private async withReconcile(
+    input: TurnInput,
+    resolved: ResolvedEpisode,
+    single: Episode,
+    fresh: AssistantDecision,
+    relation: TurnRelation,
+  ): Promise<Settled> {
+    const ask = await this.reconcileAskFor(input, resolved, single, fresh);
     return {
       episode: single,
-      decision: fallbackAssistantDecision(
-        text,
-        fallbackIntent(text, single.facts, taxonomy, decision.fallbackReason ?? 'provider_error'),
-        input.context?.kind ?? null,
-      ),
+      decision: ask ? { ...fresh, action: 'none' } : fresh,
       relation,
+      ask,
+      reconciled: false,
     };
   }
 

@@ -133,12 +133,12 @@ export function buildAssistantDecisionRequest(
     questions.turn_relation = {
       type: 'choice',
       instructions:
-        'GoGo, a date and group-outing planning app, asked `pending_question` and the person then wrote `latest_message`. `request` is the earlier request with `latest_message` appended, as it would read if the message answered the question. How does `latest_message` relate to that earlier request?',
+        'GoGo, a date and group-outing planning app, last replied `pending_question` (it may have asked something, or shown results) and the person then wrote `latest_message`. `request` is the earlier request with `latest_message` appended, as it would read if the message continued it. How does `latest_message` relate to that earlier request?',
       criteria: {
         answer_pending:
-          'It answers the question or adds detail to the same request: a kind of place or activity, an area, a time, a number of people, a budget or a preference (for example "cho mình quán cà phê" after being asked what to do).',
+          'It answers the question or adds one missing detail to the same request: a kind of place or activity, an area, a time, a number of people, a budget or a preference (for example "cho mình quán cà phê" after being asked what to do, or "rẻ hơn chút" after results).',
         new_request:
-          'It drops the earlier request or asks for something different instead (for example "thôi, tìm cà phê ở Hà Nội"), or it asks how to use GoGo.',
+          'It drops the earlier request or asks for something different instead (for example "thôi, tìm cà phê ở Hà Nội"), states a complete request of its own (a kind of place with its own details, for example "Cho tôi quán cà phê ngoài trời cho 3 người"), or asks how to use GoGo.',
         unclear:
           'It could be either; a planner would have to ask the person whether they are continuing.',
       },

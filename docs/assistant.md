@@ -596,6 +596,32 @@ request from Astra's proposal (`astra-suggest-assistant-cms-rules.out` §6).
   DEV ledger (`jev_cost_usd` of turns with `trace.jevDecisionCalls = 2`).
 - AC-4 (DEV live: the two sentences) is not covered by unit tests; it needs a deploy.
 
+### A new request asks "new or update?" (GoGo-BE#738 follow-up, owner 2026-11-01)
+
+- **When.** Jev judges the newest message a `new_request`, the earlier request (the previous
+  assistant turn's episode) and the new one are both about places, the earlier one said something,
+  and the two differ in something only the person can settle. The relation is now also asked after
+  a turn that showed results without asking anything (owner: "every message judged a new request"),
+  so a short refinement after results ("cho 4 người nhé") continues the request instead of starting
+  a fresh one.
+- **First question:** "Tạo yêu cầu mới" / "Giữ thông tin cũ và cập nhật". New → the new message
+  alone, classified as usual. Update → **one question per turn**, in a fixed order (kind of place,
+  wishes, party size, area, time, budget, occasion):
+  - said differently in both → "Bạn muốn cho 3 người? (trước đó là 2 người)" — new value first;
+  - wishes that differ → "Bạn muốn ngoài trời hay lãng mạn?" — new, old, or both;
+  - said only in the earlier request → "Bạn vẫn muốn ở Hà Nội?" — keep or drop.
+    Said the same in both, or only in the new request: kept without asking (owner decision).
+- **Joined request.** After the last answer the two are joined from the answers (`domain/reconcile.ts`,
+  pure): facts and taxonomy keys per choice, the area resolved only from the side chosen (a dropped
+  area is asked again). The decision is the person's — keys Jev answered on the two classifying
+  turns — so **no Jev decision call** runs on any reconciling turn (the relevance call may, when it
+  searches). The trace marks it `intent.reconciled`; `assistant_decisions_total` is not counted.
+- **Stored state** (`trace.reconcile` on the asking turn): message ids, taxonomy keys, field names
+  and choices — never message text. Messages are read back by id each step; one gone (deleted,
+  expired) starts over from the chip. A typed message instead of a chip leaves the walk and is
+  handled as a message under a question (#738).
+- Questions and chips are fixed wording; labels come from the CMS taxonomy, areas as typed.
+
 ### Guide coverage and publish revision (GoGo-BE#736)
 
 - **One retrieval path.** `GuideDocumentsService.retrieve` (FTS prefilter over published versions,
