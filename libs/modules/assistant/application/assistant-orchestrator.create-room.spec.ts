@@ -1345,6 +1345,33 @@ describe('#738 shape §5', () => {
     });
   });
 
+  describe('A-F-10 a how-to question mid-walk', () => {
+    it('answers as itself and keeps the suspended walk; a bare answer then resumes it', async () => {
+      const c = await opened();
+      const prefs = await c.step('Giữ thông tin cũ và cập nhật');
+      const party = await c.step(prefs.followUps[0]!.options[0]!.text);
+      expect(fields(party)).toEqual(['reconcile_partySize']);
+      const guide = await c.step('Làm sao để mời bạn?', {
+        answers: [
+          relation('new_request'),
+          {
+            ...base,
+            assistant_intent: { type: 'choice', choice: 'gogo_guide' },
+            action: { type: 'choice', choice: 'none' },
+            category: { type: 'choice', choice: 'none' },
+          },
+        ],
+      });
+      expect(guide.frames.some((f) => f.type === 'step' && f.step === 'reading_guide')).toBe(true);
+      expect(stored(guide).status).toBe('suspended');
+      expect(stored(guide).values.partySize!.pending!.map((p) => p.value)).toEqual([3, 2]);
+      const back = await c.step('4 người');
+      expect(back.jevCalls).toHaveLength(0);
+      expect(fields(back)).toEqual(['reconcile_area']);
+      expect(stored(back).values.partySize!.value).toMatchObject({ value: 4, provenance: 'typed' });
+    });
+  });
+
   describe('D-15/D-16 repeated interruption', () => {
     it('suspended → new_request → keep: the pair is asked again with the new value in front', async () => {
       const c = await opened();
@@ -1599,6 +1626,22 @@ describe('#738 shape §5', () => {
       }
     });
 
+    it('F-07 the last clause naming an area decides, in the order written', async () => {
+      const c1 = await walked();
+      const denied = await c1.step('ở Hồ Chí Minh, không ở Hồ Chí Minh', {
+        answers: relation('answer_pending'),
+      });
+      // Rejected elsewhere with nothing asserted: Hà Nội is asked again, never replaced.
+      const held = stored(denied).values.area!;
+      expect((held.value ?? held.pending![0])!.value).toMatchObject({ label: 'Hà Nội' });
+      expect(JSON.stringify(held)).not.toContain('Hồ Chí Minh');
+      const c2 = await walked();
+      const asserted = await c2.step('không ở Hồ Chí Minh, ở Hồ Chí Minh', {
+        answers: relation('answer_pending'),
+      });
+      expect(stored(asserted).values.area!.value!.value).toMatchObject({ label: 'Hồ Chí Minh' });
+    });
+
     it('F-01 a bare rejected area that is the current one is asked again', async () => {
       const c = await walked();
       const r = await c.step('không Hà Nội', { answers: relation('answer_pending') });
@@ -1622,10 +1665,28 @@ describe('#738 shape §5', () => {
     it('an old area that never resolved is no item; its question fires after the join', async () => {
       const c = await opened('cà phê lãng mạn ở Sài Gòn', 'cà phê ngoài trời');
       expect(stored(c.first).items.map((i) => i.field)).toEqual(['preferences']);
-      expect(stored(c.first).values.area!.value!.value).toMatchObject({ kind: 'scope_choice' });
+      // A-F-09: the status and the dataset units travel in the state, no message ids.
+      const area = stored(c.first).values.area!.value!.value as Record<string, unknown>;
+      expect(area).toMatchObject({ kind: 'scope_choice', typed: true });
+      expect((area.scope as { province: { code: string } }).province.code).toBe('79');
+      expect(JSON.stringify(area)).not.toContain('messageIds');
       const prefs = await c.step('Giữ thông tin cũ và cập nhật');
+      // The source text changing afterwards moves nothing: the question is from the state.
+      c.archive[0]!.text = 'cà phê lãng mạn ở Hà Nội';
       const done = await c.step(prefs.followUps[0]!.options[0]!.text);
       expect(fields(done)).toContain('area_scope');
+      expect(done.searches).toHaveLength(0);
+      const scope = done.followUps.find((g) => g.field === 'area_scope')!;
+      expect(scope.options.map((o) => o.label).join(' ')).toContain('Sài Gòn');
+    });
+
+    it('A-F-01 "không tối" beside an earlier Saturday is no hour', async () => {
+      const c = await opened('cà phê lãng mạn thứ 7', 'cà phê lãng mạn, không tối');
+      expect(stored(c.first).items).toEqual([{ field: 'time', kind: 'old_only' }]);
+      expect(stored(c.first).values.time!.pending![0]!.value).toEqual({
+        timeHint: 'saturday',
+        dayPart: null,
+      });
     });
 
     it('"thứ 7 tối" vs "thứ 7" is a change of time', async () => {

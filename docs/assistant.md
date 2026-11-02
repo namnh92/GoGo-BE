@@ -604,10 +604,10 @@ by owner order O-7 (a), reviewed on the PR. Source of the mechanism: `astra-sugg
   that no longer fits is skipped and the turn goes on deterministically for it (second
   classification → deterministic, relevance → unranked, Haiku → deterministic reply with no fallback
   notice), with `trace.budgetGuard` and `assistant_fallbacks_total{reason: budget_guard}`.
-- **`pnpm assistant:cost-bound`** computes `C`: the real worst-case requests at their caps, `state.resolved`
+- **`pnpm assistant:cost-bound`** computes `C` — a calibrated worst-case estimate, not a proof over every string under the caps (Astra on #745): the real worst-case requests at their caps, `state.resolved`
   included, counted by the provider that bills them (a paid probe, owner 2026-11-02: Jev has no public
   tokenizer), per-direction list prices, a 25 % margin that holds the 5 % BYOK fee. A missing count
-  fails the run. Jev's output term is zero because its listed completion price is $0; the Decisions API
+  fails the run. The run also checks the code's `TURN_CALL_SHARE` and the committed `eval/cost-bound.calibration.json` (taxonomy counts, prices, caps, shares) against itself and exits non-zero on drift. What bounds spend is the reservation: a call that exceeds its share overspends by its own excess, once. Jev's output term is zero because its listed completion price is $0; the Decisions API
   takes no `max_tokens`, so that is a price fact, not a cap. The caps it counts on are enforced where the request is built: the message at the send contract's 2000, place names and guide headings at 200, excerpts at 1200. Haiku's output is capped by `ASSISTANT_MAX_OUTPUT_TOKENS`.
 - AC-4 (DEV live: the two sentences) is not covered by unit tests; it needs a deploy.
 
@@ -644,7 +644,7 @@ by owner order O-7 (a), reviewed on the PR. Source of the mechanism: `astra-sugg
   "Giá trị khác…" opening the next. Never truncated, never defaulted. A bare typed value settles the
   field at any stage.
 - **Area and time per side (D-17).** Area is the resolver's result with its status
-  (`resolved|none|ambiguous|scope_choice|absent`), compared by codes and worded with the dataset's
+  (`resolved|none|ambiguous|scope_choice|absent`), the dataset units of a scope choice and a `typed` flag stored with it (nothing is re-parsed or re-resolved after the join), compared by codes and worded with the dataset's
   label. It is an item only when both sides resolved and differ, or only the old side resolved. An old
   area that never resolved is not an item and is not dropped: its normal clarification fires after the
   join; legacy districts are never widened. Time is `{timeHint, dayPart}`, so "thứ 7 tối" vs "thứ 7"
@@ -664,7 +664,7 @@ by owner order O-7 (a), reviewed on the PR. Source of the mechanism: `astra-sugg
   into clauses; a fact in a clause holding a negation marker anywhere (`không`, `không phải`, `chẳng`,
   `đừng`, `bỏ`, `khỏi`, `hết`, `thôi … nữa`, typed with or without marks; "không gian"/"không khí" are
   nouns) or inside quotes asserts nothing. A rejected value re-asks the field with what remains; with no
-  asserted value beside it, a rejection of anything else re-asks too and the current value stays a chip. Clause order decides within a message; a rejected alternative is not offered again; with nothing left the field stays open and no model answer fills it. Areas follow the same rule: only asserting clauses are read for one.
+  asserted value beside it, a rejection of anything else re-asks too and the current value stays a chip. Clause order decides within a message; a rejected alternative is not offered again; with nothing left the field stays open and no model answer fills it. Areas follow the same rule: only asserting clauses are read for one. The last clause naming an area decides, in the order written; the lexical `stated` check reads asserting text only, so a quoted term is `inferred`.
   Over-rejection costs one question.
 - **A typed message mid-walk (D-16).** A bare value for the open item answers it ("4 người", "cho 4
   người nhé"; particles `cho`, `cho mình`, `cho tôi`, `mình`, `tôi`, `là`, `thì`, `nhé`, `nha`, `ạ`,
@@ -673,8 +673,7 @@ by owner order O-7 (a), reviewed on the PR. Source of the mechanism: `astra-sugg
   `answer_pending` applies what it asserts and resumes at the first pending item (at "new or update?"
   when that was open); `new_request` asks "new or update?" against the joined-so-far request; `unclear`
   asks, and "Tiếp tục yêu cầu trước" restores the same question and queue with no model call, while the
-  unclear message's values are not applied. A non-place message (a how-to question) answers as itself
-  and ends the walk.
+  unclear message's values are not applied. A non-place message (a how-to question) answers as itself and leaves the walk suspended on that turn; the next message resumes it by the same rules.
 - **No decision call on a chip or bare step of the walk.** The decision is the person's — keys Jev
   answered on the two classifying turns — and the trace says so: `intent.source = reconciled`,
   `assistant_decisions_total` not counted. Up to 1 + |items| turns to join; the owner chose explicitness.

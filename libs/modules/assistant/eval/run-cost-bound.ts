@@ -2,7 +2,14 @@
 import { OpenRouterDecisionProvider } from '@gogo/providers';
 import type { IntentTaxonomy } from '../../search/domain/intent';
 import { TURN_CALL_SHARE } from '../domain/limits';
-import { PRICE_SOURCE, computeCostBound, worstCases, type TokenCounter } from './cost-bound';
+import {
+  PRICE_SOURCE,
+  calibrationDrift,
+  computeCostBound,
+  worstCases,
+  type TokenCounter,
+} from './cost-bound';
+import calibration from './cost-bound.calibration.json';
 
 /**
  * GoGo-BE#738 D-11 — prints `C` for one environment. Paid: three provider calls
@@ -83,6 +90,15 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({ environment: env.COST_BOUND_ENV ?? 'unknown', ...bound }, null, 2));
   console.log(`prices: ${PRICE_SOURCE}`);
   console.log(`code shares TURN_CALL_SHARE: ${JSON.stringify(TURN_CALL_SHARE)}`);
+  // The code's shares and the committed record must describe this run, or the
+  // hard stop is reading a different calibration than the ceiling (Astra r1).
+  const drift = calibrationDrift(bound, taxonomy, outputTokens, TURN_CALL_SHARE, calibration);
+  if (drift.length > 0) {
+    console.error(
+      `calibration drift: ${drift.join('; ')} — update TURN_CALL_SHARE and cost-bound.calibration.json`,
+    );
+    process.exitCode = 2;
+  }
 }
 
 if (require.main === module) {

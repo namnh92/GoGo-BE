@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { IntentTaxonomy } from '../../search/domain/intent';
 import { MAX_REQUEST_CHARS } from '../../search/domain/intent';
-import { computeCostBound, filler, worstCases, type TokenCounter } from './cost-bound';
+import { TURN_CALL_SHARE } from '../domain/limits';
+import {
+  calibrationDrift,
+  computeCostBound,
+  filler,
+  worstCases,
+  type TokenCounter,
+} from './cost-bound';
+import calibration from './cost-bound.calibration.json';
 
 const TAXONOMY: IntentTaxonomy = {
   category: [{ key: 'category:cafe', label: 'cà phê' }],
@@ -48,6 +56,43 @@ describe('#738 D-11 the cost bound', () => {
     expect(Object.keys(cases.decision.questions)).toContain('turn_relation');
     expect((cases.relevance.state as Record<string, unknown>).resolved).toBeDefined();
     expect(cases.compose[0]!.role).toBe('system');
+  });
+
+  it('the code shares are the committed calibration, and drift is named', () => {
+    expect(TURN_CALL_SHARE).toEqual(calibration.shares);
+    expect(calibration.ceilingUsd).toBeGreaterThan(0);
+    const run = { shares: calibration.shares };
+    const recorded: IntentTaxonomy = {
+      category: Array.from({ length: calibration.taxonomyCounts.category }, (_, i) => ({
+        key: `c${i}`,
+        label: `c${i}`,
+      })),
+      mood: Array.from({ length: calibration.taxonomyCounts.mood }, (_, i) => ({
+        key: `m${i}`,
+        label: `m${i}`,
+      })),
+      setting: Array.from({ length: calibration.taxonomyCounts.setting }, (_, i) => ({
+        key: `s${i}`,
+        label: `s${i}`,
+      })),
+      suitability: Array.from({ length: calibration.taxonomyCounts.suitability }, (_, i) => ({
+        key: `o${i}`,
+        label: `o${i}`,
+      })),
+    };
+    expect(calibrationDrift(run, recorded, 600, TURN_CALL_SHARE, calibration)).toEqual([]);
+    expect(calibrationDrift(run, TAXONOMY, 600, TURN_CALL_SHARE, calibration)).toContainEqual(
+      expect.stringContaining('taxonomy category'),
+    );
+    expect(
+      calibrationDrift(
+        { shares: { ...run.shares, compose: 0.5 } },
+        recorded,
+        600,
+        TURN_CALL_SHARE,
+        calibration,
+      ),
+    ).toContainEqual(expect.stringContaining('share compose: run'));
   });
 
   it('the filler is deterministic and at its cap', () => {

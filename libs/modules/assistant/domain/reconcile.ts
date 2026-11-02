@@ -4,6 +4,7 @@ import { normalizeVietnamese } from '../../search/domain/normalize';
 import {
   bareBudget,
   bareParty,
+  assertedText,
   bareTerm,
   bareTime,
   statesTerm,
@@ -37,9 +38,13 @@ export type AreaValue = {
   codes?: { datasetVersion: string; provinceCode: string; communeCode: string | null };
   /** The dataset's name, never the person's spelling (I-2). */
   label?: string;
-  /** An unresolved area asks again from these messages (ids only). */
-  messageIds?: string[];
+  /** A phrase was typed and placed nowhere: the question says so (A-F-09). */
+  typed?: boolean;
+  /** A city and a ward of the same name: the dataset units the person chooses from. */
+  scope?: { province: ScopeUnitValue; communes: ScopeUnitValue[] };
 };
+/** A dataset unit as the scope question shows it (#733 D-6): codes and dataset names. */
+export type ScopeUnitValue = { code: string; name: string; fullName: string };
 export type TimeValue = { timeHint: TimeHint | null; dayPart: DayPart | null };
 export type BudgetValue = NonNullable<IntentFacts['budget']>;
 export type PrefsValue = { moods: string[]; settings: string[] };
@@ -177,7 +182,9 @@ export function sideOf(input: {
   /** The newest message: a key it rejects is not this side's value (D-19). */
   reading?: MessageReading;
 }): RequestSide {
-  const { facts, dayPart, area, keys, texts, termsOf, reading } = input;
+  const { facts, dayPart, area, keys, termsOf, reading } = input;
+  // A-F-01: a quoted or rejected term never states a value.
+  const texts = input.texts.map((text) => assertedText(text));
   const side: RequestSide = {};
   const provenanceOf = (key: string): Provenance | null => {
     const status = reading ? termStatus(reading, termsOf(key)) : null;
@@ -506,7 +513,8 @@ export function bareValue(
 /**
  * D-19 — a rejected value: the field is asked again with what is left, never
  * silently kept or replaced. With nothing left it stays open (`pending: []`),
- * so no model answer can fill it before the person does (F-04).
+ * so no model answer can fill it before the person does (F-04). A rejected
+ * value leaves the pool for good (F-08): only the person's words bring it back.
  */
 function rejectField(
   state: ReconciledRequest,
@@ -520,15 +528,11 @@ function rejectField(
     ...(current.others ?? []),
   ]);
   if (all.length === 0) return state;
-  const rejected = all.filter(matches);
   const left = all.filter((c) => !matches(c));
   return {
     ...state,
     items: [...state.items.filter((item) => item.field !== field), { field, kind: itemKind(left) }],
-    values: {
-      ...state.values,
-      [field]: { pending: left, ...(rejected.length ? { others: rejected } : {}) },
-    },
+    values: { ...state.values, [field]: { pending: left } },
   };
 }
 
@@ -680,12 +684,12 @@ export function applyNewest(
     const label = normalizeVietnamese(value.label ?? '');
     return words.some((word) => label.includes(word));
   };
-  fact(
-    'area',
-    area && area.kind !== 'absent' ? area : null,
-    areaRejected,
-    words.length > 0 || rejectedArea?.kind === 'resolved',
-  );
+  // F-07: the same area asserted and rejected in one message asserts nothing.
+  const assertedArea =
+    area && area.kind !== 'absent' && !(rejectedArea && sameValue('area', area, rejectedArea))
+      ? area
+      : null;
+  fact('area', assertedArea, areaRejected, words.length > 0 || rejectedArea?.kind === 'resolved');
 
   for (const field of ['category', 'occasion'] as const) {
     const current = next.values[field];

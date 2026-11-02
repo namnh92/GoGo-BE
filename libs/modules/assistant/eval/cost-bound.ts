@@ -30,6 +30,15 @@ import type { ResolvedPayload } from '../domain/reconcile';
  * listed completion price is $0 — no `max_tokens` can be sent to it.
  */
 
+/**
+ * What `C` is (Astra r1 on #745, SA decision 2026-11-02): the charge of the
+ * largest request the code can build, counted by the provider, plus margin —
+ * a **calibrated worst-case estimate**, not a proof over every string under
+ * the caps (tokens per character are not bounded). What bounds spend is the
+ * reservation: a turn is admitted at `C`, and a call that exceeds its share
+ * can overspend by at most its own excess, once, before the ledger records it.
+ */
+
 /** USD per token, one price per direction. Source and date: `PRICE_SOURCE`. */
 export type Prices = {
   jevIn: number;
@@ -184,6 +193,43 @@ export type CostBound = {
   byokFeeUsd: number;
   marginUsd: number;
 };
+
+/** The committed record of the run `TURN_CALL_SHARE` was taken from. */
+export type Calibration = {
+  taxonomyCounts: Record<'category' | 'mood' | 'setting' | 'suitability', number>;
+  caps: { outputTokens: number };
+  shares: { decision: number; relevance: number; compose: number };
+};
+
+/** Where this run disagrees with the code's shares or the committed record. */
+export function calibrationDrift(
+  bound: Pick<CostBound, 'shares'>,
+  taxonomy: IntentTaxonomy,
+  outputTokens: number,
+  codeShares: { decision: number; relevance: number; compose: number },
+  record: Calibration,
+): string[] {
+  const out: string[] = [];
+  for (const call of ['decision', 'relevance', 'compose'] as const) {
+    if (Math.abs(bound.shares[call] - codeShares[call]) > 0.005) {
+      out.push(`share ${call}: run ${bound.shares[call]}, code ${codeShares[call]}`);
+    }
+    if (record.shares[call] !== codeShares[call]) {
+      out.push(`share ${call}: record ${record.shares[call]}, code ${codeShares[call]}`);
+    }
+  }
+  for (const kind of ['category', 'mood', 'setting', 'suitability'] as const) {
+    if (taxonomy[kind].length !== record.taxonomyCounts[kind]) {
+      out.push(
+        `taxonomy ${kind}: ${taxonomy[kind].length} now, ${record.taxonomyCounts[kind]} recorded`,
+      );
+    }
+  }
+  if (outputTokens !== record.caps.outputTokens) {
+    out.push(`output tokens: ${outputTokens} now, ${record.caps.outputTokens} recorded`);
+  }
+  return out;
+}
 
 const required = (what: string, tokens: number | null): number => {
   if (tokens === null) {

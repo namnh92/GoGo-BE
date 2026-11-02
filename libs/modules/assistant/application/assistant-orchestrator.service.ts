@@ -56,13 +56,7 @@ import {
   type AssistantFollowUpGroup,
   type AssistantProposalValue,
 } from '../domain/assistant.types';
-import {
-  assertedText,
-  bareAreaPhrase,
-  lonePart,
-  readMessage,
-  rejectedText,
-} from '../domain/assertion';
+import { assertedText, bareAreaPhrase, lonePart, readMessage } from '../domain/assertion';
 import {
   RECONCILE_FIELDS,
   RECONCILE_MODE_CHOICES,
@@ -187,6 +181,8 @@ type Episode = {
   areaMessages?: EpisodeMessage[];
   /** #738 D-15: a joined request's area, carried by code — never read from text again. */
   resolution?: AreaResolution;
+  /** …and whether a phrase was typed for it, for the question's wording. */
+  areaTyped?: boolean;
 };
 
 /** #738: the episode Jev is asked about, and what is still open about it. */
@@ -622,7 +618,8 @@ export class AssistantOrchestrator {
       } else if (!area && !contextPlaceId) {
         // No area and nothing to anchor on: a nationwide list would be noise.
         clarification.push('area');
-        ctx.areaUnrecognized = facts.areaText !== null || resolution.kind === 'ambiguous';
+        ctx.areaUnrecognized =
+          facts.areaText !== null || resolution.kind === 'ambiguous' || episode.areaTyped === true;
       } else if (route === 'recommend_places') {
         placeCards = await guard.run(() =>
           this.findPlaces(
@@ -1242,37 +1239,30 @@ export class AssistantOrchestrator {
 
   /**
    * #738 D-15 — an episode whose values come from the persisted request; the
-   * messages are read for the wording alone (what Jev classifies). An area
-   * still unresolved asks again from its own messages, for its question only.
+   * messages are read for the wording alone (what Jev classifies). The area
+   * status travels in the state too (A-F-09): an unresolved one asks its
+   * question from what was stored, never from the text or the dataset again.
    */
   private joinedEpisode(st: ReconciledRequest, messages: EpisodeMessage[]): Episode {
     const joined = joinedRequest(st);
     const area = joined.area;
-    const areaMessages = area.messageIds
-      ? messages.filter((m) => m.id && area.messageIds!.includes(m.id))
-      : [];
-    const areaText =
+    const resolution: AreaResolution =
       area.kind === 'resolved'
-        ? joined.facts.areaText
-        : (parseIntentFacts(areaMessages.at(-1)?.text ?? '').areaText ?? null);
+        ? { kind: 'resolved', value: { area: area.codes!, label: area.label ?? '' } }
+        : area.kind === 'scope_choice' && area.scope
+          ? { kind: 'scope_choice', province: area.scope.province, communes: area.scope.communes }
+          : area.kind === 'ambiguous'
+            ? { kind: 'ambiguous' }
+            : { kind: 'none' };
     return {
       texts: messages.map((m) => m.text),
       messages,
-      facts: { ...joined.facts, areaText },
+      facts: joined.facts,
       dayPart: joined.dayPart,
-      latestAreaText: areaText,
+      latestAreaText: joined.facts.areaText,
       previousRequest: null,
-      areaMessages,
-      ...(area.kind === 'resolved'
-        ? {
-            resolution: {
-              kind: 'resolved' as const,
-              value: { area: area.codes!, label: area.label ?? '' },
-            },
-          }
-        : area.kind === 'absent'
-          ? { resolution: { kind: 'none' as const } }
-          : {}),
+      resolution,
+      areaTyped: area.typed === true,
     };
   }
 
@@ -1303,8 +1293,39 @@ export class AssistantOrchestrator {
     }
     return {
       kind: resolution.kind,
-      messageIds: messages.flatMap((m) => (m.id ? [m.id] : [])),
+      typed: areaText !== null,
+      ...(resolution.kind === 'scope_choice'
+        ? { scope: { province: resolution.province, communes: resolution.communes } }
+        : {}),
     };
+  }
+
+  /**
+   * F-07 — the clause that decides the area is the last one naming any, in
+   * the order written: "ở X, không ở X" rejects X; "không ở X, ở X" asserts it.
+   */
+  private async areaClauses(
+    latest: EpisodeMessage,
+    reading: ReturnType<typeof readMessage>,
+  ): Promise<{ area: AreaValue | null; rejectedArea: AreaValue | null }> {
+    let decider: { text: string; negated: boolean } | null = null;
+    let lastDenied: string | null = null;
+    for (const clause of reading.clauses) {
+      const names =
+        parseIntentFacts(clause.text).areaText !== null ||
+        (await this.areas.namesArea(clause.text, clause.negated || latest.allowBareArea));
+      if (!names) continue;
+      decider = clause;
+      if (clause.negated) lastDenied = clause.text;
+    }
+    if (!decider) return { area: null, rejectedArea: null };
+    const resolve = (text: string) => this.areaOfText([{ ...latest, text, allowBareArea: true }]);
+    const denied = lastDenied ? await resolve(lastDenied) : null;
+    const area = decider.negated ? null : await resolve(decider.text);
+    // A later clause asserting what an earlier one denied stands: the denial is spent.
+    const rejectedArea =
+      area && denied && area.kind === 'resolved' && sameArea(area, denied) ? null : denied;
+    return { area, rejectedArea };
   }
 
   /** D-16 rule 1: a bare value for the open item, or for another still pending. */
@@ -1536,17 +1557,8 @@ export class AssistantOrchestrator {
     const joined = resolved.joined!;
     const latest = resolved.latest ?? resolved.candidate.messages.at(-1)!;
     const reading = readMessage(latest.text);
-    // F-01: only the clauses that assert are read for an area, as for every fact.
-    const named = assertedText(latest.text);
-    const said =
-      reading.asserted.areaText !== null ||
-      (named.length > 0 && (await this.areas.namesArea(named, latest.allowBareArea)));
-    const area = said ? await this.areaValueOf([latest]) : null;
-    const denied = rejectedText(latest.text);
-    const rejectedArea =
-      denied.length > 0 && (await this.areas.namesArea(denied, true))
-        ? await this.areaOfText([{ ...latest, text: denied, allowBareArea: true }])
-        : null;
+    // F-01/F-07: the area is read clause by clause, the last naming one decides.
+    const { area, rejectedArea } = await this.areaClauses(latest, reading);
     const answered = decision.source === 'decision_model' ? keysOf(decision) : null;
     let next = applyNewest(joined, {
       text: latest.text,
@@ -1716,12 +1728,16 @@ export class AssistantOrchestrator {
         joined: asked.joined,
       };
     }
+    // A-F-10: a reply that is not a place request (a how-to question) does
+    // not end a suspended walk; its state waits on this turn for the next one.
+    const suspended = !asked && resolved.joined?.status === 'suspended' ? resolved.joined : null;
     return {
       episode: single,
       decision: asked ? { ...fresh, action: 'none' } : fresh,
       relation,
       ask: asked?.ask ?? null,
       reconciled: false,
+      ...(suspended ? { joined: suspended } : {}),
     };
   }
 
@@ -2286,6 +2302,11 @@ function endJevCall(state: TurnState, costUsd: number | null, worstCaseUsd: numb
     state.jevInFlight === 0 && !state.trace.jevUnknownCost ? state.jevKnownUsd : null;
 }
 
+const sameArea = (a: AreaValue, b: AreaValue) =>
+  a.kind === b.kind &&
+  a.codes?.provinceCode === b.codes?.provinceCode &&
+  a.codes?.communeCode === b.codes?.communeCode;
+
 /** D-18: a call that reported nothing leaves the turn's tokens unknown. */
 function markJevTokensUnknown(state: TurnState): void {
   state.jevInputUnknown = true;
@@ -2306,7 +2327,8 @@ function refinedDayPart(
   if (reading.dayPart || reading.asserted.timeHint !== null || !earlier?.timeHint) {
     return reading.dayPart;
   }
-  return lonePart(text);
+  // A-F-01: "không tối" is no hour.
+  return lonePart(assertedText(text));
 }
 
 function timeoutReply(locale: 'vi' | 'en'): string {

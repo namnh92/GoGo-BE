@@ -227,6 +227,17 @@ describe('#738 D-9 per field', () => {
   });
 });
 
+describe('#738 A-F-01 provenance reads only what is asserted', () => {
+  it('a quoted or rejected term is inferred, not stated', () => {
+    const quoted = side('quán “lãng mạn” cho 2 người', { moods: ['romantic'] });
+    expect(quoted.preferences!.keys).toEqual({ romantic: 'inferred' });
+    const denied = side('quán không lãng mạn cho 2 người', { moods: ['romantic'] });
+    expect(denied.preferences!.keys).toEqual({ romantic: 'inferred' });
+    const plain = side('quán lãng mạn cho 2 người', { moods: ['romantic'] });
+    expect(plain.preferences!.keys).toEqual({ romantic: 'stated' });
+  });
+});
+
 describe('#738 D-17 area', () => {
   const area = (value: AreaValue) => side('quán cà phê', {}, value);
   const OTHER: AreaValue = {
@@ -245,7 +256,7 @@ describe('#738 D-17 area', () => {
   for (const kind of ['none', 'ambiguous', 'scope_choice'] as const) {
     it(`an old "${kind}" area is no item and is not dropped`, () => {
       const { items, values } = joinRequests(
-        fieldsOfSide(area({ kind, messageIds: ['a'] })),
+        fieldsOfSide(area({ kind, typed: true })),
         area({ kind: 'absent' }),
       );
       expect(items).toEqual([]);
@@ -370,6 +381,18 @@ describe('#738 D-15 applyNewest', () => {
     expect(next.values.partySize!.others!.map((c) => c.value)).toEqual([3]);
     const again = apply(next, 'không phải 4 người');
     expect(again.values.partySize!.pending!.map((p) => p.value)).toEqual([3]);
+  });
+
+  it('F-08: a rejected value never comes back as a chip, however many rejections follow', () => {
+    // 3 chosen over 2; reject 3, then reject 2 in a non-bare sentence.
+    const first = apply(final(), 'không phải 3 người');
+    expect(first.values.partySize!.pending!.map((p) => p.value)).toEqual([2]);
+    const second = apply(first, '2 người thì không nhé');
+    expect(second.values.partySize!.pending).toEqual([]);
+    expect(second.values.partySize!.others).toBeUndefined();
+    expect(second.items.at(-1)).toEqual({ field: 'partySize', kind: 'open' });
+    // Only the person's words bring 3 back.
+    expect(apply(second, '3 người nhé').values.partySize!.value!.value).toBe(3);
   });
 
   it('F-03: rejecting the chosen wish offers the one not taken', () => {
