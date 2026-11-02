@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { decideAllowance, utcMonthStart, vnDayStart, vnNextReset } from './limits';
+import {
+  TURN_CALL_SHARE,
+  callFits,
+  decideAllowance,
+  utcMonthStart,
+  vnDayStart,
+  vnNextReset,
+} from './limits';
 
 describe('assistant allowance (Q1)', () => {
   const limits = { dailyMessageLimit: 30, messagesPerMinuteLimit: 5 };
@@ -50,5 +57,23 @@ describe('assistant allowance (Q1)', () => {
       new Date(),
     );
     expect(d.ok).toBe(false);
+  });
+});
+
+describe('#738 D-11 remaining-call-fit', () => {
+  const C = 0.005;
+  it('at 0.9C a call of 0.2C is skipped, one of 0.05C runs', () => {
+    const at = { knownUsd: 0.9 * C, inFlightUnknown: false, ceilingUsd: C };
+    expect(callFits({ ...at, worstCaseUsd: 0.2 * C })).toBe(false);
+    expect(callFits({ ...at, worstCaseUsd: 0.05 * C })).toBe(true);
+  });
+  it('a call in flight counts as the whole ceiling', () => {
+    expect(
+      callFits({ knownUsd: 0, inFlightUnknown: true, worstCaseUsd: 0.01 * C, ceilingUsd: C }),
+    ).toBe(false);
+  });
+  it('the shares add up to the worst-case turn: two decisions, one relevance, one compose', () => {
+    const { decision, relevance, compose } = TURN_CALL_SHARE;
+    expect(2 * decision + relevance + compose).toBeCloseTo(1, 2);
   });
 });

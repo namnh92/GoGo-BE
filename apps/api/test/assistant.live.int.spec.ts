@@ -426,6 +426,38 @@ describe.skipIf(!LIVE)('GoGo AI live (real Jev + Claude Haiku BYOK)', () => {
     await f.setFlag(true);
   });
 
+  // #738 D-14: the real `turn_relation` runs only here and on DEV.
+  it('19. AC-1a a polite activity answer continues the room request', async () => {
+    const conversationId = await conversation(user);
+    await ask('ac1a_request', 'tạo kèo cuối tuần cho 4 người ở Cầu Giấy, Hà Nội', {
+      conversationId,
+    });
+    const t = await ask('ac1a_answer', 'cho mình quán cà phê', { conversationId });
+    expect(t.trace!.turnRelation).toMatchObject({ source: 'jev', relation: 'answer_pending' });
+    expect(t.proposals.length).toBeGreaterThan(0);
+  });
+
+  it('20. AC-1b a request that drops the earlier one asks "new or update?"', async () => {
+    const conversationId = await conversation(user);
+    await ask('ac1b_request', 'tạo kèo cuối tuần cho 4 người ở Cầu Giấy, Hà Nội', {
+      conversationId,
+    });
+    const t = await ask('ac1b_new', 'thôi, tìm cà phê ở Hà Nội', { conversationId });
+    expect(t.trace!.turnRelation).toMatchObject({ source: 'jev', relation: 'new_request' });
+    expect(t.trace!.jevDecisionCalls).toBe(2);
+    expect(JSON.stringify(t.followUps)).toContain('reconcile_mode');
+  });
+
+  it('21. the owner example: three items, never the occasion', async () => {
+    const conversationId = await conversation(user);
+    await ask('owner_old', 'Cho tôi quán cà phê lãng mạn cho 2 người ở Hà Nội', { conversationId });
+    const t = await ask('owner_new', 'Cho tôi quán cà phê ngoài trời cho 3 người', {
+      conversationId,
+    });
+    const items = (t.trace!.reconcile as { items: { field: string }[] }).items;
+    expect(items.map((i) => i.field)).toEqual(['preferences', 'partySize', 'area']);
+  });
+
   it('billing summary: Jev direct (OpenRouter credits), Haiku BYOK (Anthropic), never mixed', async () => {
     const res = await f.db.execute(sql`
       select count(*)::int as turns, sum(jev_calls)::int as jev_calls, sum(haiku_calls)::int as haiku_calls,

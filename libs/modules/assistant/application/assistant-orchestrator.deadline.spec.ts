@@ -20,6 +20,7 @@ function orchestrator(stall: 'history' | 'none', deadlineMs: number) {
     ASSISTANT_FIRST_TEXT_TIMEOUT_MS: deadlineMs,
     ASSISTANT_JEV_TIMEOUT_MS: 1_000,
     ASSISTANT_MAX_OUTPUT_TOKENS: 100,
+    ASSISTANT_TURN_COST_CEILING_USD: 0.005,
   };
   const repo = {
     history: () => (stall === 'history' ? never() : Promise.resolve([])),

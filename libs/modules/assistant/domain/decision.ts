@@ -66,6 +66,10 @@ export const MAX_LATEST_MESSAGE_CHARS = 500;
 /** #738: the question GoGo asked and the reply typed under it, sent apart. */
 export type PendingClarification = { question: string; latest: string };
 
+/** #738 D-15: how both model calls read `state.resolved`. */
+const RESOLVED_NOTE =
+  ' `resolved`, if present: `settled` is what the person said or chose; `assumed` is what GoGo inferred and may be wrong; `open` is undecided; `request` is the wording.';
+
 export function buildAssistantDecisionRequest(
   text: string,
   options: {
@@ -77,6 +81,8 @@ export function buildAssistantDecisionRequest(
      * it does — in this same call (ADR-0036 §7: one Jev call per turn).
      */
     pending?: PendingClarification | null;
+    /** #738 D-15: what a joined request already holds, by who decided it. */
+    resolved?: DecisionCriterion | null;
   },
   taxonomy: IntentTaxonomy,
 ): { state: Record<string, DecisionCriterion>; questions: Record<string, DecisionQuestion> } {
@@ -90,12 +96,12 @@ export function buildAssistantDecisionRequest(
     state.pending_question = options.pending.question.slice(0, MAX_PENDING_QUESTION_CHARS);
     state.latest_message = options.pending.latest.slice(0, MAX_LATEST_MESSAGE_CHARS);
   }
+  if (options.resolved) state.resolved = options.resolved;
   const questions: Record<string, DecisionQuestion> = {
     ...base.questions,
     assistant_intent: {
       type: 'choice',
-      instructions:
-        'What does `request` ask of GoGo, a date and group-outing planning app? `previous_request`, if present, is only for resolving words like "there" or "cheaper"; `opened_from` says which screen the person asked from.',
+      instructions: `What does \`request\` ask of GoGo, a date and group-outing planning app? \`previous_request\`, if present, is only for resolving words like "there" or "cheaper"; \`opened_from\` says which screen the person asked from.${options.resolved ? RESOLVED_NOTE : ''}`,
       criteria: {
         recommend_places:
           'Suggest somewhere to go, eat, drink or spend time, or refine an earlier suggestion.',
@@ -364,18 +370,20 @@ export function fallbackAssistantDecision(
 export function buildRelevanceRequest(
   text: string,
   candidates: readonly { key: string; description: string }[],
+  resolved: DecisionCriterion | null = null,
 ): { state: Record<string, DecisionCriterion>; questions: Record<string, DecisionQuestion> } {
   const questions: Record<string, DecisionQuestion> = {};
   for (const c of candidates) {
     questions[c.key] = {
       type: 'noul',
-      instructions: `Would the place described as candidates.${c.key} suit what the person in \`request\` wants (kind of place, atmosphere, setting, who it is for)? Ignore price, distance and opening hours; those are checked elsewhere.`,
+      instructions: `Would the place described as candidates.${c.key} suit what the person in \`request\` wants (kind of place, atmosphere, setting, who it is for)? Ignore price, distance and opening hours; those are checked elsewhere.${resolved ? RESOLVED_NOTE : ''}`,
     };
   }
   return {
     state: {
       request: text.slice(0, 500),
       candidates: Object.fromEntries(candidates.map((c) => [c.key, c.description])),
+      ...(resolved ? { resolved } : {}),
     },
     questions,
   };

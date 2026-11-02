@@ -1,0 +1,46 @@
+{
+  "date": "2026-11-02",
+  "environment": "dev",
+  "models": {
+    "jev": "typesafe/jev-1.14",
+    "haiku": "anthropic/claude-haiku-5.5"
+  },
+  "pricesUsdPerToken": {
+    "jevIn": 4.2e-8,
+    "jevOut": 0,
+    "haikuIn": 1e-7,
+    "haikuOut": 5e-7
+  },
+  "caps": {
+    "request": 500,
+    "pendingQuestion": 300,
+    "latestMessage": 500,
+    "previousRequest": 300,
+    "message": 2000,
+    "contextName": 200,
+    "guideExcerpt": 1200,
+    "historyTurns": 4,
+    "historyChars": 400,
+    "relevanceCandidates": 6,
+    "outputTokens": 600
+  },
+  "taxonomyCounts": {
+    "category": 8,
+    "mood": 5,
+    "setting": 4,
+    "suitability": 3
+  },
+  "tokens": {
+    "decision": 5680,
+    "relevance": 5005,
+    "compose": 21355,
+    "composeOutput": 600
+  },
+  "ceilingUsd": 0.003904,
+  "shares": {
+    "decision": 0.076,
+    "relevance": 0.067,
+    "compose": 0.78
+  },
+  "note": "pnpm assistant:cost-bound on the DEV keys; taxonomy counts read from GET /v1/taxonomies the same day. The script compares every field here with its run and the code and exits 2 on drift; re-run and update when any changes."
+}

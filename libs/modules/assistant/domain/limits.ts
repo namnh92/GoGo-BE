@@ -67,3 +67,26 @@ export function decideAllowance(
 function secondsUntil(at: Date, now: Date): number {
   return Math.max(1, Math.ceil((at.getTime() - now.getTime()) / 1000));
 }
+
+/**
+ * #738 D-11 — each call's share of the per-turn worst case `C`, from
+ * `pnpm assistant:cost-bound` (DEV 2026-11-02, the run that gave `C` = 0.003904):
+ * `C = 1.25 × (2 × decision + relevance + compose)`.
+ * Owner 2026-11-02: one configured value, and the shares live here.
+ */
+export const TURN_CALL_SHARE = { decision: 0.076, relevance: 0.067, compose: 0.78 } as const;
+export type TurnCall = keyof typeof TURN_CALL_SHARE;
+
+/**
+ * The in-turn hard stop, secondary to the reservation: a later call starts only
+ * if its worst case still fits. A call in flight counts as the whole ceiling.
+ */
+export function callFits(input: {
+  knownUsd: number;
+  inFlightUnknown: boolean;
+  worstCaseUsd: number;
+  ceilingUsd: number;
+}): boolean {
+  const { knownUsd, inFlightUnknown, worstCaseUsd, ceilingUsd } = input;
+  return knownUsd + (inFlightUnknown ? ceilingUsd : 0) + worstCaseUsd <= ceilingUsd;
+}

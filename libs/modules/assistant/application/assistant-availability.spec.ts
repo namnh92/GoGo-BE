@@ -88,3 +88,51 @@ describe('readiness needs both OpenRouter keys (GoGo-BE#731)', () => {
     expect((await service.readiness(tx as never)).ok).toBe(true);
   });
 });
+
+describe('#738 D-11 the ceiling is reserved per turn, under the budget lock', () => {
+  const tx = { execute: async () => ({ rows: [{ hit: false, usd: 0 }] }) };
+  const ready = (spent: () => number) => {
+    const service = new AssistantAvailabilityService(
+      tx as never,
+      {
+        APP_ENV: 'dev',
+        ASSISTANT_USER_DAILY_MAX_MESSAGES: 30,
+        ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES: 5,
+        ASSISTANT_MONTHLY_MAX_USD: 10,
+        ASSISTANT_TURN_COST_CEILING_USD: 0.005,
+        ASSISTANT_REPLY_MAX_MS: 60_000,
+        OPENROUTER_ASSISTANT_API_KEY: 'a',
+        OPENROUTER_API_KEY: 'b',
+      } as never,
+      {
+        byokViolationSince: async () => false,
+        monthSpendUsd: async (_exec: unknown, _start: Date, unknownTurnUsd: number) => {
+          expect(unknownTurnUsd).toBe(0.005);
+          return spent();
+        },
+      } as never,
+    );
+    vi.spyOn(service, 'killSwitchOn').mockResolvedValue(true);
+    return service.readiness(tx as never);
+  };
+
+  it('spend at budget − ceiling + ε refuses the next admission; exactly at it admits', async () => {
+    expect(await ready(() => 10 - 0.005 + 0.000001)).toMatchObject({
+      ok: false,
+      reason: 'budget_exhausted',
+    });
+    expect(await ready(() => 10 - 0.005)).toMatchObject({ ok: true });
+  });
+
+  it('sequential admissions under the lock: each reservation shrinks the next', async () => {
+    let reserved = 9.987;
+    const admit = async () => {
+      const r = await ready(() => reserved);
+      if (r.ok) reserved += 0.005;
+      return r.ok;
+    };
+    expect(await admit()).toBe(true);
+    expect(await admit()).toBe(true);
+    expect(await admit()).toBe(false);
+  });
+});

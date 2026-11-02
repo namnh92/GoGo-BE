@@ -352,3 +352,36 @@ describe('#738 turn_relation in the decision request', () => {
     ).toThrow(/turn_relation/);
   });
 });
+
+describe('#738 D-15 state.resolved reaches both model calls', () => {
+  const taxonomy = { category: [], mood: [], setting: [], suitability: [] };
+  const resolved = { settled: { partySize: 2 }, assumed: {}, open: [], labels: {} };
+
+  it('the decision request carries it, with the instruction, only when given', () => {
+    const on = buildAssistantDecisionRequest(
+      'r',
+      { previousRequest: null, openedFrom: null, resolved },
+      taxonomy,
+    );
+    expect(on.state.resolved).toEqual(resolved);
+    expect(JSON.stringify(on.questions.assistant_intent)).toContain(
+      '`settled` is what the person said',
+    );
+    const off = buildAssistantDecisionRequest(
+      'r',
+      { previousRequest: null, openedFrom: null },
+      taxonomy,
+    );
+    expect(off.state.resolved).toBeUndefined();
+    expect(JSON.stringify(off.questions.assistant_intent)).not.toContain('`settled`');
+  });
+
+  it('the relevance request carries it too', () => {
+    const on = buildRelevanceRequest('r', [{ key: 'c1', description: 'd' }], resolved);
+    expect(on.state.resolved).toEqual(resolved);
+    expect(JSON.stringify(on.questions.c1)).toContain('`assumed` is what GoGo inferred');
+    expect(
+      buildRelevanceRequest('r', [{ key: 'c1', description: 'd' }]).state.resolved,
+    ).toBeUndefined();
+  });
+});

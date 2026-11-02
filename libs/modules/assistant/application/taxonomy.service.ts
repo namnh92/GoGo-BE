@@ -33,6 +33,7 @@ export class AssistantTaxonomyService {
       setting: [],
       suitability: [],
       categorySynonyms: {},
+      synonyms: {},
     };
     for (const r of res.rows as {
       kind: string;
@@ -41,6 +42,7 @@ export class AssistantTaxonomyService {
       synonyms: string[];
     }[]) {
       const term: IntentTaxonomyTerm = { key: r.key, label: r.label };
+      value.synonyms![r.key] = r.synonyms;
       if (r.kind === 'category') {
         value.category.push(term);
         value.categorySynonyms![r.key] = [r.label.toLowerCase(), ...r.synonyms];

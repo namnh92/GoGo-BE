@@ -37,6 +37,7 @@ describe('abandoned retrieval places no paid call (A-R2-06)', () => {
       ASSISTANT_FIRST_TEXT_TIMEOUT_MS: 5_300,
       ASSISTANT_JEV_TIMEOUT_MS: 5_000,
       ASSISTANT_MAX_OUTPUT_TOKENS: 100,
+      ASSISTANT_TURN_COST_CEILING_USD: 0.005,
     };
     const orchestrator = new AssistantOrchestrator(
       config as never,

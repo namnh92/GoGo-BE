@@ -77,6 +77,10 @@ export type GroundedAnswerContext = {
 export const MAX_HISTORY_TURNS = 4;
 export const MAX_HISTORY_CHARS = 400;
 export const MAX_GUIDE_EXCERPT_CHARS = 1200;
+/** A place name or guide heading in a model's context: the cost bound counts on it (#738). */
+export const MAX_CONTEXT_NAME_CHARS = 200;
+/** The send contract's cap on a message (`sendMessageBody`). */
+export const MAX_MESSAGE_CHARS = 2000;
 
 const SYSTEM_PROMPT_EN = `You are GoGo AI, the assistant inside GoGo, an app for planning dates and group outings in Vietnam.
 
@@ -136,7 +140,7 @@ export function renderContext(ctx: GroundedAnswerContext): string {
     for (const p of ctx.places) {
       const tags = [...p.categories, ...p.moods].map(oneLine);
       lines.push(
-        `  [P${p.position}] ${oneLine(p.name)}${tags.length > 0 ? ` — ${tags.join(', ')}` : ''}`,
+        `  [P${p.position}] ${oneLine(p.name).slice(0, MAX_CONTEXT_NAME_CHARS)}${tags.length > 0 ? ` — ${tags.join(', ')}` : ''}`,
       );
     }
   } else if (ctx.route === 'recommend_places') {
@@ -145,8 +149,12 @@ export function renderContext(ctx: GroundedAnswerContext): string {
   if (ctx.guide.length > 0) {
     lines.push('guide:');
     for (const g of ctx.guide) {
-      lines.push(`  [${g.index}] ${fence(g.title)}${g.heading ? ` — ${fence(g.heading)}` : ''}`);
-      lines.push(`      ${fence(g.excerpt).replace(/\s+/g, ' ')}`);
+      const title = fence(g.title).slice(0, MAX_CONTEXT_NAME_CHARS);
+      const heading = g.heading ? fence(g.heading).slice(0, MAX_CONTEXT_NAME_CHARS) : null;
+      lines.push(`  [${g.index}] ${title}${heading ? ` — ${heading}` : ''}`);
+      lines.push(
+        `      ${fence(g.excerpt).slice(0, MAX_GUIDE_EXCERPT_CHARS).replace(/\s+/g, ' ')}`,
+      );
     }
   }
   if (ctx.plan) {
@@ -191,7 +199,7 @@ export function buildComposerMessages(
       '</conversation>',
     );
   }
-  parts.push('<user_message>', fence(question), '</user_message>');
+  parts.push('<user_message>', fence(question).slice(0, MAX_MESSAGE_CHARS), '</user_message>');
   return [
     { role: 'system', content: systemPrompt(ctx.locale) },
     { role: 'user', content: parts.join('\n') },

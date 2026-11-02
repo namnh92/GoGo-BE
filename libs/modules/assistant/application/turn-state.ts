@@ -25,6 +25,11 @@ export type TurnState = {
   /** Jev calls started and not yet answered, and the cost reported so far. */
   jevInFlight: number;
   jevKnownUsd: number;
+  /** Calls that ended with no cost count at their own worst case (#738 D-11). */
+  jevUnknownWorstUsd: number;
+  /** Once a call reports no tokens the turn's count stays null (#738 D-18). */
+  jevInputUnknown: boolean;
+  jevOutputUnknown: boolean;
   trace: Record<string, unknown>;
 };
 
@@ -57,6 +62,9 @@ export function newTurnState(): TurnState {
     costs: emptyCosts(),
     jevInFlight: 0,
     jevKnownUsd: 0,
+    jevUnknownWorstUsd: 0,
+    jevInputUnknown: false,
+    jevOutputUnknown: false,
     trace: {},
   };
 }

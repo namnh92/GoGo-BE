@@ -28,6 +28,7 @@ async function reply(text: string, locale: 'vi' | 'en' = 'vi'): Promise<string> 
       ASSISTANT_FIRST_TEXT_TIMEOUT_MS: 5_000,
       ASSISTANT_JEV_TIMEOUT_MS: 4_000,
       ASSISTANT_MAX_OUTPUT_TOKENS: 100,
+      ASSISTANT_TURN_COST_CEILING_USD: 0.005,
     } as never,
     { history: async () => [], insertProposal: async () => ({}) } as never,
     {
@@ -102,6 +103,7 @@ describe('Sol N-01: conflicting preferences do not skip the new-address question
         ASSISTANT_FIRST_TEXT_TIMEOUT_MS: 5_000,
         ASSISTANT_JEV_TIMEOUT_MS: 4_000,
         ASSISTANT_MAX_OUTPUT_TOKENS: 100,
+        ASSISTANT_TURN_COST_CEILING_USD: 0.005,
       } as never,
       { history: async () => [], insertProposal: async () => ({}) } as never,
       {
