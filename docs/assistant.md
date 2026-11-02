@@ -568,8 +568,11 @@ No contract change: `AssistantFollowUpGroup.field` is a free string; new values 
 
 ### Episode boundary by `turn_relation` (GoGo-BE#738)
 
-Closes the F-16 known limit. **Shape not yet confirmed by Fable** — implemented on the owner's
-request from Astra's proposal (`astra-suggest-assistant-cms-rules.out` §6).
+Closes the F-16 known limit. Shape: `dev/handoffs/sa-shape-be-738-turn-relation.fable.md` rev 4
+(Fable, written after the code on the owner's order). Astra's last verdict on it is round 4,
+`changes-required` at `76495e9`, no new finding; the three points left open are DEV requirements
+by owner order O-7 (a), reviewed on the PR. Source of the mechanism: `astra-suggest-assistant-cms-rules.out`
+§6 is absent from the workspace (owner O-4); the shape is drawn from the merged code and decisions.
 
 - **Order changed.** The episode is settled after the Jev call, not before. When the previous
   assistant turn asked a clarification and the newest message is not one of its quick replies, the
@@ -582,7 +585,8 @@ request from Astra's proposal (`astra-suggest-assistant-cms-rules.out` §6).
   2026-11-01: **one Jev call per text classified**, so such a turn makes two decision calls (plus
   the relevance call when it searches). Each call is counted and costed in the turn's ledger
   (`jev_calls`, input/output tokens, `jev_cost_usd` summed from OpenRouter's reported usage; unknown
-  stays `null`, never 0). If the second call fails, that text is classified deterministically.
+  stays `null`, never 0, cost and tokens alike, and stays `null` for the rest of the turn; input and
+  output independently). If the second call fails, that text is classified deterministically.
 - **`unclear`** neither merges nor drops: the deterministic reply asks whether the person continues,
   with two fixed chips (`turn_relation` follow-up group, asked alone). The turn stores the merged
   episode by reference; "Tiếp tục yêu cầu trước" resumes it, "Đây là yêu cầu mới" starts from the
@@ -591,12 +595,23 @@ request from Astra's proposal (`astra-suggest-assistant-cms-rules.out` §6).
   word heuristic decides as before, so F-16 remains on that path only.
 - Counted as `assistant_turn_relations_total{source: jev|heuristic|person, relation}` and written
   to the turn trace (`turnRelation`).
-- `ASSISTANT_TURN_COST_CEILING_USD` (default 0.005) is the admission reservation per turn; a
-  new-request turn now spends up to three Jev calls, so the ceiling should be checked against the
-  DEV ledger (`jev_cost_usd` of turns with `trace.jevDecisionCalls = 2`).
+- **What a turn may spend (D-11).** `ASSISTANT_TURN_COST_CEILING_USD` is the **per-turn worst case**:
+  two decision calls, one relevance call, one Haiku call. Admission reserves exactly one ceiling per
+  turn under the budget lock, as before; there is no per-call reservation. Inside the turn, a model
+  call after the first starts only if `known + (in flight ? C : 0) + its own worst case ≤ C`, where a
+  call that ended with no reported cost counts at its own worst case and a call's worst case is
+  `TURN_CALL_SHARE[call] × C` (`domain/limits.ts`; owner 2026-11-02: one configured value). A step
+  that no longer fits is skipped and the turn goes on deterministically for it (second
+  classification → deterministic, relevance → unranked, Haiku → deterministic reply with no fallback
+  notice), with `trace.budgetGuard` and `assistant_fallbacks_total{reason: budget_guard}`.
+- **`pnpm assistant:cost-bound`** computes `C`: the real worst-case requests at their caps, `state.resolved`
+  included, counted by the provider that bills them (a paid probe, owner 2026-11-02: Jev has no public
+  tokenizer), per-direction list prices, a 25 % margin that holds the 5 % BYOK fee. A missing count
+  fails the run. Jev's output term is zero because its listed completion price is $0; the Decisions API
+  takes no `max_tokens`, so that is a price fact, not a cap. Haiku's output is capped by `ASSISTANT_MAX_OUTPUT_TOKENS`.
 - AC-4 (DEV live: the two sentences) is not covered by unit tests; it needs a deploy.
 
-### A new request asks "new or update?" (GoGo-BE#738 follow-up, owner 2026-11-01)
+### A new request asks "new or update?" (GoGo-BE#738, owner 2026-11-01, 2026-11-02)
 
 - **When.** Jev judges the newest message a `new_request`, the earlier request (the previous
   assistant turn's episode) and the new one are both about places, the earlier one said something,
@@ -604,23 +619,67 @@ request from Astra's proposal (`astra-suggest-assistant-cms-rules.out` §6).
   a turn that showed results without asking anything (owner: "every message judged a new request"),
   so a short refinement after results ("cho 4 người nhé") continues the request instead of starting
   a fresh one.
+- **Provenance and precedence (D-9, owner-approved table).** Every value carries `stated`, `inferred`,
+  `confirmed` (a chip) or `typed` (a bare answer). A taxonomy key is `stated` when its CMS label or
+  synonym occurs, folded, in that side's messages; a parsed fact always is. Preferences carry it per key.
+
+  | old \\ new                   | new `stated`                  | new `inferred`       | new absent        |
+  | ---------------------------- | ----------------------------- | -------------------- | ----------------- |
+  | `stated`/`confirmed`/`typed` | differ → **ask**; same → keep | **keep old**         | **ask keep/drop** |
+  | `inferred`                   | new wins                      | newest wins, assumed | keep old, assumed |
+  | absent                       | new                           | new, assumed         | —                 |
+
+  A wish the lexical check misses reads as `inferred`: it can fill a gap, never replace. The failure
+  direction is an old value that stays and can be corrected in one message, never silent replacement.
+  When nothing needs asking but an old value still holds, the join stands without a question.
+
 - **First question:** "Tạo yêu cầu mới" / "Giữ thông tin cũ và cập nhật". New → the new message
   alone, classified as usual. Update → **one question per turn**, in a fixed order (kind of place,
   wishes, party size, area, time, budget, occasion):
   - said differently in both → "Bạn muốn cho 3 người? (trước đó là 2 người)" — new value first;
   - wishes that differ → "Bạn muốn ngoài trời hay lãng mạn?" — new, old, or both;
   - said only in the earlier request → "Bạn vẫn muốn ở Hà Nội?" — keep or drop.
-    Said the same in both, or only in the new request: kept without asking (owner decision).
-- **Joined request.** After the last answer the two are joined from the answers (`domain/reconcile.ts`,
-  pure): facts and taxonomy keys per choice, the area resolved only from the side chosen (a dropped
-  area is asked again). The decision is the person's — keys Jev answered on the two classifying
-  turns — so **no Jev decision call** runs on any reconciling turn (the relevance call may, when it
-  searches). The trace marks it `intent.reconciled`; `assistant_decisions_total` is not counted.
-- **Stored state** (`trace.reconcile` on the asking turn): message ids, taxonomy keys, field names
-  and choices — never message text. Messages are read back by id each step; one gone (deleted,
-  expired) starts over from the chip. A typed message instead of a chip leaves the walk and is
-  handled as a message under a question (#738).
-- Questions and chips are fixed wording; labels come from the CMS taxonomy, areas as typed.
+- **Candidates are a list (O-7 (a)).** A field unresolved when a new request arrives keeps its values
+  and takes the new one in front, however many: asked in stages of at most three chips, the third
+  "Giá trị khác…" opening the next. Never truncated, never defaulted. A bare typed value settles the
+  field at any stage.
+- **Area and time per side (D-17).** Area is the resolver's result with its status
+  (`resolved|none|ambiguous|scope_choice|absent`), compared by codes and worded with the dataset's
+  label. It is an item only when both sides resolved and differ, or only the old side resolved. An old
+  area that never resolved is not an item and is not dropped: its normal clarification fires after the
+  join; legacy districts are never widened. Time is `{timeHint, dayPart}`, so "thứ 7 tối" vs "thứ 7"
+  is a change. A lone "tối" counts as a bare answer to the time item or beside a day the other side said.
+- **One persisted state (D-15).** `trace.reconcile` (`ReconciledRequest`, `v: 2`) is stored on the
+  asking turn, every walking turn and the joined turn: refs, the intents of both classifying turns,
+  per-field `value`/`pending`/`others` with provenance, the queue, `asked`, `offset`, `status`
+  (`asking|suspended|final`). Ids, keys, codes, numbers and dataset labels — never message text. A later
+  turn takes values from it and reads messages back only for the wording Jev classifies. A walk stored
+  before `v: 2` is not read back; it restarts from its chip.
+- **What the models are told.** On a joined or suspended request both the decision and the relevance
+  call receive `state.resolved = { settled, assumed, open, labels }`. Jev's own keys fill only absent
+  fields (as assumed) or ones the newest message names; code refuses the rest, so no model answer moves
+  a key from assumed to settled.
+- **A continuation** (`answer_pending` on a joined request, or a chip under it) applies only what the
+  newest message asserts; successive ones chain. **Assertion (D-19):** the original message is split
+  into clauses; a fact in a clause holding a negation marker anywhere (`không`, `không phải`, `chẳng`,
+  `đừng`, `bỏ`, `khỏi`, `hết`, `thôi … nữa`, typed with or without marks; "không gian"/"không khí" are
+  nouns) or inside quotes asserts nothing. A rejected value re-asks the field with what remains; with no
+  asserted value beside it, a rejection of anything else re-asks too and the current value stays a chip.
+  Over-rejection costs one question.
+- **A typed message mid-walk (D-16).** A bare value for the open item answers it ("4 người", "cho 4
+  người nhé"; particles `cho`, `cho mình`, `cho tôi`, `mình`, `tôi`, `là`, `thì`, `nhé`, `nha`, `ạ`,
+  `vậy`, `đi`, `thôi` only); for another pending item it records that one and the open item stays asked.
+  Anything else suspends the walk, with settled answers and pending lists intact, and Jev weighs it:
+  `answer_pending` applies what it asserts and resumes at the first pending item (at "new or update?"
+  when that was open); `new_request` asks "new or update?" against the joined-so-far request; `unclear`
+  asks, and "Tiếp tục yêu cầu trước" restores the same question and queue with no model call, while the
+  unclear message's values are not applied. A non-place message (a how-to question) answers as itself
+  and ends the walk.
+- **No decision call on a chip or bare step of the walk.** The decision is the person's — keys Jev
+  answered on the two classifying turns — and the trace says so: `intent.source = reconciled`,
+  `assistant_decisions_total` not counted. Up to 1 + |items| turns to join; the owner chose explicitness.
+- A message gone (deleted, expired) starts over from the chip.
+- Questions and chips are fixed wording; labels come from the CMS taxonomy, areas from the dataset.
 
 ### Guide coverage and publish revision (GoGo-BE#736)
 

@@ -35,6 +35,8 @@ export type IntentTaxonomy = {
   suitability: IntentTaxonomyTerm[];
   /** Category key → search synonyms (`taxonomy_synonyms`), for the fallback only. */
   categorySynonyms?: Record<string, string[]>;
+  /** Any key → its synonyms, to tell a stated value from an inferred one (#738 D-9). */
+  synonyms?: Record<string, string[]>;
 };
 
 /** `saturday`/`sunday` name the day; `weekend` names neither (#733). */
@@ -164,6 +166,12 @@ export function parseIntentFacts(input: string): IntentFacts {
 }
 
 type Located<T> = { value: T; start: number; end: number };
+
+/** Where the budget phrase sits in NFC lowercase text (#738 D-16: a bare answer). */
+export function parseBudgetSpan(text: string): { start: number; end: number } | null {
+  const budget = parseBudget(text);
+  return budget ? { start: budget.start, end: budget.end } : null;
+}
 
 function parseBudget(text: string): Located<NonNullable<IntentFacts['budget']>> | null {
   const patterns: Array<[RegExp, (m: RegExpExecArray) => number]> = [

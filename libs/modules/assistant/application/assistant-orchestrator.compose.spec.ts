@@ -40,6 +40,7 @@ describe('first-text deadline counts only visible text (A-R3-03)', () => {
         ASSISTANT_FIRST_TEXT_TIMEOUT_MS: 3_000,
         ASSISTANT_JEV_TIMEOUT_MS: 1_000,
         ASSISTANT_MAX_OUTPUT_TOKENS: 100,
+        ASSISTANT_TURN_COST_CEILING_USD: 0.005,
       } as never,
       { history: async () => [], insertProposal: async () => ({}) } as never,
       {

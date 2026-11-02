@@ -1,28 +1,55 @@
-import type { DayPart, IntentFacts } from '../../search/domain/intent';
+import type { DecisionCriterion } from '@gogo/providers';
+import type { DayPart, IntentFacts, TimeHint } from '../../search/domain/intent';
+import { normalizeVietnamese } from '../../search/domain/normalize';
+import {
+  bareBudget,
+  bareParty,
+  bareTerm,
+  bareTime,
+  statesTerm,
+  termStatus,
+  type MessageReading,
+} from './assertion';
 import type { AssistantFollowUpGroup } from './assistant.types';
 
 /**
- * GoGo-BE#738 follow-up (owner 2026-11-01) — a new request typed after a
- * place request that already said things: the person is asked whether to
- * start over or keep what was said and update it; keeping walks one question
- * per differing item, then joins the two.
+ * GoGo-BE#738 (shape `sa-shape-be-738-turn-relation.fable.md` rev 4, owner
+ * 2026-11-01, 2026-11-02) — a new request typed after a place request that
+ * already said things: the person is asked whether to start over or keep what
+ * was said and update it; keeping walks one question per item, then joins.
  *
- * Owner decisions: asked whenever Jev judges the message a new request and
- * the earlier request had details; an item said the same way in both is kept
- * without asking; the first question is "new request, or keep and update?".
+ * One persisted state (`ReconciledRequest`, D-15) carries every value with its
+ * provenance, so a later turn never parses the source messages again for a
+ * value. Stated, typed or confirmed beats inferred; inferred never replaces
+ * (D-9, I-8). A field two values compete for stays a candidate list until the
+ * person settles it: never truncated, never defaulted.
  *
  * Pure and deterministic: no model writes a question, an option or a merged
- * value. Stored state is keys, numbers and message ids only — never text.
+ * value. Stored state is ids, keys, codes, numbers and dataset labels — never
+ * message text (I-3).
  */
 
-/** The parts of a place request that can differ between two of them. */
-export type RequestSnapshot = {
-  facts: IntentFacts;
-  dayPart: DayPart | null;
-  category: string | null;
-  occasion: string | null;
-  moods: string[];
-  settings: string[];
+export type Provenance = 'stated' | 'inferred' | 'confirmed' | 'typed';
+
+/** Area with its status, so `absent` and `unresolved` stay apart (D-17). */
+export type AreaValue = {
+  kind: 'resolved' | 'none' | 'ambiguous' | 'scope_choice' | 'absent';
+  codes?: { datasetVersion: string; provinceCode: string; communeCode: string | null };
+  /** The dataset's name, never the person's spelling (I-2). */
+  label?: string;
+  /** An unresolved area asks again from these messages (ids only). */
+  messageIds?: string[];
+};
+export type TimeValue = { timeHint: TimeHint | null; dayPart: DayPart | null };
+export type BudgetValue = NonNullable<IntentFacts['budget']>;
+export type PrefsValue = { moods: string[]; settings: string[] };
+export type FieldValue = string | number | AreaValue | TimeValue | BudgetValue | PrefsValue;
+
+/** One value a field may hold. Preferences carry provenance per key (`keys`). */
+export type Candidate = {
+  value: FieldValue;
+  provenance: Provenance;
+  keys?: Record<string, Provenance>;
 };
 
 export const RECONCILE_FIELDS = [
@@ -36,144 +63,716 @@ export const RECONCILE_FIELDS = [
 ] as const;
 export type ReconcileField = (typeof RECONCILE_FIELDS)[number];
 
+/** One request's values. A field it did not say is absent. */
+export type RequestSide = Partial<Record<ReconcileField, Candidate>>;
+
 /**
- * `changed`: both said it, differently — keep the new or the old.
- * `old_only`: only the earlier request said it — keep it or drop it.
- * Preferences that differ are `changed` with a third answer, both.
+ * A field's state: `value` once settled; `pending` while it is an ask cell,
+ * newest first (D-15, any length); `others` the values not taken, which a
+ * rejection brings back (D-19).
  */
-export type ReconcileItem = { field: ReconcileField; kind: 'changed' | 'old_only' };
+export type FieldState = { value?: Candidate; pending?: Candidate[]; others?: Candidate[] };
 
-export type ReconcileChoice = 'new' | 'old' | 'both' | 'keep' | 'drop';
+/**
+ * `changed`: several candidates. `old_only`: one, kept or dropped.
+ * `open`: none left after a rejection — the person types it.
+ */
+export type ReconcileItem = { field: ReconcileField; kind: 'changed' | 'old_only' | 'open' };
 
-/** Where the merged request's area comes from. */
-export type AreaSource = 'old' | 'new' | 'none';
+export type Ref = { id: string; allowBareArea: boolean };
 
-const sameSet = (a: readonly string[], b: readonly string[]) =>
-  a.length === b.length && a.every((x) => b.includes(x));
+/** The classification keys of one request, as its turn's trace keeps them. */
+export type IntentKeys = {
+  intent: string;
+  action: string;
+  category: string | null;
+  occasion: string | null;
+  moods: string[];
+  settings: string[];
+  model: string | null;
+};
 
-const sameBudget = (a: IntentFacts['budget'], b: IntentFacts['budget']) =>
-  a?.amount === b?.amount && a?.mode === b?.mode;
+/**
+ * What a turn stores (in its trace, D-15) for the next one to read. `asked` is
+ * the item asked on this turn (`null` while "new or update?" is open);
+ * `offset` is where its chips start (staged, O-7 (a)).
+ */
+export type ReconciledRequest = {
+  v: 2;
+  refs: { old: Ref[]; new: Ref };
+  intents: { old: IntentKeys; new: IntentKeys };
+  values: Partial<Record<ReconcileField, FieldState>>;
+  items: ReconcileItem[];
+  asked: number | null;
+  offset: number;
+  status: 'asking' | 'suspended' | 'final';
+};
 
-const norm = (s: string | null) => s?.trim().toLowerCase().replace(/\s+/g, ' ') ?? null;
+/** The joined request, in the shape a decision is built from. */
+export type JoinedRequest = {
+  facts: IntentFacts;
+  dayPart: DayPart | null;
+  category: string | null;
+  occasion: string | null;
+  moods: string[];
+  settings: string[];
+  area: AreaValue;
+};
 
-function valuesOf(s: RequestSnapshot, field: ReconcileField): unknown {
+/** Key → the words that state it: its CMS label and synonyms (D-9). */
+export type TermsOf = (key: string) => readonly string[];
+
+const SETTLED = (p: Provenance) => p !== 'inferred';
+const isAbsentArea = (c: Candidate | undefined) => !c || (c.value as AreaValue).kind === 'absent';
+
+function sameValue(field: ReconcileField, a: FieldValue, b: FieldValue): boolean {
   switch (field) {
-    case 'category':
-      return s.category;
-    case 'occasion':
-      return s.occasion;
-    case 'preferences':
-      return s.moods.length + s.settings.length > 0 ? [...s.moods, ...s.settings] : null;
-    case 'partySize':
-      return s.facts.partySize;
-    case 'area':
-      return s.facts.areaText;
-    case 'time':
-      return s.facts.timeHint;
+    case 'preferences': {
+      const x = a as PrefsValue;
+      const y = b as PrefsValue;
+      const left = [...x.moods, ...x.settings];
+      const right = [...y.moods, ...y.settings];
+      return left.length === right.length && left.every((key) => right.includes(key));
+    }
     case 'budget':
-      return s.facts.budget;
+      return (
+        (a as BudgetValue).amount === (b as BudgetValue).amount &&
+        (a as BudgetValue).mode === (b as BudgetValue).mode
+      );
+    case 'area': {
+      const x = (a as AreaValue).codes;
+      const y = (b as AreaValue).codes;
+      return (
+        (a as AreaValue).kind === (b as AreaValue).kind &&
+        x?.provinceCode === y?.provinceCode &&
+        x?.communeCode === y?.communeCode
+      );
+    }
+    case 'time':
+      return (
+        (a as TimeValue).timeHint === (b as TimeValue).timeHint &&
+        (a as TimeValue).dayPart === (b as TimeValue).dayPart
+      );
+    default:
+      return a === b;
   }
 }
 
-function same(field: ReconcileField, a: RequestSnapshot, b: RequestSnapshot): boolean {
-  switch (field) {
-    case 'preferences':
-      return sameSet([...a.moods, ...a.settings], [...b.moods, ...b.settings]);
-    case 'budget':
-      return sameBudget(a.facts.budget, b.facts.budget);
-    case 'area':
-      return norm(a.facts.areaText) === norm(b.facts.areaText);
-    case 'time':
-      return a.facts.timeHint === b.facts.timeHint && a.dayPart === b.dayPart;
-    default:
-      return valuesOf(a, field) === valuesOf(b, field);
+const uniqueCandidates = (field: ReconcileField, list: readonly (Candidate | undefined)[]) => {
+  const out: Candidate[] = [];
+  for (const c of list) {
+    if (c && !out.some((o) => sameValue(field, o.value, c.value))) out.push(c);
   }
+  return out;
+};
+
+/** The values one request said, with provenance (D-9). Facts are always stated. */
+export function sideOf(input: {
+  facts: IntentFacts;
+  dayPart: DayPart | null;
+  area: AreaValue;
+  keys: Pick<IntentKeys, 'category' | 'occasion' | 'moods' | 'settings'>;
+  texts: readonly string[];
+  termsOf: TermsOf;
+  /** The newest message: a key it rejects is not this side's value (D-19). */
+  reading?: MessageReading;
+}): RequestSide {
+  const { facts, dayPart, area, keys, texts, termsOf, reading } = input;
+  const side: RequestSide = {};
+  const provenanceOf = (key: string): Provenance | null => {
+    const status = reading ? termStatus(reading, termsOf(key)) : null;
+    if (status === 'rejected') return null;
+    return status === 'asserted' || statesTerm(texts, termsOf(key)) ? 'stated' : 'inferred';
+  };
+  const single = (key: string | null): Candidate | undefined => {
+    const provenance = key ? provenanceOf(key) : null;
+    return key && provenance ? { value: key, provenance } : undefined;
+  };
+  const category = single(keys.category);
+  if (category) side.category = category;
+  const occasion = single(keys.occasion);
+  if (occasion) side.occasion = occasion;
+  const prefKeys: Record<string, Provenance> = {};
+  const kept = (list: string[]) =>
+    list.filter((key) => {
+      const provenance = provenanceOf(key);
+      if (provenance) prefKeys[key] = provenance;
+      return provenance !== null;
+    });
+  const prefs: PrefsValue = { moods: kept(keys.moods), settings: kept(keys.settings) };
+  if (prefs.moods.length + prefs.settings.length > 0)
+    side.preferences = prefsCandidate(prefs, prefKeys);
+  if (facts.partySize !== null) side.partySize = { value: facts.partySize, provenance: 'stated' };
+  if (area.kind !== 'absent') side.area = { value: area, provenance: 'stated' };
+  if (facts.timeHint !== null || dayPart !== null) {
+    side.time = { value: { timeHint: facts.timeHint, dayPart }, provenance: 'stated' };
+  }
+  if (facts.budget) side.budget = { value: facts.budget, provenance: 'stated' };
+  return side;
+}
+
+function prefsCandidate(value: PrefsValue, keys: Record<string, Provenance>): Candidate {
+  return {
+    value,
+    keys,
+    provenance: Object.values(keys).some(SETTLED) ? 'stated' : 'inferred',
+  };
+}
+
+/** The keys of a preference set whose provenance passes, or null when none does. */
+function prefsSubset(c: Candidate, pass: (p: Provenance) => boolean): Candidate | null {
+  const value = c.value as PrefsValue;
+  const keys = c.keys ?? {};
+  const keep = (key: string) => pass(keys[key] ?? c.provenance);
+  const moods = value.moods.filter(keep);
+  const settings = value.settings.filter(keep);
+  if (moods.length + settings.length === 0) return null;
+  const left: Record<string, Provenance> = {};
+  for (const key of [...moods, ...settings]) left[key] = keys[key] ?? c.provenance;
+  return prefsCandidate({ moods, settings }, left);
+}
+
+function prefsUnion(cands: readonly (Candidate | null | undefined)[]): Candidate | null {
+  const moods: string[] = [];
+  const settings: string[] = [];
+  const keys: Record<string, Provenance> = {};
+  for (const c of cands) {
+    if (!c) continue;
+    const value = c.value as PrefsValue;
+    for (const key of value.moods) if (!moods.includes(key)) moods.push(key);
+    for (const key of value.settings) if (!settings.includes(key)) settings.push(key);
+    for (const key of [...value.moods, ...value.settings]) {
+      if (!(key in keys)) keys[key] = c.keys?.[key] ?? c.provenance;
+    }
+  }
+  return moods.length + settings.length > 0 ? prefsCandidate({ moods, settings }, keys) : null;
+}
+
+/** D-9 per key: only stated keys compete; inferred ones fill the gap, as assumed. */
+function joinPreferences(old: Candidate | undefined, fresh: Candidate | undefined): FieldState {
+  const oldStated = old ? prefsSubset(old, SETTLED) : null;
+  const newStated = fresh ? prefsSubset(fresh, SETTLED) : null;
+  const oldAssumed = old ? prefsSubset(old, (p) => !SETTLED(p)) : null;
+  const newAssumed = fresh ? prefsSubset(fresh, (p) => !SETTLED(p)) : null;
+  // Newest inferred wins, as assumed.
+  const assumed = newAssumed ?? oldAssumed;
+  if (!oldStated) {
+    const value = prefsUnion([newStated, assumed]);
+    return value ? { value } : {};
+  }
+  if (!newStated) {
+    if (!fresh) return { pending: [prefsUnion([oldStated, assumed])!] };
+    const value = prefsUnion([oldStated, oldAssumed]);
+    return { ...(value ? { value } : {}), ...(newAssumed ? { others: [newAssumed] } : {}) };
+  }
+  if (sameValue('preferences', oldStated.value, newStated.value)) {
+    return { value: prefsUnion([oldStated, assumed])! };
+  }
+  return { pending: [newStated, oldStated], ...(assumed ? { others: [assumed] } : {}) };
+}
+
+/** D-17: the area is asked only when both resolved and differ, or only the old resolved. */
+function joinArea(old: Candidate | undefined, fresh: Candidate | undefined): FieldState {
+  if (isAbsentArea(old)) return isAbsentArea(fresh) ? {} : { value: fresh! };
+  const before = old!.value as AreaValue;
+  if (isAbsentArea(fresh)) {
+    return before.kind === 'resolved' ? { pending: [old!] } : { value: old! };
+  }
+  if (before.kind !== 'resolved') return { value: fresh! };
+  const after = fresh!.value as AreaValue;
+  if (after.kind !== 'resolved') return { value: fresh!, others: [old!] };
+  return sameValue('area', before, after) ? { value: old! } : { pending: [fresh!, old!] };
+}
+
+/** D-9's table for one field; `pending` is one of the two ask cells. */
+function joinField(
+  field: ReconcileField,
+  earlier: FieldState | undefined,
+  fresh: Candidate | undefined,
+): FieldState {
+  // An unresolved pair stays a question; the new value goes in front (D-15).
+  if (earlier?.pending) {
+    const pending = uniqueCandidates(field, [fresh, ...earlier.pending]);
+    return { pending, ...(earlier.others ? { others: earlier.others } : {}) };
+  }
+  const old = earlier?.value;
+  if (field === 'preferences') return joinPreferences(old, fresh);
+  if (field === 'area') return joinArea(old, fresh);
+  if (!old) return fresh ? { value: fresh } : {};
+  if (!SETTLED(old.provenance)) return fresh ? { value: fresh, others: [old] } : { value: old };
+  if (!fresh) return { pending: [old] };
+  if (!SETTLED(fresh.provenance)) return { value: old, others: [fresh] };
+  return sameValue(field, old.value, fresh.value) ? { value: old } : { pending: [fresh, old] };
+}
+
+function itemKind(pending: readonly Candidate[]): ReconcileItem['kind'] {
+  if (pending.length === 0) return 'open';
+  return pending.length === 1 ? 'old_only' : 'changed';
 }
 
 /** Whether the earlier request said anything worth keeping. */
-export function hasDetails(s: RequestSnapshot): boolean {
-  return RECONCILE_FIELDS.some((f) => valuesOf(s, f) !== null);
+export function hasDetails(side: RequestSide): boolean {
+  return RECONCILE_FIELDS.some((field) =>
+    field === 'area' ? !isAbsentArea(side.area) : side[field] !== undefined,
+  );
+}
+
+/** A settled request as one earlier side of a new walk. */
+export function fieldsOfSide(side: RequestSide): Partial<Record<ReconcileField, FieldState>> {
+  const out: Partial<Record<ReconcileField, FieldState>> = {};
+  for (const field of RECONCILE_FIELDS) {
+    const value = side[field];
+    if (value) out[field] = { value };
+  }
+  return out;
 }
 
 /**
- * The items to ask about, in a fixed order: what kind of place, then the
- * wishes about it, then the facts. Said the same in both, or only in the new
- * request: kept without asking.
+ * The fields of a join and the items to ask, in a fixed order: what kind of
+ * place, then the wishes about it, then the facts. Only D-9's two ask cells
+ * produce items, plus every pair still unresolved on the earlier side.
  */
-export function diffRequests(old: RequestSnapshot, fresh: RequestSnapshot): ReconcileItem[] {
+export function joinRequests(
+  earlier: Partial<Record<ReconcileField, FieldState>>,
+  fresh: RequestSide,
+): { values: Partial<Record<ReconcileField, FieldState>>; items: ReconcileItem[] } {
+  const values: Partial<Record<ReconcileField, FieldState>> = {};
   const items: ReconcileItem[] = [];
   for (const field of RECONCILE_FIELDS) {
-    const before = valuesOf(old, field);
-    if (before === null) continue;
-    if (valuesOf(fresh, field) === null) items.push({ field, kind: 'old_only' });
-    else if (!same(field, old, fresh)) items.push({ field, kind: 'changed' });
+    const joined = joinField(field, earlier[field], fresh[field]);
+    if (joined.value || joined.pending || joined.others) values[field] = joined;
+    if (joined.pending) items.push({ field, kind: itemKind(joined.pending) });
   }
-  return items;
+  return { values, items };
 }
 
-/** The answers a question offers, in the order its chips are shown. */
-export function choicesFor(item: ReconcileItem): ReconcileChoice[] {
-  if (item.kind === 'old_only') return ['keep', 'drop'];
-  return item.field === 'preferences' ? ['new', 'old', 'both'] : ['new', 'old'];
+/** The first item still to be answered; recorded items leave the queue (D-16). */
+export function firstPending(state: Pick<ReconciledRequest, 'items' | 'values'>): number | null {
+  const at = state.items.findIndex((item) => state.values[item.field]?.pending !== undefined);
+  return at < 0 ? null : at;
+}
+
+/** What a chip of an item does, in the order the chips are shown. */
+export type ItemChip =
+  | { kind: 'pick'; index: number }
+  | { kind: 'both' }
+  | { kind: 'keep' }
+  | { kind: 'drop' }
+  | { kind: 'more'; offset: number };
+
+/** At most three chips; the third opens the next three while more remain (O-7 (a)). */
+export function chipsFor(
+  item: ReconcileItem,
+  pending: readonly Candidate[],
+  offset = 0,
+): ItemChip[] {
+  if (pending.length === 0) return [];
+  if (pending.length === 1) return [{ kind: 'keep' }, { kind: 'drop' }];
+  const pick = (index: number): ItemChip => ({ kind: 'pick', index });
+  if (pending.length === 2 && item.field === 'preferences') {
+    return [pick(0), pick(1), { kind: 'both' }];
+  }
+  const rest = pending.length - offset;
+  if (rest <= 3) return Array.from({ length: rest }, (_, i) => pick(offset + i));
+  return [pick(offset), pick(offset + 1), { kind: 'more', offset: offset + 2 }];
+}
+
+const confirmed = (c: Candidate): Candidate => ({
+  ...c,
+  provenance: 'confirmed',
+  ...(c.keys
+    ? {
+        keys: Object.fromEntries(
+          Object.entries(c.keys).map(([key, p]) => [key, SETTLED(p) ? ('confirmed' as const) : p]),
+        ),
+      }
+    : {}),
+});
+
+/** One chip answered. */
+export function applyChip(state: ReconciledRequest, chip: ItemChip): ReconciledRequest {
+  const item = state.items[state.asked!]!;
+  const field = state.values[item.field] ?? {};
+  const pending = field.pending ?? [];
+  if (chip.kind === 'more') return { ...state, offset: chip.offset };
+  const others = field.others ?? [];
+  // Inferred wishes that survived beside the question ride along as assumed.
+  const assumed =
+    item.field === 'preferences'
+      ? (others.find((c) => (c.keys ? !Object.values(c.keys).some(SETTLED) : false)) ?? null)
+      : null;
+  const settle = (value: Candidate | null, rest: Candidate[]): FieldState => {
+    const withAssumed =
+      item.field === 'preferences' && value ? prefsUnion([value, assumed]) : value;
+    const left = uniqueCandidates(item.field, [...rest, ...others]);
+    return {
+      ...(withAssumed ? { value: withAssumed } : {}),
+      ...(left.length ? { others: left } : {}),
+    };
+  };
+  let next: FieldState;
+  if (chip.kind === 'pick') {
+    next = settle(
+      confirmed(pending[chip.index]!),
+      pending.filter((_, i) => i !== chip.index),
+    );
+  } else if (chip.kind === 'both') {
+    next = settle(confirmed(prefsUnion(pending)!), []);
+  } else if (chip.kind === 'keep') {
+    next = settle(confirmed(pending[0]!), []);
+  } else {
+    next = settle(null, pending);
+  }
+  return { ...state, offset: 0, values: { ...state.values, [item.field]: next } };
+}
+
+/** A value the person typed settles a field, whatever stage it was at. */
+export function settleField(
+  state: ReconciledRequest,
+  field: ReconcileField,
+  value: Candidate,
+): ReconciledRequest {
+  const current = state.values[field] ?? {};
+  const others = uniqueCandidates(field, [
+    current.value,
+    ...(current.pending ?? []),
+    ...(current.others ?? []),
+  ]).filter((c) => !sameValue(field, c.value, value.value));
+  return {
+    ...state,
+    values: {
+      ...state.values,
+      [field]: { value, ...(others.length ? { others } : {}) },
+    },
+  };
+}
+
+/** The pieces of taxonomy a bare typed answer can name. */
+export type TaxonomyKeys = {
+  category: string[];
+  occasion: string[];
+  moods: string[];
+  settings: string[];
+};
+
+/**
+ * D-16 rule 1 — the message is a bare value of this field. The area needs the
+ * dataset, so the caller reads it; every other field is here.
+ */
+export function bareValue(
+  field: Exclude<ReconcileField, 'area'>,
+  text: string,
+  pending: readonly Candidate[],
+  taxonomy: TaxonomyKeys,
+  termsOf: TermsOf,
+): Candidate | null {
+  switch (field) {
+    case 'partySize': {
+      const n = bareParty(text);
+      return n === null ? null : { value: n, provenance: 'typed' };
+    }
+    case 'budget': {
+      const budget = bareBudget(text);
+      return budget ? { value: budget, provenance: 'typed' } : null;
+    }
+    case 'time': {
+      const time = bareTime(text);
+      if (!time) return null;
+      // A lone part of the day refines the day already on the table (D-17).
+      const day =
+        time.timeHint ??
+        pending.map((c) => (c.value as TimeValue).timeHint).find((hint) => hint !== null) ??
+        null;
+      return day ? { value: { timeHint: day, dayPart: time.dayPart }, provenance: 'typed' } : null;
+    }
+    case 'category':
+    case 'occasion': {
+      const key = taxonomy[field].find((k) => bareTerm(text, termsOf(k)));
+      return key ? { value: key, provenance: 'typed' } : null;
+    }
+    case 'preferences': {
+      const mood = taxonomy.moods.find((k) => bareTerm(text, termsOf(k)));
+      const setting = taxonomy.settings.find((k) => bareTerm(text, termsOf(k)));
+      const key = mood ?? setting;
+      if (!key) return null;
+      return prefsCandidate(
+        { moods: mood ? [mood] : [], settings: mood ? [] : [setting!] },
+        { [key]: 'typed' },
+      );
+    }
+  }
+}
+
+/** D-19 — a rejected value: the field is asked again, never silently kept or replaced. */
+function rejectField(
+  state: ReconciledRequest,
+  field: ReconcileField,
+  matches: (c: Candidate) => boolean,
+  emptyAsks: boolean,
+): ReconciledRequest {
+  const current = state.values[field] ?? {};
+  const all = uniqueCandidates(field, [
+    current.value,
+    ...(current.pending ?? []),
+    ...(current.others ?? []),
+  ]);
+  if (all.length === 0) return state;
+  const rejected = all.filter(matches);
+  const left = all.filter((c) => !matches(c));
+  if (left.length === 0 && !emptyAsks) {
+    return { ...state, values: { ...state.values, [field]: { others: rejected } } };
+  }
+  const items = state.items.filter((item) => item.field !== field);
+  return {
+    ...state,
+    items: [...items, { field, kind: itemKind(left) }],
+    values: {
+      ...state.values,
+      [field]: { pending: left, ...(rejected.length ? { others: rejected } : {}) },
+    },
+  };
+}
+
+function rejectPreference(state: ReconciledRequest, key: string): ReconciledRequest {
+  const current = state.values.preferences ?? {};
+  const without = (c: Candidate) => {
+    const value = c.value as PrefsValue;
+    const keys = { ...(c.keys ?? {}) };
+    delete keys[key];
+    const moods = value.moods.filter((k) => k !== key);
+    const settings = value.settings.filter((k) => k !== key);
+    return moods.length + settings.length > 0 ? prefsCandidate({ moods, settings }, keys) : null;
+  };
+  const left = uniqueCandidates(
+    'preferences',
+    [current.value, ...(current.pending ?? [])].map((c) =>
+      c ? (without(c) ?? undefined) : undefined,
+    ),
+  );
+  const items = state.items.filter((item) => item.field !== 'preferences');
+  if (left.length === 0) {
+    return { ...state, items, values: { ...state.values, preferences: {} } };
+  }
+  return {
+    ...state,
+    items: [...items, { field: 'preferences', kind: itemKind(left) }],
+    values: { ...state.values, preferences: { pending: left } },
+  };
 }
 
 /**
- * The request the answers describe. An item never asked takes the new value
- * when the new request said it, else the old one (said the same in both).
+ * D-15 — what a message under a joined or walking request changes. Only what
+ * the newest message asserts applies; a mention or a rejection does not.
+ * Jev's own keys fill only absent fields (as assumed) or ones the newest
+ * message states; they never move a key from assumed to settled (A-F-03): the
+ * only way to `stated` is the person's words, checked here.
  */
-export function mergeRequests(
-  old: RequestSnapshot,
-  fresh: RequestSnapshot,
-  choices: Partial<Record<ReconcileField, ReconcileChoice>>,
-): { snapshot: RequestSnapshot; area: AreaSource } {
-  const pick = (field: ReconcileField): 'old' | 'new' | 'both' | 'none' => {
-    const choice = choices[field];
-    if (choice === 'old' || choice === 'keep') return 'old';
-    if (choice === 'drop') return 'none';
-    if (choice === 'both') return 'both';
-    if (choice === 'new') return 'new';
-    return valuesOf(fresh, field) !== null ? 'new' : valuesOf(old, field) !== null ? 'old' : 'none';
+export function applyNewest(
+  state: ReconciledRequest,
+  input: {
+    reading: MessageReading;
+    /** The newest message's own area; `null` when it names none. */
+    area: AreaValue | null;
+    /** Jev's answers on this turn; `null` when no model answered. */
+    jev: Pick<IntentKeys, 'category' | 'occasion' | 'moods' | 'settings'> | null;
+    termsOf: TermsOf;
+  },
+): ReconciledRequest {
+  const { reading, area, jev, termsOf } = input;
+  let next = state;
+  const inWalk = state.status !== 'final';
+  const set = (field: ReconcileField, value: FieldValue) => {
+    const pending = next.values[field]?.pending;
+    const provenance: Provenance = inWalk || pending ? 'typed' : 'stated';
+    next = settleField(next, field, { value, provenance });
   };
-  const from = <T>(field: ReconcileField, o: T, n: T, none: T): T => {
-    const p = pick(field);
-    return p === 'old' ? o : p === 'new' || p === 'both' ? n : none;
-  };
-  const prefs = pick('preferences');
-  const union = (a: string[], b: string[]) => [...new Set([...a, ...b])];
-  const time = pick('time');
-  const area = pick('area');
+  const has = reading.asserted;
+  const no = reading.rejected;
+  if (has.partySize !== null) set('partySize', has.partySize);
+  else if (no.partySize !== null) {
+    next = rejectField(next, 'partySize', (c) => c.value === no.partySize, true);
+  }
+  if (has.budget) set('budget', has.budget);
+  else if (no.budget) {
+    const amount = no.budget.amount;
+    next = rejectField(next, 'budget', (c) => (c.value as BudgetValue).amount === amount, true);
+  }
+  if (has.timeHint !== null) {
+    // The same day without an hour keeps the hour said for it (#733 episode rule).
+    const before = next.values.time?.value?.value as TimeValue | undefined;
+    const dayPart = reading.dayPart ?? (before?.timeHint === has.timeHint ? before.dayPart : null);
+    set('time', { timeHint: has.timeHint, dayPart });
+  } else if (no.timeHint !== null) {
+    const hint = no.timeHint;
+    next = rejectField(next, 'time', (c) => (c.value as TimeValue).timeHint === hint, true);
+  }
+  if (area && area.kind !== 'absent') set('area', area);
+  else if (no.areaText !== null) {
+    const words = normalizeVietnamese(no.areaText);
+    next = rejectField(
+      next,
+      'area',
+      (c) => normalizeVietnamese((c.value as AreaValue).label ?? '').includes(words),
+      true,
+    );
+  }
+
+  for (const field of ['category', 'occasion'] as const) {
+    const current = next.values[field];
+    const held = uniqueCandidates(field, [current?.value, ...(current?.pending ?? [])]);
+    const refused = held.filter(
+      (c) => termStatus(reading, termsOf(c.value as string)) === 'rejected',
+    );
+    if (refused.length > 0) {
+      next = rejectField(next, field, (c) => refused.some((r) => r.value === c.value), false);
+    }
+    const key = jev?.[field] ?? null;
+    if (!key || held.some((c) => c.value === key)) continue;
+    const said = termStatus(reading, termsOf(key));
+    if (said === 'asserted') set(field, key);
+    else if (said === null && !next.values[field]?.value && !next.values[field]?.pending) {
+      next = {
+        ...next,
+        values: {
+          ...next.values,
+          [field]: { ...next.values[field], value: { value: key, provenance: 'inferred' } },
+        },
+      };
+    }
+  }
+
+  const held = next.values.preferences;
+  const heldKeys = uniqueCandidates('preferences', [held?.value, ...(held?.pending ?? [])]).flatMap(
+    (c) => [...(c.value as PrefsValue).moods, ...(c.value as PrefsValue).settings],
+  );
+  for (const key of new Set(heldKeys)) {
+    if (termStatus(reading, termsOf(key)) === 'rejected') next = rejectPreference(next, key);
+  }
+  if (jev) {
+    const add = (key: string, kind: 'moods' | 'settings') => {
+      const field = next.values.preferences ?? {};
+      const said = termStatus(reading, termsOf(key));
+      const isHeld = uniqueCandidates('preferences', [field.value, ...(field.pending ?? [])]).some(
+        (c) =>
+          [...(c.value as PrefsValue).moods, ...(c.value as PrefsValue).settings].includes(key),
+      );
+      if (isHeld && said !== 'asserted') return;
+      const value: PrefsValue = {
+        moods: kind === 'moods' ? [key] : [],
+        settings: kind === 'settings' ? [key] : [],
+      };
+      if (said === 'asserted') {
+        const named = prefsCandidate(value, {
+          [key]: inWalk || field.pending ? 'typed' : 'stated',
+        });
+        if (field.pending) next = settleField(next, 'preferences', named);
+        else {
+          next = {
+            ...next,
+            values: {
+              ...next.values,
+              preferences: { ...field, value: prefsUnion([named, field.value])! },
+            },
+          };
+        }
+      } else if (said === null && !field.value && !field.pending) {
+        next = {
+          ...next,
+          values: {
+            ...next.values,
+            preferences: { ...field, value: prefsCandidate(value, { [key]: 'inferred' }) },
+          },
+        };
+      }
+    };
+    for (const key of jev.moods) add(key, 'moods');
+    for (const key of jev.settings) add(key, 'settings');
+  }
+  return next;
+}
+
+/** The request the settled values describe. A pending field holds no value here. */
+export function joinedRequest(state: Pick<ReconciledRequest, 'values'>): JoinedRequest {
+  const value = <T>(field: ReconcileField) => state.values[field]?.value?.value as T | undefined;
+  const area = value<AreaValue>('area') ?? { kind: 'absent' as const };
+  const time = value<TimeValue>('time');
+  const prefs = value<PrefsValue>('preferences');
   return {
-    snapshot: {
-      category: from('category', old.category, fresh.category, null),
-      occasion: from('occasion', old.occasion, fresh.occasion, null),
-      moods:
-        prefs === 'both'
-          ? union(old.moods, fresh.moods)
-          : prefs === 'old'
-            ? old.moods
-            : prefs === 'new'
-              ? fresh.moods
-              : [],
-      settings:
-        prefs === 'both'
-          ? union(old.settings, fresh.settings)
-          : prefs === 'old'
-            ? old.settings
-            : prefs === 'new'
-              ? fresh.settings
-              : [],
-      facts: {
-        partySize: from('partySize', old.facts.partySize, fresh.facts.partySize, null),
-        budget: from('budget', old.facts.budget, fresh.facts.budget, null),
-        timeHint:
-          time === 'old' ? old.facts.timeHint : time === 'new' ? fresh.facts.timeHint : null,
-        areaText:
-          area === 'old' ? old.facts.areaText : area === 'new' ? fresh.facts.areaText : null,
-      },
-      dayPart: time === 'old' ? old.dayPart : time === 'new' ? fresh.dayPart : null,
+    facts: {
+      partySize: value<number>('partySize') ?? null,
+      budget: value<BudgetValue>('budget') ?? null,
+      timeHint: time?.timeHint ?? null,
+      areaText: area.kind === 'resolved' ? (area.label ?? null) : null,
     },
-    area: area === 'old' ? 'old' : area === 'new' ? 'new' : 'none',
+    dayPart: time?.dayPart ?? null,
+    category: value<string>('category') ?? null,
+    occasion: value<string>('occasion') ?? null,
+    moods: prefs?.moods ?? [],
+    settings: prefs?.settings ?? [],
+    area,
   };
+}
+
+/**
+ * What the two model calls are told on a joined request (D-15): what the
+ * person said or chose, what GoGo inferred, what is undecided. Labels travel
+ * as data (#737).
+ */
+export type ResolvedPayload = {
+  settled: Record<string, DecisionCriterion>;
+  assumed: Record<string, DecisionCriterion>;
+  open: ReconcileField[];
+  labels: Record<string, string>;
+};
+
+export function resolvedPayload(
+  state: Pick<ReconciledRequest, 'values'>,
+  labels: ReadonlyMap<string, string>,
+): ResolvedPayload {
+  const payload: ResolvedPayload = { settled: {}, assumed: {}, open: [], labels: {} };
+  const label = (key: string) => {
+    const text = labels.get(key);
+    if (text) payload.labels[key] = text;
+  };
+  for (const field of RECONCILE_FIELDS) {
+    const state_ = state.values[field];
+    if (state_?.pending || !state_?.value) {
+      payload.open.push(field);
+      continue;
+    }
+    const c = state_.value;
+    if (field === 'preferences') {
+      const prefs = c.value as PrefsValue;
+      for (const [kind, keys] of [
+        ['moods', prefs.moods],
+        ['settings', prefs.settings],
+      ] as const) {
+        for (const key of keys) {
+          const target = SETTLED(c.keys?.[key] ?? c.provenance) ? payload.settled : payload.assumed;
+          ((target[kind] as string[] | undefined) ?? ((target[kind] = []) as string[])).push(key);
+          label(key);
+        }
+      }
+      continue;
+    }
+    const target = SETTLED(c.provenance) ? payload.settled : payload.assumed;
+    if (field === 'area') {
+      const area = c.value as AreaValue;
+      if (area.kind === 'resolved') target.area = area.label ?? null;
+      else payload.open.push(field);
+      continue;
+    }
+    target[field] = c.value as DecisionCriterion;
+    if (field === 'category' || field === 'occasion') label(c.value as string);
+  }
+  return payload;
+}
+
+/** Every stored value's source request is gone from the old side: chained refs stay bounded. */
+export const MAX_STORED_REFS = 7;
+
+export function boundedRefs(refs: Ref[]): Ref[] {
+  return refs.length <= MAX_STORED_REFS ? refs : [refs[0]!, ...refs.slice(-(MAX_STORED_REFS - 1))];
 }
 
 // ── wording (fixed vocabulary) ───────────────────────────────────────────────
@@ -205,31 +804,33 @@ function money(amount: number, lang: Lang): string {
   return `${amount}đ`;
 }
 
-/** One side of an item as words; `labels` resolves taxonomy keys. */
+/** One value as words; `labels` resolves taxonomy keys. */
 function describe(
   field: ReconcileField,
-  s: RequestSnapshot,
+  c: Candidate,
   labels: ReadonlyMap<string, string>,
   lang: Lang,
 ): string {
   const label = (key: string) => labels.get(key) ?? key;
   switch (field) {
     case 'category':
-      return label(s.category!);
     case 'occasion':
-      return label(s.occasion!);
-    case 'preferences':
-      return [...s.moods, ...s.settings].map(label).join(', ');
+      return label(c.value as string);
+    case 'preferences': {
+      const prefs = c.value as PrefsValue;
+      return [...prefs.moods, ...prefs.settings].map(label).join(', ');
+    }
     case 'partySize':
-      return lang === 'vi' ? `${s.facts.partySize} người` : `${s.facts.partySize} people`;
+      return lang === 'vi' ? `${c.value as number} người` : `${c.value as number} people`;
     case 'area':
-      return s.facts.areaText!.trim();
+      return (c.value as AreaValue).label ?? '';
     case 'time': {
-      const day = TIME_WORDS[s.facts.timeHint!][lang];
-      return s.dayPart ? `${day} ${DAY_PART_WORDS[s.dayPart][lang]}` : day;
+      const time = c.value as TimeValue;
+      const day = time.timeHint ? TIME_WORDS[time.timeHint][lang] : '';
+      return time.dayPart ? `${day} ${DAY_PART_WORDS[time.dayPart][lang]}`.trim() : day;
     }
     case 'budget': {
-      const b = s.facts.budget!;
+      const b = c.value as BudgetValue;
       const amount = money(b.amount, lang);
       if (b.mode === 'per_person')
         return lang === 'vi' ? `${amount}/người` : `${amount} per person`;
@@ -278,24 +879,31 @@ export function modeQuestion(lang: Lang): { text: string; group: AssistantFollow
 /**
  * One item, one question: "Bạn muốn cho 3 người?" with the new value first,
  * "Bạn muốn lãng mạn hay ngoài trời?" for wishes (or both), "Bạn vẫn muốn ở
- * Hà Nội?" for what only the earlier request said.
+ * Hà Nội?" for what only the earlier request said. More than two candidates
+ * are shown in stages (O-7 (a)), newest first.
  */
 export function itemQuestion(
   item: ReconcileItem,
-  old: RequestSnapshot,
-  fresh: RequestSnapshot,
+  pending: readonly Candidate[],
+  offset: number,
   labels: ReadonlyMap<string, string>,
   lang: Lang,
 ): { text: string; group: AssistantFollowUpGroup } {
   const vi = lang === 'vi';
-  const o = describe(item.field, old, labels, lang).slice(0, 60);
+  const words = (c: Candidate) => describe(item.field, c, labels, lang).slice(0, 60);
   const field = `reconcile_${item.field}`;
-  const groupLabel = vi
-    ? `Về ${FIELD_NOUN[item.field].vi}`
-    : `About the ${FIELD_NOUN[item.field].en}`;
+  const noun = FIELD_NOUN[item.field];
+  const groupLabel = vi ? `Về ${noun.vi}` : `About the ${noun.en}`;
   const at = item.field === 'area' ? (vi ? 'ở ' : 'in ') : '';
   const forWhom = item.field === 'partySize' ? (vi ? 'cho ' : 'for ') : '';
-  if (item.kind === 'old_only') {
+  if (pending.length === 0) {
+    return {
+      text: vi ? `Bạn cho mình biết ${noun.vi} nhé?` : `What ${noun.en} would you like?`,
+      group: { field, label: groupLabel, options: [] },
+    };
+  }
+  const o = words(pending[pending.length === 1 ? 0 : 1]!);
+  if (pending.length === 1) {
     return {
       text: vi ? `Bạn vẫn muốn ${forWhom}${at}${o}?` : `Do you still want ${forWhom}${at}${o}?`,
       group: {
@@ -304,17 +912,17 @@ export function itemQuestion(
         options: vi
           ? [
               { label: `Giữ: ${o}`.slice(0, 40), text: `Vẫn ${forWhom}${at}${o}` },
-              { label: 'Bỏ', text: `Bỏ ${FIELD_NOUN[item.field].vi}` },
+              { label: 'Bỏ', text: `Bỏ ${noun.vi}` },
             ]
           : [
               { label: `Keep: ${o}`.slice(0, 40), text: `Still ${forWhom}${at}${o}` },
-              { label: 'Drop it', text: `Drop the ${FIELD_NOUN[item.field].en}` },
+              { label: 'Drop it', text: `Drop the ${noun.en}` },
             ],
       },
     };
   }
-  const n = describe(item.field, fresh, labels, lang).slice(0, 60);
-  if (item.field === 'preferences') {
+  const n = words(pending[0]!);
+  if (pending.length === 2 && item.field === 'preferences') {
     return {
       text: vi ? `Bạn muốn ${n} hay ${o}?` : `Do you want ${n} or ${o}?`,
       group: {
@@ -334,58 +942,61 @@ export function itemQuestion(
       },
     };
   }
+  if (pending.length === 2) {
+    return {
+      text: vi
+        ? `Bạn muốn ${forWhom}${at}${n}? (trước đó là ${o})`
+        : `Do you want ${forWhom}${at}${n}? (earlier: ${o})`,
+      group: {
+        field,
+        label: groupLabel,
+        options: [
+          { label: n.slice(0, 40), text: `${vi ? 'Đổi sang' : 'Change to'} ${forWhom}${at}${n}` },
+          { label: o.slice(0, 40), text: `${vi ? 'Giữ' : 'Keep'} ${forWhom}${at}${o}` },
+        ],
+      },
+    };
+  }
+  const chips = chipsFor(item, pending, offset);
+  const shown = chips.flatMap((chip) =>
+    chip.kind === 'pick' ? [words(pending[chip.index]!)] : [],
+  );
   return {
     text: vi
-      ? `Bạn muốn ${forWhom}${at}${n}? (trước đó là ${o})`
-      : `Do you want ${forWhom}${at}${n}? (earlier: ${o})`,
+      ? `Bạn chọn ${noun.vi} nào: ${shown.join(', ')}?`
+      : `Which ${noun.en} would you like: ${shown.join(', ')}?`,
     group: {
       field,
       label: groupLabel,
-      options: [
-        { label: n.slice(0, 40), text: `${vi ? 'Đổi sang' : 'Change to'} ${forWhom}${at}${n}` },
-        { label: o.slice(0, 40), text: `${vi ? 'Giữ' : 'Keep'} ${forWhom}${at}${o}` },
-      ],
+      options: chips.map((chip) =>
+        chip.kind === 'pick'
+          ? {
+              label: words(pending[chip.index]!).slice(0, 40),
+              text: `${vi ? 'Chọn' : 'Choose'} ${forWhom}${at}${words(pending[chip.index]!)}`,
+            }
+          : vi
+            ? { label: 'Giá trị khác…', text: 'Giá trị khác…' }
+            : { label: 'Other values…', text: 'Other values…' },
+      ),
     },
   };
 }
 
-/**
- * What a reconciling turn stores (in its trace) for the next one to read:
- * message ids and keys, never text. `asked` is the item asked on this turn
- * (`null` while the first question is open).
- */
-export type ReconcileState = {
-  oldRefs: { id: string; allowBareArea: boolean }[];
-  newRef: { id: string; allowBareArea: boolean };
-  oldIntent: IntentKeys;
-  newIntent: IntentKeys;
-  items: ReconcileItem[];
-  asked: number | null;
-  choices: Partial<Record<ReconcileField, ReconcileChoice>>;
-};
-
-/** The classification keys of one request, as its turn's trace keeps them. */
-export type IntentKeys = {
-  intent: string;
-  action: string;
-  category: string | null;
-  occasion: string | null;
-  moods: string[];
-  settings: string[];
-  model: string | null;
-};
-
-export function isReconcileState(value: unknown): value is ReconcileState {
+export function isReconcileState(value: unknown): value is ReconciledRequest {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   const ref = (r: unknown) =>
     !!r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string';
+  const refs = v.refs as { old?: unknown; new?: unknown } | undefined;
   return (
-    Array.isArray(v.oldRefs) &&
-    v.oldRefs.length > 0 &&
-    v.oldRefs.length <= 7 &&
-    v.oldRefs.every(ref) &&
-    ref(v.newRef) &&
+    // A walk stored before D-15 is not read back: its chip starts over (D-13).
+    v.v === 2 &&
+    !!refs &&
+    Array.isArray(refs.old) &&
+    refs.old.length > 0 &&
+    refs.old.length <= MAX_STORED_REFS &&
+    refs.old.every(ref) &&
+    ref(refs.new) &&
     Array.isArray(v.items) &&
     v.items.every(
       (i) =>
@@ -394,9 +1005,10 @@ export function isReconcileState(value: unknown): value is ReconcileState {
         (RECONCILE_FIELDS as readonly string[]).includes((i as ReconcileItem).field),
     ) &&
     (v.asked === null || (typeof v.asked === 'number' && v.asked < v.items.length)) &&
-    !!v.oldIntent &&
-    !!v.newIntent &&
-    !!v.choices &&
-    typeof v.choices === 'object'
+    typeof v.offset === 'number' &&
+    (v.status === 'asking' || v.status === 'suspended' || v.status === 'final') &&
+    !!v.intents &&
+    !!v.values &&
+    typeof v.values === 'object'
   );
 }
