@@ -301,7 +301,14 @@ function joinField(
   if (earlier?.pending) {
     // Only a value the person said enters an open question; a model's guess
     // never does, so a rejected value cannot return by inference (A-F-08).
-    const said = fresh && SETTLED(fresh.provenance) ? fresh : undefined;
+    // Per key for the wishes: one stated key does not smuggle an inferred one in.
+    const said = !fresh
+      ? undefined
+      : field === 'preferences'
+        ? (prefsSubset(fresh, SETTLED) ?? undefined)
+        : SETTLED(fresh.provenance)
+          ? fresh
+          : undefined;
     const pending = uniqueCandidates(field, [said, ...earlier.pending]);
     return { pending, ...(earlier.others ? { others: earlier.others } : {}) };
   }

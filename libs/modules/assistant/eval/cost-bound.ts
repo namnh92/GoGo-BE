@@ -34,9 +34,11 @@ import type { ResolvedPayload } from '../domain/reconcile';
  * What `C` is (Astra r1 on #745, SA decision 2026-11-02): the charge of the
  * largest request the code can build, counted by the provider, plus margin —
  * a **calibrated worst-case estimate**, not a proof over every string under
- * the caps (tokens per character are not bounded). What bounds spend is the
- * reservation: a turn is admitted at `C`, and a call that exceeds its share
- * can overspend by at most its own excess, once, before the ledger records it.
+ * the caps (tokens per character are not bounded). The reservation bounds
+ * admission, not provider charges: a turn is admitted at `C`, an underestimated
+ * call charges what it charges, concurrent turns can each exceed `C`, and the
+ * ledger records it after the turn. The drift check below and the ledger check
+ * (no settled turn above `C`) notice an underestimate; neither prevents it.
  */
 
 /** USD per token, one price per direction. Source and date: `PRICE_SOURCE`. */

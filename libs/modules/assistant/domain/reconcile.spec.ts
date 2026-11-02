@@ -310,6 +310,27 @@ describe('#738 O-7 (a) candidates in stages', () => {
     expect(said.values.category!.pending!.map((c) => c.value)).toEqual(['category:cafe']);
   });
 
+  it('A-F-08: wishes are admitted per key — a stated key brings no inferred one with it', () => {
+    const romantic: Candidate = {
+      value: { moods: ['romantic'], settings: [] },
+      provenance: 'stated',
+      keys: { romantic: 'stated' },
+    };
+    const mixed: Candidate = {
+      value: { moods: ['romantic'], settings: ['outdoor'] },
+      provenance: 'stated',
+      keys: { romantic: 'stated', outdoor: 'inferred' },
+    };
+    // outdoor was rejected earlier (it is in no list); only romantic may come back.
+    const { values } = joinRequests(
+      { preferences: { pending: [romantic] } },
+      { preferences: mixed },
+    );
+    expect(values.preferences!.pending!.map((c) => c.value)).toEqual([
+      { moods: ['romantic'], settings: [] },
+    ]);
+  });
+
   it('a pending field is `open` to the models, and holds no value', () => {
     const st = walk(OLD, NEW);
     expect(joinedRequest(st).facts.partySize).toBeNull();
