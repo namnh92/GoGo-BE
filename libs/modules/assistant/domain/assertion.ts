@@ -45,13 +45,26 @@ const EMPTY_FACTS = (): IntentFacts => ({
 });
 
 export type MessageReading = {
-  /** The latest asserted value of each fact. */
+  /** The latest asserted value of each fact; a later clause rejecting it clears it. */
   asserted: IntentFacts;
   dayPart: DayPart | null;
-  /** The facts a negated clause contains. */
-  rejected: IntentFacts;
+  /** The facts a negated clause contains, and no later clause asserted again. */
+  rejected: Rejected;
   clauses: { text: string; negated: boolean }[];
 };
+
+export type Rejected = {
+  partySize: number[];
+  budget: NonNullable<IntentFacts['budget']>[];
+  timeHint: NonNullable<IntentFacts['timeHint']>[];
+  areaText: string[];
+};
+
+const noRejections = (): Rejected => ({ partySize: [], budget: [], timeHint: [], areaText: [] });
+const sameBudget = (
+  a: NonNullable<IntentFacts['budget']> | null,
+  b: NonNullable<IntentFacts['budget']>,
+) => a?.amount === b.amount;
 
 export function readMessage(input: string): MessageReading {
   const text = input.normalize('NFC').replace(QUOTED, ' ');
@@ -61,7 +74,7 @@ export function readMessage(input: string): MessageReading {
     return {
       asserted: parseIntentFacts(text),
       dayPart: parseDayPart(text),
-      rejected: EMPTY_FACTS(),
+      rejected: noRejections(),
       clauses: [{ text, negated: false }],
     };
   }
@@ -71,18 +84,69 @@ export function readMessage(input: string): MessageReading {
     .filter((clause) => clause.length > 0)
     .map((clause) => ({ text: clause, negated: hasNegation(clause) }));
   const asserted = EMPTY_FACTS();
-  const rejected = EMPTY_FACTS();
+  const rejected = noRejections();
   let dayPart: DayPart | null = null;
+  // Clause order decides: what a later clause says about the same value stands.
   for (const clause of clauses) {
     const facts = parseIntentFacts(clause.text);
-    const into = clause.negated ? rejected : asserted;
-    if (facts.partySize !== null) into.partySize = facts.partySize;
-    if (facts.budget !== null) into.budget = facts.budget;
-    if (facts.timeHint !== null) into.timeHint = facts.timeHint;
-    if (facts.areaText !== null) into.areaText = facts.areaText;
-    if (!clause.negated) dayPart = parseDayPart(clause.text) ?? dayPart;
+    if (clause.negated) {
+      if (facts.partySize !== null) {
+        rejected.partySize.push(facts.partySize);
+        if (asserted.partySize === facts.partySize) asserted.partySize = null;
+      }
+      if (facts.budget) {
+        rejected.budget.push(facts.budget);
+        if (sameBudget(asserted.budget, facts.budget)) asserted.budget = null;
+      }
+      if (facts.timeHint !== null) {
+        rejected.timeHint.push(facts.timeHint);
+        if (asserted.timeHint === facts.timeHint) {
+          asserted.timeHint = null;
+          dayPart = null;
+        }
+      }
+      if (facts.areaText !== null) {
+        rejected.areaText.push(facts.areaText);
+        if (asserted.areaText === facts.areaText) asserted.areaText = null;
+      }
+      continue;
+    }
+    if (facts.partySize !== null) {
+      asserted.partySize = facts.partySize;
+      rejected.partySize = rejected.partySize.filter((n) => n !== facts.partySize);
+    }
+    if (facts.budget) {
+      const budget = facts.budget;
+      asserted.budget = budget;
+      rejected.budget = rejected.budget.filter((b) => !sameBudget(b, budget));
+    }
+    if (facts.timeHint !== null) {
+      asserted.timeHint = facts.timeHint;
+      rejected.timeHint = rejected.timeHint.filter((t) => t !== facts.timeHint);
+    }
+    if (facts.areaText !== null) {
+      asserted.areaText = facts.areaText;
+      rejected.areaText = rejected.areaText.filter((t) => t !== facts.areaText);
+    }
+    dayPart = parseDayPart(clause.text) ?? dayPart;
   }
   return { asserted, dayPart, rejected, clauses };
+}
+
+/** What the message asserts, as text: no quoted span, no negated clause (F-01). */
+export function assertedText(input: string): string {
+  return readMessage(input)
+    .clauses.filter((clause) => !clause.negated)
+    .map((clause) => clause.text)
+    .join(', ');
+}
+
+/** What the message rejects, as text. */
+export function rejectedText(input: string): string {
+  return readMessage(input)
+    .clauses.filter((clause) => clause.negated)
+    .map((clause) => clause.text)
+    .join(', ');
 }
 
 const containsTerm = (haystack: string, term: string) => {
@@ -160,7 +224,7 @@ const LOCATIVE = /(?:gần|ở|quanh|khu vực|khu|tại|bên|phía)\s*$/iu;
 /** A bare party size: "4 người", "cho 4 người nhé", "3 người thôi". */
 export function bareParty(input: string): number | null {
   const reading = readMessage(input);
-  if (reading.rejected.partySize !== null || reading.asserted.partySize === null) return null;
+  if (reading.rejected.partySize.length > 0 || reading.asserted.partySize === null) return null;
   return isOnlyParticles(input.normalize('NFC').toLowerCase().replace(PARTY_SPAN, ' '))
     ? reading.asserted.partySize
     : null;
@@ -169,7 +233,7 @@ export function bareParty(input: string): number | null {
 export function bareBudget(input: string): NonNullable<IntentFacts['budget']> | null {
   const reading = readMessage(input);
   const budget = reading.asserted.budget;
-  if (reading.rejected.budget !== null || budget === null) return null;
+  if (reading.rejected.budget.length > 0 || budget === null) return null;
   const text = input.normalize('NFC').toLowerCase();
   const span = parseBudgetSpan(text);
   if (!span) return null;
@@ -208,7 +272,7 @@ export function lonePart(input: string): DayPart | null {
 export function bareAreaPhrase(input: string): string | null {
   const reading = readMessage(input);
   const area = reading.asserted.areaText;
-  if (reading.rejected.areaText !== null || area === null) return null;
+  if (reading.rejected.areaText.length > 0 || area === null) return null;
   const text = input.normalize('NFC');
   const at = text.toLowerCase().lastIndexOf(area.toLowerCase());
   if (at < 0) return null;

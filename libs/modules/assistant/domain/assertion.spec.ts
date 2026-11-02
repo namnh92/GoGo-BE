@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertedText,
   bareAreaPhrase,
   bareBudget,
   bareParty,
@@ -8,6 +9,7 @@ import {
   isOnlyParticles,
   lonePart,
   readMessage,
+  rejectedText,
   statesTerm,
   termStatus,
 } from './assertion';
@@ -33,7 +35,7 @@ describe('#738 D-19 a parsed fact asserts only when it is not negated', () => {
     it(`"${text}"`, () => {
       const r = readMessage(text);
       expect(r.asserted.partySize).toBe(asserted);
-      expect(r.rejected.partySize).toBe(rejected);
+      expect(r.rejected.partySize).toEqual(rejected === null ? [] : [rejected]);
     });
   }
 
@@ -57,7 +59,22 @@ describe('#738 D-19 a parsed fact asserts only when it is not negated', () => {
   it('a budget with a decimal mark survives the clause split', () => {
     const r = readMessage('không 2 triệu, 1,5 triệu thôi');
     expect(r.asserted.budget?.amount).toBe(1_500_000);
-    expect(r.rejected.budget?.amount).toBe(2_000_000);
+    expect(r.rejected.budget.map((b) => b.amount)).toEqual([2_000_000]);
+  });
+
+  it('clause order decides: a later clause about the same value stands (F-02)', () => {
+    const denied = readMessage('4 người, không phải 4 người');
+    expect(denied.asserted.partySize).toBeNull();
+    expect(denied.rejected.partySize).toEqual([4]);
+    const again = readMessage('không phải 4 người, 4 người');
+    expect(again.asserted.partySize).toBe(4);
+    expect(again.rejected.partySize).toEqual([]);
+  });
+
+  it('only asserting clauses read as asserted text (F-01)', () => {
+    expect(assertedText('“Đà Nẵng” nghe xa quá').includes('Đà Nẵng')).toBe(false);
+    expect(assertedText('không ở Hà Nội, ở Đà Nẵng')).toBe('ở Đà Nẵng');
+    expect(rejectedText('không ở Hà Nội, ở Đà Nẵng')).toBe('không ở Hà Nội');
   });
 
   it('terms: asserted in one clause, rejected in another', () => {

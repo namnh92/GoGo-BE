@@ -70,11 +70,11 @@ function secondsUntil(at: Date, now: Date): number {
 
 /**
  * #738 D-11 — each call's share of the per-turn worst case `C`, from
- * `pnpm assistant:cost-bound` (DEV 2026-11-02, the run that gave `C` = 0.003532):
+ * `pnpm assistant:cost-bound` (DEV 2026-11-02, the run that gave `C` = 0.003904):
  * `C = 1.25 × (2 × decision + relevance + compose)`.
  * Owner 2026-11-02: one configured value, and the shares live here.
  */
-export const TURN_CALL_SHARE = { decision: 0.084, relevance: 0.074, compose: 0.757 } as const;
+export const TURN_CALL_SHARE = { decision: 0.076, relevance: 0.067, compose: 0.78 } as const;
 export type TurnCall = keyof typeof TURN_CALL_SHARE;
 
 /**

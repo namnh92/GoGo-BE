@@ -608,7 +608,7 @@ by owner order O-7 (a), reviewed on the PR. Source of the mechanism: `astra-sugg
   included, counted by the provider that bills them (a paid probe, owner 2026-11-02: Jev has no public
   tokenizer), per-direction list prices, a 25 % margin that holds the 5 % BYOK fee. A missing count
   fails the run. Jev's output term is zero because its listed completion price is $0; the Decisions API
-  takes no `max_tokens`, so that is a price fact, not a cap. Haiku's output is capped by `ASSISTANT_MAX_OUTPUT_TOKENS`.
+  takes no `max_tokens`, so that is a price fact, not a cap. The caps it counts on are enforced where the request is built: the message at the send contract's 2000, place names and guide headings at 200, excerpts at 1200. Haiku's output is capped by `ASSISTANT_MAX_OUTPUT_TOKENS`.
 - AC-4 (DEV live: the two sentences) is not covered by unit tests; it needs a deploy.
 
 ### A new request asks "new or update?" (GoGo-BE#738, owner 2026-11-01, 2026-11-02)
@@ -664,7 +664,7 @@ by owner order O-7 (a), reviewed on the PR. Source of the mechanism: `astra-sugg
   into clauses; a fact in a clause holding a negation marker anywhere (`không`, `không phải`, `chẳng`,
   `đừng`, `bỏ`, `khỏi`, `hết`, `thôi … nữa`, typed with or without marks; "không gian"/"không khí" are
   nouns) or inside quotes asserts nothing. A rejected value re-asks the field with what remains; with no
-  asserted value beside it, a rejection of anything else re-asks too and the current value stays a chip.
+  asserted value beside it, a rejection of anything else re-asks too and the current value stays a chip. Clause order decides within a message; a rejected alternative is not offered again; with nothing left the field stays open and no model answer fills it. Areas follow the same rule: only asserting clauses are read for one.
   Over-rejection costs one question.
 - **A typed message mid-walk (D-16).** A bare value for the open item answers it ("4 người", "cho 4
   người nhé"; particles `cho`, `cho mình`, `cho tôi`, `mình`, `tôi`, `là`, `thì`, `nhé`, `nha`, `ạ`,

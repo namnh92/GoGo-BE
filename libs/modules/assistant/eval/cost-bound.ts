@@ -9,9 +9,11 @@ import {
   buildRelevanceRequest,
 } from '../domain/decision';
 import {
+  MAX_CONTEXT_NAME_CHARS,
   MAX_GUIDE_EXCERPT_CHARS,
   MAX_HISTORY_CHARS,
   MAX_HISTORY_TURNS,
+  MAX_MESSAGE_CHARS,
   buildComposerMessages,
   type GroundedAnswerContext,
 } from '../domain/grounding';
@@ -49,7 +51,7 @@ export const MARGIN = 0.25;
 export const BYOK_FEE = 0.05;
 /** The relevance call's candidates, `RELEVANCE_MAX` in the orchestrator. */
 export const RELEVANCE_CANDIDATES = 6;
-const MAX_NAME_CHARS = 200;
+const MAX_NAME_CHARS = MAX_CONTEXT_NAME_CHARS;
 
 /** A deterministic filler that tokenizes badly: rare scripts, digits and emoji. */
 export function filler(length: number): string {
@@ -162,7 +164,7 @@ export function worstCases(taxonomy: IntentTaxonomy, composeOutputTokens: number
   return {
     decision,
     relevance,
-    compose: buildComposerMessages(ctx, history, filler(MAX_REQUEST_CHARS)),
+    compose: buildComposerMessages(ctx, history, filler(MAX_MESSAGE_CHARS)),
     composeOutputTokens,
   };
 }

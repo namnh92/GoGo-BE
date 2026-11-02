@@ -41,6 +41,7 @@ import {
 } from '../domain/decision';
 import {
   StreamSanitizer,
+  MAX_CONTEXT_NAME_CHARS,
   buildComposerMessages,
   constraintsFrom,
   deterministicReply,
@@ -55,7 +56,13 @@ import {
   type AssistantFollowUpGroup,
   type AssistantProposalValue,
 } from '../domain/assistant.types';
-import { bareAreaPhrase, lonePart, readMessage } from '../domain/assertion';
+import {
+  assertedText,
+  bareAreaPhrase,
+  lonePart,
+  readMessage,
+  rejectedText,
+} from '../domain/assertion';
 import {
   RECONCILE_FIELDS,
   RECONCILE_MODE_CHOICES,
@@ -581,17 +588,20 @@ export class AssistantOrchestrator {
         episode.resolution ??
         (await guard.run(() =>
           this.areas.resolve(
-            (episode.areaMessages ?? episode.messages).map((m) => m.text).join('\n'),
+            (episode.areaMessages ?? episode.messages).map((m) => assertedText(m.text)).join('\n'),
             facts.areaText,
             episode.areaMessages
               ? {
-                  text: episode.areaMessages[episode.areaMessages.length - 1]?.text ?? '',
+                  text: assertedText(
+                    episode.areaMessages[episode.areaMessages.length - 1]?.text ?? '',
+                  ),
                   areaText: episode.latestAreaText,
                 }
-              : { text: input.text, areaText: episode.latestAreaText },
+              : { text: assertedText(input.text), areaText: episode.latestAreaText },
             (episode.areaMessages ?? episode.messages).map((m) => ({
               ...m,
-              areaText: parseIntentFacts(m.text).areaText,
+              text: assertedText(m.text),
+              areaText: readMessage(m.text).asserted.areaText,
             })),
           ),
         ));
@@ -1267,7 +1277,11 @@ export class AssistantOrchestrator {
   }
 
   /** D-17: the area a request's messages name, with its status. */
-  private async areaValueOf(messages: EpisodeMessage[]): Promise<AreaValue> {
+  private areaValueOf(messages: EpisodeMessage[]): Promise<AreaValue> {
+    return this.areaOfText(messages.map((m) => ({ ...m, text: assertedText(m.text) })));
+  }
+
+  private async areaOfText(messages: EpisodeMessage[]): Promise<AreaValue> {
     const last = messages[messages.length - 1];
     if (!last) return { kind: 'absent' };
     const withArea = messages.map((m) => ({ ...m, areaText: parseIntentFacts(m.text).areaText }));
@@ -1319,8 +1333,8 @@ export class AssistantOrchestrator {
           (open === 'area' &&
             !startsNewRequest(text) &&
             !readMessage(text).clauses.some((c) => c.negated) &&
-            text.trim().split(/\s+/).length <= MAX_BARE_AREA_WORDS &&
-            (await this.areas.namesArea(text, true)));
+            assertedText(text).trim().split(/\s+/).length <= MAX_BARE_AREA_WORDS &&
+            (await this.areas.namesArea(assertedText(text), true)));
         if (!named) continue;
         const area = await this.areaValueOf([{ text, allowBareArea: true }]);
         if (area.kind === 'resolved') return { field, value: { value: area, provenance: 'typed' } };
@@ -1522,13 +1536,26 @@ export class AssistantOrchestrator {
     const joined = resolved.joined!;
     const latest = resolved.latest ?? resolved.candidate.messages.at(-1)!;
     const reading = readMessage(latest.text);
+    // F-01: only the clauses that assert are read for an area, as for every fact.
+    const named = assertedText(latest.text);
     const said =
       reading.asserted.areaText !== null ||
-      (reading.rejected.areaText === null &&
-        (await this.areas.namesArea(latest.text, latest.allowBareArea)));
+      (named.length > 0 && (await this.areas.namesArea(named, latest.allowBareArea)));
     const area = said ? await this.areaValueOf([latest]) : null;
+    const denied = rejectedText(latest.text);
+    const rejectedArea =
+      denied.length > 0 && (await this.areas.namesArea(denied, true))
+        ? await this.areaOfText([{ ...latest, text: denied, allowBareArea: true }])
+        : null;
     const answered = decision.source === 'decision_model' ? keysOf(decision) : null;
-    let next = applyNewest(joined, { reading, area, jev: answered, termsOf });
+    let next = applyNewest(joined, {
+      text: latest.text,
+      reading,
+      area,
+      rejectedArea,
+      jev: answered,
+      termsOf,
+    });
     // A walk still at "new or update?" asks that again; no item is opened for it.
     const atMode = joined.status !== 'final' && joined.asked === null;
     const asked = atMode ? null : firstPending(next);
@@ -1913,7 +1940,12 @@ export class AssistantOrchestrator {
     const stageStartedAt = Date.now();
     const tags = await this.hydrator.placeTags(ids);
     const names = new Map<string, string>();
-    for (const id of ids) names.set(id, (await this.hydrator.placeCard(id)).facts.name);
+    for (const id of ids) {
+      names.set(
+        id,
+        (await this.hydrator.placeCard(id)).facts.name.slice(0, MAX_CONTEXT_NAME_CHARS),
+      );
+    }
     // Server-generated keys; the key → id map never leaves this process.
     const keyed = ids.map((id, i) => ({ key: `c${i + 1}`, id }));
     const request = buildRelevanceRequest(

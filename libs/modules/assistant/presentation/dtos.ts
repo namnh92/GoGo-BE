@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { FEEDBACK_REASONS } from '../domain/assistant.types';
+import { MAX_MESSAGE_CHARS } from '../domain/grounding';
 
 /** Zod mirrors of the `assistant` contract (openapi 2.0.0-alpha.3). */
 
@@ -30,7 +31,7 @@ export const listMessagesQuery = z.object({ limit: limit(50, 30), cursor });
 
 export const sendMessageBody = z
   .object({
-    text: z.string().min(1).max(2000),
+    text: z.string().min(1).max(MAX_MESSAGE_CHARS),
     context: context.optional(),
     attachments: z
       .array(z.object({ uploadKey: z.string().max(512) }).strict())

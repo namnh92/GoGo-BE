@@ -503,12 +503,15 @@ export function bareValue(
   }
 }
 
-/** D-19 — a rejected value: the field is asked again, never silently kept or replaced. */
+/**
+ * D-19 — a rejected value: the field is asked again with what is left, never
+ * silently kept or replaced. With nothing left it stays open (`pending: []`),
+ * so no model answer can fill it before the person does (F-04).
+ */
 function rejectField(
   state: ReconciledRequest,
   field: ReconcileField,
   matches: (c: Candidate) => boolean,
-  emptyAsks: boolean,
 ): ReconciledRequest {
   const current = state.values[field] ?? {};
   const all = uniqueCandidates(field, [
@@ -519,13 +522,9 @@ function rejectField(
   if (all.length === 0) return state;
   const rejected = all.filter(matches);
   const left = all.filter((c) => !matches(c));
-  if (left.length === 0 && !emptyAsks) {
-    return { ...state, values: { ...state.values, [field]: { others: rejected } } };
-  }
-  const items = state.items.filter((item) => item.field !== field);
   return {
     ...state,
-    items: [...items, { field, kind: itemKind(left) }],
+    items: [...state.items.filter((item) => item.field !== field), { field, kind: itemKind(left) }],
     values: {
       ...state.values,
       [field]: { pending: left, ...(rejected.length ? { others: rejected } : {}) },
@@ -533,29 +532,67 @@ function rejectField(
   };
 }
 
-function rejectPreference(state: ReconciledRequest, key: string): ReconciledRequest {
-  const current = state.values.preferences ?? {};
-  const without = (c: Candidate) => {
-    const value = c.value as PrefsValue;
-    const keys = { ...(c.keys ?? {}) };
-    delete keys[key];
-    const moods = value.moods.filter((k) => k !== key);
-    const settings = value.settings.filter((k) => k !== key);
-    return moods.length + settings.length > 0 ? prefsCandidate({ moods, settings }, keys) : null;
-  };
-  const left = uniqueCandidates(
-    'preferences',
-    [current.value, ...(current.pending ?? [])].map((c) =>
-      c ? (without(c) ?? undefined) : undefined,
-    ),
-  );
-  const items = state.items.filter((item) => item.field !== 'preferences');
-  if (left.length === 0) {
-    return { ...state, items, values: { ...state.values, preferences: {} } };
-  }
+/** A rejected value leaves the alternatives, so a later rejection cannot bring it back. */
+function forget(
+  state: ReconciledRequest,
+  field: ReconcileField,
+  matches: (c: Candidate) => boolean,
+): ReconciledRequest {
+  const current = state.values[field];
+  if (!current?.others) return state;
+  const others = current.others.filter((c) => !matches(c));
+  const { others: _dropped, ...rest } = current;
   return {
     ...state,
-    items: [...items, { field: 'preferences', kind: itemKind(left) }],
+    values: { ...state.values, [field]: { ...rest, ...(others.length ? { others } : {}) } },
+  };
+}
+
+const prefKeysOf = (c: Candidate) => [
+  ...(c.value as PrefsValue).moods,
+  ...(c.value as PrefsValue).settings,
+];
+
+function withoutKey(c: Candidate, key: string): Candidate | null {
+  const value = c.value as PrefsValue;
+  const keys = { ...(c.keys ?? {}) };
+  delete keys[key];
+  const moods = value.moods.filter((k) => k !== key);
+  const settings = value.settings.filter((k) => k !== key);
+  return moods.length + settings.length > 0 ? prefsCandidate({ moods, settings }, keys) : null;
+}
+
+/**
+ * A rejected wish leaves every candidate; a wish only among the alternatives
+ * just stops being offered. What the person is holding is asked again (F-03).
+ */
+function rejectPreference(state: ReconciledRequest, key: string): ReconciledRequest {
+  const current = state.values.preferences ?? {};
+  const held = [current.value, ...(current.pending ?? [])].flatMap((c) => (c ? [c] : []));
+  const others = uniqueCandidates(
+    'preferences',
+    (current.others ?? []).map((c) => withoutKey(c, key) ?? undefined),
+  );
+  if (!held.some((c) => prefKeysOf(c).includes(key))) {
+    const { others: _dropped, ...rest } = current;
+    return {
+      ...state,
+      values: {
+        ...state.values,
+        preferences: { ...rest, ...(others.length ? { others } : {}) },
+      },
+    };
+  }
+  const left = uniqueCandidates('preferences', [
+    ...held.map((c) => withoutKey(c, key) ?? undefined),
+    ...others,
+  ]);
+  return {
+    ...state,
+    items: [
+      ...state.items.filter((item) => item.field !== 'preferences'),
+      { field: 'preferences', kind: itemKind(left) },
+    ],
     values: { ...state.values, preferences: { pending: left } },
   };
 }
@@ -570,15 +607,19 @@ function rejectPreference(state: ReconciledRequest, key: string): ReconciledRequ
 export function applyNewest(
   state: ReconciledRequest,
   input: {
+    /** The message as sent: a lone part of the day reads from the whole of it. */
+    text: string;
     reading: MessageReading;
-    /** The newest message's own area; `null` when it names none. */
+    /** The newest message's own asserted area; `null` when it names none. */
     area: AreaValue | null;
+    /** The area its negated clauses name, as the dataset reads it. */
+    rejectedArea: AreaValue | null;
     /** Jev's answers on this turn; `null` when no model answered. */
     jev: Pick<IntentKeys, 'category' | 'occasion' | 'moods' | 'settings'> | null;
     termsOf: TermsOf;
   },
 ): ReconciledRequest {
-  const { reading, area, jev, termsOf } = input;
+  const { text, reading, area, rejectedArea, jev, termsOf } = input;
   let next = state;
   const inWalk = state.status !== 'final';
   const set = (field: ReconcileField, value: FieldValue) => {
@@ -586,77 +627,100 @@ export function applyNewest(
     const provenance: Provenance = inWalk || pending ? 'typed' : 'stated';
     next = settleField(next, field, { value, provenance });
   };
+  /** F-02: asserted and rejected values of one message apply together. */
+  const fact = (
+    field: ReconcileField,
+    asserted: FieldValue | null,
+    rejected: (c: Candidate) => boolean,
+    anyRejected: boolean,
+  ) => {
+    if (asserted !== null) {
+      set(field, asserted);
+      if (anyRejected) next = forget(next, field, rejected);
+    } else if (anyRejected) {
+      next = rejectField(next, field, rejected);
+    }
+  };
   const has = reading.asserted;
   const no = reading.rejected;
-  if (has.partySize !== null) set('partySize', has.partySize);
-  else if (no.partySize !== null) {
-    next = rejectField(next, 'partySize', (c) => c.value === no.partySize, true);
+  fact(
+    'partySize',
+    has.partySize,
+    (c) => no.partySize.includes(c.value as number),
+    no.partySize.length > 0,
+  );
+  fact(
+    'budget',
+    has.budget,
+    (c) => no.budget.some((b) => b.amount === (c.value as BudgetValue).amount),
+    no.budget.length > 0,
+  );
+  const heldTime = next.values.time?.value?.value as TimeValue | undefined;
+  // The same day without an hour keeps the hour said for it (#733 episode rule).
+  const dayPart =
+    reading.dayPart ?? (heldTime?.timeHint === has.timeHint ? (heldTime?.dayPart ?? null) : null);
+  fact(
+    'time',
+    has.timeHint !== null ? { timeHint: has.timeHint, dayPart } : null,
+    (c) => no.timeHint.some((hint) => hint === (c.value as TimeValue).timeHint),
+    no.timeHint.length > 0,
+  );
+  // F-05: a lone part of the day refines the day already held (D-17).
+  if (has.timeHint === null && no.timeHint.length === 0) {
+    const lone = bareTime(text);
+    const day = heldTime?.timeHint ?? null;
+    if (lone && lone.timeHint === null && lone.dayPart && day) {
+      set('time', { timeHint: day, dayPart: lone.dayPart });
+    }
   }
-  if (has.budget) set('budget', has.budget);
-  else if (no.budget) {
-    const amount = no.budget.amount;
-    next = rejectField(next, 'budget', (c) => (c.value as BudgetValue).amount === amount, true);
-  }
-  if (has.timeHint !== null) {
-    // The same day without an hour keeps the hour said for it (#733 episode rule).
-    const before = next.values.time?.value?.value as TimeValue | undefined;
-    const dayPart = reading.dayPart ?? (before?.timeHint === has.timeHint ? before.dayPart : null);
-    set('time', { timeHint: has.timeHint, dayPart });
-  } else if (no.timeHint !== null) {
-    const hint = no.timeHint;
-    next = rejectField(next, 'time', (c) => (c.value as TimeValue).timeHint === hint, true);
-  }
-  if (area && area.kind !== 'absent') set('area', area);
-  else if (no.areaText !== null) {
-    const words = normalizeVietnamese(no.areaText);
-    next = rejectField(
-      next,
-      'area',
-      (c) => normalizeVietnamese((c.value as AreaValue).label ?? '').includes(words),
-      true,
-    );
-  }
+  const words = no.areaText.map((t) => normalizeVietnamese(t));
+  const areaRejected = (c: Candidate) => {
+    const value = c.value as AreaValue;
+    if (rejectedArea?.kind === 'resolved' && sameValue('area', value, rejectedArea)) return true;
+    const label = normalizeVietnamese(value.label ?? '');
+    return words.some((word) => label.includes(word));
+  };
+  fact(
+    'area',
+    area && area.kind !== 'absent' ? area : null,
+    areaRejected,
+    words.length > 0 || rejectedArea?.kind === 'resolved',
+  );
 
   for (const field of ['category', 'occasion'] as const) {
     const current = next.values[field];
     const held = uniqueCandidates(field, [current?.value, ...(current?.pending ?? [])]);
-    const refused = held.filter(
-      (c) => termStatus(reading, termsOf(c.value as string)) === 'rejected',
-    );
-    if (refused.length > 0) {
-      next = rejectField(next, field, (c) => refused.some((r) => r.value === c.value), false);
-    }
+    const says = (c: Candidate) => termStatus(reading, termsOf(c.value as string)) === 'rejected';
+    if (held.some(says)) next = rejectField(next, field, says);
+    else next = forget(next, field, says);
     const key = jev?.[field] ?? null;
-    if (!key || held.some((c) => c.value === key)) continue;
+    if (!key) continue;
     const said = termStatus(reading, termsOf(key));
-    if (said === 'asserted') set(field, key);
-    else if (said === null && !next.values[field]?.value && !next.values[field]?.pending) {
+    const after = next.values[field];
+    // F-06: the person's words settle a key, even one already a candidate.
+    if (said === 'asserted' && after?.value?.value !== key) set(field, key);
+    else if (said === null && !after?.value && !after?.pending) {
       next = {
         ...next,
         values: {
           ...next.values,
-          [field]: { ...next.values[field], value: { value: key, provenance: 'inferred' } },
+          [field]: { ...after, value: { value: key, provenance: 'inferred' } },
         },
       };
     }
   }
 
-  const held = next.values.preferences;
-  const heldKeys = uniqueCandidates('preferences', [held?.value, ...(held?.pending ?? [])]).flatMap(
-    (c) => [...(c.value as PrefsValue).moods, ...(c.value as PrefsValue).settings],
+  const prefs = next.values.preferences;
+  const known = [prefs?.value, ...(prefs?.pending ?? []), ...(prefs?.others ?? [])].flatMap((c) =>
+    c ? prefKeysOf(c) : [],
   );
-  for (const key of new Set(heldKeys)) {
+  for (const key of new Set(known)) {
     if (termStatus(reading, termsOf(key)) === 'rejected') next = rejectPreference(next, key);
   }
   if (jev) {
     const add = (key: string, kind: 'moods' | 'settings') => {
       const field = next.values.preferences ?? {};
       const said = termStatus(reading, termsOf(key));
-      const isHeld = uniqueCandidates('preferences', [field.value, ...(field.pending ?? [])]).some(
-        (c) =>
-          [...(c.value as PrefsValue).moods, ...(c.value as PrefsValue).settings].includes(key),
-      );
-      if (isHeld && said !== 'asserted') return;
       const value: PrefsValue = {
         moods: kind === 'moods' ? [key] : [],
         settings: kind === 'settings' ? [key] : [],

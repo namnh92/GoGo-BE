@@ -305,7 +305,15 @@ describe('#738 D-15 applyNewest', () => {
     st: ReconciledRequest,
     text: string,
     jev: Parameters<typeof applyNewest>[1]['jev'] = null,
-  ) => applyNewest(st, { reading: readMessage(text), area: null, jev, termsOf });
+  ) =>
+    applyNewest(st, {
+      text,
+      reading: readMessage(text),
+      area: null,
+      rejectedArea: null,
+      jev,
+      termsOf,
+    });
 
   it('a stated value replaces, a rejected one re-queues, a mention does nothing', () => {
     const st = final();
@@ -348,6 +356,82 @@ describe('#738 D-15 applyNewest', () => {
       value: 'category:restaurant',
       provenance: 'stated',
     });
+  });
+
+  it('F-02: a value asserted and then rejected settles nothing and re-asks', () => {
+    const next = apply(final(), '3 người, không phải 3 người');
+    expect(next.values.partySize!.value).toBeUndefined();
+    expect(next.values.partySize!.pending!.map((p) => p.value)).toEqual([2]);
+  });
+
+  it('F-02: a rejected alternative does not come back when the new value is rejected', () => {
+    const next = apply(final(), 'không 2 người, 4 người');
+    expect(next.values.partySize!.value!.value).toBe(4);
+    expect(next.values.partySize!.others!.map((c) => c.value)).toEqual([3]);
+    const again = apply(next, 'không phải 4 người');
+    expect(again.values.partySize!.pending!.map((p) => p.value)).toEqual([3]);
+  });
+
+  it('F-03: rejecting the chosen wish offers the one not taken', () => {
+    const next = apply(final(), 'không ngoài trời');
+    expect(next.values.preferences!.pending!.map((p) => p.value)).toEqual([
+      { moods: ['romantic'], settings: [] },
+    ]);
+    expect(firstPending(next)).not.toBeNull();
+  });
+
+  it('F-04: the last category rejected stays open; Jev cannot fill it', () => {
+    const cafe = side('quán cà phê', { category: 'category:cafe' });
+    const next = apply({ ...walk(cafe, cafe), status: 'final' }, 'không cà phê', {
+      category: 'category:restaurant',
+      occasion: null,
+      moods: [],
+      settings: [],
+    });
+    expect(next.values.category!.value).toBeUndefined();
+    expect(next.values.category!.pending).toEqual([]);
+    expect(next.items.at(-1)).toEqual({ field: 'category', kind: 'open' });
+  });
+
+  it('F-05: a lone part of the day refines the day held; in a sentence it does not', () => {
+    const st: ReconciledRequest = {
+      ...walk(side('thứ 7', {}), side('thứ 7', {})),
+      status: 'final',
+      values: {
+        time: { value: { value: { timeHint: 'saturday', dayPart: null }, provenance: 'stated' } },
+      },
+    };
+    expect(apply(st, 'tối').values.time!.value!.value).toEqual({
+      timeHint: 'saturday',
+      dayPart: 'evening',
+    });
+    expect(apply(st, 'mình đi ăn tối đã').values.time!.value!.value).toEqual({
+      timeHint: 'saturday',
+      dayPart: null,
+    });
+  });
+
+  it('F-06: a sentence asserting a pending candidate settles it', () => {
+    const st: ReconciledRequest = {
+      ...walk(
+        side('quán cà phê', { category: 'category:cafe' }),
+        side('nhà hàng', { category: 'category:restaurant' }),
+      ),
+      status: 'suspended',
+    };
+    expect(st.values.category!.pending).toHaveLength(2);
+    const next = apply(st, 'mình muốn đi nhà hàng hơn', {
+      category: 'category:restaurant',
+      occasion: null,
+      moods: [],
+      settings: [],
+    });
+    expect(next.values.category!.pending).toBeUndefined();
+    expect(next.values.category!.value).toMatchObject({
+      value: 'category:restaurant',
+      provenance: 'typed',
+    });
+    expect(firstPending(next)).toBeNull();
   });
 
   it('a rejected wish leaves the set and is asked about', () => {

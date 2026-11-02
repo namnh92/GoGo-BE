@@ -1549,15 +1549,30 @@ describe('#738 shape §5', () => {
       expect(call.settled.occasion).toBeUndefined();
     });
 
-    it('a relevance answer changes no stored value', async () => {
-      const { done } = await walked({ places: 6 });
-      const before = JSON.stringify(stored(done).values);
-      expect(before).toContain('outdoor');
-      const c = await walked({
-        places: 6,
-        answers: { c1: { type: 'noul', noul: 1 }, 'mood:romantic': { type: 'noul', noul: 1 } },
+    it('a relevance answer changes no stored value, an assumed one included', async () => {
+      const run = async (answers: Record<string, unknown>) => {
+        const c = await opened(OLD_TEXT, NEW_TEXT, intent({ occasion: 'couple' }), {
+          ...freshAnswers,
+          occasion: { type: 'choice', choice: 'group' },
+        });
+        const prefs = await c.step('Giữ thông tin cũ và cập nhật');
+        const party = await c.step(prefs.followUps[0]!.options[0]!.text);
+        const area = await c.step(party.followUps[0]!.options[1]!.text);
+        return c.step(area.followUps[0]!.options[0]!.text, { places: 6, answers });
+      };
+      const plain = await run({});
+      const contrary = await run({
+        c1: { type: 'noul', noul: 1 },
+        occasion: { type: 'choice', choice: 'couple' },
+        'mood:romantic': { type: 'noul', noul: 1 },
       });
-      expect(JSON.stringify(stored(c.done).values)).toBe(before);
+      expect(contrary.jevCalls[0]!.questions).toContain('c1');
+      expect(resolvedOf(contrary.jevCalls[0]!).assumed.occasion).toBe('group');
+      expect(stored(contrary).values.occasion!.value).toMatchObject({
+        value: 'group',
+        provenance: 'inferred',
+      });
+      expect(stored(contrary).values).toEqual(stored(plain).values);
     });
   });
 
@@ -1573,6 +1588,22 @@ describe('#738 shape §5', () => {
       const c = await walked();
       const r = await c.step('không 3 người đâu, 4 người', { answers: relation('answer_pending') });
       expect(stored(r).values.partySize!.value!.value).toBe(4);
+    });
+
+    it('F-01 a quoted or negated area replaces nothing', async () => {
+      for (const text of ['“Hồ Chí Minh” nghe xa quá', 'không ở Hồ Chí Minh đâu, cho 2 người']) {
+        const c = await walked();
+        const r = await c.step(text, { answers: relation('answer_pending') });
+        const held = (stored(r).values.area!.value ?? stored(r).values.area!.pending![0])!;
+        expect(held.value, text).toMatchObject({ label: 'Hà Nội' });
+      }
+    });
+
+    it('F-01 a bare rejected area that is the current one is asked again', async () => {
+      const c = await walked();
+      const r = await c.step('không Hà Nội', { answers: relation('answer_pending') });
+      expect(fields(r)).toEqual(['reconcile_area']);
+      expect(stored(r).values.area!.value).toBeUndefined();
     });
 
     it('a quoted number never asserts', async () => {
