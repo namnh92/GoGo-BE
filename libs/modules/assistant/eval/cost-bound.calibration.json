@@ -42,5 +42,5 @@
     "relevance": 0.067,
     "compose": 0.78
   },
-  "note": "pnpm assistant:cost-bound on the DEV keys; taxonomy counts read from GET /v1/taxonomies the same day. Re-run when any field above changes."
+  "note": "pnpm assistant:cost-bound on the DEV keys; taxonomy counts read from GET /v1/taxonomies the same day. The script compares every field here with its run and the code and exits 2 on drift; re-run and update when any changes."
 }

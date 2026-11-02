@@ -1370,6 +1370,39 @@ describe('#738 shape §5', () => {
       expect(fields(back)).toEqual(['reconcile_area']);
       expect(stored(back).values.partySize!.value).toMatchObject({ value: 4, provenance: 'typed' });
     });
+
+    it('F-10 a new place request after the how-to reply still asks "new or update?" against the walk', async () => {
+      const c = await opened();
+      const prefs = await c.step('Giữ thông tin cũ và cập nhật');
+      await c.step(prefs.followUps[0]!.options[0]!.text);
+      await c.step('Làm sao để mời bạn?', {
+        answers: [
+          relation('new_request'),
+          {
+            ...base,
+            assistant_intent: { type: 'choice', choice: 'gogo_guide' },
+            action: { type: 'choice', choice: 'none' },
+            category: { type: 'choice', choice: 'none' },
+          },
+        ],
+      });
+      const next = await c.step('thôi tìm quán cà phê cho 4 người', {
+        answers: [relation('new_request'), ranked],
+      });
+      expect(fields(next)).toEqual(['reconcile_mode']);
+      expect(stored(next).values.partySize!.pending!.map((p) => p.value)).toEqual([4, 3, 2]);
+      expect(next.searches).toHaveLength(0);
+    });
+
+    it('A-F-01 a quoted bare answer mid-walk is a mention: the walk suspends', async () => {
+      const c = await opened();
+      const prefs = await c.step('Giữ thông tin cũ và cập nhật');
+      expect(fields(prefs)).toEqual(['reconcile_preferences']);
+      const quoted = await c.step('“ngoài trời”', { answers: relation('unclear') });
+      expect(quoted.jevCalls).toHaveLength(1);
+      expect(stored(quoted).status).toBe('suspended');
+      expect(stored(quoted).values.preferences!.pending).toHaveLength(2);
+    });
   });
 
   describe('D-15/D-16 repeated interruption', () => {
@@ -1640,6 +1673,14 @@ describe('#738 shape §5', () => {
         answers: relation('answer_pending'),
       });
       expect(stored(asserted).values.area!.value!.value).toMatchObject({ label: 'Hồ Chí Minh' });
+    });
+
+    it('F-09 a bare dataset name answers a correction even where bare areas were not allowed', async () => {
+      const c = await walked();
+      const r = await c.step('không ở Hà Nội, Bến Thành', { answers: relation('answer_pending') });
+      expect(stored(r).values.area!.value!.value).toMatchObject({
+        codes: { communeCode: '26734' },
+      });
     });
 
     it('F-01 a bare rejected area that is the current one is asked again', async () => {

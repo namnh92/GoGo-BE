@@ -3,6 +3,7 @@ import { OpenRouterDecisionProvider } from '@gogo/providers';
 import type { IntentTaxonomy } from '../../search/domain/intent';
 import { TURN_CALL_SHARE } from '../domain/limits';
 import {
+  PRICES,
   PRICE_SOURCE,
   calibrationDrift,
   computeCostBound,
@@ -92,7 +93,20 @@ async function main(): Promise<void> {
   console.log(`code shares TURN_CALL_SHARE: ${JSON.stringify(TURN_CALL_SHARE)}`);
   // The code's shares and the committed record must describe this run, or the
   // hard stop is reading a different calibration than the ceiling (Astra r1).
-  const drift = calibrationDrift(bound, taxonomy, outputTokens, TURN_CALL_SHARE, calibration);
+  const drift = calibrationDrift(
+    bound,
+    {
+      models: {
+        jev: env.ASSISTANT_JEV_MODEL ?? 'typesafe/jev-1.14',
+        haiku: env.ASSISTANT_HAIKU_MODEL ?? 'anthropic/claude-haiku-5.5',
+      },
+      prices: PRICES,
+      taxonomy,
+      outputTokens,
+    },
+    TURN_CALL_SHARE,
+    calibration,
+  );
   if (drift.length > 0) {
     console.error(
       `calibration drift: ${drift.join('; ')} — update TURN_CALL_SHARE and cost-bound.calibration.json`,

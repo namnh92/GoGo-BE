@@ -1310,10 +1310,17 @@ export class AssistantOrchestrator {
   ): Promise<{ area: AreaValue | null; rejectedArea: AreaValue | null }> {
     let decider: { text: string; negated: boolean } | null = null;
     let lastDenied: string | null = null;
+    // F-09: in a correction ("không ở Hà Nội, Bến Thành") a short bare dataset
+    // name is the answer, whether or not a bare area was allowed here.
+    const correcting = reading.clauses.some((clause) => clause.negated);
     for (const clause of reading.clauses) {
+      const short = clause.text.trim().split(/\s+/).length <= MAX_BARE_AREA_WORDS;
       const names =
         parseIntentFacts(clause.text).areaText !== null ||
-        (await this.areas.namesArea(clause.text, clause.negated || latest.allowBareArea));
+        (await this.areas.namesArea(
+          clause.text,
+          clause.negated || latest.allowBareArea || (correcting && short),
+        ));
       if (!names) continue;
       decider = clause;
       if (clause.negated) lastDenied = clause.text;
@@ -1458,15 +1465,19 @@ export class AssistantOrchestrator {
     termsOf: TermsOf,
   ): Promise<{ ask: ReconcileAsk } | { joined: ReconciledRequest } | null> {
     // Both must be about places: a how-to question or chit-chat after results
-    // is answered as itself, with nothing to keep or drop.
-    if (!isPlaceRequest(resolved.previousIntent) || !isPlaceRequest(keysOf(fresh))) return null;
+    // is answered as itself, with nothing to keep or drop. The earlier side of
+    // a suspended walk is the walk, whatever the reply in between was (F-10).
+    const earlierIntent = resolved.joined
+      ? [resolved.joined.intents.new, resolved.joined.intents.old].find(isPlaceRequest)
+      : resolved.previousIntent;
+    if (!isPlaceRequest(earlierIntent) || !isPlaceRequest(keysOf(fresh))) return null;
     const oldMsgs = resolved.candidate.messages.slice(0, -1);
     const newMsg = single.messages[0];
     if (oldMsgs.length === 0 || !newMsg?.id || !oldMsgs.every((m) => m.id)) return null;
     const newKeys = keysOf(fresh);
     const reading = readMessage(newMsg.text);
     const earlierJoined = resolved.joined;
-    let oldKeys = resolved.previousIntent!;
+    let oldKeys = earlierIntent!;
     let oldSide: RequestSide | null = null;
     if (earlierJoined) {
       const j = joinedRequest(earlierJoined);

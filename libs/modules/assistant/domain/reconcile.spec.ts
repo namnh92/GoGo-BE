@@ -16,6 +16,7 @@ import {
   resolvedPayload,
   sideOf,
   type AreaValue,
+  type Candidate,
   type ItemChip,
   type ReconciledRequest,
   type RequestSide,
@@ -296,6 +297,17 @@ describe('#738 O-7 (a) candidates in stages', () => {
     );
     expect(items).toEqual([{ field: 'partySize', kind: 'changed' }]);
     expect(values.partySize!.pending!.map((p) => p.value)).toEqual([4, 3, 2]);
+  });
+
+  it("A-F-08: only the person's words re-enter an open question; a model's guess never does", () => {
+    const open = { category: { pending: [] as Candidate[] } };
+    const guessed = joinRequests(open, {
+      category: { value: 'category:cafe', provenance: 'inferred' },
+    });
+    expect(guessed.values.category!.pending).toEqual([]);
+    expect(guessed.items).toEqual([{ field: 'category', kind: 'open' }]);
+    const said = joinRequests(open, { category: { value: 'category:cafe', provenance: 'stated' } });
+    expect(said.values.category!.pending!.map((c) => c.value)).toEqual(['category:cafe']);
   });
 
   it('a pending field is `open` to the models, and holds no value', () => {

@@ -247,7 +247,8 @@ export function bareTime(input: string): {
 } | null {
   const reading = readMessage(input);
   if (reading.clauses.some((clause) => clause.negated)) return null;
-  const text = input.normalize('NFC').toLowerCase();
+  // A quoted "tối" is a mention, not an hour (D-19).
+  const text = assertedText(input).toLowerCase();
   const rest = text.replace(TIME_SPAN, ' ');
   if (reading.asserted.timeHint !== null) {
     return isOnlyParticles(rest.replace(PART_SPAN, ' '))
@@ -283,7 +284,8 @@ export function bareAreaPhrase(input: string): string | null {
 /** The term a whole message names, once particles are gone. */
 export function bareTerm(input: string, terms: readonly string[]): boolean {
   if (readMessage(input).clauses.some((clause) => clause.negated)) return false;
-  const words = foldedWords(input).split(' ');
+  // A quoted term is a mention, not an answer (D-19).
+  const words = foldedWords(assertedText(input)).split(' ');
   return terms.some((term) => {
     const needle = foldedWords(term);
     if (!needle) return false;

@@ -194,18 +194,52 @@ export type CostBound = {
   marginUsd: number;
 };
 
+/** The caps the worst-case requests are built from, as the code enforces them. */
+export const REQUEST_CAPS = {
+  request: MAX_REQUEST_CHARS,
+  pendingQuestion: MAX_PENDING_QUESTION_CHARS,
+  latestMessage: MAX_LATEST_MESSAGE_CHARS,
+  previousRequest: MAX_PREVIOUS_REQUEST_CHARS,
+  message: MAX_MESSAGE_CHARS,
+  contextName: MAX_CONTEXT_NAME_CHARS,
+  guideExcerpt: MAX_GUIDE_EXCERPT_CHARS,
+  historyTurns: MAX_HISTORY_TURNS,
+  historyChars: MAX_HISTORY_CHARS,
+  relevanceCandidates: RELEVANCE_CANDIDATES,
+} as const;
+
 /** The committed record of the run `TURN_CALL_SHARE` was taken from. */
 export type Calibration = {
+  models: { jev: string; haiku: string };
+  pricesUsdPerToken: Prices;
+  caps: Record<keyof typeof REQUEST_CAPS, number> & { outputTokens: number };
   taxonomyCounts: Record<'category' | 'mood' | 'setting' | 'suitability', number>;
-  caps: { outputTokens: number };
+  tokens: { decision: number; relevance: number; compose: number; composeOutput: number };
+  ceilingUsd: number;
   shares: { decision: number; relevance: number; compose: number };
 };
 
-/** Where this run disagrees with the code's shares or the committed record. */
+/** What this run was made of, in the record's shape. */
+export type RunInputs = {
+  models: { jev: string; haiku: string };
+  prices: Prices;
+  taxonomy: IntentTaxonomy;
+  outputTokens: number;
+};
+
+/** Counts and money may move a little between provider runs; past this it is drift. */
+const TOLERANCE = 0.02;
+const off = (a: number, b: number) => Math.abs(a - b) > TOLERANCE * Math.max(Math.abs(b), 1e-12);
+
+/**
+ * Where this run disagrees with the code's shares or the committed record:
+ * shares, models, prices, every cap, the taxonomy counts, the token counts and
+ * `C` itself (F-11 — proportional price moves keep the shares and still
+ * change the ceiling).
+ */
 export function calibrationDrift(
-  bound: Pick<CostBound, 'shares'>,
-  taxonomy: IntentTaxonomy,
-  outputTokens: number,
+  bound: Pick<CostBound, 'shares' | 'tokens' | 'ceilingUsd'>,
+  run: RunInputs,
   codeShares: { decision: number; relevance: number; compose: number },
   record: Calibration,
 ): string[] {
@@ -217,16 +251,42 @@ export function calibrationDrift(
     if (record.shares[call] !== codeShares[call]) {
       out.push(`share ${call}: record ${record.shares[call]}, code ${codeShares[call]}`);
     }
+    if (off(bound.tokens[call], record.tokens[call])) {
+      out.push(`tokens ${call}: ${bound.tokens[call]} now, ${record.tokens[call]} recorded`);
+    }
   }
-  for (const kind of ['category', 'mood', 'setting', 'suitability'] as const) {
-    if (taxonomy[kind].length !== record.taxonomyCounts[kind]) {
+  for (const model of ['jev', 'haiku'] as const) {
+    if (run.models[model] !== record.models[model]) {
+      out.push(`model ${model}: ${run.models[model]} now, ${record.models[model]} recorded`);
+    }
+  }
+  for (const price of ['jevIn', 'jevOut', 'haikuIn', 'haikuOut'] as const) {
+    // Per-token prices are tiny quotients: compare within tolerance, not bit for bit.
+    if (off(run.prices[price], record.pricesUsdPerToken[price])) {
       out.push(
-        `taxonomy ${kind}: ${taxonomy[kind].length} now, ${record.taxonomyCounts[kind]} recorded`,
+        `price ${price}: ${run.prices[price]} now, ${record.pricesUsdPerToken[price]} recorded`,
       );
     }
   }
-  if (outputTokens !== record.caps.outputTokens) {
-    out.push(`output tokens: ${outputTokens} now, ${record.caps.outputTokens} recorded`);
+  for (const [cap, value] of Object.entries(REQUEST_CAPS) as [
+    keyof typeof REQUEST_CAPS,
+    number,
+  ][]) {
+    if (value !== record.caps[cap])
+      out.push(`cap ${cap}: ${value} now, ${record.caps[cap]} recorded`);
+  }
+  if (run.outputTokens !== record.caps.outputTokens) {
+    out.push(`output tokens: ${run.outputTokens} now, ${record.caps.outputTokens} recorded`);
+  }
+  for (const kind of ['category', 'mood', 'setting', 'suitability'] as const) {
+    if (run.taxonomy[kind].length !== record.taxonomyCounts[kind]) {
+      out.push(
+        `taxonomy ${kind}: ${run.taxonomy[kind].length} now, ${record.taxonomyCounts[kind]} recorded`,
+      );
+    }
+  }
+  if (off(bound.ceilingUsd, record.ceilingUsd)) {
+    out.push(`C: ${bound.ceilingUsd} now, ${record.ceilingUsd} recorded`);
   }
   return out;
 }

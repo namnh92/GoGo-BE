@@ -607,7 +607,7 @@ by owner order O-7 (a), reviewed on the PR. Source of the mechanism: `astra-sugg
 - **`pnpm assistant:cost-bound`** computes `C` — a calibrated worst-case estimate, not a proof over every string under the caps (Astra on #745): the real worst-case requests at their caps, `state.resolved`
   included, counted by the provider that bills them (a paid probe, owner 2026-11-02: Jev has no public
   tokenizer), per-direction list prices, a 25 % margin that holds the 5 % BYOK fee. A missing count
-  fails the run. The run also checks the code's `TURN_CALL_SHARE` and the committed `eval/cost-bound.calibration.json` (taxonomy counts, prices, caps, shares) against itself and exits non-zero on drift. What bounds spend is the reservation: a call that exceeds its share overspends by its own excess, once. Jev's output term is zero because its listed completion price is $0; the Decisions API
+  fails the run. The run compares its result with the code's `TURN_CALL_SHARE` and the committed `eval/cost-bound.calibration.json` — shares, models, prices, every cap, taxonomy counts, token counts, `C` — and exits 2 on drift. The reservation bounds admission, not provider charges: an underestimated call charges what it charges, the ledger records it after the turn, and concurrent reserved turns can each exceed `C`; the drift check and the ledger check notice an underestimate, they do not prevent it. Jev's output term is zero because its listed completion price is $0; the Decisions API
   takes no `max_tokens`, so that is a price fact, not a cap. The caps it counts on are enforced where the request is built: the message at the send contract's 2000, place names and guide headings at 200, excerpts at 1200. Haiku's output is capped by `ASSISTANT_MAX_OUTPUT_TOKENS`.
 - AC-4 (DEV live: the two sentences) is not covered by unit tests; it needs a deploy.
 
@@ -673,7 +673,7 @@ by owner order O-7 (a), reviewed on the PR. Source of the mechanism: `astra-sugg
   `answer_pending` applies what it asserts and resumes at the first pending item (at "new or update?"
   when that was open); `new_request` asks "new or update?" against the joined-so-far request; `unclear`
   asks, and "Tiếp tục yêu cầu trước" restores the same question and queue with no model call, while the
-  unclear message's values are not applied. A non-place message (a how-to question) answers as itself and leaves the walk suspended on that turn; the next message resumes it by the same rules.
+  unclear message's values are not applied. A non-place message (a how-to question) answers as itself and leaves the walk suspended on that turn; the next message resumes it by the same rules. A later place request still asks "new or update?" against the suspended walk. A quoted value ("“ngoài trời”") is a mention, never a bare answer; in a correction a short bare dataset name is the answer.
 - **No decision call on a chip or bare step of the walk.** The decision is the person's — keys Jev
   answered on the two classifying turns — and the trace says so: `intent.source = reconciled`,
   `assistant_decisions_total` not counted. Up to 1 + |items| turns to join; the owner chose explicitness.

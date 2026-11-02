@@ -3,6 +3,7 @@ import type { IntentTaxonomy } from '../../search/domain/intent';
 import { MAX_REQUEST_CHARS } from '../../search/domain/intent';
 import { TURN_CALL_SHARE } from '../domain/limits';
 import {
+  PRICES,
   calibrationDrift,
   computeCostBound,
   filler,
@@ -61,38 +62,53 @@ describe('#738 D-11 the cost bound', () => {
   it('the code shares are the committed calibration, and drift is named', () => {
     expect(TURN_CALL_SHARE).toEqual(calibration.shares);
     expect(calibration.ceilingUsd).toBeGreaterThan(0);
-    const run = { shares: calibration.shares };
-    const recorded: IntentTaxonomy = {
-      category: Array.from({ length: calibration.taxonomyCounts.category }, (_, i) => ({
-        key: `c${i}`,
-        label: `c${i}`,
-      })),
-      mood: Array.from({ length: calibration.taxonomyCounts.mood }, (_, i) => ({
-        key: `m${i}`,
-        label: `m${i}`,
-      })),
-      setting: Array.from({ length: calibration.taxonomyCounts.setting }, (_, i) => ({
-        key: `s${i}`,
-        label: `s${i}`,
-      })),
-      suitability: Array.from({ length: calibration.taxonomyCounts.suitability }, (_, i) => ({
-        key: `o${i}`,
-        label: `o${i}`,
-      })),
+    const run = {
+      shares: calibration.shares,
+      tokens: calibration.tokens,
+      ceilingUsd: calibration.ceilingUsd,
     };
-    expect(calibrationDrift(run, recorded, 600, TURN_CALL_SHARE, calibration)).toEqual([]);
-    expect(calibrationDrift(run, TAXONOMY, 600, TURN_CALL_SHARE, calibration)).toContainEqual(
+    const terms = (n: number, prefix: string) =>
+      Array.from({ length: n }, (_, i) => ({ key: `${prefix}${i}`, label: `${prefix}${i}` }));
+    const recorded: IntentTaxonomy = {
+      category: terms(calibration.taxonomyCounts.category, 'c'),
+      mood: terms(calibration.taxonomyCounts.mood, 'm'),
+      setting: terms(calibration.taxonomyCounts.setting, 's'),
+      suitability: terms(calibration.taxonomyCounts.suitability, 'o'),
+    };
+    const inputs = {
+      models: calibration.models,
+      prices: PRICES,
+      taxonomy: recorded,
+      outputTokens: 600,
+    };
+    const drift = (b: Partial<typeof run>, i: Partial<typeof inputs>) =>
+      calibrationDrift({ ...run, ...b }, { ...inputs, ...i }, TURN_CALL_SHARE, calibration);
+    expect(drift({}, {})).toEqual([]);
+    expect(drift({}, { taxonomy: TAXONOMY })).toContainEqual(
       expect.stringContaining('taxonomy category'),
     );
+    expect(drift({ shares: { ...run.shares, compose: 0.5 } }, {})).toContainEqual(
+      expect.stringContaining('share compose: run'),
+    );
+    // F-11: proportional prices keep every share; the prices and the ceiling still differ.
+    const doubled = {
+      jevIn: PRICES.jevIn * 2,
+      jevOut: 0,
+      haikuIn: PRICES.haikuIn * 2,
+      haikuOut: PRICES.haikuOut * 2,
+    };
+    const priced = drift({ ceilingUsd: run.ceilingUsd * 2 }, { prices: doubled });
+    expect(priced).toContainEqual(expect.stringContaining('price jevIn'));
+    expect(priced).toContainEqual(expect.stringContaining('C:'));
     expect(
-      calibrationDrift(
-        { shares: { ...run.shares, compose: 0.5 } },
-        recorded,
-        600,
-        TURN_CALL_SHARE,
-        calibration,
-      ),
-    ).toContainEqual(expect.stringContaining('share compose: run'));
+      drift({}, { models: { ...inputs.models, haiku: 'anthropic/claude-haiku-6' } }),
+    ).toContainEqual(expect.stringContaining('model haiku'));
+    expect(drift({ tokens: { ...run.tokens, compose: 30_000 } }, {})).toContainEqual(
+      expect.stringContaining('tokens compose'),
+    );
+    expect(drift({}, { outputTokens: 700 })).toContainEqual(
+      expect.stringContaining('output tokens'),
+    );
   });
 
   it('the filler is deterministic and at its cap', () => {

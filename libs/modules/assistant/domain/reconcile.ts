@@ -299,7 +299,10 @@ function joinField(
 ): FieldState {
   // An unresolved pair stays a question; the new value goes in front (D-15).
   if (earlier?.pending) {
-    const pending = uniqueCandidates(field, [fresh, ...earlier.pending]);
+    // Only a value the person said enters an open question; a model's guess
+    // never does, so a rejected value cannot return by inference (A-F-08).
+    const said = fresh && SETTLED(fresh.provenance) ? fresh : undefined;
+    const pending = uniqueCandidates(field, [said, ...earlier.pending]);
     return { pending, ...(earlier.others ? { others: earlier.others } : {}) };
   }
   const old = earlier?.value;

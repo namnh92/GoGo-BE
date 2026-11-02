@@ -110,6 +110,10 @@ describe('#738 D-16 rule 1 a bare answer', () => {
     expect(bareTerm('ngoài trời nhé', ['ngoài trời'])).toBe(true);
     expect(bareTerm('tìm chỗ ngoài trời', ['ngoài trời'])).toBe(false);
     expect(bareTerm('không ngoài trời', ['ngoài trời'])).toBe(false);
+    // A-F-01: a quoted answer is a mention.
+    expect(bareTerm('“ngoài trời”', ['ngoài trời'])).toBe(false);
+    expect(bareTime('“tối”')).toBeNull();
+    expect(bareParty('“4 người”')).toBeNull();
   });
 
   it('area, with its locative word and nothing else', () => {
