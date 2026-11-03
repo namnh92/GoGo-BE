@@ -2110,7 +2110,7 @@ export interface paths {
          *
          *     The subscription id is the provider's own — the same id `POST /notifications/identity/logout` takes — and is verified against the provider before anything is written: it must belong to the calling user and be enabled. A client cannot register someone else's device.
          *
-         *     Idempotent on `subscriptionId`: reporting again refreshes the record, and a device where a different account signs in moves to that account.
+         *     Idempotent on `subscriptionId`: reporting again refreshes the record, and a device where a different account signs in moves to that account. If the record changed while the provider was being asked, nothing is written and the answer is 409: report again, which verifies again (#746, ADR-0037).
          *
          *     Called after the client has confirmed identity binding and the OS permits notifications — never before, since an unconfirmed device is not reachable.
          */
@@ -14279,6 +14279,13 @@ export interface operations {
             };
             /** @description PUSH_SUBSCRIPTION_NOT_CONFIRMED — the provider does not report this subscription as enabled for the caller. One answer for "not yours" and "yours but disabled", so the route cannot be used to probe whether a subscription id exists. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description PUSH_SUBSCRIPTION_CONFLICT — the record of this subscription changed while the provider was being asked, so the answer may be stale and nothing was written. Retryable: reporting again verifies again. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

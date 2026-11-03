@@ -247,6 +247,8 @@ export const deviceTokens = pgTable(
   (t) => [uniqueIndex('device_tokens_token_unique').on(t.token)],
 );
 
+export const pushSubscriptionOwnerKind = pgEnum('push_subscription_owner_kind', ['user', 'device']);
+
 /**
  * NTF-BE-011 (#515) — which of GoGo's users can be reached by a push, and on
  * what platform.
@@ -265,9 +267,13 @@ export const pushSubscriptions = pgTable(
   'push_subscriptions',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    /** NTF-BE-016 (#746): exactly one of `userId` and `deviceId`, per this kind. */
+    ownerKind: pushSubscriptionOwnerKind('owner_kind').notNull().default('user'),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    /** A device identity. No foreign key yet: the table arrives with NTF-BE-017. */
+    deviceId: uuid('device_id'),
+    /** Advanced by every ownership write; a write that read an older one lost. */
+    revision: integer('revision').notNull().default(0),
     platform: devicePlatform('platform').notNull(),
     subscriptionId: text('subscription_id').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -285,8 +291,23 @@ export const pushSubscriptions = pgTable(
     index('push_subscriptions_live_idx')
       .on(t.userId, t.platform)
       .where(sql`${t.revokedAt} is null`),
+    check(
+      'push_subscriptions_one_owner',
+      sql`(${t.ownerKind} = 'user' and ${t.userId} is not null and ${t.deviceId} is null) or (${t.ownerKind} = 'device' and ${t.userId} is null and ${t.deviceId} is not null)`,
+    ),
   ],
 );
+
+/**
+ * NTF-BE-016 (#746), ADR-0037 — what stops a delayed registration recreating a
+ * row a confirmed logout found absent. A row can carry a revision; a missing row
+ * cannot, so the generation lives here. Names no user.
+ */
+export const pushSubscriptionFences = pgTable('push_subscription_fences', {
+  subscriptionId: text('subscription_id').primaryKey(),
+  generation: integer('generation').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 // ------------------------------------------------------- campaigns (#226)
 
