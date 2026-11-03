@@ -23,7 +23,13 @@
 -- No backfill and no rewrite: the column defaults are constants and the table is
 -- small, so the check's validation scan holds its lock briefly.
 --
--- Down (only while no device-owned row exists):
+-- Down (one transaction; refuses while a device-owned row exists, leaving everything as it was):
+--   BEGIN;
+--   DO $$ BEGIN
+--     IF EXISTS (SELECT 1 FROM push_subscriptions WHERE owner_kind = 'device') THEN
+--       RAISE EXCEPTION 'push_subscriptions holds device-owned rows';
+--     END IF;
+--   END $$;
 --   DROP TABLE IF EXISTS push_subscription_fences;
 --   ALTER TABLE push_subscriptions DROP CONSTRAINT IF EXISTS push_subscriptions_one_owner;
 --   ALTER TABLE push_subscriptions ALTER COLUMN user_id SET NOT NULL;
@@ -31,6 +37,7 @@
 --   ALTER TABLE push_subscriptions DROP COLUMN IF EXISTS device_id;
 --   ALTER TABLE push_subscriptions DROP COLUMN IF EXISTS owner_kind;
 --   DROP TYPE IF EXISTS push_subscription_owner_kind;
+--   COMMIT;
 CREATE TYPE "push_subscription_owner_kind" AS ENUM ('user', 'device');
 --> statement-breakpoint
 ALTER TABLE "push_subscriptions"

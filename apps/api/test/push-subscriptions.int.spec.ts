@@ -292,6 +292,28 @@ describe('AC-2 — a row that exists (R-20, D1)', () => {
     expect((await row(sub))?.revokedAt).not.toBeNull();
   });
 
+  it('a registration verified before a logout cannot reactivate an already revoked row', async () => {
+    const { provider, svc, sub } = scenario();
+    const user = await newUser();
+    await svc.register(user, { platform: 'ios', subscriptionId: sub });
+    provider.enabled = false;
+    await logout(svc, user, sub);
+    provider.enabled = true;
+
+    const hold = holdNextRead(provider);
+    const late = svc
+      .register(user, { platform: 'ios', subscriptionId: sub })
+      .catch((e: unknown) => e);
+    await hold.reached;
+
+    provider.enabled = false;
+    await logout(svc, user, sub);
+    hold.release();
+
+    expect(codeOf(await late)).toBe('PUSH_SUBSCRIPTION_CONFLICT');
+    expect((await row(sub))?.revokedAt).not.toBeNull();
+  });
+
   it('a confirmed logout revokes the row and advances its revision', async () => {
     const { provider, svc, sub } = scenario();
     const user = await newUser();
@@ -479,6 +501,39 @@ describe('AC-1 — the migration on a database with data', () => {
          )`,
       );
     const before = (await audience()).rows;
+    const seedDeviceRow = () =>
+      oldPool.query(
+        `insert into push_subscriptions (owner_kind, device_id, platform, subscription_id)
+         values ('device', $1, 'ios', 'sub-device')`,
+        [randomUUID()],
+      );
+    /**
+     * Runs the migration's Down statement by statement on one connection, carrying
+     * on after an error: the worst a runner can do, and what the script must survive.
+     */
+    const runDown = async () => {
+      const source = await readFile(
+        path.join(MIGRATIONS, '0077_push-subscription-ownership.sql'),
+        'utf8',
+      );
+      const header = source.slice(source.indexOf('-- Down')).split('\n').slice(1);
+      const end = header.findIndex((l) => !l.startsWith('--'));
+      const statements: string[] = [];
+      for (const line of header.slice(0, end).map((l) => l.replace(/^--\s{0,3}/, ''))) {
+        if (/^(BEGIN|DO|DROP|ALTER|COMMIT)\b/.test(line)) statements.push(line);
+        else statements[statements.length - 1] += `\n${line}`;
+      }
+      const errors: string[] = [];
+      const client = await oldPool.connect();
+      try {
+        for (const statement of statements) {
+          await client.query(statement).catch((e: Error) => errors.push(e.message));
+        }
+      } finally {
+        client.release();
+      }
+      return errors;
+    };
 
     await migrate(drizzle(oldPool, { schema }), { migrationsFolder: MIGRATIONS });
 
@@ -492,16 +547,19 @@ describe('AC-1 — the migration on a database with data', () => {
       { subscription_id: 'sub-live', owner_kind: 'user', revision: 0, device_id: null },
     ]);
 
-    const source = await readFile(
-      path.join(MIGRATIONS, '0077_push-subscription-ownership.sql'),
-      'utf8',
+    await seedDeviceRow();
+    expect((await runDown())[0]).toMatch(/device-owned/);
+    // Refused means untouched: the constraint, the fences and the rows all stay.
+    const kept = await oldPool.query(
+      `select
+         (select count(*)::int from push_subscriptions) as rows,
+         (select count(*)::int from pg_constraint where conname = 'push_subscriptions_one_owner') as checks,
+         to_regclass('push_subscription_fences') is not null as fences`,
     );
-    const down = source
-      .split('\n')
-      .filter((l) => /^--\s+(DROP|ALTER)\b/.test(l))
-      .map((l) => l.replace(/^--\s+/, ''))
-      .join('\n');
-    await oldPool.query(down);
+    expect(kept.rows[0]).toEqual({ rows: 3, checks: 1, fences: true });
+    await oldPool.query(`delete from push_subscriptions where owner_kind = 'device'`);
+
+    expect(await runDown()).toEqual([]);
 
     const columns = await oldPool.query<{ column_name: string; is_nullable: string }>(
       `select column_name, is_nullable from information_schema.columns

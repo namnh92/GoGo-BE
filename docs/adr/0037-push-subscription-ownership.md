@@ -57,7 +57,8 @@ revision = $read`;
 
 `register()` sets `owner_kind='user', user_id=$me, device_id=null` in the same write.
 A confirmed logout, in one transaction, advances the fence and then revokes with
-`user_id = $me and revision = $read`. It reads before it asks, so it never acts on a
+`user_id = $me and revision = $read`, advancing the revision of a row already revoked
+too, so a registration that read it cannot clear `revoked_at` afterwards. It reads before it asks, so it never acts on a
 revision newer than its answer. A logout that saw no row revokes nothing.
 
 **Lock order, for #747 to extend:** identity row (`for update`) → fence → subscription
@@ -87,10 +88,11 @@ Limits, stated rather than solved:
 - **The binary before this one does not advance `revision`.** A compare-and-set racing
   it during the deploy can overwrite its write; the device reports again.
 - **Any signed-in caller can advance a fence for any id it names**, because "not on
-  your user" also confirms a logout. The worst case is one 409 on someone's first
-  registration and a small row per id, bounded by the route's 30 requests a minute per
-  actor. `updated_at` is there so a later retention sweep has something to read; none
-  ships here.
+  your user" also confirms a logout. Each advance can cost that id's first registration
+  one 409, repeatedly if the caller knows the id and keeps at it; ids are not exposed.
+  It also leaves one small row per id: the route's 30 requests a minute per actor bounds
+  the rate, not the total. `updated_at` is there so a later retention sweep has something
+  to read; none ships here.
 
 ## Migration & rollback
 

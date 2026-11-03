@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import type { Actor } from '../../identity/domain/actor';
@@ -174,15 +174,16 @@ export class PushSubscriptionsService {
           set: { generation: sql`${f.generation} + 1`, updatedAt: sql`now()` },
         });
       if (seen.revision === null) return [];
+      // An already revoked row advances too: a registration verified before this
+      // logout read the same revision, and would otherwise clear `revoked_at`.
       return tx
         .update(p)
-        .set({ revokedAt: sql`now()`, revision: sql`${p.revision} + 1` })
+        .set({ revokedAt: sql`coalesce(${p.revokedAt}, now())`, revision: sql`${p.revision} + 1` })
         .where(
           and(
             eq(p.subscriptionId, subscriptionId),
             eq(p.userId, userId),
             eq(p.revision, seen.revision),
-            isNull(p.revokedAt),
           ),
         )
         .returning({ id: p.id });
