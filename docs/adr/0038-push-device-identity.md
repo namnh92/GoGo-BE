@@ -76,8 +76,11 @@ jointly exceed it. Past it: 429 and `push_device_identities_total{result=ceiling
 
 1. Expire: never confirmed within 7 days, or quiet for 90. Takes the row lock and re-checks,
    so a renewal either lands first and the job skips, or sees `revoked_at` and gets GONE.
-2. Flag off: retire identities quiet for over an hour. Nothing can renew while it is off, so
-   they hold no JWT the provider would still accept.
+2. Drain: a stored row saying off for this environment, untouched for an hour, retires
+   identities quiet for over an hour. Nothing can renew while it is off, so they hold no JWT
+   the provider would still accept. Retirement cannot be undone and turning the flag back on
+   does not cancel queued cleanup, so a removed row or no row never drains, and the hour is
+   the time to take back a mistaken toggle (owner 2026-11-04).
 3. Provider cleanup: `DELETE /apps/{app}/users/by/external_id/device:<id>`, an hour after
    retirement so the last JWT has expired and the device has moved its subscription. Backs
    off from 5 minutes; after 8 attempts the row is `failed` and
@@ -89,6 +92,10 @@ jointly exceed it. Past it: 429 and `push_device_identities_total{result=ceiling
    to anything.
 
 ## Consequences
+
+- **What a person is told.** Normal deletion is about 90 days quiet + 1 hour to cleanup + 30
+  days, and a `failed` cleanup holds it until someone looks. GoGo-MobileApp#398's copy (shape
+  D6) must say that, not "after 90 days".
 
 - Who can create: anyone, by design; FR-USER-014 gains this exception. The worst a holder
   of a bogus identity gets is promotions.
@@ -118,15 +125,38 @@ Limits, stated rather than solved:
 Forward: `0078_push-device-identity.sql`, additive. The rollback baseline is the release
 carrying ADR-0037, never an older binary (R-18):
 
-1. Turn the flag off. Issuance stops, dispatch skips devices, clients discard credentials.
-2. Let the worker drain: identities retire after an hour, provider cleanup follows. The
-   JWTs have expired by then, and a `login` with one cannot recreate a BE identity because
-   the row is what admits a device.
+1. Turn the flag off with a stored row. Issuance stops, dispatch skips devices, clients
+   discard credentials.
+2. Let the worker drain: identities start retiring after an hour, provider cleanup follows.
+   The JWTs have expired by then, and a `login` with one cannot recreate a BE identity because
+   the row is what admits a device. The drain is complete when this returns 0; a `failed` row
+   needs a person first:
+   ```sql
+   select count(*) from push_device_identities
+   where revoked_at is null or cleanup_state <> 'done';
+   ```
 3. Cancel any scheduled `public` campaign; the baseline cannot resolve that audience and
    would fail it rather than send it. Any `public` row stays readable there but cannot be
    estimated, edited or rescheduled until the release returns.
-4. Roll the binary back. Its `register()` takes over a device-owned row by writing a valid
-   owner. It does not retire the identity, which is why the drain comes first.
+4. Delete what the drain left, without waiting the 30 days (owner 2026-11-04): the baseline
+   has no job to do it, and the promise of deletion must not depend on how long a rollback
+   lasts. This deletes data, so it needs the owner's order at that moment:
+   ```sql
+   begin;
+   insert into push_subscription_fences (subscription_id, generation)
+   select subscription_id, 1 from push_subscriptions where owner_kind = 'device'
+   on conflict (subscription_id) do update
+   set generation = push_subscription_fences.generation + 1, updated_at = now();
+   delete from push_subscriptions where owner_kind = 'device';
+   delete from push_device_identities where cleanup_state = 'done' and revoked_at is not null;
+   commit;
+   ```
+5. Roll the binary back. Its `register()` writes a valid owner, and no device-owned row is
+   left for it to take over. After this the baseline compares by subscription id and revision
+   again, so a delayed write could match a row recreated at the same revision. Only user rows
+   exist there and the provider's answer still names that user: an audience misstatement at
+   worst, corrected by the next report. Restoring this release needs the flag row kept off
+   until someone turns it on deliberately.
 
 The schema stays. Dropping it is the `Down` script, a separate decision with its own order;
 it refuses while a device-owned row exists and leaves the enum value behind.

@@ -1,11 +1,7 @@
 import { eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import type { NotificationProviderPort } from '@gogo/providers';
-import {
-  flagEnvironmentOf,
-  resolveBooleanFlag,
-  type FlagEnvironment,
-} from '../../shared/feature-flags';
+import { flagEnvironmentOf, type FlagEnvironment } from '../../shared/feature-flags';
 import {
   DEVICE_IDENTITY_FLAG,
   DEVICE_INACTIVE_DAYS,
@@ -58,17 +54,33 @@ export class PushDeviceLifecycle {
           or last_seen_at < now() - make_interval(days => ${DEVICE_INACTIVE_DAYS})`,
       'expired',
     );
-    // Flag off: nothing can renew, so an identity quiet for an hour holds no JWT
-    // the provider would still accept. That is the rollback's drain.
-    const on = await resolveBooleanFlag(this.db, DEVICE_IDENTITY_FLAG, {
-      environment: this.environment,
-    });
-    const drained = on
-      ? 0
-      : await this.retireWhere(sql`last_seen_at < now() - interval '1 hour'`, 'drained');
+    // Nothing can renew while the flag is off, so an identity quiet for an hour holds
+    // no JWT the provider would still accept. That is the rollback's drain.
+    const drained = (await this.drainRequested())
+      ? await this.retireWhere(sql`last_seen_at < now() - interval '1 hour'`, 'drained')
+      : 0;
     const { cleaned, cleanupFailed } = await this.cleanup(signal);
     const deleted = await this.deleteRetained();
     return { expired, drained, cleaned, cleanupFailed, deleted };
+  }
+
+  /**
+   * Retirement cannot be undone, so it takes more than the flag reading off (owner
+   * 2026-11-04): a stored row saying off for this environment, left alone for an
+   * hour. No row means nobody asked, and the hour is the time to take back a
+   * mistaken toggle.
+   */
+  private async drainRequested(): Promise<boolean> {
+    const { rows } = await this.db.execute<{ off: boolean }>(sql`
+      select (not enabled and updated_at < now() - interval '1 hour') as off
+      from feature_flags
+      where key = ${DEVICE_IDENTITY_FLAG}
+        and environment in (${this.environment}::feature_flag_environment, 'all')
+        and platform = 'all'
+      order by environment = ${this.environment}::feature_flag_environment desc
+      limit 1
+    `);
+    return rows[0]?.off === true;
   }
 
   /** Identities whose provider cleanup gave up: a person has to look. */

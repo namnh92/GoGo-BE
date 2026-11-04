@@ -1252,7 +1252,13 @@ describe('D9 — how an identity ends', () => {
     expect((await identityRow(replacement.deviceId))!.revokedAt).toBeNull();
   });
 
-  it('flag off drains only identities quiet past the last JWT; flag on drains nothing', async () => {
+  const flagAge = (hours: number) =>
+    db
+      .update(schema.featureFlags)
+      .set({ updatedAt: new Date(Date.now() - hours * 3_600_000) })
+      .where(eq(schema.featureFlags.key, FLAG));
+
+  it('drains only on a stored off row untouched for an hour, and only quiet identities', async () => {
     const s = scenario();
     const quiet = await newDevice(s);
     const fresh = await newDevice(s);
@@ -1261,9 +1267,83 @@ describe('D9 — how an identity ends', () => {
     await lifecycle().run.tick();
     expect((await identityRow(quiet.deviceId))!.revokedAt).toBeNull();
 
+    // Just turned off: the hour to take it back.
     await setFlag(false);
+    await lifecycle().run.tick();
+    expect((await identityRow(quiet.deviceId))!.revokedAt).toBeNull();
+
+    await flagAge(2);
     await lifecycle().run.tick();
     expect((await identityRow(quiet.deviceId))!.revokedAt).not.toBeNull();
     expect((await identityRow(fresh.deviceId))!.revokedAt).toBeNull();
+  });
+
+  it('no row reads off for issuing, but never drains', async () => {
+    const s = scenario();
+    const quiet = await newDevice(s);
+    await age(quiet.deviceId, { lastSeenAt: new Date(Date.now() - 2 * 3_600_000) });
+    await db.delete(schema.featureFlags).where(eq(schema.featureFlags.key, FLAG));
+    await lifecycle().run.tick();
+    expect((await identityRow(quiet.deviceId))!.revokedAt).toBeNull();
+    expect(await s.devices.enabled()).toBe(false);
+  });
+
+  it('an old off row for another environment does not drain this one', async () => {
+    const s = scenario();
+    const quiet = await newDevice(s);
+    await age(quiet.deviceId, { lastSeenAt: new Date(Date.now() - 2 * 3_600_000) });
+    await db.delete(schema.featureFlags).where(eq(schema.featureFlags.key, FLAG));
+    await db.insert(schema.featureFlags).values({
+      key: FLAG,
+      environment: 'production',
+      platform: 'all',
+      enabled: false,
+      updatedAt: new Date(Date.now() - 2 * 3_600_000),
+    });
+    await lifecycle().run.tick();
+    expect((await identityRow(quiet.deviceId))!.revokedAt).toBeNull();
+  });
+
+  it('the rollback runbook in ADR-0038 leaves no device row and a live user row', async () => {
+    const adr = await readFile(
+      path.resolve(__dirname, '../../../docs/adr/0038-push-device-identity.md'),
+      'utf8',
+    );
+    const blocks = [...adr.matchAll(/```sql\n([\s\S]*?)```/g)].map((m) => m[1]!);
+    const [readiness, runbook] = blocks;
+    const pending = async () =>
+      Number((await pool.query(readiness!.replace('count(*)', 'count(*)::int as n'))).rows[0].n);
+
+    const s = scenario();
+    const user = await newUser();
+    s.provider.subscriptions.set(user.id, [{ id: s.sub, enabled: true }]);
+    await s.users.register(user, { platform: 'ios', subscriptionId: s.sub });
+    const d = await newDevice(s);
+    const deviceSub = randomUUID();
+    d.attach(deviceSub);
+    await s.devices.report(d.auth, report({ subscriptionId: deviceSub }));
+    expect(await pending()).toBeGreaterThan(0);
+
+    await db.execute(sql`
+      update push_device_identities
+      set revoked_at = coalesce(revoked_at, now()), cleanup_state = 'done',
+          cleanup_next_at = null, cleanup_done_at = now()
+    `);
+    await db.execute(sql`
+      update push_subscriptions set revoked_at = now()
+      where owner_kind = 'device' and revoked_at is null
+    `);
+    expect(await pending()).toBe(0);
+
+    const client = await pool.connect();
+    await client.query(runbook!).finally(() => client.release());
+
+    expect(await row(deviceSub)).toBeUndefined();
+    expect(await identityRow(d.deviceId)).toBeUndefined();
+    expect(await row(s.sub)).toMatchObject({ ownerKind: 'user', userId: user.id });
+    const { rows } = await db.execute<{ generation: number }>(
+      sql`select generation from push_subscription_fences where subscription_id = ${deviceSub}`,
+    );
+    expect(rows[0]!.generation).toBeGreaterThan(0);
   });
 });
