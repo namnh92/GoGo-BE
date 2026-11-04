@@ -43,7 +43,9 @@ export function audiencePredicate(
   const base = sql`u.status <> 'deleted' and ${livePushSubscription()}`;
 
   switch (audienceType) {
+    // `public` is `all` for accounts; its device half is `devicePublicPredicate`.
     case 'all':
+    case 'public':
       return base;
 
     // Membership in at least one room of that type. A person who has planned a
@@ -60,6 +62,21 @@ export function audiencePredicate(
     case 'platform':
       return sql`u.status <> 'deleted' and ${livePushSubscription(String(filter['platform']))}`;
   }
+}
+
+/**
+ * NTF-BE-017 (#747) — the device half of `public`, as one predicate over
+ * `push_device_identities i`, used by the estimate and the worker alike.
+ *
+ * A device is in only when it stated yes: null has never been stated, and a
+ * retired identity or a row taken over by a user does not qualify. Selecting
+ * identities rather than rows counts each owner once.
+ */
+export function devicePublicPredicate(): SQL {
+  return sql`i.revoked_at is null and i.promotions_enabled = true and exists (
+    select 1 from push_subscriptions ps
+    where ps.device_id = i.id and ps.owner_kind = 'device' and ps.revoked_at is null
+  )`;
 }
 
 /**

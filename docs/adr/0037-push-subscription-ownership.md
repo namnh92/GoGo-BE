@@ -4,7 +4,7 @@
 - **Date:** 2026-11-03
 - **Deciders:** owner, SA (shape GoGo-MobileApp#398 rev 7), DEV
 - **Extends:** ADR-0016, ADR-0017, ADR-0021, ADR-0025. Part 1 of device identity
-  for push to devices with no account; part 2 ships with NTF-BE-017 (#747).
+  for push to devices with no account; part 2 is ADR-0038 (NTF-BE-017, #747).
 
 ## Context
 

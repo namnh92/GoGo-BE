@@ -136,6 +136,38 @@ export class OneSignalPushAdapter implements NotificationProviderPort {
     };
   }
 
+  async deleteDeviceIdentity(externalId: string): Promise<void> {
+    if (!externalId.startsWith('device:')) {
+      throw new ProviderInvalidRequestError('onesignal.push', 'NOT_A_DEVICE_IDENTITY');
+    }
+    await withResilience(RESILIENCE, async (signal) => {
+      let response: Response;
+      try {
+        response = await this.fetchImpl(
+          `${this.baseUrl}/apps/${encodeURIComponent(this.config.appId)}/users/by/external_id/${encodeURIComponent(externalId)}`,
+          {
+            method: 'DELETE',
+            headers: { authorization: `Key ${this.config.restApiKey}`, accept: 'application/json' },
+            signal,
+          },
+        );
+      } catch (err) {
+        this.metrics.increment('push_provider_requests_total', { status: 'network' });
+        throw err;
+      }
+      const status = response.status;
+      this.metrics.increment('push_provider_requests_total', { status });
+      if (status === 401 || status === 403) {
+        throw new ProviderConfigurationError('onesignal.push', 'AUTH_FAILED', `HTTP ${status}`);
+      }
+      if (status === 400) {
+        throw new ProviderInvalidRequestError('onesignal.push', 'INVALID_ARGUMENT', `HTTP 400`);
+      }
+      // 404 is the provider saying it is already gone, which is what was asked for.
+      if (!response.ok && status !== 404) throw new Error(`onesignal responded ${status}`);
+    });
+  }
+
   private async create(
     externalIds: string[],
     notification: UserNotification,

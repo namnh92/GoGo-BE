@@ -8,6 +8,23 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 4.0.0-alpha.1 — campaign audience `public`, device push identity (GoGo-BE#747)
+
+**Breaking for readers of CMS campaigns.** `CampaignAudience` gains `public`, so
+`audienceType` in a response can hold a value the previous contract excluded. A
+client that fails on an unknown value must learn it first; GoGo-CMS does in
+GoGo-CMS#270. Campaigns on any other audience are unaffected. MAJOR by owner
+decision 2026-11-04, with the exact pair of contract files recorded in
+`.github/oasdiff-exceptions.json`.
+
+Added: `POST`/`DELETE /notifications/identity/device`,
+`POST /notifications/identity/device/token`,
+`PUT /notifications/device-subscriptions` (device credential, not a session) and
+`GET /cms/campaigns/capabilities`. `CmsCampaign` gains `deviceRecipientCount`,
+`deviceSentCount` and `deviceFailedCount`; the audience estimate gains
+`estimatedAccounts` and `estimatedDevices`, with `estimatedRecipients` their sum.
+Off by default per environment (ADR-0038).
+
 ## 3.0.0-alpha.1 — taxonomy labels are one line of plain text (GoGo-BE#737)
 
 **Breaking for writers of taxonomy labels.** `cmsCreateTaxonomy` and

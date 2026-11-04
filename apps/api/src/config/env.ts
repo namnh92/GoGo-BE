@@ -296,6 +296,8 @@ const envSchema = z
     ONESIGNAL_IDENTITY_VERIFICATION_KEY: z.string().default(''),
     /** Spec §14: one hour at most; the client refreshes. */
     ONESIGNAL_IDENTITY_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(3_600),
+    /** #747 — owner 2026-11-04. Past it `POST /notifications/identity/device` answers 429. */
+    PUSH_DEVICE_IDENTITY_DAILY_CEILING: z.coerce.number().int().min(1).default(20_000),
     /**
      * LNK-BE-002 (#205) — the canonical share host this environment mints
      * links on, e.g. `https://go-dev.gogo.id.vn`. HTTPS origin only: no path,

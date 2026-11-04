@@ -19,7 +19,7 @@ import { assertExternalUrl } from '../../shared/external-url';
  * deliberately not here: nothing stores a user's city or their app version,
  * and there is no segment store. Each needs its own backend work first.
  */
-export const CAMPAIGN_AUDIENCES = ['all', 'couple', 'group', 'platform'] as const;
+export const CAMPAIGN_AUDIENCES = ['all', 'couple', 'group', 'platform', 'public'] as const;
 export type CampaignAudience = (typeof CAMPAIGN_AUDIENCES)[number];
 
 export const CAMPAIGN_DESTINATIONS = [
@@ -53,6 +53,7 @@ export const AUDIENCE_FILTERS = {
   couple: z.object({}).strict(),
   group: z.object({}).strict(),
   platform: z.object({ platform: z.enum(['ios', 'android', 'web']) }).strict(),
+  public: z.object({}).strict(),
 } as const satisfies Record<CampaignAudience, z.ZodType>;
 
 /** Destinations that carry an id, and what kind of id it is. */
@@ -211,7 +212,7 @@ export function campaignOutcome(counts: {
   if (counts.attempted === 0) {
     return {
       status: 'failed',
-      lastError: 'EMPTY_AUDIENCE: no account matched this audience at send time',
+      lastError: 'EMPTY_AUDIENCE: nobody matched this audience at send time',
     };
   }
   return {
@@ -229,4 +230,9 @@ export function campaignOutcome(counts: {
  */
 export function campaignDedupeKey(dispatchKey: string, userId: string): string {
   return `campaign:${dispatchKey}:${userId}`;
+}
+
+/** NTF-BE-017 (#747): the same dispatch key, so a retry replays and a re-send does not. */
+export function campaignDeviceDedupeKey(dispatchKey: string, deviceId: string): string {
+  return `${dispatchKey}:device:${deviceId}`;
 }

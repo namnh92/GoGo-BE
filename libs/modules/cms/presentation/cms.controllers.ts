@@ -1747,6 +1747,12 @@ export class CmsCampaignsController {
     return this.campaigns.create(actor, body);
   }
 
+  /** NTF-BE-017: declared before `:id` so the word is not read as an id. */
+  @Get('capabilities')
+  capabilities() {
+    return this.campaigns.capabilities();
+  }
+
   @Get(':id')
   detail(@Param('id', Uuid) id: string) {
     return this.campaigns.get(id);

@@ -26,4 +26,8 @@ export class UnconfiguredPushProvider implements NotificationProviderPort {
   ): Promise<PushSendResult> {
     return Promise.reject(new ProviderConfigurationError('onesignal.push', 'MISSING_CREDENTIAL'));
   }
+
+  deleteDeviceIdentity(_externalId: string): Promise<void> {
+    return Promise.reject(new ProviderConfigurationError('onesignal.push', 'MISSING_CREDENTIAL'));
+  }
 }

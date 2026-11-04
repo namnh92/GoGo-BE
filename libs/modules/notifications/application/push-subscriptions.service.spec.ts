@@ -83,7 +83,15 @@ describe('PushSubscriptionsService.register', () => {
     const record = await svc.register(user, { platform: 'ios', subscriptionId: 'sub-1' });
 
     expect(record.platform).toBe('ios');
-    expect(inserted).toEqual([{ userId: user.id, platform: 'ios', subscriptionId: 'sub-1' }]);
+    expect(inserted).toEqual([
+      {
+        ownerKind: 'user',
+        userId: user.id,
+        deviceId: null,
+        platform: 'ios',
+        subscriptionId: 'sub-1',
+      },
+    ]);
   });
 
   it('answers 409 and writes nothing when a logout moved the fence during the provider read', async () => {

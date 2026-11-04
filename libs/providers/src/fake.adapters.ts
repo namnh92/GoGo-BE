@@ -338,6 +338,17 @@ export class FakePush implements NotificationProviderPort {
       unknownUserIds: unknown,
     };
   }
+
+  /** What `deleteDeviceIdentity` was asked to remove, in order. */
+  readonly deletedIdentities: string[] = [];
+
+  async deleteDeviceIdentity(externalId: string): Promise<void> {
+    if (!externalId.startsWith('device:')) {
+      throw new ProviderInvalidRequestError('fake.push', 'NOT_A_DEVICE_IDENTITY');
+    }
+    if (this.unavailable) throw new ProviderUnavailableError('fake.push', 'simulated outage');
+    this.deletedIdentities.push(externalId);
+  }
 }
 
 /**

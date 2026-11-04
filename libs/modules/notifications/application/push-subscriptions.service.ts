@@ -6,6 +6,13 @@ import type { Actor } from '../../identity/domain/actor';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import { PushIdentityService, type DeviceUnsubscribeConfirmation } from './push-identity.service';
+import {
+  claimOwnership,
+  lockIdentities,
+  readOwnership,
+  retireIdentities,
+  type OwnershipRead,
+} from './push-subscription-ownership';
 
 /**
  * NTF-BE-011 (#515) — the record of which users a push campaign can reach.
@@ -40,19 +47,6 @@ export type PushSubscriptionRecord = {
   registeredAt: string;
 };
 
-/**
- * NTF-BE-016 (#746), ADR-0037 — what an ownership write saw before it asked the
- * provider. The provider call holds no lock, so the write proves nothing changed
- * meanwhile by comparing against this: a row by its revision, an absent row by
- * the generation of its fence.
- */
-type OwnershipRead = {
-  /** Null when no row exists for this subscription id. */
-  revision: number | null;
-  /** Zero when no fence exists: nothing has logged out of an absent row yet. */
-  fenceGeneration: number;
-};
-
 function requireUser(actor: Actor): string {
   if (actor.type !== 'user') throw AppError.forbidden('USER_ONLY', 'Login required');
   return actor.id;
@@ -78,13 +72,16 @@ export class PushSubscriptionsService {
    * What it saw is captured before the provider is asked, and the write only
    * lands if that still holds. Anything else means the answer may be stale, so
    * the caller gets a 409 and has to be verified again.
+   *
+   * Taking a row from a device identity retires that identity in the same
+   * transaction, so a copied device secret cannot go on renewing (ADR-0038).
    */
   async register(
     actor: Actor,
     input: PushSubscriptionRegistration,
   ): Promise<PushSubscriptionRecord> {
     const userId = requireUser(actor);
-    const seen = await this.readOwnership(input.subscriptionId);
+    const seen = await readOwnership(this.db, input.subscriptionId);
     const read = await this.identity.readOwnSubscriptions(actor);
 
     if (read.kind === 'unreachable' || read.kind === 'error') {
@@ -114,7 +111,13 @@ export class PushSubscriptionsService {
       );
     }
 
-    const row = await this.claim(userId, input, seen);
+    const row = await this.db.transaction(async (tx) => {
+      const previous = seen.deviceId ? [seen.deviceId] : [];
+      await lockIdentities(tx, previous);
+      const claimed = await claimOwnership(tx, { ...input, owner: { kind: 'user', userId } }, seen);
+      if (claimed) await retireIdentities(tx, previous);
+      return claimed;
+    });
     if (!row) {
       this.metrics.increment('push_subscription_registrations_total', { result: 'conflict' });
       throw new AppError(
@@ -140,7 +143,7 @@ export class PushSubscriptionsService {
     actor: Actor,
     subscriptionId: string,
   ): Promise<DeviceUnsubscribeConfirmation> {
-    const seen = await this.readOwnership(subscriptionId);
+    const seen = await readOwnership(this.db, subscriptionId);
     const confirmation = await this.identity.confirmDeviceUnsubscribed(actor, subscriptionId);
     // Only on a confirmation — a device that is still enabled stays in the
     // audience, and only the caller's own row is ever touched.
@@ -173,89 +176,19 @@ export class PushSubscriptionsService {
           target: f.subscriptionId,
           set: { generation: sql`${f.generation} + 1`, updatedAt: sql`now()` },
         });
-      if (seen.revision === null) return [];
+      if (seen.revision === null || seen.rowId === null) return [];
       // An already revoked row advances too: a registration verified before this
       // logout read the same revision, and would otherwise clear `revoked_at`.
       return tx
         .update(p)
         .set({ revokedAt: sql`coalesce(${p.revokedAt}, now())`, revision: sql`${p.revision} + 1` })
-        .where(
-          and(
-            eq(p.subscriptionId, subscriptionId),
-            eq(p.userId, userId),
-            eq(p.revision, seen.revision),
-          ),
-        )
+        .where(and(eq(p.id, seen.rowId), eq(p.userId, userId), eq(p.revision, seen.revision)))
         .returning({ id: p.id });
     });
-    if (revoked.length > 0) {
+    // Only a row this logout took out of the audience. The compare-and-set makes
+    // `seen.live` the state it acted on, and an already revoked row advances too.
+    if (revoked.length > 0 && seen.live) {
       this.metrics.increment('push_subscription_registrations_total', { result: 'revoked' });
     }
-  }
-
-  private async readOwnership(subscriptionId: string): Promise<OwnershipRead> {
-    // One statement, so the row and the fence come from one snapshot.
-    const result = await this.db.execute<{
-      revision: number | null;
-      generation: number | null;
-    }>(sql`
-      select
-        (select revision from push_subscriptions where subscription_id = ${subscriptionId}) as revision,
-        (select generation from push_subscription_fences where subscription_id = ${subscriptionId}) as generation
-    `);
-    const row = result.rows[0];
-    return { revision: row?.revision ?? null, fenceGeneration: row?.generation ?? 0 };
-  }
-
-  /** The write `register` verified for. Undefined when what it saw no longer holds. */
-  private async claim(
-    userId: string,
-    input: PushSubscriptionRegistration,
-    seen: OwnershipRead,
-  ): Promise<{ platform: PushSubscriptionRecord['platform']; lastConfirmedAt: Date } | undefined> {
-    const f = schema.pushSubscriptionFences;
-    const p = schema.pushSubscriptions;
-    const written = { platform: p.platform, lastConfirmedAt: p.lastConfirmedAt };
-    const { subscriptionId, platform } = input;
-
-    if (seen.revision !== null) {
-      const [row] = await this.db
-        .update(p)
-        .set({
-          ownerKind: 'user',
-          userId,
-          deviceId: null,
-          platform,
-          lastConfirmedAt: sql`now()`,
-          // A device that reports again is subscribed again, whatever an
-          // earlier logout recorded.
-          revokedAt: null,
-          revision: sql`${p.revision} + 1`,
-        })
-        .where(and(eq(p.subscriptionId, subscriptionId), eq(p.revision, seen.revision)))
-        .returning(written);
-      return row;
-    }
-
-    return this.db.transaction(async (tx) => {
-      // Touching the fence takes its row lock, which a logout holds until it
-      // commits. Comparing a plain read instead would leave a gap between this
-      // statement's snapshot and the logout's commit for the row to land in.
-      const [fence] = await tx
-        .insert(f)
-        .values({ subscriptionId })
-        .onConflictDoUpdate({
-          target: f.subscriptionId,
-          set: { generation: sql`${f.generation}` },
-        })
-        .returning({ generation: f.generation });
-      if (fence!.generation !== seen.fenceGeneration) return undefined;
-      const [row] = await tx
-        .insert(p)
-        .values({ userId, platform, subscriptionId })
-        .onConflictDoNothing({ target: p.subscriptionId })
-        .returning(written);
-      return row;
-    });
   }
 }

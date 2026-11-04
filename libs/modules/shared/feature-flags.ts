@@ -158,6 +158,17 @@ export const FEATURE_FLAGS = {
     description: 'GoGo AI assistant accepts new messages (paid inference: Jev + Claude Haiku).',
     platformScoped: false,
   },
+  // GoGo-BE#747 (ADR-0038). Default **off**; production needs a separate owner
+  // order (Decree 13 question, shape Q8). Off stops issuance and reporting, makes
+  // dispatch skip devices, and the worker drains what exists once it has gone
+  // quiet. Retiring an identity keeps working either way.
+  'push.device_identity.enabled': {
+    valueType: 'boolean',
+    defaultValue: false,
+    description:
+      'Devices with no account hold a device:<id> push identity and receive `public` campaigns.',
+    platformScoped: false,
+  },
 } as const satisfies Record<string, FlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAGS;

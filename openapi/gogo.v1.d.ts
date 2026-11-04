@@ -2701,6 +2701,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/notifications/identity/device": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue a push identity to a device with no session (NTF-BE-017)
+         * @description No body and no session. Returns `externalId = device:<id>`, a provider JWT with the same claims a user's has (`iss`, `exp` ≤ 1 hour, `identity.external_id`), and a device credential whose secret is returned **once** and stored only as a hash. The JWT is for the provider SDK; GoGo's API never accepts it. A device identity receives `public` campaigns and nothing else, and holds nothing about an account.
+         *
+         *     Limited per IP like a login, and by a ceiling on new identities in any 24 hours across all callers. Off by default per environment (`push.device_identity.enabled`, ADR-0038).
+         */
+        post: operations["createPushDeviceIdentity"];
+        /**
+         * Retire this device identity (NTF-BE-017)
+         * @description Revokes the identity and every subscription row it owns in one transaction, and queues provider cleanup. Works with the flag off: this is how a device leaves. Retry until 2xx or `PUSH_DEVICE_IDENTITY_GONE`.
+         */
+        delete: operations["retirePushDeviceIdentity"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notifications/identity/device/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Renew the provider JWT of a device identity (NTF-BE-017) */
+        post: operations["renewPushDeviceToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notifications/device-subscriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Record this device's subscription and promotions choice (NTF-BE-017)
+         * @description Verified against the provider before anything is written: the subscription must be attached to this device identity, and enabled when `promotionsEnabled` is true. An opt-out is accepted for a disabled subscription.
+         *
+         *     A higher `preferenceVersion` applies; the same version replays the stored choice and reports the provider afresh; a lower one answers 409. Clear a pending change only when `appliedVersion` equals it. An opt-out has reached the provider only when a response for the current version shows `providerEnabled: false`.
+         */
+        put: operations["reportPushDeviceSubscription"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/share-links": {
         parameters: {
             query?: never;
@@ -4168,6 +4233,26 @@ export interface paths {
          *     A due campaign that already holds one of those destinations is not sent: the dispatcher marks it `failed` with `lastError = DESTINATION_NOT_OPENABLE`.
          */
         post: operations["cmsCreateCampaign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/campaigns/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: which audiences this environment can actually reach (NTF-BE-017)
+         * @description Hide `public` when `publicAudience` is false.
+         */
+        get: operations["cmsGetCampaignCapabilities"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -9260,10 +9345,10 @@ export interface components {
          */
         CampaignStatus: "draft" | "scheduled" | "sending" | "sent" | "cancelled" | "failed";
         /**
-         * @description Only what the backend can resolve from data it holds. `city`, `app_version` and `custom_segment` from the mockup are absent on purpose: nothing stores a user's city or their app version, and a campaign aimed at a segment the server has to guess at reaches the wrong people — the one failure with no undo.
+         * @description `public` is `all` plus devices with no account that said yes (#747); ask `GET /cms/campaigns/capabilities` before offering it. Only what the backend can resolve from data it holds. `city`, `app_version` and `custom_segment` from the mockup are absent on purpose: nothing stores a user's city or their app version, and a campaign aimed at a segment the server has to guess at reaches the wrong people — the one failure with no undo.
          * @enum {string}
          */
-        CampaignAudience: "all" | "couple" | "group" | "platform";
+        CampaignAudience: "all" | "couple" | "group" | "platform" | "public";
         /**
          * @description `plan_template` rather than `plan`: a campaign points every recipient at the same thing, and a plan belongs to one room.
          * @enum {string}
@@ -9304,6 +9389,10 @@ export interface components {
             /** @description How many the provider accepted. Not "seen", and not a guarantee of delivery to a device. */
             sentCount: number;
             failedCount: number;
+            /** @description The device half of a `public` send. Absent when no device half ran. */
+            deviceRecipientCount?: number;
+            deviceSentCount?: number;
+            deviceFailedCount?: number;
             lastError?: string;
             /** Format: date-time */
             testSendRequestedAt?: string;
@@ -9321,12 +9410,37 @@ export interface components {
             nextCursor: string | null;
             totalCount: number;
         };
+        CmsCampaignCapabilities: {
+            /** @description Whether the `public` audience reaches devices in this environment. */
+            publicAudience: boolean;
+        };
+        PushDeviceIdentity: {
+            /** Format: uuid */
+            deviceId: string;
+            /** @description Returned once. Never logged. */
+            deviceSecret: string;
+            /** @description `device:<deviceId>`. */
+            externalId: string;
+            /** @description ES256 JWT for the provider SDK. Never logged. */
+            token: string;
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        PushDeviceSubscriptionResult: {
+            appliedVersion: number;
+            storedVersion: number;
+            /** @description What the provider read in this request showed. */
+            providerEnabled: boolean;
+        };
         CmsCampaignAudienceEstimate: {
             /** Format: uuid */
             campaignId: string;
             audienceType: components["schemas"]["CampaignAudience"];
-            /** @description Accounts with a registered device that match right now. */
+            /** @description Accounts plus devices that match right now. */
             estimatedRecipients: number;
+            estimatedAccounts: number;
+            /** @description Zero unless the audience is `public` and device identities are on. */
+            estimatedDevices: number;
             /** Format: date-time */
             estimatedAt: string;
         };
@@ -15270,6 +15384,208 @@ export interface operations {
             };
         };
     };
+    createPushDeviceIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Created. Keep `deviceSecret`; it cannot be read again. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushDeviceIdentity"];
+                };
+            };
+            /** @description PUSH_DEVICE_IDENTITY_DISABLED — the flag is off. Do not recreate until the next launch. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description No identity signing key in this environment (`PUSH_IDENTITY_UNAVAILABLE`) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    retirePushDeviceIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Retired */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description DEVICE_CREDENTIAL_REQUIRED — no well-formed credential. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description PUSH_DEVICE_IDENTITY_GONE — unknown, retired or wrong secret; one answer for all three. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    renewPushDeviceToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A new JWT */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushIdentityToken"];
+                };
+            };
+            /** @description DEVICE_CREDENTIAL_REQUIRED — no well-formed credential. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `PUSH_DEVICE_IDENTITY_GONE` (unknown, retired or wrong secret: discard and create anew) or `PUSH_DEVICE_IDENTITY_DISABLED` (flag off: discard, and do not recreate until the next launch). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description No identity signing key in this environment (`PUSH_IDENTITY_UNAVAILABLE`) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    reportPushDeviceSubscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    platform: "ios" | "android" | "web";
+                    /** @description OneSignal subscription id for this device. Not a device token. */
+                    subscriptionId: string;
+                    promotionsEnabled: boolean;
+                    preferenceVersion: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded, or an idempotent replay */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushDeviceSubscriptionResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description DEVICE_CREDENTIAL_REQUIRED — no well-formed credential. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description PUSH_SUBSCRIPTION_NOT_CONFIRMED — not attached to this device, or disabled on an opt-in. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description PUSH_DEVICE_IDENTITY_GONE or PUSH_DEVICE_IDENTITY_DISABLED, as on the token route. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `PUSH_PREFERENCE_STALE` — a newer choice is stored, its version in `field_errors[0].message`; adopt that version plus one for the next change. `PUSH_SUBSCRIPTION_CONFLICT` — the record changed during verification; nothing was written, report again. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description PUSH_SUBSCRIPTION_UNVERIFIED — the provider could not be reached. Retryable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     createShareLink: {
         parameters: {
             query?: never;
@@ -18465,6 +18781,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsGetCampaignCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Capabilities */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsCampaignCapabilities"];
                 };
             };
         };

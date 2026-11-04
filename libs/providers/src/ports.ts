@@ -394,6 +394,12 @@ export interface NotificationProviderPort {
    * provider rejects on its merits. Callers retry only the first.
    */
   sendToUsers(userIds: readonly string[], notification: UserNotification): Promise<PushSendResult>;
+  /**
+   * NTF-BE-017 (#747) — removes a retired `device:<id>` identity at the provider.
+   * Refuses anything outside that namespace, so no bug here can delete a person.
+   * An identity already gone is success. Throws like a send otherwise.
+   */
+  deleteDeviceIdentity(externalId: string): Promise<void>;
 }
 
 /**

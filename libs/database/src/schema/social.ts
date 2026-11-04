@@ -249,6 +249,51 @@ export const deviceTokens = pgTable(
 
 export const pushSubscriptionOwnerKind = pgEnum('push_subscription_owner_kind', ['user', 'device']);
 
+export const pushDeviceCleanupState = pgEnum('push_device_cleanup_state', [
+  'none',
+  'pending',
+  'done',
+  'failed',
+]);
+
+/**
+ * NTF-BE-017 (#747), ADR-0038 — a device with no session, addressed as
+ * `external_id = device:<id>`. Holds no account, no token and nothing about a
+ * person; the only bearer is a random secret, stored here hashed.
+ */
+export const pushDeviceIdentities = pgTable(
+  'push_device_identities',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** SHA-256 of the secret returned once at creation. */
+    secretHash: text('secret_hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    /** Null = never stated, which is not in any audience. */
+    promotionsEnabled: boolean('promotions_enabled'),
+    preferenceVersion: integer('preference_version').notNull().default(0),
+    /** The provider half of a retirement, run by the worker after the row is revoked. */
+    cleanupState: pushDeviceCleanupState('cleanup_state').notNull().default('none'),
+    cleanupAttempts: integer('cleanup_attempts').notNull().default(0),
+    cleanupNextAt: timestamp('cleanup_next_at', { withTimezone: true }),
+    /** Retention counts from here, not from retirement. */
+    cleanupDoneAt: timestamp('cleanup_done_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('push_device_identities_created_idx').on(t.createdAt),
+    index('push_device_identities_live_seen_idx')
+      .on(t.lastSeenAt)
+      .where(sql`${t.revokedAt} is null`),
+    index('push_device_identities_cleanup_idx')
+      .on(t.cleanupNextAt)
+      .where(sql`${t.cleanupState} = 'pending'`),
+    index('push_device_identities_cleaned_idx')
+      .on(t.cleanupDoneAt)
+      .where(sql`${t.cleanupState} = 'done'`),
+  ],
+);
+
 /**
  * NTF-BE-011 (#515) — which of GoGo's users can be reached by a push, and on
  * what platform.
@@ -270,8 +315,8 @@ export const pushSubscriptions = pgTable(
     /** NTF-BE-016 (#746): exactly one of `userId` and `deviceId`, per this kind. */
     ownerKind: pushSubscriptionOwnerKind('owner_kind').notNull().default('user'),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-    /** A device identity. No foreign key yet: the table arrives with NTF-BE-017. */
-    deviceId: uuid('device_id'),
+    /** The owning device identity (NTF-BE-017). */
+    deviceId: uuid('device_id').references(() => pushDeviceIdentities.id),
     /** Advanced by every ownership write; a write that read an older one lost. */
     revision: integer('revision').notNull().default(0),
     platform: devicePlatform('platform').notNull(),
@@ -290,6 +335,9 @@ export const pushSubscriptions = pgTable(
     uniqueIndex('push_subscriptions_subscription_unique').on(t.subscriptionId),
     index('push_subscriptions_live_idx')
       .on(t.userId, t.platform)
+      .where(sql`${t.revokedAt} is null`),
+    index('push_subscriptions_device_live_idx')
+      .on(t.deviceId)
       .where(sql`${t.revokedAt} is null`),
     check(
       'push_subscriptions_one_owner',
@@ -327,7 +375,13 @@ export const campaignStatus = pgEnum('campaign_status', [
  * segment the server cannot compute reaches the wrong people — which is not
  * recoverable once sent.
  */
-export const campaignAudience = pgEnum('campaign_audience', ['all', 'couple', 'group', 'platform']);
+export const campaignAudience = pgEnum('campaign_audience', [
+  'all',
+  'couple',
+  'group',
+  'platform',
+  'public',
+]);
 
 export const campaignDestination = pgEnum('campaign_destination', [
   'home',
@@ -375,6 +429,10 @@ export const notificationCampaigns = pgTable(
     recipientCount: integer('recipient_count'),
     sentCount: integer('sent_count').notNull().default(0),
     failedCount: integer('failed_count').notNull().default(0),
+    /** NTF-BE-017: the device half of a `public` send, counted apart from accounts. */
+    deviceRecipientCount: integer('device_recipient_count'),
+    deviceSentCount: integer('device_sent_count').notNull().default(0),
+    deviceFailedCount: integer('device_failed_count').notNull().default(0),
     lastError: text('last_error'),
     /** A request the worker picks up; it never touches `status`. */
     testSendRequestedAt: timestamp('test_send_requested_at', { withTimezone: true }),
@@ -391,5 +449,33 @@ export const notificationCampaigns = pgTable(
     uniqueIndex('notification_campaigns_name_unique').on(t.name),
     index('notification_campaigns_due_idx').on(t.scheduledAt),
     index('notification_campaigns_list_idx').on(t.createdAt, t.id),
+  ],
+);
+
+/**
+ * NTF-BE-017 (#747) — one device's copy of one dispatch. A device has no inbox,
+ * so this is its `notifications` row: claimed before the send, `pushSentAt` set
+ * after the provider accepted. `dedupeKey` is `<dispatch_key>:device:<id>`.
+ */
+export const campaignDeviceSends = pgTable(
+  'campaign_device_sends',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    campaignId: uuid('campaign_id')
+      .notNull()
+      .references(() => notificationCampaigns.id, { onDelete: 'cascade' }),
+    /** Null once the identity is deleted after retention. */
+    deviceId: uuid('device_id').references(() => pushDeviceIdentities.id, {
+      onDelete: 'set null',
+    }),
+    dedupeKey: text('dedupe_key').notNull(),
+    pushSentAt: timestamp('push_sent_at', { withTimezone: true }),
+    pushMessageId: text('push_message_id'),
+    failedReason: text('failed_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('campaign_device_sends_dedupe_unique').on(t.dedupeKey),
+    index('campaign_device_sends_campaign_idx').on(t.campaignId),
   ],
 );
