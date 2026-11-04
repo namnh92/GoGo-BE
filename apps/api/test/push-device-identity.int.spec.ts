@@ -276,6 +276,18 @@ describe('AC-2 — issuance and renewal', () => {
   });
 });
 
+describe('F-02 — the ceiling under concurrency', () => {
+  it('concurrent creations cannot jointly exceed it', async () => {
+    const { rows } = await db.execute<{ n: number }>(
+      sql`select count(*)::int as n from push_device_identities
+          where created_at >= now() - interval '24 hours'`,
+    );
+    const s = scenario(Number(rows[0]!.n) + 2);
+    const results = await Promise.allSettled(Array.from({ length: 6 }, () => s.devices.create()));
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
+  });
+});
+
 describe('AC-10 — the flag', () => {
   it('off: issuing, renewing and reporting answer DISABLED; retiring still works', async () => {
     const s = scenario();
@@ -929,6 +941,39 @@ describe('D4 — the `public` campaign', () => {
     expect((await stateOf(c.id)).deviceFailedCount).toBe(1);
   });
 
+  it('F-04: a device reached earlier still counts after it left the audience', async () => {
+    const reached = await subscribedDevice();
+    const other = await subscribedDevice();
+    const c = await campaign('public');
+    // The first run: the ledger says `reached` got its push; the other throws.
+    await db.execute(sql`
+      insert into campaign_device_sends (campaign_id, device_id, dedupe_key, push_sent_at)
+      values (${c.id}::uuid, ${reached.deviceId}::uuid,
+              ${`${c.dispatchKey}:device:${reached.deviceId}`}, now())
+    `);
+    const down = new FakePush();
+    down.unavailable = true;
+    await new CampaignDispatcher(db as never, down).dispatchDue();
+    expect((await stateOf(c.id)).status).toBe('failed');
+
+    await db
+      .update(schema.pushDeviceIdentities)
+      .set({ revokedAt: new Date() })
+      .where(eq(schema.pushDeviceIdentities.id, reached.deviceId));
+    await db
+      .update(schema.notificationCampaigns)
+      .set({ status: 'scheduled', scheduledAt: new Date(Date.now() - 1_000) })
+      .where(eq(schema.notificationCampaigns.id, c.id));
+    const retry = new FakePush();
+    retry.unknownUserIds.add(other.externalId);
+    await new CampaignDispatcher(db as never, retry).dispatchDue();
+
+    const state = await stateOf(c.id);
+    expect(state.status).toBe('sent');
+    expect(state.deviceSentCount).toBe(1);
+    expect(state.deviceFailedCount).toBe(1);
+  });
+
   it('an outage fails the campaign; a re-run replays the same keys and skips what landed', async () => {
     const first = await subscribedDevice();
     const second = await subscribedDevice();
@@ -1109,7 +1154,7 @@ describe('D9 — how an identity ends', () => {
     stored = await identityRow(d.deviceId);
     expect(stored).toMatchObject({ cleanupState: 'failed', cleanupNextAt: null });
     expect(await l.run.cleanupDeadLettered()).toBeGreaterThan(0);
-    await age(d.deviceId, { cleanupState: 'done' });
+    await age(d.deviceId, { cleanupState: 'none' });
   });
 
   it('deletes the identity and its row 30 days after cleanup; the ledger keeps its count', async () => {
@@ -1134,12 +1179,17 @@ describe('D9 — how an identity ends', () => {
       pushSentAt: new Date(),
     });
     await s.devices.retire(d.auth);
-    await age(d.deviceId, { cleanupState: 'done', cleanupNextAt: null, revokedAt: days(29) });
+    await age(d.deviceId, {
+      cleanupState: 'done',
+      cleanupNextAt: null,
+      cleanupDoneAt: days(29),
+      revokedAt: days(60),
+    });
 
     await lifecycle().run.tick();
     expect(await identityRow(d.deviceId)).toBeDefined();
 
-    await age(d.deviceId, { revokedAt: days(31) });
+    await age(d.deviceId, { cleanupDoneAt: days(31) });
     await lifecycle().run.tick();
     expect(await identityRow(d.deviceId)).toBeUndefined();
     expect(await row(s.sub)).toBeUndefined();
@@ -1149,6 +1199,57 @@ describe('D9 — how an identity ends', () => {
       .where(eq(schema.campaignDeviceSends.campaignId, c!.id));
     expect(ledger).toMatchObject({ deviceId: null });
     expect(ledger!.pushSentAt).not.toBeNull();
+  });
+
+  it('F-03: the 30 days count from cleanup, however long after retirement it ran', async () => {
+    const s = scenario();
+    const d = await newDevice(s);
+    await s.devices.retire(d.auth);
+    await age(d.deviceId, { revokedAt: days(31), cleanupNextAt: days(1) });
+    await lifecycle().run.tick();
+    const stored = await identityRow(d.deviceId);
+    expect(stored).toMatchObject({ cleanupState: 'done' });
+    expect(stored!.cleanupDoneAt).not.toBeNull();
+  });
+
+  it('F-01: a write that read a deleted row cannot land on its replacement', async () => {
+    const s = scenario();
+    const user = await newUser();
+    const old = await newDevice(s);
+    old.attach(s.sub);
+    await s.devices.report(old.auth, report({ subscriptionId: s.sub }));
+    const fenceBefore = await db.execute<{ generation: number }>(
+      sql`select generation from push_subscription_fences where subscription_id = ${s.sub}`,
+    );
+    await s.devices.retire(old.auth);
+    const readRevision = (await row(s.sub))!.revision;
+
+    s.provider.subscriptions.set(user.id, [{ id: s.sub, enabled: true }]);
+    const held = holdNextRead(s.provider);
+    const delayed = fails(s.users.register(user, { platform: 'ios', subscriptionId: s.sub }));
+    await held.reached;
+
+    await age(old.deviceId, { cleanupState: 'done', cleanupDoneAt: days(31), cleanupNextAt: null });
+    await lifecycle().run.tick();
+    expect(await row(s.sub)).toBeUndefined();
+    const fenceAfter = await db.execute<{ generation: number }>(
+      sql`select generation from push_subscription_fences where subscription_id = ${s.sub}`,
+    );
+    expect(fenceAfter.rows[0]!.generation).toBe((fenceBefore.rows[0]?.generation ?? 0) + 1);
+
+    const replacement = await newDevice(s);
+    replacement.attach(s.sub);
+    await s.devices.report(replacement.auth, report({ subscriptionId: s.sub }));
+    let guard = 0;
+    while ((await row(s.sub))!.revision < readRevision && guard++ < 10) {
+      await s.devices.report(replacement.auth, report({ subscriptionId: s.sub }));
+    }
+    expect((await row(s.sub))!.revision).toBe(readRevision);
+
+    held.release();
+    expect(await delayed).toBe('PUSH_SUBSCRIPTION_CONFLICT');
+    expect(await row(s.sub)).toMatchObject({ ownerKind: 'device', deviceId: replacement.deviceId });
+    expect((await identityRow(replacement.deviceId))!.revokedAt).toBeNull();
   });
 
   it('flag off drains only identities quiet past the last JWT; flag on drains nothing', async () => {

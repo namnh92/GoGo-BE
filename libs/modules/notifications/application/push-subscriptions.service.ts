@@ -176,19 +176,13 @@ export class PushSubscriptionsService {
           target: f.subscriptionId,
           set: { generation: sql`${f.generation} + 1`, updatedAt: sql`now()` },
         });
-      if (seen.revision === null) return [];
+      if (seen.revision === null || seen.rowId === null) return [];
       // An already revoked row advances too: a registration verified before this
       // logout read the same revision, and would otherwise clear `revoked_at`.
       return tx
         .update(p)
         .set({ revokedAt: sql`coalesce(${p.revokedAt}, now())`, revision: sql`${p.revision} + 1` })
-        .where(
-          and(
-            eq(p.subscriptionId, subscriptionId),
-            eq(p.userId, userId),
-            eq(p.revision, seen.revision),
-          ),
-        )
+        .where(and(eq(p.id, seen.rowId), eq(p.userId, userId), eq(p.revision, seen.revision)))
         .returning({ id: p.id });
     });
     // Only a row this logout took out of the audience. The compare-and-set makes

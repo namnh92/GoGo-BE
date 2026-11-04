@@ -277,6 +277,8 @@ export const pushDeviceIdentities = pgTable(
     cleanupState: pushDeviceCleanupState('cleanup_state').notNull().default('none'),
     cleanupAttempts: integer('cleanup_attempts').notNull().default(0),
     cleanupNextAt: timestamp('cleanup_next_at', { withTimezone: true }),
+    /** Retention counts from here, not from retirement. */
+    cleanupDoneAt: timestamp('cleanup_done_at', { withTimezone: true }),
   },
   (t) => [
     index('push_device_identities_created_idx').on(t.createdAt),
@@ -286,8 +288,8 @@ export const pushDeviceIdentities = pgTable(
     index('push_device_identities_cleanup_idx')
       .on(t.cleanupNextAt)
       .where(sql`${t.cleanupState} = 'pending'`),
-    index('push_device_identities_retired_idx')
-      .on(t.revokedAt)
+    index('push_device_identities_cleaned_idx')
+      .on(t.cleanupDoneAt)
       .where(sql`${t.cleanupState} = 'done'`),
   ],
 );

@@ -80,20 +80,27 @@ export class PushDeviceIdentityService {
         false,
       );
     }
-    const { rows } = await this.db.execute<{ n: number }>(sql`
-      select count(*)::int as n from push_device_identities
-      where created_at >= now() - interval '24 hours'
-    `);
-    if (Number(rows[0]?.n ?? 0) >= this.config.PUSH_DEVICE_IDENTITY_DAILY_CEILING) {
-      this.metrics.increment('push_device_identities_total', { result: 'ceiling' });
-      throw AppError.tooManyRequests('Too many new device identities today', 3_600);
-    }
-
     const deviceSecret = randomBytes(32).toString('base64url');
-    const [row] = await this.db
-      .insert(schema.pushDeviceIdentities)
-      .values({ secretHash: hashDeviceSecret(deviceSecret) })
-      .returning({ id: schema.pushDeviceIdentities.id });
+    // One creation at a time, across replicas: a count and an insert in separate
+    // statements let concurrent callers all pass a ceiling they jointly exceed.
+    const row = await this.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext('push_device_identities.create'))`,
+      );
+      const { rows } = await tx.execute<{ n: number }>(sql`
+        select count(*)::int as n from push_device_identities
+        where created_at >= now() - interval '24 hours'
+      `);
+      if (Number(rows[0]?.n ?? 0) >= this.config.PUSH_DEVICE_IDENTITY_DAILY_CEILING) {
+        this.metrics.increment('push_device_identities_total', { result: 'ceiling' });
+        throw AppError.tooManyRequests('Too many new device identities today', 3_600);
+      }
+      const [created] = await tx
+        .insert(schema.pushDeviceIdentities)
+        .values({ secretHash: hashDeviceSecret(deviceSecret) })
+        .returning({ id: schema.pushDeviceIdentities.id });
+      return created;
+    });
     this.metrics.increment('push_device_identities_total', { result: 'created' });
     return { deviceId: row!.id, deviceSecret, ...this.identity.issueForDevice(row!.id) };
   }

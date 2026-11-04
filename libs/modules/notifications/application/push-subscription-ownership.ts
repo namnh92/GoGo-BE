@@ -23,6 +23,12 @@ export type SubscriptionOwner =
  * fence.
  */
 export type OwnershipRead = {
+  /**
+   * The row's own id. Retention can delete a row and a new one can climb back to
+   * the same revision, so a revision only means something for the row it was read
+   * from.
+   */
+  rowId: string | null;
   /** Null when no row exists for this subscription id. */
   revision: number | null;
   /** Zero when no fence exists: nothing has logged out of an absent row yet. */
@@ -36,21 +42,23 @@ export type OwnershipRead = {
 export async function readOwnership(db: Exec, subscriptionId: string): Promise<OwnershipRead> {
   // One statement, so the row and the fence come from one snapshot.
   const result = await db.execute<{
+    id: string | null;
     revision: number | null;
     device_id: string | null;
     live: boolean | null;
     generation: number | null;
   }>(sql`
-    select r.revision, r.device_id, r.live,
+    select r.id, r.revision, r.device_id, r.live,
       (select generation from push_subscription_fences where subscription_id = ${subscriptionId}) as generation
     from (select 1) one
     left join (
-      select revision, device_id, revoked_at is null as live
+      select id, revision, device_id, revoked_at is null as live
       from push_subscriptions where subscription_id = ${subscriptionId}
     ) r on true
   `);
   const row = result.rows[0];
   return {
+    rowId: row?.id ?? null,
     revision: row?.revision ?? null,
     fenceGeneration: row?.generation ?? 0,
     deviceId: row?.device_id ?? null,
@@ -79,7 +87,7 @@ export async function claimOwnership(
       ? { ownerKind: 'user' as const, userId: owner.userId, deviceId: null }
       : { ownerKind: 'device' as const, userId: null, deviceId: owner.deviceId };
 
-  if (seen.revision !== null) {
+  if (seen.revision !== null && seen.rowId !== null) {
     const [row] = await tx
       .update(p)
       .set({
@@ -91,7 +99,7 @@ export async function claimOwnership(
         revokedAt: null,
         revision: sql`${p.revision} + 1`,
       })
-      .where(and(eq(p.subscriptionId, subscriptionId), eq(p.revision, seen.revision)))
+      .where(and(eq(p.id, seen.rowId), eq(p.revision, seen.revision)))
       .returning(written);
     return row;
   }

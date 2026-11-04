@@ -4,8 +4,9 @@
 -- Additive. The rollback baseline is the release that shipped 0077 (ADR-0037):
 -- its register() writes a valid owner over a device-owned row, and neither the
 -- foreign key nor the new tables get in its way. That binary cannot resolve the
--- `public` audience, so a `public` campaign still scheduled fails rather than
--- sends; cancel those before rolling back.
+-- `public` audience: a `public` campaign still scheduled fails rather than sends,
+-- so cancel those before rolling back, and any `public` row stays readable but
+-- cannot be estimated or rescheduled.
 --
 -- `promotions_enabled` is null until the device has stated a choice, and null is
 -- not in the audience. `cleanup_state` tracks the provider half of a retirement,
@@ -51,7 +52,8 @@ CREATE TABLE "push_device_identities" (
   "preference_version" integer DEFAULT 0 NOT NULL,
   "cleanup_state" "push_device_cleanup_state" DEFAULT 'none' NOT NULL,
   "cleanup_attempts" integer DEFAULT 0 NOT NULL,
-  "cleanup_next_at" timestamptz
+  "cleanup_next_at" timestamptz,
+  "cleanup_done_at" timestamptz
 );
 --> statement-breakpoint
 CREATE INDEX "push_device_identities_created_idx" ON "push_device_identities" ("created_at");
@@ -60,7 +62,7 @@ CREATE INDEX "push_device_identities_live_seen_idx" ON "push_device_identities" 
 --> statement-breakpoint
 CREATE INDEX "push_device_identities_cleanup_idx" ON "push_device_identities" ("cleanup_next_at") WHERE "cleanup_state" = 'pending';
 --> statement-breakpoint
-CREATE INDEX "push_device_identities_retired_idx" ON "push_device_identities" ("revoked_at") WHERE "cleanup_state" = 'done';
+CREATE INDEX "push_device_identities_cleaned_idx" ON "push_device_identities" ("cleanup_done_at") WHERE "cleanup_state" = 'done';
 --> statement-breakpoint
 ALTER TABLE "push_subscriptions"
   ADD CONSTRAINT "push_subscriptions_device_id_fk" FOREIGN KEY ("device_id") REFERENCES "push_device_identities" ("id");

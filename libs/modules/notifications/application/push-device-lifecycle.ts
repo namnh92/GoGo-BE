@@ -120,7 +120,7 @@ export class PushDeviceLifecycle {
         await this.push.deleteDeviceIdentity(deviceExternalId(row.id));
         await this.db
           .update(d)
-          .set({ cleanupState: 'done', cleanupNextAt: null })
+          .set({ cleanupState: 'done', cleanupNextAt: null, cleanupDoneAt: sql`now()` })
           .where(eq(d.id, row.id));
         cleaned += 1;
         this.metrics?.increment('push_device_identities_total', { result: 'cleaned' });
@@ -146,20 +146,28 @@ export class PushDeviceLifecycle {
 
   /**
    * Owner 2026-11-04: the promise to a person is deletion, so a retired identity
-   * goes once the provider has dropped it and the window has passed. Its rows were
-   * revoked at retirement. A later registration finds no row and takes the fence
-   * path; the ledger keeps its counts, with `device_id` set null by the foreign key.
+   * goes once the provider has dropped it and the window since has passed. Its rows
+   * were revoked at retirement. The fence advances first, so a registration that
+   * read the absent row earlier cannot land on what deletion leaves behind; one that
+   * read the row holds its id, which no replacement will have. The ledger keeps its
+   * counts, with `device_id` set null by the foreign key.
    */
   private async deleteRetained(): Promise<number> {
     const { rows } = await this.db.execute<{ id: string }>(sql`
       select id from push_device_identities
       where cleanup_state = 'done'
-        and revoked_at < now() - make_interval(days => ${DEVICE_RETAINED_AFTER_CLEANUP_DAYS})
+        and cleanup_done_at < now() - make_interval(days => ${DEVICE_RETAINED_AFTER_CLEANUP_DAYS})
       order by id limit ${BATCH}
     `);
     for (const { id } of rows) {
       await this.db.transaction(async (tx) => {
         await lockIdentities(tx, [id]);
+        await tx.execute(sql`
+          insert into push_subscription_fences (subscription_id, generation)
+          select subscription_id, 1 from push_subscriptions where device_id = ${id}::uuid
+          on conflict (subscription_id) do update
+          set generation = push_subscription_fences.generation + 1, updated_at = now()
+        `);
         await tx.delete(schema.pushSubscriptions).where(eq(schema.pushSubscriptions.deviceId, id));
         await tx.delete(schema.pushDeviceIdentities).where(eq(schema.pushDeviceIdentities.id, id));
       });

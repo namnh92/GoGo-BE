@@ -256,7 +256,22 @@ export class CampaignDispatcher {
         where id = ${campaign.id}::uuid
       `);
     }
-    return { attempted: rows.length, accepted: sent };
+    // What this dispatch's ledger holds, not what this run reached: a device an
+    // earlier run got through to may have left the audience since, and it still
+    // holds the message.
+    const { rows: ledger } = await this.db.execute<{ accepted: number }>(sql`
+      select count(*)::int as accepted from campaign_device_sends
+      where campaign_id = ${campaign.id}::uuid
+        and dedupe_key like ${`${campaign.dispatch_key}:device:%`}
+        and push_sent_at is not null
+    `);
+    const accepted = Number(ledger[0]?.accepted ?? 0);
+    await this.db.execute(sql`
+      update notification_campaigns
+      set device_sent_count = ${accepted}, updated_at = now()
+      where id = ${campaign.id}::uuid
+    `);
+    return { attempted: Math.max(rows.length, accepted), accepted };
   }
 
   /**

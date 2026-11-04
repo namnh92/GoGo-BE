@@ -32,7 +32,9 @@ bytes returned once, stored as SHA-256, reaching only `POST …/identity/device/
 `PUT /notifications/device-subscriptions` and `DELETE …/identity/device`. A wrong secret,
 an unknown id and a retired identity get one answer, 404 `PUSH_DEVICE_IDENTITY_GONE`.
 
-**Ownership extends ADR-0037.** One table, one protocol. Lock order in every transaction
+**Ownership extends ADR-0037.** One table, one protocol. The compare-and-set now also names
+the row's own id: retention deletes rows, and a replacement can climb back to the revision a
+delayed write read. Lock order in every transaction
 taking more than one: identity row(s) `for update`, in id order → fence → subscription
 row. A device report re-checks `revoked_at` under that lock, so a request authenticated
 before a retirement cannot land after it. A confirmed logout takes no identity lock: it
@@ -67,7 +69,8 @@ needs a separate owner order** (Decree 13, shape Q8).
 
 **Limits.** Creation: 5 a minute per IP like a login, and
 `PUSH_DEVICE_IDENTITY_DAILY_CEILING` (20 000 in any 24 hours, owner 2026-11-04, no measured
-source) across all callers. Past it: 429 and `push_device_identities_total{result=ceiling}`.
+source) across all callers, enforced under an advisory lock so concurrent callers cannot
+jointly exceed it. Past it: 429 and `push_device_identities_total{result=ceiling}`.
 
 **Lifecycle.** A worker job every 5 minutes:
 
@@ -79,8 +82,9 @@ source) across all callers. Past it: 429 and `push_device_identities_total{resul
    retirement so the last JWT has expired and the device has moved its subscription. Backs
    off from 5 minutes; after 8 attempts the row is `failed` and
    `push_device_cleanup_dead_lettered` counts it.
-4. Delete: 30 days after retirement with cleanup done, the identity and its rows go (owner
-   2026-11-04, so the 90-day promise to a person is true). The ledger keeps its counts with
+4. Delete: 30 days after provider cleanup finished, the identity and its rows go (owner
+   2026-11-04, so the promise of deletion to a person is true). The subscription's fence
+   advances in the same transaction. The ledger keeps its counts with
    `device_id` null. Its dedupe key still holds the dead random id, which no longer links
    to anything.
 
@@ -103,6 +107,9 @@ Limits, stated rather than solved:
   a new one and the next report writes it.
 - **The ceiling is a shared availability limit**, and per-IP creation limits are hard on
   carrier NAT. Both are the shape's choice.
+- **A retried account half counts this run's recipients.** An account an earlier run reached
+  that has since left the audience drops out of `sent_count`; pre-existing, not changed here.
+  The device half reads its ledger instead.
 - **The ceiling alert is not here.** The metric ships; the rule belongs in GoGo-Infra.
 - **WAF:** the login rule set for these routes (shape D7) belongs in GoGo-Infra.
 
@@ -116,7 +123,8 @@ carrying ADR-0037, never an older binary (R-18):
    JWTs have expired by then, and a `login` with one cannot recreate a BE identity because
    the row is what admits a device.
 3. Cancel any scheduled `public` campaign; the baseline cannot resolve that audience and
-   would fail it rather than send it.
+   would fail it rather than send it. Any `public` row stays readable there but cannot be
+   estimated, edited or rescheduled until the release returns.
 4. Roll the binary back. Its `register()` takes over a device-owned row by writing a valid
    owner. It does not retire the identity, which is why the drain comes first.
 
