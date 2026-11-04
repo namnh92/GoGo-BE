@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import { schema } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { PushIdentityService } from './push-identity.service';
 import { PushSubscriptionsService } from './push-subscriptions.service';
@@ -23,28 +24,41 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-/** Records what would have been written, so a refusal is visibly a no-write. */
-function fakeDb() {
+/**
+ * Records what would have been written, so a refusal is visibly a no-write. The
+ * compare-and-set itself needs a real database: `push-subscriptions.int.spec.ts`.
+ */
+function fakeDb(fenceGeneration = 0) {
   const inserted: unknown[] = [];
-  const db = {
-    insert: () => ({
-      values: (v: unknown) => {
-        inserted.push(v);
-        return {
-          onConflictDoUpdate: () => ({
-            returning: () =>
-              Promise.resolve([
-                { platform: 'ios', lastConfirmedAt: new Date('2026-09-09T00:00:00Z') },
-              ]),
-          }),
-        };
-      },
+  const tx = {
+    insert: (table: unknown) => ({
+      values: (v: unknown) =>
+        table === schema.pushSubscriptionFences
+          ? {
+              onConflictDoUpdate: () => ({
+                returning: () => Promise.resolve([{ generation: fenceGeneration }]),
+              }),
+            }
+          : {
+              onConflictDoNothing: () => ({
+                returning: () => {
+                  inserted.push(v);
+                  return Promise.resolve([
+                    { platform: 'ios', lastConfirmedAt: new Date('2026-09-09T00:00:00Z') },
+                  ]);
+                },
+              }),
+            },
     }),
+  };
+  const db = {
+    execute: () => Promise.resolve({ rows: [{ revision: null, generation: 0 }] }),
+    transaction: <T>(work: (t: typeof tx) => Promise<T>) => work(tx),
   };
   return { db, inserted };
 }
 
-function service(fetchImpl: typeof fetch) {
+function service(fetchImpl: typeof fetch, fenceGeneration = 0) {
   const identity = new PushIdentityService(
     {
       ONESIGNAL_APP_ID: APP_ID,
@@ -54,7 +68,7 @@ function service(fetchImpl: typeof fetch) {
     undefined,
     fetchImpl,
   );
-  const { db, inserted } = fakeDb();
+  const { db, inserted } = fakeDb(fenceGeneration);
   return { svc: new PushSubscriptionsService(db as never, identity), inserted };
 }
 
@@ -70,6 +84,23 @@ describe('PushSubscriptionsService.register', () => {
 
     expect(record.platform).toBe('ios');
     expect(inserted).toEqual([{ userId: user.id, platform: 'ios', subscriptionId: 'sub-1' }]);
+  });
+
+  it('answers 409 and writes nothing when a logout moved the fence during the provider read', async () => {
+    const { svc, inserted } = service(
+      vi.fn(async () =>
+        jsonResponse({ subscriptions: [{ id: 'sub-1', enabled: true }] }),
+      ) as unknown as typeof fetch,
+      1,
+    );
+
+    const error = await svc
+      .register(user, { platform: 'ios', subscriptionId: 'sub-1' })
+      .catch((e: unknown) => e);
+
+    expect((error as AppError).code).toBe('PUSH_SUBSCRIPTION_CONFLICT');
+    expect((error as AppError).httpStatus).toBe(409);
+    expect(inserted).toEqual([]);
   });
 
   it('refuses a subscription id the provider does not list for this caller', async () => {

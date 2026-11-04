@@ -137,4 +137,6 @@ with a new table name.
 
 Rollback: `DROP TABLE push_subscriptions` and revert the predicate. The audience
 returns to `device_tokens`, i.e. to reaching nobody real; rolling back is only
-appropriate together with reverting the campaign feature itself.
+appropriate together with reverting the campaign feature itself. From 0077
+(ADR-0037) the schema stays on a rollback of device identity; this rollback
+applies only to reverting campaigns altogether.

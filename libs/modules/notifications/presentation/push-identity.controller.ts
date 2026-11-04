@@ -42,17 +42,11 @@ export class PushIdentityController {
    */
   @RateLimit({ action: 'notifications.identity', limit: 30, windowSeconds: 60, keyBy: 'actor' })
   @Post('identity/logout')
-  async confirmUnsubscribed(
+  confirmUnsubscribed(
     @CurrentActor() actor: Actor,
     @Body(new ZodValidationPipe(confirmUnsubscribedSchema))
     body: z.infer<typeof confirmUnsubscribedSchema>,
   ) {
-    const confirmation = await this.identity.confirmDeviceUnsubscribed(actor, body.subscriptionId);
-    // NTF-BE-011 (#515): the provider has just agreed this device can no longer
-    // be delivered to for this person, so they stop being reachable on it.
-    // Only on a confirmation — a device that is still enabled stays in the
-    // audience, and only the caller's own row is ever touched.
-    if (confirmation.confirmed) await this.subscriptions.revoke(actor, body.subscriptionId);
-    return confirmation;
+    return this.subscriptions.confirmLogout(actor, body.subscriptionId);
   }
 }

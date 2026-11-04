@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 3.0.0-alpha.2
+  version: 3.0.0-alpha.3
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4338,7 +4338,9 @@ paths:
 
 
         Idempotent on `subscriptionId`: reporting again refreshes the record, and
-        a device where a different account signs in moves to that account.
+        a device where a different account signs in moves to that account. If the
+        record changed while the provider was being asked, nothing is written and
+        the answer is 409: report again, which verifies again (#746, ADR-0037).
 
 
         Called after the client has confirmed identity binding and the OS permits
@@ -4374,6 +4376,11 @@ paths:
             subscription as enabled for the caller. One answer for "not yours"
             and "yours but disabled", so the route cannot be used to probe
             whether a subscription id exists.
+        '409':
+          description: >
+            PUSH_SUBSCRIPTION_CONFLICT — the record of this subscription changed
+            while the provider was being asked, so the answer may be stale and
+            nothing was written. Retryable: reporting again verifies again.
         '503':
           description: >
             PUSH_SUBSCRIPTION_UNVERIFIED — the provider could not be reached, so
