@@ -232,4 +232,41 @@ describe('OneSignalPushAdapter', () => {
     expect(everything).not.toContain(config.restApiKey);
     expect(metrics.increment).toHaveBeenCalledWith('push_provider_requests_total', { status: 500 });
   });
+
+  describe('deleteDeviceIdentity (NTF-BE-017)', () => {
+    const adapter = (status: number) => {
+      const fetchImpl = vi.fn(async () => new Response('{}', { status }));
+      return {
+        fetchImpl,
+        push: new OneSignalPushAdapter(
+          { appId: 'app', restApiKey: 'key' },
+          undefined,
+          fetchImpl as unknown as typeof fetch,
+        ),
+      };
+    };
+
+    it('deletes by external id, encoded, with the App API key', async () => {
+      const { push, fetchImpl } = adapter(200);
+      await push.deleteDeviceIdentity('device:abc');
+      const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe('https://api.onesignal.com/apps/app/users/by/external_id/device%3Aabc');
+      expect(init.method).toBe('DELETE');
+      expect((init.headers as Record<string, string>)['authorization']).toBe('Key key');
+    });
+
+    it('never reaches the provider for an id outside the namespace', async () => {
+      const { push, fetchImpl } = adapter(200);
+      await expect(push.deleteDeviceIdentity('5b0c0d1e-user-id')).rejects.toThrow();
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it('treats an identity already gone as done', async () => {
+      await expect(adapter(404).push.deleteDeviceIdentity('device:abc')).resolves.toBeUndefined();
+    });
+
+    it('fails on a refused credential', async () => {
+      await expect(adapter(403).push.deleteDeviceIdentity('device:abc')).rejects.toThrow();
+    });
+  });
 });

@@ -16,14 +16,20 @@ import {
   type CampaignDestination,
   type CampaignStatus,
 } from '../domain/campaign';
-import { audiencePredicate, respectsPushPreference } from './campaign-audience';
+import { DEVICE_IDENTITY_FLAG } from '../domain/device-identity';
+import { flagEnvironmentOf, resolveBooleanFlag } from '../../shared/feature-flags';
+import {
+  audiencePredicate,
+  devicePublicPredicate,
+  respectsPushPreference,
+} from './campaign-audience';
 import {
   UploadsService,
   type Executor,
   type VerifiedUploads,
 } from '../../uploads/application/uploads.service';
 import { publicCatalogueUrl } from '../../shared/media-url';
-import { APP_CONFIG, type MediaConfig } from '../../shared/config';
+import { APP_CONFIG, type MediaConfig, type PlatformConfig } from '../../shared/config';
 import type { Actor } from '../../identity/domain/actor';
 
 /**
@@ -132,6 +138,9 @@ type CampaignRow = {
   recipient_count: number | null;
   sent_count: number;
   failed_count: number;
+  device_recipient_count: number | null;
+  device_sent_count: number;
+  device_failed_count: number;
   last_error: string | null;
   dispatch_key: string | null;
   test_send_requested_at: Date | string | null;
@@ -146,7 +155,7 @@ export class CampaignsService {
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly uploads: UploadsService,
-    @Optional() @Inject(APP_CONFIG) private readonly config?: MediaConfig,
+    @Optional() @Inject(APP_CONFIG) private readonly config?: MediaConfig & Partial<PlatformConfig>,
   ) {}
 
   private get mediaBaseUrl(): string | undefined {
@@ -452,6 +461,9 @@ export class CampaignsService {
         dispatchKey,
         sentCount: 0,
         failedCount: 0,
+        deviceRecipientCount: null,
+        deviceSentCount: 0,
+        deviceFailedCount: 0,
         lastError: null,
         updatedAt: sql`now()`,
       })
@@ -534,12 +546,37 @@ export class CampaignsService {
       select count(distinct u.id)::int as n from users u
       where ${predicate} and ${preference}
     `);
+    const accounts = (rows[0] as { n: number }).n;
+    const devices = row.audience_type === 'public' ? await this.estimateDevices() : 0;
     return {
       campaignId: id,
       audienceType: row.audience_type,
-      estimatedRecipients: (rows[0] as { n: number }).n,
+      estimatedRecipients: accounts + devices,
+      estimatedAccounts: accounts,
+      estimatedDevices: devices,
       estimatedAt: new Date().toISOString(),
     };
+  }
+
+  /** Zero with the flag off, because the worker will skip devices. */
+  private async estimateDevices(): Promise<number> {
+    if (!(await this.devicesEnabled())) return 0;
+    const { rows } = await this.db.execute(sql`
+      select count(*)::int as n from push_device_identities i
+      where ${devicePublicPredicate()}
+    `);
+    return (rows[0] as { n: number }).n;
+  }
+
+  private devicesEnabled(): Promise<boolean> {
+    return resolveBooleanFlag(this.db, DEVICE_IDENTITY_FLAG, {
+      environment: flagEnvironmentOf(this.config?.APP_ENV ?? 'dev'),
+    });
+  }
+
+  /** NTF-BE-017: what the console should offer. `public` needs the device flag on. */
+  async capabilities() {
+    return { publicAudience: await this.devicesEnabled() };
   }
 
   /**
@@ -701,6 +738,10 @@ export class CampaignsService {
       recipientCount: row.recipient_count ?? undefined,
       sentCount: row.sent_count,
       failedCount: row.failed_count,
+      // The device half of a `public` send, never mixed into the account counts.
+      deviceRecipientCount: row.device_recipient_count ?? undefined,
+      deviceSentCount: row.device_sent_count,
+      deviceFailedCount: row.device_failed_count,
       lastError: row.last_error ?? undefined,
       testSendRequestedAt: row.test_send_requested_at
         ? toIso(row.test_send_requested_at)
@@ -723,11 +764,15 @@ export class CampaignsService {
    */
   private async deliveredRecipients(id: string): Promise<number> {
     const { rows } = await this.db.execute(sql`
-      select count(*)::int as delivered
-      from notifications
-      where kind = 'campaign'
-        and payload->>'campaignId' = ${id}
-        and push_sent_at is not null
+      select (
+        (select count(*) from notifications
+         where kind = 'campaign'
+           and payload->>'campaignId' = ${id}
+           and push_sent_at is not null)
+        +
+        (select count(*) from campaign_device_sends
+         where campaign_id = ${id}::uuid and push_sent_at is not null)
+      )::int as delivered
     `);
     return Number((rows[0] as { delivered: number }).delivered);
   }

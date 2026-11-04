@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 3.0.0-alpha.3
+  version: 3.0.0-alpha.4
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -5485,6 +5485,168 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
+  /notifications/identity/device:
+    post:
+      operationId: createPushDeviceIdentity
+      tags: [me]
+      security: []
+      summary: Issue a push identity to a device with no session (NTF-BE-017)
+      description: >
+        No body and no session. Returns `externalId = device:<id>`, a provider JWT
+        with the same claims a user's has (`iss`, `exp` ≤ 1 hour,
+        `identity.external_id`), and a device credential whose secret is returned
+        **once** and stored only as a hash. The JWT is for the provider SDK; GoGo's
+        API never accepts it. A device identity receives `public` campaigns and
+        nothing else, and holds nothing about an account.
+
+
+        Limited per IP like a login, and by a ceiling on new identities in any 24
+        hours across all callers. Off by default per environment
+        (`push.device_identity.enabled`, ADR-0038).
+      responses:
+        '201':
+          description: Created. Keep `deviceSecret`; it cannot be read again.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PushDeviceIdentity' }
+        '404':
+          description: PUSH_DEVICE_IDENTITY_DISABLED — the flag is off. Do not recreate until the next launch.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: No identity signing key in this environment (`PUSH_IDENTITY_UNAVAILABLE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    delete:
+      operationId: retirePushDeviceIdentity
+      tags: [me]
+      security: [{ deviceCredential: [] }]
+      summary: Retire this device identity (NTF-BE-017)
+      description: >
+        Revokes the identity and every subscription row it owns in one transaction,
+        and queues provider cleanup. Works with the flag off: this is how a device
+        leaves. Retry until 2xx or `PUSH_DEVICE_IDENTITY_GONE`.
+      responses:
+        '204': { description: Retired }
+        '401':
+          description: DEVICE_CREDENTIAL_REQUIRED — no well-formed credential.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404':
+          description: PUSH_DEVICE_IDENTITY_GONE — unknown, retired or wrong secret; one answer for all three.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /notifications/identity/device/token:
+    post:
+      operationId: renewPushDeviceToken
+      tags: [me]
+      security: [{ deviceCredential: [] }]
+      summary: Renew the provider JWT of a device identity (NTF-BE-017)
+      responses:
+        '200':
+          description: A new JWT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PushIdentityToken' }
+        '401':
+          description: DEVICE_CREDENTIAL_REQUIRED — no well-formed credential.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404':
+          description: >
+            `PUSH_DEVICE_IDENTITY_GONE` (unknown, retired or wrong secret: discard and
+            create anew) or `PUSH_DEVICE_IDENTITY_DISABLED` (flag off: discard, and do
+            not recreate until the next launch).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: No identity signing key in this environment (`PUSH_IDENTITY_UNAVAILABLE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /notifications/device-subscriptions:
+    put:
+      operationId: reportPushDeviceSubscription
+      tags: [me]
+      security: [{ deviceCredential: [] }]
+      summary: Record this device's subscription and promotions choice (NTF-BE-017)
+      description: >
+        Verified against the provider before anything is written: the subscription
+        must be attached to this device identity, and enabled when
+        `promotionsEnabled` is true. An opt-out is accepted for a disabled
+        subscription.
+
+
+        A higher `preferenceVersion` applies; the same version replays the stored
+        choice and reports the provider afresh; a lower one answers 409. Clear a
+        pending change only when `appliedVersion` equals it. An opt-out has reached
+        the provider only when a response for the current version shows
+        `providerEnabled: false`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [platform, subscriptionId, promotionsEnabled, preferenceVersion]
+              properties:
+                platform: { type: string, enum: [ios, android, web] }
+                subscriptionId:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: OneSignal subscription id for this device. Not a device token.
+                promotionsEnabled: { type: boolean }
+                preferenceVersion: { type: integer, minimum: 0, maximum: 2147483647 }
+      responses:
+        '200':
+          description: Recorded, or an idempotent replay
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PushDeviceSubscriptionResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401':
+          description: DEVICE_CREDENTIAL_REQUIRED — no well-formed credential.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403':
+          description: PUSH_SUBSCRIPTION_NOT_CONFIRMED — not attached to this device, or disabled on an opt-in.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404':
+          description: PUSH_DEVICE_IDENTITY_GONE or PUSH_DEVICE_IDENTITY_DISABLED, as on the token route.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: >
+            `PUSH_PREFERENCE_STALE` — a newer choice is stored, its version in
+            `field_errors[0].message`; adopt that version plus one for the next change.
+            `PUSH_SUBSCRIPTION_CONFLICT` — the record changed during verification;
+            nothing was written, report again.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: PUSH_SUBSCRIPTION_UNVERIFIED — the provider could not be reached. Retryable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /share-links:
     post:
       operationId: createShareLink
@@ -9068,6 +9230,19 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
+  /cms/campaigns/capabilities:
+    get:
+      operationId: cmsGetCampaignCapabilities
+      tags: [cms]
+      summary: 'Ops: which audiences this environment can actually reach (NTF-BE-017)'
+      description: Hide `public` when `publicAudience` is false.
+      responses:
+        '200':
+          description: Capabilities
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsCampaignCapabilities' }
+
   /cms/campaigns/{id}:
     get:
       operationId: cmsGetCampaign
@@ -11315,6 +11490,11 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    deviceCredential:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: '`Device <deviceId>.<deviceSecret>` (NTF-BE-017). Device-scoped routes only.'
     cookieAuth:
       type: apiKey
       in: cookie
@@ -17775,9 +17955,10 @@ components:
 
     CampaignAudience:
       type: string
-      enum: [all, couple, group, platform]
+      enum: [all, couple, group, platform, public]
       description: >
-        Only what the backend can resolve from data it holds. `city`,
+        `public` is `all` plus devices with no account that said yes (#747); ask
+        `GET /cms/campaigns/capabilities` before offering it. Only what the backend can resolve from data it holds. `city`,
         `app_version` and `custom_segment` from the mockup are absent on
         purpose: nothing stores a user's city or their app version, and a
         campaign aimed at a segment the server has to guess at reaches the wrong
@@ -17850,6 +18031,11 @@ components:
             How many the provider accepted. Not "seen", and not a guarantee of
             delivery to a device.
         failedCount: { type: integer }
+        deviceRecipientCount:
+          type: integer
+          description: The device half of a `public` send. Absent when no device half ran.
+        deviceSentCount: { type: integer }
+        deviceFailedCount: { type: integer }
         lastError: { type: string }
         testSendRequestedAt: { type: string, format: date-time }
         testSendCompletedAt: { type: string, format: date-time }
@@ -17867,15 +18053,55 @@ components:
         nextCursor: { type: [string, 'null'] }
         totalCount: { type: integer }
 
+    CmsCampaignCapabilities:
+      type: object
+      required: [publicAudience]
+      properties:
+        publicAudience:
+          type: boolean
+          description: Whether the `public` audience reaches devices in this environment.
+
+    PushDeviceIdentity:
+      type: object
+      required: [deviceId, deviceSecret, externalId, token, expiresAt]
+      properties:
+        deviceId: { type: string, format: uuid }
+        deviceSecret: { type: string, description: Returned once. Never logged. }
+        externalId: { type: string, description: '`device:<deviceId>`.' }
+        token: { type: string, description: ES256 JWT for the provider SDK. Never logged. }
+        expiresAt: { type: string, format: date-time }
+
+    PushDeviceSubscriptionResult:
+      type: object
+      required: [appliedVersion, storedVersion, providerEnabled]
+      properties:
+        appliedVersion: { type: integer }
+        storedVersion: { type: integer }
+        providerEnabled:
+          type: boolean
+          description: What the provider read in this request showed.
+
     CmsCampaignAudienceEstimate:
       type: object
-      required: [campaignId, audienceType, estimatedRecipients, estimatedAt]
+      required:
+        [
+          campaignId,
+          audienceType,
+          estimatedRecipients,
+          estimatedAccounts,
+          estimatedDevices,
+          estimatedAt,
+        ]
       properties:
         campaignId: { type: string, format: uuid }
         audienceType: { $ref: '#/components/schemas/CampaignAudience' }
         estimatedRecipients:
           type: integer
-          description: Accounts with a registered device that match right now.
+          description: Accounts plus devices that match right now.
+        estimatedAccounts: { type: integer }
+        estimatedDevices:
+          type: integer
+          description: Zero unless the audience is `public` and device identities are on.
         estimatedAt: { type: string, format: date-time }
 
     CmsCampaignCreate:

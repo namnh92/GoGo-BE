@@ -224,6 +224,8 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
    * id is ever a label.
    */
   push_subscription_registrations_total: ['result'],
+  push_device_identities_total: ['result'],
+  push_device_reports_total: ['result'],
   // #459 — the administrative address resolver. `status` is a mapping status,
   // `method` the evidence that decided it (or `none`). Deliberately **not**
   // labelled with the dataset or boundary version: those are minted per
@@ -344,6 +346,7 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   media_cleanup_attempt_total: ['bucket', 'outcome'],
   // Worker gauges (ADR-0022): queue depth and dead-lettered rows, no labels.
   media_cleanup_pending: [],
+  push_device_cleanup_dead_lettered: [],
   media_cleanup_dead_lettered: [],
   // GoGo-BE#256 — secure privacy export deletion, worker sweep gauges.
   privacy_export_cleanup_pending: [],

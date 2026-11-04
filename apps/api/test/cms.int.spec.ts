@@ -5188,6 +5188,7 @@ describe('campaign dispatch (worker side, BE-CMS-G4e #226)', () => {
   // #193: user-targeted, like the real provider — one entry per recipient.
   class CountingPush {
     readonly sent: { userId: string; title: string; imageUrl?: string | undefined }[] = [];
+    async deleteDeviceIdentity() {}
     async sendToUser(
       userId: string,
       payload: { headings: { en: string }; imageUrl?: string | undefined },

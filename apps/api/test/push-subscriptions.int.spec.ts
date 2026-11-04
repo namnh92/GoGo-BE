@@ -371,12 +371,16 @@ describe('AC-2 — a row that exists (R-20, D1)', () => {
 });
 
 describe('AC-3 — rollback baseline (R-18, R-18b)', () => {
-  const deviceRow = async (sub: string) =>
-    pool.query(
+  const deviceRow = async (sub: string) => {
+    const device = await pool.query(
+      `insert into push_device_identities (secret_hash) values ('x') returning id`,
+    );
+    await pool.query(
       `insert into push_subscriptions (owner_kind, device_id, platform, subscription_id)
        values ('device', $1, 'ios', $2)`,
-      [randomUUID(), sub],
+      [device.rows[0].id, sub],
     );
+  };
 
   it('this binary takes over a device-owned row, atomically and validly', async () => {
     const { svc, sub } = scenario();
@@ -535,7 +539,14 @@ describe('AC-1 — the migration on a database with data', () => {
       return errors;
     };
 
-    await migrate(drizzle(oldPool, { schema }), { migrationsFolder: MIGRATIONS });
+    // Up to 0077 itself: its Down is what this proves, and later migrations stack on it.
+    const journalPath = path.join(folder, 'meta', '_journal.json');
+    const all = JSON.parse(
+      await readFile(path.join(MIGRATIONS, 'meta', '_journal.json'), 'utf8'),
+    ) as { entries: { tag: string }[] };
+    all.entries = all.entries.filter((e) => e.tag < '0078');
+    await writeFile(journalPath, JSON.stringify(all));
+    await migrate(drizzle(oldPool, { schema }), { migrationsFolder: folder });
 
     expect((await audience()).rows).toEqual(before);
     const migrated = await oldPool.query(

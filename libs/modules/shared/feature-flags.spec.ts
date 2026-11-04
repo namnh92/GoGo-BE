@@ -15,6 +15,10 @@ describe('feature flag registry (BE-CMS-G3 #221)', () => {
     expect(() => validateFlagValue('made.up.key', true)).toThrowError(/No such application flag/);
   });
 
+  it('the device identity flag ships off (GoGo-BE#747, Q8)', () => {
+    expect(FEATURE_FLAGS['push.device_identity.enabled'].defaultValue).toBe(false);
+  });
+
   it('every registered key ships a default of its own declared type', () => {
     for (const key of FEATURE_FLAG_KEYS) {
       const { valueType, defaultValue } = FEATURE_FLAGS[key];

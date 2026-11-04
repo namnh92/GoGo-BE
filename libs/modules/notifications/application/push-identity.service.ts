@@ -6,6 +6,7 @@ import type { Actor } from '../../identity/domain/actor';
 import { AppError } from '../../shared/app-error';
 import { APP_CONFIG, type PushIdentityConfig } from '../../shared/config';
 import { ONESIGNAL_API_BASE } from '@gogo/providers';
+import { deviceExternalId, isDeviceExternalId } from '../domain/device-identity';
 
 /**
  * NTF-BE-008 (#199) — the identity JWT the mobile client hands to the OneSignal
@@ -164,6 +165,23 @@ export class PushIdentityService {
       // an identity for one would bind a device to a session id, not a person.
       throw AppError.forbidden('USER_ONLY', 'Push identity is issued to signed-in users only');
     }
+    // The `device:` namespace is not reachable from a session (ADR-0038).
+    if (isDeviceExternalId(actor.id)) {
+      throw AppError.forbidden('USER_ONLY', 'Push identity is issued to signed-in users only');
+    }
+    return this.signFor(actor.id);
+  }
+
+  /**
+   * NTF-BE-017 (#747) — the same claim set for a device identity. Callers have
+   * authenticated the device credential, or just minted it; the id is a uuid and
+   * nothing in a request can choose the namespace.
+   */
+  issueForDevice(deviceId: string): PushIdentityToken {
+    return this.signFor(deviceExternalId(deviceId));
+  }
+
+  private signFor(externalId: string): PushIdentityToken {
     if (!this.sign) {
       this.metrics.increment('push_identity_tokens_total', { result: 'unavailable' });
       // Not retryable: a missing key does not come back on its own.
@@ -173,7 +191,7 @@ export class PushIdentityService {
         false,
       );
     }
-    const token = this.sign({ identity: { external_id: actor.id } });
+    const token = this.sign({ identity: { external_id: externalId } });
     // Read `exp` back from the token rather than recomputing it, so the value
     // the client schedules its refresh on is the one the provider will check.
     const claims = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8')) as {
@@ -181,7 +199,7 @@ export class PushIdentityService {
     };
     this.metrics.increment('push_identity_tokens_total', { result: 'issued' });
     return {
-      externalId: actor.id,
+      externalId,
       token,
       expiresAt: new Date(claims.exp * 1_000).toISOString(),
     };
@@ -260,6 +278,19 @@ export class PushIdentityService {
     if (actor.type !== 'user') {
       throw AppError.forbidden('USER_ONLY', 'Push identity is issued to signed-in users only');
     }
+    return this.readSubscriptions(actor.id);
+  }
+
+  /**
+   * NTF-BE-017 (#747) — the same read for a device identity the caller has
+   * authenticated. Disabled subscriptions are reported, not hidden: an opt-out
+   * is accepted for one.
+   */
+  readDeviceSubscriptions(deviceId: string): Promise<OwnSubscriptionsRead> {
+    return this.readSubscriptions(deviceExternalId(deviceId));
+  }
+
+  private async readSubscriptions(externalId: string): Promise<OwnSubscriptionsRead> {
     if (!this.signConfirm) {
       throw AppError.serviceUnavailable(
         'PUSH_IDENTITY_UNAVAILABLE',
@@ -268,8 +299,8 @@ export class PushIdentityService {
       );
     }
 
-    const token = this.signConfirm({ identity: { external_id: actor.id } });
-    const url = `${ONESIGNAL_API_BASE}/apps/${encodeURIComponent(this.appId)}/users/by/external_id/${encodeURIComponent(actor.id)}`;
+    const token = this.signConfirm({ identity: { external_id: externalId } });
+    const url = `${ONESIGNAL_API_BASE}/apps/${encodeURIComponent(this.appId)}/users/by/external_id/${encodeURIComponent(externalId)}`;
 
     let response: Response;
     try {

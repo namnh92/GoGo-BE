@@ -111,6 +111,14 @@ export type PushIdentityConfig = {
 };
 
 /**
+ * NTF-BE-017 (#747) — new device identities allowed in any 24 hours, across all
+ * callers. Per-IP limits do not bound distributed creation.
+ */
+export type PushDeviceIdentityConfig = PlatformConfig & {
+  PUSH_DEVICE_IDENTITY_DAILY_CEILING: number;
+};
+
+/**
  * LNK-BE-002 (#205) — the canonical share host, e.g. `https://go-dev.gogo.id.vn`.
  * Empty means this environment cannot mint links (503, not retryable); resolve
  * and revoke do not need it.

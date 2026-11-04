@@ -533,6 +533,13 @@
       "when": 1791590400000,
       "tag": "0077_push-subscription-ownership",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1791676800000,
+      "tag": "0078_push-device-identity",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import os from 'node:os';
 import { createDb } from '@gogo/database';
 import {
   CampaignDispatcher,
+  PushDeviceLifecycle,
   DbUsageLedger,
   OutboxDispatcher,
   AdministrativeResolverRepository,
@@ -178,6 +179,7 @@ async function bootstrap(): Promise<void> {
   const INGEST_POLL_MS = ingestPollMs();
   const PLACE_REFRESH_POLL_MS = placeRefreshPollMs();
   const MEDIA_CLEANUP_POLL_MS = mediaCleanupPollMs();
+  const PUSH_DEVICE_LIFECYCLE_POLL_MS = 5 * 60_000;
   const PRIVACY_EXPORT_POLL_MS = privacyExportPollMs();
   const PRIVACY_EXPORT_SWEEP_MS = privacyExportSweepMs();
   const logger = createLogger({
@@ -265,7 +267,16 @@ async function bootstrap(): Promise<void> {
   // tick as the outbox rather than a schedule of their own.
   // The public media host, so a campaign image reaches the provider as the
   // durable URL it will still be able to fetch when the campaign goes out.
-  const campaigns = new CampaignDispatcher(db, push, metrics, process.env.MEDIA_PUBLIC_BASE_URL);
+  const campaigns = new CampaignDispatcher(
+    db,
+    push,
+    metrics,
+    process.env.MEDIA_PUBLIC_BASE_URL,
+    process.env.APP_ENV ?? 'dev',
+  );
+  // ADR-0038 D9: how a device identity ends. Runs with the flag off too, because
+  // draining is what the flag being off asks for.
+  const pushDevices = new PushDeviceLifecycle(db, push, metrics, process.env.APP_ENV ?? 'dev');
   const privacy = new PrivacyJobs(db);
   // ADR-0022: the retry half of media cleanup. Registered only with real
   // buckets — a fake here would mark rows done while the objects stayed.
@@ -620,6 +631,21 @@ async function bootstrap(): Promise<void> {
           const ran = report.results.filter((r) => !r.outcome.startsWith('skipped'));
           if (ran.length > 0 || report.monitoring.overBudget) {
             logger.info({ results: ran, monitoring: report.monitoring }, 'cost collectors ticked');
+          }
+        },
+      },
+      {
+        name: 'gogo:worker:push-device-lifecycle',
+        schedule: { everyMs: PUSH_DEVICE_LIFECYCLE_POLL_MS },
+        run: async ({ signal }) => {
+          const report = await pushDevices.tick(signal);
+          const deadLettered = await pushDevices.cleanupDeadLettered();
+          registry.gauge('push_device_cleanup_dead_lettered', deadLettered);
+          if (Object.values(report).some((n) => n > 0)) {
+            logger.info({ report }, 'push device lifecycle tick');
+          }
+          if (deadLettered > 0) {
+            logger.warn({ deadLettered }, 'push device cleanup dead-lettered — needs a person');
           }
         },
       },

@@ -1,14 +1,25 @@
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
-import { idempotencyKeyFrom, type NotificationProviderPort } from '@gogo/providers';
+import {
+  idempotencyKeyFrom,
+  type NotificationProviderPort,
+  type PushSendResult,
+} from '@gogo/providers';
 import {
   campaignDedupeKey,
+  campaignDeviceDedupeKey,
   campaignOutcome,
   isOpenableDestination,
   type CampaignAudience,
   type CampaignDestination,
 } from '../domain/campaign';
-import { audiencePredicate, respectsPushPreference } from './campaign-audience';
+import { DEVICE_IDENTITY_FLAG, deviceExternalId } from '../domain/device-identity';
+import { flagEnvironmentOf, resolveBooleanFlag } from '../../shared/feature-flags';
+import {
+  audiencePredicate,
+  devicePublicPredicate,
+  respectsPushPreference,
+} from './campaign-audience';
 import { publicCatalogueUrl } from '../../shared/media-url';
 
 /**
@@ -41,6 +52,16 @@ type DueCampaign = {
 /** How many recipients one tick handles, so a large send does not block. */
 const RECIPIENT_BATCH = 500;
 
+/**
+ * What the provider's answer means for the one target a send named. No id is
+ * nobody to deliver to. An id alongside `invalid_aliases` naming that target is
+ * partial for a request and nothing for this recipient (measured, shape §8.1).
+ */
+function acceptedMessageId(result: PushSendResult, externalId: string): string | null {
+  if (result.unknownUserIds.includes(externalId)) return null;
+  return result.providerMessageId;
+}
+
 export class CampaignDispatcher {
   constructor(
     private readonly db: Db,
@@ -53,6 +74,8 @@ export class CampaignDispatcher {
      * has expired long before a campaign scheduled for next week goes out.
      */
     private readonly mediaPublicBaseUrl?: string,
+    /** Which environment's `push.device_identity.enabled` row applies. */
+    private readonly appEnv: string = 'dev',
   ) {}
 
   /** Null for a text campaign, and for a key no public host will serve. */
@@ -163,7 +186,15 @@ export class CampaignDispatcher {
       // `failed` is the honest end for both empty cases, and it is a state an
       // operator can act from: `failed → scheduled` reopens, and a re-run skips
       // whoever already has `push_sent_at` set.
-      const outcome = campaignOutcome({ attempted: recipients.length, accepted: sent });
+      //
+      // NTF-BE-017: a `public` send has a second enumeration in this same run, and
+      // the outcome is decided over both. An exception in either lands in the catch
+      // below, so the run is only complete when both finished.
+      const devices = await this.sendToDevices(campaign);
+      const outcome = campaignOutcome({
+        attempted: recipients.length + devices.attempted,
+        accepted: sent + devices.accepted,
+      });
       await this.db.execute(sql`
         update notification_campaigns
         set status = ${outcome.status}, completed_at = now(), sent_count = ${sent},
@@ -184,6 +215,108 @@ export class CampaignDispatcher {
       `);
       this.metrics?.increment('campaign_dispatched_total', { result: 'failed' });
     }
+  }
+
+  /**
+   * NTF-BE-017 (#747) — the device half of a `public` campaign. Nothing else ever
+   * addresses a device, and with the flag off this half does not run.
+   */
+  private async sendToDevices(campaign: DueCampaign): Promise<{
+    attempted: number;
+    accepted: number;
+  }> {
+    if (campaign.audience_type !== 'public') return { attempted: 0, accepted: 0 };
+    const on = await resolveBooleanFlag(this.db, DEVICE_IDENTITY_FLAG, {
+      environment: flagEnvironmentOf(this.appEnv),
+    });
+    if (!on) return { attempted: 0, accepted: 0 };
+
+    const { rows } = await this.db.execute<{ id: string }>(sql`
+      select i.id from push_device_identities i
+      where ${devicePublicPredicate()}
+      order by i.id
+    `);
+    await this.db.execute(sql`
+      update notification_campaigns
+      set device_recipient_count = ${rows.length}, updated_at = now()
+      where id = ${campaign.id}::uuid
+    `);
+
+    let sent = 0;
+    let failed = 0;
+    for (let offset = 0; offset < rows.length; offset += RECIPIENT_BATCH) {
+      for (const device of rows.slice(offset, offset + RECIPIENT_BATCH)) {
+        const delivered = await this.deliverToDevice(campaign, device.id);
+        if (delivered === 'no_target') failed += 1;
+        else sent += 1;
+      }
+      await this.db.execute(sql`
+        update notification_campaigns
+        set device_sent_count = ${sent}, device_failed_count = ${failed}, updated_at = now()
+        where id = ${campaign.id}::uuid
+      `);
+    }
+    return { attempted: rows.length, accepted: sent };
+  }
+
+  /**
+   * One device, the same shape as `deliver`: the ledger row is claimed first and
+   * `push_sent_at` is written only after the provider accepted, so a re-run of this
+   * dispatch skips what went through and replays the rest under the same key. A
+   * thrown provider error propagates and the campaign is marked `failed`.
+   */
+  private async deliverToDevice(
+    campaign: DueCampaign,
+    deviceId: string,
+  ): Promise<'sent' | 'already_sent' | 'no_target'> {
+    const dedupeKey = campaignDeviceDedupeKey(campaign.dispatch_key, deviceId);
+    await this.db.execute(sql`
+      insert into campaign_device_sends (campaign_id, device_id, dedupe_key)
+      values (${campaign.id}::uuid, ${deviceId}::uuid, ${dedupeKey})
+      on conflict (dedupe_key) do nothing
+    `);
+    const { rows } = await this.db.execute<{ id: string; push_sent_at: Date | string | null }>(sql`
+      select id, push_sent_at from campaign_device_sends where dedupe_key = ${dedupeKey}
+    `);
+    const row = rows[0];
+    if (!row) throw new Error('device send row missing after insert');
+    if (row.push_sent_at !== null) return 'already_sent';
+
+    const externalId = deviceExternalId(deviceId);
+    const messageId = acceptedMessageId(
+      await this.push.sendToUser(externalId, this.message(campaign, dedupeKey)),
+      externalId,
+    );
+    if (messageId === null) {
+      await this.db.execute(sql`
+        update campaign_device_sends set failed_reason = 'no_target' where id = ${row.id}::uuid
+      `);
+      return 'no_target';
+    }
+    await this.db.execute(sql`
+      update campaign_device_sends
+      set push_sent_at = now(), push_message_id = ${messageId}, failed_reason = null
+      where id = ${row.id}::uuid
+    `);
+    return 'sent';
+  }
+
+  private message(campaign: DueCampaign, dedupeKey: string) {
+    const image = this.imageUrl(campaign);
+    return {
+      headings: { en: campaign.title },
+      contents: { en: campaign.body },
+      ...(image ? { imageUrl: image } : {}),
+      data: {
+        campaignId: campaign.id,
+        destinationType: campaign.destination_type,
+        ...(campaign.destination_value ? { destination: campaign.destination_value } : {}),
+      },
+      // The dedupe key already identifies this recipient of this dispatch; the
+      // provider gets the same identity, so even a crash between the send and
+      // the update below is a replay at the provider, not a second push.
+      idempotencyKey: idempotencyKeyFrom(dedupeKey),
+    };
   }
 
   /**
@@ -229,21 +362,7 @@ export class CampaignDispatcher {
     // operator re-schedules from, not something to burn through 500 recipients
     // discovering. The row above stays without push_sent_at, which is exactly
     // what the reschedule retries.
-    const image = this.imageUrl(campaign);
-    const result = await this.push.sendToUser(userId, {
-      headings: { en: campaign.title },
-      contents: { en: campaign.body },
-      ...(image ? { imageUrl: image } : {}),
-      data: {
-        campaignId: campaign.id,
-        destinationType: campaign.destination_type,
-        ...(campaign.destination_value ? { destination: campaign.destination_value } : {}),
-      },
-      // The dedupe key already identifies this recipient of this dispatch; the
-      // provider gets the same identity, so even a crash between the send and
-      // the update below is a replay at the provider, not a second push.
-      idempotencyKey: idempotencyKeyFrom(options.dedupeKey),
-    });
+    const result = await this.push.sendToUser(userId, this.message(campaign, options.dedupeKey));
     // A message id is a delivery the provider accepted. None means no
     // subscription for this person right now — recorded in failed_count, as an
     // account with no registered device was before.
@@ -255,10 +374,11 @@ export class CampaignDispatcher {
     // never retried: that campaign is `sent`, correctly, and what an
     // unsubscribed recipient is owed after a partial send is a product
     // decision, not a dispatcher fix (review finding R4).
-    if (result.providerMessageId === null) return 'no_target';
+    const messageId = acceptedMessageId(result, userId);
+    if (messageId === null) return 'no_target';
     await this.db.execute(sql`
       update notifications
-      set push_sent_at = now(), push_message_id = ${result.providerMessageId}
+      set push_sent_at = now(), push_message_id = ${messageId}
       where id = ${row.id}::uuid
     `);
     return 'sent';
