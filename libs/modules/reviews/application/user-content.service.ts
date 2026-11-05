@@ -29,6 +29,7 @@ import {
   type SavedItemArea,
 } from '../domain/saved-area';
 import { READABLE_PLACE_STATUSES } from '../domain/public-review';
+import { loadGogoRatings } from '../infrastructure/gogo-ratings';
 import { eraseAssistantDataForUser } from '../../assistant/application/assistant-privacy';
 import {
   INDEPENDENT_SOURCE_TYPES,
@@ -242,15 +243,18 @@ export class UserContentService {
       .from(schema.savedItems)
       .where(eq(schema.savedItems.userId, userId))
       .orderBy(desc(schema.savedItems.createdAt));
-    const areas = await this.savedAreas(
-      rows.filter((r) => r.targetType === 'place').map((r) => r.targetId),
-      rows.filter((r) => r.targetType === 'plan').map((r) => r.targetId),
-    );
+    const placeIds = rows.filter((r) => r.targetType === 'place').map((r) => r.targetId);
+    const planIds = rows.filter((r) => r.targetType === 'plan').map((r) => r.targetId);
+    const [areas, gogoRatings] = await Promise.all([
+      this.savedAreas(placeIds, planIds),
+      loadGogoRatings(this.db, placeIds),
+    ]);
     return rows.map((r) => ({
       targetType: r.targetType,
       targetId: r.targetId,
       savedAt: r.createdAt.toISOString(),
       area: areas.get(`${r.targetType}:${r.targetId}`) ?? UNKNOWN_AREA,
+      ...(r.targetType === 'place' ? gogoRatings.get(r.targetId) : {}),
     }));
   }
 

@@ -42,6 +42,7 @@ export type PublicReviewRow = {
   authorDisplayName: string;
   authorStatus: 'active' | 'suspended' | 'banned' | 'deleted';
   helpfulCount: number;
+  verifiedVisit: boolean;
 };
 
 export type PublicReview = {
@@ -52,6 +53,8 @@ export type PublicReview = {
   author: { displayName: string | null };
   /** A count only — who reacted is never public (ADR-0026). */
   helpfulCount: number;
+  /** An approved GoGo check-in by this author at this place exists. */
+  verifiedVisit: boolean;
 };
 
 export function toPublicReview(row: PublicReviewRow): PublicReview {
@@ -62,5 +65,6 @@ export function toPublicReview(row: PublicReviewRow): PublicReview {
     createdAt: row.createdAt.toISOString(),
     author: { displayName: row.authorStatus === 'deleted' ? null : row.authorDisplayName },
     helpfulCount: row.helpfulCount,
+    verifiedVisit: row.verifiedVisit,
   };
 }

@@ -8,6 +8,7 @@ import { writeOutbox, type DomainEventInput } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import { pgArray } from '../../search/infrastructure/search.repository';
 import type { Candidate, RoomSnapshot } from '../domain/types';
+import { loadGogoRatings } from '../../reviews/infrastructure/gogo-ratings';
 
 export type RunRow = typeof schema.suggestionRuns.$inferSelect;
 export type ScoreRow = typeof schema.candidateScores.$inferSelect;
@@ -340,6 +341,10 @@ export class SuggestionsRepository {
       .where(eq(schema.candidateScores.runId, runId))
       .orderBy(schema.candidateScores.rank);
     return rows.map((r) => ({ ...r.score, name: r.name }));
+  }
+
+  gogoRatingsForPlaceIds(placeIds: string[]) {
+    return loadGogoRatings(this.db, placeIds);
   }
 
   async upsertVote(input: {

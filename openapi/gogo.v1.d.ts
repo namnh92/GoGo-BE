@@ -1607,8 +1607,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Latest or most helpful published GoGo reviews of a place (at most three)
-         * @description BE-BFF-018. GoGo community reviews only, never Google's: the provider rating stays on `PlaceDetail.rating`/`ratingCount` with its attribution and is never merged with these. Only reviews a moderator published are listed; `pending`, `rejected`, `removed` and emergency-`hidden` reviews never appear. Ordered newest first by `createdAt`, ties broken by `id` descending, so repeated reads agree. Answers for the same places `getPlaceDetail` does (404 otherwise) and is served `Cache-Control: no-store`, so a takedown holds on the next read.
+         * Published GoGo reviews of a place, with aggregate and cursor pagination
+         * @description BE-BFF-018 / GoGo-BE#754. GoGo community reviews only, never Google's: the provider rating stays on `PlaceDetail.rating`/`ratingCount` with its attribution and is never merged with these. Only reviews a moderator published are listed; `pending`, `rejected`, `removed` and emergency-`hidden` reviews never appear. Ordered newest first by `createdAt`, ties broken by `id` descending, so repeated reads agree. With no pagination parameters the legacy preview remains at most three rows. Send `limit` and then the opaque `nextCursor` to traverse the full published list in `items`; the legacy `reviews` property remains capped at three rows. Answers for the same places `getPlaceDetail` does (404 otherwise) and is served `Cache-Control: no-store`, so a takedown holds on the next read.
          *
          *     BE-BFF-019 (ADR-0026, proposal): `order=helpful` ranks by `helpfulCount` descending, then the same newest-first order, so with no reactions it answers exactly what `latest` does. Counts only; no response names who reacted.
          */
@@ -6400,6 +6400,10 @@ export interface components {
             lng: number;
             rating?: number;
             ratingCount?: number;
+            /** @description GoGo community mean; omitted below the five-review sample threshold. Never merged with `rating`. */
+            gogoRating?: number;
+            /** @description Published GoGo review count, including zero; the client uses words rather than a score below five. */
+            gogoRatingCount?: number;
             avgVisitMinutes?: number;
             suitability?: {
                 [key: string]: number;
@@ -7633,6 +7637,10 @@ export interface components {
             /** Format: date-time */
             savedAt: string;
             area: components["schemas"]["SavedItemArea"];
+            /** @description Place items only; omitted below the five-review sample threshold. Never merged with the provider score. */
+            gogoRating?: number;
+            /** @description Place items only; published GoGo review count, including zero. */
+            gogoRatingCount?: number;
         };
         /** @description ADM-022 (#569) — facts to group a saved item by, never a composed label. A place is `commune` only through a VERIFIED mapping in the published dataset. A plan is `commune` when every stop is in one commune, `province` when every stop is in one province across communes, `multiple_provinces` when stops span provinces, and `unknown` when any stop has no such mapping (a plan is never placed by its first stop). Labels come from the published dataset. */
         SavedItemArea: {
@@ -7959,6 +7967,10 @@ export interface components {
             /** Format: uuid */
             placeId?: string;
             name?: string;
+            /** @description GoGo community mean; omitted below the five-review sample threshold. Never merged with provider quality used for ranking. */
+            gogoRating?: number;
+            /** @description Published GoGo review count, including zero. */
+            gogoRatingCount?: number;
             rank?: number;
             score?: number;
             /** @description Explainable score parts — drives the "Vì sao phù hợp" UI. */
@@ -8694,7 +8706,16 @@ export interface components {
              * @enum {string}
              */
             source: "gogo";
+            /** @description Mean of all published GoGo reviews; omitted below the five-review sample threshold. */
+            gogoRating?: number;
+            /** @description Count of all published GoGo reviews, not merely this page. */
+            gogoRatingCount?: number;
+            /** @description Opaque cursor for the next page; null at the end. The legacy three-row preview may ignore it. */
+            nextCursor?: string | null;
+            /** @description Backward-compatible preview containing at most the first three rows of this response. */
             reviews: components["schemas"]["PublicPlaceReview"][];
+            /** @description Page rows returned when `limit` or `cursor` is sent; omitted for a legacy preview request. */
+            items?: components["schemas"]["PublicPlaceReview"][];
         };
         /** @description A published review as anyone may read it. Carries no user id, email or avatar. */
         PublicPlaceReview: {
@@ -8714,6 +8735,8 @@ export interface components {
                 /** @description The name the author shows other people; `null` once the account is deleted (ADR-0023). Clients render their own label for it. */
                 displayName: string | null;
             };
+            /** @description True only when this author has an approved GoGo check-in at this place; review moderation alone is not visit verification. */
+            verifiedVisit?: boolean;
         };
         PlacePhoto: {
             /** Format: uuid */
@@ -13569,6 +13592,10 @@ export interface operations {
         parameters: {
             query?: {
                 order?: "latest" | "helpful";
+                /** @description Opaque cursor from a previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Omit for the backward-compatible three-review preview. */
+                limit?: number;
             };
             header?: never;
             path: {
@@ -13578,7 +13605,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Up to three reviews; an empty list when none is published */
+            /** @description GoGo aggregate plus a page of reviews; an empty list when none is published */
             200: {
                 headers: {
                     [name: string]: unknown;

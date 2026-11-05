@@ -8,6 +8,20 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 4.0.0-alpha.5 — GoGo ratings on place lists and review-page facts (GoGo-BE#754)
+
+**Additive.** `PlaceSearchResult`, place `SavedItem` rows and
+`SuggestionCandidate` gain optional `gogoRating` and `gogoRatingCount`. The
+fields describe moderator-published GoGo reviews only and stay separate from
+Google's `rating`/`ratingCount`; below five reviews the count remains and the
+GoGo score is omitted.
+
+`GET /places/{id}/reviews` keeps the required legacy `reviews` property capped
+at three rows and now accepts opaque cursor pagination. When pagination input
+is sent, the optional `items` property carries up to 20 rows. Its response also
+gains the all-review aggregate, `nextCursor`, per-review `verifiedVisit` (an
+approved check-in, not merely content moderation).
+
 ## 4.0.0-alpha.4 — notification rows carry display facts (GoGo-BE#753)
 
 **Additive.** `Notification.payload` gains optional `roomName`, `inviterName`,
