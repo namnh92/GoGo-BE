@@ -521,6 +521,77 @@ export class RoomsService {
   }
 
   /**
+   * GoGo-BE#758 — enough facts to render the invitation before joining, and
+   * nothing else. The code is judged exactly like a new guest join but no use
+   * is consumed. Exact origin text/coordinates, room/member ids and the code
+   * itself never leave this boundary.
+   */
+  async previewInvite(code: string) {
+    const invite = await this.resolveInvite(code);
+    const room = await this.precheckInvite(invite, { enforceRoomExpiry: true });
+    const [constraint, inviter, user] = await Promise.all([
+      this.repo.getCurrentConstraint(room.id, room.constraintVersion),
+      this.repo.getMemberById(invite.createdByMemberId),
+      this.identity.findUserById(room.hostUserId),
+    ]);
+
+    // Invites are host-only, so the creator is always this room's user host.
+    // Treat a broken relation as an unusable invitation instead of widening
+    // the response with a fallback identity from elsewhere.
+    if (
+      !inviter ||
+      inviter.roomId !== room.id ||
+      inviter.userId !== room.hostUserId ||
+      inviter.removedAt !== null ||
+      !user ||
+      user.status !== 'active'
+    ) {
+      throw joinRefused('INVITE_NOT_USABLE');
+    }
+
+    const legacyArea =
+      !constraint?.administrativeArea && constraint?.areaKey
+        ? await this.repo.findActiveServiceArea(constraint.areaKey)
+        : undefined;
+    const administrativeArea = constraint?.administrativeArea;
+    const area = administrativeArea
+      ? {
+          source: 'administrative_area' as const,
+          name: administrativeArea.communeName ?? administrativeArea.provinceName,
+          city:
+            administrativeArea.communeName !== null ? administrativeArea.provinceName : undefined,
+        }
+      : legacyArea
+        ? {
+            source: 'service_area' as const,
+            name: legacyArea.name,
+            city: legacyArea.city ?? undefined,
+          }
+        : undefined;
+
+    return {
+      inviter: {
+        displayName: inviter.displayName,
+        avatarUrl: publicMediaUrl(this.config?.MEDIA_PUBLIC_BASE_URL, user.avatarKey),
+        // This is deliberately the exact account fact, not a KYC claim.
+        emailVerified: user.emailVerifiedAt !== null,
+      },
+      roomType: room.type,
+      participantCount: room.participantCount,
+      startAt: (constraint?.startAt ?? room.scheduledDate)?.toISOString(),
+      endAt: constraint?.endAt?.toISOString(),
+      area,
+      budget: constraint
+        ? {
+            mode: constraint.budgetMode,
+            amount: constraint.budgetAmount,
+            currency: constraint.currency,
+          }
+        : undefined,
+    };
+  }
+
+  /**
    * Resolve an invite code for a join and refuse it early if it cannot succeed.
    * Shared by user join and guest join. Nothing is spent here: `admit` spends
    * the use, inside the transaction that also adds the member.

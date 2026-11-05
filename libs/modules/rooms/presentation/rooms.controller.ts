@@ -1,6 +1,7 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
+import { NoIdempotencyReplay } from '../../shared/idempotency.interceptor';
 import type { Actor } from '../../identity/domain/actor';
 import { AuthService } from '../../identity/application/auth.service';
 import { CurrentActor, Public, RateLimit } from '../../identity/presentation/decorators';
@@ -10,6 +11,7 @@ import {
   createInviteSchema,
   createRoomSchema,
   guestJoinSchema,
+  inviteCodeSchema,
   joinRoomSchema,
   renameRoomSchema,
   seedPlacesSchema,
@@ -165,6 +167,16 @@ export class RoomsController {
     @Param('inviteId', UuidPipe) inviteId: string,
   ) {
     return this.rooms.revokeInvite(actor, id, inviteId);
+  }
+
+  /** Public invitation facts. The credential stays in the body, never the URL. */
+  @Public()
+  @RateLimit({ action: 'rooms.invite_preview', limit: 10, windowSeconds: 60, keyBy: 'ip' })
+  @NoIdempotencyReplay()
+  @HttpCode(200)
+  @Post('invites/preview')
+  previewInvite(@Body(new ZodValidationPipe(inviteCodeSchema)) body: JoinRoomDto) {
+    return this.rooms.previewInvite(body.inviteCode);
   }
 
   /** Authenticated user joins via invite code (FR-ROOM-006). */

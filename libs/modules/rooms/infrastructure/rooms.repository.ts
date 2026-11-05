@@ -454,6 +454,19 @@ export class RoomsRepository {
     return new Map(rows.map((r) => [r.id, r.avatarKey]));
   }
 
+  /** A legacy room area is displayable only while it remains in the curated catalog. */
+  findActiveServiceArea(areaKey: string) {
+    return this.db
+      .select({
+        name: schema.serviceAreas.name,
+        city: schema.serviceAreas.city,
+      })
+      .from(schema.serviceAreas)
+      .where(and(eq(schema.serviceAreas.key, areaKey), eq(schema.serviceAreas.isActive, true)))
+      .limit(1)
+      .then((rows) => rows[0]);
+  }
+
   getMemberById(memberId: string): Promise<MemberRow | undefined> {
     return this.db
       .select()

@@ -759,6 +759,87 @@ describe('constraints + staleness (core rule #6)', () => {
 });
 
 describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
+  it('rechecks keyed previews after appointment edits and revocation (GoGo-BE#758, F-01)', async () => {
+    const { token } = await registerUser('invite-preview-replay@gogo.id.vn', 'Chủ Kèo');
+    const room = await createGroupRoom(token);
+    const firstStartAt = '2026-11-06T11:30:00.000Z';
+    const firstEndAt = '2026-11-06T14:00:00.000Z';
+    const editedStartAt = '2026-11-07T12:30:00.000Z';
+    const editedEndAt = '2026-11-07T15:00:00.000Z';
+
+    const firstEdit = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/constraints`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        budgetMode: 'per_person',
+        budgetAmount: 300_000,
+        startAt: firstStartAt,
+        endAt: firstEndAt,
+        expectedConstraintVersion: room.constraintVersion,
+      },
+    });
+    expect(firstEdit.statusCode).toBe(200);
+
+    const created = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {},
+    });
+    expect(created.statusCode).toBe(201);
+    const { inviteId, code } = created.json();
+    const previewIp = ip();
+    const preview = () =>
+      api().inject({
+        method: 'POST',
+        url: '/v1/rooms/invites/preview',
+        remoteAddress: previewIp,
+        headers: { 'idempotency-key': 'invite-preview-replay-758' },
+        payload: { inviteCode: code },
+      });
+
+    const initial = await preview();
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toMatchObject({ startAt: firstStartAt, endAt: firstEndAt });
+    expect(initial.headers['x-idempotent-replay']).toBeUndefined();
+
+    const appointmentEdit = await api().inject({
+      method: 'PATCH',
+      url: `/v1/rooms/${room.id}/constraints`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {
+        budgetMode: 'per_person',
+        budgetAmount: 300_000,
+        startAt: editedStartAt,
+        endAt: editedEndAt,
+        expectedConstraintVersion: firstEdit.json().constraintVersion,
+      },
+    });
+    expect(appointmentEdit.statusCode).toBe(200);
+
+    const afterEdit = await preview();
+    expect(afterEdit.statusCode).toBe(200);
+    expect(afterEdit.json()).toMatchObject({ startAt: editedStartAt, endAt: editedEndAt });
+    expect(afterEdit.headers['x-idempotent-replay']).toBeUndefined();
+
+    const revoke = await api().inject({
+      method: 'DELETE',
+      url: `/v1/rooms/${room.id}/invites/${inviteId}`,
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+    expect(revoke.statusCode).toBe(200);
+
+    const afterRevoke = await preview();
+    expect(afterRevoke.statusCode).toBe(410);
+    expect(afterRevoke.json().code).toBe('INVITE_NOT_USABLE');
+    expect(afterRevoke.headers['x-idempotent-replay']).toBeUndefined();
+  });
+
   it('revoked invites stop working; guest join via invite works', async () => {
     const { token } = await registerUser('host10@gogo.id.vn');
     const room = await createGroupRoom(token);

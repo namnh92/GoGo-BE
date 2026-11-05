@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 4.0.0-alpha.8
+  version: 4.0.0-alpha.9
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -896,6 +896,48 @@ paths:
         '200': { description: Removed }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /rooms/invites/preview:
+    post:
+      operationId: previewRoomInvite
+      tags: [rooms]
+      summary: Preview the inviter and appointment facts before joining
+      description: >
+        Public because the recipient may not have an account; the high-entropy
+        invite code is the credential and is accepted only in the request body,
+        never in the URL. A usable code reveals only what the invitation screen
+        needs: the inviter's room display name, public avatar and verified-email
+        fact, plus aggregate room type/count and current time, area and budget.
+        It never returns the code, room/member/user ids, title, member list,
+        preferences, exact origin text/coordinates or any email address. The
+        preview does not consume an invite use.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [inviteCode]
+              properties:
+                inviteCode: { type: string, minLength: 10, maxLength: 128 }
+      responses:
+        '200':
+          description: Minimal invitation facts; copy and money formatting are client-owned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InvitePreview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          description: >
+            Invite expired/revoked/spent (`INVITE_NOT_USABLE`), room no longer
+            taking members (`ROOM_NOT_JOINABLE`) or room expired (`ROOM_EXPIRED`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /rooms/{id}/invites:
     post:
@@ -13030,6 +13072,47 @@ components:
         isGuest: { type: boolean }
         joinedAt: { type: string, format: date-time }
         avatarUrl: { type: string, nullable: true }
+    InvitePreview:
+      type: object
+      description: >
+        GoGo-BE#758 — facts for the pre-join invitation screen. Optional
+        appointment properties are absent when the host did not set them.
+        `emailVerified` means the account verified its email; it is not an
+        identity/KYC claim. No property carries the invite credential or an id.
+      required: [inviter, roomType, participantCount]
+      properties:
+        inviter:
+          type: object
+          required: [displayName, avatarUrl, emailVerified]
+          properties:
+            displayName: { type: string }
+            avatarUrl:
+              type: [string, 'null']
+              description: Public avatar URL, or null when absent or media hosting is unavailable.
+            emailVerified: { type: boolean }
+        roomType: { type: string, enum: [couple, group] }
+        participantCount: { type: integer, minimum: 2, maximum: 20 }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, format: date-time }
+        area:
+          type: object
+          required: [source, name]
+          properties:
+            source: { type: string, enum: [administrative_area, service_area] }
+            name:
+              type: string
+              description: Verified administrative-unit or active curated service-area name.
+            city: { type: string }
+        budget:
+          type: object
+          required: [mode, amount, currency]
+          properties:
+            mode: { type: string, enum: [total, per_person] }
+            amount:
+              type: integer
+              minimum: 0
+              description: Integer minor units.
+            currency: { type: string, minLength: 3, maxLength: 3 }
     RoomSummary:
       type: object
       description: Facts only — audience copy is composed client-side from type/participantCount/budgetMode.
