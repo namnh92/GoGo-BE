@@ -243,6 +243,7 @@ export class SuggestionService {
     const tally = tallyVotes(
       votes.map((v) => ({ memberId: v.memberId, placeId: v.targetPlaceId, value: v.value })),
     );
+    const tallyByPlaceId = new Map(tally.map((row) => [row.placeId, row]));
     return {
       run: {
         id: run.id,
@@ -253,18 +254,24 @@ export class SuggestionService {
         stale: scores.length > 0 && scores.every((s) => s.isStale),
       },
       decisionMode: room.decisionMode,
-      candidates: scores.map((s) => ({
-        placeId: s.placeId,
-        name: s.name,
-        ...gogoRatings.get(s.placeId)!,
-        rank: s.rank,
-        score: s.scoreMicros / 1e6,
-        components: s.components,
-        reasonCodes: s.reasonCodes,
-        stale: s.isStale,
-        myVote: myVotes[s.placeId],
-        points: tally.find((t) => t.placeId === s.placeId)?.points ?? 0,
-      })),
+      candidates: scores.map((s) => {
+        const candidateTally = tallyByPlaceId.get(s.placeId);
+        const matchScore = s.scoreMicros / 1e6;
+        return {
+          placeId: s.placeId,
+          name: s.name,
+          ...gogoRatings.get(s.placeId)!,
+          rank: s.rank,
+          score: matchScore,
+          matchScore,
+          likedByCount: (candidateTally?.yes ?? 0) + (candidateTally?.star ?? 0),
+          components: s.components,
+          reasonCodes: s.reasonCodes,
+          stale: s.isStale,
+          myVote: myVotes[s.placeId],
+          points: candidateTally?.points ?? 0,
+        };
+      }),
       votes: {
         mine: myVotes,
         progress: tally,
