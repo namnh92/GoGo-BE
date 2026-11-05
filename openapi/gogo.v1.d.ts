@@ -8044,6 +8044,10 @@ export interface components {
             /** @enum {string} */
             myVote?: "yes" | "no" | "star";
             points?: number;
+            /** @description Driving minutes from the room origin to this candidate; omitted when the room has no origin. */
+            travelMinutesFromOrigin?: number;
+            /** @description Driving distance in metres from the room origin to this candidate; omitted when the room has no origin. */
+            travelDistanceMFromOrigin?: number;
         };
         SuggestionsCurrent: {
             run?: {
@@ -8058,6 +8062,8 @@ export interface components {
             } | null;
             /** @enum {string} */
             decisionMode?: "match" | "vote" | "host";
+            /** @description True when at least one candidate leg is a straight-line estimate rather than a routed driving result. Omitted when the room has no origin. */
+            travelEstimated?: boolean;
             candidates?: components["schemas"]["SuggestionCandidate"][];
             votes?: {
                 mine?: {
@@ -8122,6 +8128,10 @@ export interface components {
             durationMinutes?: number;
             travelMinutesFromPrev?: number | null;
             travelDistanceMFromPrev?: number | null;
+            /** @description The next stop's stored driving minutes; null on the final stop. */
+            travelMinutesToNext?: number | null;
+            /** @description The next stop's stored driving distance in metres; null on the final stop. */
+            travelDistanceMToNext?: number | null;
             /** @description Lower price bound per `costScope`. `null` means the place has no price in that scope — unknown, not free; a free place is `0`. */
             costMin?: number | null;
             /** @description Upper price bound per `costScope`, under the same rule as `costMin`. */

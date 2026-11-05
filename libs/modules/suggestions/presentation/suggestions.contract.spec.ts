@@ -6,7 +6,7 @@ import { parse as parseYaml } from 'yaml';
 const SPEC = path.resolve(__dirname, '../../../../openapi/gogo.v1.yaml');
 
 interface SchemaObject {
-  type?: string;
+  type?: string | string[];
   minimum?: number;
   maximum?: number;
   required?: string[];
@@ -17,6 +17,32 @@ interface SchemaObject {
 const doc = parseYaml(readFileSync(SPEC, 'utf8')) as {
   components: { schemas: Record<string, SchemaObject> };
 };
+
+describe('GoGo-BE#756 travel facts contract', () => {
+  it('adds optional origin legs to suggestions and next legs to plan stops', () => {
+    const current = doc.components.schemas.SuggestionsCurrent!;
+    const candidate = doc.components.schemas.SuggestionCandidate!;
+    const stop = doc.components.schemas.PlanStop!;
+
+    expect(current.properties?.travelEstimated?.type).toBe('boolean');
+    expect(candidate.properties?.travelMinutesFromOrigin).toMatchObject({
+      type: 'integer',
+      minimum: 0,
+    });
+    expect(candidate.properties?.travelDistanceMFromOrigin).toMatchObject({
+      type: 'integer',
+      minimum: 0,
+    });
+    expect(stop.properties?.travelMinutesToNext?.type).toEqual(['integer', 'null']);
+    expect(stop.properties?.travelDistanceMToNext?.type).toEqual(['integer', 'null']);
+
+    expect(current.required ?? []).not.toContain('travelEstimated');
+    expect(candidate.required ?? []).not.toContain('travelMinutesFromOrigin');
+    expect(candidate.required ?? []).not.toContain('travelDistanceMFromOrigin');
+    expect(stop.required ?? []).not.toContain('travelMinutesToNext');
+    expect(stop.required ?? []).not.toContain('travelDistanceMToNext');
+  });
+});
 
 describe('GoGo-BE#755 suggestion option facts contract', () => {
   it('adds optional normalized match score and liked-member count facts', () => {

@@ -33,7 +33,15 @@ import type { RedisLike } from './redis-rate-limit.store';
 export const RATE_LIMIT_REDIS = Symbol('RATE_LIMIT_REDIS');
 
 /** What the warm-up needs from a client: the store's slice plus ioredis's lazy `connect()`. */
-export type RateLimitRedis = RedisLike & { connect(): Promise<void>; status?: string };
+export type RateLimitRedis = RedisLike & {
+  connect(): Promise<void>;
+  eval(
+    script: string,
+    numberOfKeys: number,
+    ...keysAndArguments: (string | number)[]
+  ): Promise<unknown>;
+  status?: string;
+};
 
 export const RATE_LIMIT_REDIS_WARMUP_MS = 2_000;
 

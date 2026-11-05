@@ -176,6 +176,9 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // Bounded by deploys rather than by traffic, and it never comes back down.
   suggestion_run_latency_seconds: ['variant', 'weights_version'],
   suggestion_run_over_budget_total: ['variant'],
+  // `scope` is room | actor | both. Enforcement outages do not increment an
+  // exhaustion counter; their Redis call is recorded by runtime telemetry.
+  suggestion_route_budget_exhausted_total: ['scope'],
 
   // --- share links (#205) --------------------------------------------------
   // `type` is the share_link_type enum (plus the literal `unknown` on a slug

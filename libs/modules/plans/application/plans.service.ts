@@ -119,26 +119,33 @@ export class PlansService {
       createdAt: plan.createdAt.toISOString(),
       // Plan-level flag so a client can show one banner without scanning stops.
       hasUnavailableStops: [...reasons.values()].some((r) => r !== undefined),
-      stops: stops.map((s) => ({
-        id: s.id,
-        placeId: s.placeId,
-        position: s.position,
-        arriveAt: s.arriveAt?.toISOString(),
-        departAt: s.departAt?.toISOString(),
-        durationMinutes: s.durationMinutes,
-        travelMinutesFromPrev: s.travelMinutesFromPrev,
-        travelDistanceMFromPrev: s.travelDistanceMFromPrev,
-        costMin: s.costMin,
-        costMax: s.costMax,
-        costScope: PLAN_COST_SCOPE,
-        isLocked: s.isLocked,
-        isOptional: s.isOptional,
-        status: s.status,
-        completedAt: s.completedAt?.toISOString(),
-        // `status` above is the stop's own progress; this is the place behind it.
-        placeAvailable: reasons.get(s.id) === undefined,
-        unavailableReason: reasons.get(s.id),
-      })),
+      stops: stops.map((s, index) => {
+        const next = stops[index + 1];
+        return {
+          id: s.id,
+          placeId: s.placeId,
+          position: s.position,
+          arriveAt: s.arriveAt?.toISOString(),
+          departAt: s.departAt?.toISOString(),
+          durationMinutes: s.durationMinutes,
+          travelMinutesFromPrev: s.travelMinutesFromPrev,
+          travelDistanceMFromPrev: s.travelDistanceMFromPrev,
+          // The active-date screen is centered on the current stop, so expose
+          // its next leg without making clients reinterpret the following row.
+          travelMinutesToNext: next?.travelMinutesFromPrev ?? null,
+          travelDistanceMToNext: next?.travelDistanceMFromPrev ?? null,
+          costMin: s.costMin,
+          costMax: s.costMax,
+          costScope: PLAN_COST_SCOPE,
+          isLocked: s.isLocked,
+          isOptional: s.isOptional,
+          status: s.status,
+          completedAt: s.completedAt?.toISOString(),
+          // `status` above is the stop's own progress; this is the place behind it.
+          placeAvailable: reasons.get(s.id) === undefined,
+          unavailableReason: reasons.get(s.id),
+        };
+      }),
     };
   }
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 4.0.0-alpha.9
+  version: 4.0.0-alpha.10
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -15842,6 +15842,14 @@ components:
           description: True after a constraint edit — regenerate before showing as current.
         myVote: { type: string, enum: [yes, no, star] }
         points: { type: integer }
+        travelMinutesFromOrigin:
+          type: integer
+          minimum: 0
+          description: Driving minutes from the room origin to this candidate; omitted when the room has no origin.
+        travelDistanceMFromOrigin:
+          type: integer
+          minimum: 0
+          description: Driving distance in metres from the room origin to this candidate; omitted when the room has no origin.
     SuggestionsCurrent:
       type: object
       properties:
@@ -15855,6 +15863,11 @@ components:
             weightsVersion: { type: string }
             stale: { type: boolean }
         decisionMode: { type: string, enum: [match, vote, host] }
+        travelEstimated:
+          type: boolean
+          description: >
+            True when at least one candidate leg is a straight-line estimate rather than a routed
+            driving result. Omitted when the room has no origin.
         candidates:
           type: array
           items: { $ref: '#/components/schemas/SuggestionCandidate' }
@@ -15964,6 +15977,12 @@ components:
         durationMinutes: { type: integer }
         travelMinutesFromPrev: { type: [integer, 'null'] }
         travelDistanceMFromPrev: { type: [integer, 'null'] }
+        travelMinutesToNext:
+          type: [integer, 'null']
+          description: The next stop's stored driving minutes; null on the final stop.
+        travelDistanceMToNext:
+          type: [integer, 'null']
+          description: The next stop's stored driving distance in metres; null on the final stop.
         costMin:
           type: [integer, 'null']
           description: >

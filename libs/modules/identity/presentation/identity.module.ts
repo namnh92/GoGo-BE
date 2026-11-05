@@ -130,6 +130,7 @@ import { SessionsController } from './sessions.controller';
     IdentityRepository,
     SessionRevocationService,
     RATE_LIMIT_STORE,
+    RATE_LIMIT_REDIS,
   ],
 })
 export class IdentityModule {}

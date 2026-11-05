@@ -377,6 +377,72 @@ describe('Redis rate-limit store (multi-instance)', () => {
   });
 });
 
+describe('Redis suggestion routing reservation (multi-instance)', () => {
+  it('makes one atomic room-and-actor admission across two API instances', async () => {
+    const { RedisRoutingReservation } =
+      await import('../../../libs/modules/suggestions/infrastructure/redis-routing-reservation.js');
+    const { SUGGESTION_ROUTE_BUDGET } =
+      await import('../../../libs/modules/suggestions/application/suggestion.service.js');
+    const url = `redis://${redisContainer.getHost()}:${redisContainer.getMappedPort(6379)}`;
+    const redisA = new IORedis(url);
+    const redisB = new IORedis(url);
+    const reservationA = new RedisRoutingReservation(redisA);
+    const reservationB = new RedisRoutingReservation(redisB);
+    const request = {
+      roomId: 'routing-room-shared',
+      actorKey: 'user:routing-actor-shared',
+      ...SUGGESTION_ROUTE_BUDGET,
+    };
+
+    const results = await Promise.all([
+      reservationA.reserve(request),
+      reservationB.reserve(request),
+    ]);
+
+    expect(results).toEqual(expect.arrayContaining([{ ok: true }, { ok: false, reason: 'room' }]));
+    expect(await redisA.ttl(`routing:suggestion:room:${request.roomId}`)).toBeGreaterThan(0);
+    expect(await redisA.ttl(`routing:suggestion:actor:${request.actorKey}`)).toBeGreaterThan(0);
+    redisA.disconnect();
+    redisB.disconnect();
+  });
+
+  it('reports unavailable on both API instances during a Redis outage', async () => {
+    const { RedisRoutingReservation } =
+      await import('../../../libs/modules/suggestions/infrastructure/redis-routing-reservation.js');
+    const deadClient = () => {
+      const redis = new IORedis('redis://127.0.0.1:1', {
+        lazyConnect: true,
+        maxRetriesPerRequest: 0,
+        enableOfflineQueue: false,
+        retryStrategy: () => null,
+      });
+      redis.on('error', () => undefined);
+      return redis;
+    };
+    const redisA = deadClient();
+    const redisB = deadClient();
+    const request = {
+      roomId: 'routing-room-outage',
+      actorKey: 'user:routing-actor-outage',
+      windowSeconds: 60,
+      perRoom: 1,
+      perActor: 3,
+    };
+
+    await expect(
+      Promise.all([
+        new RedisRoutingReservation(redisA).reserve(request),
+        new RedisRoutingReservation(redisB).reserve(request),
+      ]),
+    ).resolves.toEqual([
+      { ok: false, reason: 'unavailable' },
+      { ok: false, reason: 'unavailable' },
+    ]);
+    redisA.disconnect();
+    redisB.disconnect();
+  });
+});
+
 describe('CORS allowlist (BE-IMP-003)', () => {
   const preflight = (origin: string) =>
     api().inject({
