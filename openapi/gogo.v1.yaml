@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 4.0.0-alpha.5
+  version: 4.0.0-alpha.6
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -15709,7 +15709,20 @@ components:
           minimum: 0
           description: Published GoGo review count, including zero.
         rank: { type: integer }
-        score: { type: number, minimum: 0, maximum: 1 }
+        score:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Normalized match score from the deterministic ranking pipeline.
+        matchScore:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: The same normalized ranking fact as `score`, named explicitly for match-result option rows.
+        likedByCount:
+          type: integer
+          minimum: 0
+          description: Members whose current vote for this option is `yes` or `star`; zero when nobody liked it.
         components:
           type: object
           description: Explainable score parts — drives the "Vì sao phù hợp" UI.

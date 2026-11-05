@@ -8,6 +8,14 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 4.0.0-alpha.6 — per-option match and like facts (GoGo-BE#755)
+
+**Additive.** Every current `SuggestionCandidate` gains optional `matchScore`
+(the existing normalized deterministic `score`, explicitly named for match
+results) and `likedByCount` (members whose current vote is `yes` or `star`).
+The existing candidate score, vote points and `votes.progress` breakdown stay
+unchanged; clients compose display copy from these facts.
+
 ## 4.0.0-alpha.5 — GoGo ratings on place lists and review-page facts (GoGo-BE#754)
 
 **Additive.** `PlaceSearchResult`, place `SavedItem` rows and

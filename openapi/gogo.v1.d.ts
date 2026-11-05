@@ -7972,7 +7972,12 @@ export interface components {
             /** @description Published GoGo review count, including zero. */
             gogoRatingCount?: number;
             rank?: number;
+            /** @description Normalized match score from the deterministic ranking pipeline. */
             score?: number;
+            /** @description The same normalized ranking fact as `score`, named explicitly for match-result option rows. */
+            matchScore?: number;
+            /** @description Members whose current vote for this option is `yes` or `star`; zero when nobody liked it. */
+            likedByCount?: number;
             /** @description Explainable score parts — drives the "Vì sao phù hợp" UI. */
             components?: {
                 [key: string]: number;
