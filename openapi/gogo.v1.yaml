@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 4.0.0-alpha.1
+  version: 4.0.0-alpha.2
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4101,7 +4101,7 @@ paths:
                 text: { type: string, maxLength: 2000 }
       responses:
         '201':
-          description: Review created; awaits moderation
+          description: Review created with its stored rating; awaits moderation
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Review' }
@@ -5327,7 +5327,7 @@ paths:
                 text: { type: string, maxLength: 2000 }
       responses:
         '200':
-          description: Updated; status returns to `pending`
+          description: Updated with its current stored rating; status returns to `pending`
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Review' }
@@ -15074,7 +15074,11 @@ components:
         id: { type: string, format: uuid }
         placeId: { type: string, format: uuid }
         planId: { type: string, format: uuid }
-        rating: { type: integer, minimum: 1, maximum: 5 }
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: The current stored score; always present in create and update responses.
         text: { type: string }
         status:
           type: string

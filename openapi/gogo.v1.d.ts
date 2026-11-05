@@ -7580,6 +7580,7 @@ export interface components {
             placeId?: string;
             /** Format: uuid */
             planId?: string;
+            /** @description The current stored score; always present in create and update responses. */
             rating: number;
             text?: string;
             /**
@@ -14117,7 +14118,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Review created; awaits moderation */
+            /** @description Review created with its stored rating; awaits moderation */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -15203,7 +15204,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated; status returns to `pending` */
+            /** @description Updated with its current stored rating; status returns to `pending` */
             200: {
                 headers: {
                     [name: string]: unknown;

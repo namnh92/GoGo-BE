@@ -257,6 +257,7 @@ describe('moderation decides what is public, on the next read (#570)', () => {
       payload: { placeId, rating: 5, text: 'Không gian yên tĩnh' },
     });
     expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ rating: 5, status: 'pending' });
     const reviewId = created.json().id as string;
     expect(idsOf(await read(placeId))).toEqual([]);
 
@@ -285,7 +286,7 @@ describe('moderation decides what is public, on the next read (#570)', () => {
       headers: auth(author.token),
       payload: { text: 'Không gian yên tĩnh, hơi đông cuối tuần' },
     });
-    expect(edited.json().status).toBe('pending');
+    expect(edited.json()).toMatchObject({ id: reviewId, rating: 5, status: 'pending' });
     expect(idsOf(await read(placeId))).toEqual([]);
 
     expect((await decide('published')).statusCode).toBe(201);

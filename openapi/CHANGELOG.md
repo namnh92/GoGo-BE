@@ -8,6 +8,13 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 4.0.0-alpha.2 — review mutations return their stored rating (GoGo-BE#751)
+
+**Fix.** `POST /reviews` and `PATCH /reviews/{id}` now return the required
+`Review.rating` alongside `id` and `status`. An update that omits `rating`
+returns the review's unchanged stored score. Requests and all other response
+fields are unchanged.
+
 ## 4.0.0-alpha.1 — campaign audience `public`, device push identity (GoGo-BE#747)
 
 **Breaking for readers of CMS campaigns.** `CampaignAudience` gains `public`, so
