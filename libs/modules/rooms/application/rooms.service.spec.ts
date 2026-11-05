@@ -17,6 +17,7 @@ const ROOM_ID = '311f5bd8-f853-4ced-af68-e04398d1451a';
 function serviceWith(opts: {
   roomStatus: string[];
   roomExpiresAt?: Date | null;
+  roomScheduledDate?: Date | null;
   invite?: Partial<{
     revokedAt: Date | null;
     expiresAt: Date;
@@ -28,6 +29,11 @@ function serviceWith(opts: {
   member?: { id: string; role: 'host' | 'member' };
   addedMember?: { id: string; role: 'host' | 'member' };
   created?: boolean;
+  constraint?: Record<string, unknown> | null;
+  inviter?: Record<string, unknown> | null;
+  user?: Record<string, unknown> | null;
+  serviceArea?: { name: string; city: string | null };
+  mediaPublicBaseUrl?: string;
 }) {
   const statuses = [...opts.roomStatus];
   const consumeInvite = vi.fn(async () => opts.consumed ?? true);
@@ -37,6 +43,11 @@ function serviceWith(opts: {
     id: ROOM_ID,
     status: statuses.length > 1 ? statuses.shift() : statuses[0],
     expiresAt: opts.roomExpiresAt ?? null,
+    hostUserId: 'host-user',
+    type: 'couple',
+    participantCount: 2,
+    constraintVersion: 1,
+    scheduledDate: opts.roomScheduledDate ?? null,
   }));
   const repo = {
     findInviteByHash: vi.fn(async () => ({
@@ -57,6 +68,20 @@ function serviceWith(opts: {
       member: opts.addedMember ?? { id: 'new-member', role: 'member' },
       created: opts.created ?? true,
     })),
+    getCurrentConstraint: vi.fn(async () => opts.constraint ?? undefined),
+    getMemberById: vi.fn(async () =>
+      opts.inviter === null
+        ? undefined
+        : {
+            id: 'host-member',
+            roomId: ROOM_ID,
+            userId: 'host-user',
+            displayName: 'Lan',
+            removedAt: null,
+            ...opts.inviter,
+          },
+    ),
+    findActiveServiceArea: vi.fn(async () => opts.serviceArea),
   } as unknown as RoomsRepository;
   const policy = { getRoom: readRoom } as unknown as RoomPolicy;
   const tokens = { hashOpaqueToken: (code: string) => `hash:${code}` } as unknown as TokenService;
@@ -65,9 +90,24 @@ function serviceWith(opts: {
     repo,
     policy,
     tokens,
-    { findUserById: vi.fn(async () => ({ displayName: 'Lan' })) } as unknown as IdentityRepository,
+    {
+      findUserById: vi.fn(async () =>
+        opts.user === null
+          ? undefined
+          : {
+              displayName: 'Lan',
+              status: 'active',
+              avatarKey: null,
+              emailVerifiedAt: null,
+              ...opts.user,
+            },
+      ),
+    } as unknown as IdentityRepository,
     {} as SessionRevocationService,
     events as unknown as RoomEventBus,
+    opts.mediaPublicBaseUrl
+      ? ({ MEDIA_PUBLIC_BASE_URL: opts.mediaPublicBaseUrl } as never)
+      : undefined,
   );
   return { service, consumeInvite, repo, events };
 }
@@ -148,6 +188,78 @@ describe('RoomsService.openInvite + admit (GoGo-BE#592, #605)', () => {
   it('answers INVITE_NOT_USABLE when the last use went to someone else in between', async () => {
     const { service } = serviceWith({ roomStatus: ['collecting', 'collecting'], consumed: false });
     expect(await codeOf(consume(service, 'code'))).toBe('INVITE_NOT_USABLE');
+  });
+});
+
+describe('RoomsService.previewInvite (GoGo-BE#758)', () => {
+  it('returns only inviter and appointment facts without consuming the invitation', async () => {
+    const { service, consumeInvite } = serviceWith({
+      roomStatus: ['collecting'],
+      constraint: {
+        startAt: new Date('2026-11-05T11:30:00.000Z'),
+        endAt: new Date('2026-11-05T14:00:00.000Z'),
+        originText: 'A private exact pickup point',
+        originLat: 10.77,
+        originLng: 106.69,
+        administrativeArea: {
+          datasetVersion: '2026-07',
+          provinceCode: '79',
+          provinceName: 'Thành phố Hồ Chí Minh',
+          communeCode: '26734',
+          communeName: 'Phường Sài Gòn',
+        },
+        budgetMode: 'total',
+        budgetAmount: 400_000,
+        currency: 'VND',
+      },
+      user: {
+        avatarKey: 'avatars/host.webp',
+        emailVerifiedAt: new Date('2026-01-02T00:00:00.000Z'),
+        email: 'private@example.com',
+      },
+      mediaPublicBaseUrl: 'https://assets.example.test',
+    });
+
+    await expect(service.previewInvite('opaque-code')).resolves.toEqual({
+      inviter: {
+        displayName: 'Lan',
+        avatarUrl: 'https://assets.example.test/avatars/host.webp',
+        emailVerified: true,
+      },
+      roomType: 'couple',
+      participantCount: 2,
+      startAt: '2026-11-05T11:30:00.000Z',
+      endAt: '2026-11-05T14:00:00.000Z',
+      area: {
+        source: 'administrative_area',
+        name: 'Phường Sài Gòn',
+        city: 'Thành phố Hồ Chí Minh',
+      },
+      budget: { mode: 'total', amount: 400_000, currency: 'VND' },
+    });
+    expect(consumeInvite).not.toHaveBeenCalled();
+  });
+
+  it('uses an active curated label for a legacy area key', async () => {
+    const { service, repo } = serviceWith({
+      roomStatus: ['draft'],
+      constraint: {
+        areaKey: 'hcm-thao-dien',
+        budgetMode: 'per_person',
+        budgetAmount: 200_000,
+        currency: 'VND',
+      },
+      serviceArea: { name: 'Thảo Điền', city: 'Thành phố Hồ Chí Minh' },
+    });
+
+    await expect(service.previewInvite('opaque-code')).resolves.toMatchObject({
+      area: {
+        source: 'service_area',
+        name: 'Thảo Điền',
+        city: 'Thành phố Hồ Chí Minh',
+      },
+    });
+    expect(repo.findActiveServiceArea).toHaveBeenCalledWith('hcm-thao-dien');
   });
 });
 

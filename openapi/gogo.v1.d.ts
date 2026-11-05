@@ -397,6 +397,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/rooms/invites/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview the inviter and appointment facts before joining
+         * @description Public because the recipient may not have an account; the high-entropy invite code is the credential and is accepted only in the request body, never in the URL. A usable code reveals only what the invitation screen needs: the inviter's room display name, public avatar and verified-email fact, plus aggregate room type/count and current time, area and budget. It never returns the code, room/member/user ids, title, member list, preferences, exact origin text/coordinates or any email address. The preview does not consume an invite use.
+         */
+        post: operations["previewRoomInvite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/rooms/{id}/invites": {
         parameters: {
             query?: never;
@@ -6350,6 +6370,36 @@ export interface components {
             joinedAt?: string;
             avatarUrl?: string | null;
         };
+        /** @description GoGo-BE#758 — facts for the pre-join invitation screen. Optional appointment properties are absent when the host did not set them. `emailVerified` means the account verified its email; it is not an identity/KYC claim. No property carries the invite credential or an id. */
+        InvitePreview: {
+            inviter: {
+                displayName: string;
+                /** @description Public avatar URL, or null when absent or media hosting is unavailable. */
+                avatarUrl: string | null;
+                emailVerified: boolean;
+            };
+            /** @enum {string} */
+            roomType: "couple" | "group";
+            participantCount: number;
+            /** Format: date-time */
+            startAt?: string;
+            /** Format: date-time */
+            endAt?: string;
+            area?: {
+                /** @enum {string} */
+                source: "administrative_area" | "service_area";
+                /** @description Verified administrative-unit or active curated service-area name. */
+                name: string;
+                city?: string;
+            };
+            budget?: {
+                /** @enum {string} */
+                mode: "total" | "per_person";
+                /** @description Integer minor units. */
+                amount: number;
+                currency: string;
+            };
+        };
         /** @description Facts only — audience copy is composed client-side from type/participantCount/budgetMode. */
         RoomSummary: {
             /** Format: uuid */
@@ -11447,6 +11497,44 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    previewRoomInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    inviteCode: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Minimal invitation facts; copy and money formatting are client-owned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitePreview"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description Invite expired/revoked/spent (`INVITE_NOT_USABLE`), room no longer taking members (`ROOM_NOT_JOINABLE`) or room expired (`ROOM_EXPIRED`). */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
         };
     };
     listRoomInvites: {

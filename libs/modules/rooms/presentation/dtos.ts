@@ -116,9 +116,10 @@ export const createInviteSchema = z.object({
 });
 export type CreateInviteDto = z.infer<typeof createInviteSchema>;
 
-export const joinRoomSchema = z.object({
+export const inviteCodeSchema = z.object({
   inviteCode: z.string().trim().min(10).max(128),
 });
+export const joinRoomSchema = inviteCodeSchema;
 export type JoinRoomDto = z.infer<typeof joinRoomSchema>;
 
 export const guestJoinSchema = z.object({

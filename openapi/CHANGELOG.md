@@ -8,6 +8,16 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 4.0.0-alpha.9 — pre-join invitation facts (GoGo-BE#758)
+
+**Additive.** New public `POST /rooms/invites/preview` accepts the opaque invite
+code in its body and returns only the facts needed before joining: inviter room
+display name, public avatar and verified-email boolean; room type and participant
+count; optional UTC start/end, verified area label and integer-minor-unit budget.
+It returns no ids, email address, invite code, exact origin or member data, and
+does not consume an invite use. Invalid or unusable invitations retain the join
+flow's existing 404/410 answers.
+
 ## 4.0.0-alpha.8 — saved-plan condition versions (GoGo-BE#759)
 
 **Additive.** Plan rows from `GET /me/saved` gain optional

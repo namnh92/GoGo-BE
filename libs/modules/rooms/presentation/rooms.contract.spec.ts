@@ -23,11 +23,16 @@ type Responses = Record<string, { $ref?: string } | undefined>;
 interface Operation {
   operationId?: string;
   responses?: Responses;
+  security?: unknown[];
+  requestBody?: {
+    content?: Record<string, { schema?: SchemaObject }>;
+  };
 }
 interface SchemaObject {
   type?: string | string[];
   required?: string[];
   enum?: string[];
+  $ref?: string;
   properties?: Record<string, SchemaObject>;
 }
 interface Document {
@@ -87,5 +92,45 @@ describe('rooms contract', () => {
     );
     expect(budget?.properties?.amount?.type).toBe('integer');
     expect(budget?.properties?.currency?.type).toBe('string');
+  });
+
+  it('previewRoomInvite accepts the credential in a body and returns only display facts (#758)', () => {
+    const preview = operation('previewRoomInvite');
+    expect(preview.security).toEqual([]);
+    expect(preview.requestBody?.content?.['application/json']?.schema?.required).toEqual([
+      'inviteCode',
+    ]);
+    expect(preview.responses?.['200']).toEqual({
+      description: 'Minimal invitation facts; copy and money formatting are client-owned.',
+      content: {
+        'application/json': { schema: { $ref: '#/components/schemas/InvitePreview' } },
+      },
+    });
+
+    const shape = doc.components.schemas.InvitePreview!;
+    expect(shape.required).toEqual(['inviter', 'roomType', 'participantCount']);
+    expect(shape.properties?.inviter?.required).toEqual([
+      'displayName',
+      'avatarUrl',
+      'emailVerified',
+    ]);
+    expect(shape.properties?.budget?.required).toEqual(['mode', 'amount', 'currency']);
+    expect(shape.properties?.budget?.properties?.amount?.type).toBe('integer');
+
+    // Holding a code reveals no identifiers, credential echo, exact origin or
+    // account contact. The screen cannot accidentally render data it never gets.
+    for (const forbidden of [
+      'inviteCode',
+      'roomId',
+      'memberId',
+      'userId',
+      'email',
+      'originText',
+      'originLat',
+      'originLng',
+      'members',
+    ]) {
+      expect(shape.properties).not.toHaveProperty(forbidden);
+    }
   });
 });
