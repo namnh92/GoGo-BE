@@ -266,7 +266,7 @@ export class UserContentService {
       resourceId: row!.id,
       payload: { placeId: input.placeId ?? null },
     });
-    return { id: row!.id, status: row!.status };
+    return { id: row!.id, rating: row!.rating, status: row!.status };
   }
 
   async updateReview(
@@ -293,7 +293,7 @@ export class UserContentService {
       })
       .where(eq(schema.reviews.id, reviewId))
       .returning();
-    return { id: updated!.id, status: updated!.status };
+    return { id: updated!.id, rating: updated!.rating, status: updated!.status };
   }
 
   async myReviews(actor: Actor) {
