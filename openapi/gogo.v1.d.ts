@@ -7591,6 +7591,40 @@ export interface components {
             /** Format: date-time */
             createdAt?: string;
         };
+        /** @description A review written by the caller, with factual context for the My Reviews list. Target facts are optional because a review has either a place or a plan, and place names or historical addresses without verified GoGo provenance are not returned. Private room title and date are returned only while the caller has an active room membership. */
+        MyReview: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            placeId?: string;
+            /** Format: uuid */
+            planId?: string;
+            /** @description The current stored score; always present in create and update responses. */
+            rating: number;
+            text?: string;
+            /**
+             * @description New and edited reviews start at `pending` until moderation.
+             * @enum {string}
+             */
+            status: "pending" | "published" | "rejected" | "removed";
+            /** Format: date-time */
+            createdAt?: string;
+            /** @description Independently sourced GoGo catalogue name of the reviewed place. */
+            placeName?: string;
+            /** @description Verified GoGo-owned address of the reviewed place. */
+            placeAddressText?: string;
+            /** @description Title of the room whose plan was reviewed, when set and the caller is an active member. */
+            planTitle?: string;
+            /**
+             * Format: date-time
+             * @description Scheduled UTC date of the room whose plan was reviewed, when set and the caller is an active member.
+             */
+            planScheduledDate?: string;
+            /** @description How many accounts marked this review helpful; derived from reactions. */
+            helpfulCount: number;
+            /** @description Present only when status is `rejected` and moderation recorded a reason. */
+            rejectionReason?: string;
+        };
         SavedItem: {
             /** @enum {string} */
             targetType: "place" | "plan";
@@ -15181,7 +15215,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Review"][];
+                    "application/json": components["schemas"]["MyReview"][];
                 };
             };
         };

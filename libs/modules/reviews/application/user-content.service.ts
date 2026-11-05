@@ -28,7 +28,14 @@ import {
   type SavedAreaCodes,
   type SavedItemArea,
 } from '../domain/saved-area';
+import { READABLE_PLACE_STATUSES } from '../domain/public-review';
 import { eraseAssistantDataForUser } from '../../assistant/application/assistant-privacy';
+import {
+  INDEPENDENT_SOURCE_TYPES,
+  contactOwnership,
+  isGoogleReference,
+  isTransportReference,
+} from '../../shared/place-contact';
 
 /** The kinds the per-kind contract (`NotificationKind`) exposes; campaigns never had a toggle. */
 const LEGACY_PUSH_KINDS = [
@@ -89,6 +96,125 @@ export function requireUser(actor: Actor): string {
     throw AppError.forbidden('USER_ONLY', 'Register an account to use this feature');
   }
   return actor.id;
+}
+
+type MyReviewRow = {
+  id: string;
+  placeId: string | null;
+  planId: string | null;
+  rating: number;
+  text: string | null;
+  status: 'pending' | 'published' | 'rejected' | 'removed' | 'hidden';
+  moderationReason: string | null;
+  createdAt: Date;
+  placeName: string | null;
+  placeAddressText: string | null;
+  addressSourceType: string | null;
+  addressSourceReference: string | null;
+  addressCollectedAt: Date | null;
+  helpfulCount: number;
+};
+
+type MyReviewRoomFacts = {
+  planTitle: string | null;
+  planScheduledDate: Date | null;
+};
+
+type MyReviewNameProvenance = {
+  placeId: string;
+  sourceType: string;
+  sourceReference: string | null;
+};
+
+function hasIndependentPlaceNameProvenance(
+  provenance: MyReviewNameProvenance | undefined,
+): boolean {
+  if (!provenance) return false;
+  const reference = provenance.sourceReference?.trim();
+  return (
+    (INDEPENDENT_SOURCE_TYPES as readonly string[]).includes(provenance.sourceType) &&
+    reference !== undefined &&
+    reference !== '' &&
+    !isGoogleReference(reference) &&
+    !isTransportReference(reference)
+  );
+}
+
+/** GoGo-BE#752 — facts needed to identify what an own-review row is about. */
+export function toMyReview(
+  row: MyReviewRow,
+  roomFacts?: MyReviewRoomFacts,
+  nameProvenance?: MyReviewNameProvenance,
+) {
+  const addressOwnership = row.addressSourceType
+    ? contactOwnership({
+        source_type: row.addressSourceType,
+        source_reference: row.addressSourceReference,
+        collected_at: row.addressCollectedAt,
+      })
+    : 'unknown';
+  const verifiedPlaceAddress = addressOwnership === 'gogo' ? row.placeAddressText : null;
+  const verifiedPlaceName = hasIndependentPlaceNameProvenance(nameProvenance)
+    ? row.placeName
+    : null;
+  const rejectionReason =
+    row.status === 'rejected' ? row.moderationReason?.trim() || undefined : undefined;
+
+  return {
+    id: row.id,
+    placeId: row.placeId ?? undefined,
+    planId: row.planId ?? undefined,
+    rating: row.rating,
+    text: row.text ?? undefined,
+    status: row.status,
+    createdAt: row.createdAt.toISOString(),
+    ...(verifiedPlaceName !== null ? { placeName: verifiedPlaceName } : {}),
+    ...(verifiedPlaceAddress !== null ? { placeAddressText: verifiedPlaceAddress } : {}),
+    ...(roomFacts?.planTitle != null ? { planTitle: roomFacts.planTitle } : {}),
+    ...(roomFacts?.planScheduledDate != null
+      ? { planScheduledDate: roomFacts.planScheduledDate.toISOString() }
+      : {}),
+    helpfulCount: row.helpfulCount,
+    ...(rejectionReason ? { rejectionReason } : {}),
+  };
+}
+
+/** Private room facts for reviewed plans the caller may still read. */
+export function activePlanRoomFactsQuery(db: Db, userId: string, planIds: string[]) {
+  return db
+    .select({
+      planId: schema.plans.id,
+      planTitle: schema.rooms.title,
+      planScheduledDate: schema.rooms.scheduledDate,
+    })
+    .from(schema.plans)
+    .innerJoin(schema.rooms, eq(schema.rooms.id, schema.plans.roomId))
+    .innerJoin(
+      schema.roomMembers,
+      and(
+        eq(schema.roomMembers.roomId, schema.rooms.id),
+        eq(schema.roomMembers.userId, userId),
+        isNull(schema.roomMembers.removedAt),
+      ),
+    )
+    .where(inArray(schema.plans.id, planIds));
+}
+
+/** Independent provenance for every reviewed place name, read without an N+1 query. */
+export function placeNameProvenanceQuery(db: Db, placeIds: string[]) {
+  return db
+    .select({
+      placeId: schema.placeFieldProvenance.placeId,
+      sourceType: schema.placeFieldProvenance.sourceType,
+      sourceReference: schema.placeFieldProvenance.sourceReference,
+    })
+    .from(schema.placeFieldProvenance)
+    .where(
+      and(
+        inArray(schema.placeFieldProvenance.placeId, placeIds),
+        eq(schema.placeFieldProvenance.field, 'name'),
+      ),
+    );
 }
 
 /** BE-BFF-009 — saved items, reviews, profile, privacy (export/delete). */
@@ -298,20 +424,78 @@ export class UserContentService {
 
   async myReviews(actor: Actor) {
     const userId = requireUser(actor);
+    // Derived from reactions rather than copied onto the review, so the list
+    // cannot drift from the public helpful count.
+    const helpfulCount = sql<number>`(
+      select count(*)::int from ${schema.reviewReactions} rr
+      where rr.review_id = ${schema.reviews.id} and rr.type = 'helpful'
+    )`.mapWith(Number);
     const rows = await this.db
-      .select()
+      .select({
+        id: schema.reviews.id,
+        placeId: schema.reviews.placeId,
+        planId: schema.reviews.planId,
+        rating: schema.reviews.rating,
+        text: schema.reviews.text,
+        status: schema.reviews.status,
+        moderationReason: schema.reviews.moderationReason,
+        createdAt: schema.reviews.createdAt,
+        placeName: schema.places.name,
+        placeAddressText: schema.places.addressText,
+        addressSourceType: schema.placeFieldProvenance.sourceType,
+        addressSourceReference: schema.placeFieldProvenance.sourceReference,
+        addressCollectedAt: schema.placeFieldProvenance.collectedAt,
+        helpfulCount,
+      })
       .from(schema.reviews)
+      .leftJoin(
+        schema.places,
+        and(
+          eq(schema.places.id, schema.reviews.placeId),
+          inArray(schema.places.status, READABLE_PLACE_STATUSES),
+        ),
+      )
+      .leftJoin(
+        schema.placeFieldProvenance,
+        and(
+          eq(schema.placeFieldProvenance.placeId, schema.places.id),
+          eq(schema.placeFieldProvenance.field, 'address_text'),
+        ),
+      )
       .where(eq(schema.reviews.userId, userId))
       .orderBy(desc(schema.reviews.createdAt));
-    return rows.map((r) => ({
-      id: r.id,
-      placeId: r.placeId ?? undefined,
-      planId: r.planId ?? undefined,
-      rating: r.rating,
-      text: r.text ?? undefined,
-      status: r.status,
-      createdAt: r.createdAt.toISOString(),
-    }));
+
+    // The catalogue column alone does not establish ownership. Read the name
+    // origin once for all reviewed places and fail closed for absent, Google,
+    // or otherwise non-independent provenance.
+    const placeIds = [
+      ...new Set(rows.flatMap((row) => (row.placeId === null ? [] : [row.placeId]))),
+    ];
+    const nameProvenanceRows =
+      placeIds.length > 0 ? await placeNameProvenanceQuery(this.db, placeIds) : [];
+    const nameProvenanceByPlace = new Map(
+      nameProvenanceRows.map((provenance) => [provenance.placeId, provenance]),
+    );
+
+    // One batched authorization query for every reviewed plan. Joining active
+    // membership here keeps the review visible while making private room facts
+    // disappear immediately for non-members and removed members.
+    const planIds = [...new Set(rows.flatMap((row) => (row.planId === null ? [] : [row.planId])))];
+    const roomFactRows =
+      planIds.length > 0 ? await activePlanRoomFactsQuery(this.db, userId, planIds) : [];
+    const roomFactsByPlan = new Map<string, MyReviewRoomFacts>(
+      roomFactRows.map(({ planId, planTitle, planScheduledDate }) => [
+        planId,
+        { planTitle, planScheduledDate },
+      ]),
+    );
+    return rows.map((row) =>
+      toMyReview(
+        row,
+        row.planId === null ? undefined : roomFactsByPlan.get(row.planId),
+        row.placeId === null ? undefined : nameProvenanceByPlace.get(row.placeId),
+      ),
+    );
   }
 
   // --- privacy (security rules: export + delete) ----------------------------

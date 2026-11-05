@@ -8,6 +8,16 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 4.0.0-alpha.3 — own-review rows identify their target (GoGo-BE#752)
+
+**Additive.** `GET /me/reviews` now returns `MyReview`: the existing `Review`
+fields plus required `helpfulCount` and optional independently sourced GoGo
+`placeName`, verified GoGo-owned `placeAddressText`, `planTitle`, `planScheduledDate`,
+and `rejectionReason`. Private room facts require the caller's active room
+membership and are omitted for non-members and removed members. Target facts
+are read in batches; no Google content is fetched or persisted. Review
+create/update responses remain `Review` and are unchanged.
+
 ## 4.0.0-alpha.2 — review mutations return their stored rating (GoGo-BE#751)
 
 **Fix.** `POST /reviews` and `PATCH /reviews/{id}` now return the required
