@@ -9,6 +9,7 @@ import { SuggestionsRepository } from '../../suggestions/infrastructure/suggesti
 import { PlansRepository } from '../infrastructure/plans.repository';
 import { TravelTimeService } from '../../travel/application/travel-time.service';
 import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
+import { planChangeFacts } from './plan-change-facts';
 
 /**
  * Shared plan construction (SG-007/SG-008): winner-anchored builds and
@@ -263,7 +264,9 @@ export class PlanBuilderService {
           resourceId: planId,
           payload: {
             action: 'regenerate',
+            stopCount: built.stops.length,
             optionalStopCount: built.stops.filter((s) => s.isOptional).length,
+            ...planChangeFacts(stops, built.stops),
             keptLockedStops: anchors.map((a) => a.placeId),
             excluded: [...exclude],
             avoidedCategories: [...avoid],

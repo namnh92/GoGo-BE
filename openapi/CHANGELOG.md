@@ -8,6 +8,17 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 4.0.0-alpha.4 — notification rows carry display facts (GoGo-BE#753)
+
+**Additive.** `Notification.payload` gains optional `roomName`, `inviterName`,
+`preferenceProgress`, `stopCount`, `planChange`, `title` and `body`. These are
+facts for clients to compose localized inbox copy: preference progress is
+aggregate only, plan changes are structured, and campaign copy remains the
+CMS-authored title/body. Plan changes include event-time total/optional counts
+and aggregate added, removed, moved, duration, lock and optionality changes;
+all remain optional for rows written before these facts existed. `campaign` is now declared in the extensible
+`NotificationKind` list. Existing payload and cursor fields are unchanged.
+
 ## 4.0.0-alpha.3 — own-review rows identify their target (GoGo-BE#752)
 
 **Additive.** `GET /me/reviews` now returns `MyReview`: the existing `Review`

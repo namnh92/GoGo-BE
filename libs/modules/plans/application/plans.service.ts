@@ -15,6 +15,7 @@ import { normalizeStoredTotals } from '../../suggestions/domain/plan-costs';
 import { SuggestionsRepository } from '../../suggestions/infrastructure/suggestions.repository';
 import { PlansRepository, type PlanRow, type StopRow } from '../infrastructure/plans.repository';
 import { PlanBuilderService } from './plan-builder.service';
+import { planChangeFacts } from './plan-change-facts';
 
 /**
  * GoGo-BE#593 — what every plan cost is *per*. Plans read only `per_person`
@@ -297,6 +298,7 @@ export class PlansService {
             action: 'edit',
             stopCount: built.stops.length,
             optionalStopCount: built.stops.filter((s) => s.isOptional).length,
+            ...planChangeFacts(existingStops, built.stops),
           },
         },
       ],

@@ -22,6 +22,7 @@ function serviceWith(opts: {
     expiresAt: Date;
     useCount: number;
     maxUses: number | null;
+    createdByMemberId: string;
   }>;
   consumed?: boolean;
   member?: { id: string; role: 'host' | 'member' };
@@ -45,6 +46,7 @@ function serviceWith(opts: {
       expiresAt: new Date(Date.now() + 3_600_000),
       useCount: 2,
       maxUses: 20,
+      createdByMemberId: 'host-member',
       ...opts.invite,
     })),
     consumeInvite,
@@ -204,6 +206,11 @@ describe('RoomsService.joinAsUser × existing member (GoGo-BE#597)', () => {
     });
     expect(consumeInvite).toHaveBeenCalledTimes(1);
     expect(repo.addUserMember).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(repo.addUserMember).mock.calls[0]?.[0]).toMatchObject({
+      event: {
+        payload: { memberType: 'user', inviterMemberId: 'host-member' },
+      },
+    });
   });
 
   it('refuses a new member for a room past its expiry with ROOM_EXPIRED, spending nothing (GoGo-BE#606)', async () => {

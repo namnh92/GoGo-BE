@@ -7738,6 +7738,42 @@ export interface components {
                 entityType?: string;
                 /** Format: uuid */
                 entityId?: string;
+                /** @description Room title, when the room has one. */
+                roomName?: string;
+                /** @description Display name of the room member who created the invite used to join. */
+                inviterName?: string;
+                /** @description Aggregate completion only; never contains a member's private selections. */
+                preferenceProgress?: {
+                    completedCount: number;
+                    memberCount: number;
+                };
+                /** @description Number of stops in the current plan at notification fan-out. */
+                stopCount?: number;
+                /** @description Structured plan-change facts; the client composes the sentence. */
+                planChange?: {
+                    /** @enum {string} */
+                    action: "edit" | "regenerate";
+                    /** @description Stops in the event-time plan version, or in the current plan at fan-out for a legacy event with no stored counts. */
+                    stopCount?: number;
+                    /** @description Optional stops in the same plan version as `stopCount`; never combined with a count from another version. */
+                    optionalStopCount?: number;
+                    /** @description Stops whose place was not present in the previous plan version. */
+                    addedStopCount?: number;
+                    /** @description Stops whose place is absent from the new plan version. */
+                    removedStopCount?: number;
+                    /** @description Retained stops whose position changed. */
+                    movedStopCount?: number;
+                    /** @description Retained stops whose visit duration changed. */
+                    durationChangedStopCount?: number;
+                    /** @description Retained stops whose lock flag changed. */
+                    lockChangedStopCount?: number;
+                    /** @description Retained stops whose optional flag changed. */
+                    optionalChangedStopCount?: number;
+                };
+                /** @description CMS-authored campaign title; present only for campaign rows. */
+                title?: string;
+                /** @description CMS-authored campaign body; present only for campaign rows. */
+                body?: string;
             } & {
                 [key: string]: unknown;
             };

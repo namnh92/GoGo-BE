@@ -18,6 +18,7 @@ import {
   type PushKind,
 } from './notification-templates';
 import { pushAllowed } from './push-preference';
+import { notificationFacts } from './notification-payload';
 
 /** Which domain events fan out to which member notifications (BE-BFF-010). */
 export const EVENT_TO_NOTIFICATION: Record<
@@ -141,6 +142,12 @@ export class OutboxDispatcher {
     }
     if (!roomId) return;
 
+    const [room] = await this.db
+      .select({ title: schema.rooms.title })
+      .from(schema.rooms)
+      .where(eq(schema.rooms.id, roomId))
+      .limit(1);
+
     const members = await this.db
       .select()
       .from(schema.roomMembers)
@@ -170,13 +177,28 @@ export class OutboxDispatcher {
     // A plan kind opens the room's current plan. An edit or a regenerate writes
     // a new plan row, so the plan id an event names may already be superseded.
     let currentPlanId: string | null = null;
+    let currentPlanCounts: { stopCount: number; optionalStopCount: number } | null = null;
     if (opensPlan(mapping.kind)) {
       const [current] = await this.db
-        .select({ id: schema.plans.id })
+        .select({
+          id: schema.plans.id,
+          stopCount: sql<number>`(
+            select count(*)::int from ${schema.planStops}
+            where ${schema.planStops.planId} = ${schema.plans.id}
+          )`,
+          optionalStopCount: sql<number>`(
+            select count(*)::int from ${schema.planStops}
+            where ${schema.planStops.planId} = ${schema.plans.id}
+              and ${schema.planStops.isOptional} = true
+          )`,
+        })
         .from(schema.plans)
         .where(and(eq(schema.plans.roomId, roomId), eq(schema.plans.status, 'current')))
         .limit(1);
       currentPlanId = current?.id ?? null;
+      currentPlanCounts = current
+        ? { stopCount: current.stopCount, optionalStopCount: current.optionalStopCount }
+        : null;
     }
 
     // #584 — one inbox row per recipient, whichever release writes it.
@@ -198,6 +220,12 @@ export class OutboxDispatcher {
       roomId,
       resourceId: event.resourceId,
       ...inboxTarget(pushTarget(mapping.kind, roomId, currentPlanId)),
+      ...notificationFacts(mapping.kind, {
+        roomName: room?.title ?? null,
+        members,
+        currentPlanCounts,
+        eventPayload: event.payload as Record<string, unknown>,
+      }),
     };
     const existing = await this.db
       .select({ userId: schema.notifications.userId })
