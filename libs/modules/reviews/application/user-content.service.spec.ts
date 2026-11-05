@@ -5,6 +5,7 @@ import {
   activePlanRoomFactsQuery,
   placeNameProvenanceQuery,
   toMyReview,
+  toSavedPlanConditionFacts,
   UserContentService,
 } from './user-content.service';
 
@@ -248,5 +249,27 @@ describe('own review list facts (#752)', () => {
     expect(query.sql).toContain('"place_field_provenance"."place_id" in ($1, $2)');
     expect(query.sql).toContain('"place_field_provenance"."field" = $3');
     expect(query.params).toEqual([...placeIds, 'name']);
+  });
+});
+
+describe('saved plan condition facts (#759)', () => {
+  it('reports the plan and current room versions when conditions changed', () => {
+    expect(
+      toSavedPlanConditionFacts({ planConstraintVersion: 2, currentConstraintVersion: 4 }),
+    ).toEqual({
+      conditionsChanged: true,
+      planConstraintVersion: 2,
+      currentConstraintVersion: 4,
+    });
+  });
+
+  it('keeps the signal false while the saved plan uses the current conditions', () => {
+    expect(
+      toSavedPlanConditionFacts({ planConstraintVersion: 4, currentConstraintVersion: 4 }),
+    ).toEqual({
+      conditionsChanged: false,
+      planConstraintVersion: 4,
+      currentConstraintVersion: 4,
+    });
   });
 });

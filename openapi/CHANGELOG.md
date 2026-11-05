@@ -8,6 +8,16 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 4.0.0-alpha.8 — saved-plan condition versions (GoGo-BE#759)
+
+**Additive.** Plan rows from `GET /me/saved` gain optional
+`conditionsChanged`, `planConstraintVersion` and `currentConstraintVersion`.
+The boolean is true only when the room's current constraint version is newer
+than the one used to build that saved plan; clients compose warning copy from
+these facts. The fields are omitted for places, missing plans and plans the
+caller can no longer read. Existing saved-item fields and ordering are
+unchanged.
+
 ## 4.0.0-alpha.7 — per-member vote status (GoGo-BE#760)
 
 **Additive.** `SuggestionsCurrent.votes` gains optional `members`, listing each

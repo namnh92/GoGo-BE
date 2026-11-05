@@ -7641,6 +7641,12 @@ export interface components {
             gogoRating?: number;
             /** @description Place items only; published GoGo review count, including zero. */
             gogoRatingCount?: number;
+            /** @description Plan items only; true when the room's current constraint version is newer than the version used to build this saved plan. Omitted when the target is not a readable plan. */
+            conditionsChanged?: boolean;
+            /** @description Plan items only; constraint version used to build this saved plan. */
+            planConstraintVersion?: number;
+            /** @description Plan items only; the room's current constraint version. */
+            currentConstraintVersion?: number;
         };
         /** @description ADM-022 (#569) — facts to group a saved item by, never a composed label. A place is `commune` only through a VERIFIED mapping in the published dataset. A plan is `commune` when every stop is in one commune, `province` when every stop is in one province across communes, `multiple_provinces` when stops span provinces, and `unknown` when any stop has no such mapping (a plan is never placed by its first stop). Labels come from the published dataset. */
         SavedItemArea: {
