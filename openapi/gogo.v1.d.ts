@@ -8015,6 +8015,13 @@ export interface components {
                     star?: number;
                     no?: number;
                 }[];
+                /** @description Active room members and whether each has cast at least one vote represented by `progress`. Ballot choices remain private; only the display name already visible to co-members is included. */
+                members?: {
+                    /** Format: uuid */
+                    memberId: string;
+                    displayName: string;
+                    hasVoted: boolean;
+                }[];
             };
         };
         /**

@@ -11,6 +11,7 @@ interface SchemaObject {
   maximum?: number;
   required?: string[];
   properties?: Record<string, SchemaObject>;
+  items?: SchemaObject;
 }
 
 const doc = parseYaml(readFileSync(SPEC, 'utf8')) as {
@@ -32,5 +33,20 @@ describe('GoGo-BE#755 suggestion option facts contract', () => {
     });
     expect(candidate.required ?? []).not.toContain('matchScore');
     expect(candidate.required ?? []).not.toContain('likedByCount');
+  });
+});
+
+describe('GoGo-BE#760 per-member vote status contract', () => {
+  it('adds an optional member list with required identity and status facts', () => {
+    const current = doc.components.schemas.SuggestionsCurrent!;
+    const votes = current.properties?.votes;
+    const members = votes?.properties?.members;
+
+    expect(members?.type).toBe('array');
+    expect(members?.items?.required).toEqual(['memberId', 'displayName', 'hasVoted']);
+    expect(members?.items?.properties?.memberId?.type).toBe('string');
+    expect(members?.items?.properties?.displayName?.type).toBe('string');
+    expect(members?.items?.properties?.hasVoted?.type).toBe('boolean');
+    expect(votes?.required ?? []).not.toContain('members');
   });
 });
