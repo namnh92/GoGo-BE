@@ -99,6 +99,19 @@ export function requireUser(actor: Actor): string {
   return actor.id;
 }
 
+type SavedPlanConditionVersions = {
+  planConstraintVersion: number;
+  currentConstraintVersion: number;
+};
+
+/** GoGo-BE#759 — version facts, never localized warning copy. */
+export function toSavedPlanConditionFacts(versions: SavedPlanConditionVersions) {
+  return {
+    conditionsChanged: versions.currentConstraintVersion > versions.planConstraintVersion,
+    ...versions,
+  };
+}
+
 type MyReviewRow = {
   id: string;
   placeId: string | null;
@@ -245,9 +258,10 @@ export class UserContentService {
       .orderBy(desc(schema.savedItems.createdAt));
     const placeIds = rows.filter((r) => r.targetType === 'place').map((r) => r.targetId);
     const planIds = rows.filter((r) => r.targetType === 'plan').map((r) => r.targetId);
-    const [areas, gogoRatings] = await Promise.all([
+    const [areas, gogoRatings, planConditionFacts] = await Promise.all([
       this.savedAreas(placeIds, planIds),
       loadGogoRatings(this.db, placeIds),
+      this.savedPlanConditionFacts(userId, planIds),
     ]);
     return rows.map((r) => ({
       targetType: r.targetType,
@@ -255,7 +269,43 @@ export class UserContentService {
       savedAt: r.createdAt.toISOString(),
       area: areas.get(`${r.targetType}:${r.targetId}`) ?? UNKNOWN_AREA,
       ...(r.targetType === 'place' ? gogoRatings.get(r.targetId) : {}),
+      ...(r.targetType === 'plan' ? (planConditionFacts.get(r.targetId) ?? {}) : {}),
     }));
+  }
+
+  /**
+   * GoGo-BE#759 — one authorized batch for every saved plan. A removed member
+   * keeps their own bookmark but learns no later room state from this list.
+   */
+  private async savedPlanConditionFacts(userId: string, planIds: string[]) {
+    if (planIds.length === 0)
+      return new Map<string, ReturnType<typeof toSavedPlanConditionFacts>>();
+    const rows = await this.db
+      .select({
+        planId: schema.plans.id,
+        planConstraintVersion: schema.plans.constraintVersion,
+        currentConstraintVersion: schema.rooms.constraintVersion,
+      })
+      .from(schema.plans)
+      .innerJoin(schema.rooms, eq(schema.rooms.id, schema.plans.roomId))
+      .innerJoin(
+        schema.roomMembers,
+        and(
+          eq(schema.roomMembers.roomId, schema.rooms.id),
+          eq(schema.roomMembers.userId, userId),
+          isNull(schema.roomMembers.removedAt),
+        ),
+      )
+      .where(inArray(schema.plans.id, planIds));
+    return new Map(
+      rows.map((row) => [
+        row.planId,
+        toSavedPlanConditionFacts({
+          planConstraintVersion: row.planConstraintVersion,
+          currentConstraintVersion: row.currentConstraintVersion,
+        }),
+      ]),
+    );
   }
 
   /**

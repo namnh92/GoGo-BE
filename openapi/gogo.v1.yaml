@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 4.0.0-alpha.7
+  version: 4.0.0-alpha.8
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -15165,6 +15165,20 @@ components:
           type: integer
           minimum: 0
           description: Place items only; published GoGo review count, including zero.
+        conditionsChanged:
+          type: boolean
+          description: >
+            Plan items only; true when the room's current constraint version is
+            newer than the version used to build this saved plan. Omitted when
+            the target is not a readable plan.
+        planConstraintVersion:
+          type: integer
+          minimum: 1
+          description: Plan items only; constraint version used to build this saved plan.
+        currentConstraintVersion:
+          type: integer
+          minimum: 1
+          description: Plan items only; the room's current constraint version.
     SavedItemArea:
       type: object
       description: >
