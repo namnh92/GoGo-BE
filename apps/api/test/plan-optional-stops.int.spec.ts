@@ -373,6 +373,45 @@ describe('who may set isOptional (ADR-0029)', () => {
 });
 
 describe('edit semantics (ADR-0029)', () => {
+  it('writes same-count replacement, reorder and duration facts on the change event (#753)', async () => {
+    const { hostToken, plan } = await plannedRoom();
+    const res = await patch(hostToken, `/v1/plans/${plan.id}`, {
+      expectedVersion: plan.version,
+      stops: [
+        { placeId: placeIds['Park Xanh'], isLocked: false, isOptional: false },
+        { placeId: placeIds['Cafe Dos'], isLocked: false, isOptional: false },
+        {
+          placeId: placeIds['Cafe Uno'],
+          durationMinutes: 90,
+          isLocked: false,
+          isOptional: false,
+        },
+      ],
+    });
+    expect(res.statusCode).toBe(200);
+
+    const [event] = await db
+      .select({ payload: schema.outboxEvents.payload })
+      .from(schema.outboxEvents)
+      .where(
+        and(
+          eq(schema.outboxEvents.eventType, 'plan.changed'),
+          eq(schema.outboxEvents.resourceId, plan.id),
+        ),
+      );
+    expect(event?.payload).toMatchObject({
+      action: 'edit',
+      stopCount: 3,
+      optionalStopCount: 0,
+      addedStopCount: 1,
+      removedStopCount: 1,
+      movedStopCount: 2,
+      durationChangedStopCount: 1,
+      lockChangedStopCount: 0,
+      optionalChangedStopCount: 0,
+    });
+  });
+
   it('omission keeps, explicit false clears, a new place starts required', async () => {
     const { hostToken, plan } = await plannedRoom();
     const marked = await patch(hostToken, `/v1/plans/${plan.id}`, {

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 4.0.0-alpha.3
+  version: 4.0.0-alpha.4
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -15056,6 +15056,7 @@ components:
           plan_changed,
           date_reminder,
           moderation_update,
+          campaign,
           privacy_export_ready,
         ]
     NotificationPreferenceKind:
@@ -15271,6 +15272,71 @@ components:
               description: Grows with push data v1; route an unknown value by `roomId`.
               x-extensible-enum: [room, plan]
             entityId: { type: string, format: uuid }
+            roomName:
+              type: string
+              description: Room title, when the room has one.
+            inviterName:
+              type: string
+              description: Display name of the room member who created the invite used to join.
+            preferenceProgress:
+              type: object
+              required: [completedCount, memberCount]
+              description: Aggregate completion only; never contains a member's private selections.
+              properties:
+                completedCount: { type: integer, minimum: 0 }
+                memberCount: { type: integer, minimum: 0 }
+            stopCount:
+              type: integer
+              minimum: 0
+              description: Number of stops in the current plan at notification fan-out.
+            planChange:
+              type: object
+              required: [action]
+              description: Structured plan-change facts; the client composes the sentence.
+              properties:
+                action: { type: string, enum: [edit, regenerate] }
+                stopCount:
+                  type: integer
+                  minimum: 0
+                  description: >-
+                    Stops in the event-time plan version, or in the current plan at fan-out for a
+                    legacy event with no stored counts.
+                optionalStopCount:
+                  type: integer
+                  minimum: 0
+                  description: >-
+                    Optional stops in the same plan version as `stopCount`; never combined with a
+                    count from another version.
+                addedStopCount:
+                  type: integer
+                  minimum: 0
+                  description: Stops whose place was not present in the previous plan version.
+                removedStopCount:
+                  type: integer
+                  minimum: 0
+                  description: Stops whose place is absent from the new plan version.
+                movedStopCount:
+                  type: integer
+                  minimum: 0
+                  description: Retained stops whose position changed.
+                durationChangedStopCount:
+                  type: integer
+                  minimum: 0
+                  description: Retained stops whose visit duration changed.
+                lockChangedStopCount:
+                  type: integer
+                  minimum: 0
+                  description: Retained stops whose lock flag changed.
+                optionalChangedStopCount:
+                  type: integer
+                  minimum: 0
+                  description: Retained stops whose optional flag changed.
+            title:
+              type: string
+              description: CMS-authored campaign title; present only for campaign rows.
+            body:
+              type: string
+              description: CMS-authored campaign body; present only for campaign rows.
         readAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
     OpenState:

@@ -626,7 +626,7 @@ export class RoomsService {
             resourceType: 'room',
             resourceId: room.id,
             actorId: user?.analyticsId,
-            payload: { memberType: 'user' },
+            payload: { memberType: 'user', inviterMemberId: invite.createdByMemberId },
           },
         },
         tx,

@@ -68,6 +68,7 @@ function builder(stops: Stop[]) {
   const created: {
     stops: { placeId: string; isOptional: boolean; isLocked: boolean; arriveAt: Date | null }[];
     guard?: unknown;
+    events?: { payload: Record<string, unknown> }[];
   }[] = [];
   const plans = {
     getPlan: async () => ({
@@ -142,6 +143,13 @@ describe('PlanBuilderService.regenerate with optional stops (ADR-0029)', () => {
     expect(kept.arriveAt?.toISOString()).toBe('2026-08-29T05:00:00.000Z');
     expect(out.some((s) => s.placeId === 'gone')).toBe(false);
     expect(out.find((s) => s.placeId === 'fresh')?.isOptional).toBe(false);
+    expect(created[0]!.events?.[0]?.payload).toMatchObject({
+      action: 'regenerate',
+      stopCount: 2,
+      optionalStopCount: 1,
+      addedStopCount: 1,
+      removedStopCount: 1,
+    });
   });
 
   it('publishes with a guard naming the plan, version, constraint version and flags it read', async () => {

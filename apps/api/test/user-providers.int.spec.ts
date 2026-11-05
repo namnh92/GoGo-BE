@@ -767,7 +767,7 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
     }
   });
 
-  it('a plan.changed on a superseded plan opens the current one; an opted-out en member gets none (#594)', async () => {
+  it('a delayed plan.changed keeps event-version counts while opening the current plan (#594, #753)', async () => {
     const { roomId, userIds } = await roomWithMembers('push-superseded', 3);
     const [hostId, viMember, enMember, enOptedOut] = userIds as [string, string, string, string];
     await db
@@ -786,28 +786,61 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
       overBudget: false,
       uncertain: false,
     };
-    const [oldPlan, currentPlan] = await db
+    const [oldPlan] = await db
       .insert(schema.plans)
-      .values([
-        { roomId, version: 1, status: 'superseded', constraintVersion: 1, totals },
-        { roomId, version: 2, status: 'current', constraintVersion: 1, totals },
-      ])
+      .values({ roomId, version: 1, status: 'current', constraintVersion: 1, totals })
       .returning();
-    // A regenerate names the plan it replaced, which is no longer the one to open.
+    // The event is durable before a later edit supersedes its plan. The worker
+    // must keep these event-time counts when it eventually dispatches.
     const [event] = await db
       .insert(schema.outboxEvents)
       .values({
         eventType: 'plan.changed',
         resourceType: 'plan',
         resourceId: oldPlan!.id,
-        payload: {},
+        payload: {
+          action: 'regenerate',
+          stopCount: 2,
+          optionalStopCount: 1,
+          addedStopCount: 1,
+          removedStopCount: 2,
+          movedStopCount: 0,
+          durationChangedStopCount: 0,
+          lockChangedStopCount: 0,
+          optionalChangedStopCount: 0,
+        },
       })
+      .returning();
+    await db
+      .update(schema.plans)
+      .set({ status: 'superseded' })
+      .where(eq(schema.plans.id, oldPlan!.id));
+    const [currentPlan] = await db
+      .insert(schema.plans)
+      .values({ roomId, version: 2, status: 'current', constraintVersion: 1, totals })
       .returning();
     const push = new FakePush();
     await new OutboxDispatcher(db as never, push).dispatchBatch();
 
     // Everyone keeps the inbox row, the opted-out member included.
     expect(await inboxCounts(userIds, oldPlan!.id)).toEqual([1, 1, 1, 1]);
+    const [inbox] = await db
+      .select({ payload: schema.notifications.payload })
+      .from(schema.notifications)
+      .where(eq(schema.notifications.dedupeKey, event!.id));
+    expect(inbox?.payload).toMatchObject({
+      planChange: {
+        action: 'regenerate',
+        stopCount: 2,
+        optionalStopCount: 1,
+        addedStopCount: 1,
+        removedStopCount: 2,
+        movedStopCount: 0,
+        durationChangedStopCount: 0,
+        lockChangedStopCount: 0,
+        optionalChangedStopCount: 0,
+      },
+    });
     expect(push.sent).toHaveLength(2);
     const [vi, en] = push.sent;
     expect([...vi!.userIds].sort()).toEqual([hostId, viMember].sort());
@@ -877,6 +910,7 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
       route: `gogo://plan/${currentPlan!.id}`,
       entityType: 'plan',
       entityId: currentPlan!.id,
+      stopCount: 0,
     });
     // One way to route: the inbox row and the push open the same place.
     const data = push.sent[0]!.data!;
