@@ -36,12 +36,12 @@ let seq = 0;
 type ReviewStatus = 'pending' | 'published' | 'rejected' | 'removed' | 'hidden';
 type PlaceStatus = 'published' | 'community_submitted' | 'draft' | 'suspended';
 
-async function place(status: PlaceStatus = 'published') {
+async function place(status: PlaceStatus = 'published', name?: string) {
   seq += 1;
   const [row] = await db
     .insert(schema.places)
     .values({
-      name: `Quán review ${seq}`,
+      name: name ?? `Quán review ${seq}`,
       nameNormalized: 'set-by-trigger',
       status,
       geom: { x: 106.7 + seq / 1000, y: 10.77 },
@@ -64,6 +64,58 @@ async function account(displayName = 'Lan') {
   expect(body.accessToken).toBeTruthy();
   return { token: body.accessToken as string, userId: body.userId as string, email };
 }
+
+async function privatePlan(hostUserId: string) {
+  const scheduledDate = new Date('2026-11-08T12:30:00.000Z');
+  const title = `Phòng riêng ${++seq}`;
+  const [room] = await db
+    .insert(schema.rooms)
+    .values({
+      code: `REVIEW-ROOM-${seq}`,
+      type: 'group',
+      decisionMode: 'vote',
+      hostUserId,
+      title,
+      scheduledDate,
+    })
+    .returning();
+  const [plan] = await db
+    .insert(schema.plans)
+    .values({
+      roomId: room!.id,
+      version: 1,
+      status: 'current',
+      constraintVersion: 1,
+      totals: {
+        costMin: 0,
+        costMax: 0,
+        currency: 'VND',
+        durationMinutes: 0,
+        travelDistanceM: 0,
+        overBudget: false,
+        uncertain: false,
+      },
+    })
+    .returning();
+  return { roomId: room!.id, planId: plan!.id, title, scheduledDate };
+}
+
+const submitPlanReview = (token: string, planId: string) =>
+  api().inject({
+    method: 'POST',
+    url: '/v1/reviews',
+    remoteAddress: ip(),
+    headers: auth(token),
+    payload: { planId, rating: 4, text: 'Một buổi tối vui' },
+  });
+
+const readOwnReviews = (token: string) =>
+  api().inject({
+    method: 'GET',
+    url: '/v1/me/reviews',
+    remoteAddress: ip(),
+    headers: auth(token),
+  });
 
 async function review(
   placeId: string,
@@ -381,5 +433,116 @@ describe('what a stranger learns about the author (#570)', () => {
     const [item] = (await read(placeId)).json().reviews;
     expect(item.id).toBe(reviewId);
     expect(item.author).toEqual({ displayName: null });
+  });
+});
+
+describe('private room facts on own plan reviews (#752 F-01)', () => {
+  it('keeps a non-member review but omits the room title and date', async () => {
+    const host = await account('Chủ phòng');
+    const outsider = await account('Người ngoài phòng');
+    const plan = await privatePlan(host.userId);
+
+    const created = await submitPlanReview(outsider.token, plan.planId);
+    expect(created.statusCode).toBe(201);
+    const reviewId = created.json().id as string;
+
+    const response = await readOwnReviews(outsider.token);
+    expect(response.statusCode).toBe(200);
+    const item = (response.json() as { id: string }[]).find((row) => row.id === reviewId);
+    expect(item).toMatchObject({ id: reviewId, planId: plan.planId, rating: 4 });
+    expect(item).not.toHaveProperty('planTitle');
+    expect(item).not.toHaveProperty('planScheduledDate');
+  });
+
+  it('removes room facts, not the review, when membership is removed', async () => {
+    const host = await account('Chủ phòng');
+    const author = await account('Thành viên');
+    const plan = await privatePlan(host.userId);
+    const [membership] = await db
+      .insert(schema.roomMembers)
+      .values({
+        roomId: plan.roomId,
+        userId: author.userId,
+        role: 'member',
+        displayName: 'Thành viên',
+      })
+      .returning();
+    const created = await submitPlanReview(author.token, plan.planId);
+    expect(created.statusCode).toBe(201);
+    const reviewId = created.json().id as string;
+
+    const beforeRemoval = (await readOwnReviews(author.token)).json() as {
+      id: string;
+      planTitle?: string;
+      planScheduledDate?: string;
+    }[];
+    expect(beforeRemoval.find((row) => row.id === reviewId)).toMatchObject({
+      id: reviewId,
+      planTitle: plan.title,
+      planScheduledDate: plan.scheduledDate.toISOString(),
+    });
+
+    await db
+      .update(schema.roomMembers)
+      .set({ removedAt: new Date() })
+      .where(eq(schema.roomMembers.id, membership!.id));
+
+    const afterRemoval = (await readOwnReviews(author.token)).json() as {
+      id: string;
+      planId?: string;
+    }[];
+    const item = afterRemoval.find((row) => row.id === reviewId);
+    expect(item).toMatchObject({ id: reviewId, planId: plan.planId });
+    expect(item).not.toHaveProperty('planTitle');
+    expect(item).not.toHaveProperty('planScheduledDate');
+  });
+});
+
+describe('place-name provenance on own reviews (#752 F-01)', () => {
+  it.each([
+    ['Google-derived', 'google_derived' as const, 'ChIJN1t_tDeuEmsRUsoyG83frY4'],
+    ['unknown-source', 'editorial' as const, null],
+  ])('omits a %s catalogue name', async (_case, sourceType, sourceReference) => {
+    const author = await account('Người viết đánh giá');
+    const placeName = `Tên chưa thuộc GoGo ${++seq}`;
+    const placeId = await place('published', placeName);
+    await db.insert(schema.placeFieldProvenance).values({
+      placeId,
+      field: 'name',
+      sourceType,
+      sourceReference,
+    });
+    const reviewId = await review(placeId, author.userId);
+
+    const response = await readOwnReviews(author.token);
+
+    expect(response.statusCode).toBe(200);
+    const item = (response.json() as { id: string; placeName?: string }[]).find(
+      (row) => row.id === reviewId,
+    );
+    expect(item).toMatchObject({ id: reviewId, placeId });
+    expect(item).not.toHaveProperty('placeName');
+    expect(response.body).not.toContain(placeName);
+  });
+
+  it('returns a catalogue name with independent GoGo provenance', async () => {
+    const author = await account('Người viết đánh giá');
+    const placeName = `Tên GoGo ${++seq}`;
+    const placeId = await place('published', placeName);
+    await db.insert(schema.placeFieldProvenance).values({
+      placeId,
+      field: 'name',
+      sourceType: 'editorial',
+      sourceReference: 'Website chính thức của địa điểm',
+    });
+    const reviewId = await review(placeId, author.userId);
+
+    const response = await readOwnReviews(author.token);
+
+    expect(response.statusCode).toBe(200);
+    const item = (response.json() as { id: string; placeName?: string }[]).find(
+      (row) => row.id === reviewId,
+    );
+    expect(item).toMatchObject({ id: reviewId, placeId, placeName });
   });
 });

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 4.0.0-alpha.2
+  version: 4.0.0-alpha.3
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -5307,7 +5307,7 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Review' }
+                items: { $ref: '#/components/schemas/MyReview' }
 
   /reviews/{id}:
     patch:
@@ -15085,6 +15085,50 @@ components:
           enum: [pending, published, rejected, removed]
           description: New and edited reviews start at `pending` until moderation.
         createdAt: { type: string, format: date-time }
+    MyReview:
+      type: object
+      required: [id, rating, status, helpfulCount]
+      description: >
+        A review written by the caller, with factual context for the My
+        Reviews list. Target facts are optional because a review has either
+        a place or a plan, and place names or historical addresses without
+        verified GoGo provenance are not returned. Private room title and
+        date are returned only while the caller has an active room membership.
+      properties:
+        id: { type: string, format: uuid }
+        placeId: { type: string, format: uuid }
+        planId: { type: string, format: uuid }
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: The current stored score; always present in create and update responses.
+        text: { type: string }
+        status:
+          type: string
+          enum: [pending, published, rejected, removed]
+          description: New and edited reviews start at `pending` until moderation.
+        createdAt: { type: string, format: date-time }
+        placeName:
+          type: string
+          description: Independently sourced GoGo catalogue name of the reviewed place.
+        placeAddressText:
+          type: string
+          description: Verified GoGo-owned address of the reviewed place.
+        planTitle:
+          type: string
+          description: Title of the room whose plan was reviewed, when set and the caller is an active member.
+        planScheduledDate:
+          type: string
+          format: date-time
+          description: Scheduled UTC date of the room whose plan was reviewed, when set and the caller is an active member.
+        helpfulCount:
+          type: integer
+          minimum: 0
+          description: How many accounts marked this review helpful; derived from reactions.
+        rejectionReason:
+          type: string
+          description: Present only when status is `rejected` and moderation recorded a reason.
     SavedItem:
       type: object
       required: [targetType, targetId, savedAt, area]
