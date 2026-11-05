@@ -38,6 +38,20 @@ export class TravelTimeService {
   ) {}
 
   /**
+   * Provider-free matrix for callers whose own routing budget is exhausted.
+   * Keeping this path here makes the fallback identical to the one used for a
+   * provider outage, without exposing the fallback adapter itself or storing a
+   * provider response.
+   */
+  async estimateMatrix(
+    origin: TravelTarget,
+    destinations: TravelTarget[],
+  ): Promise<{ legs: TravelLeg[]; estimated: true }> {
+    const legs = await this.fallback.matrix(origin, destinations);
+    return { legs: legs.map((leg) => leg!), estimated: true };
+  }
+
+  /**
    * One origin, many destinations — the shape a greedy step needs. Returns a
    * leg for every destination, plus whether any of them is a fallback estimate
    * so the caller can label the plan honestly.
@@ -48,9 +62,7 @@ export class TravelTimeService {
   ): Promise<{ legs: TravelLeg[]; estimated: boolean }> {
     if (destinations.length === 0) return { legs: [], estimated: false };
     if (!this.enabled || !this.provider) {
-      // Haversine always answers, so the non-null assertion is safe here.
-      const legs = await this.fallback.matrix(origin, destinations);
-      return { legs: legs.map((l) => l!), estimated: true };
+      return this.estimateMatrix(origin, destinations);
     }
 
     const cached = origin.placeId

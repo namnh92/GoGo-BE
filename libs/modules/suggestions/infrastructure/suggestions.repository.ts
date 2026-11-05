@@ -330,17 +330,26 @@ export class SuggestionsRepository {
       .then((r) => r[0]);
   }
 
-  async scoresForRun(runId: string): Promise<(ScoreRow & { name: string })[]> {
+  async scoresForRun(
+    runId: string,
+  ): Promise<(ScoreRow & { name: string; lat: number; lng: number })[]> {
     const rows = await this.db
       .select({
         score: schema.candidateScores,
         name: schema.places.name,
+        lat: sql<number>`ST_Y(${schema.places.geom})`,
+        lng: sql<number>`ST_X(${schema.places.geom})`,
       })
       .from(schema.candidateScores)
       .innerJoin(schema.places, eq(schema.places.id, schema.candidateScores.placeId))
       .where(eq(schema.candidateScores.runId, runId))
       .orderBy(schema.candidateScores.rank);
-    return rows.map((r) => ({ ...r.score, name: r.name }));
+    return rows.map((r) => ({
+      ...r.score,
+      name: r.name,
+      lat: Number(r.lat),
+      lng: Number(r.lng),
+    }));
   }
 
   gogoRatingsForPlaceIds(placeIds: string[]) {

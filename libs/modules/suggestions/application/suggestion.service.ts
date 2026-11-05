@@ -25,12 +25,32 @@ import {
   DEFAULT_SCORING_WEIGHTS,
   ENGINE_VERSION,
   SCORING_WEIGHT_BOUNDS,
+  type RoomSnapshot,
   type ScoringWeights,
 } from '../domain/types';
 import { SuggestionsRepository } from '../infrastructure/suggestions.repository';
 import { PlanBuilderService } from '../../plans/application/plan-builder.service';
+import { TravelTimeService } from '../../travel/application/travel-time.service';
+import { ROUTING_RESERVATION, type RoutingReservation } from './routing-reservation';
 
 const TOP_K = 10;
+const ROUTABLE_ROOM_STATUSES = new Set(['collecting', 'matching', 'ready', 'active']);
+
+/**
+ * Provider routing is enrichment, not the polling budget. One room refreshes
+ * its routed facts at most once per minute, while an actor may refresh up to
+ * three different rooms. Reads past either ceiling still succeed with the
+ * provider-free estimate.
+ *
+ * The reservation is one shared, atomic decision across both keys. It has no
+ * process-local fallback: if shared enforcement is unavailable, reads use the
+ * provider-free estimate and authorise no paid matrix.
+ */
+export const SUGGESTION_ROUTE_BUDGET = {
+  windowSeconds: 60,
+  perRoom: 1,
+  perActor: 3,
+} as const;
 
 /** BE-BFF-007 — deterministic suggestion runs, votes, decisions (SG-002..006). */
 @Injectable()
@@ -43,6 +63,8 @@ export class SuggestionService {
     @Inject(DB) private readonly db: Db,
     @Inject(ROOM_EVENT_BUS) private readonly events: RoomEventBus,
     private readonly experiments: ExperimentsService,
+    private readonly travel: TravelTimeService,
+    @Inject(ROUTING_RESERVATION) private readonly routingReservation: RoutingReservation,
     @Optional() @Inject(METRICS) private readonly metrics?: MetricsPort,
   ) {}
 
@@ -53,6 +75,34 @@ export class SuggestionService {
     } catch {
       /* clients fall back to polling */
     }
+  }
+
+  /** Route when both cost scopes reserve a slot; otherwise estimate locally. */
+  private async currentTravel(
+    actor: Actor,
+    roomId: string,
+    origin: NonNullable<RoomSnapshot['origin']>,
+    destinations: Parameters<TravelTimeService['matrix']>[1],
+  ) {
+    let reservation;
+    try {
+      reservation = await this.routingReservation.reserve({
+        roomId,
+        actorKey: `${actor.type}:${actor.id}`,
+        ...SUGGESTION_ROUTE_BUDGET,
+      });
+    } catch {
+      reservation = { ok: false, reason: 'unavailable' } as const;
+    }
+    if (!reservation.ok) {
+      if (reservation.reason !== 'unavailable') {
+        this.metrics?.increment('suggestion_route_budget_exhausted_total', {
+          scope: reservation.reason,
+        });
+      }
+      return this.travel.estimateMatrix(origin, destinations);
+    }
+    return this.travel.matrix(origin, destinations);
   }
 
   /**
@@ -234,11 +284,36 @@ export class SuggestionService {
     if (!run) {
       return { run: null, candidates: [], votes: { mine: {}, progress: [] } };
     }
-    const scores = await this.repo.scoresForRun(run.id);
-    const [votes, gogoRatings, members] = await Promise.all([
+    const [scores, currentConstraint] = await Promise.all([
+      this.repo.scoresForRun(run.id),
+      this.roomsRepo.getCurrentConstraint(roomId, room.constraintVersion),
+    ]);
+    const snapshotOrigin = (run.inputSnapshot as RoomSnapshot | null)?.origin;
+    // A snapshot is immutable audit input, not current authority for exact
+    // location. Retention and explicit edits clear/change the live constraint
+    // without rewriting old runs, so those coordinates must never be sent to
+    // Routes or used to derive travel facts afterwards. Terminal rooms are
+    // ineligible too: retention targets them, so this also closes the interval
+    // between its eligibility scan and coordinate-clearing write.
+    const origin =
+      snapshotOrigin &&
+      ROUTABLE_ROOM_STATUSES.has(room.status) &&
+      currentConstraint?.originLat === snapshotOrigin.lat &&
+      currentConstraint.originLng === snapshotOrigin.lng
+        ? snapshotOrigin
+        : undefined;
+    const destinations = scores.map((score) => ({
+      placeId: score.placeId,
+      lat: score.lat,
+      lng: score.lng,
+    }));
+    const [votes, gogoRatings, members, travel] = await Promise.all([
       this.repo.listVotes(roomId),
       this.repo.gogoRatingsForPlaceIds(scores.map((score) => score.placeId)),
       this.roomsRepo.listMembers(roomId),
+      origin && destinations.length > 0
+        ? this.currentTravel(actor, roomId, origin, destinations)
+        : undefined,
     ]);
     const votedMemberIds = new Set(votes.map((vote) => vote.memberId));
     const myVotes = Object.fromEntries(
@@ -258,9 +333,11 @@ export class SuggestionService {
         stale: scores.length > 0 && scores.every((s) => s.isStale),
       },
       decisionMode: room.decisionMode,
-      candidates: scores.map((s) => {
+      ...(travel ? { travelEstimated: travel.estimated } : {}),
+      candidates: scores.map((s, index) => {
         const candidateTally = tallyByPlaceId.get(s.placeId);
         const matchScore = s.scoreMicros / 1e6;
+        const travelLeg = travel?.legs[index];
         return {
           placeId: s.placeId,
           name: s.name,
@@ -274,6 +351,12 @@ export class SuggestionService {
           stale: s.isStale,
           myVote: myVotes[s.placeId],
           points: candidateTally?.points ?? 0,
+          ...(travelLeg
+            ? {
+                travelMinutesFromOrigin: travelLeg.minutes,
+                travelDistanceMFromOrigin: travelLeg.distanceM,
+              }
+            : {}),
         };
       }),
       votes: {

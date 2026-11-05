@@ -42,6 +42,10 @@ function fakeRedis(mode: 'up' | 'refused' | 'never' = 'up', connectDelayMs = 5) 
       if (!connected) throw refuse();
       return 1;
     },
+    async eval() {
+      if (!connected) throw refuse();
+      return [1, 0, 0];
+    },
   };
   return redis;
 }

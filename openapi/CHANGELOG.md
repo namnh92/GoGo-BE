@@ -8,6 +8,23 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 4.0.0-alpha.10 — suggestion origin and plan next-leg travel (GoGo-BE#756)
+
+**Additive.** Suggestion candidates gain optional `travelMinutesFromOrigin`
+and `travelDistanceMFromOrigin`; `SuggestionsCurrent.travelEstimated` says
+whether any returned origin leg is a straight-line estimate. The fields are
+omitted when the room has no current eligible origin, including after privacy
+retention clears it. Existing authorization still scopes the origin to room
+members. Provider routing has independent per-room and per-actor cost ceilings;
+reads beyond either ceiling use the estimate fallback, and provider route
+results are not persisted.
+
+Every plan stop also gains optional nullable `travelMinutesToNext` and
+`travelDistanceMToNext`, projected from the next stop's existing stored
+from-previous leg. The final stop returns null for both. Existing
+`travelMinutesFromPrev`, `travelDistanceMFromPrev` and plan totals are
+unchanged.
+
 ## 4.0.0-alpha.9 — pre-join invitation facts (GoGo-BE#758)
 
 **Additive.** New public `POST /rooms/invites/preview` accepts the opaque invite

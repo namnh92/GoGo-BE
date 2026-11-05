@@ -4,7 +4,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { eq, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
@@ -14,6 +14,13 @@ import {
   type RoomEventBus,
 } from '../../../libs/modules/realtime/application/room-event-bus';
 import type { SequencedRoomEvent } from '../../../libs/modules/realtime/domain/room-event';
+import { PrivacyJobs } from '../../../libs/modules/shared/privacy-jobs';
+import {
+  ROUTING_RESERVATION,
+  type RoutingReservation,
+} from '../../../libs/modules/suggestions/application/routing-reservation';
+import { RedisRoutingReservation } from '../../../libs/modules/suggestions/infrastructure/redis-routing-reservation';
+import { TravelTimeService } from '../../../libs/modules/travel/application/travel-time.service';
 
 /**
  * SG pipeline + BE-BFF-007/008/014 end-to-end over real HTTP + PostGIS:
@@ -332,6 +339,86 @@ describe('group vote flow (SG-002..006, BE-BFF-007)', () => {
     expect(
       seen.find((entry) => typeOf(entry) === 'room.status_changed')?.event.payload,
     ).toMatchObject({ from: 'matching', to: 'ready' });
+  });
+});
+
+describe('suggestion origin privacy retention (GoGo-BE#756 review F-01)', () => {
+  it('does not reuse the immutable run origin after retention clears current constraints', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    const generated = await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    expect(generated.statusCode).toBe(201);
+    expect(generated.json()).toHaveProperty('travelEstimated');
+    expect(generated.json().candidates[0]).toHaveProperty('travelMinutesFromOrigin');
+
+    const [runBefore] = await db
+      .select({ id: schema.suggestionRuns.id, inputSnapshot: schema.suggestionRuns.inputSnapshot })
+      .from(schema.suggestionRuns)
+      .where(eq(schema.suggestionRuns.roomId, roomId));
+    expect(runBefore!.inputSnapshot).toMatchObject({ origin: { lat: 10.776, lng: 106.7 } });
+
+    // Retention applies only to terminal rooms older than 30 days. It clears
+    // every constraint version but deliberately does not rewrite the immutable
+    // suggestion audit snapshot that exposed this regression.
+    await db
+      .update(schema.rooms)
+      .set({ status: 'completed', updatedAt: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000) })
+      .where(eq(schema.rooms.id, roomId));
+    const report = await new PrivacyJobs(db as never).run(false);
+    expect(report.originsCleared).toBeGreaterThanOrEqual(1);
+
+    const constraints = await db
+      .select({
+        originLat: schema.roomConstraints.originLat,
+        originLng: schema.roomConstraints.originLng,
+      })
+      .from(schema.roomConstraints)
+      .where(eq(schema.roomConstraints.roomId, roomId));
+    expect(constraints).not.toHaveLength(0);
+    expect(constraints.every((row) => row.originLat === null && row.originLng === null)).toBe(true);
+
+    const current = await get(hostToken, `/v1/rooms/${roomId}/suggestions/current`);
+    expect(current.statusCode).toBe(200);
+    expect(current.json()).not.toHaveProperty('travelEstimated');
+    for (const candidate of current.json().candidates as Record<string, unknown>[]) {
+      expect(candidate).not.toHaveProperty('travelMinutesFromOrigin');
+      expect(candidate).not.toHaveProperty('travelDistanceMFromOrigin');
+    }
+
+    const [runAfter] = await db
+      .select({ inputSnapshot: schema.suggestionRuns.inputSnapshot })
+      .from(schema.suggestionRuns)
+      .where(eq(schema.suggestionRuns.id, runBefore!.id));
+    expect(runAfter!.inputSnapshot).toMatchObject({ origin: { lat: 10.776, lng: 106.7 } });
+  });
+});
+
+describe('suggestion routing reservation deadline (GoGo-BE#756 review F-03)', () => {
+  it('returns estimates without calling Routes when Redis stops answering EVAL', async () => {
+    const reservation = app.get<RoutingReservation>(ROUTING_RESERVATION);
+    const originalReserve = reservation.reserve;
+    const bounded = new RedisRoutingReservation(
+      { eval: () => new Promise<never>(() => undefined) },
+      undefined,
+      { deadlineMs: 10 },
+    );
+    reservation.reserve = bounded.reserve.bind(bounded);
+
+    const travel = app.get(TravelTimeService);
+    const route = vi.spyOn(travel, 'matrix');
+    const estimate = vi.spyOn(travel, 'estimateMatrix');
+    try {
+      const { hostToken, roomId } = await matchingRoom('group', 'vote');
+      const response = await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toHaveProperty('travelEstimated', true);
+      expect(route).not.toHaveBeenCalled();
+      expect(estimate).toHaveBeenCalledOnce();
+    } finally {
+      reservation.reserve = originalReserve;
+      route.mockRestore();
+      estimate.mockRestore();
+    }
   });
 });
 
