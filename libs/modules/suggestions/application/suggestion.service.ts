@@ -15,6 +15,7 @@ import { ExperimentsService, RANKING_EXPERIMENT } from './experiments.service';
 export const SUGGESTION_LATENCY_BUDGET_MS = 3_000;
 import { ROOM_EVENT_BUS, type RoomEventBus } from '../../realtime/application/room-event-bus';
 import type { Actor } from '../../identity/domain/actor';
+import { RoomsRepository } from '../../rooms/infrastructure/rooms.repository';
 import { RoomPolicy } from '../../rooms/presentation/room-policy';
 import { coupleMatches, resolveWinner, tallyVotes, type VoteRecord } from '../domain/decision';
 import { rankWithFairness } from '../domain/fairness';
@@ -36,6 +37,7 @@ const TOP_K = 10;
 export class SuggestionService {
   constructor(
     private readonly repo: SuggestionsRepository,
+    private readonly roomsRepo: RoomsRepository,
     private readonly policy: RoomPolicy,
     private readonly planBuilder: PlanBuilderService,
     @Inject(DB) private readonly db: Db,
@@ -233,10 +235,12 @@ export class SuggestionService {
       return { run: null, candidates: [], votes: { mine: {}, progress: [] } };
     }
     const scores = await this.repo.scoresForRun(run.id);
-    const [votes, gogoRatings] = await Promise.all([
+    const [votes, gogoRatings, members] = await Promise.all([
       this.repo.listVotes(roomId),
       this.repo.gogoRatingsForPlaceIds(scores.map((score) => score.placeId)),
+      this.roomsRepo.listMembers(roomId),
     ]);
+    const votedMemberIds = new Set(votes.map((vote) => vote.memberId));
     const myVotes = Object.fromEntries(
       votes.filter((v) => v.memberId === member.id).map((v) => [v.targetPlaceId, v.value]),
     );
@@ -275,6 +279,11 @@ export class SuggestionService {
       votes: {
         mine: myVotes,
         progress: tally,
+        members: members.map((roomMember) => ({
+          memberId: roomMember.id,
+          displayName: roomMember.displayName,
+          hasVoted: votedMemberIds.has(roomMember.id),
+        })),
       },
     };
   }

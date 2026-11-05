@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 4.0.0-alpha.6
+  version: 4.0.0-alpha.7
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -15777,6 +15777,19 @@ components:
                   yes: { type: integer }
                   star: { type: integer }
                   no: { type: integer }
+            members:
+              type: array
+              description: >
+                Active room members and whether each has cast at least one vote represented by
+                `progress`. Ballot choices remain private; only the display name already visible
+                to co-members is included.
+              items:
+                type: object
+                required: [memberId, displayName, hasVoted]
+                properties:
+                  memberId: { type: string, format: uuid }
+                  displayName: { type: string }
+                  hasVoted: { type: boolean }
     PlanTotals:
       type: object
       description: >

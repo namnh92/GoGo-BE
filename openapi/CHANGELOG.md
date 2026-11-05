@@ -8,6 +8,14 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 4.0.0-alpha.7 — per-member vote status (GoGo-BE#760)
+
+**Additive.** `SuggestionsCurrent.votes` gains optional `members`, listing each
+active room member's `memberId`, co-member-visible `displayName` and
+`hasVoted`. The boolean reports whether that member has at least one vote in
+the same vote set aggregated by `votes.progress`; it never exposes another
+member's ballot. Existing vote progress and candidate fields are unchanged.
+
 ## 4.0.0-alpha.6 — per-option match and like facts (GoGo-BE#755)
 
 **Additive.** Every current `SuggestionCandidate` gains optional `matchScore`

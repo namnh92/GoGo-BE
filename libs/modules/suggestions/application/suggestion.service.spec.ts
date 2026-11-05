@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Actor } from '../../identity/domain/actor';
 import type { RoomPolicy } from '../../rooms/presentation/room-policy';
+import type { RoomsRepository } from '../../rooms/infrastructure/rooms.repository';
 import type { PlanBuilderService } from '../../plans/application/plan-builder.service';
 import type { RoomEventBus } from '../../realtime/application/room-event-bus';
 import type { Db } from '@gogo/database';
@@ -9,7 +10,7 @@ import type { SuggestionsRepository } from '../infrastructure/suggestions.reposi
 import { SuggestionService } from './suggestion.service';
 
 describe('SuggestionService.current', () => {
-  it('returns normalized match score and positive-voter count for every candidate', async () => {
+  it('returns candidate scores and each active member vote status', async () => {
     const repo = {
       latestRun: vi.fn().mockResolvedValue({
         id: 'run-1',
@@ -56,8 +57,17 @@ describe('SuggestionService.current', () => {
         room: { decisionMode: 'vote' },
       }),
     };
+    const roomsRepo = {
+      listMembers: vi.fn().mockResolvedValue([
+        { id: 'member-1', displayName: 'Lan' },
+        { id: 'member-2', displayName: 'Minh' },
+        { id: 'member-3', displayName: 'An' },
+        { id: 'member-4', displayName: 'Binh' },
+      ]),
+    };
     const service = new SuggestionService(
       repo as unknown as SuggestionsRepository,
+      roomsRepo as unknown as RoomsRepository,
       policy as unknown as RoomPolicy,
       {} as PlanBuilderService,
       {} as Db,
@@ -84,5 +94,13 @@ describe('SuggestionService.current', () => {
         likedByCount: 0,
       }),
     ]);
+    expect(result.votes.members).toEqual([
+      { memberId: 'member-1', displayName: 'Lan', hasVoted: true },
+      { memberId: 'member-2', displayName: 'Minh', hasVoted: true },
+      { memberId: 'member-3', displayName: 'An', hasVoted: true },
+      { memberId: 'member-4', displayName: 'Binh', hasVoted: false },
+    ]);
+    expect(roomsRepo.listMembers).toHaveBeenCalledOnce();
+    expect(roomsRepo.listMembers).toHaveBeenCalledWith('room-1');
   });
 });
