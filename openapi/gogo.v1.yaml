@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 4.0.0-alpha.4
+  version: 4.0.0-alpha.5
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3493,14 +3493,17 @@ paths:
     get:
       operationId: listPlaceReviews
       tags: [places]
-      summary: Latest or most helpful published GoGo reviews of a place (at most three)
+      summary: Published GoGo reviews of a place, with aggregate and cursor pagination
       description: >
-        BE-BFF-018. GoGo community reviews only, never Google's: the provider
+        BE-BFF-018 / GoGo-BE#754. GoGo community reviews only, never Google's: the provider
         rating stays on `PlaceDetail.rating`/`ratingCount` with its attribution
         and is never merged with these. Only reviews a moderator published are
         listed; `pending`, `rejected`, `removed` and emergency-`hidden` reviews
         never appear. Ordered newest first by `createdAt`, ties broken by `id`
-        descending, so repeated reads agree. Answers for the same places
+        descending, so repeated reads agree. With no pagination parameters the
+        legacy preview remains at most three rows. Send `limit` and then the
+        opaque `nextCursor` to traverse the full published list in `items`;
+        the legacy `reviews` property remains capped at three rows. Answers for the same places
         `getPlaceDetail` does (404 otherwise) and is served
         `Cache-Control: no-store`, so a takedown holds on the next read.
 
@@ -3516,9 +3519,15 @@ paths:
           in: query
           required: false
           schema: { type: string, enum: [latest, helpful], default: latest }
+        - $ref: '#/components/parameters/Cursor'
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 20 }
+          description: Omit for the backward-compatible three-review preview.
       responses:
         '200':
-          description: Up to three reviews; an empty list when none is published
+          description: GoGo aggregate plus a page of reviews; an empty list when none is published
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PlaceReviewPreview' }
@@ -13080,6 +13089,15 @@ components:
         lng: { type: number }
         rating: { type: number }
         ratingCount: { type: integer }
+        gogoRating:
+          type: number
+          minimum: 1
+          maximum: 5
+          description: GoGo community mean; omitted below the five-review sample threshold. Never merged with `rating`.
+        gogoRatingCount:
+          type: integer
+          minimum: 0
+          description: Published GoGo review count, including zero; the client uses words rather than a score below five.
         avgVisitMinutes: { type: integer }
         suitability:
           type: object
@@ -15138,6 +15156,15 @@ components:
         targetId: { type: string, format: uuid }
         savedAt: { type: string, format: date-time }
         area: { $ref: '#/components/schemas/SavedItemArea' }
+        gogoRating:
+          type: number
+          minimum: 1
+          maximum: 5
+          description: Place items only; omitted below the five-review sample threshold. Never merged with the provider score.
+        gogoRatingCount:
+          type: integer
+          minimum: 0
+          description: Place items only; published GoGo review count, including zero.
     SavedItemArea:
       type: object
       description: >
@@ -15672,6 +15699,15 @@ components:
       properties:
         placeId: { type: string, format: uuid }
         name: { type: string }
+        gogoRating:
+          type: number
+          minimum: 1
+          maximum: 5
+          description: GoGo community mean; omitted below the five-review sample threshold. Never merged with provider quality used for ranking.
+        gogoRatingCount:
+          type: integer
+          minimum: 0
+          description: Published GoGo review count, including zero.
         rank: { type: integer }
         score: { type: number, minimum: 0, maximum: 1 }
         components:
@@ -16953,9 +16989,27 @@ components:
           description: >
             Always `gogo`. These are GoGo community reviews; they never share a
             number with a provider rating.
+        gogoRating:
+          type: number
+          minimum: 1
+          maximum: 5
+          description: Mean of all published GoGo reviews; omitted below the five-review sample threshold.
+        gogoRatingCount:
+          type: integer
+          minimum: 0
+          description: Count of all published GoGo reviews, not merely this page.
+        nextCursor:
+          type: [string, 'null']
+          description: Opaque cursor for the next page; null at the end. The legacy three-row preview may ignore it.
         reviews:
           type: array
           maxItems: 3
+          description: Backward-compatible preview containing at most the first three rows of this response.
+          items: { $ref: '#/components/schemas/PublicPlaceReview' }
+        items:
+          type: array
+          maxItems: 20
+          description: Page rows returned when `limit` or `cursor` is sent; omitted for a legacy preview request.
           items: { $ref: '#/components/schemas/PublicPlaceReview' }
     PublicPlaceReview:
       type: object
@@ -16983,6 +17037,9 @@ components:
               description: >
                 The name the author shows other people; `null` once the account
                 is deleted (ADR-0023). Clients render their own label for it.
+        verifiedVisit:
+          type: boolean
+          description: True only when this author has an approved GoGo check-in at this place; review moderation alone is not visit verification.
     PlacePhoto:
       type: object
       required: [id, url, source]

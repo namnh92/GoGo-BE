@@ -9,7 +9,11 @@ import { REVIEW_ORDERS } from '../domain/public-review';
  * The whole query object, not one key: the pipe turns an absent value into
  * `{}`, which a bare enum rejects, and a missing `order` must mean `latest`.
  */
-const previewQuerySchema = z.object({ order: z.enum(REVIEW_ORDERS).default('latest') });
+const previewQuerySchema = z.object({
+  order: z.enum(REVIEW_ORDERS).default('latest'),
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(20).optional(),
+});
 type PreviewQuery = z.infer<typeof previewQuerySchema>;
 
 @Controller('places')
@@ -30,6 +34,6 @@ export class PlaceReviewsController {
     @Param('id', new ZodValidationPipe(z.string().uuid())) id: string,
     @Query(new ZodValidationPipe(previewQuerySchema)) query: PreviewQuery,
   ) {
-    return this.reviews.preview(id, query.order);
+    return this.reviews.preview(id, query.order, query);
   }
 }

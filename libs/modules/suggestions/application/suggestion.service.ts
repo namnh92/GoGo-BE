@@ -233,7 +233,10 @@ export class SuggestionService {
       return { run: null, candidates: [], votes: { mine: {}, progress: [] } };
     }
     const scores = await this.repo.scoresForRun(run.id);
-    const votes = await this.repo.listVotes(roomId);
+    const [votes, gogoRatings] = await Promise.all([
+      this.repo.listVotes(roomId),
+      this.repo.gogoRatingsForPlaceIds(scores.map((score) => score.placeId)),
+    ]);
     const myVotes = Object.fromEntries(
       votes.filter((v) => v.memberId === member.id).map((v) => [v.targetPlaceId, v.value]),
     );
@@ -253,6 +256,7 @@ export class SuggestionService {
       candidates: scores.map((s) => ({
         placeId: s.placeId,
         name: s.name,
+        ...gogoRatings.get(s.placeId)!,
         rank: s.rank,
         score: s.scoreMicros / 1e6,
         components: s.components,

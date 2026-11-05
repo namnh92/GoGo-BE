@@ -146,6 +146,25 @@ async function review(
 const read = (placeId: string) =>
   api().inject({ method: 'GET', url: `/v1/places/${placeId}/reviews`, remoteAddress: ip() });
 
+const readPage = (placeId: string, order: 'latest' | 'helpful', cursor?: string) =>
+  api().inject({
+    method: 'GET',
+    url:
+      `/v1/places/${placeId}/reviews?order=${order}&limit=1` +
+      (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''),
+    remoteAddress: ip(),
+  });
+
+const invalidCursor = (createdAt: unknown) =>
+  Buffer.from(
+    JSON.stringify({
+      order: 'latest',
+      helpfulCount: 0,
+      createdAt,
+      id: '00000000-0000-4000-8000-000000000001',
+    }),
+  ).toString('base64url');
+
 const idsOf = (res: { json: () => { reviews: { id: string }[] } }) =>
   res.json().reviews.map((r) => r.id);
 
@@ -206,7 +225,13 @@ describe('how many reviews a place shows (#570)', () => {
     const res = await read(placeId);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ source: 'gogo', order: 'latest', reviews: [] });
+    expect(res.json()).toEqual({
+      source: 'gogo',
+      order: 'latest',
+      gogoRatingCount: 0,
+      reviews: [],
+      nextCursor: null,
+    });
     expect(res.headers['cache-control']).toBe('no-store');
   });
 
@@ -270,6 +295,63 @@ describe('how many reviews a place shows (#570)', () => {
 
     expect(idsOf(await read(here))).toEqual([mine]);
   });
+});
+
+describe.each(['latest', 'helpful'] as const)(
+  '%s review pagination keeps PostgreSQL timestamp precision (#754 F-03)',
+  (order) => {
+    it('traverses every review across sub-millisecond page boundaries', async () => {
+      const placeId = await place();
+      const { userId } = await account();
+      const timestamps = [
+        '2026-11-05T08:00:00.000100Z',
+        '2026-11-05T08:00:00.000500Z',
+        '2026-11-05T08:00:00.000900Z',
+      ];
+      const expected: string[] = [];
+
+      for (const timestamp of timestamps) {
+        const id = await review(placeId, userId);
+        await db.execute(
+          sql`update ${schema.reviews} set created_at = ${timestamp}::timestamptz where id = ${id}`,
+        );
+        expected.unshift(id);
+      }
+
+      const traversed: string[] = [];
+      let cursor: string | null | undefined;
+      do {
+        const response = await readPage(placeId, order, cursor ?? undefined);
+        expect(response.statusCode).toBe(200);
+        const body = response.json() as {
+          items: { id: string }[];
+          nextCursor: string | null;
+        };
+        expect(body.items).toHaveLength(1);
+        traversed.push(body.items[0]!.id);
+        cursor = body.nextCursor;
+      } while (cursor);
+
+      expect(traversed).toEqual(expected);
+    });
+  },
+);
+
+describe('review cursor validation (#754 F-02)', () => {
+  it.each([
+    ['a non-string timestamp', 0],
+    ['an impossible calendar date', '2026-02-30T08:00:00.000900Z'],
+  ])(
+    'returns INVALID_CURSOR for %s instead of a PostgreSQL cast error',
+    async (_label, createdAt) => {
+      const placeId = await place();
+
+      const response = await readPage(placeId, 'latest', invalidCursor(createdAt));
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ code: 'INVALID_CURSOR', retryable: false });
+    },
+  );
 });
 
 describe('which places answer (#570)', () => {
@@ -399,7 +481,9 @@ describe('what a stranger learns about the author (#570)', () => {
       'id',
       'rating',
       'text',
+      'verifiedVisit',
     ]);
+    expect(item.verifiedVisit).toBe(false);
     expect(item.author).toEqual({ displayName: 'Minh' });
     expect(item.createdAt).toBe(minutesAgo(3).toISOString());
     expect(res.body).not.toContain(author.userId);

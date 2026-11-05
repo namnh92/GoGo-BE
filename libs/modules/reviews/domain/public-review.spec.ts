@@ -9,6 +9,7 @@ const row: PublicReviewRow = {
   authorDisplayName: 'Lan',
   authorStatus: 'active',
   helpfulCount: 2,
+  verifiedVisit: true,
 };
 
 describe('a public review carries facts a stranger may read, and nothing else', () => {
@@ -20,6 +21,7 @@ describe('a public review carries facts a stranger may read, and nothing else', 
       createdAt: '2026-09-14T05:00:00.000Z',
       author: { displayName: 'Lan' },
       helpfulCount: 2,
+      verifiedVisit: true,
     });
   });
 

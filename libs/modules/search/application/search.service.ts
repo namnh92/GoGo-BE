@@ -21,6 +21,7 @@ import {
 import { DB } from '../../shared/tokens';
 import { validateAreaSelection } from '../../administrative/application/area-selection';
 import { gogoRatingOutcome, toGogoRating } from '../../reviews/domain/gogo-rating';
+import { loadGogoRatings } from '../../reviews/infrastructure/gogo-ratings';
 import { normalizeVietnamese } from '../domain/normalize';
 import {
   SearchRepository,
@@ -214,7 +215,11 @@ export class SearchService {
     const page = rows.slice(0, filters.limit);
 
     const at = filters.openAt ?? new Date();
-    const hoursAll = await this.repo.hoursFor(page.map((r) => r.id));
+    const placeIds = page.map((r) => r.id);
+    const [hoursAll, gogoRatings] = await Promise.all([
+      this.repo.hoursFor(placeIds),
+      loadGogoRatings(this.db, placeIds),
+    ]);
     const hoursByPlace = new Map<string, HoursRow[]>();
     for (const h of hoursAll) {
       const list = hoursByPlace.get(h.place_id) ?? [];
@@ -222,9 +227,10 @@ export class SearchService {
       hoursByPlace.set(h.place_id, list);
     }
 
-    const results = page.map((row) =>
-      this.toResult(row, hoursByPlace.get(row.id) ?? [], at, filters),
-    );
+    const results = page.map((row) => ({
+      ...this.toResult(row, hoursByPlace.get(row.id) ?? [], at, filters),
+      ...gogoRatings.get(row.id)!,
+    }));
 
     // SE-006 — the denominator. Zero-result counts were already recorded, but
     // "40 zero-results today" says nothing without "out of how many searches",
