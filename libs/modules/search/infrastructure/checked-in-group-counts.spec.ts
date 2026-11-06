@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Db } from '@gogo/database';
 import type { MetricsPort } from '@gogo/observability';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { SearchRepository } from './search.repository';
-import { CheckedInGroupCounts } from './checked-in-group-counts';
+import { CheckedInGroupCounts, checkedInGroupCountQuery } from './checked-in-group-counts';
 
 function setup(count: unknown = 5) {
   const execute = vi.fn().mockResolvedValue({ rows: [{ group_count: count }] });
@@ -17,6 +18,14 @@ function setup(count: unknown = 5) {
 afterEach(() => vi.useRealTimers());
 
 describe('checked-in group count reads (#785)', () => {
+  it('F-02: reads a single precomputed place row without scanning visit history', () => {
+    const query = new PgDialect().sqlToQuery(checkedInGroupCountQuery('target-place'));
+    expect(query.sql).toContain('from place_checkin_counts');
+    expect(query.sql).toContain('where place_id = $1');
+    expect(query.params).toEqual(['target-place']);
+    expect(query.sql).not.toMatch(/count\s*\(|distinct|plan_stops|stop_checkins|\bplans\b/i);
+  });
+
   it('F-01: suppresses 5→4 immediately in every repository instance before TTL expiry', async () => {
     vi.useFakeTimers();
     const { cache, execute, increment } = setup(5);

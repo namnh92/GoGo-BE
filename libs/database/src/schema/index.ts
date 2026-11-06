@@ -3,6 +3,7 @@ export * from './rooms';
 export * from './places';
 export * from './administrative';
 export * from './plans';
+export * from './place-checkin-counts';
 export * from './social';
 export * from './cms';
 export * from './platform';

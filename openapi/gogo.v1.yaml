@@ -16078,8 +16078,8 @@ components:
             Always null below 5 rooms (including zero); otherwise an integer.
             Completed stops, plans, votes, saves and reviews alone do not count.
             Check-in content moderation does not change visit participation.
-            No room or member identities are returned. Read from the database for
-            each request without aggregate or in-flight promise caching; deletions,
+            No room or member identities are returned. Read from a transactionally precomputed database count for
+            each request without process value or in-flight promise caching; deletions,
             cascades and place merges committed before that read are reflected
             immediately across API processes. Hide this fact when null.
         priceLevel: { type: integer }

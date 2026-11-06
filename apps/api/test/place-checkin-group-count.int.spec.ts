@@ -4,6 +4,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -117,6 +118,38 @@ async function visits(placeId: string, n: number) {
   for (let i = 0; i < n; i++) await stop(placeId, await room(i % 2 ? 'couple' : 'group'));
 }
 
+async function expectConsistentCounts() {
+  // Independent source-of-truth oracle, deliberately expensive and never on reads.
+  const mismatch = await pool.query(`
+    with expected as (
+      select s.place_id, count(distinct p.room_id)::int as group_count
+      from stop_checkins c join plan_stops s on s.id = c.plan_stop_id
+      join plans p on p.id = s.plan_id group by s.place_id
+    )
+    select * from expected e full join place_checkin_counts a using (place_id)
+    where coalesce(e.group_count, 0) <> coalesce(a.group_count, 0)
+  `);
+  expect(mismatch.rows).toEqual([]);
+  const rooms = await pool.query(`
+    with expected as (
+      select s.place_id, p.room_id, count(*)::int as checkin_count
+      from stop_checkins c join plan_stops s on s.id = c.plan_stop_id
+      join plans p on p.id = s.plan_id group by s.place_id, p.room_id
+    )
+    select * from expected e full join place_checkin_rooms a using (place_id, room_id)
+    where e.checkin_count is distinct from a.checkin_count
+  `);
+  expect(rooms.rows).toEqual([]);
+  const associations = await pool.query(`
+    select c.id from stop_checkins c join plan_stops s on s.id = c.plan_stop_id
+    join plans p on p.id = s.plan_id
+    full join place_checkin_visits v on v.checkin_id = c.id
+    where c.id is null or v.checkin_id is null
+       or v.place_id <> s.place_id or v.room_id <> p.room_id
+  `);
+  expect(associations.rows).toEqual([]);
+}
+
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgis/postgis:16-3.4')
     .withDatabase('gogo_checkin_count_test')
@@ -218,7 +251,15 @@ describe('PlaceDetail checked-in group count (#785)', () => {
     expect((await detail(id)).json().checkedInGroupCount).toBeNull();
   });
 
-  it.each(['check-in deletion', 'room cascade', 'place merge'] as const)(
+  it.each([
+    'check-in deletion',
+    'room cascade',
+    'member erasure',
+    'user erasure',
+    'plan cascade',
+    'stop cascade',
+    'place merge',
+  ] as const)(
     'F-01: suppresses 5→4 immediately across API instances after %s commits',
     async (mutation) => {
       const id = await place();
@@ -244,6 +285,23 @@ describe('PlaceDetail checked-in group count (#785)', () => {
             .where(eq(schema.stopCheckins.planStopId, fifth.stopId));
         } else if (mutation === 'room cascade') {
           await tx.delete(schema.rooms).where(eq(schema.rooms.id, fifthRoom));
+        } else if (mutation === 'member erasure') {
+          await tx.delete(schema.roomMembers).where(eq(schema.roomMembers.id, fifth.memberId));
+        } else if (mutation === 'user erasure') {
+          const [erased] = await tx
+            .insert(schema.users)
+            .values({ displayName: 'Erased' })
+            .returning();
+          await tx
+            .update(schema.roomMembers)
+            .set({ guestSessionId: null, userId: erased!.id })
+            .where(eq(schema.roomMembers.id, fifth.memberId));
+          await tx.delete(schema.users).where(eq(schema.users.id, erased!.id));
+        } else if (mutation === 'plan cascade') {
+          await tx.execute(sql`delete from plans where id = (
+            select plan_id from plan_stops where id = ${fifth.stopId})`);
+        } else if (mutation === 'stop cascade') {
+          await tx.delete(schema.planStops).where(eq(schema.planStops.id, fifth.stopId));
         } else {
           await tx
             .update(schema.planStops)
@@ -253,6 +311,7 @@ describe('PlaceDetail checked-in group count (#785)', () => {
       });
       expect((await detail(id)).json().checkedInGroupCount).toBeNull();
       expect((await otherDetail()).json().checkedInGroupCount).toBeNull();
+      await expectConsistentCounts();
     },
   );
 
@@ -288,45 +347,272 @@ describe('PlaceDetail checked-in group count (#785)', () => {
     const id = await place();
     await visits(id, 5);
     expect((await detail(id)).json().checkedInGroupCount).toBe(5);
-    await db.execute(sql`alter table stop_checkins rename to stop_checkins_unavailable`);
+    await db.execute(
+      sql`alter table place_checkin_counts rename to place_checkin_counts_unavailable`,
+    );
     try {
       const response = await detail(id);
       expect(response.statusCode).toBeGreaterThanOrEqual(500);
       expect(response.body).not.toContain('checkedInGroupCount');
     } finally {
-      await db.execute(sql`alter table stop_checkins_unavailable rename to stop_checkins`);
+      await db.execute(
+        sql`alter table place_checkin_counts_unavailable rename to place_checkin_counts`,
+      );
     }
     expect((await detail(id)).statusCode).toBe(200);
   });
 
-  it('uses existing place and check-in indexes for the production aggregate statement', async () => {
+  it('F-02: repeated reads touch one indexed aggregate row with 40,000 matching check-ins', async () => {
     const target = await place();
     await visits(target, 5);
-    // A meaningful competing population, without forcing the planner's choice.
-    const elsewhere = await place();
     const r = await room();
-    const { stopId, memberId } = await stop(elsewhere, r);
+    const { stopId, memberId } = await stop(target, r);
+    // Grow the history AT the queried place, not just unrelated places.
     await db.execute(sql`
       with stops as (
         insert into plan_stops (plan_id, place_id, position, duration_minutes)
-        select plan_id, ${elsewhere}, n, 60
-        from plan_stops, generate_series(1, 20000) n where id = ${stopId}
+        select plan_id, ${target}, n, 60
+        from plan_stops, generate_series(1, 40000) n where id = ${stopId}
         returning id
       )
       insert into stop_checkins (plan_stop_id, member_id)
       select id, ${memberId} from stops
     `);
-    await db.execute(sql`analyze plan_stops`);
-    await db.execute(sql`analyze stop_checkins`);
-    const result = await db.execute(
-      sql`explain (analyze, format text) ${checkedInGroupCountQuery(target)}`,
+    // Make the aggregate itself large enough for a meaningful index choice.
+    await pool.query(`with added as (
+      insert into places(name, name_normalized, geom)
+      select 'Empty fixture', 'empty fixture', ST_SetSRID(ST_MakePoint(106.7, 10.77),4326)
+      from generate_series(1, 10000) returning id
+    ) insert into place_checkin_counts(place_id, group_count) select id, 0 from added`);
+    await db.execute(sql`analyze place_checkin_counts`);
+    for (let i = 0; i < 5; i++) {
+      const result = await db.execute(
+        sql`explain (analyze, buffers, format json) ${checkedInGroupCountQuery(target)}`,
+      );
+      const plan = (result.rows[0] as { 'QUERY PLAN': { Plan: Record<string, unknown> }[] })[
+        'QUERY PLAN'
+      ][0]!.Plan;
+      const text = JSON.stringify(plan);
+      expect(text).toContain('place_checkin_counts_pkey');
+      expect(text).not.toMatch(/plan_stops|stop_checkins|place_checkin_visits|place_checkin_rooms/);
+      expect((plan['Plans'] as Record<string, unknown>[])[0]?.['Actual Rows']).toBe(1);
+      expect(
+        Number(plan['Shared Hit Blocks']) + Number(plan['Shared Read Blocks']),
+      ).toBeLessThanOrEqual(4);
+      expect((await db.execute(checkedInGroupCountQuery(target))).rows).toEqual([
+        { group_count: 6 },
+      ]);
+    }
+    expect((await detail(target)).json().checkedInGroupCount).toBe(6);
+    await expectConsistentCounts();
+  });
+
+  it('keeps a room until its last member/stop/version check-in disappears', async () => {
+    const id = await place();
+    await visits(id, 4);
+    const r = await room();
+    const first = await stop(id, r);
+    const second = await stop(id, r, 2);
+    const extra = await member(r);
+    await db.insert(schema.stopCheckins).values({ planStopId: first.stopId, memberId: extra.id });
+    await db.delete(schema.roomMembers).where(eq(schema.roomMembers.id, first.memberId));
+    expect((await detail(id)).json().checkedInGroupCount).toBe(5);
+    await db.delete(schema.planStops).where(eq(schema.planStops.id, first.stopId));
+    expect((await detail(id)).json().checkedInGroupCount).toBe(5);
+    await db.delete(schema.planStops).where(eq(schema.planStops.id, second.stopId));
+    expect((await detail(id)).json().checkedInGroupCount).toBeNull();
+    await expectConsistentCounts();
+  });
+
+  it('moves check-in/stop/plan associations and rolls aggregate changes back with the writer', async () => {
+    const source = await place();
+    const destination = await place();
+    await visits(source, 4);
+    const fifth = await stop(source, await room());
+    const destinationRoom = await room();
+    const to = await stop(destination, destinationRoom, 3, false);
+    await db
+      .update(schema.stopCheckins)
+      .set({ planStopId: to.stopId })
+      .where(eq(schema.stopCheckins.planStopId, fifth.stopId));
+    expect((await detail(source)).json().checkedInGroupCount).toBeNull();
+    await expectConsistentCounts();
+    // Reparent an entire stop, then a plan; merge into an already-counted room.
+    await db.execute(sql`update plan_stops set plan_id = (
+      select plan_id from plan_stops where id = ${fifth.stopId}
+    ), position = 1 where id = ${to.stopId}`);
+    await expectConsistentCounts();
+    await db.execute(sql`update plans set room_id = ${destinationRoom} where id = (
+      select plan_id from plan_stops where id = ${fifth.stopId})`);
+    await expectConsistentCounts();
+    await expect(
+      db.transaction(async (tx) => {
+        await tx.delete(schema.stopCheckins).where(eq(schema.stopCheckins.planStopId, to.stopId));
+        throw new Error('rollback fixture');
+      }),
+    ).rejects.toThrow('rollback fixture');
+    await expectConsistentCounts();
+  });
+
+  it('serializes concurrent first/last references without losing increments or retaining erased rooms', async () => {
+    const id = await place();
+    await visits(id, 4);
+    const r = await room();
+    const a = await stop(id, r, 1, false);
+    const b = await stop(id, r, 2, false);
+    await Promise.all(
+      [a, b].map(({ stopId, memberId }) =>
+        db.insert(schema.stopCheckins).values({ planStopId: stopId, memberId }),
+      ),
     );
-    const plan = (result.rows as { 'QUERY PLAN': string }[])
-      .map((row) => row['QUERY PLAN'])
-      .join('\n');
-    expect(plan).toContain('plan_stops_place_idx');
-    expect(plan).toContain('stop_checkins_stop_member_unique');
-    expect(plan).not.toMatch(/Seq Scan on (plan_stops|stop_checkins)/);
-    expect((await detail(target)).json().checkedInGroupCount).toBe(5);
+    expect((await detail(id)).json().checkedInGroupCount).toBe(5);
+    await Promise.all(
+      [a, b].map(({ stopId }) =>
+        db.delete(schema.stopCheckins).where(eq(schema.stopCheckins.planStopId, stopId)),
+      ),
+    );
+    expect((await detail(id)).json().checkedInGroupCount).toBeNull();
+    // Distinct rooms contend on the same total row.
+    const c = await stop(id, await room(), 1, false);
+    const d = await stop(id, await room(), 1, false);
+    await Promise.all(
+      [c, d].map(({ stopId, memberId }) =>
+        db.insert(schema.stopCheckins).values({ planStopId: stopId, memberId }),
+      ),
+    );
+    expect((await detail(id)).json().checkedInGroupCount).toBe(6);
+    await expectConsistentCounts();
+  });
+
+  it('does not remap a concurrently reparented check-in through a stale parent snapshot', async () => {
+    const a = await stop(await place(), await room());
+    const b = await stop(await place(), await room(), 2, false);
+    const movedRoom = await room();
+    const writer = await pool.connect();
+    const parentWriter = await pool.connect();
+    const observer = await pool.connect();
+    let parentMove: Promise<unknown> | undefined;
+    try {
+      await writer.query('BEGIN');
+      await writer.query('UPDATE stop_checkins SET plan_stop_id=$1 WHERE plan_stop_id=$2', [
+        b.stopId,
+        a.stopId,
+      ]);
+      const pid = (await parentWriter.query('select pg_backend_pid() as pid')).rows[0].pid;
+      // This statement sees the old source association, then waits for its row.
+      parentMove = parentWriter.query(
+        `update plans set room_id=$1 where id=(
+        select plan_id from plan_stops where id=$2)`,
+        [movedRoom, a.stopId],
+      );
+      // Observe the lock instead of relying on a timing delay.
+      await vi.waitFor(
+        async () => {
+          const state = await observer.query(
+            'select wait_event_type from pg_stat_activity where pid=$1',
+            [pid],
+          );
+          expect(state.rows[0]?.wait_event_type).toBe('Lock');
+        },
+        { timeout: 5000, interval: 10 },
+      );
+      await writer.query('COMMIT');
+      await parentMove;
+    } finally {
+      try {
+        await writer.query('ROLLBACK');
+        await parentMove;
+      } finally {
+        writer.release();
+        parentWriter.release();
+        observer.release();
+      }
+    }
+    await expectConsistentCounts();
+  });
+
+  it('keeps reads committed until the deleting transaction commits, across independent connections', async () => {
+    const id = await place();
+    await visits(id, 4);
+    const fifth = await stop(id, await room());
+    const writer = await pool.connect();
+    try {
+      await writer.query('BEGIN');
+      await writer.query('delete from stop_checkins where plan_stop_id=$1', [fifth.stopId]);
+      expect((await db.execute(checkedInGroupCountQuery(id))).rows).toEqual([{ group_count: 5 }]);
+      await writer.query('COMMIT');
+      expect((await detail(id)).json().checkedInGroupCount).toBeNull();
+      expect(
+        (
+          await otherApp
+            .getHttpAdapter()
+            .getInstance()
+            .inject({ method: 'GET', url: `/v1/places/${id}` })
+        ).json().checkedInGroupCount,
+      ).toBeNull();
+    } finally {
+      await writer.query('ROLLBACK');
+      writer.release();
+    }
+    await expectConsistentCounts();
+  });
+
+  it('clears derived identities and totals for transactional truncate cascades', async () => {
+    // Roll back so the rest of this suite retains its source fixtures.
+    const writer = await pool.connect();
+    try {
+      await writer.query('BEGIN');
+      await writer.query('TRUNCATE stop_checkins CASCADE');
+      for (const table of ['place_checkin_visits', 'place_checkin_rooms', 'place_checkin_counts']) {
+        expect((await writer.query(`select count(*)::int as n from ${table}`)).rows).toEqual([
+          { n: 0 },
+        ]);
+      }
+    } finally {
+      await writer.query('ROLLBACK');
+      writer.release();
+    }
+    await expectConsistentCounts();
+  });
+
+  it('forward-tests existing history, rollback and reapplication without altering source visits', async () => {
+    const root = path.resolve(__dirname, '../../..');
+    const rollback = readFileSync(
+      path.join(root, 'scripts/rollback-0082-place-checkin-counts.sql'),
+      'utf8',
+    );
+    const forward = readFileSync(
+      path.join(root, 'migrations/0082_place-checkin-counts.sql'),
+      'utf8',
+    );
+    const reapply = async () => {
+      const connection = await pool.connect();
+      try {
+        await connection.query('BEGIN');
+        await connection.query(forward);
+        await connection.query('COMMIT');
+      } catch (error) {
+        await connection.query('ROLLBACK');
+        throw error;
+      } finally {
+        connection.release();
+      }
+    };
+    const before = (await pool.query('select count(*)::int as n from stop_checkins')).rows;
+    await pool.query(rollback);
+    try {
+      expect((await pool.query('select count(*)::int as n from stop_checkins')).rows).toEqual(
+        before,
+      );
+      // The prior application query still works while the aggregate is absent.
+      await pool.query(`select count(distinct p.room_id) from plan_stops s
+        join plans p on p.id=s.plan_id where exists (
+          select 1 from stop_checkins c where c.plan_stop_id=s.id)`);
+      const id = await place();
+      await visits(id, 5);
+    } finally {
+      await reapply();
+    }
+    await expectConsistentCounts();
   });
 });

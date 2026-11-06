@@ -127,7 +127,10 @@ describe('PlaceDetail checked-in room count contract (#785)', () => {
     const description = placeDetail.properties?.['checkedInGroupCount']?.description ?? '';
     expect(description).toContain('distinct rooms');
     expect(description).toContain('null below 5');
-    expect(description).toContain('each request without aggregate or in-flight promise caching');
+    expect(description).toContain(
+      'each request without process value or in-flight promise caching',
+    );
+    expect(description).toContain('transactionally precomputed database count');
     expect(description).toContain('immediately across API processes');
     expect(description).toContain('No room or member identities');
   });

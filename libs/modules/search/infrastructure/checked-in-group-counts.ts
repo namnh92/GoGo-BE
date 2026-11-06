@@ -2,20 +2,18 @@ import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import type { MetricsPort } from '@gogo/observability';
 
-/** #785: a room is the unit, across members, stops and plan versions. */
+/** #785: transactionally maintained, deduplicated across members/stops/versions. */
 export function checkedInGroupCountQuery(placeId: string): SQL {
   return sql`
-    select count(distinct p.room_id)::int as group_count
-    from plan_stops s join plans p on p.id = s.plan_id
-    where s.place_id = ${placeId}
-      and exists (select 1 from stop_checkins c where c.plan_stop_id = s.id)
+    select coalesce((select group_count from place_checkin_counts
+      where place_id = ${placeId}), 0)::int as group_count
   `;
 }
 
 export const CHECKED_IN_GROUP_MIN_SAMPLE = 5;
 
 /**
- * Read the committed population for each request. Neither values nor in-flight
+ * Read one precomputed row per request. Neither values nor in-flight
  * promises may be reused: another process can delete/cascade/merge visits below
  * the privacy threshold while a previous aggregate is cached or still running.
  * A read started before a concurrent commit uses its own DB statement snapshot;
