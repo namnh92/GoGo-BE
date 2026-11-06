@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setTimeout as delay } from 'node:timers/promises';
+import type * as TimersPromises from 'node:timers/promises';
 import { NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { PasswordRecoveryService, RecoveryCrypto } from './password-recovery.service';
 import { RecoveryMailSink, UnconfiguredRecoveryMailSender } from '../infrastructure/recovery-mail';
@@ -6,6 +8,12 @@ import type { RecoveryRepository } from '../infrastructure/recovery.repository';
 import { InMemoryRateLimitStore } from '../presentation/rate-limit.service';
 import { recoveryCompleteSchema } from '../presentation/dtos';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
+
+// Verify the padding policy without depending on real timer scheduling.
+vi.mock('node:timers/promises', async (importOriginal) => ({
+  ...(await importOriginal<typeof TimersPromises>()),
+  setTimeout: vi.fn().mockResolvedValue(undefined),
+}));
 
 describe('consumer password recovery', () => {
   afterEach(() => vi.restoreAllMocks());
@@ -116,7 +124,10 @@ describe('consumer password recovery', () => {
     );
   }
 
-  beforeEach(setup);
+  beforeEach(() => {
+    setup();
+    vi.mocked(delay).mockClear();
+  });
 
   it('uses the same response and bounded sink work for eligible, unknown, disabled and passwordless identities', async () => {
     const active = { ...user };
@@ -394,10 +405,33 @@ describe('consumer password recovery', () => {
     ).rejects.toMatchObject({ code: 'RATE_LIMITED', options: { retryAfterSeconds: 900 } });
   });
 
-  it('pads request responses to at least 250ms', async () => {
-    const started = performance.now();
+  it.each([
+    [0, 250],
+    [100, 150],
+    [250, 0],
+    [300, 0],
+  ])('after %ims of work requests %ims of padding', async (elapsed, padding) => {
+    vi.spyOn(performance, 'now')
+      .mockReturnValueOnce(1000)
+      .mockReturnValue(1000 + elapsed);
     await service.request({ email }, ctx('request-1'));
-    expect(performance.now() - started).toBeGreaterThanOrEqual(249);
+    expect(delay).toHaveBeenCalledExactlyOnceWith(padding);
+  });
+
+  it('applies the same padding policy to missing identities and request failures', async () => {
+    vi.spyOn(performance, 'now').mockReturnValue(1000);
+    user = undefined;
+    await service.request({ email }, ctx('request-1'));
+    expect(delay).toHaveBeenCalledExactlyOnceWith(250);
+
+    vi.mocked(delay).mockClear();
+    vi.spyOn(sink, 'assertConfigured').mockImplementation(() =>
+      new UnconfiguredRecoveryMailSender().assertConfigured(),
+    );
+    await expect(service.request({ email }, ctx('request-2'))).rejects.toMatchObject({
+      code: 'RECOVERY_MAIL_NOT_CONFIGURED',
+    });
+    expect(delay).toHaveBeenCalledExactlyOnceWith(250);
   });
 
   it('domain separates email, proof and idempotency HMACs', () => {
