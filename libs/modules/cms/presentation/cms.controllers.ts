@@ -908,6 +908,18 @@ const placeListQuery = z.object({
   q: z.string().trim().min(1).max(120).optional(),
   areaKey: z.string().trim().max(64).optional(),
   category: z.string().trim().max(64).optional(),
+  amenities: z
+    .string()
+    .transform((value) => [
+      ...new Set(
+        value
+          .split(',')
+          .map((key) => key.trim())
+          .filter(Boolean),
+      ),
+    ])
+    .pipe(z.array(z.string().min(1).max(64)).max(10))
+    .optional(),
   source: z.enum(PLACE_SOURCES).optional(),
   /** Places whose freshness was last checked before N days ago (or never). */
   staleDays: z.coerce.number().int().min(0).max(3650).optional(),
