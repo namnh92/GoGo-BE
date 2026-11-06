@@ -8,6 +8,31 @@ import {
 
 type Integration = ReturnType<typeof Sentry.getDefaultIntegrations>[number];
 
+/** #777 — fixed error only; strip ambient request/breadcrumb/user context too. */
+export function reportRecoveryMailFailure(): void {
+  try {
+    Sentry.captureException(new Error('Password recovery mail delivery failed'), {
+      // captureContext receives a clone used only to prepare this event.
+      captureContext: (scope) => {
+        scope.clear();
+        scope.addEventProcessor((event) => ({
+          ...(event.event_id !== undefined ? { event_id: event.event_id } : {}),
+          ...(event.timestamp !== undefined ? { timestamp: event.timestamp } : {}),
+          ...(event.platform !== undefined ? { platform: event.platform } : {}),
+          ...(event.level !== undefined ? { level: event.level } : {}),
+          ...(event.exception !== undefined ? { exception: event.exception } : {}),
+          ...(event.release !== undefined ? { release: event.release } : {}),
+          ...(event.environment !== undefined ? { environment: event.environment } : {}),
+          tags: { operation: 'password_recovery_send' },
+        }));
+        return scope;
+      },
+    });
+  } catch {
+    // Reporting must never change the account-independent 202 response.
+  }
+}
+
 /**
  * #588 — the only way the API and the worker initialise Sentry, and the
  * protection boundary for exact positions in error events. Lives in this lib
@@ -36,8 +61,9 @@ type Integration = ReturnType<typeof Sentry.getDefaultIntegrations>[number];
  * Also relied on, and pinned by `apps/api/src/sentry-usage.spec.ts`: no code
  * outside this file, the API's `main.ts` and global exception filter, and the
  * worker's `apps/worker/src/sentry.ts` calls the Sentry API; the filter attaches
- * only `request_id`, the worker only the periodic job name; tracing is off and
- * `includeLocalVariables` is unset.
+ * only `request_id`, the worker only the periodic job name. Recovery delivery
+ * failures use the fixed, context-stripped report above (#777). Tracing is off
+ * and `includeLocalVariables` is unset.
  */
 
 export const SENTRY_REQUEST_HEADERS: ReadonlySet<string> = new Set([

@@ -1,6 +1,6 @@
 import * as Sentry from '@sentry/node';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { sentryInitOptions } from './sentry';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { reportRecoveryMailFailure, sentryInitOptions } from './sentry';
 
 /**
  * #588 — the payload that would leave for Sentry, captured by an in-memory
@@ -16,6 +16,9 @@ const LAT4 = '10.7769';
 const LNG4 = '106.7009';
 
 const sent: unknown[] = [];
+beforeEach(() => {
+  sent.length = 0;
+});
 
 type Exception = { type: string; value: string; stacktrace?: { frames: unknown[] } };
 type EventLike = {
@@ -69,6 +72,35 @@ afterAll(async () => {
 });
 
 describe('Sentry events never carry an exact position (#588)', () => {
+  it('reports recovery delivery failure without ambient PII (#777)', async () => {
+    const start = sent.length;
+    Sentry.withIsolationScope((scope) => {
+      scope.setUser({ email: 'recovery-pii@example.com', id: 'private-user-id' });
+      scope.setTag('private-tag', 'private-challenge-id');
+      scope.setExtra('code', 'private-proof');
+      scope.setSDKProcessingMetadata({
+        normalizedRequest: {
+          url: 'https://example.com/?email=recovery-pii@example.com',
+          data: { code: 'private-proof' },
+        },
+      });
+      Sentry.addBreadcrumb({ message: 'private-breadcrumb' });
+      reportRecoveryMailFailure();
+    });
+    await Sentry.flush(2000);
+    const payload = JSON.stringify(sent.slice(start));
+    expect(payload).toContain('Password recovery mail delivery failed');
+    expect(payload).toContain('password_recovery_send');
+    for (const secret of [
+      'recovery-pii@example.com',
+      'private-user-id',
+      'private-challenge-id',
+      'private-proof',
+      'private-breadcrumb',
+    ])
+      expect(payload).not.toContain(secret);
+  });
+
   it('keeps positions out of every traced path and keeps the diagnostics', async () => {
     Sentry.withIsolationScope((scope) => {
       // What the SDK's HTTP integration puts on the scope for a request. `data`

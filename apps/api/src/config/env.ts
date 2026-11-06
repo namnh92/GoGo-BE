@@ -72,7 +72,13 @@ const envSchema = z
     REDIS_URL: z.string().startsWith('redis://').or(z.string().startsWith('rediss://')),
     AUTH_JWT_SECRET: z.string().default(''),
     // Sink is explicit and restricted to dev/test by IdentityModule.
-    AUTH_RECOVERY_MAIL_ADAPTER: z.enum(['disabled', 'sink']).default('disabled'),
+    AUTH_RECOVERY_MAIL_ADAPTER: z.enum(['disabled', 'sink', 'ses']).default('disabled'),
+    AUTH_RECOVERY_MAIL_SENDER: z.string().trim().default(''),
+    AUTH_RECOVERY_MAIL_REGION: z.string().trim().default(''),
+    AUTH_RECOVERY_MAIL_CONFIGURATION_SET: z.string().trim().default(''),
+    // Validated here; the SES SDK reads these directly via its default chain.
+    AWS_ACCESS_KEY_ID: z.string().trim().default(''),
+    AWS_SECRET_ACCESS_KEY: z.string().trim().default(''),
     AUTH_RECOVERY_KEY: z
       .string()
       .refine(
@@ -592,6 +598,55 @@ const envSchema = z
     SECRETS_READINESS_FILE: z.string().default(''),
   })
   .superRefine((env, ctx) => {
+    if (env.AUTH_RECOVERY_MAIL_ADAPTER === 'ses') {
+      const required = [
+        'AUTH_RECOVERY_MAIL_SENDER',
+        'AUTH_RECOVERY_MAIL_REGION',
+        'AUTH_RECOVERY_MAIL_CONFIGURATION_SET',
+        'AUTH_RECOVERY_KEY',
+        'AWS_ACCESS_KEY_ID',
+        'AWS_SECRET_ACCESS_KEY',
+      ] as const;
+      for (const name of required) {
+        if (!env[name]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [name],
+            message: `${name} is required when AUTH_RECOVERY_MAIL_ADAPTER=ses`,
+          });
+        }
+      }
+      if (
+        env.AUTH_RECOVERY_MAIL_SENDER &&
+        !z.string().email().safeParse(env.AUTH_RECOVERY_MAIL_SENDER).success
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AUTH_RECOVERY_MAIL_SENDER'],
+          message: 'AUTH_RECOVERY_MAIL_SENDER must be a mailbox address',
+        });
+      }
+      if (
+        env.AUTH_RECOVERY_MAIL_REGION &&
+        !/^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(env.AUTH_RECOVERY_MAIL_REGION)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AUTH_RECOVERY_MAIL_REGION'],
+          message: 'AUTH_RECOVERY_MAIL_REGION must be an AWS region name',
+        });
+      }
+      if (
+        env.AUTH_RECOVERY_MAIL_CONFIGURATION_SET &&
+        !/^[A-Za-z0-9_-]{1,64}$/.test(env.AUTH_RECOVERY_MAIL_CONFIGURATION_SET)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AUTH_RECOVERY_MAIL_CONFIGURATION_SET'],
+          message: 'AUTH_RECOVERY_MAIL_CONFIGURATION_SET must be a configuration set name',
+        });
+      }
+    }
     // GoGo-BE#548: a credential with no resolvable account id signs for the
     // host `.r2.cloudflarestorage.com`. Refusing at boot is the only place
     // that failure is cheap — later it is a presigned URL a client trusts.
@@ -854,6 +909,12 @@ const envSchema = z
  * endpoint. `env.spec.ts` derives the set from a deployed fixture and pins it.
  */
 export const CONDITIONALLY_REQUIRED_ENV_KEYS = [
+  'AUTH_RECOVERY_MAIL_SENDER',
+  'AUTH_RECOVERY_MAIL_REGION',
+  'AUTH_RECOVERY_MAIL_CONFIGURATION_SET',
+  'AUTH_RECOVERY_KEY',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
   'AUTH_JWT_SECRET',
   'COOKIE_SECRET',
   'COOKIE_SECURE',

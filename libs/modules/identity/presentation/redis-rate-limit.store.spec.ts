@@ -26,6 +26,19 @@ function fakeRedis(overrides: Partial<RedisLike> = {}): RedisLike & { calls: str
 }
 
 describe('RedisRateLimitStore runtime telemetry (#414)', () => {
+  it('fails closed for recovery when shared quota storage fails (#777)', async () => {
+    const failure = new Error('ECONNREFUSED');
+    const store = new FallbackRateLimitStore(
+      new RedisRateLimitStore(
+        fakeRedis({
+          incr: () => Promise.reject(failure),
+        }),
+      ),
+    );
+    await expect(store.hit('recovery|request|email-minute|digest', 60)).rejects.toBe(failure);
+    await expect(store.hit('recovery|complete|ip-quarter|digest', 900)).rejects.toBe(failure);
+    expect(await store.hit('login:1.2.3.4', 60)).toBe(1);
+  });
   it('records one ok call per hit, whether it took one round trip or two', async () => {
     const registry = new MetricsRegistry();
     const redis = fakeRedis();

@@ -31,7 +31,7 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   search_count_duration_ms: [],
 
   // Consumer recovery: action is request | complete (failed also permits send).
-  // adapter is sink. No identity, proof, digest or free-text values.
+  // adapter is sink | ses. No identity, proof, digest or free-text values.
   password_recovery_requested: [],
   password_recovery_sent: ['adapter'],
   password_recovery_completed: [],

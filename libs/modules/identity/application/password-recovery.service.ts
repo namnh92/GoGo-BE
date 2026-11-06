@@ -1,7 +1,12 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHmac, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { NoopMetrics, RUNTIME_METRICS, type MetricsPort } from '@gogo/observability';
+import {
+  NoopMetrics,
+  RUNTIME_METRICS,
+  reportRecoveryMailFailure,
+  type MetricsPort,
+} from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
 import { RecoveryRepository } from '../infrastructure/recovery.repository';
 import { RecoveryMailSender } from '../infrastructure/recovery-mail';
@@ -132,14 +137,19 @@ export class PasswordRecoveryService {
                   code,
                   challengeId: id,
                   expiresAt: new Date(result.body.expiresAt),
+                  locale: result.user.locale === 'en' ? 'en' : 'vi',
                 }
               : null,
           );
-          if (result.user) this.metrics.increment('password_recovery_sent', { adapter: 'sink' });
+          if (result.user) {
+            this.metrics.increment('password_recovery_sent', { adapter: this.mail.adapter });
+          }
         } catch {
           // Never turn an account-specific send failure into an enumeration oracle.
           await this.repo.invalidate(digest, id).catch(() => undefined);
           this.metrics.increment('password_recovery_failed', { action: 'send' });
+          // Never pass the provider error, recipient, proof, or challenge to reporting.
+          reportRecoveryMailFailure();
         }
       }
       return result.body;

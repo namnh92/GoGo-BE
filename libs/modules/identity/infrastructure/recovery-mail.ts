@@ -1,8 +1,16 @@
 import { AppError } from '../../shared/app-error';
 
-export type RecoveryMail = { email: string; challengeId: string; code: string; expiresAt: Date };
+export type RecoveryMail = {
+  email: string;
+  challengeId: string;
+  code: string;
+  expiresAt: Date;
+  /** Template locale; Vietnamese is the default. Never added to telemetry. */
+  locale?: 'vi' | 'en';
+};
 
 export abstract class RecoveryMailSender {
+  readonly adapter: 'disabled' | 'sink' | 'ses' = 'disabled';
   abstract assertConfigured(): void;
   /** Null is decoy work; it must follow the same adapter path. */
   abstract send(message: RecoveryMail | null): Promise<void>;
@@ -10,6 +18,7 @@ export abstract class RecoveryMailSender {
 
 /** In-memory dev sink, like FakePush.sent. Never prints or sends mail. */
 export class RecoveryMailSink extends RecoveryMailSender {
+  override readonly adapter = 'sink' as const;
   private messages: RecoveryMail[] = [];
 
   get sent(): readonly RecoveryMail[] {

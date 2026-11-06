@@ -1,13 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setTimeout as delay } from 'node:timers/promises';
 import type * as TimersPromises from 'node:timers/promises';
-import { NoopMetrics, type MetricsPort } from '@gogo/observability';
+import type * as Observability from '@gogo/observability';
+import { NoopMetrics, reportRecoveryMailFailure, type MetricsPort } from '@gogo/observability';
 import { PasswordRecoveryService, RecoveryCrypto } from './password-recovery.service';
 import { RecoveryMailSink, UnconfiguredRecoveryMailSender } from '../infrastructure/recovery-mail';
 import type { RecoveryRepository } from '../infrastructure/recovery.repository';
 import { InMemoryRateLimitStore } from '../presentation/rate-limit.service';
 import { recoveryCompleteSchema } from '../presentation/dtos';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
+import { SesRecoveryMailSender } from '../infrastructure/recovery-mail-ses';
+
+vi.mock('@gogo/observability', async (importOriginal) => ({
+  ...(await importOriginal<typeof Observability>()),
+  reportRecoveryMailFailure: vi.fn(),
+}));
 
 // Verify the padding policy without depending on real timer scheduling.
 vi.mock('node:timers/promises', async (importOriginal) => ({
@@ -127,6 +134,53 @@ describe('consumer password recovery', () => {
   beforeEach(() => {
     setup();
     vi.mocked(delay).mockClear();
+    vi.mocked(reportRecoveryMailFailure).mockClear();
+  });
+
+  it.each(['en', 'vi', 'unsupported', undefined])(
+    'passes account locale %s with vi fallback',
+    async (locale) => {
+      user.locale = locale;
+      await service.request({ email }, ctx('request-1'));
+      expect(sink.sent[0]?.locale).toBe(locale === 'en' ? 'en' : 'vi');
+    },
+  );
+
+  it.each([false, true])('uses SES telemetry and hides delivery failure=%s', async (fail) => {
+    const sendEmail = fail
+      ? vi.fn().mockRejectedValue(new Error(`${email} private-proof`))
+      : vi.fn().mockResolvedValue({});
+    const adapter = new SesRecoveryMailSender(
+      { sendEmail },
+      {
+        sender: 'recovery@example.com',
+        region: 'ap-southeast-1',
+        configurationSet: 'recovery-test',
+      },
+    );
+    const increment = vi.spyOn(metrics, 'increment');
+    service = new PasswordRecoveryService(
+      repo,
+      { hash: vi.fn() } as any,
+      { revokeMany } as any,
+      store,
+      crypto,
+      adapter,
+      metrics,
+    );
+    const response = await service.request({ email }, ctx('request-1'));
+    expect(response.challengeId).toBe(challenge.id);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    if (fail) {
+      expect(challenge.consumedAt).toBeTruthy();
+      expect(increment).toHaveBeenCalledWith('password_recovery_failed', { action: 'send' });
+      expect(increment).not.toHaveBeenCalledWith('password_recovery_sent', { adapter: 'ses' });
+      expect(reportRecoveryMailFailure).toHaveBeenCalledExactlyOnceWith();
+    } else {
+      expect(challenge.consumedAt).toBeNull();
+      expect(increment).toHaveBeenCalledWith('password_recovery_sent', { adapter: 'ses' });
+      expect(reportRecoveryMailFailure).not.toHaveBeenCalled();
+    }
   });
 
   it('uses the same response and bounded sink work for eligible, unknown, disabled and passwordless identities', async () => {

@@ -7,6 +7,53 @@ const base = {
   REDIS_URL: 'redis://localhost:6379',
 };
 
+describe('SES recovery configuration (#777)', () => {
+  const ses = {
+    ...base,
+    AUTH_RECOVERY_MAIL_ADAPTER: 'ses',
+    AUTH_RECOVERY_MAIL_SENDER: 'recovery@example.com',
+    AUTH_RECOVERY_MAIL_REGION: 'ap-southeast-1',
+    AUTH_RECOVERY_MAIL_CONFIGURATION_SET: 'recovery-test',
+    AUTH_RECOVERY_KEY: 'r'.repeat(48),
+    AWS_ACCESS_KEY_ID: 'test-access-key',
+    AWS_SECRET_ACCESS_KEY: 'test-secret-key',
+  };
+
+  it('defaults to disabled and requires SES fields only when selected', () => {
+    expect(loadEnv(base).AUTH_RECOVERY_MAIL_ADAPTER).toBe('disabled');
+    expect(
+      loadEnv({ ...base, AUTH_RECOVERY_MAIL_ADAPTER: 'sink' }).AUTH_RECOVERY_MAIL_ADAPTER,
+    ).toBe('sink');
+    expect(loadEnv(ses).AUTH_RECOVERY_MAIL_ADAPTER).toBe('ses');
+    expect(() => loadEnv({ ...base, AUTH_RECOVERY_MAIL_ADAPTER: 'smtp' })).toThrow(
+      /AUTH_RECOVERY_MAIL_ADAPTER/,
+    );
+  });
+
+  it.each([
+    'AUTH_RECOVERY_MAIL_SENDER',
+    'AUTH_RECOVERY_MAIL_REGION',
+    'AUTH_RECOVERY_MAIL_CONFIGURATION_SET',
+    'AUTH_RECOVERY_KEY',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+  ] as const)('refuses absent %s and marks it conditionally required', (name) => {
+    expect(() => loadEnv({ ...ses, [name]: undefined })).toThrow(name);
+    expect(envCatalogue().find((entry) => entry.name === name)?.conditional).toBe(true);
+  });
+
+  it.each([
+    ['AUTH_RECOVERY_MAIL_SENDER', 'not-a-mailbox'],
+    ['AUTH_RECOVERY_MAIL_REGION', 'not-a-region'],
+    ['AUTH_RECOVERY_MAIL_CONFIGURATION_SET', 'bad/name'],
+    ['AUTH_RECOVERY_KEY', 'short'],
+    ['AWS_ACCESS_KEY_ID', ' '],
+    ['AWS_SECRET_ACCESS_KEY', ' '],
+  ] as const)('refuses malformed %s', (name, value) => {
+    expect(() => loadEnv({ ...ses, [name]: value })).toThrow(name);
+  });
+});
+
 describe('loadEnv (FND-006 fail-fast config)', () => {
   it('parses a minimal valid development env', () => {
     const env = loadEnv({ ...base, NODE_ENV: 'development' });
