@@ -602,3 +602,11 @@ export {
   eraseAssistantDataForUser,
   type AssistantRetentionReport,
 } from '../assistant/application/assistant-privacy';
+
+// Owner-authorized one-off address repair (#776).
+export {
+  backfillPlaceAddresses,
+  DbAddressBackfillStore,
+  type AddressBackfillStore,
+  type AddressCandidate,
+} from '../places/application/place-address-backfill';

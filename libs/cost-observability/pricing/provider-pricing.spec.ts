@@ -185,10 +185,20 @@ describe('provider taxonomy', () => {
     // fixes it.
     expect(byKey['google.maps_sdk_ios']).toBe('not_instrumented');
     expect(byKey['google.maps_sdk_android']).toBe('not_instrumented');
+    // #776 counts address requests, but the Essentials price is unverified:
+    // known usage with unknown cost is valid (Cost Epic §8), never free.
+    expect(byKey['google.details.address']).toBe('price_unknown');
+    expect(providerOf('google.details.address')).toBe('places');
+    expect(pricingFor('google.details.address', TODAY)?.instrumented).toBe(true);
+    expect(listCostMicros('google.details.address', TODAY, 1_000)).toBeNull();
     // Routes is counted exactly and, since #410, priced: it is no longer a
     // gap of either kind.
     expect(byKey['google.routeMatrix']).toBeUndefined();
-    expect(Object.keys(byKey).sort()).toEqual(['google.maps_sdk_android', 'google.maps_sdk_ios']);
+    expect(Object.keys(byKey).sort()).toEqual([
+      'google.details.address',
+      'google.maps_sdk_android',
+      'google.maps_sdk_ios',
+    ]);
   });
 });
 

@@ -46,7 +46,8 @@ describe('providerRuntime', () => {
     expect(providerRuntime(COST_REGISTRY.provider('google')!)).toEqual({
       coverage: 'PARTIAL',
       services: { full: 3, partial: 0, notInstrumented: 2 },
-      operations: { instrumented: 13, total: 15 },
+      // #776 adds one measured Places operation; both Maps SDK gaps remain.
+      operations: { instrumented: 14, total: 16 },
     });
   });
 

@@ -500,7 +500,8 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     expect(row.runtime).toEqual({
       coverage: 'PARTIAL',
       services: { full: 3, partial: 0, notInstrumented: 2 },
-      operations: { instrumented: 13, total: 15 },
+      // #776 adds one measured Places operation; both Maps SDK gaps remain.
+      operations: { instrumented: 14, total: 16 },
     });
     // No cost row and no source in this input: never observed, said on its
     // own — and the runtime dimension above did not move.
@@ -741,7 +742,8 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     expect(places.runtime).toEqual({
       surface: 'in_process',
       coverage: 'FULL',
-      operations: { instrumented: 10, total: 10 },
+      // Address backfill emits metrics too, regardless of its unknown price.
+      operations: { instrumented: 11, total: 11 },
       connection: null,
     });
     expect(places.instrumented).toBe(true);

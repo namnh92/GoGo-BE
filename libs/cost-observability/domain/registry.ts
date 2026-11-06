@@ -485,6 +485,11 @@ const GOOGLE_SKUS: readonly BillingSkuDefinition[] = [
     displayName: 'Places API (New) — Place Details Essentials IDs Only',
   },
   {
+    id: 'places.details.essentials',
+    providerId: 'google',
+    displayName: 'Places API (New) — Place Details Essentials',
+  },
+  {
     id: 'places.details.pro',
     providerId: 'google',
     displayName: 'Places API (New) — Place Details Pro',
@@ -580,6 +585,13 @@ const GOOGLE: ProviderDefinition = {
           displayName: 'Place Details (liveness, IDs only)',
           instrumented: true,
           usageMeters: callMeters('google.details.liveness', PLACES, 'places.details.idsOnly'),
+        },
+        {
+          id: 'google.details.address',
+          serviceId: PLACES,
+          displayName: 'Place Details (address backfill)',
+          instrumented: true,
+          usageMeters: callMeters('google.details.address', PLACES, 'places.details.essentials'),
         },
         {
           id: 'google.details.core',
