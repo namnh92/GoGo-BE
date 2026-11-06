@@ -305,7 +305,21 @@ they are absent on a `resync` frame.
 Earlier versions (`1.0.0-alpha.1` … `1.0.0-alpha.73`) predate this file. Their
 history is in `git log -- openapi/gogo.v1.yaml` and in the ADRs they reference.
 
-## 5.2.0-alpha.1 (2026-11-06)
+## 6.0.0-alpha.1 (2026-11-06) — discovery (GoGo-BE#774 / PR #775)
+
+**Breaking for readers of CMS taxonomies.** `TaxonomyList[].kind` gains
+`amenity`: `GET /cms/taxonomies` can now return a value the previous closed
+response enum excluded. MAJOR per `git.md` SemVer, following the campaign
+`audienceType=public` decision in GoGo-BE#747 / PR #749 (4.0.0-alpha.1).
+The exact base/revision contract hashes and this single finding are recorded in
+`.github/oasdiff-exceptions.json`; the checker remains unchanged. See ADR-0040.
+
+GoGo-CMS currently rejects the entire array with `CONTRACT_MISMATCH` on an
+unknown kind, including inactive rows. Before deploying this response, sync
+its vendored contract and regenerate the client, add `amenity` to its runtime
+taxonomy enum and kind selector, and provide Vietnamese/English kind labels.
+The place editor and submission review also fetch this list unfiltered.
+Changing to `x-extensible-enum` now cannot make those existing readers tolerant.
 
 - Discovery: opt-in exact `includeTotal` with cursor-independent `meta.totalCount`/`totalCountAccuracy`; same SQL snapshot and eligibility, retryable `SEARCH_COUNT_UNAVAILABLE` permits retry without totals. Configurable count timeout/concurrency/rate guard.
 - Search cards: explicit evidence-free `verification`, active `taxonomies`, localized current verified `areaSummary`; `locale=vi|en`. Publication/confidence/administrative mapping never imply a venue badge.

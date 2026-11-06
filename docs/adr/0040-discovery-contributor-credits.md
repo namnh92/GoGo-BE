@@ -48,7 +48,19 @@ end lead, ordered by absolute start proximity (unknown last, future active start
 allowed), then future collecting/matching/ready by earliest start, UUID descending
 for ties. Reads never mutate room status.
 
-Deployment: migrations 0080/0081, contract 5.2.0-alpha.1. To avoid unsafe enum
+Contract compatibility (2026-11-06, PR #775 CI fix): `amenity` expands the closed
+`TaxonomyList[].kind` response enum on `GET /cms/taxonomies`. This withdraws a
+published guarantee, so use MAJOR 6.0.0-alpha.1 per `git.md`, following BE#747 /
+PR #749's `CampaignAudience=public` decision. Record only this finding against
+the exact base/revision SHA-256 pair in `.github/oasdiff-exceptions.json`; do not
+weaken the checker or relabel the enum as extensible to evade the old contract.
+The owner requested this classification and established-pattern fix in-session.
+GoGo-CMS uses a closed Zod enum and rejects the whole list with CONTRACT_MISMATCH
+on an unknown kind. Before rollout, sync its contract/generated client, runtime
+taxonomy enum, kind selector and vi/en labels. Inactive amenity seeds also appear
+in the unfiltered list, so deactivation alone does not preserve compatibility.
+
+Deployment: migrations 0080/0081, contract 6.0.0-alpha.1. To avoid unsafe enum
 ADD VALUE + seed in the runner's all-pending transaction, 0080 replaces the enum
 transactionally with all existing labels plus amenity before seeds. This works on
 fresh and existing databases; no special runner or external commit stage required.

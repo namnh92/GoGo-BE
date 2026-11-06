@@ -109,11 +109,21 @@ export async function startAssistantFixture(
   const tax: Record<string, string> = {};
   for (const [kind, terms] of Object.entries(TAX)) {
     for (const [key, label] of Object.entries(terms)) {
-      const [row] = await db
+      // Migration 0080 already owns the suitability rows and vi/en labels.
+      await db
         .insert(schema.taxonomies)
         .values({ kind: kind as 'mood', key })
-        .returning();
-      await db.insert(schema.taxonomyLabels).values({ taxonomyId: row!.id, locale: 'vi', label });
+        .onConflictDoNothing({ target: [schema.taxonomies.kind, schema.taxonomies.key] });
+      const [row] = await db
+        .select({ id: schema.taxonomies.id })
+        .from(schema.taxonomies)
+        .where(and(eq(schema.taxonomies.kind, kind as 'mood'), eq(schema.taxonomies.key, key)));
+      await db
+        .insert(schema.taxonomyLabels)
+        .values({ taxonomyId: row!.id, locale: 'vi', label })
+        .onConflictDoNothing({
+          target: [schema.taxonomyLabels.taxonomyId, schema.taxonomyLabels.locale],
+        });
       tax[`${kind}:${key}`] = row!.id;
     }
   }
