@@ -17,7 +17,7 @@ import { parse as parseYaml } from 'yaml';
 const SPEC = path.resolve(__dirname, '../../../../openapi/gogo.v1.yaml');
 
 interface SchemaObject {
-  type?: string;
+  type?: string | string[];
   required?: string[];
   minimum?: number;
   maximum?: number;
@@ -111,5 +111,34 @@ describe('PlaceDetail administrative area contract (#784)', () => {
     ]);
     expect(area.properties?.['communeCode']?.type).toEqual(['string', 'null']);
     expect(getPlaceDetail.description).toContain('locale=vi');
+  });
+});
+
+describe('PlaceDetail checked-in room count contract (#785)', () => {
+  it('requires a nullable integer whose public values start at five', () => {
+    expect(placeDetail.required).toContain('checkedInGroupCount');
+    expect(placeDetail.properties?.['checkedInGroupCount']).toMatchObject({
+      type: ['integer', 'null'],
+      minimum: 5,
+    });
+  });
+
+  it('documents the population, privacy threshold and committed-read freshness', () => {
+    const description = placeDetail.properties?.['checkedInGroupCount']?.description ?? '';
+    expect(description).toContain('distinct rooms');
+    expect(description).toContain('null below 5');
+    expect(description).toContain(
+      'each request without process value or in-flight promise caching',
+    );
+    expect(description).toContain('transactionally precomputed database count');
+    expect(description).toContain('immediately across API processes');
+    expect(description).toContain('No room or member identities');
+  });
+
+  it('provides suppressed and public count examples beside the independent rating', () => {
+    const examples = Object.values(ok.content['application/json'].examples ?? {}).map(
+      (example) => example.value,
+    );
+    expect(examples.map((example) => example['checkedInGroupCount'])).toEqual([null, null, 5]);
   });
 });

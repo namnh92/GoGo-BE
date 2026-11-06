@@ -8106,6 +8106,8 @@ export interface components {
             gogoRating?: number;
             /** @description GoGo-BE#217 (ADR-0028) — how many moderator-published GoGo reviews of this place `gogoRating` is computed from; always present, including 0. Counts reviews, not people: one author may have several. Pending, rejected, removed and hidden reviews, plan reviews, check-ins and provider reviews are never counted. Below 5 the client says in words that there are not enough GoGo reviews yet, beside this count, and renders no score. */
             gogoRatingCount: number;
+            /** @description GoGo-BE#785 — all-time distinct rooms with at least one stored stop check-in at this place, across members, stops and plan versions. Always null below 5 rooms (including zero); otherwise an integer. Completed stops, plans, votes, saves and reviews alone do not count. Check-in content moderation does not change visit participation. No room or member identities are returned. Read from a transactionally precomputed database count for each request without process value or in-flight promise caching; deletions, cascades and place merges committed before that read are reflected immediately across API processes. Hide this fact when null. */
+            checkedInGroupCount: number | null;
             priceLevel?: number;
             avgVisitMinutes?: number;
             suitability?: {

@@ -8,6 +8,40 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 6.4.0-alpha.1 — Checked-in room count (GoGo-BE#785)
+
+Additive MINOR from 6.3.0-alpha.1. `PlaceDetail.checkedInGroupCount` counts
+all-time distinct rooms with a stored check-in at the place. Multiple members,
+stops and plan versions in one room count once. Plans, completed stops without
+a check-in, votes, saves and reviews do not count. Check-in content moderation
+is independent of the existence of the visit record.
+
+The field is always present: `null` below five rooms (including zero), otherwise
+an integer at least five. Clients hide the fact for null; no room or member
+identity is exposed. Each request reads the committed population from the DB;
+no aggregate or in-flight promise is cached. Deletions, cascades and merges
+committed before that read are reflected immediately across API processes,
+including 5→4 suppression. A concurrent read uses its own statement snapshot
+and cannot supply a later request. The HTTP response remains `no-store`.
+Database errors fail the request; no false zero or stale count is returned.
+
+Migration `0082_place-checkin-counts` is required: it creates and backfills
+`place_checkin_visits`, `place_checkin_rooms` and `place_checkin_counts`, with
+triggers maintaining them in the source-write transaction. Apply the migration
+successfully **before rolling out the API**: the new reader requires
+`place_checkin_counts`. Each request reads the precomputed count by place
+primary key.
+
+Rollback the API to the uncached query at `d097b37` first, retaining the tables
+and triggers; never restore the TTL-cached reader. Only after every reader has
+switched back may `scripts/rollback-0082-place-checkin-counts.sql` remove the
+derived schema. It preserves source records and the Drizzle journal, so a later
+roll-forward must explicitly reapply migration 0082 in a transaction before
+rolling out the new reader. Consumers regenerate clients as needed and tolerate
+the field being absent with an older API. See [the runbook](../docs/runbooks.md#checked-in-room-count--gogo-be785)
+and [ADR-0043](../docs/adr/0043-place-checked-in-group-count.md) for migration
+limits, read consistency, privacy assumptions and verification.
+
 ## 6.3.0-alpha.1 — Place Detail areaSummary (GoGo-BE#784)
 
 **Additive MINOR** from 6.2.0-alpha.1. `GET /places/{id}` returns optional

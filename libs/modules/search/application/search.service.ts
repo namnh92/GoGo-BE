@@ -436,6 +436,8 @@ export class SearchService {
       // never merged with it (core rule 14). Score omitted below the sample
       // threshold; the count always travels.
       ...gogoRating,
+      // #785: privacy-filtered aggregate; independent of review ratings.
+      checkedInGroupCount: (row['checked_in_group_count'] as number | null) ?? null,
       priceLevel: num(row['price_level']),
       avgVisitMinutes: num(row['avg_visit_minutes']),
       suitability: (row['suitability'] as Record<string, number> | null) ?? undefined,

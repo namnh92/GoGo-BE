@@ -561,6 +561,13 @@
       "when": 1793980800081,
       "tag": "0081_discovery-verification-credits",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1794009600082,
+      "tag": "0082_place-checkin-counts",
+      "breakpoints": true
     }
   ]
 }
