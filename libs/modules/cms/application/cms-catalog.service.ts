@@ -1,3 +1,4 @@
+import { isSubmissionPhotoKey, communityPhotoUrl } from '../../shared/submission-photo-url';
 import {
   readVenueVerification,
   setVenueVerification,
@@ -1529,7 +1530,11 @@ export class CmsCatalogService {
            * media hosting is not configured here, which the console renders as
            * "not available in this environment" rather than a broken image.
            */
-          url: this.mediaUrl(r.storage_key),
+          url: isSubmissionPhotoKey(r.storage_key)
+            ? r.moderation === 'approved'
+              ? communityPhotoUrl(placeId, r.id)
+              : null
+            : this.mediaUrl(r.storage_key),
           width: r.width,
           height: r.height,
           sortOrder: r.sort_order,

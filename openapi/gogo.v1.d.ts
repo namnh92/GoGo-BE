@@ -626,13 +626,13 @@ export interface paths {
          * Presigned upload for moderated user media
          * @description Check-in accepts `photoKeys` and `billPhotoKey` — keys of already uploaded objects — and until this endpoint existed nothing in the contract could produce one, so the mobile check-in sheet shipped without photos or the verified bill (FR-PLAN-009 was unreachable).
          *
-         *     Presigned rather than multipart: the client PUTs the bytes straight to storage with the returned URL and sends only the `key` back. Image bytes never cross the API.
+         *     Presigned rather than multipart: the client PUTs the bytes straight to storage with the returned URL and sends its key or media id back. The API reads avatar/place-photo bytes server-side only to sanitise them.
          *
          *     The returned key is bound to the actor that created it. Attaching a key belonging to another actor, an expired one, or one issued for a different purpose is rejected — the server does not distinguish those cases in its answer.
          *
          *     Content type and size are enforced server-side and the content type is part of what is signed, so storage refuses an upload that does not match what was authorized.
          *
-         *     Purpose `avatar` (ADR-0022): users only, `image/jpeg`, `image/png` or `image/webp` — never HEIC, which the client converts first. The key lands in a private, one-day-lifetime prefix and is attached with `PUT /me/avatar`, which processes it and publishes the result. Answers 503 where `GET /me` reports `capabilities.avatarUpload: unavailable`.
+         *     Purpose `avatar` (ADR-0022): users only, `image/jpeg`, `image/png` or `image/webp` — never HEIC, which the client converts first. The key lands in a private, one-day-lifetime prefix and is attached with `PUT /me/avatar`, which processes it and publishes the result. Answers 503 where `GET /me` reports `capabilities.avatarUpload: unavailable`. Purpose `place_photo`: original keys use the private one-day `tmp/` lifecycle, including abandoned uploads. Send the returned `id` (not key) in `POST /place-submissions.mediaIds`. This path accepts JPEG/PNG/WebP; convert HEIC before attaching. Originals are never served by the BFF.
          */
         post: operations["createUpload"];
         delete?: never;
@@ -2422,7 +2422,7 @@ export interface paths {
          *
          *     #786 / ADR-0043: with provider photos enabled, approval retains at most one current first Google photo with provider provenance and per-photo credits. No image or references were stored while pending. Disabled or confirmed no-photo results permit approval without imagery; photo budget, provider or storage failures return retryable `503 SUBMISSION_PHOTO_UNAVAILABLE` and leave the submission pending. Google may change photo order since preview.
          *
-         *     `rejected` creates no place. `merged` points the proposal at an existing one and writes nothing to it.
+         *     `rejected` creates no place. `merged` points the proposal at an existing one and attaches the explicitly selected photos to it.
          *
          *     Approval is not verification and not publication: the administrative mapping is resolved from the new place's own coordinate and is never `VERIFIED`, and the publication blocker stays until somebody confirms it (ADM-017, GoGo-BE#525).
          */
@@ -5670,6 +5670,66 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-submissions/{id}/photos/{photoId}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a sanitised pending submission photo
+         * @description Requires CMS moderator/editor read permission. The submission and photo must still be pending. Always returns the processed WebP, never an original. Responses are private, no-store.
+         */
+        get: operations["cmsReadSubmissionPhoto"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/places/{id}/photos/{photoId}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an approved sanitised GoGo photo
+         * @description Public only while the photo is approved and the place is published or community_submitted. Always returns the processed WebP, never an original. Responses are private, no-store.
+         */
+        get: operations["readCommunityPlacePhoto"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/place-submissions/{id}/photos/{photoId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Reject one pending submission photo
+         * @description Moderator/editor only. Audited; immediately unreadable, cleaned after seven days. Changes the submission revision.
+         */
+        delete: operations["cmsRemoveSubmissionPhoto"];
         options?: never;
         head?: never;
         patch?: never;
@@ -8975,6 +9035,18 @@ export interface components {
             /** @description GoGo-BE#280 — evidence for `addressText`, `phone` and `website`, under the same rule as `cmsUpdatePlace`: a non-null value needs its entry, `null` needs none. Values and evidence are stored normalized (E.164, `https://`, `collectedAt` in UTC) and returned that way. */
             provenance?: components["schemas"]["PlaceContactProvenanceInput"];
         };
+        SubmissionPhoto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            mediaId: string;
+            width: number;
+            height: number;
+            /** @enum {string} */
+            status: "pending" | "approved" | "rejected";
+            /** @description Root-relative API URL for an authenticated CMS fetch; null after decision or removal. */
+            url: string | null;
+        };
         /** @description PI-BE-031 (GoGo-BE#528) — everything a decision needs that GoGo already holds. No provider request: this endpoint costs nothing to open, and `POST /cms/place-submissions/{id}/provider-preview` is the explicit, separately-counted way to ask Google. */
         PlaceSubmissionDetail: {
             /** Format: uuid */
@@ -8996,6 +9068,8 @@ export interface components {
             decidedAt?: string;
             decisionReason?: string;
             rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
+            /** @description Sanitised photos with bearer-authenticated CMS preview URLs. Fetch with the CMS Authorization header; never load from the public asset host. No original keys. */
+            photos?: components["schemas"]["SubmissionPhoto"][];
             /** @description What the contributor sent, untouched by any review. */
             contribution: {
                 categoryKey?: string;
@@ -9114,7 +9188,7 @@ export interface components {
         PlacePhoto: {
             /** Format: uuid */
             id: string;
-            /** @description Directly loadable. Photos are omitted entirely rather than sent with a URL that will not load — a broken image is worse than the neutral placeholder a client falls back to. */
+            /** @description CDN URL or root-relative BFF URL (resolve against the API origin, without adding another /v1). Photos are omitted entirely rather than sent with a URL that will not load — a broken image is worse than the neutral placeholder a client falls back to. */
             url: string;
             width?: number;
             height?: number;
@@ -9123,6 +9197,10 @@ export interface components {
              * @enum {string}
              */
             source: "google" | "community" | "manual";
+            /** @description Actual registered uploader credit, omitted for guest or erased accounts. */
+            contributor?: {
+                displayName: string;
+            };
             /** @description Present for provider imagery, which must be displayed with it. Community photos are only returned once approved in moderation. */
             attribution?: string;
             /** @description Per-photo provider credits that must be rendered with this image. */
@@ -12387,6 +12465,11 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /**
+                         * Format: uuid
+                         * @description Media id for place-submissions.mediaIds
+                         */
+                        id: string;
                         /** @description Send this back in the check-in; it is only usable by this actor. */
                         key: string;
                         uploadUrl: string;
@@ -15245,6 +15328,8 @@ export interface operations {
                     };
                     vibes?: string[];
                     note?: string;
+                    /** @description Optional media ids from POST /uploads purpose place_photo, owned by this actor. JPEG/PNG/WebP only, at most 10 MiB each; actual bytes and size are verified. HEIC must be converted by the client. Originals are never served. Photos stay private until explicitly selected by staff at the submission decision. Deduplicated submissions retain each photo's actual uploader; at most five non-rejected photos per pending submission, including concurrent requests. */
+                    mediaIds?: string[];
                     /** @description The `resolutionToken` from the preceding `POST /places/resolve-google-maps-link` (#337). Optional — without it the server verifies the place with the provider again, which is the behaviour before this field existed. */
                     resolutionToken?: string;
                 };
@@ -15260,7 +15345,7 @@ export interface operations {
                     "application/json": components["schemas"]["SubmissionResult"];
                 };
             };
-            /** @description `RESOLUTION_TOKEN_INVALID` — the `resolutionToken` was expired, edited, or minted for another place. `retryable: true`: resolve the link again and resubmit. */
+            /** @description `INVALID_SUBMISSION_PHOTOS` rejects foreign or invalid media; `INVALID_UPLOAD_KEY` rejects expired or already claimed uploads. `FILE_TOO_LARGE` rejects oversized files. `RESOLUTION_TOKEN_INVALID` — the `resolutionToken` was expired, edited, or minted for another place. `retryable: true`: resolve the link again and resubmit. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -15270,8 +15355,17 @@ export interface operations {
                 };
             };
             403: components["responses"]["Forbidden"];
-            /** @description Place is closed/suspended and cannot be added */
+            /** @description Place is closed/suspended; UPLOAD_NOT_RECEIVED, SUBMISSION_PHOTO_LIMIT or SUBMISSION_CHANGED. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description PHOTO_UNPROCESSABLE - invalid, mismatched, animated, or undecodable image. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15505,6 +15599,8 @@ export interface operations {
                     rejectionReason: components["schemas"]["SubmissionRejectionReason"];
                     /** @description Optional internal note. Never returned by public polling. */
                     reason?: string;
+                    /** @description Required when approving or merging a submission with pending photos; absent means 409 PHOTO_REVIEW_REQUIRED. Select only photo ids shown by the CMS detail. An explicit empty array rejects every photo. Unselected photos are rejected and cleaned after seven days. */
+                    approvedPhotoIds?: string[];
                     /** Format: uuid */
                     mergeIntoPlaceId?: string;
                 } | {
@@ -15512,9 +15608,11 @@ export interface operations {
                     decision: "approved" | "merged";
                     reason: string;
                     rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
+                    /** @description Required when approving or merging a submission with pending photos; absent means 409 PHOTO_REVIEW_REQUIRED. Select only photo ids shown by the CMS detail. An explicit empty array rejects every photo. Unselected photos are rejected and cleaned after seven days. */
+                    approvedPhotoIds?: string[];
                     /**
                      * Format: uuid
-                     * @description Required for `merged`, and the place must exist — `404 MERGE_TARGET_NOT_FOUND` otherwise (GoGo-BE#528). Merging records where this proposal went; nothing about the target place is written.
+                     * @description Required for `merged`, and the place must exist — `404 MERGE_TARGET_NOT_FOUND` otherwise (GoGo-BE#528). Merging records where this proposal went and attaches only explicitly approved photos to the target, retaining their uploader credits.
                      */
                     mergeIntoPlaceId?: string;
                 };
@@ -15528,6 +15626,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description VALIDATION_FAILED for invalid decision fields, including missing/unknown rejectionReason when rejecting; INVALID_SUBMISSION_PHOTOS when the selection contains a photo outside this pending submission. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             403: components["responses"]["Forbidden"];
             /** @description `SUBMISSION_NOT_FOUND`, or `MERGE_TARGET_NOT_FOUND` for a merge. */
             404: {
@@ -15538,7 +15645,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            409: components["responses"]["Conflict"];
+            /** @description ALREADY_DECIDED, SUBMISSION_CHANGED, or PHOTO_REVIEW_REQUIRED. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             /** @description Retryable provider verification or photo/storage/budget outage. SUBMISSION_PHOTO_UNAVAILABLE leaves the submission pending. */
             503: {
                 headers: {
@@ -21885,6 +22000,101 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    cmsReadSubmissionPhoto: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                photoId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sanitised WebP bytes (EXIF/GPS removed) */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/webp": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
+        };
+    };
+    readCommunityPlacePhoto: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                photoId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sanitised WebP bytes (EXIF/GPS removed) */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/webp": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
+        };
+    };
+    cmsRemoveSubmissionPhoto: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                photoId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    reason: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Photo removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        removed: true;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
 }

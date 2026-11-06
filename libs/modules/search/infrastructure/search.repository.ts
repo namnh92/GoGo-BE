@@ -369,7 +369,7 @@ export class SearchRepository {
         -- #151: one image is enough for a list row; the gallery is detail-only.
         pm.id as photo_id, pm.storage_key as photo_key,
         pm.width as photo_width, pm.height as photo_height,
-        pm.uploaded_by_user_id is not null as photo_from_community,
+        (pm.source_type = 'community' or pm.uploaded_by_user_id is not null) as photo_from_community,
         pm.source_type as photo_source_type, pm.attribution as photo_attribution,
         pm.provider_photo as photo_provider_metadata,
         ${distanceM} as distance_m,
@@ -528,8 +528,9 @@ export class SearchRepository {
         (select json_agg(json_build_object(
             'id', m.id, 'storageKey', m.storage_key,
             'width', m.width, 'height', m.height,
-            'source', case when m.source_type in ('google_derived', 'provider') then 'google' when m.uploaded_by_user_id is null then 'manual' else 'community' end,
+            'source', case when m.source_type in ('google_derived', 'provider') then 'google' when m.source_type = 'community' or m.uploaded_by_user_id is not null then 'community' else 'manual' end,
             'providerPhoto', m.provider_photo,
+            'contributor', (select json_build_object('displayName', u.display_name) from users u where u.id = m.uploaded_by_user_id and u.status = 'active'),
             'moderation', m.moderation,
             'caption', m.caption, 'attribution', m.attribution,
             'isCover', m.is_cover)

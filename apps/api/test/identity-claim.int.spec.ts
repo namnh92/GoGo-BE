@@ -1,3 +1,4 @@
+import { SubmissionPhotosService } from '../../../libs/modules/ingestion/application/submission-photos.service';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -146,6 +147,7 @@ describe('F-02 PostgreSQL approval versus bulk import identity claims', () => {
         winner === 'approval' ? firstDedup : secondDedup,
         {} as never,
         {} as never,
+        new SubmissionPhotosService(approveDb, {} as never, {} as never, {} as never),
       );
       const imports = new PlaceImportJobService(
         importDb,

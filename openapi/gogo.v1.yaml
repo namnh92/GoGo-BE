@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 7.1.0-alpha.1
+  version: 7.2.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1373,8 +1373,8 @@ paths:
 
 
         Presigned rather than multipart: the client PUTs the bytes straight to
-        storage with the returned URL and sends only the `key` back. Image
-        bytes never cross the API.
+        storage with the returned URL and sends its key or media id back.
+        The API reads avatar/place-photo bytes server-side only to sanitise them.
 
 
         The returned key is bound to the actor that created it. Attaching a key
@@ -1393,6 +1393,10 @@ paths:
         key lands in a private, one-day-lifetime prefix and is attached with
         `PUT /me/avatar`, which processes it and publishes the result. Answers
         503 where `GET /me` reports `capabilities.avatarUpload: unavailable`.
+        Purpose `place_photo`: original keys use the private one-day `tmp/`
+        lifecycle, including abandoned uploads. Send the returned `id` (not key)
+        in `POST /place-submissions.mediaIds`. This path accepts JPEG/PNG/WebP;
+        convert HEIC before attaching. Originals are never served by the BFF.
       requestBody:
         required: true
         content:
@@ -1424,8 +1428,14 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [key, uploadUrl, expiresAt, maxBytes]
+                required: [id, key, uploadUrl, expiresAt, maxBytes]
                 properties:
+                  id:
+                    {
+                      type: string,
+                      format: uuid,
+                      description: Media id for place-submissions.mediaIds,
+                    }
                   key:
                     type: string
                     description: Send this back in the check-in; it is only usable by this actor.
@@ -4802,6 +4812,18 @@ paths:
                   type: array
                   items: { type: string }
                 note: { type: string, maxLength: 1000 }
+                mediaIds:
+                  type: array
+                  maxItems: 5
+                  uniqueItems: true
+                  items: { type: string, format: uuid }
+                  description: >
+                    Optional media ids from POST /uploads purpose place_photo, owned by this actor.
+                    JPEG/PNG/WebP only, at most 10 MiB each; actual bytes and size are verified.
+                    HEIC must be converted by the client. Originals are never served.
+                    Photos stay private until explicitly selected by staff at the submission decision.
+                    Deduplicated submissions retain each photo's actual uploader; at most five
+                    non-rejected photos per pending submission, including concurrent requests.
                 resolutionToken:
                   type: string
                   maxLength: 1024
@@ -4819,7 +4841,7 @@ paths:
               schema: { $ref: '#/components/schemas/SubmissionResult' }
         '400':
           description: >
-            `RESOLUTION_TOKEN_INVALID` — the `resolutionToken` was expired,
+            `INVALID_SUBMISSION_PHOTOS` rejects foreign or invalid media; `INVALID_UPLOAD_KEY` rejects expired or already claimed uploads. `FILE_TOO_LARGE` rejects oversized files. `RESOLUTION_TOKEN_INVALID` — the `resolutionToken` was expired,
             edited, or minted for another place. `retryable: true`: resolve the
             link again and resubmit.
           content:
@@ -4827,7 +4849,12 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409':
-          description: Place is closed/suspended and cannot be added
+          description: Place is closed/suspended; UPLOAD_NOT_RECEIVED, SUBMISSION_PHOTO_LIMIT or SUBMISSION_CHANGED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: PHOTO_UNPROCESSABLE - invalid, mismatched, animated, or undecodable image.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -5103,6 +5130,16 @@ paths:
                       minLength: 3
                       maxLength: 500
                       description: Optional internal note. Never returned by public polling.
+                    approvedPhotoIds:
+                      type: array
+                      maxItems: 5
+                      uniqueItems: true
+                      items: { type: string, format: uuid }
+                      description: >
+                        Required when approving or merging a submission with pending photos;
+                        absent means 409 PHOTO_REVIEW_REQUIRED. Select only photo ids shown
+                        by the CMS detail. An explicit empty array rejects every photo.
+                        Unselected photos are rejected and cleaned after seven days.
                     mergeIntoPlaceId: { type: string, format: uuid }
                 - type: object
                   required: [decision, reason]
@@ -5110,14 +5147,24 @@ paths:
                     decision: { type: string, enum: [approved, merged] }
                     reason: { type: string, minLength: 3, maxLength: 500 }
                     rejectionReason: { $ref: '#/components/schemas/SubmissionRejectionReason' }
+                    approvedPhotoIds:
+                      type: array
+                      maxItems: 5
+                      uniqueItems: true
+                      items: { type: string, format: uuid }
+                      description: >
+                        Required when approving or merging a submission with pending photos;
+                        absent means 409 PHOTO_REVIEW_REQUIRED. Select only photo ids shown
+                        by the CMS detail. An explicit empty array rejects every photo.
+                        Unselected photos are rejected and cleaned after seven days.
                     mergeIntoPlaceId:
                       type: string
                       format: uuid
                       description: >
                         Required for `merged`, and the place must exist —
                         `404 MERGE_TARGET_NOT_FOUND` otherwise (GoGo-BE#528).
-                        Merging records where this proposal went; nothing about the
-                        target place is written.
+                        Merging records where this proposal went and attaches only explicitly
+                        approved photos to the target, retaining their uploader credits.
 
       description: >
         GoGo-BE#787: `rejected` requires `rejectionReason` from the fixed key
@@ -5149,7 +5196,7 @@ paths:
 
 
         `rejected` creates no place. `merged` points the proposal at an existing
-        one and writes nothing to it.
+        one and attaches the explicitly selected photos to it.
 
 
         Approval is not verification and not publication: the administrative
@@ -5164,7 +5211,19 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '400':
+          description: >
+            VALIDATION_FAILED for invalid decision fields, including missing/unknown
+            rejectionReason when rejecting; INVALID_SUBMISSION_PHOTOS when the selection
+            contains a photo outside this pending submission.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: ALREADY_DECIDED, SUBMISSION_CHANGED, or PHOTO_REVIEW_REQUIRED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '503':
           description: >
             Retryable provider verification or photo/storage/budget outage.
@@ -12004,6 +12063,92 @@ paths:
         '403': { description: Role may not read operational data }
         '422': { description: Unknown provider }
 
+  /cms/place-submissions/{id}/photos/{photoId}/content:
+    get:
+      operationId: cmsReadSubmissionPhoto
+      tags: [cms]
+      summary: Read a sanitised pending submission photo
+      description: >
+        Requires CMS moderator/editor read permission. The submission and photo must still be pending.
+        Always returns the processed WebP, never an original. Responses are private, no-store.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: photoId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Sanitised WebP bytes (EXIF/GPS removed)
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            image/webp:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
+
+  /places/{id}/photos/{photoId}/content:
+    get:
+      operationId: readCommunityPlacePhoto
+      tags: [places]
+      summary: Read an approved sanitised GoGo photo
+      description: >
+        Public only while the photo is approved and the place is published or community_submitted.
+        Always returns the processed WebP, never an original. Responses are private, no-store.
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: photoId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Sanitised WebP bytes (EXIF/GPS removed)
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            image/webp:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
+
+  /cms/place-submissions/{id}/photos/{photoId}:
+    delete:
+      operationId: cmsRemoveSubmissionPhoto
+      tags: [cms]
+      summary: Reject one pending submission photo
+      description: Moderator/editor only. Audited; immediately unreadable, cleaned after seven days. Changes the submission revision.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: photoId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 3, maxLength: 500 }
+      responses:
+        '200':
+          description: Photo removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [removed]
+                properties:
+                  removed: { type: boolean, const: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -17661,6 +17806,18 @@ components:
             under the same rule as `cmsUpdatePlace`: a non-null value needs its
             entry, `null` needs none. Values and evidence are stored normalized
             (E.164, `https://`, `collectedAt` in UTC) and returned that way.
+    SubmissionPhoto:
+      type: object
+      required: [id, mediaId, width, height, status, url]
+      properties:
+        id: { type: string, format: uuid }
+        mediaId: { type: string, format: uuid }
+        width: { type: integer }
+        height: { type: integer }
+        status: { type: string, enum: [pending, approved, rejected] }
+        url:
+          type: [string, 'null']
+          description: Root-relative API URL for an authenticated CMS fetch; null after decision or removal.
     PlaceSubmissionDetail:
       type: object
       description: >
@@ -17689,6 +17846,12 @@ components:
         decidedAt: { type: string, format: date-time }
         decisionReason: { type: string }
         rejectionReason: { $ref: '#/components/schemas/SubmissionRejectionReason' }
+        photos:
+          type: array
+          items: { $ref: '#/components/schemas/SubmissionPhoto' }
+          description: >
+            Sanitised photos with bearer-authenticated CMS preview URLs. Fetch with the
+            CMS Authorization header; never load from the public asset host. No original keys.
         contribution:
           type: object
           description: What the contributor sent, untouched by any review.
@@ -17861,7 +18024,7 @@ components:
         url:
           type: string
           description: >
-            Directly loadable. Photos are omitted entirely rather than sent with
+            CDN URL or root-relative BFF URL (resolve against the API origin, without adding another /v1). Photos are omitted entirely rather than sent with
             a URL that will not load — a broken image is worse than the neutral
             placeholder a client falls back to.
         width: { type: integer }
@@ -17870,6 +18033,12 @@ components:
           type: string
           enum: [google, community, manual]
           description: Lets a client tell imported and user-submitted imagery apart.
+        contributor:
+          type: object
+          required: [displayName]
+          properties:
+            displayName: { type: string }
+          description: Actual registered uploader credit, omitted for guest or erased accounts.
         attribution:
           type: string
           description: >

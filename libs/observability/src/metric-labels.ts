@@ -172,6 +172,9 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   place_resolution_attestation_total: ['result'],
 
   // --- submissions ---------------------------------------------------------
+  // #793: closed processing outcomes; no upload, photo or submission ids.
+  submission_photo_processing_total: ['outcome'], // processed | failed
+  submission_photo_processing_duration_ms: [],
   mobile_place_submissions_total: ['status'],
   place_submission_publish_latency_hours: ['decision'],
 

@@ -17,6 +17,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { users } from './identity';
 import { places } from './places';
+import { mediaUploads } from './platform';
 import { administrativeMappingStatus } from './administrative';
 
 /**
@@ -446,5 +447,35 @@ export const placeSubmissionContributors = pgTable(
   (t) => [
     primaryKey({ columns: [t.userId, t.submissionId] }),
     index('place_submission_contributors_submission_idx').on(t.submissionId),
+  ],
+);
+
+/** Private, sanitised contributions. Originals are never a read target. */
+export const placeSubmissionPhotos = pgTable(
+  'place_submission_photos',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    submissionId: uuid('submission_id')
+      .notNull()
+      .references(() => placeSubmissions.id, { onDelete: 'cascade' }),
+    mediaUploadId: uuid('media_upload_id')
+      .notNull()
+      .references(() => mediaUploads.id),
+    storageKey: text('storage_key').notNull().unique(),
+    uploadedByUserId: uuid('uploaded_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    width: integer('width').notNull(),
+    height: integer('height').notNull(),
+    status: text('status').notNull().default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('place_submission_photos_submission_idx').on(t.submissionId, t.status),
+    uniqueIndex('place_submission_photos_upload_unique').on(t.mediaUploadId),
+    check(
+      'place_submission_photos_status_check',
+      sql`${t.status} in ('pending','approved','rejected')`,
+    ),
   ],
 );

@@ -1,3 +1,4 @@
+import { isSubmissionPhotoKey, communityPhotoUrl } from '../../shared/submission-photo-url';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, eq, ne, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -403,7 +404,11 @@ export class CmsPlaceMediaService {
     return {
       id: row.id,
       storageKey: row.storageKey,
-      url: this.readUrl(row.storageKey),
+      url: isSubmissionPhotoKey(row.storageKey)
+        ? row.moderation === 'approved'
+          ? communityPhotoUrl(row.placeId, row.id)
+          : null
+        : this.readUrl(row.storageKey),
       width: row.width,
       height: row.height,
       sortOrder: row.sortOrder,

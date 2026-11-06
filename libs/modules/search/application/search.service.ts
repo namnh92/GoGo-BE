@@ -352,6 +352,8 @@ export class SearchService {
               },
             ],
             this.mediaBaseUrl,
+            undefined,
+            row.id,
           )[0]
         : undefined,
       // FR-SEARCH-009: estimated per-person range — facts, not fake precision.
@@ -470,6 +472,7 @@ export class SearchService {
         row['media'] as PlacePhotoRow[] | null,
         this.mediaBaseUrl,
         providerAttribution,
+        placeId,
       ),
     };
   }

@@ -52,6 +52,11 @@ const submitSchema = z.object({
     .optional(),
   vibes: z.array(z.string().max(40)).max(10).default([]),
   note: z.string().max(1000).optional(),
+  mediaIds: z
+    .array(z.string().uuid())
+    .max(5)
+    .refine((ids) => new Set(ids).size === ids.length, 'Media ids must be distinct')
+    .default([]),
   /**
    * #337 — the opaque proof returned by `POST /places/resolve-google-maps-link`.
    * Optional: a client that does not send one gets the old behaviour, which is
@@ -92,6 +97,7 @@ export class IngestionController {
       vibeKeys: body.vibes,
       note: body.note,
       resolutionToken: body.resolutionToken,
+      mediaIds: body.mediaIds,
     });
   }
 
@@ -107,6 +113,11 @@ const decisionSchema = z
     reason: z.string().trim().min(3).max(500).optional(),
     rejectionReason: z.enum(SUBMISSION_REJECTION_REASONS).optional(),
     mergeIntoPlaceId: z.string().uuid().optional(),
+    approvedPhotoIds: z
+      .array(z.string().uuid())
+      .max(5)
+      .refine((ids) => new Set(ids).size === ids.length, 'Photo ids must be distinct')
+      .optional(),
   })
   .superRefine((body, ctx) => {
     if (body.decision === 'rejected' && body.rejectionReason === undefined) {
@@ -257,6 +268,7 @@ export class CmsSubmissionController {
       body.reason,
       body.mergeIntoPlaceId,
       body.rejectionReason,
+      body.approvedPhotoIds,
     );
   }
 }

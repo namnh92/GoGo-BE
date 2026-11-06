@@ -156,6 +156,19 @@
       "diagnostic": "error [request-body-wrapped-in-one-of] at openapi/gogo.v1.yaml in API POST /cms/place-submissions/{id}/decide the request body was restructured into a oneOf, so a payload that was previously valid may no longer be accepted",
       "reason": "ADR-0044: every new rejection must carry a public reason key; old CMS rejection requests without rejectionReason now return 400 VALIDATION_FAILED. The owner keeps the stricter API and declares MAJOR 7.0.0-alpha.1 per BE-BFF-012, with a consumer note in openapi/CHANGELOG.md. GoGo-CMS must sync its contract, regenerate its client and require key selection, then deploy together with BE. Internal reason remains optional for rejection and required for approval/merge.",
       "note": "The base is origin/re-design at 7afe6ace4746f3b17a77fb9eb531201ffd8ba693 after PRs #791/#792. Both SHA-256 values use the raw YAML bytes, exactly as scripts/check-contract-compat.ts does. The diagnostic is retained from CI run 42305813256; the request-body oneOf transition is unchanged by the rebase. Local replay checks this historical diagnostic against the refreshed pair, not a fresh oasdiff measurement: Docker socket access is denied in this sandbox and no local oasdiff binary is available. Fresh measurement and integration verification remain required outside the sandbox. ADR-0044 and migration 0084 apply; rollback is documented in docs/submission-rejection-reasons.md. Changing either contract or adding another finding still fails."
+    },
+    {
+      "id": "BE-793-submission-photos-decide-oneof",
+      "issue": "https://github.com/namnh92/GoGo-BE/issues/793",
+      "decidedAt": "2026-11-07",
+      "decidedBy": "product owner (CODEOWNER for openapi/gogo.v1.yaml), in session on PR #794: \"Ghi exception, giữ MINOR\"",
+      "baseCommit": "facd5cedb91f9b93b86bedffc79da906ff2dd425",
+      "baseSha256": "dfa9f14fd0a98b23c0cc6c31f1cf236f460d30c2379ef137774a5139620a4d99",
+      "revisionBasis": "Final rebased working-tree openapi/gogo.v1.yaml; identified by revisionSha256 (no commit created)",
+      "revisionSha256": "02ccaa48426bc0c41b97271eeef3dfb80be92252db26caeb91d930e1e2472737",
+      "diagnostic": "error [request-body-one-of-removed] at /w/head.yaml in API POST /cms/place-submissions/{id}/decide removed `subschema #1, subschema #2` from the request body `oneOf` list",
+      "reason": "ADR-0046 section Contract compatibility exception (2026-11-07): docs/adr/0046-place-submission-photos.md#contract-compatibility-exception-2026-11-07. approvedPhotoIds is an additive optional field in both decide oneOf branches. oasdiff matches inline subschemas by exact equality, so these edits appear as removal plus addition; wrapping in allOf is also flagged. The owner records this false positive and keeps MINOR 7.2.0-alpha.1. Old CMS approving a submission with pending photos receives 409 PHOTO_REVIEW_REQUIRED; deploy together with GoGo-CMS#283 after contract/client sync and explicit photo selection. openapi/CHANGELOG.md carries the consumer note.",
+      "note": "The base is origin/re-design at facd5cedb91f9b93b86bedffc79da906ff2dd425. Both SHA-256 values use the raw YAML bytes, exactly as scripts/check-contract-compat.ts does. The full diagnostic is retained from the stable oasdiff report reproduced locally and saved at dev/handoffs/be-794-oasdiff-report.txt in the GoGo workspace. Replay with --expect=BE-793-submission-photos-decide-oneof must admit it exactly once. Changing either contract or adding another finding still fails."
     }
   ]
 }
