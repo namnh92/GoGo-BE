@@ -8293,7 +8293,7 @@ describe('CMS assistant credit balance and history (#778)', () => {
         status: 'collecting',
         decisionMode: 'vote',
         hostUserId: user.id,
-        participantCount: 1,
+        participantCount: 4,
       })
       .returning();
     const guest = await api().inject({
