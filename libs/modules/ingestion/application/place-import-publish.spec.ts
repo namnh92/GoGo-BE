@@ -68,6 +68,7 @@ function harness(count: number, distinct: number) {
   const dialect = new PgDialect();
   const owners = new Map<string, string>();
   const places = new Map<string, Record<string, unknown>>();
+  const commits: { rows: Row[]; owners: Map<string, string> }[] = [];
   const queries: string[] = [];
   const locks = new Map<string, Promise<void>>();
   function matches(row: Row, where: SQL) {
@@ -106,7 +107,9 @@ function harness(count: number, distinct: number) {
         },
       };
       try {
-        return await work(tx);
+        const result = await work(tx);
+        commits.push({ rows: structuredClone(rows), owners: new Map(owners) });
+        return result;
       } finally {
         for (const release of releases) release();
       }
@@ -147,7 +150,7 @@ function harness(count: number, distinct: number) {
         then(resolve: (v: unknown) => void) {
           resolve(
             table === 'place_ingest_rows'
-              ? rows.filter((r) => !where || matches(r, where))
+              ? structuredClone(rows.filter((r) => !where || matches(r, where)))
               : table === 'places'
                 ? [...places].map(([id, p]) => ({ id, ...p }))
                 : [],
@@ -227,7 +230,7 @@ function harness(count: number, distinct: number) {
       mode: 'create_drafts',
       normalized: rows[i]!.normalizedInput,
     });
-  return { service, internals, rows, owners, places, queries, jobId, resolve };
+  return { service, internals, dedup, rows, owners, places, queries, commits, jobId, resolve };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -250,13 +253,89 @@ describe('bulk import readiness and identity claims', () => {
     });
     expect(h.places.size).toBe(25);
     expect(h.owners.size).toBe(25);
+    const duplicates = h.rows.filter((r) => r.status === 'duplicate');
+    expect(duplicates).toHaveLength(65);
+    for (const row of duplicates) {
+      const sibling = ready.find((r) => r.resolvedGooglePlaceId === row.resolvedGooglePlaceId)!;
+      expect(row.matchedPlaceId).toBe(sibling.matchedPlaceId);
+      expect(row.matchedPlaceId).toBe(h.owners.get(row.resolvedGooglePlaceId!));
+      expect(row.errors[0]?.code).toBe('PLACE_DUPLICATE_IN_JOB');
+    }
+    // Inspect each transaction boundary, not just the final row state.
+    for (const commit of h.commits) {
+      for (const row of commit.rows.filter((r) => r.status === 'duplicate')) {
+        const owner = commit.owners.get(row.resolvedGooglePlaceId!);
+        if (owner) expect(row.matchedPlaceId).toBe(owner);
+      }
+    }
     const owners = [...h.owners];
+    const duplicate = duplicates[0]!;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(
+        await h.service.mergeRow(h.jobId, duplicate.id, duplicate.matchedPlaceId!, randomUUID()),
+      ).toMatchObject({ status: 'imported', matchedPlaceId: duplicate.matchedPlaceId });
+      expect([...h.owners]).toEqual(owners);
+      expect(h.places.size).toBe(25);
+    }
     expect(await h.service.publish(h.jobId, randomUUID())).toMatchObject({
       created: 0,
       failed: [],
     });
     expect([...h.owners]).toEqual(owners);
     expect(h.places.size).toBe(25);
+  });
+
+  it('links duplicate siblings atomically when the ready row merges into an existing place', async () => {
+    const h = harness(5, 1);
+    for (let i = 0; i < 5; i++) await h.resolve(i);
+    h.rows[3]!.jobId = randomUUID();
+    h.rows[4]!.status = 'failed';
+    const placeId = randomUUID();
+    h.places.set(placeId, { status: 'draft' });
+    const claim = vi.spyOn(h.dedup, 'claimGoogleIdentity');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await h.service.mergeRow(h.jobId, h.rows[0]!.id, placeId, randomUUID());
+      expect(h.rows.slice(1, 3).map((r) => [r.status, r.matchedPlaceId])).toEqual([
+        ['duplicate', placeId],
+        ['duplicate', placeId],
+      ]);
+      expect(h.rows[3]!.matchedPlaceId).toBeNull();
+      expect(h.rows[4]!.matchedPlaceId).toBeNull();
+      expect(h.places.size).toBe(1);
+      expect([...h.owners]).toEqual([['fake-scale-0', placeId]]);
+    }
+    // Each merge claims explicitly and the source upsert defensively claims again.
+    expect(claim).toHaveBeenCalledTimes(4);
+    for (const [, identity, target] of claim.mock.calls) {
+      expect(identity).toBe('fake-scale-0');
+      expect(target).toBe(placeId);
+    }
+    for (const commit of h.commits.filter((c) => c.owners.size > 0)) {
+      expect(commit.rows[0]).toMatchObject({ status: 'imported', matchedPlaceId: placeId });
+      expect(commit.rows[1]!.matchedPlaceId).toBe(placeId);
+      expect(commit.rows[2]!.matchedPlaceId).toBe(placeId);
+    }
+    expect(await h.service.publish(h.jobId, randomUUID())).toMatchObject({
+      created: 0,
+      failed: [],
+    });
+  });
+
+  it('serializes concurrent re-publish and gives later resolved siblings the committed match', async () => {
+    const h = harness(3, 1);
+    await h.resolve(0);
+    await h.resolve(1);
+    const results = await Promise.all([
+      h.service.publish(h.jobId, randomUUID()),
+      h.service.publish(h.jobId, randomUUID()),
+    ]);
+    expect(results.every((result) => result.failed.length === 0)).toBe(true);
+    await h.resolve(2);
+    expect(h.places.size).toBe(1);
+    const placeId = h.owners.get('fake-scale-0');
+    expect(placeId).toBeDefined();
+    expect(h.rows.map((r) => r.matchedPlaceId)).toEqual([placeId, placeId, placeId]);
+    expect(h.rows.map((r) => r.status)).toEqual(['imported', 'duplicate', 'duplicate']);
   });
 
   it('keeps all 90 distinct resolved identities ready, regardless of missing input IDs', async () => {

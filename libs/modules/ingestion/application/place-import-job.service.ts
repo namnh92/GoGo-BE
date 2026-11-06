@@ -1389,9 +1389,7 @@ export class PlaceImportJobService {
         .where(eq(schema.placeIngestRows.id, rowId))
         .limit(1);
       if (!row) throw AppError.notFound('ROW_NOT_FOUND', 'Import row not found');
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtextextended(${`place-import:${row.jobId}:${details.providerPlaceId}`}, 0))`,
-      );
+      await this.lockJobIdentity(tx, row.jobId, details.providerPlaceId);
       const [sibling] = await tx
         .select({ matchedPlaceId: schema.placeIngestRows.matchedPlaceId })
         .from(schema.placeIngestRows)
@@ -1944,6 +1942,7 @@ export class PlaceImportJobService {
       : null;
     await this.db.transaction(async (tx) => {
       await this.dedup.claimGoogleIdentity(tx, row.resolvedGooglePlaceId!, placeId);
+      await this.lockJobIdentity(tx, jobId, row.resolvedGooglePlaceId!);
       if (details)
         await this.dedup.upsertProviderSource(
           { placeId, details, derivedScore: score!, fetchTier: details.fetchTier },
@@ -1953,6 +1952,7 @@ export class PlaceImportJobService {
         .update(schema.placeIngestRows)
         .set({ status: 'imported', matchedPlaceId: placeId, updatedAt: new Date() })
         .where(eq(schema.placeIngestRows.id, rowId));
+      await this.matchDuplicateSiblings(tx, row, placeId);
       await this.dedup.emitReindex(placeId, 'merged', tx);
       await writeAudit(tx, {
         actorType: 'admin',
@@ -1984,6 +1984,26 @@ export class PlaceImportJobService {
   }
 
   // --- publish -------------------------------------------------------------
+
+  private async lockJobIdentity(tx: Pick<Db, 'execute'>, jobId: string, providerId: string) {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`place-import:${jobId}:${providerId}`}, 0))`,
+    );
+  }
+
+  /** Caller holds the job/identity lock; commit the match with the canonical link. */
+  private async matchDuplicateSiblings(tx: Pick<Db, 'update'>, row: IngestRow, placeId: string) {
+    await tx
+      .update(schema.placeIngestRows)
+      .set({ matchedPlaceId: placeId, updatedAt: new Date() })
+      .where(
+        and(
+          eq(schema.placeIngestRows.jobId, row.jobId),
+          eq(schema.placeIngestRows.resolvedGooglePlaceId, row.resolvedGooglePlaceId!),
+          eq(schema.placeIngestRows.status, 'duplicate'),
+        ),
+      );
+  }
 
   /**
    * Creates canonical places from `ready` rows. `create_drafts` leaves them in
@@ -2110,6 +2130,26 @@ export class PlaceImportJobService {
 
     const stored = await this.db.transaction(async (tx) => {
       await this.dedup.lockGoogleIdentities(tx, [details.providerPlaceId]);
+      // Match resolution's job lock after the F-02 identity lock, as mergeRow
+      // does. Resolution takes only the job lock, so it cannot invert this order.
+      await this.lockJobIdentity(tx, row.jobId, details.providerPlaceId);
+      const [current] = await tx
+        .select()
+        .from(schema.placeIngestRows)
+        .where(eq(schema.placeIngestRows.id, row.id))
+        .limit(1);
+      if (!current) throw AppError.notFound('IMPORT_ROW_NOT_FOUND', 'Dòng import không tồn tại');
+      // Another publish (or merge) may have completed after our ready-row read.
+      // Reuse that result without claiming a new place or changing its owner.
+      if (current.status === 'imported' && current.matchedPlaceId) {
+        await this.dedup.assertGoogleIdentityOwner(
+          tx,
+          details.providerPlaceId,
+          current.matchedPlaceId,
+        );
+        await this.matchDuplicateSiblings(tx, current, current.matchedPlaceId);
+        return { placeId: current.matchedPlaceId, mappingWrite: null };
+      }
       await this.dedup.assertGoogleIdentityOwner(tx, details.providerPlaceId);
       let committedMapping: CommittedMapping | null = null;
       let mappingWrite: PersistResult | null = null;
@@ -2263,35 +2303,38 @@ export class PlaceImportJobService {
         },
         tx,
       );
-      return { placeId: place!.id, committedMapping, mappingWrite };
+      await tx
+        .update(schema.placeIngestRows)
+        .set({
+          status: 'imported',
+          matchedPlaceId: place!.id,
+          // Record the mapping actually stored, rather than the preview.
+          ...(committedMapping
+            ? {
+                administrativeProvinceCode: committedMapping.provinceCode,
+                administrativeCommuneCode: committedMapping.communeCode,
+                administrativeMappingStatus: committedMapping.status,
+                administrativeDatasetVersion: committedMapping.datasetVersion,
+              }
+            : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.placeIngestRows.id, row.id));
+      await this.matchDuplicateSiblings(tx, row, place!.id);
+      return { placeId: place!.id, mappingWrite };
     });
 
-    const { placeId, committedMapping } = stored;
+    const { placeId } = stored;
     if (stored.mappingWrite) this.administrative.countPersist(stored.mappingWrite);
 
     // ADM-009: the row records what happened to its publication request, so a
     // result can never call a deferred row published.
     const publication = wantsPublication ? await this.settlePublication(placeId) : null;
-    await this.db
-      .update(schema.placeIngestRows)
-      .set({
-        status: 'imported',
-        matchedPlaceId: placeId,
-        ...(publication ? { publicationOutcome: publication } : {}),
-        // The row now reports what was actually stored, not what was predicted.
-        // An operator comparing the two is the point; a row that kept showing
-        // its prediction after the fact could never be checked against anything.
-        ...(committedMapping
-          ? {
-              administrativeProvinceCode: committedMapping.provinceCode,
-              administrativeCommuneCode: committedMapping.communeCode,
-              administrativeMappingStatus: committedMapping.status,
-              administrativeDatasetVersion: committedMapping.datasetVersion,
-            }
-          : {}),
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.placeIngestRows.id, row.id));
+    if (publication)
+      await this.db
+        .update(schema.placeIngestRows)
+        .set({ publicationOutcome: publication, updatedAt: new Date() })
+        .where(eq(schema.placeIngestRows.id, row.id));
     if (publication === 'published') await this.dedup.emitReindex(placeId, 'published');
     return placeId;
   }

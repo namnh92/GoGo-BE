@@ -380,6 +380,11 @@ never reach the provider.
   the existing job with `reused: true` instead of re-billing the provider.
 - Row key: `(job_id, source_row_id)` — unique. A retried chunk updates rows, it
   cannot duplicate them or create a second canonical place.
+- Rows sharing a provider identity within a job reserve one ready row. When
+  that row creates or merges into a canonical place, the same transaction sets
+  `matchedPlaceId` on its duplicate siblings, leaving their statuses unchanged.
+  The CMS can then merge each sibling into that place. Re-publishing or merging
+  again creates no additional place and does not reassign provider ownership.
 - Chunks claim rows with `UPDATE … FOR UPDATE SKIP LOCKED`, so two workers
   never process the same row.
 - **Quota**: `ProviderQuotaExceededError` parks the job at

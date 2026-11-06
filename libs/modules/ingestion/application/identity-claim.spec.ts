@@ -149,11 +149,13 @@ function harness(owner?: string, legacy?: string) {
               resolve(
                 table === 'place_submissions'
                   ? [submission]
-                  : table === 'places'
-                    ? ownPlaces.has(id) || state.places.has(id)
-                      ? [{ id, status: ownPlaces.get(id) ?? state.places.get(id) }]
-                      : []
-                    : [],
+                  : table === 'place_ingest_rows'
+                    ? [{ ...row, status: state.rowStatus }]
+                    : table === 'places'
+                      ? ownPlaces.has(id) || state.places.has(id)
+                        ? [{ id, status: ownPlaces.get(id) ?? state.places.get(id) }]
+                        : []
+                      : [],
               );
             },
           };
@@ -223,7 +225,7 @@ function harness(owner?: string, legacy?: string) {
             where: async () => {
               writes.push(() => {
                 if (getTableName(table) === 'place_submissions') Object.assign(submission, value);
-                if (getTableName(table) === 'place_ingest_rows')
+                if (getTableName(table) === 'place_ingest_rows' && value.status !== undefined)
                   state.rowStatus = String(value.status);
               });
             },
@@ -259,12 +261,12 @@ function harness(owner?: string, legacy?: string) {
   db.select = (() => ({
     from: () => ({ where: () => ({ limit: async () => [submission] }) }),
   })) as never;
-  // Bulk creation commits the place/source, then records the import-row outcome
-  // through the pool. Keep that write observable, just like tx.update above.
+  // Publication outcomes may still be recorded through the pool after creation.
   db.update = ((table: Parameters<typeof getTableName>[0]) => ({
     set: (value: Record<string, unknown>) => ({
       where: async () => {
-        if (getTableName(table) === 'place_ingest_rows') state.rowStatus = String(value.status);
+        if (getTableName(table) === 'place_ingest_rows' && value.status !== undefined)
+          state.rowStatus = String(value.status);
       },
     }),
   })) as never;
@@ -287,7 +289,12 @@ function harness(owner?: string, legacy?: string) {
     isLodging: null,
     curatedRank: null,
   };
-  const row = { id: randomUUID(), resolvedGooglePlaceId: identity, normalizedInput: normalized };
+  const row = {
+    id: randomUUID(),
+    jobId: randomUUID(),
+    resolvedGooglePlaceId: identity,
+    normalizedInput: normalized,
+  };
   const importPlace = () =>
     (
       imports as unknown as {
